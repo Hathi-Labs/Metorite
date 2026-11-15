@@ -254,7 +254,8 @@ async def test_a_denied_confirmation_writes_nothing(tool: str, monkeypatch) -> N
     asked = deny(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _CALLS[tool]()
-    assert "cancelled" in out.lower(), f"{tool} did not say it was cancelled: {out}"
+    # HRD-7: the words of a declined card, from the one table.
+    assert out.startswith("Declined:"), f"{tool} did not say it was declined: {out}"
     assert writes(calls) == [], (
         f"{tool} mutated the CRM after the user declined: "
         f"{[(c['method'], c['path']) for c in writes(calls)]}"
@@ -319,7 +320,8 @@ async def test_a_non_interactive_run_writes_nothing(tool: str, monkeypatch) -> N
     """
     calls = _gateway(monkeypatch)
     out = await _CALLS[tool]()
-    assert "cancelled" in out.lower(), f"{tool} proceeded unattended: {out}"
+    # HRD-7: no card could show, in the words of the one table.
+    assert out.startswith("Not shown:"), f"{tool} proceeded unattended: {out}"
     assert writes(calls) == [], f"{tool} wrote the CRM with nobody in the loop"
 
 
@@ -1265,7 +1267,7 @@ async def test_a_declined_record_edit_sends_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_update_record(*_EDIT_ARGS)
-    assert "Cancelled" in out and writes(calls) == []
+    assert out.startswith("Declined:") and writes(calls) == []
 
 
 @pytest.mark.parametrize("entity, record, title, fields", [
@@ -1431,7 +1433,8 @@ async def test_a_card_that_errors_sends_nothing(tool: str, monkeypatch) -> None:
 @pytest.mark.parametrize("tool", ["crm_update_record", "crm_update_task"])
 async def test_a_card_that_times_out_sends_nothing(tool: str, monkeypatch) -> None:
     """The REAL ``request_confirmation``: a timeout on the wait answers False
-    (``_block_on`` maps ``TimeoutError`` to ``TIMEOUT``), so the tool cancels."""
+    (``_block_on`` maps ``TimeoutError`` to ``TIMEOUT``), so the tool writes
+    nothing. HRD-7: its answer says that the card timed out, never "no"."""
     import asyncio
 
     import orchestrator.executor as executor
@@ -1448,4 +1451,4 @@ async def test_a_card_that_times_out_sends_nothing(tool: str, monkeypatch) -> No
         out = await _CALLS[tool]()
     finally:
         executor._active_run_queue.reset(token)
-    assert "cancelled" in out.lower() and writes(calls) == []
+    assert out.startswith("Timed out:") and writes(calls) == []

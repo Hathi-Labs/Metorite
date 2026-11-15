@@ -173,6 +173,7 @@ from customer_console.lifecycle import (
     assert_transition,
     capabilities_of,
 )
+from customer_console.prompt_cache import prompt_cache_for_step
 from customer_console.reasoning import (
     messages_for_step,
     publish_reasoning_alias,
@@ -9406,6 +9407,11 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         passthrough["messages"] = messages_for_step(
             passthrough["messages"], step.model,
         )
+        # Task 2875: an Anthropic step caches only what its request marks, and
+        # only this step knows its model. The marks go on the stable system
+        # block and the last tool, behind CUSTOMER_CONSOLE_PROMPT_CACHE (off:
+        # the same dict comes back). Per step, because a chain may mix vendors.
+        passthrough = prompt_cache_for_step(passthrough, step.model)
         # Task 1128: a thinking parameter reaches only a step whose model
         # takes it. litellm here runs with no `drop_params`, so a step that
         # refuses `thinking` would answer 400 for the whole request.

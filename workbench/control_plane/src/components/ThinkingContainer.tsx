@@ -42,8 +42,11 @@ import EntityPill from "@/components/ui/EntityPill";
 import { agentName } from "@/lib/agentName";
 import { fieldSpec } from "@/lib/cardFields";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
+import { FIRST_STEP } from "@/lib/runStatus";
+import { WRITING_STEP } from "@/lib/runStep";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
+import { memberLineOf } from "@/lib/cardOutcomes";
 import { argFields, needsClamp } from "@/lib/toolArgs";
 import {
   COMMAND_CAP,
@@ -68,6 +71,10 @@ interface ThinkingContainerProps {
    *  segmentCutoff. Empty for id-less runtimes (which use the reasoning fold). */
   narrationSegments?: string[];
   isActive: boolean;
+  /** CS-1: the turn was just sent and nothing has come back. The header then says `FIRST_STEP`. */
+  firstLine?: boolean;
+  /** CS-1: answer text has started, so the header never says that Mira still reads the message. */
+  answerStarted?: boolean;
   /**
    * The receipt of a read, drawn inside its step when the step is open
    * (§24 rule 2). Null for a step with none. `MessageBubble` supplies it
@@ -408,7 +415,8 @@ export function ClampText({ text, clamp }: { text: string; clamp: boolean }) {
 
 /** Any other step expands into its arguments and its result. */
 function ArgsDetail({ event, step, dur }: { event: ToolEvent; step: ToolStep; dur?: number }) {
-  const out = event.result ? capOutput(String(event.result), 2000) : null;
+  // HRD-7: a card outcome shows its head only. Its next step is for the model.
+  const out = event.result ? capOutput(memberLineOf(String(event.result)), 2000) : null;
   // Each key in product words (`fieldSpec`, the one map of a key to its
   // label), and each value in full. The keys that the row already shows are
   // left out.
@@ -496,10 +504,10 @@ function SubAgentSteps({ event }: { event: ToolEvent }) {
                   // One line, and an ellipsis where it stops: `truncate`,
                   // never a silent cut. The tooltip holds the rest.
                   <span
-                    title={capOutput(String(st.result)).text}
+                    title={capOutput(memberLineOf(String(st.result))).text}
                     className="text-[10px] text-muted-foreground font-mono truncate min-w-0"
                   >
-                    {capOutput(String(st.result), 400).text}
+                    {capOutput(memberLineOf(String(st.result)), 400).text}
                   </span>
                 )}
               </li>
@@ -650,6 +658,8 @@ export default function ThinkingContainer({
   reasoningBlocks,
   narrationSegments,
   isActive,
+  firstLine,
+  answerStarted,
   evidenceFor,
   notice,
 }: ThinkingContainerProps) {
@@ -768,7 +778,7 @@ export default function ThinkingContainer({
     ? (hasRunningTool && lastLabel ? lastLabel : null)
       ?? liveReasoningTail
       ?? lastLabel
-      ?? "Thinking…"
+      ?? (answerStarted ? WRITING_STEP : firstLine ? FIRST_STEP : "Thinking…")
     : summaryTitle;
 
   const totalMs = useMemo(() => {

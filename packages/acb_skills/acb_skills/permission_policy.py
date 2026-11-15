@@ -174,6 +174,10 @@ MCP_ALWAYS_CONFIRM = "mcp_always_confirm"
 #: :data:`MCP_ALWAYS_CONFIRM` wins over it, and an untrusted answer (step 3a)
 #: still asks the card.
 MCP_READ_ONLY_KEY = "mcp_read_only_key"
+#: The MCP hint names of the ``annotations`` of one tool (MCP 2025-03-26).
+#: The ONE copy (STU-B1b-1). ``orchestrator._maf_mcp`` reads it for the gate,
+#: and ``gateway/studio/mcp_actions.py`` reads it for the action catalog.
+MCP_HINT_NAMES = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
 
 
 def mcp_needs_confirmation(annotations: Any) -> bool:

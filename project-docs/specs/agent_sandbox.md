@@ -4,12 +4,15 @@
 
 - **Status:** ACTIVE, 2026-10-27. **D130** answers every owner call of §14,
   and takes each recommendation. **D187** amends the spec on 2026-11-07
-  (§0a): a user tool is an AI Studio package. Nothing built. SBX-1 is the
-  first slice.
+  (§0a): a user tool is an AI Studio package. **D224** sets the order of
+  work on 2026-11-15 (§0b): chains of existing actions first, code last.
+  Nothing built. SBX-1 is the first slice of code.
 - **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
   of D187 were read on 2026-11-07 at `main` `f2671c706`. Re-verify every
   anchor at dispatch.
-- **Board row:** **WS-TO**, Metorite epic 521 (D130). The work extends the
+- **Board row:** **WS-TO**. Metorite task 810 is the umbrella of the SBX
+  slices. Epic 3393 (WS-TOF, D224) orders the work with the Studio skill
+  slices (§0b). The work extends the
   one sandbox broker of D83, so `maf_coding_engine.md` (WS-43) still owns the
   broker. Metorite task 1962 is SBX-0b, the D187 amendment.
 - **Asked by:** the owner, 2026-10-18 and 2026-10-19, in chat. The owner
@@ -127,6 +130,78 @@ recommendation". `work_plan.md` §3 records it as D187.
 The header, §0, §2, §3.1, §3.2, §4.4, §6.1 to §6.5, §7, §8, §9.2, §11, §12,
 §13, §14 and §16 change. §4.6 and §6.7 to §6.10 are new. Each changed
 paragraph carries "(D187)". Text with no mark stands as D130 left it.
+
+---
+
+## 0b. The order of work: tools on the fly (D224, 2026-11-15)
+
+**The ask.** On 2026-11-15 the owner asked that the chat fix tools, and
+build the tools that do not exist from the apps and integrations that it
+has. The owner asked that these tools persist for a member and for the org,
+and fit the tool loading that exists. Then the owner wrote "Go in the order
+that you recommend". D224 records the order. Epic 3393 (WS-TOF) holds the
+slices.
+
+**The rule.** A chain of existing actions comes before code. Most missing
+tools are a chain of actions that exist: read the CRM, find the contact,
+draft the mail. D187 already tries a chain before it writes code (§6.1).
+Code adds logic, not reach, because no provider token enters the sandbox
+(§5.4). A chain needs no sandbox and no owner hardware gate.
+
+### The ladder
+
+Each rung ends in a demo on production (D211). The column "On main" was
+read at `539221a29` on 2026-11-15. Re-verify it at dispatch.
+
+| Rung | The demo (task) | On main | Slices (task) | Owner gate |
+|---|---|---|---|---|
+| 1. Save and reuse | A member does a three-step job and saves it. A new chat finds it from a plain sentence and runs it (3414) | F3 loads a skill pack. F6a (3160) built the save offer behind a build-time flag. Only Knowledge reaches the catalog: CRM, Projects, Email and Calendar give 0 rows. A skill matches on its exact name only. A skill pack adds rules, not tools | TOF-1a catalog coverage (3404). TOF-1b a skill brings its tools (3411). TOF-1c a match on the member's words (3412). TOF-1d the offer for each org (3413) | The offer flag, the HathiLabs org first |
+| 2. The tool failure log | A tool error becomes one task with counts. A fix merges, and the next release closes it (3417) | Nothing. Task 1793 has no spec | TOF-2a the spec (3416), then the build (1793) | None |
+| 3. Repair a saved skill | Mira shows why a skill broke, proposes version 2 and tries it with writes held. The member approves, and undo works (3420) | F7 undo exists. F4 tests and §7 step 6 "Improve" of `ai_studio.md` are not built | TOF-3b the F4 tests (3419). TOF-3a the repair (3418) | None |
+| 4. Share with the org | A member shares a skill, an admin approves it, and the chat of another member uses it (3422) | `list_loadable` loads an `org` skill. No route sets `visibility`. The J2b slices approve app versions, not skills | TOF-4a share and approve (3421) | None |
+| 5. Connected systems | A skill uses an approved MCP tool, then a Zoho action (3426) | MCP rows reach the catalog (B1b-2). `action_tool` gives None for an `mcp:` or `integration:` id. B1b-3 and B1b-4 are in flight | TOF-5a MCP actions (3423). TOF-5b integration actions (3424), after IN-3 (3176). TOF-5c a direct provider request (3425) | 3176 is OWNER-GATE. 3425 is a decision |
+| 6. Sandbox code tools | The chat builds, runs and keeps a tool that no chain can do | No SBX code | SBX-1 to SBX-11 (umbrella 810). SBX-12 to SBX-17 (3427 to 3432) | SBX-G9 to SBX-G11 for production |
+
+§12 named tasks 1980 to 1985 for SBX-12 to SBX-17. Those tasks never
+existed on the board. Tasks 3427 to 3432 replace them.
+
+### Persistence and loading
+
+- **Where a tool lives.** A saved skill is a `studio_skills` row with
+  immutable `studio_skill_versions` rows, under FORCE RLS. A code tool is an
+  `app_versions` row (§7.1). This adds no store.
+- **Who can use it.** First the member who saved it. Then the whole org,
+  after a holder of `studio:publish` approves one version (TOF-4a, SBX-Q3).
+  Every org gets a tool only as first-party code, through a reviewed pull
+  request (§6.8). Nothing copies from one org to another.
+- **How it loads.** The one chat path: `_apply_tool_packs`, the F3 skill
+  packs, then `find_tools` (D222). The chat loads a skill as it loads a
+  code pack. This adds no loader.
+
+### Two merges, PROPOSED
+
+The owner decides both on task 3394. No builder starts on either finder
+before the answer.
+
+1. **One finder.** D187 plans `find_tool` (§6.1). D222 plans `find_tools`
+   (`one_assistant_context.md` §4.2.9). The proposal is one tool,
+   `find_tools`. On no match, it writes the `tool_gaps` row of SBX-1 and runs
+   the compose check. Then it says if a chain can do the job, or if a new
+   tool is necessary. SBX-1 then builds no second finder.
+2. **One failure store.** Task 1793 (the tool failure log) and IR-4 (issue
+   reports, epic 475) each plan to group errors by fingerprint into one
+   task. The proposal is one store and one fingerprint, and both write to
+   it. TOF-2a (task 3416) writes it with IR-0 (task 555).
+
+### Out of scope
+
+- How the chat sends a turn to an attached MCP server, the description of
+  the server, and its `mcp.call` log line. WS-CSY owns them (epic 3390,
+  `agent_architecture.md` §12.2).
+- The tool search pilot (task 3190). On 2026-11-15 the model called
+  `find_tools` on 0 of 3 Studio chats, because it took the pack loader. So
+  TOF-1c matches a skill on the server, and rung 1 does not wait for the
+  model to search.
 
 ---
 
@@ -1343,12 +1418,12 @@ the A2 model.
 | **SBX-9** | (D187) Turn it on: `tools:<Fracktal>` on production, on the dedicated box of §4.6. D144 retired staging, so the local staging gate of D145 comes first | SBX-1 to SBX-8, SBX-12, SBX-13, SBX-15, WS43-G1, WS43-G2, WS43-G4, WS43-G5, SBX-G9, SBX-G10, SBX-G11 | **OWNER-GATE** |
 | **SBX-10** | The `e2b` backend (§4.4) and the public door name. (D187) The alternative to the box of §4.6 | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
 | **SBX-11** | The SPACE check through ECW (§4.5) | SBX-10, the three triggers of §4.5 | **OWNER-GATE**. A new host costs money |
-| **SBX-12** (task 1980) | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
-| **SBX-13** (task 1981) | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
-| **SBX-14** (task 1982) | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
-| **SBX-15** (task 1983) | (D187) **The `docker-remote` backend** (§4.6): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. **Done when:** on the dev stack, a build, a smoke test and a run go to a second local daemon. The outputs come back through the safe opener. In production mode the broker refuses a `runc` run on that backend | SBX-4, SBX-8, WS-43g | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
-| **SBX-16** (task 1984) | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
-| **SBX-17** (task 1985) | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
+| **SBX-12** (task 3427) | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
+| **SBX-13** (task 3428) | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
+| **SBX-14** (task 3429) | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
+| **SBX-15** (task 3430) | (D187) **The `docker-remote` backend** (§4.6): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. **Done when:** on the dev stack, a build, a smoke test and a run go to a second local daemon. The outputs come back through the safe opener. In production mode the broker refuses a `runc` run on that backend | SBX-4, SBX-8, WS-43g | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
+| **SBX-16** (task 3431) | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
+| **SBX-17** (task 3432) | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
 
 ### 12.1 SBX-1 — the first dispatchable slice
 

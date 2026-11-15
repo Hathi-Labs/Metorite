@@ -221,7 +221,8 @@ No email agent exists to hand a task to.
   the reply to say in instruction, in the member's words. Put each person to
   copy in cc, as a full address from find_contact. "X and Y" is ONE mail.
 - After a card, say what the tool returned in one line: "Sent to ...",
-  "Saved in Drafts ..." or "Reply discarded ...".
+  "Saved in Drafts ..." or the lead of a card that did nothing ("Declined",
+  "Timed out" or "Closed by your message").
 - "Send it", "go ahead" and "ok send" mean: call send_draft on the draft of
   the working set. Never write a new draft for them. Without a draft, call
   compose_reply. The card is the confirmation.
@@ -318,9 +319,8 @@ No CRM agent exists to hand a task to.
   a stage or an id. If no tool gave it, you do not have it.
 - Each write shows the member a card: create_lead, update_deal_status,
   crm_update_record, crm_update_task, log_activity and convert_lead. The
-  card is the question: do not ask in text before it. Say that a write happened only after the tool says so. When the
-  member declines, say "that wasn't approved, so nothing changed", and do not
-  try the same write again.
+  card is the question: do not ask in text before it. Say that a write happened only after the tool says so. If a
+  card did not go ahead, nothing changed. Follow the next step in its text.
 - Search with search_crm before create_lead. A second row for a known lead
   makes a CRM worse. The lead is owned by the member, and you cannot make it
   for another person.
@@ -416,8 +416,8 @@ No Projects agent exists to hand a task to.
   lacks becomes a new tag, so read vocabulary before you tag a task.
 - Each write shows a card with the exact change. The card is the question: do
   not ask in text before it. Say that a change happened only after the receipt
-  says so. When the member declines, say "that wasn't approved, so nothing
-  changed".
+  says so. If a card did not go ahead, nothing changed. Follow
+  the next step in its text.
 - assign takes an exact name or an address. When two people could match, show
   both and ask. Use people_for to find who could take a task.
 - An open task due before today is overdue. A task in a done or cancelled
@@ -1508,6 +1508,36 @@ def packs_on(org: object) -> frozenset[str]:
     if ALL in slugs:
         return known
     return with_followers(known & slugs) & known
+
+
+def tool_search_on(org: object) -> bool:
+    """True when ``find_tools`` is on for organization *org*. THE one reader
+    of ``TOOL_SEARCH_ORGS`` (WS-67 TS-2a, D222).
+
+    ``TOOL_SEARCH_ORGS`` lists the organization ids, or ``*`` for each one,
+    in any case and with spaces. It reads the setting on each call, so a
+    SIGHUP reload applies a change (``docs/flag_reload.md``). It fails
+    closed: an empty list, an empty *org*, an org that the list does not
+    name and a fault in the settings read each give False.
+
+    It asks only its own setting. The caller holds the allowed packs of the
+    run already. The caller passes the bound tenant of the run, never a value
+    from request input (R5). Any value other than empty on a box is
+    OWNER-ONLY (``work_plan.md`` §6 D4). Its one caller is
+    ``orchestrator._tool_injection._apply_tool_packs``. Fence:
+    ``tests/unit/test_tool_search_off.py``.
+    """
+    org_id = str(org or "").strip().lower()
+    if not org_id:
+        return False
+    try:
+        from acb_common import get_settings
+
+        orgs = _entries(getattr(get_settings(), "tool_search_orgs", ""))
+    except Exception:  # never turn the search on after a fault
+        _log.warning("tool_packs.search_flag_read_failed")
+        return False
+    return ALL in orgs or org_id in orgs
 
 
 # ── OA-7c: layer (a), the sticky state and the persona (§4.2.2) ─────────────
@@ -3181,8 +3211,8 @@ LOAD_NO_PATH = (
 WROTE_HANDOFF_REFUSED = (
     "Not run. In this turn you already did this work with your own tool "
     "{tool}. A hand-off would do it a second time. Tell the member the result "
-    "of {tool}. If the member cancelled its card, tell the member that "
-    "nothing changed, and do not try again. If the member also asked for "
+    "of {tool}. If its card did not go ahead, tell the member that "
+    "nothing changed, and follow the next step in the text of the tool. If the member also asked for "
     "work that your tools cannot do, ask the member to send it in a new "
     "message."
 )
@@ -3885,8 +3915,12 @@ class LoadSkillToolsProvider(ContextProvider):
 # refusal and the run key hold with no new code. The pack stays the unit of
 # the guards, the rules and the state: a found tool never joins
 # ``PackRun.holds``, so a sub-agent never gets one (``_child_pack_tools``).
-# NO CALLER yet: TS-2a PR 3 wires the provider behind ``TOOL_SEARCH_ORGS``.
-# Fence: ``tests/unit/test_find_tools_guards.py``.
+# TS-2a PR 3 wires it behind ``TOOL_SEARCH_ORGS`` (:func:`tool_search_on`):
+# ``_tool_injection._apply_tool_packs`` makes the candidates and
+# ``_offer_pack_loader`` attaches the provider. Fences:
+# ``tests/unit/test_find_tools_guards.py``,
+# ``tests/unit/test_find_tools_maf_loop.py`` and
+# ``tests/unit/test_tool_search_off.py``.
 
 #: The name of the search tool.
 FIND_TOOL = "find_tools"
@@ -4363,8 +4397,9 @@ class FindTools(FunctionMiddleware):
 class FindToolsProvider(ContextProvider):
     """Adds ``find_tools`` and its middleware to ONE run (TS-2a).
 
-    NO CALLER yet. TS-2a PR 3 attaches it to the run's own view of the agent
-    (``agent_with_providers``), BEFORE :class:`LoadSkillToolsProvider`, so
+    ``_tool_injection._offer_pack_loader`` attaches it to the run's own view
+    of the agent (``agent_with_providers``), BEFORE
+    :class:`LoadSkillToolsProvider` in the same list (TS-2a PR 3), so
     the tool is in ``context.tools`` when layer (c) counts the live list
     (:meth:`LoadSkillTools.load_early`). It adds no instruction. The packs
     ride in the description of the tool."""

@@ -72,7 +72,8 @@ def _field(spec: dict[str, Any]) -> FieldSpec:
         min=spec.get("min"), max=spec.get("max"),
         units=tuple(spec["units"]) if spec.get("units") else None, format=spec.get("format"),
         normal=sf.range_of(spec.get("normal")), critical=sf.range_of(spec.get("critical")),
-        conversions=sf.conversions_of(spec.get("conversions")))
+        conversions=sf.conversions_of(spec.get("conversions")),
+        prefix=spec.get("prefix"), pad=spec.get("pad"), reset=spec.get("reset"))
 
 
 OPEN_CLOSED = ["Open", "Closed"]
@@ -179,6 +180,11 @@ VALUES.update({
     "barcode": ({"format": "ean13"}, [
         "4006381333931", "4006381333932", "400638133393", "40063813339311",
         "400638133393a", 4006381333931, None,
+    ]),
+    # C15a. The store fills the stored form: a prefix, then digits. A caller sends none.
+    "autonumber": ({"prefix": "FV-", "pad": 4}, [
+        "FV-0042", "0001", "FV-12345", "fv_9.A/b-3", "FV-", "", "FV-0042x", "ABCDEFGHIJKL0001",
+        "ABCDEFGHIJKLM0001", "123456789012345", "FV 0042", 42, None,
     ]),
 })
 # A barcode of the other two formats, and a rating with its own bounds.
@@ -387,6 +393,9 @@ def test_ts_limits_equal_the_python_constants():
         "MAX_UNIT_CHARS": sf.MAX_UNIT_CHARS,
         "MAX_CODE_CHARS": sf.MAX_CODE_CHARS,
         "MAX_QR_CHARS": sf.MAX_QR_CHARS,
+        "MAX_AUTONUMBER_PREFIX": sf.MAX_AUTONUMBER_PREFIX,
+        "MAX_AUTONUMBER_PAD": sf.MAX_AUTONUMBER_PAD,
+        "MAX_AUTONUMBER": sf.MAX_AUTONUMBER,
     }
     assert found == want
 

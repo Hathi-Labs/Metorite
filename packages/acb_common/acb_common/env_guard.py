@@ -161,6 +161,14 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
     # covers both too.
     "TOOL_PACKS", "TOOL_PACKS_ORGS",
+    # WS-67 TS-2a (D222): the orgs whose chat holds `find_tools`. A found tool
+    # moves what the chat can do and spends model tokens, so only the owner
+    # writes it (work_plan.md §6 D4). The `TOOL_` prefix covers it too.
+    "TOOL_SEARCH_ORGS",
+    # WS-FIND FIND-2 (find_engine.md section 8): the orgs whose search hits say
+    # how they matched. It changes the order and the text of each answer, so
+    # only the owner writes it (work_plan.md section 6 D4).
+    "FIND_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
@@ -280,6 +288,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-55 CIV-14b: MCP_IMAGE_UPLOAD_ORGS lets an outside agent upload an
+    # image to a task and show it on a question. A tenant must not open it
+    # for another org, so only the owner writes it.
+    "MCP_IMAGE_UPLOAD_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact

@@ -188,7 +188,7 @@ async def test_a_cancelled_card_still_refuses_the_hand_off(store, agents, monkey
     with L._in_run(applied):
         made = await _tool(agents, "create_personal_task").func(title="Order the bearings")
         out = await L.agent_tools.call_agent(PA, "Make the task: order the bearings")
-    assert str(made).startswith("Cancelled"), made
+    assert str(made).startswith("Declined:"), made  # HRD-7: the one table
     assert len(asked) == 1 and _posts(calls) == []
     assert out == _wrote("create_personal_task") and ran == []
 

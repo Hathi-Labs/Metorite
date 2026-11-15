@@ -130,6 +130,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/studio/packages/{package_id}/install/run-as"),
     # WS-STU J2b-2, the share with people.
     ("POST", "/studio/packages/{package_id}/share"),
+    # WS-STU J2b-5, the per-person unshare.
+    ("DELETE", "/studio/packages/{package_id}/share/{email}"),
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
@@ -142,6 +144,9 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
     # I8a, the connections of a draft (Connect in place).
     ("GET", "/studio/packages/{package_id}/connections"),
+    # I8b-1a, the ask of an admin and its withdraw.
+    ("POST", "/studio/packages/{package_id}/connections/ask"),
+    ("DELETE", "/studio/packages/{package_id}/connections/ask"),
     # AF-10a, the saved views of an app.
     ("GET", "/studio/packages/{package_id}/views"),
     ("POST", "/studio/packages/{package_id}/views"),
@@ -149,6 +154,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/studio/packages/{package_id}/views/{view_id}"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
+    # B1b-2, the refresh of the tools of one MCP server.
+    ("POST", "/studio/mcp/{server}/refresh"),
 )
 
 _PARAMS = {
@@ -157,7 +164,9 @@ _PARAMS = {
     "app_id": str(uuid.uuid4()),
     "version": "1",
     "action": "peek",
+    "email": "ben@example.test",
     "view_id": str(uuid.uuid4()),
+    "server": "github",
     "object_name": "ledger",
 }
 
@@ -216,6 +225,9 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))
+    # B1b-2: the refresh and the cache read of the MCP tools.
+    monkeypatch.setattr(actions.mcp_tools, "refresh", _trip("mcp_tools.refresh"))
+    monkeypatch.setattr(actions.mcp_tools, "catalog_tools", _trip("mcp_tools.catalog_tools"))
     monkeypatch.setattr(actions, "package_rows", _trip("package_rows"))
     return reached
 

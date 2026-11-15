@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 197
+-- Tables in this phase: 198
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -667,6 +667,13 @@ ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_settings FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS gtd_settings_tenant_isolation ON user_settings;
 CREATE POLICY gtd_settings_tenant_isolation ON user_settings
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE integration_attention ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration_attention FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS integration_attention_tenant_isolation ON integration_attention;
+CREATE POLICY integration_attention_tenant_isolation ON integration_attention
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -1549,6 +1556,13 @@ ALTER TABLE studio_saved_views ENABLE ROW LEVEL SECURITY;
 ALTER TABLE studio_saved_views FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS studio_saved_views_tenant_isolation ON studio_saved_views;
 CREATE POLICY studio_saved_views_tenant_isolation ON studio_saved_views
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_object_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_object_counters FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_object_counters_tenant_isolation ON studio_object_counters;
+CREATE POLICY studio_object_counters_tenant_isolation ON studio_object_counters
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

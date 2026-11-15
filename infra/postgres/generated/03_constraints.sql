@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 197
+-- Tables in this phase: 198
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1118,6 +1118,18 @@ ALTER TABLE user_settings ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE user_settings ADD CONSTRAINT gtd_settings_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS gtd_settings_org_idx ON user_settings (organization_id);
+
+-- integration_attention
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM integration_attention WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: integration_attention still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE integration_attention ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE integration_attention ADD CONSTRAINT integration_attention_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS integration_attention_org_idx ON integration_attention (organization_id);
 
 -- integration_connections
 DO $$
@@ -2629,6 +2641,18 @@ ALTER TABLE studio_saved_views ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_saved_views ADD CONSTRAINT studio_saved_views_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_saved_views_org_idx ON studio_saved_views (organization_id);
+
+-- studio_object_counters
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_object_counters WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_object_counters still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_object_counters ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_object_counters ADD CONSTRAINT studio_object_counters_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_object_counters_org_idx ON studio_object_counters (organization_id);
 
 -- studio_object_fields
 DO $$

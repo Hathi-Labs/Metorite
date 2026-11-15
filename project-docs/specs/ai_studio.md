@@ -722,6 +722,37 @@ The owner asked on 2026-11-14 (task 3164). Studio apps, workflows and skills bui
 - The offer of CE-10d (task 3069) works because it is the one next step that fits: "Also sync its calendar". IN-9 copies that pattern.
 - So "Build an app on <provider>" shows only for a provider whose data no built-in app shows. The connector list (IN-11) says which. It is never a modal, and never an automatic build. A member can always build from Studio.
 
+### 8.2 Ask an admin: the store of an ask (I8b)
+
+A member who may not connect an org connection presses "Ask an admin" on the line of I8a (§8.1 rule 2). I8b-1a builds the store and the two routes, dark. I8b-1b shows each open ask to the admins as a Needs-you item. I8b-2 adds the buttons in the IDE.
+
+**The store.** `integration_attention` holds one row for each item that needs an admin. The kind `ask` is the ask of one member for one provider. The kind `broken` is for I10a, and no code writes it yet. The table has the tenant `organization_id` and FORCE RLS. `connections/attention.py` is the one module that runs SQL on it, and it never names the credential column.
+
+**The routes.** `POST /studio/packages/{id}/connections/ask` takes `{"name": "<connection>"}`. `DELETE` on the same path with `?name=<connection>` withdraws the ask. Both ride `STUDIO_ORGS` and `STUDIO_CONNECTION_GATE_ORGS`. With either flag off, each route answers 404 and sends no SQL. Only the owner of the draft asks, and the org and the member come from the session.
+
+The ask refuses a name in this order:
+
+1. A name that the draft does not hold gets 422 `not_in_draft`.
+2. A name that the registry cannot hold gets 409 `not_checkable` (`connections.checkable`).
+3. A name that the member has now gets 409 `already_met`. "Has now" is the rule of I9a: the set of the account of the need. A member row of the asker never meets an `org` need.
+4. A member who may connect the name gets 409 `can_connect`. That is the rule of `can_connect` on the line of I8a (`connections._can_connect`). The name is checkable, and the `as` of the need is the scope of the connector. Also, `may_connect` lets the member connect it. The text is "You can connect it yourself."
+5. A name that no connect of an admin can meet gets 409 `admin_cannot_connect`. A connect writes a row of the scope of the connector. A member row of the admin never meets the need of another member. So an admin can meet only an `org` need on a connector of `org` scope (`connections._admin_can_meet`). A `{zoho, as: member}` need and a `{google_drive, as: org}` need store no ask. The text is "An admin cannot connect this for you. Change the connection in the draft."
+
+The answer is `{"asked": true, "new": <bool>}`, and `new` is false on a second press. A member who holds 10 live asks gets 429 `too_many_asks` for a new one. The read of I8a adds `asked` to each row, with one more read only when a name is not met.
+
+**The life of an ask.**
+
+1. One ask for each member and provider. A second ask within 30 days keeps the row and its time, and moves the row to the newest draft, so the delete of the first draft does not take it.
+2. An ask expires after 30 days. A read ignores an older row, and a new ask makes it live again. The daily prune job deletes it.
+3. A connect clears it. Each registry writer deletes the asks of the provider when the row that it writes is `connected` at org scope. A member row never clears an org ask.
+4. A withdraw deletes the row of the asker only.
+5. A delete of the package deletes its asks, by the cascade of the key.
+6. The member purge deletes the asks of the member in this org.
+7. One member holds at most 10 live asks in one org. The 11th new ask answers 429 `too_many_asks`, under a lock on the org and the member. A repeat of an ask that exists is never refused. A dedupe for each provider holds the rest.
+8. No free text. An ask holds no note, so no text of a member reaches an admin.
+
+**The reach.** The item stays in the app. I8b-1b gives it the Reach class `none`, so no mail and no push go out. A wider Reach class waits for an owner decision.
+
 ---
 
 ## 9. Governance
@@ -916,8 +947,8 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **B1** | 🔨 BUILT, dark (2026-10-31) | STD | AGENT-SAFE | [row](ai_studio_rows/B1.md) |
 | **B1c** | 🔨 BUILT, dark (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/B1c.md) |
-| **B1b-1** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
-| **B1b-2** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-2.md) |
+| **B1b-1** | 🔨 BUILT (2026-11-14, task 3278) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
+| **B1b-2** | 🔨 BUILT (2026-11-14, task 3279) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-2.md) |
 | **B1b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-3.md) |
 | **B2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2a.md) |
 | **B2b-1** | 🔨 BUILT, dark (2026-11-02) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2b-1.md) |
@@ -959,6 +990,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2a.md) |
 | **C2b** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2b.md) |
 | **C2c** | 🔨 BUILT, dark (2026-11-13, task 1349) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2c.md) |
+| **C2d-a** | 🔨 BUILT, dark (2026-11-14, task 3311) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2d-a.md) |
 | **C3** | 🔨 BUILT, dark (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/C3.md) |
 | **C4** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4.md) |
 | **C4a-1** | 🔨 BUILT, dark (2026-11-13, task 3084) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4a-1.md) |
@@ -982,7 +1014,9 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C12** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C12.md) |
 | **C13** | 🔨 BUILT (2026-11-09) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C13.md) |
 | **C14** | 🔨 BUILT (2026-11-09) | STD | AGENT-SAFE | [row](ai_studio_rows/C14.md) |
-| **C15** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15.md) |
+| **C15a** | 🔨 BUILT, dark (2026-11-14, task 2345) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15a.md) |
+| **C15b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C15b.md) |
+| **C15c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15c.md) |
 | **C16** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C16.md) |
 | **C17** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C17.md) |
 | **C18** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C18.md) |
@@ -1006,7 +1040,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D3** | 🔨 BUILT, preview only (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/D3.md) |
 | **D3b** | 🔨 BUILT, preview only (2026-11-05) | STD | AGENT-SAFE | [row](ai_studio_rows/D3b.md) |
 | **D4** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/D4.md) |
-| **D5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D5.md) |
+| **D5** | 🔨 BUILT, part (2026-11-13, STU-D5 and D5-W2, task 1165) | STD | AGENT-SAFE | [row](ai_studio_rows/D5.md) |
 | **D6** | 🔨 BUILT, part (2026-11-13, STU-D6, task 1166) | STD | AGENT-SAFE | [row](ai_studio_rows/D6.md) |
 | **D7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D7.md) |
 | **D8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D8.md) |
@@ -1029,7 +1063,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D18** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D18.md) |
 | **D18-1** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D18-1.md) |
 | **D18-2a** | 🔨 BUILT, dark (2026-11-14, task 3296) | HIGH | AGENT-SAFE | [row](ai_studio_rows/D18-2a.md) |
-| **D18-2b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D18-2b.md) |
+| **D18-2b** | 🔨 BUILT, dark (2026-11-14, task 3297) | STD | AGENT-SAFE | [row](ai_studio_rows/D18-2b.md) |
 | **D19a** | 🔨 BUILT, dark, preview only (2026-11-14, task 2363) | STD | AGENT-SAFE | [row](ai_studio_rows/D19a.md) |
 | **D19b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/D19b.md) |
 | **D19c** | open | STD | see row | [row](ai_studio_rows/D19c.md) |
@@ -1071,7 +1105,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **AF-10a** | 🔨 BUILT, dark (2026-11-13, task 3158) | HIGH | AGENT-SAFE | [row](ai_studio_rows/AF-10a.md) |
 | **AF-10b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-10b.md) |
 | **AF-11a** | open | STD | see row | [row](ai_studio_rows/AF-11a.md) |
-| **AF-11b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
+| **AF-11b** | 🔨 BUILT, dark (2026-11-15, AF-11b-1 and AF-11b-2, tasks 3326 and 3327) | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
 
 ### Group E — Workflows in Studio
 
@@ -1084,6 +1118,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **E5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E5.md) |
 | **E6** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/E6.md) |
 | **E7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E7.md) |
+| **E7f** | 🔨 BUILT (2026-11-15, task 3382) | STD | AGENT-SAFE | [row](ai_studio_rows/E7f.md) |
 | **E8a** | 🔨 BUILT, dark (2026-11-13, task 3095) | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8a.md) |
 | **E8b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8b.md) |
 | **E8c** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E8c.md) |
@@ -1207,14 +1242,20 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8.md) |
 | **I8a** | 🔨 BUILT, dark (2026-11-14), task 3168 | STD | AGENT-SAFE | [row](ai_studio_rows/I8a.md) |
 | **I8b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I8b.md) |
+| **I8b-1a** | 🔨 BUILT, dark (2026-11-14), task 3215 | HIGH | AGENT-SAFE | [row](ai_studio_rows/I8b-1a.md) |
+| **I8b-1b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I8b-1b.md) |
+| **I8b-2** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8b-2.md) |
 | **I8c** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8c.md) |
 | **I8d** | 🔨 BUILT, dark (2026-11-14), task 3217 | STD | AGENT-SAFE | [row](ai_studio_rows/I8d.md) |
 | **I8e** | open | HIGH | see row | [row](ai_studio_rows/I8e.md) |
 | **I8f** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8f.md) |
-| **I9** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
+| **I9** | 🔨 I9a BUILT, dark (2026-11-14, task 3169) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
 | **I10** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I10.md) |
+| **I10a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I10a.md) |
+| **I10b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I10b.md) |
+| **I10c** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I10c.md) |
 | **I11-0** | 🔨 BUILT, test only (2026-11-14, task 3235) | STD | AGENT-SAFE | [row](ai_studio_rows/I11-0.md) |
-| **I11a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I11a.md) |
+| **I11a** | 🔨 BUILT (2026-11-15, task 3236) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I11a.md) |
 | **I11b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I11b.md) |
 
 ### Group J — Governance
@@ -1229,8 +1270,10 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **J2b-1** | 🔨 BUILT, dark (2026-11-13, task 3088) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-1.md) |
 | **J2b-2** | 🔨 BUILT, dark (2026-11-13, task 3089) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-2.md) |
 | **J2b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-3.md) |
+| **J2b-4a** | 🔨 BUILT, dark (2026-11-13, task 3091) | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4a.md) |
+| **J2b-4b** | open | STD | see row | [row](ai_studio_rows/J2b-4b.md) |
 | **J2b-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4.md) |
-| **J2b-5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
+| **J2b-5** | 🔨 BUILT, dark (2026-11-13, task 3103) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
 | **J3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3.md) |
 | **J3a** | 🔨 BUILT, dark (2026-11-11, task 1201) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3a.md) |
 | **J3b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3b.md) |
@@ -1392,6 +1435,14 @@ Each path was read on `82157e5fd`. A3 and C1 added their paths after that commit
 - `workbench/control_plane/src/components/studio/ConnectSheet.tsx` (`ConnectLines` and the sheet) and `src/app/studio/build/components/ProblemsPanel.tsx`
 - `workbench/control_plane/src/app/integrations/page.tsx`, `components/AddMcpModal.tsx` and `lib/connections.ts` (`addMcpAsk`, `prefilledMcpForm`) — the console half of the return
 
+**I8b-1a, Ask an admin**
+
+- `infra/postgres/449_integration_attention.sql` — the table `integration_attention` (the number at build, R1)
+- `apps/services/gateway/gateway/connections/attention.py` — the one module that runs SQL on the table
+- `apps/services/gateway/gateway/connections/store.py` (`_clear_asks`) — the hook that the six registry writers call
+- `apps/services/gateway/gateway/routes/studio/connections.py` — the two routes of an ask, and `asked` on the read of I8a
+- `apps/services/gateway/gateway/routes/admin/members.py` (`connection_asks`) and `gateway/jobs/worker.py` (`prune_hooks`) — the purge and the retention
+
 **Frontend** (`workbench/control_plane/src/`)
 
 - `components/GenerativeUINode.tsx`, `components/genUITemplates.tsx`, `components/SandboxedHtml.tsx`, `components/SandboxedReact.tsx`
@@ -1452,6 +1503,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A manifest names no colour, px size, unknown block or class X action | New with A2 and D12: `tests/unit/test_studio_manifest.py` |
 | A connection name has the grammar of I1a, and a field key names no secret. In an org that `STUDIO_CONNECTION_GATE_ORGS` lists, an install with a missing connection is `needs_setup`, and the door refuses each action of it. In any other org, nothing changes | New with I1a: `tests/unit/test_studio_manifest.py`, `tests/unit/test_package_host_resolve.py`, `tests/unit/test_studio_action_door.py`, and the R8 suites `test_package_host_resolve_r8.py`, `test_studio_action_door_r8.py` and `test_studio_run_as_r8.py` |
 | Studio copies no connect flow. It sends the browser to the server's `setup_href`, and a return goes only to a path of this site under `/studio/` | New with I8a: `src/components/studio/ConnectSheet.test.ts`, `src/lib/studio/connect.test.ts`, `src/app/integrations/components/mcpConnect.test.ts` and `tests/unit/test_studio_connect_in_place.py`. R8: `tests/unit/test_studio_connect_in_place_r8.py` |
+| One module runs SQL on `integration_attention`, and it names no credential column. Each of the six registry writers clears the asks of a provider only for a `connected` org row, in a savepoint, and only while the gate holds the org. An ask of org A never reaches org B | New with I8b-1a: `tests/unit/test_studio_connection_ask.py` and `tests/unit/test_studio_connection_ask_r8.py` (R8) |
 | A package reaches data only through a declared catalog action | New with B2a: `tests/unit/test_studio_action_door_r8.py` (R8) and `tests/unit/test_studio_action_door.py` |
 | The class of an object action has one source, and its verbs are the verbs of the A2 grammar | New with B2a: `OBJECT_OP_CLASSES`, pinned by `test_the_object_verb_table_holds_the_five_verbs_of_the_grammar` in `tests/unit/test_studio_action_door.py` |
 | The door opens only the object get, the object list and, behind `STUDIO_DOOR_OPS_ORGS`, a class A door op | New with B2b-1, and B2b-2b adds the door op: `test_the_door_opens_the_object_get_the_object_list_and_the_door_op` in `tests/unit/test_studio_action_door.py` |
@@ -1503,7 +1555,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A skill loads only in the state `published`, and only when the member owns it or the org shares it. Org B's skill never loads for org A | New with F3: `tests/unit/test_skill_packs_r8.py` (R8) |
 | A skill pack takes a place of the 3 packs, loads in a fixed order, and fails to load with an unresolved variable, an action with no chat tool or a tool that the run does not hold | New with F3: `tests/unit/test_skill_packs.py` |
 | A record and its lines are one batch of at most 50 writes, and a line names a parent of its own package and org only | New with C13: `tests/unit/test_studio_lines.py` and `tests/unit/test_studio_lines_r8.py` (R8) |
-| Each call of the six record functions and of `read_tree` (D18-2a) passes a `viewer`. Each takes it as a required keyword, and the test lists each reader path. Only the owner's door calls `aggregate_records`, which takes no viewer | New with C8a: `test_each_call_of_the_six_passes_a_viewer`, `test_the_six_take_viewer_as_a_required_keyword` and `test_no_code_calls_a_reader_that_takes_no_viewer` in `tests/unit/test_studio_row_rules.py` |
+| Each call of the six record functions, of `read_tree` (D18-2a) and of `aggregate_records` (C2d-a) passes a `viewer`. Each takes it as a required keyword. The test lists each reader path | New with C8a: `test_each_call_of_the_six_passes_a_viewer` and `test_the_six_take_viewer_as_a_required_keyword` in `tests/unit/test_studio_row_rules.py` |
 | A viewer reads only the rows of its grants, and a hidden key leaves each answer. A change or a delete of a record that the viewer cannot read answers not found | New with C8a: `tests/unit/test_studio_row_rules_r8.py` (R8) |
 | Each part of a page statement holds the row rule, and a check of a rule reads every record | New with C8a: `test_a_page_with_a_row_rule_holds_it_in_each_part` and `test_a_check_of_a_rule_reads_every_record` in `tests/unit/test_studio_row_rules.py` |
 | The door builds the viewer from the session's member only | New with C8a: `test_the_door_builds_the_viewer_from_the_session_member_only` in `tests/unit/test_studio_row_rules.py`, and `test_the_door_passes_the_owner_of_the_session_as_the_viewer` in `tests/unit/test_studio_action_door.py` |

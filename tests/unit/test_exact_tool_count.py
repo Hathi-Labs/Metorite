@@ -27,6 +27,13 @@ Mutations this file catches (R7):
   count misses the tool of a context provider → red;
 * ``tool_digest`` hashes the order of the names → two orders, two hashes → red.
 
+WS-67 TS-2a PR 3 (D222 decision 13) adds the count of ``find_tools``:
+
+* ``base += 1`` for ``find_tools`` runs with the flag off, or not with the
+  flag on → the base of the first choice is off by one → red;
+* ``_log_pack_request_tools`` drops ``find_tools`` → the true count is one
+  short of the estimate with the flag on → red.
+
 Run: ``uv run pytest tests/unit/test_exact_tool_count.py -q``.
 """
 from __future__ import annotations
@@ -123,9 +130,11 @@ async def _flow(agents: list[Any], words: str, monkeypatch, *, allowed=EVERY) ->
         await ti._add_crm_facts_block(agents, frozenset(_names(agents)), no_egress=False)
     plan = [x for x in logged if x["event"] == "executor.pack_plan"]
     loader = 1 if ex._pack_loader_offer(agents[0]) else 0
+    # WS-67 TS-2a: `find_tools` rides in a context provider too.
+    finder = 1 if ex._pack_finder(agents[0]) is not None else 0
     return {"base": seen[0], "plan": plan[0]["planned_tools"] if plan else -1,
-            "sent": len(_names(agents)) + loader, "loader": loader,
-            "packs": len(applied.record.slugs) if applied else 0}
+            "sent": len(_names(agents)) + loader + finder, "loader": loader,
+            "finder": finder, "packs": len(applied.record.slugs) if applied else 0}
 
 
 # ── 1. The estimate equals the sent count ───────────────────────────────────
@@ -190,6 +199,83 @@ async def test_the_true_count_log_counts_the_load_tool(
     ex._log_pack_request_tools(orchestrator)
     line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
     assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+# ── 1b. find_tools counts in the base only with the flag on (TS-2a) ─────────
+
+
+def _search(monkeypatch, on: bool) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "tool_search_orgs", ORG if on else "", raising=False)
+
+
+def _spy_choose(monkeypatch) -> list[int]:
+    """The ``base_tools`` of each call of ``tool_packs.choose``."""
+    bases: list[int] = []
+    real = tp.choose
+
+    def spy(*a: Any, **k: Any) -> Any:
+        bases.append(int(k["base_tools"]))
+        return real(*a, **k)
+
+    monkeypatch.setattr(tp, "choose", spy)
+    return bases
+
+
+@pytest.mark.parametrize("on", [False, True])
+async def test_find_tools_adds_one_to_the_base_only_with_the_flag_on(
+    staging_shape, orchestrator, store, monkeypatch, on: bool,  # noqa: F811
+) -> None:
+    """D222 decision 13: ``find_tools`` rides in each request of a run where
+    the flag is on, so the first choice already counts it: the base of the
+    estimate + 1 with the flag on, + 0 with it off. The loader adds its own
+    1 for the second choice. The plan, the sent count and the true-count log
+    agree. Mutation: ``base += 1`` with no flag test -> the off case is one
+    high -> red. Mutation: no ``base += 1`` -> the on case is one low -> red."""
+    _search(monkeypatch, on)
+    bases = _spy_choose(monkeypatch)
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["finder"] == int(on) and got["loader"] == 1
+    assert bases[0] == got["base"] + int(on), (bases, got)
+    assert bases[1] == got["base"] + int(on) + 1, (bases, got)
+    assert got["plan"] == got["sent"] == 59 + int(on), got
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ex._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    ex._log_pack_request_tools(orchestrator)
+    line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
+    assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+def test_at_the_cap_find_tools_drops_studio_more_the_trade_of_decision_13() -> None:
+    """The trade that the owner accepted in D222 decision 13. A Studio turn
+    with the email words fills the cap exactly with production's base (56 and
+    the load tool): email (31), studio (10) and studio-more (13), less the
+    email specialist, make 110 tools. With ``find_tools`` in the base the
+    count would be 111, so ``choose`` drops studio-more, the last pack that
+    came by the surface alone. The request then holds 58 + 31 + 10 - 1 = 98
+    tools. Mutation: ``choose`` keeps a pack past the cap -> red."""
+    from tests.unit.test_studio_split_matrix import (
+        BASE,
+        MEMBER,
+        SESSION,
+        SPECIALISTS,
+        TURN,
+        _allowed,
+    )
+    from tests.unit.test_studio_split_matrix import ORG as MATRIX_ORG
+
+    turn = tp.PackTurn(MATRIX_ORG, SESSION, tp._member_part(MEMBER), TURN, (),
+                       "check my emails", True, surface="studio")
+    off = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS)
+    on = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 1, specialists=SPECIALISTS)
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in ("email", "studio", "studio-more")}
+    assert BASE == 57 and size == {"email": 31, "studio": 10, "studio-more": 13}
+    assert off.slugs == ("email", "studio", "studio-more") and off.skipped == ()
+    assert BASE + sum(size.values()) - 1 == tp.MAX_REQUEST_TOOLS == 110
+    assert on.slugs == ("email", "studio") and on.skipped == ("studio-more",)
+    assert BASE + 1 + size["email"] + size["studio"] - 1 == 98
 
 
 # ── 2. The choice subtracts the specialist tool that a pack replaces ────────

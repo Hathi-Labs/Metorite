@@ -28,7 +28,8 @@ export type FieldType =
   | "duration"
   | "quantity"
   | "percent"
-  | "barcode";
+  | "barcode"
+  | "autonumber";
 
 export type BlockName =
   | "table"
@@ -43,7 +44,8 @@ export type BlockName =
   | "processFlow"
   | "checklist"
   | "map"
-  | "markdown";
+  | "markdown"
+  | "tree";
 
 export type NavIcon =
   | "Home"
@@ -162,6 +164,10 @@ export interface FieldDef {
   format?: string | null;
   // C13. A lines relation: the field of the object `to` that names this one.
   lines?: string | null;
+  // C15a. The parts of an autonumber: the text before the number, the pad width and `never` or `day`.
+  prefix?: string | null;
+  pad?: number | null;
+  reset?: string | null;
 }
 
 export interface ObjectDef {
@@ -228,6 +234,41 @@ export interface TabDef {
   cells: CellDef[];
 }
 
+// STU-LY-0: the page presets. The enum is closed, and `studio_manifest.py` holds the twin of
+// `LAYOUTS` and `PRESET_REGIONS`. A page with a `layout` has `regions` and no tabs, cells or side.
+export const LAYOUTS = [
+  "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+] as const;
+export type LayoutName = (typeof LAYOUTS)[number];
+
+export type RegionRule = {
+  /** The block type that the region takes. */
+  block: string;
+  /** The most views in the region. */
+  cap: number;
+  required: boolean;
+};
+
+const LIST_DETAIL: Record<string, RegionRule> = {
+  list: { block: "table", cap: 1, required: true },
+  detail: { block: "detail", cap: 1, required: true },
+};
+
+export const PRESET_REGIONS: Record<LayoutName, Record<string, RegionRule>> = {
+  table_workspace: { main: { block: "table", cap: 1, required: true } },
+  list_detail: LIST_DETAIL,
+  board: { main: { block: "board", cap: 1, required: true } },
+  dashboard: {
+    kpis: { block: "stat", cap: 6, required: true },
+    charts: { block: "chart", cap: 4, required: false },
+    worklist: { block: "table", cap: 1, required: false },
+  },
+  work_queue: LIST_DETAIL,
+  approval_queue: LIST_DETAIL,
+};
+
+export const REGION_NAMES = ["list", "main", "detail", "kpis", "charts", "worklist"] as const;
+
 export interface PageDef {
   id: string;
   title?: string | null;
@@ -235,6 +276,8 @@ export interface PageDef {
   tabs?: TabDef[];
   cells?: CellDef[];
   side?: SideDef | null;
+  layout?: LayoutName | null;
+  regions?: Record<string, string[]>;
 }
 
 export interface NavRow {
@@ -315,6 +358,14 @@ export interface RuntimeDef {
   packages?: Record<string, string>;
 }
 
+// STU-I9a. One connection that the app needs. `as` is `org` or `member`. With
+// none, the connector list gives the default. `scopes` are a declaration only.
+export interface ConnectionNeed {
+  name: string;
+  as?: "org" | "member" | null;
+  scopes?: string[] | null;
+}
+
 export interface StudioManifest {
   studio: StudioVersion;
   kind?: ManifestKind;
@@ -325,8 +376,9 @@ export interface StudioManifest {
   team?: string | null;
   // STU-I1a. Each name is `mcp:<server>` or a provider id, once, at most 32.
   // The server holds the check (`_check_connections`), and a missing one
-  // makes the install `needs_setup`.
-  connections?: string[];
+  // makes the install `needs_setup`. STU-I9a: an item is a name, or an object
+  // that adds the account (`as`) and the scopes.
+  connections?: Array<string | ConnectionNeed>;
   // C8a. The roles of the app. An install maps each one to members (C8b).
   roles?: string[];
   objects?: ObjectDef[];

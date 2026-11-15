@@ -60,8 +60,11 @@ ALLOWED_HEADERS = frozenset({
 })
 
 #: ``route`` and ``app`` find the matched template. ``path`` and
-#: ``query_string`` are the signed path and query.
-ALLOWED_SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
+#: ``query_string`` are the signed path and query. CIV-14b:
+#: ``acb.agent_signed_body`` is the copy of the body of a signed form that the
+#: gateway keeps for branch 0 (``deps._signed_body``).
+ALLOWED_SCOPE_KEYS = frozenset({"route", "app", "path", "query_string",
+                                "acb.agent_signed_body"})
 
 #: What ``RouteContext.matches`` reads, through ``_EffectiveRouteContext``,
 #: ``APIRoute`` or Starlette's ``Route``: the type, the path and root path,

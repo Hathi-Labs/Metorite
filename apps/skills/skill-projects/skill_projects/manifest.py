@@ -1825,6 +1825,8 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
         "type": "G23", "idempotency_key": "G23", "body": "G23", "options": "G23",
         "allow_multiple": "G23", "selected": "G23", "action": "G23",
         "parameters": "G23", "signal": "G23",
+        # CIV-14b: the images of an outside agent's question, with the run tools.
+        "attachment_ids": "G23",
     },
     ("POST", "/projects/agent-runs/{run_id}/finish"): {
         "summary": "G23", "idempotency_key": "G23",

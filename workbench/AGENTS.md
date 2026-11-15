@@ -125,6 +125,7 @@ The Knowledge app (spec `knowledge_base.md` §11.1 and §21). Only the first `GE
 - `app/signup/` + `app/api/signup/route.ts`: the self-serve form. It redirects to `/signin` while `SELF_SERVE_SIGNUP_ENABLED` is not `"true"`. The hop forwards ONLY `{slug, display_name, registered_state, gstin}`. Fences: `signup.test.ts`, `tests/unit/test_signup_provision_route.py`.
 - `app/workflows/` streams a run through its own SSE relay, because the catch-all buffers bodies. `app/api/agent/chat/route.ts` sends all agents through `/agent/run/stream`.
   - `app/workflows/lib/humanStep.ts` holds the rules of the human step form (WFC-4a-1), and `HumanStepForm.tsx` only draws them. The form writes `assignee`, `title` and `description` only, and refuses `{{`. Each type of `graph.NODE_TYPES` needs an icon and a label in `lib/nodeVisuals.ts`. Fences: `lib/humanStep.test.ts`, `lib/nodeTypes.test.ts`, `components/NodePalette.test.tsx`, `components/NodeInspector.test.tsx`.
+  - ⚠️ No node id is `trigger` or `vars`. The engine keeps them as the roots of its state, and Validate refuses them. `app/workflows/lib/triggerId.ts` gives the first node of a new workflow its id (`start`), and the editor renames an old `trigger` node on load. Fences: `lib/triggerId.test.ts`, `tests/unit/test_workflows_editor_first_node.py`.
 
 ## Conventions
 - Next.js App Router, SSE streaming for chat, AG-UI translation in route.ts
@@ -186,6 +187,7 @@ and a stale row after a 409 reads as success.
 
 ## HITL (Human-in-the-Loop)
 - ConfirmationCard.tsx — Approve/Reject prompt for agent confirmation requests
+- `lib/cardOutcomes.ts` — THE leads of the card outcomes (HRD-7). The server writes each text from `ask_tools.CARD_OUTCOMES`, and a card file reads the outcome with `cardOutcomeOf`. Each outcome that did nothing draws the chip of before: "Cancelled" in Projects and email, "Nothing changed" for no card in email. A card that the member's message closed keeps its own receipt, and a parked card is never "Cancelled". ⚠️ Each receipt and each step of the trail draws `memberLineOf(result)`: the second-person line of `CARD_OUTCOME_MEMBER_LINES` and the act, because the text of the table is for the model. Fences: `lib/cardOutcomes.test.ts`, `tests/unit/test_card_outcome_vocabulary.py`
 - lib/bidi.ts — THE rule of the bidi controls in text that somebody else wrote. The forward chips of Email and the app request card read it. Do not write a second copy of the class
 - AppRequestCard.tsx — THE card of an app request (MCP-P1b-1). Each value and each field name drops the bidi controls. A field of the agent never takes the key or the label of the Target or Version row. A body key such as `constructor` or `__proto__` draws a row, because `cardFields.ts` reads own keys only. Fences: `AppRequestCard.test.ts`, `app/api/agent-access/requests/relay.test.ts`
   - Each value of the call is a text node under the mark of the agent text. Never inner HTML or Markdown. The decision relay is same origin only.

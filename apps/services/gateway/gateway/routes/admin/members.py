@@ -907,6 +907,13 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
                 "AND NOT EXISTS (SELECT 1 FROM calendar_entries AS e "
                 "WHERE e.id = calendar_entry_attendees.entry_id "
                 "AND lower(e.owner_email) = :email)"),
+    # WS-STU I8b-1a: the member's asks of an admin for a connection, in THIS
+    # organization. An ask is the member's own, and it waits on nothing after
+    # the member goes. The clause names the bound org beside RLS, as
+    # `goal_records` does. A `broken` row names no member, so it stays.
+    _PersonRows("connection_asks", "integration_attention",
+                "kind = 'ask' AND lower(member_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
