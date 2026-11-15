@@ -251,7 +251,7 @@ else
     if [ -n "$caused" ]; then
       printf '  %s\n' $caused >&2
       say "the merge test took $(( (SECONDS - started + 59) / 60 )) minute(s)"
-      fail "these tests pass on the branch alone and on $BASE alone, and fail once the two are merged. Merge $BASE into the branch, fix, push, and wait for pr-check."
+      fail "these tests pass on the branch alone (or are not there) and pass on $BASE alone, and fail once the two are merged. Merge $BASE into the branch, fix, push, and wait for pr-check."
     fi
     say "these tests fail on the branch alone or on $BASE alone, so the merge did not cause them (this machine, or already red):"
     printf '  %s\n' $merged_fail

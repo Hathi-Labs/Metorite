@@ -52,6 +52,14 @@ def _by_size(files: set[str], root: Path) -> list[str]:
     return sorted(files, key=lambda f: (size(f), f))
 
 
+def _src_reach(files: list[str], root: Path) -> set[str]:
+    src = [f for f in files if f not in _tests(files, root)]
+    try:
+        return set(at.select(src, scanners=False)[0])
+    except TypeError:  # an older affected_tests.py has no scanners switch
+        return set(at.select(src)[0])
+
+
 def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[list[str], int] | None:
     """(the test files in run order, the length of the first tier), or None when both sides are FULL.
 
@@ -71,8 +79,8 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     else:
         both = set(pr_sel) & set(main_sel)
     # Scanner tests are left out here: any .py change picks all of them.
-    pr_src = set(at.select([f for f in pr if f not in _tests(pr, root)], scanners=False)[0])
-    main_src = set(at.select([f for f in main if f not in _tests(main, root)], scanners=False)[0])
+    pr_src = _src_reach(pr, root)
+    main_src = _src_reach(main, root)
     tier1 = ((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src))
     tier2 = changed - tier1
     tier3 = both - changed
