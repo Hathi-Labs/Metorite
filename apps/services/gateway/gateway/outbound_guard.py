@@ -420,10 +420,16 @@ class _PinnedTransport(httpx.AsyncBaseTransport):
         if request.method == "DELETE":
             cap = MCP_DELETE_TIMEOUT_S
             extensions["timeout"] = {"connect": cap, "read": cap, "write": cap, "pool": cap}
+        headers = request.headers
+        if self._budget is not None:
+            # STU-B1b-2: the cap counts wire bytes, and httpx decodes gzip
+            # after the transport. So a budgeted session asks for no coding.
+            headers = httpx.Headers(request.headers)
+            headers["Accept-Encoding"] = "identity"
         pinned = httpx.Request(
             request.method,
             url.copy_with(host=self._target.ip),
-            headers=request.headers,
+            headers=headers,
             stream=request.stream,
             extensions=extensions,
         )
@@ -436,6 +442,13 @@ class _PinnedTransport(httpx.AsyncBaseTransport):
         if self._budget.tripped.is_set():
             await response.aclose()
             raise AnswerTooLarge(self._target.host, "too large")
+        coding = response.headers.get("content-encoding", "").strip().lower()
+        if coding not in ("", "identity"):
+            # A coded answer can inflate far past the cap after the count, so
+            # it is refused before one byte of it is read.
+            await response.aclose()
+            self._budget.tripped.set()
+            raise AnswerTooLarge(self._target.host, "encoded")
         return httpx.Response(
             status_code=response.status_code,
             headers=response.headers,
@@ -451,8 +464,10 @@ async def mcp_client(url: str, *, budget: AnswerBudget | None = None) -> httpx.A
     """A client for ONE MCP session to ``url``, or :class:`OutboundRefused`.
 
     The caller owns the client and closes it when the run ends. With a
-    *budget* (STU-B1b-2), each answer is counted, and an answer past a cap
-    raises :class:`AnswerTooLarge` while it is read. A run passes no budget,
+    *budget* (STU-B1b-2), each request asks for ``Accept-Encoding:
+    identity``, an answer with another ``Content-Encoding`` is refused before
+    it is read, and each answer is counted. An answer past a cap raises
+    :class:`AnswerTooLarge` while it is read. A run passes no budget,
     so its behaviour does not change."""
     target = await check_mcp_url(url)
     return httpx.AsyncClient(

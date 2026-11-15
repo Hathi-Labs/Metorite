@@ -36,9 +36,10 @@ This file proves:
 - no answer holds a url, a header or an exception text;
 - the real SDK path sends the stored headers through the pinned client only.
 
-**The mutations (R7).** Each ran on 2026-11-15, then was restored.
+**The mutations (R7).** Each ran on 2026-11-15, then was restored. M12 to
+M16 come from the second review (P1, P2-a and P2-b).
 
-* M1 (a). ``mcp_tools._scope``: bind one shared org (``"shared"``). 9 tests
+* M1 (a). ``mcp_tools._scope``: bind one shared org (``"shared"``). 11 tests
   go red, among them ``test_the_cache_of_one_org_never_serves_another``.
   The R8 file goes red too (see there).
 * M2 (b). ``mcp_tools.catalog_tools``: on an empty index, refresh each
@@ -66,6 +67,21 @@ This file proves:
   and both cases of ``test_a_refusal_in_the_cause_chain_is_found``.
 * M11 (P3-2). ``_server_key``: ``match`` in place of ``fullmatch``. The two
   ``%0A`` cases of ``test_a_server_key_that_the_registry_refuses_is_404`` go red.
+* M12 (P1). ``_PinnedTransport``: no refusal of a ``Content-Encoding``. The 6
+  cases of ``test_a_coded_answer_is_refused_before_one_byte_is_read`` go red.
+* M13 (P1). No ``Accept-Encoding: identity``, in the transport and in
+  ``_sdk_list``. Both cases of
+  ``test_the_sdk_path_sends_the_headers_through_the_pinned_client`` go red.
+* M14 (P2-a). ``_forget``: drop the list whatever its age.
+  ``test_a_late_failure_never_drops_the_list_of_a_newer_refresh`` goes red.
+* M15 (P2-a). ``_forget``: keep the list when the slot has expired (the old
+  slot rule). ``test_a_failure_after_the_slot_expired_still_drops_the_old_list``
+  and the late-failure test go red.
+* M16 (P2-b). ``catalog_tools``: no compare of the identity hash.
+  ``test_a_new_server_with_an_old_name_gets_no_cached_row`` goes red.
+
+``test_a_cancel_of_the_read_reaches_the_caller`` is a guard, not a fence. The
+old ``contextlib.suppress`` cleanup passes it too, so no mutation turns it red.
 """
 
 from __future__ import annotations
@@ -491,9 +507,10 @@ def test_a_refusal_in_the_cause_chain_is_found(explicit: bool) -> None:
 
 
 def test_a_late_failure_never_drops_the_list_of_a_newer_refresh(world) -> None:
-    """Review fix P3-1. Refresh 1 holds the slot and waits. The slot ends,
-    refresh 2 takes a new slot and stores its list, and refresh 1 then fails.
-    The list of refresh 2 stays."""
+    """Review fixes P3-1 and P2-a. Refresh 1 holds the slot and waits. The
+    slot ends, refresh 2 takes a new slot and stores its list, and refresh 1
+    then fails. The list of refresh 2 is newer than the start of refresh 1,
+    so it stays."""
     gate = asyncio.Event()
 
     async def _slow_then_fail(_server: Any) -> list[Any]:
@@ -519,6 +536,64 @@ def test_a_late_failure_never_drops_the_list_of_a_newer_refresh(world) -> None:
     second, first = asyncio.run(_run())
     assert second.ok is True and first.ok is False
     assert _mcp(_get(world).json()) == [("mcp:github.fresh", "A")]
+
+
+def test_a_failure_after_the_slot_expired_still_drops_the_old_list(world) -> None:
+    """Review fix P2-a. A list from before the refresh, a read that outlasts
+    the slot, and no newer refresh: the failure drops the old list, so a
+    server that now fails does not keep its rows for 7 days."""
+    _give(world, ORG_A, "github", [_tool("old", READ)])
+    _refresh(world, "github")
+    world.raw.now += mcp_tools.REFRESH_INTERVAL_S + 1
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def _outlasts_the_slot(_server: Any) -> list[Any]:
+        entered.set()
+        await gate.wait()
+        raise RuntimeError("down")
+
+    async def _run() -> Any:
+        first = asyncio.ensure_future(
+            mcp_tools.refresh(ORG_A, "github", lister=_outlasts_the_slot))
+        await asyncio.wait_for(entered.wait(), 3)
+        assert await _slot_live(world)
+        world.raw.now += mcp_tools.REFRESH_INTERVAL_S + 10  # the slot ends
+        assert not await _slot_live(world)
+        gate.set()
+        return await first
+
+    assert asyncio.run(_run()).ok is False
+    body = _get(world).json()
+    assert _mcp(body) == [] and body["stale"] is True
+
+
+async def _slot_live(world: Any) -> bool:
+    return await world.raw.get(
+        f"{tenant_redis.KEY_ROOT}:{ORG_A}:{mcp_tools.NAMESPACE}:refresh:github") is not None
+
+
+def test_a_new_server_with_an_old_name_gets_no_cached_row(world) -> None:
+    """Review fix P2-b. The member removes ``github`` at url A and connects a
+    new ``github`` at url B. The list of A is never served as rows of B."""
+    _give(world, ORG_A, "github", [_tool("from_a", READ)])
+    _refresh(world, "github")
+    assert _mcp(_get(world).json()) == [("mcp:github.from_a", "A")]
+    world.servers[ORG_A][0].url = f"https://other-{HOST}/{ORG_A}/github"
+    body = _get(world).json()
+    assert _mcp(body) == [] and body["stale"] is True
+    _give(world, ORG_A, "github", [])
+    world.tools[f"https://other-{HOST}/{ORG_A}/github"] = [_tool("from_b", READ)]
+    world.raw.now += mcp_tools.REFRESH_INTERVAL_S + 1
+    assert _refresh(world, "github").status_code == 200
+    assert _mcp(_get(world).json()) == [("mcp:github.from_b", "A")]
+
+
+def test_the_cached_identity_holds_no_url() -> None:
+    server = SimpleNamespace(url=f"https://{HOST}/x")
+    ident = mcp_tools._identity(server)
+    assert len(ident) == 32 and HOST not in ident
+    assert ident != mcp_tools._identity(SimpleNamespace(url=f"https://{HOST}/y"))
 
 
 def test_a_failure_of_the_slot_holder_drops_its_list(world) -> None:
@@ -729,11 +804,14 @@ async def test_the_sdk_path_sends_the_headers_through_the_pinned_client(
     monkeypatch.setattr(real_guard, "mcp_client", _counted)
     server = _server("github", ORG_A)
     server.url = "https://mcp.example.com/mcp"
+    # A stored header cannot ask for a coded answer (review fix P1).
+    server.headers = {"Authorization": SECRET, "Accept-Encoding": "gzip"}
     items = await mcp_tools._sdk_list(server)
     assert built == ["https://mcp.example.com/mcp"]
     assert [i.name for i in items] == [f"p{n}" for n in range(expected)]
     posts = [r for r in seen if r.method == "POST"]
     assert posts and all(r.headers["authorization"] == SECRET for r in posts)
+    assert all(r.headers["accept-encoding"] == "identity" for r in seen)
     assert all(r.url.host == "93.184.216.34" and r.headers["host"] == "mcp.example.com"
                for r in posts)
 
@@ -876,6 +954,103 @@ async def test_the_read_stops_at_the_item_cap(monkeypatch) -> None:
     listed = await _list_of(monkeypatch, handle)
     assert pages == [0, 1]
     assert len(listed.tools) == mcp_tools.MAX_TOOLS and listed.truncated is True
+
+
+def _gzip_bomb(inflated: int) -> bytes:
+    """Gzip of *inflated* spaces, built in chunks, so the test holds no copy."""
+    import zlib
+
+    packer = zlib.compressobj(9, zlib.DEFLATED, 31)
+    block = b" " * (1024 * 1024)
+    parts = [packer.compress(block) for _ in range(inflated // len(block))]
+    parts.append(packer.flush())
+    return b"".join(parts)
+
+
+@pytest.mark.parametrize("coding", ["gzip", "deflate", "br", "GZIP", "x-gzip", "gzip, identity"])
+async def test_a_coded_answer_is_refused_before_one_byte_is_read(monkeypatch, coding) -> None:
+    """Review fix P1. The cap counts wire bytes, and httpx inflates a coded
+    answer after the transport. So any ``Content-Encoding`` but identity is
+    refused before the body is read: 120 MiB of gzip spaces, sent as about
+    120 KiB, never inflates."""
+    monkeypatch.setattr(mcp_tools, "READ_TIMEOUT_S", 3.0)
+    bomb = _gzip_bomb(120 * 1024 * 1024)
+    assert len(bomb) < mcp_tools.MAX_ANSWER_BYTES
+    pulled = {"bytes": 0}
+
+    async def _body() -> Any:
+        for at in range(0, len(bomb), CHUNK):
+            pulled["bytes"] += CHUNK
+            yield bomb[at:at + CHUNK]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(405)
+        msg = json.loads(request.content)
+        if "id" not in msg:
+            return httpx.Response(202)
+        return httpx.Response(200, headers={"content-type": "application/json",
+                                            "content-encoding": coding}, content=_body())
+
+    started = time.monotonic()
+    with pytest.raises(mcp_tools.ListFailed) as failed:
+        await _list_of(monkeypatch, handle)
+    assert failed.value.reason == "too_large"
+    assert pulled["bytes"] == 0
+    assert time.monotonic() - started < 2.5
+
+
+@pytest.mark.parametrize("coding", [None, "identity", " Identity "])
+async def test_an_identity_answer_still_works(monkeypatch, coding) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(405)
+        msg = json.loads(request.content)
+        if "id" not in msg:
+            return httpx.Response(202)
+        answer = (_init(msg) if msg["method"] == "initialize" else
+                  _rpc(msg, {"tools": [{"name": "t", "inputSchema": {"type": "object"}}]}))
+        if coding is not None:
+            answer.headers["content-encoding"] = coding
+        return answer
+
+    listed = await _list_of(monkeypatch, handle)
+    assert [t["name"] for t in listed.tools] == ["t"]
+
+
+async def test_a_run_without_a_budget_keeps_its_headers(monkeypatch) -> None:
+    """The run path (``_maf_mcp``) passes no budget, so nothing changes there."""
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, headers={"content-encoding": "gzip"},
+                              content=_gzip_bomb(1024 * 1024))
+
+    _guard_on(monkeypatch, handle)
+    client = await outbound_guard.mcp_client("https://mcp.example.com/mcp")
+    try:
+        r = await client.get("https://mcp.example.com/mcp", headers={"accept-encoding": "gzip"})
+        assert len(r.content) == 1024 * 1024
+    finally:
+        await client.aclose()
+    assert seen[0].headers["accept-encoding"] == "gzip"
+
+
+async def test_a_cancel_of_the_read_reaches_the_caller(monkeypatch) -> None:
+    """The cleanup of ``_sdk_list`` never swallows a cancel of the read."""
+    async def handle(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(10)
+        return httpx.Response(405)
+
+    _guard_on(monkeypatch, handle)
+    server = _server("github", ORG_A)
+    server.url = "https://mcp.example.com/mcp"
+    task = asyncio.ensure_future(mcp_tools._sdk_list(server))
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 3)
 
 
 def test_clean_tools_reads_at_most_the_item_cap() -> None:

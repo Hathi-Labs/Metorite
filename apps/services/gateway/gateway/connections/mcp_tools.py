@@ -49,9 +49,15 @@ and a TTL of :data:`LIST_TTL_S`. So the catalog and each caller of
 names the servers that hold a list. A catalog read of an org with an empty
 index opens no database session.
 
-**The slot token.** A refresh writes a new token as the value of its slot
-key. A failed read drops the list only while the slot still holds that
-token, so a late failure never drops the list of a newer refresh.
+**A failed read.** A refresh notes its start time when it takes its slot. A
+failed read drops the stored list unless that list is NEWER than the start.
+So a late failure keeps the list of a newer refresh, and it drops an older
+list also when the slot has expired.
+
+**The server identity.** Each cached list holds a hash of the url of the
+server (``_identity``). ``enabled_meta`` gives the url with no secret. The
+catalog serves a list only when its hash equals the hash of the server of
+NOW, so a new server with an old name never gets the tools of the old one.
 
 Fences: ``tests/unit/test_studio_mcp_tools.py`` and
 ``tests/unit/test_studio_mcp_tools_r8.py`` (R8).
@@ -60,13 +66,12 @@ Fences: ``tests/unit/test_studio_mcp_tools.py`` and
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import hashlib
 import json
 import re
 import time
-import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import islice
 from typing import Any
 
@@ -105,7 +110,7 @@ MAX_READ_BYTES = 4 * 1024 * 1024
 DESCRIPTION_CHARS = mcp_actions.DESCRIPTION_CHARS
 #: The version of the shape of a cached value. A value of another version
 #: reads as cold.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 _TOOL_NAME = re.compile(MCP_TOOL_NAME)
 
@@ -159,6 +164,17 @@ class ToolList:
 
     tools: list[dict[str, Any]]
     truncated: bool
+    #: The hash of the server that gave the list (``_identity``).
+    identity: str = ""
+
+
+def _identity(server: Any) -> str:
+    """The hash of the connection identity of one server: its url.
+
+    The url is not a secret, and ``enabled_meta`` gives it with no blob
+    opened. A new server with an old name and another url gets another hash."""
+    url = str(getattr(server, "url", "") or "")
+    return hashlib.sha256(url.encode("utf-8", "surrogatepass")).hexdigest()[:32]
 
 
 @dataclass(frozen=True)
@@ -273,16 +289,19 @@ async def _sdk_list(server: Any) -> Sequence[Any]:
         # The pinned transport sends to the one origin of the URL only, so
         # the headers of the server can never reach another host.
         client.headers.update(dict(server.headers))
+        # Set AFTER the stored headers, so a stored header cannot ask for a
+        # coded answer. The transport sets it on each request too.
+        client.headers["Accept-Encoding"] = "identity"
         work = asyncio.ensure_future(_pages(client, server.url))
         trip = asyncio.ensure_future(budget.tripped.wait())
         try:
             await asyncio.wait({work, trip}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for task in (work, trip):
-                if not task.done():
-                    task.cancel()
-                    with contextlib.suppress(BaseException):
-                        await task
+                task.cancel()
+            # ``gather`` keeps the faults of the two tasks, and a cancel of
+            # this read itself still reaches the caller.
+            await asyncio.gather(work, trip, return_exceptions=True)
         if budget.tripped.is_set():
             raise outbound_guard.AnswerTooLarge(_host(server.url), "too large")
         return work.result()
@@ -352,7 +371,7 @@ async def list_tools(org: str, server: str, *, lister: Lister | None = None) -> 
         _log.warning("studio.mcp_tools.failed", name=server, reason=reason,
                      kind=type(exc).__name__)
         raise ListFailed(reason) from None
-    return clean_tools(raw)
+    return replace(clean_tools(raw), identity=_identity(stored))
 
 
 # ── The cache ───────────────────────────────────────────────────────────────
@@ -376,9 +395,9 @@ def _key(*parts: str) -> Any:
     return tenant_redis.key(NAMESPACE, *parts)
 
 
-def _decode(raw: Any) -> tuple[list[dict[str, Any]], float] | None:
-    """The tools and ``fetched_at`` of one cached value, or None for a value
-    that is not ours."""
+def _decode(raw: Any) -> tuple[list[dict[str, Any]], float, str] | None:
+    """The tools, ``fetched_at`` and identity of one cached value, or None for
+    a value that is not ours."""
     if not isinstance(raw, str | bytes):
         return None
     try:
@@ -389,10 +408,11 @@ def _decode(raw: Any) -> tuple[list[dict[str, Any]], float] | None:
         return None
     tools = value.get("tools")
     fetched = value.get("fetched_at")
-    if not isinstance(tools, list) or isinstance(fetched, bool) or not isinstance(
-            fetched, int | float):
+    identity = value.get("identity")
+    if (not isinstance(tools, list) or isinstance(fetched, bool)
+            or not isinstance(fetched, int | float) or not isinstance(identity, str)):
         return None
-    return [t for t in tools if isinstance(t, dict)], float(fetched)
+    return [t for t in tools if isinstance(t, dict)], float(fetched), identity
 
 
 async def _store(org: str, server: str, listed: ToolList) -> None:
@@ -401,6 +421,7 @@ async def _store(org: str, server: str, listed: ToolList) -> None:
         "tools": listed.tools,
         "truncated": listed.truncated,
         "fetched_at": _now(),
+        "identity": listed.identity,
     })
     client = _redis()
     with _scope(org):
@@ -410,29 +431,31 @@ async def _store(org: str, server: str, listed: ToolList) -> None:
         await client.expire(index, LIST_TTL_S)
 
 
-async def _forget(org: str, server: str, token: str) -> bool:
-    """Drop the list of ONE server, only while its slot holds *token*.
+async def _forget(org: str, server: str, started: float) -> bool:
+    """Drop the list of ONE server after a failed read that began at *started*.
 
-    A slot that holds another token belongs to a newer refresh, so its list
-    stays. The lists of the other servers always stay."""
+    A list that is NEWER than *started* comes from a newer refresh, so it
+    stays. Each other list goes, also when the slot of this refresh has
+    expired. The lists of the other servers always stay."""
     client = _redis()
     with _scope(org):
-        if await client.get(_key("refresh", server)) != token:
+        key = _key("tools", server)
+        decoded = _decode(await client.get(key))
+        if decoded is not None and decoded[1] > started:
             return False
-        await client.delete(_key("tools", server))
+        await client.delete(key)
         await client.hdel(_key("index"), server)
     return True
 
 
-async def _claim_refresh(org: str, server: str) -> str:
-    """Take the refresh slot of one server and give its token, or raise
+async def _claim_refresh(org: str, server: str) -> float:
+    """Take the refresh slot of one server and give the start time, or raise
     :class:`RefreshTooSoon`."""
     client = _redis()
-    token = uuid.uuid4().hex
     with _scope(org):
         slot = _key("refresh", server)
-        if await client.set(slot, token, nx=True, ex=REFRESH_INTERVAL_S):
-            return token
+        if await client.set(slot, "1", nx=True, ex=REFRESH_INTERVAL_S):
+            return _now()
         left = int(await client.ttl(slot))
     raise RefreshTooSoon(left if left > 0 else REFRESH_INTERVAL_S)
 
@@ -441,16 +464,16 @@ async def refresh(org: str, server: str, *, lister: Lister | None = None) -> Ref
     """Read ONE server of *org* and fill its cache (the member action).
 
     The slot comes first, so a name that the org does not hold costs a slot
-    too. A failed read drops the list of that server only, and only while
-    the slot holds the token of this refresh. ``ServerNotFound`` and
+    too. A failed read drops the list of that server only, unless the stored
+    list is newer than the start of this refresh. ``ServerNotFound`` and
     ``RefreshTooSoon`` reach the caller. A Redis fault reaches the caller too."""
     if not _server_key(server):
         raise ServerNotFound(server)
-    token = await _claim_refresh(org, server)
+    started = await _claim_refresh(org, server)
     try:
         listed = await list_tools(org, server, lister=lister)
     except ListFailed as failed:
-        await _forget(org, server, token)
+        await _forget(org, server, started)
         return Refreshed(server=server, ok=False, reason=failed.reason)
     await _store(org, server, listed)
     return Refreshed(server=server, ok=True, tools=len(listed.tools),
@@ -462,9 +485,10 @@ async def catalog_tools(org: str) -> tuple[list[dict[str, Any]], bool]:
 
     It reads the cache and ``mcp.enabled_meta``, and NEVER a server. It
     serves the last good list of each connected server, at any age up to
-    :data:`LIST_TTL_S`. ``stale`` is true when the index is empty, when a
-    connected server has no list, or when a list is older than
-    :data:`FRESH_S`. A Redis or database fault gives no row and
+    :data:`LIST_TTL_S`, when the hash of the list equals the hash of the
+    server of now. ``stale`` is true when the index is empty, when a
+    connected server has no list or a list of another identity, or when a
+    list is older than :data:`FRESH_S`. A Redis or database fault gives no row and
     ``stale: true``, because the catalog must still answer."""
     try:
         client = _redis()
@@ -482,12 +506,12 @@ async def catalog_tools(org: str) -> tuple[list[dict[str, Any]], bool]:
     tools: dict[str, list[dict[str, Any]]] = {}
     now = _now()
     stale = False
-    for name, raw in zip(names, values, strict=True):
+    for server, raw in zip(servers, values, strict=True):
         decoded = _decode(raw)
-        if decoded is None:
+        if decoded is None or decoded[2] != _identity(server):
             stale = True
             continue
-        tools[name], fetched = decoded
+        tools[server.name], fetched, _ = decoded
         if now - fetched > FRESH_S:
             stale = True
     return mcp_actions.mcp_rows(servers, tools), stale

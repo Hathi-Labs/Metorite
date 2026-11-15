@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import socket
 import uuid
+from types import SimpleNamespace
 from typing import Any, get_args, get_type_hints
 
 import httpx
@@ -258,11 +259,11 @@ async def test_the_mcp_source_of_the_real_catalog_reads_only_the_cache(no_outbou
     index = f"cc:org-a:{mcp_tools.NAMESPACE}:index"
     raw.data[index] = {"github": "1"}
     raw.data[f"cc:org-a:{mcp_tools.NAMESPACE}:tools:github"] = (
-        json.dumps({"v": 2, "fetched_at": mcp_tools._now(), "tools": [
+        json.dumps({"v": 3, "fetched_at": mcp_tools._now(),
+                    "identity": mcp_tools._identity(SimpleNamespace(url="")), "tools": [
             {"name": "get_issue", "description": "", "annotations": {"readOnlyHint": True}}]}))
 
     async def _meta(_org):
-        from types import SimpleNamespace
         return [SimpleNamespace(name="github", enabled=True, always_confirm=False)]
 
     from gateway.connections import mcp
