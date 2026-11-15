@@ -1880,7 +1880,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - List `FindToolsProvider` BEFORE `LoadSkillToolsProvider`, in one `agent_with_providers` list.
   - Make ONE `FindTools` for each run, with `record=applied.record`. Never put it on a shared agent object.
   - Call `setup_candidates` inside the bound frame of the run. Give it a context that holds `PACK_RUN_KEY`, as `_build_early` does (`tool_packs.py:3812` at TS-2a PR 3). Else `_pack_tools` gives an empty build, and the tool ships with an empty catalog.
-  - Pass `measure=_maf_mcp.schema_tokens`, `owners=PACK_ONLY_OWNERS`, `loaded=choice.slugs`, and `available=` the `_available` test of `_plan_pack_loader`.
+  - Pass `measure=_maf_mcp.schema_tokens`, `owners=PACK_ONLY_OWNERS`, `loaded` as the packs of `choice.slugs` and `choice.evicted` (a pack that left at the start of the turn is no candidate), and `available=` the `_pack_available` test that `_plan_pack_loader` also uses.
   - Pass the `allow` of `_apply_tool_packs` (`_tool_injection.py:4083` at TS-2a PR 3). It widens the admin toggles with `with_followers`. Never pass a fresh `packs_on`.
   - `search_packs` keys on the owner `studio-builder` and on `allow`. So `studio-more` is a candidate wherever `studio` is on. The dark `studio-workflows` is one only where `TOOL_PACKS` names it or is `*`.
   - The orchestrator decided on 2026-11-14 that follow packs are candidates. It is not an owner grant. The owner sees it at the PR 3 preview and at the flip ask. The reland of PR 2 has a test for each case.
