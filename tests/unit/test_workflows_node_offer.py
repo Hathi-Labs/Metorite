@@ -16,6 +16,15 @@ search and the Copilot shortlist show, and what the Copilot prompt asks for.
   and shortlist cases turn red.
 * M2. Drop the ``human_step`` line from ``COPILOT_SYSTEM_PROMPT``: the prompt
   cases turn red.
+
+WFC-4a-2a adds section 5: the pair that the Studio write form writes. The
+TypeScript rules (``studioWrite.ts``) are read as text, as ``_form_keys`` does
+for the human step. The pair must pass ``validate_graph``.
+
+* M3. Add ``record_id`` to ``STUDIO_WRITE_KEYS`` of ``studioWrite.ts``: the key
+  case turns red.
+* M4. Drop ``"studio_write"`` from ``catalog.UNOFFERED_NODE_TYPES``: the offer
+  cases turn red.
 """
 from __future__ import annotations
 
@@ -34,12 +43,17 @@ from gateway.routes.workflows import tools as tools_mod
 from gateway.routes.workflows.engine.graph import (
     HUMAN_STEP_KEYS,
     NODE_TYPES,
+    STUDIO_WRITE_KEYS,
     validate_graph,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
 _FORM_RULES = (
     _ROOT / "workbench" / "control_plane" / "src" / "app" / "workflows" / "lib" / "humanStep.ts"
+)
+
+_STUDIO_WRITE_RULES = (
+    _ROOT / "workbench" / "control_plane" / "src" / "app" / "workflows" / "lib" / "studioWrite.ts"
 )
 
 _PERSON = "ravi@acme.test"
@@ -231,3 +245,81 @@ def test_the_copilot_round_accepts_a_human_step_graph(monkeypatch, bare_catalog)
     )
     assert out["_problems"] == [] and out["_issues"] == []
     assert created == {}
+
+
+# -- 5. The pair that the Studio write form writes (WFC-4a-2a) --------------------
+
+_PACKAGE = "11111111-1111-4111-8111-111111111111"
+
+
+def _studio_form_keys() -> set[str]:
+    """``STUDIO_WRITE_KEYS`` of the form rules, read from the TypeScript."""
+    text = _STUDIO_WRITE_RULES.read_text(encoding="utf-8")
+    found = re.search(r"export const STUDIO_WRITE_KEYS = \[([^\]]*)\] as const;", text)
+    assert found, "studioWrite.ts lost STUDIO_WRITE_KEYS"
+    return set(re.findall(r'"([a-z_]+)"', found.group(1)))
+
+
+def _pair_graph(write: dict[str, Any], *, second_write: bool = False,
+                gate: bool = True) -> dict[str, Any]:
+    """The graph that the palette drops (approval, then write), joined by ONE edge."""
+    nodes = [
+        _node("start", "trigger", {"kind": "schedule"}),
+        _node("gate", "approval", {"message": "Add this record to the app?"}),
+        _node("write", "studio_write", write),
+        _node("done", "output", {"value": "end"}),
+    ]
+    edges = [
+        {"id": "e1", "source": "start", "target": "gate" if gate else "write"},
+        {"id": "e2", "source": "gate", "target": "write"},
+        {"id": "e3", "source": "write", "target": "done"},
+    ]
+    if second_write:
+        nodes.append(_node("write2", "studio_write", write))
+        edges.append({"id": "e4", "source": "gate", "target": "write2"})
+    if not gate:
+        edges = [e for e in edges if e["id"] != "e2"]
+    return {"nodes": nodes, "edges": edges}
+
+
+_WRITE = {"package_id": _PACKAGE, "action": "add_ticket", "data": {"title": "Fix the door"}}
+
+
+def test_the_studio_form_keys_are_the_engine_keys_without_the_record_id() -> None:
+    """A create has no record id, and the form writes no key that publish refuses."""
+    assert _studio_form_keys() == {"package_id", "action", "data"}
+    assert _studio_form_keys() == set(STUDIO_WRITE_KEYS) - {"record_id"}
+
+
+def test_a_studio_write_stays_unoffered_in_search_and_has_no_node_type_meta() -> None:
+    assert "studio_write" in catalog_mod.UNOFFERED_NODE_TYPES
+    assert "studio_write" not in {m["type"] for m in catalog_mod.NODE_TYPE_META}
+
+
+def test_the_pair_as_the_form_writes_it_has_no_issue() -> None:
+    assert set(_WRITE) <= _studio_form_keys()
+    assert validate_graph(_pair_graph(_WRITE)) == []
+
+
+def test_the_dropped_blank_pair_fails_only_on_its_blank_config() -> None:
+    """Before the owner fills the form, publish names the package and the action."""
+    blank = {"package_id": "", "action": "", "data": {}}
+    issues = validate_graph(_pair_graph(blank))
+    assert {i.code for i in issues} == {"missing_config"}, issues
+    assert {i.node_id for i in issues} == {"write"}
+
+
+def test_a_ref_in_the_data_fails() -> None:
+    write = {**_WRITE, "data": {"title": "Fix {{trigger.door}}"}}
+    issues = validate_graph(_pair_graph(write))
+    assert any(i.code == "templated_config" and i.node_id == "write" for i in issues), issues
+
+
+def test_a_write_with_no_approval_above_it_fails() -> None:
+    issues = validate_graph(_pair_graph(_WRITE, gate=False))
+    assert any(i.code == "studio_write_without_approval" for i in issues), issues
+
+
+def test_a_second_write_under_one_approval_fails() -> None:
+    issues = validate_graph(_pair_graph(_WRITE, second_write=True))
+    assert any(i.code == "approval_clears_one_write" for i in issues), issues
