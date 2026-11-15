@@ -107,8 +107,11 @@ export interface RecordShell {
   body: ReactNode;
   full: boolean;
   onClose: () => void;
-  /** Move the panel to the full page, or the full page back to the panel. */
-  onFull: (full: boolean) => void;
+  /**
+   * Move the panel to the full page, or the full page back to the panel. Absent, the record has
+   * the full page only, and no button moves it (the floor view, STU-D23a).
+   */
+  onFull?: (full: boolean) => void;
   /** The label of the way back from the full page, such as the page title. */
   backLabel: string;
 }
@@ -168,7 +171,9 @@ export default function StudioPage({
             </div>
             <div className="flex items-center justify-between gap-2">
               <h2 className="min-w-0 truncate text-base font-semibold text-foreground">{record.title}</h2>
-              <Button variant="ghost" size="icon-sm" icon="Minimize2" aria-label="Show in the side panel" onClick={() => record.onFull(false)} />
+              {record.onFull ? (
+                <Button variant="ghost" size="icon-sm" icon="Minimize2" aria-label="Show in the side panel" onClick={() => record.onFull?.(false)} />
+              ) : null}
             </div>
             <div className={PANEL}>{record.body}</div>
           </div>
@@ -182,7 +187,9 @@ export default function StudioPage({
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">{record.title}</h2>
         <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="icon-sm" icon="Maximize2" aria-label="Open full page" onClick={() => record.onFull(true)} />
+          {record.onFull ? (
+            <Button variant="ghost" size="icon-sm" icon="Maximize2" aria-label="Open full page" onClick={() => record.onFull?.(true)} />
+          ) : null}
           <Button variant="ghost" size="icon-sm" icon="X" aria-label="Close record" onClick={record.onClose} />
         </div>
       </div>
@@ -241,9 +248,11 @@ export default function StudioPage({
         // The sheet has its own title and its own close, so only the full-page button is added.
         <Modal open onClose={record.onClose} title={record.title} placement="sheet" size="lg">
           <div data-record-page="panel" className="overflow-y-auto p-3">
-            <div className="mb-2 flex justify-end">
-              <Button variant="ghost" size="sm" icon="Maximize2" onClick={() => record.onFull(true)}>Open full page</Button>
-            </div>
+            {record.onFull ? (
+              <div className="mb-2 flex justify-end">
+                <Button variant="ghost" size="sm" icon="Maximize2" onClick={() => record.onFull?.(true)}>Open full page</Button>
+              </div>
+            ) : null}
             {record.body}
           </div>
         </Modal>
