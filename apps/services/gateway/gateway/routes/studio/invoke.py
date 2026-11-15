@@ -685,6 +685,8 @@ class _Outcome:
     uses: str | None = None
     cls: str | None = None
     refusal: str | None = None
+    #: WS-STU I9a. The connection need behind a ``needs_connection`` refusal.
+    unmet: _Unmet | None = None
     record: objects_store.Record | None = None
     page: objects_store.RecordPage | None = None
     #: The result of an aggregate (D4b).
@@ -1017,22 +1019,25 @@ async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
     checked first, so a refused body reads nothing. Then the path of the list:
     the object by its name in the package, then the one reader of C2b.
 
-    Only the owner aggregates. A viewer of an install (J2a) reads no sum: the
-    reader of C2b knows neither the installed fields nor the row rules (C8a),
-    so a sum could count a value that the viewer cannot read."""
-    if isinstance(package, _viewer.InstalledApp):
-        out.refusal = SOURCE_NOT_OPEN
-        return
+    C2d-a: a viewer of an install (J2a) aggregates too. The object must be in
+    the installed version, and the one grammar runs on the installed fields
+    first, so a field of a newer version is refused as unknown. The store then
+    reads what ``query_records`` reads for *viewer*: the row rules bind (C8a),
+    and a hidden key is refused. The answer holds field keys only."""
     try:
         body = _aggregate_input(raw)
         obj = await objects_store.get_object_by_name(
             db, str(ref.object), package_id=package.id)
-        if obj is None:
+        if obj is None or not _installed_object(package, obj.name):
             out.object_missing = True
             return
+        if isinstance(package, _viewer.InstalledApp):
+            studio_query.parse_aggregate(package.project(obj).fields, body.get("filter"),
+                                         body.get("group_by"), body.get("measures"))
         result = await objects_store.aggregate_records(
-            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
-            group_by=body.get("group_by"), measures=body.get("measures"))
+            db, package_id=package.id, object_id=obj.id, viewer=viewer,
+            filter=body.get("filter"), group_by=body.get("group_by"),
+            measures=body.get("measures"))
     except studio_query.QueryError as exc:
         out.query_error = exc
         return
@@ -1205,30 +1210,54 @@ def _object_action(manifest: dict[str, Any], action: str) -> bool:
     return ref is not None and ref.source == "object"
 
 
-async def _needs_connection(db: Any, member: str, manifest: dict[str, Any], action: str,
-                            preview: bool = False, *, org: str | None) -> bool:
-    """True when *manifest* names a connection that *member* does not have now
-    (WS-STU I1a): the refusal :data:`NEEDS_CONNECTION`.
+@dataclasses.dataclass(frozen=True)
+class _Unmet:
+    """The connection need that stopped a call (WS-STU I9a): the provider and
+    the account, or None for each when the ``connections`` value is malformed.
+    It is data only. It names no member and no row."""
 
-    It answers False with no read while ``STUDIO_CONNECTION_GATE_ORGS`` does
+    provider: str | None
+    whose: str | None
+
+
+async def _needs_connection(db: Any, member: str, manifest: dict[str, Any], action: str,
+                            preview: bool = False, *, org: str | None,
+                            org_approved: bool = False) -> _Unmet | None:
+    """The first connection need of *manifest* that *member* does not meet now
+    (WS-STU I1a, I9a), or None. A hit is the refusal :data:`NEEDS_CONNECTION`.
+
+    It answers None with no read while ``STUDIO_CONNECTION_GATE_ORGS`` does
     not hold *org* (``studio_flags.connection_gate_on``), so the door is then
     as before I1a. *org* is the org of the session or the run, never request
-    input. The rule is ``resolve.connections_met``, the one rule of the
+    input. The rule is ``resolve.first_unmet_connection``, the one rule of the
     resolve too. The met set comes from ``resolve.met_connections``: the org
     rows of the bound org and the member rows of *member*, never of another
-    member. A manifest with no connection reads nothing, and a
-    ``connections`` value that is not a list of text fails closed with no
-    read. A *preview* of an object action stays open, so the IDE works while
-    the member connects."""
+    member. *org_approved* is ``resolve.org_install_approved`` of the install
+    that runs, and False for a draft or a preview, so an ``org`` need fails
+    closed there. A manifest with no connection reads nothing, and a
+    ``connections`` value of a wrong shape fails closed with no read. A
+    *preview* of an object action stays open, so the IDE works while the
+    member connects."""
     if not connection_gate_on(org):
-        return False
+        return None
     names = _resolve.connection_names(manifest)
     if names == () or (preview and _object_action(manifest, action)):
-        return False
+        return None
     if names is None:
-        return True
+        return _Unmet(None, None)
     met = await _resolve.met_connections(db, viewer=member)
-    return not _resolve.connections_met(manifest, met)
+    unmet = _resolve.first_unmet_connection(manifest, met, org_approved)
+    return None if unmet is None else _Unmet(*unmet)
+
+
+def _refusal_detail(out: _Outcome, message: str) -> dict[str, Any]:
+    """The detail of a refusal that is not a 403. WS-STU I9a: a
+    ``needs_connection`` adds the provider and the account kind (``as``) of the
+    first unmet need. It is data only, and it names no other member and no row."""
+    detail: dict[str, Any] = {"code": out.refusal, "message": message}
+    if out.refusal == NEEDS_CONNECTION and out.unmet is not None and out.unmet.provider:
+        detail["provider"], detail["as"] = out.unmet.provider, out.unmet.whose
+    return detail
 
 
 async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
@@ -1261,7 +1290,7 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
     open. The org of the gate is *org*, or the bound tenant for a workflow
     write, which passes no *org* and binds its run's org.
     """
-    out.uses, out.cls, out.refusal = None, None, None
+    out.uses, out.cls, out.refusal, out.unmet = None, None, None, None
     out.viewer, out.version = False, None
     owned = await packages_store.get_package(db, member, pid)
     if owned is not None and owned.paused_at is not None:
@@ -1274,8 +1303,14 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
             out.viewer, out.version = True, package.version
     if package is None:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
-    if await _needs_connection(db, member, package.manifest, action, preview,
-                               org=org or current_tenant()):
+    # I9a: only an installed version of an ORG install, once approved, can meet
+    # an `org` need. The owner's draft and a preview cannot.
+    approved = isinstance(package, _viewer.InstalledApp) and _resolve.org_install_approved(
+        package.scope_kind, package.review_status)
+    unmet = await _needs_connection(db, member, package.manifest, action, preview,
+                                    org=org or current_tenant(), org_approved=approved)
+    if unmet is not None:
+        out.unmet = unmet
         out.refusal = NEEDS_CONNECTION
         return package, None
     entry = _declared(package.manifest, action)
@@ -2134,8 +2169,12 @@ async def _run_as_session(db: Any, *, member: str, install_id: str, action: str,
         out.refusal = RUN_AS_LOST
         return
     out.version = app.version
-    if await _needs_connection(db, member, app.manifest, action, org=org):
+    unmet = await _needs_connection(
+        db, member, app.manifest, action, org=org,
+        org_approved=_resolve.org_install_approved(app.scope_kind, app.review_status))
+    if unmet is not None:
         # I1a: the connections of the run_as member, never of a caller.
+        out.unmet = unmet
         out.refusal = NEEDS_CONNECTION
         return
     entry = _declared(app.manifest, action)
@@ -2559,7 +2598,7 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
             "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
     if out.refusal in _NOT_A_403:
         status, message = _NOT_A_403[out.refusal]
-        raise HTTPException(status_code=status, detail={"code": out.refusal, "message": message})
+        raise HTTPException(status_code=status, detail=_refusal_detail(out, message))
     if out.refusal is not None:
         ask = out.refusal == APPROVAL_REQUIRED and out.can_ask
         raise HTTPException(status_code=403, detail={

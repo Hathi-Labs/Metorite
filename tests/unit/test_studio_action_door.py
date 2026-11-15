@@ -287,11 +287,12 @@ def world(monkeypatch):
         return objects_store.RecordPage(tuple(rows[start:start + size]), len(rows), None,
                                         start, size, "")
 
-    async def _aggregate(db: Any, *, package_id: str, object_id: str, filter: Any = None,
-                         group_by: Any = None, measures: Any = None) -> Any:
+    async def _aggregate(db: Any, *, package_id: str, object_id: str, viewer: Any,
+                         filter: Any = None, group_by: Any = None, measures: Any = None) -> Any:
         """The store's aggregate on the fake session (D4b), under the real
         shape check. It filters on the bound org, as RLS does, and answers a
         count and a sum of money of the records of the object."""
+        w.viewers.append(viewer)
         w.aggregates.append({"package_id": package_id, "object_id": object_id,
                              "filter": filter, "group_by": group_by, "measures": measures})
         studio_query.check_aggregate_shape(filter, group_by, measures)
@@ -2603,20 +2604,46 @@ class TestTheDoorOp:
         assert (r.status_code, _code(r)) == (403, "read_only")
         assert len(opw.calls) == 1
 
-    def test_a_viewer_of_an_install_aggregates_nothing(self):
-        """C8a with D4b and J2a: the aggregate reader knows neither the
-        installed fields nor the row rules, so a viewer gets a refusal and no
-        read."""
-        out = invoke._Outcome("visit_stats")
+    def test_a_viewer_of_an_install_reaches_the_store_with_its_viewer(self, monkeypatch):
+        """C2d-a with D4b and J2a: a viewer aggregates. The one grammar runs on
+        the installed fields first, and the store gets the viewer of the call.
+        A field of a newer version is refused before the store."""
+        from datetime import UTC, datetime
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        obj = objects_store.StudioObject(
+            "o1", "p1", "visit", None, "ben@x.test", now, now,
+            (FieldSpec(key="site", type="text", hot=True),
+             FieldSpec(key="newer", type="number", hot=True)))
+        seen: list[Any] = []
+
+        async def _by_name(*_a: Any, **_k: Any) -> Any:
+            return obj
+
+        async def _store(db: Any, **kw: Any) -> Any:
+            seen.append(kw)
+            return None
+
+        monkeypatch.setattr(objects_store, "get_object_by_name", _by_name)
+        monkeypatch.setattr(objects_store, "aggregate_records", _store)
+        manifest = {**DOOR_MANIFEST, "objects": [
+            {"name": "visit", "fields": [{"key": "site", "type": "text", "hot": True}]}]}
+        app = _viewer.InstalledApp(id="p1", version=3, manifest=manifest)
+        me = Viewer("ana@x.test")
         ref = parse_uses("object:visit.aggregate")
-
-        async def _boom(*_a: Any, **_k: Any) -> Any:
-            raise AssertionError("a viewer must not reach the store")
-
-        app = _viewer.InstalledApp(id="p1", version=3, manifest=DOOR_MANIFEST)
+        out = invoke._Outcome("visit_stats")
+        body = b'{"group_by": {"field": "site"}}'
+        asyncio.run(invoke._run_object_aggregate(SimpleNamespace(), app, ref, body, out, me))
+        assert out.refusal is None and out.query_error is None
+        assert len(seen) == 1 and seen[0]["viewer"] is me
+        newer = invoke._Outcome("visit_stats")
         asyncio.run(invoke._run_object_aggregate(
-            SimpleNamespace(execute=_boom), app, ref, b"{}", out, Viewer("ana@x.test")))
-        assert out.refusal == invoke.SOURCE_NOT_OPEN and out.aggregate is None
+            SimpleNamespace(), app, ref,
+            b'{"measures": [{"op": "sum", "field": "newer"}]}', newer, me))
+        assert newer.query_error is not None and len(seen) == 1
+        gone = invoke._Outcome("visit_stats")
+        other = _viewer.InstalledApp(id="p1", version=3, manifest={**manifest, "objects": []})
+        asyncio.run(invoke._run_object_aggregate(SimpleNamespace(), other, ref, b"{}", gone, me))
+        assert gone.object_missing and len(seen) == 1
 
     def test_the_answer_holds_at_most_50_rows_and_256_kib(self, opw):
         pid = _package(opw, manifest=DOOR_MANIFEST)
@@ -2671,7 +2698,10 @@ class TestTheDoorOpFences:
 
 
 #: The manifest of the door, with one connection of the registry.
-NEEDS_TALLY: dict[str, Any] = {**MANIFEST, "connections": ["mcp:tally"]}
+NEEDS_TALLY: dict[str, Any] = {
+    **MANIFEST, "connections": [{"name": "mcp:tally", "as": "member"}]}
+#: I9a: the same connection as an ORG need (the default of an MCP server).
+NEEDS_TALLY_ORG: dict[str, Any] = {**MANIFEST, "connections": ["mcp:tally"]}
 
 
 @pytest.fixture
@@ -2679,10 +2709,10 @@ def cw(world, monkeypatch):
     """The world of the door, with the gate on for every org and the one read
     of the connections patched. ``met`` is the set that the read answers, and
     ``met_reads`` holds the viewer of each read."""
-    world.met = frozenset()
+    world.met = invoke._resolve.Met()
     world.met_reads = []
 
-    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
+    async def _met(db: Any, *, viewer: str) -> invoke._resolve.Met:
         assert db.org == ORG, "the read runs in the session of the check"
         world.met_reads.append(viewer)
         return world.met
@@ -2738,8 +2768,10 @@ class TestTheConnections:
         for action in actions_of:
             r = _call(_client(cw), pid, action, {"id": rid, "data": {"site": "x"}})
             assert r.status_code == invoke.CONNECTION_STATUS == 409, (action, r.text)
+            # I9a: the detail adds the provider and the account kind, as data.
             assert r.json()["detail"] == {"code": invoke.NEEDS_CONNECTION,
-                                          "message": invoke.CONNECTION_TEXT}, action
+                                          "message": invoke.CONNECTION_TEXT,
+                                          "provider": "mcp:tally", "as": "member"}, action
         assert _record_reads(cw) == [] and cw.queries == [] and cw.aggregates == []
         assert "catalog" not in cw.log
         assert cw.met_reads == [ANA] * len(actions_of)
@@ -2751,16 +2783,17 @@ class TestTheConnections:
     def test_a_connection_that_the_caller_has_runs_the_action(self, cw):
         pid = _package(cw, manifest=NEEDS_TALLY)
         rid = _record(cw, _object(cw, pid))
-        cw.met = frozenset({"mcp:tally", "zoho"})
+        cw.met = invoke._resolve.Met(member=frozenset({"mcp:tally", "zoho"}))
         r = _call(_client(cw), pid, "peek", {"id": rid})
         assert r.status_code == 200, r.text
         # The check runs twice, so the door reads the set twice.
         assert cw.met_reads == [ANA, ANA]
 
     def test_each_name_must_be_met(self, cw):
-        pid = _package(cw, manifest={**MANIFEST, "connections": ["mcp:tally", "zoho"]})
+        pid = _package(cw, manifest={**MANIFEST, "connections": [
+            {"name": "mcp:tally", "as": "member"}, {"name": "zoho", "as": "member"}]})
         rid = _record(cw, _object(cw, pid))
-        cw.met = frozenset({"mcp:tally"})
+        cw.met = invoke._resolve.Met(member=frozenset({"mcp:tally"}))
         r = _call(_client(cw), pid, "peek", {"id": rid})
         assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
 
@@ -2768,9 +2801,10 @@ class TestTheConnections:
     def test_a_connections_value_that_is_not_a_list_of_text_fails_closed(self, cw, names):
         pid = _package(cw, manifest={**MANIFEST, "connections": names})
         rid = _record(cw, _object(cw, pid))
-        cw.met = frozenset({"mcp:tally"})
+        cw.met = invoke._resolve.Met(member=frozenset({"mcp:tally"}))
         r = _call(_client(cw), pid, "peek", {"id": rid})
         assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+        assert "provider" not in r.json()["detail"]
         assert cw.met_reads == [], "a malformed value refuses with no read"
 
     def test_a_preview_of_an_object_action_stays_open(self, cw):
@@ -2815,13 +2849,62 @@ class TestTheConnections:
         assert r.status_code != 409 or _code(r) != invoke.NEEDS_CONNECTION
         assert cw.met_reads == []
 
+    def test_a_viewer_org_need_needs_an_approved_org_install(self, cw, monkeypatch):
+        """I9a: the installed version meets an `org` need only when the install
+        is an org install and the version is `approved`."""
+        pid = _package(cw, owner=BEN, manifest=MANIFEST)
+        cw.met = invoke._resolve.Met(org=frozenset({"mcp:tally"}))
+        state: dict[str, Any] = {}
+
+        async def _installed(db: Any, *, viewer: str, app_id: str) -> Any:
+            return _viewer.InstalledApp(id=app_id, version=2, manifest=NEEDS_TALLY_ORG,
+                                        **state)
+
+        monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
+        monkeypatch.setattr(invoke._viewer, "installed_app", _installed)
+        for state in ({}, {"scope_kind": "org"}, {"scope_kind": "org", "review_status": "pending"},
+                      {"scope_kind": "group", "review_status": "approved"},
+                      {"scope_kind": "private", "review_status": "approved"}):
+            r = _call(_client(cw), pid, "find", {})
+            assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION), state
+            assert r.json()["detail"]["provider"] == "mcp:tally", state
+            assert r.json()["detail"]["as"] == "org", state
+        state = {"scope_kind": "org", "review_status": "approved"}
+        r = _call(_client(cw), pid, "find", {})
+        assert r.status_code != 409, r.text
+
+    def test_the_owners_draft_never_meets_an_org_need(self, cw):
+        """I9a, the known limit until I9b: the draft of the owner is no install."""
+        pid = _package(cw, manifest=NEEDS_TALLY_ORG)
+        rid = _record(cw, _object(cw, pid))
+        cw.met = invoke._resolve.Met(org=frozenset({"mcp:tally"}),
+                                     member=frozenset({"mcp:tally"}))
+        r = _call(_client(cw), pid, "peek", {"id": rid})
+        assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
+        assert r.json()["detail"]["as"] == "org"
+
+    def test_the_gate_off_answers_the_same_with_or_without_connections(self, monkeypatch, cw):
+        """I9a: with the org off the list, `connections` (any form, any `as`)
+        change nothing, so the status and the record data equal those of an app with none."""
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "")
+        plain = _package(cw, manifest=MANIFEST)
+        named = _package(cw, manifest={**MANIFEST, "connections": [
+            {"name": "mcp:tally", "as": "member"}, "zoho", {"name": "github", "as": "org"}]})
+        rid = _record(cw, _object(cw, plain))
+        rid2 = _record(cw, _object(cw, named))
+        a = _call(_client(cw), plain, "peek", {"id": rid})
+        b = _call(_client(cw), named, "peek", {"id": rid2})
+        assert (a.status_code, b.status_code) == (200, 200)
+        assert a.json()["record"]["data"] == b.json()["record"]["data"]
+        assert cw.met_reads == []
+
     def test_the_door_and_the_resolve_share_one_rule(self):
-        """``_needs_connection`` asks ``resolve.connections_met`` and
+        """``_needs_connection`` asks ``resolve.first_unmet_connection`` and
         ``resolve.met_connections``, and keeps no copy of either."""
         import ast
         import inspect
 
         src = inspect.getsource(invoke._needs_connection).replace("\r\n", "\n")
         named = {n.attr for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Attribute)}
-        assert {"connection_names", "connections_met", "met_connections"} <= named
+        assert {"connection_names", "first_unmet_connection", "met_connections"} <= named
         assert "integration_connections" not in inspect.getsource(invoke)

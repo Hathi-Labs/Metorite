@@ -282,8 +282,8 @@ target over a source that the viewer cannot read whole. The text of a rule
 that reads a hidden key, or of a key rule over records that the viewer cannot
 read, names no field (:func:`_masked`). The parent of a line must be a record
 that the viewer can read. ``test_studio_row_rules.py`` fails each call of
-these seven that passes no viewer. ⚠️ :func:`aggregate_records` takes no viewer
-yet. Its one caller is the door, for the owner only (D4b).
+these eight that passes no viewer. C2d-a: :func:`aggregate_records` takes a REQUIRED
+``viewer`` too, and it reads what :func:`query_records` reads.
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -3266,8 +3266,9 @@ def _q_agg_currency(j: int) -> str:
             f"WHERE mc{j}.{_OF_ORG} AND mc{j}.{_OF_OBJECT} AND mc{j}.id = c.id), '') END)")
 
 
-def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
-                    package_id: str) -> tuple[str, dict[str, Any]]:
+def build_aggregate(agg: studio_query.Aggregate, *, object_id: str, package_id: str,
+                    access: tuple[Sequence[str], str] | None = None
+                    ) -> tuple[str, dict[str, Any]]:
     """The one statement of the aggregate *agg*: its SQL and its binds. Pure.
 
     The first row holds the count of the fields that are still hot (``v.n``),
@@ -3278,9 +3279,16 @@ def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
     row then holds the columns of ``p``: the part (0 for a kept group, 1 for
     ``other``), the rank, the key, the records, and the sum and the count of
     each field. With no group in the result, the row holds NULL there.
+
+    C2d-a: *access* is the row rule of the viewer, ``(person keys, address)``,
+    as in :func:`build_query`. Each part then holds it (:func:`_q_access`), so
+    the groups and the total count only the records that the viewer reads.
+    With no *access*, the statement is the one of the owner.
     """
     params: dict[str, Any] = {"oid": object_id, "pid": package_id,
                               "hk": list(agg.hot_keys()), "groups": studio_query.MAX_GROUPS}
+    if access is not None:
+        params["akeys"], params["me"] = list(access[0]), access[1]
     conditions = agg.conditions
     guard = "CAST(NULL AS bigint)"
     if agg.query().cold():
@@ -3430,13 +3438,14 @@ def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> Aggre
 
 
 async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_by: Any,
-                          measures: Any) -> tuple[studio_query.Aggregate, list[Any]]:
+                          measures: Any, access: tuple[Sequence[str], str] | None = None
+                          ) -> tuple[studio_query.Aggregate, list[Any]]:
     """The fields, then the aggregate statement. A field that turned cold
     after the store read the fields has lost its hot rows, so the store reads
     the fields and runs the aggregate once more, as :func:`_read_page` does."""
     for _ in range(2):
         agg = studio_query.parse_aggregate(await _fields(timed, oid), filter, group_by, measures)
-        sql, params = build_aggregate(agg, object_id=oid, package_id=pid)
+        sql, params = build_aggregate(agg, object_id=oid, package_id=pid, access=access)
         rows = (await timed.execute(text(sql), params)).all()
         if int(rows[0][0]) == len(agg.hot_keys()):
             _check_hot_or_small(rows, agg.query())
@@ -3444,8 +3453,37 @@ async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_
     raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
 
 
-async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
-                            group_by: Any = None,
+def _refuse_hidden_aggregate(view: _View, items: Sequence[Mapping[str, Any]],
+                             group_by: Any, measures: Sequence[Mapping[str, Any]]) -> None:
+    """C2d-a. A filter, a group or a measure on a key that is hidden from the
+    viewer would show the value, so it is refused before any read."""
+    _refuse_hidden_query(view, items, None)
+    hidden = view.maybe_hidden()
+    if not hidden:
+        return
+    key = group_by.get("field") if isinstance(group_by, Mapping) else None
+    if isinstance(key, str) and key in hidden:
+        raise QueryError(studio_query.OP_NOT_ALLOWED,
+                         f"Field `{key}` is hidden from you, so a query cannot group "
+                         "by it.", key)
+    for measure in measures:
+        key = measure.get("field")
+        if isinstance(key, str) and key in hidden:
+            raise QueryError(studio_query.OP_NOT_ALLOWED,
+                             f"Field `{key}` is hidden from you, so a query cannot "
+                             "total it.", key)
+
+
+def _empty_aggregate(agg: studio_query.Aggregate) -> AggregateResult:
+    """C2d-a. The result for a viewer whose roles read no record: no group, a
+    total of 0, and the measures that the caller asked for, each at zero."""
+    zero = {f.key: (0, 0) for f in agg.measure_fields()}
+    total = AggregateGroup(None, 0, _measure_values(agg, 0, zero))
+    return AggregateResult(agg.measures, (None,) * len(agg.measures), (), None, 0, total)
+
+
+async def aggregate_records(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
+                            filter: Any = None, group_by: Any = None,
                             measures: Any = None) -> AggregateResult | None:
     """Group the records of the object *object_id* of the package
     *package_id*, and take a count, a sum or an average of each group (C2b).
@@ -3460,17 +3498,29 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter:
     each record that it adds holds one currency, as the CRM does (HANDOFF
     H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
     most records stay, and the rest fold into :attr:`AggregateResult.other`.
+
+    C2d-a: *viewer* is REQUIRED, and the call reads what :func:`query_records`
+    reads for it. The row rule joins each part of the one statement. A filter,
+    a group or a measure on a hidden key is refused. A viewer whose roles read
+    no record gets a total of 0 and no group.
     """
+    who = _check_viewer(viewer)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
-    studio_query.check_aggregate_shape(filter, group_by, measures)
+    items, group, shaped = studio_query.check_aggregate_shape(filter, group_by, measures)
     await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
-        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
-        if found.first() is None:
+        view = await _view(timed, oid, pid, who)
+        if view is None:
             return None
-        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures)
+        _refuse_hidden_aggregate(view, items, group, shaped)
+        if not view.scope.reads:
+            fields = await _fields(timed, oid)
+            return _empty_aggregate(
+                studio_query.parse_aggregate(fields, filter, group_by, measures))
+        access = (view.scope.where_keys, who.email) if view.scope.row_bound else None
+        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures, access)
     return _aggregate_result(agg, rows)
 
 
