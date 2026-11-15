@@ -521,6 +521,75 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> Non
         stats_back()
 
 
+#: The most buffers that the C18 check of a move of a 2,000-node subtree may touch. The lookup
+#: per step took the wrong index under stale statistics and read 102,010 (0.8 s on the box);
+#: the child-edge join reads 55 (measured, stale and never analyzed).
+MAX_TREE_CHECK_BUFFERS = 5_000
+
+
+async def _check_buffers(org: str, pkg: str, oid: str, rid: str) -> tuple[str, int]:
+    binds = {"oid": oid, "pid": pkg, "fk": "parent", "rids": [rid], "cap": 20}
+    try:
+        async with tenant_session(org) as db:
+            await db.execute(text("SET LOCAL statement_timeout = 60000"))
+            plan = [r[0] for r in (await db.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS) " + store._TREE_CHECK_SQL), binds)).all()]
+        top = next((x for x in plan if "Buffers:" in x), "")
+        m = re.search(r"Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?", top)
+        return "\n".join(plan), (int(m.group(1) or 0) + int(m.group(2) or 0) if m else -1)
+    except Exception as exc:
+        return f"check plan failed: {type(exc).__name__}: {str(exc)[:200]}", -1
+
+
+@pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
+def test_r8_a_write_that_moves_a_2000_node_subtree_stays_cheap(world, stats: str) -> None:
+    """Task 3346: moving the root of a 2,000-node tree under another record walks the whole
+    subtree in the C18 check. The walk must not take a lookup per step (the wrong index under
+    stale statistics): the buffer count of the check is the fence, as for the read."""
+    with world.p.admin_engine.begin() as c:
+        for t in ("studio_records", "studio_record_hot"):
+            c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
+            if stats == "never_analyzed":
+                c.execute(text("DELETE FROM pg_statistic WHERE starelid = CAST(:t AS regclass)"),
+                          {"t": t})
+                c.execute(text("UPDATE pg_class SET reltuples = -1, relpages = 0 "
+                               "WHERE oid = CAST(:t AS regclass)"), {"t": t})
+    if stats == "stale":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("ANALYZE studio_records"))
+            c.execute(text("ANALYZE studio_record_hot"))
+    ids: dict[str, str] = {}
+
+    async def build() -> None:
+        [root] = await _put(world.a, world.lot, Write("create", world.lot.id,
+                                                      data={"name": "root"}))
+        [new] = await _put(world.a, world.lot, Write("create", world.lot.id,
+                                                     data={"name": "new"}))
+        ids["root"], ids["new"] = root.id, new.id
+        for start in range(0, 1999, 50):
+            await _put(world.a, world.lot, *[
+                Write("create", world.lot.id, data={"name": f"n{i}", "parent": {"id": root.id}})
+                for i in range(start, min(start + 50, 1999))])
+
+    async def move() -> None:
+        await _put(world.a, world.lot, Write("update", world.lot.id, record_id=ids["root"],
+                                             data={"parent": {"id": ids["new"]}}))
+
+    try:
+        _run(world, build)
+        report, buffers = _run(world, lambda: _check_buffers(
+            world.a, world.pkg, world.lot.id, ids["root"]))
+        print(f"tree check buffers ({stats}): {buffers}")
+        if not 0 <= buffers < MAX_TREE_CHECK_BUFFERS:
+            raise AssertionError(f"the check touched {buffers} buffers "
+                                 f"(limit {MAX_TREE_CHECK_BUFFERS})\n{report}")
+        _run(world, move)  # the write passes the C18 check inside its deadline
+    finally:
+        with world.p.admin_engine.begin() as c:
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} RESET (autovacuum_enabled)"))
+
+
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed."""

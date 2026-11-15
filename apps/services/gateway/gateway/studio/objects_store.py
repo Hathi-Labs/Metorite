@@ -4603,6 +4603,19 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
 #: 2,000 nodes in one read.
 MAX_TREE_NODES = 2_000
 
+#: The child edges of the field, read once: one range scan on the full prefix
+#: ``(organization_id, object_id, field_key)`` of the object (51 buffers for 2,000 edges). The
+#: walk down, in a READ and in the C18 WRITE CHECK, joins this set by the text of the parent id,
+#: so the plan does not choose an index for each step (task 3308 and its follow-up 3346). A
+#: lookup per step took the wrong index under stale statistics: 102,010 buffers and 0.8 s on the
+#: box to check a write that moves a node with a subtree of 2,000 nodes.
+_TREE_KIDS = (
+    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
+)
+
+
 #: The object test of a lookup in ``studio_record_hot`` BY RECORD ID (the parent step, the
 #: roots). The primary key is ``(organization_id, record_id, field_key)``. With a plain
 #: ``object_id = ...`` test the planner can also take an index that leads with
@@ -4633,19 +4646,11 @@ _TREE_PARENT = (
     "OFFSET 0) p ON true "
 )
 
-#: The children of a record, by the text index of the hot rows.
-_TREE_CHILDREN = (
-    "JOIN LATERAL (SELECT h.record_id FROM studio_record_hot h "
-    "WHERE h.organization_id = " + _BOUND_ORG + " "
-    "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
-    "AND h.v_text = CAST(t.id AS text) OFFSET 0) h ON true "
-)
-
 #: The walk of each record of `:rids` (C18): its level (the walk up, which stops
 #: one past the cap), a cycle, the levels below it (the walk down, to the cap),
 #: and whether its parent is a record of this object.
 _TREE_CHECK_SQL = (
-    "WITH RECURSIVE s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
+    "WITH RECURSIVE " + _TREE_KIDS + ", s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
     "WHERE " + _IN_PACKAGE + "), "
     "up(start, id, depth, path, cyc) AS ("
     "SELECT s.id, s.id, 1, ARRAY[s.id], false FROM s "
@@ -4654,11 +4659,11 @@ _TREE_CHECK_SQL = (
     + _TREE_PARENT +
     "WHERE NOT u.cyc AND u.depth <= CAST(:cap AS int) "
     "AND (p.id = u.start OR NOT p.id = ANY(u.path))), "
-    "down(start, id, depth, path) AS ("
-    "SELECT s.id, s.id, 0, ARRAY[s.id] FROM s "
+    "down(start, id, depth, path, key) AS ("
+    "SELECT s.id, s.id, 0, ARRAY[s.id], CAST(s.id AS text) FROM s "
     "UNION ALL "
-    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id FROM down t "
-    + _TREE_CHILDREN +
+    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+    "FROM down t JOIN kids h ON h.v_text = t.key "
     "WHERE t.depth < CAST(:cap AS int) AND NOT h.record_id = ANY(t.path)) "
     "SELECT s.id::text, "
     "(SELECT max(u.depth) FROM up u WHERE u.start = s.id), "
@@ -4695,21 +4700,6 @@ _TREE_ALL_ROOTS = (
 _TREE_ONE_ROOT = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = CAST(:root AS uuid)"
-)
-
-
-#: The child edges of the field, read once: one range scan on the full prefix
-#: ``(organization_id, object_id, field_key)`` of the object. The walk of a READ then joins this
-#: set by the text of the parent id, so the plan does not choose an index for each step, and the
-#: cost is one scan of the field plus the join (task 3308). The write check keeps a lookup for
-#: each step, because a write must not scan the whole field. RESIDUAL (follow-up of 3308): with
-#: stale statistics a write that moves a node with a LARGE subtree (about 2,000 nodes) can still
-#: take the wrong index for those lookups (about 0.9 s on the box, past the batch deadline on a
-#: slow runner). Writes of leaves and small subtrees are not affected.
-_TREE_KIDS = (
-    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
-    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
-    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
 )
 
 
