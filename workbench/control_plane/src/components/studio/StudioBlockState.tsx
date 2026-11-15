@@ -59,6 +59,7 @@ export default function StudioBlockState(props: StudioBlockStateProps) {
       <EmptyState
         icon={copy.icon}
         message={copy.message}
+        tone={props.allClear && kind === "empty" ? "success" : "muted"}
         hint={copy.hint}
         action={copy.action && run ? { label: copy.action, onClick: run } : undefined}
       />

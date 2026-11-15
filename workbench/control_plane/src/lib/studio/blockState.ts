@@ -58,6 +58,8 @@ export interface BlockStateWords {
   create?: string;
   /** Who to ask for access: "an admin of the app". */
   askWho?: string;
+  /** A queue that is empty is a success, not a gap (STU-LY-6): "All clear." and no action. */
+  allClear?: boolean;
 }
 
 /** The sentence of one state. Loading has no copy, and the skeleton draws it. */
@@ -65,9 +67,10 @@ export function blockStateCopy(
   kind: Exclude<BlockStateKind, "loading">,
   words: BlockStateWords,
 ): BlockStateCopy {
-  const { noun, create, askWho } = words;
+  const { noun, create, askWho, allClear } = words;
   switch (kind) {
     case "empty":
+      if (allClear) return { icon: "CircleCheck", message: "All clear.", hint: `No ${noun} wait here.` };
       return create
         ? {
             icon: "Inbox",

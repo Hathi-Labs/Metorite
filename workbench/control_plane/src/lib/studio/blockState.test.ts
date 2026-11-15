@@ -40,6 +40,13 @@ describe("blockStateCopy", () => {
     expect(blockStateCopy("empty", w).action).toBe("New visit");
     expect(blockStateCopy("empty", { noun: "visits" }).action).toBeUndefined();
   });
+  it("says All clear for an empty queue, with no action, and still names a filtered empty", () => {
+    const q = blockStateCopy("empty", { noun: "requests", create: "request", allClear: true });
+    expect(q.message).toBe("All clear.");
+    expect(q.hint).toBe("No requests wait here.");
+    expect(q.action).toBeUndefined();
+    expect(blockStateCopy("filtered", { noun: "requests", allClear: true }).action).toBe("Clear filters");
+  });
   it("offers Clear filters on a filtered empty", () => {
     expect(blockStateCopy("filtered", w).action).toBe("Clear filters");
   });

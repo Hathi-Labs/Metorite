@@ -30,8 +30,8 @@ describe("LayoutBody", () => {
     expect(draw("table_workspace", { main: [] })).toContain("no table to show");
   });
   it("says that a preset of a later slice is not drawn yet", () => {
-    const html = draw("work_queue", { list: ["b"], detail: ["d"] });
-    expect(html).toContain('data-layout-pending="work_queue"');
+    const html = draw("list_detail", { list: ["b"], detail: ["d"] });
+    expect(html).toContain('data-layout-pending="list_detail"');
     expect(html).not.toContain("data-view");
   });
   it("draws the main region of a board in a labelled section", () => {
@@ -44,11 +44,27 @@ describe("LayoutBody", () => {
     expect(draw("board", { main: [] })).toContain("no board to show");
   });
   it("draws only the presets that a slice built", () => {
-    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board", "dashboard"]);
+    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board", "dashboard", "work_queue", "approval_queue"]);
   });
   it("adds no colour and no pixel size", () => {
     const src = readFileSync(join(__dirname, "LayoutBody.tsx"), "utf-8");
     expect(src).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\b(?:bg|text|border)-(?:red|green|blue|amber|yellow|gray|slate)-|\b\d+px\b/);
+  });
+});
+
+describe("the queue", () => {
+  for (const layout of ["work_queue", "approval_queue"] as const) {
+    it(`${layout} draws the list before the item, 35 and 65 percent from a wide screen`, () => {
+      const html = draw(layout, { list: ["l"], detail: ["d"] });
+      expect(html).toContain(`data-layout="${layout}"`);
+      expect(html.indexOf('data-view="l"')).toBeLessThan(html.indexOf('data-view="d"'));
+      expect(html).toContain("grid-cols-1");
+      expect(html).toContain("lg:grid-cols-[minmax(0,35fr)_minmax(0,65fr)]");
+    });
+  }
+  it("draws the list alone when no item region is named, and says so with no list", () => {
+    expect(draw("work_queue", { list: ["l"] })).toContain('data-view="l"');
+    expect(draw("work_queue", {})).toContain("no list to show");
   });
 });
 
@@ -80,6 +96,10 @@ describe("the frame", () => {
     expect(frame).toContain('shape={preset === "board" ? "board" : "rows"}');
     expect(frame).toContain("<LayoutList");
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
+  });
+  it("draws a queue list as All clear when it is empty", () => {
+    expect(frame).toContain('preset === "work_queue" || preset === "approval_queue"');
+    expect(frame).toContain("allClear={queue}");
   });
   it("gives each stat and chart tile of a dashboard its own state", () => {
     expect(frame).toContain('preset === "dashboard"');

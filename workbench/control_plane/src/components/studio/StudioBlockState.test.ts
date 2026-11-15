@@ -34,6 +34,12 @@ describe("StudioBlockState", () => {
     expect(html).toContain("No visits yet.");
     expect(html).toMatch(/<button[^>]*>[^<]*New visit/);
   });
+  it("draws All clear in the success tone for an empty queue", () => {
+    const html = draw({ allClear: true });
+    expect(html).toContain("All clear.");
+    expect(html).toContain("text-success");
+    expect(html).not.toContain("<button");
+  });
   it("draws Clear filters on a filtered empty", () => {
     expect(draw({ filtersActive: true, onClearFilters: () => {} })).toMatch(/<button[^>]*>[^<]*Clear filters/);
   });
