@@ -299,6 +299,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                 "roll back the workflow to version 2"),
     "studio_workflow_live": ("pause the workflow that chases invoices",
                              "turn on the workflow again"),
+    # -- studio-views: the saved views of an app (STU-AF10b-3) --
+    "studio_view_manage": ("save this view of my studio app",
+                           "share the view with my team in the studio app",
+                           "delete the saved view"),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

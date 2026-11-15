@@ -594,6 +594,21 @@ def test_the_skill_list_is_read_only_and_the_other_two_write_and_all_are_closed_
     assert all(h["open_world"] is False for h in hints.values())
 
 
+def test_the_view_tool_takes_no_identity_and_is_a_closed_world_write() -> None:
+    """STU-AF10b-3: the one tool of the pack studio-views takes no identity
+    argument, and it is annotated as a write. Mutation: add a ``member`` or
+    ``organization_id`` parameter, or mark it read only -> red."""
+    identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
+                "member", "member_email", "user", "user_email", "email", "actor", "as_user",
+                "owner", "owner_email", "visibility", "confirm", "confirmed"}
+    assert [fn.__name__ for fn in st.STUDIO_VIEW_TOOLS] == ["studio_view_manage"]
+    for fn in st.STUDIO_VIEW_TOOLS:
+        assert not set(inspect.signature(fn).parameters) & identity, fn.__name__
+        assert inspect.iscoroutinefunction(fn)
+        hints = fn.__tool_risk__
+        assert hints["read_only"] is False and hints["open_world"] is False, fn.__name__
+
+
 # -- the fence: no studio module runs code -----------------------------------
 
 _STUDIO_MODULES = (

@@ -357,6 +357,7 @@
       "tests/unit/test_studio_state_machine_r8.py",
       "tests/unit/test_studio_templates_r8.py",
       "tests/unit/test_studio_tree_door_r8.py",
+      "tests/unit/test_studio_view_tool_r8.py",
       "tests/unit/test_studio_workflow_write_r8.py",
       "tests/unit/test_task_check_r8.py",
       "tests/unit/test_team_scope_isolation_r8.py",

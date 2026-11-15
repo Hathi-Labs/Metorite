@@ -971,6 +971,32 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # STU-AF10b-3 (ai_studio.md AF-10b): the one tool of the saved views of an app,
+    # to list, save, change, share and delete a view as the member. The studio packs
+    # are full, so it forms a one-tool pack of the same owner, after them. It is NOT
+    # in tool_packs.FOLLOWS: it ships dark, and it is on only where the tool-pack flag
+    # names it (an owner-only line). Fence: test_studio_view_tool.py.
+    "studio-views": {
+        "label": "AI Studio saved views",
+        "summary": (
+            "List, save, change, share and delete the saved views of a Studio app."
+        ),
+        "description": (
+            "A tool pack: the one tool that manages the saved views of an app, for "
+            "the main assistant to load when a turn asks to save, share, change or "
+            "delete a view of a Studio app. A share, an unshare, and a change or a "
+            "delete of a shared view always show one card. A write of a private view "
+            "shows a card only in a chat that read outside mail. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "studio_view_manage",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 

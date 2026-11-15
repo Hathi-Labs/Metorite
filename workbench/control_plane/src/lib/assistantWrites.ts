@@ -94,6 +94,8 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * (STU-A5c-2) takes an app out of the library, so the library re-reads. The
  * two workflow writes (STB-6b, the `studio-workflows` pack) publish, roll back,
  * pause and turn on a workflow of the Studio library, so the library re-reads.
+ * The view tool (STU-AF10b-3, the `studio-views` pack) lists, saves, shares and deletes a
+ * saved view. One tool has one name, so its list op fires the refresh too.
  * The read tools (draft, validate, patch, outline, plan, describe, list_actions,
  * package_get, record_list, skill_list, interview, workflow_read) change nothing
  * stored.
@@ -102,6 +104,8 @@ const STUDIO_WRITES: ReadonlySet<string> = new Set([
   "studio_save", "studio_publish", "studio_delete_package", "studio_create_from_template", "studio_skill_save",
   "studio_skill_state", "studio_record_create", "studio_record_update", "studio_record_delete",
   "studio_workflow_publish", "studio_workflow_live",
+  // STU-AF10b-3: studio_view_manage lists, saves, shares and deletes a saved view (the `studio-views` pack).
+  "studio_view_manage",
 ]);
 
 /**
