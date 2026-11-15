@@ -21170,9 +21170,9 @@ in step.
 
 ### 18.11 A redraft through the chat keeps the member's edits (2026-11-05, owner)
 
-**Status:** 🔨 BUILT on branch `mt-5f606b3e-redraft-in-place`, not merged, dark behind
+**Status:** ✅ BUILT and MERGED on `main` (#1785, task 1650), dark behind
 `EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
-1533, slice 3 of 4 (task 1650).
+1533, slice 3 of 4. The link covers a new mail only. HRD-8b (§21.9, item 11) extends it.
 
 **Fix round 1 (2026-11-05, Opus review).** A steer carries a snapshot of each open
 new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" line names
@@ -21941,6 +21941,12 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
    still right for the new sends? The proposal says yes.
 10. **The flag owner.** The flag moves mail to real people. §3a rule 3 of `CLAUDE.md`
     says that the owner flips it. Confirm that no session may flip it.
+11. **The act of a redraft (HRD-8b, HIGH, task to file).** The held-card record keeps its act kind.
+    The revise link of §18.11 then covers a forward and a reply, and not only a new mail. A new card with
+    another act kind, or other To and Cc, shows a plain line. The owner decides two things. First, the words
+    of that line. Second, whether a card with a changed act still takes the revise link. The safe default
+    is that it takes the link and shows the line. The Redis case runs in `TestTheOrderOnARealRedis`,
+    which skips in pr-check until task 1856 adds the Redis service. `chat_failure_modes.md` §6 holds the row.
 
 
 ### 21.10 Build record (2026-10-22)
