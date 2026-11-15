@@ -7,10 +7,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { fmtClock } from "@/app/tasks/lib/utils";
 import { EMPTY_SENTENCE, WeekGrid } from "./WeekGrid";
 import type { GridEvent } from "./types";
 
 const L = (d: number, h = 0, mi = 0) => new Date(2026, 10, d, h, mi);
+/** A clock label as the grid draws it. fmtClock follows the host locale, so a test never types a literal like 9:00 am. */
+const T = (h: number, mi = 0) => fmtClock(L(11, h, mi));
 const ev = (id: string, s: Date, e: Date, allDay = false): GridEvent => ({
   id, title: id, start: s, end: e, allDay, tone: "primary",
 });
@@ -83,7 +86,7 @@ describe("WeekGrid: the blocks", () => {
   });
 
   it("shows the title and the time range, and lets the caller replace them", () => {
-    expect(draw()).toContain("9:00 am – 10:30 am");
+    expect(draw()).toContain(`${T(9)} – ${T(10, 30)}`);
     const html = draw({ renderEvent: (e: GridEvent) => createElement("i", null, `custom-${e.id}`) });
     expect(html).toContain("custom-alpha");
   });
@@ -117,17 +120,17 @@ describe("WeekGrid: chips", () => {
     expect(draw()).toMatch(/data-block="alpha" class="absolute rounded bg-card"/);
   });
   it("keeps the time line in a wide lane and drops it in a narrow lane", () => {
-    expect(draw({ mode: "day", anchor: L(11), events: [EVENTS[0]] })).toContain("9:00 am – 10:30 am");
+    expect(draw({ mode: "day", anchor: L(11), events: [EVENTS[0]] })).toContain(`${T(9)} – ${T(10, 30)}`);
     const narrow = draw({ mode: "week", events: many });
-    expect(narrow).not.toContain("9:00 am – 10:00 am</span>");
-    expect(narrow).toContain('title="a, 9:00 am – 10:00 am"');
-    expect(draw({ mode: "day", anchor: L(11), events: many.slice(0, 2) })).toContain("9:00 am – 10:00 am</span>");
-    expect(draw({ mode: "day", anchor: L(11), events: many })).not.toContain("10:00 am</span>");
+    expect(narrow).not.toContain(`${T(9)} – ${T(10)}</span>`);
+    expect(narrow).toContain(`title="a, ${T(9)} – ${T(10)}"`);
+    expect(draw({ mode: "day", anchor: L(11), events: many.slice(0, 2) })).toContain(`${T(9)} – ${T(10)}</span>`);
+    expect(draw({ mode: "day", anchor: L(11), events: many })).not.toContain(`${T(10)}</span>`);
   });
   it("shows one line and no time for a block under 30 px", () => {
     const html = draw({ mode: "day", anchor: L(11), events: [ev("quick", L(11, 9), L(11, 9, 5))] });
-    expect(html).toContain('title="quick, 9:00 am – 9:05 am"');
-    expect(html).not.toContain("9:05 am</span>");
+    expect(html).toContain(`title="quick, ${T(9)} – ${T(9, 5)}"`);
+    expect(html).not.toContain(`${T(9, 5)}</span>`);
   });
   it("gives the body room above the first hour label", () => {
     expect(draw()).toContain('class="pt-2"');
