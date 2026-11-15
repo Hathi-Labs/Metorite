@@ -83,10 +83,11 @@ PACK_ARMS = ck.PACK_ARMS
 STUDIO_PACKS = ("studio",)
 
 
-#: TS-5b sets this True when the scripted plans that call ``find_tools`` are in.
+#: TS-5b. True: the scripted plans that call ``find_tools`` are in (``Plan.find``,
+#: :func:`scripted_models`). Set it False and the ``search`` arm prints SKIP again.
 #: TS-2a PR 3 added the field ``tool_search_orgs`` first, so the field alone no
 #: longer tells that the arm can run.
-SEARCH_PLANS = False
+SEARCH_PLANS = True
 
 
 def search_built() -> bool:
@@ -103,7 +104,7 @@ def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
     """The arms that run *sc*: a fan-out chat runs on ``pack`` and ``packs+spawn``
     (delegation holds no spawn tool), a Studio chat on ``pack`` and ``search``
     (``studio-builder`` takes no hand-off), any other chat on ``delegation`` and
-    ``pack``. The ``search`` arm drops out while :func:`search_built` is False."""
+    ``pack``. The ``search`` arm drops out when :func:`search_built` is False."""
     if sc.set == "fanout":
         want = (ARMS[1], SPAWN_ARM)
     elif sc.set == "studio":
@@ -327,8 +328,6 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
     """
     from acb_skills import tool_packs
 
-    if arm == SEARCH_ARM:
-        raise NotImplementedError("the scripted plans that call find_tools are TS-5b")
     in_pack = pack_tool_names()
     orch: list[Any] = []
     subs: dict[str, list[Any]] = {}
@@ -338,6 +337,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
     for turn in sc.turns:
         plan = turn.plan
         calls_of = plan.calls if (arm == SPAWN_ARM or not plan.solo) else plan.solo
+        if arm == SEARCH_ARM and plan.search_calls is not None:
+            calls_of = plan.search_calls
         # The web tools and the spawn tool belong to no owner: the orchestrator
         # calls them itself, in every arm that holds them.
         direct = [c for c in calls_of if c[0] in BASE_DIRECT]
@@ -358,6 +359,13 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
             for name, args in direct:
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
+            # TS-5b. The model searches first: one ``find_tools`` call for each query of
+            # the plan, then the tools that the find added (no ``load_skill_tools``).
+            searched = arm == SEARCH_ARM and bool(plan.find)
+            if arm == SEARCH_ARM:
+                for query in plan.find:
+                    n += 1
+                    orch.append(tool_turn(ck.FIND_TOOL, {"query": query}, call_id=f"call_{n}"))
             mine = [c for c in calls_of if c[0] in in_pack]
             setup = [c for c in calls_of
                      if c[0] not in in_pack and owner_of_tool(c[0]) == EA]
@@ -380,7 +388,7 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                 work = []
             for name, args in work:
                 slug = pack_of_tool(name)
-                if slug not in held and not (
+                if slug not in held and not searched and not (
                         tool_packs.matched_layer(slug, turn.words)
                         or sc.surface in tool_packs.PACKS[slug].surface_slugs):
                     n += 1
@@ -404,7 +412,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                     n += 1
                     orch.append(tool_turn(name, args, call_id=f"call_{n}"))
             used = used or bool(mine)
-        orch.append(text_turn(plan.answer))
+        answer = plan.search_answer if arm == SEARCH_ARM and plan.search_answer else plan.answer
+        orch.append(text_turn(answer))
     models = {ORCHESTRATOR: ReplyModel(orch)}
     models.update({owner: ReplyModel(turns) for owner, turns in subs.items()})
     if arm == SPAWN_ARM:
@@ -537,8 +546,10 @@ def tap_schemas(mp: Any) -> None:
     arm need their names, the description of ``find_tools`` and the schema tokens.
     This wraps ``_WireTap.handle_async_request`` from here and edits no harness
     file: it reads the body that the tap reads, and sets three attributes on the
-    call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``).
-    It changes nothing on the wire."""
+    call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``,
+    and ``find_answers``: the FULL text of each ``find_tools`` answer that this request
+    carries, because the event stream cuts a tool result at 2000 characters and the hold
+    note of a found pack comes after that cut). It changes nothing on the wire."""
     real = harness_mod._WireTap.handle_async_request
 
     async def handle(tap: Any, request: httpx.Request) -> httpx.Response:
@@ -562,6 +573,7 @@ def tap_schemas(mp: Any) -> None:
             mine.find_description = next(
                 (str(f.get("description") or "") for f in funcs if f.get("name") == ck.FIND_TOOL), "")
             mine.schema_tokens = ck.schema_tokens_of(tools)
+            mine.find_answers = ck.find_answers_in(body if isinstance(body, dict) else {})
         return response
 
     mp.setattr(harness_mod._WireTap, "handle_async_request", handle)
@@ -790,7 +802,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 needs=next((str(c.arg) for c in turn.checks if c.kind == "right_pack"), ""),
                 reachable=reachable_of(tap.events[marks[3]:]),
                 write_cards=ck.write_cards_of(record.events),
-                trace=ck.trace_of(record.events),
+                trace=ck.full_find_results(
+                    ck.trace_of(record.events),
+                    [a for c in orch_calls for a in getattr(c, "find_answers", ())]),
                 tool_names=frozenset(n for c in orch_calls for n in getattr(c, "tool_names", ())),
                 find_description=next((d for c in orch_calls
                                        if (d := getattr(c, "find_description", ""))), ""),
@@ -799,6 +813,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 held=marked,
             )
             result = ck.check_turn(turn, obs)
+            find_requests = find_requests_of(orch_calls)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
             # A send that reached the Router and that no tap saw is counted at
             # the worst case, never at zero (2026-10-30 drain).
@@ -845,6 +860,11 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                                        if name not in (ck.FIND_TOOL, ck.LOAD_TOOL)
                                        and not ck.refused(result)}),
                 "schema_tokens": obs.schema_tokens, "held": obs.held,
+                # TS-5b. Was ``find_tools`` in the request? A turn with 0 searches is then
+                # "offered and ignored" (True) or "not offered" (False). On the pack arms
+                # the tool is never offered, so a pack row holds False and 0.
+                "find_tools_offered": find_requests > 0,
+                "find_tools_requests": find_requests,
             }
             marked = marked or row["mark_writes"] > 0
             rows.append(row)
@@ -853,6 +873,13 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
             history += [{"role": "user", "content": turn.words},
                         {"role": "assistant", "content": record.answer}]
     return rows
+
+
+def find_requests_of(calls: list[Any]) -> int:
+    """TS-5b. How many of the orchestrator's *calls* (requests) carried ``find_tools``.
+    The tap sets ``tool_names`` on a live and on a scripted call alike, so a row says
+    "offered and ignored" (offered, 0 searches) apart from "not offered"."""
+    return sum(1 for c in calls if ck.FIND_TOOL in getattr(c, "tool_names", ()))
 
 
 def reachable_of(events: list[dict[str, Any]]) -> frozenset[str] | None:
@@ -1113,6 +1140,7 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
         for agent, n in (r.get("handoffs_refused") or {}).items():
             refused[agent] += n
     searched = [r for r in app if r.get("searches")]
+    offered = [r for r in rs if r.get("find_tools_offered")]
     tokens = [r["schema_tokens"] for r in rs if r.get("schema_tokens")]
     return {
         "app_turns": len(app),
@@ -1123,6 +1151,12 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
         "search_turn_share_pct": _pct(len(searched), len(app)),
         "searches_per_turn": _mean([float(r.get("searches", 0)) for r in rs]),
         "found_tools_per_turn": _mean([float(len(r.get("found_tools") or [])) for r in rs]),
+        # TS-5b. A turn where ``find_tools`` was in a request and the model made no
+        # search: "offered and ignored". It is a count, never a check.
+        "find_offered_turns": len(offered),
+        "find_requests_per_turn": _mean([float(r.get("find_tools_requests", 0)) for r in rs]),
+        "find_offered_not_called": sum(1 for r in offered if not r.get("searches")),
+        "offered_not_called": f"{sum(1 for r in offered if not r.get('searches'))} of {len(offered)}",
         "false_searches": sum(r.get("searches", 0) for r in rs
                               if r["checks"].get("not_searched") is not None),
         "schema_tokens_max": max(tokens, default=None),
@@ -1357,9 +1391,15 @@ def report(data: dict[str, Any]) -> str:
                 ("Tools that ran after a find or a load, per turn", "found_tools_per_turn"),
                 ("App turns that searched", "app_turns_searched"),
                 ("False searches (a find on a turn that needs no tool)", "false_searches"),
+                ("Turns where find_tools was offered", "find_offered_turns"),
+                ("Requests that carried find_tools, per turn", "find_requests_per_turn"),
                 ("Schema tokens in a request, most", "schema_tokens_max"),
                 ("Schema tokens in a request, mean", "schema_tokens_mean")):
             lines.append(f"| {label} | " + " | ".join(str(s[a].get(key)) for a in arms) + " |")
+        # TS-5b. Check-free: it tells "offered and ignored" from "not offered".
+        for a in arms:
+            if s[a].get("find_offered_turns"):
+                lines += ["", f"{a}: offered but not called: {s[a].get('offered_not_called')}"]
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
         lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]
     return "\n".join(lines)
@@ -1702,8 +1742,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         return EXIT_NO_GO
     arms = tuple(a for a in asked if a in ALL_ARMS)
     if SEARCH_ARM in arms and (args.scripted or args.live) and not search_built():
-        print(f"SKIP: arm {SEARCH_ARM}: it waits for the plans of TS-5b (SEARCH_PLANS). "
-              "The arm runs when they are in, beside the flag tool_search_orgs.")
+        print(f"SKIP: arm {SEARCH_ARM}: it needs the flag tool_search_orgs (TS-2a) in the "
+              "settings and SEARCH_PLANS on (the plans of TS-5b). One of them is missing.")
         arms = tuple(a for a in arms if a != SEARCH_ARM)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
     chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)

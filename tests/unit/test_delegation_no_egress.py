@@ -1463,7 +1463,8 @@ def test_a_delegated_mail_write_with_no_card_channel_answers_as_on_main(
     _run_top(PA, ORG_B, cards=False)
     assert email.bodies, "the delegation never ran"
     answer = _results(email.bodies[1])[-1]
-    assert answer.startswith("Nothing changed. This needs your approval on a card"), answer
+    # HRD-7: the email assistant's no-card answer is the one table's.
+    assert answer.startswith("Not shown: a card cannot show here"), answer
     assert "read an answer of an agent" not in answer, answer
 
 

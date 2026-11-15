@@ -4142,6 +4142,10 @@ Affinity, mutes, "Why am I seeing this", `metric_moved`, `lead_replied`,
 `whatsapp_waiting`. "Why am I seeing this" names the judged group and weight
 in words, for example "Judged high: it moves the Q3 launch".
 
+**The learning of MD-9, proposed 2026-11-16.** `proactive_loop.md` §7 and its
+slices LOOP-4 and LOOP-5 specify the learned `affinity`, the mutes and the class
+that the learner lowers. This spec stays the owner of the feed parts.
+
 ### MD-10 · Nudges outside the app — OWNER-GATE
 
 Step 4 of §6.5, on WhatsApp templates (WAC-7) or web push (D-2). Opt-in for
