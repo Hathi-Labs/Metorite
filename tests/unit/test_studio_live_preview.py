@@ -77,6 +77,17 @@ The review fixes (P1, P2 and the notes on the shape). Each ran on 2026-11-15.
 * (n) ``_Shaper.value``: let a second key overwrite the first.
   ``test_two_keys_that_clean_to_one_keep_the_first`` goes red.
 
+After the merge of I9a (2026-11-15):
+
+* (u) ``invoke._live_unmet``: pass ``org_approved=True`` (the rule opens for a
+  draft). 6 tests go red: the three ``org`` cases of
+  ``TestTheRealRule::test_a_draft_preview_is_409_and_calls_nothing``,
+  ``TestTheRealRule::test_the_rule_is_the_one_of_the_door``,
+  ``test_with_the_real_rule_a_draft_sends_nothing`` (I11-0) and
+  ``test_r8_a_draft_never_meets_the_mcp_need_on_real_rows`` (R8). The other
+  tests of the live path run with a marked STAND-IN for that rule (see the
+  fixture ``lw``), because the owner has not decided it.
+
 The last round (2026-11-15):
 
 * (o) ``fresh_tool_list``: drop the compare of the stored server. The
@@ -118,6 +129,7 @@ from acb_common.tenant_redis import TenantRedis
 from gateway import outbound_guard
 from gateway.connections import mcp as mcp_registry
 from gateway.connections import mcp_tools
+from gateway.package_host import resolve as _resolve
 from gateway.package_host import viewer as _viewer
 from gateway.routes.studio import actions, invoke
 
@@ -191,6 +203,7 @@ def lw(dw, monkeypatch):  # noqa: F811
     raw = RawRedis()
     w = dw
     w.raw, w.lists, w.calls, w.meta_reads, w.met = raw, [], [], [], frozenset({"mcp:github"})
+    w.member_met = frozenset()
     w.servers = {ORG: [_server(ORG)], OTHER: [_server(OTHER)]}
     w.tools = {s.url: _tools() for org in w.servers for s in w.servers[org]}
     w.answers = {}
@@ -222,8 +235,8 @@ def lw(dw, monkeypatch):  # noqa: F811
     async def _no_client(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("a real MCP client was built")
 
-    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
-        return w.met
+    async def _met(db: Any, *, viewer: str) -> Any:
+        return _resolve.Met(org=w.met, member=w.member_met)
 
     monkeypatch.setattr(mcp_registry, "enabled_meta", _enabled_meta)
     monkeypatch.setattr(mcp_registry, "servers_for_org", _servers_for_org)
@@ -231,6 +244,15 @@ def lw(dw, monkeypatch):  # noqa: F811
     monkeypatch.setattr(mcp_tools, "_sdk_call", _call)
     monkeypatch.setattr(outbound_guard, "mcp_client", _no_client)
     monkeypatch.setattr(invoke._resolve, "met_connections", _met)
+    # ⚠️ A STAND-IN, not the rule. After I9a a draft never meets an ``org``
+    # need (``invoke._live_unmet``), so a live read of a draft never runs
+    # today. The owner has not decided whether a preview of the owner may
+    # count the org row (the I11a row). To fence the steps AFTER that rule,
+    # this fixture counts an org row as met, as an approved install would.
+    # ``TestTheRealRule`` below runs with the real rule.
+    w.real_live_unmet = invoke._live_unmet
+    monkeypatch.setattr(invoke, "_live_unmet",
+                        lambda manifest, met: _resolve.first_unmet_connection(manifest, met, True))
     monkeypatch.setattr(get_settings(), "studio_live_preview_orgs", "*")
     mcp_tools._LIVE_IN_FLIGHT.clear()
     yield w
@@ -1209,3 +1231,43 @@ def test_the_answer_identity_holds_updated_at_and_the_list_identity_does_not() -
     two = _server(ORG, updated_at=datetime(2026, 11, 6, tzinfo=UTC))
     assert mcp_tools._identity(one) == mcp_tools._identity(two)
     assert mcp_tools._answer_identity(one) != mcp_tools._answer_identity(two)
+
+
+# ── The real connection rule after I9a ─────────────────────────────────────
+
+
+class TestTheRealRule:
+    """``invoke._live_unmet`` as it ships: ``first_unmet_connection`` with
+    ``org_approved=False``, as ``_needs_connection`` asks for a preview of
+    each other source. A draft is no install, so an ``org`` need is never
+    met, and no live read of a draft calls a server today (fail closed)."""
+
+    @pytest.fixture
+    def real(self, lw, monkeypatch):
+        monkeypatch.setattr(invoke, "_live_unmet", lw.real_live_unmet)
+        _warm_list(lw)
+        return lw
+
+    @pytest.mark.parametrize("connections,whose", [
+        (["mcp:github"], "org"),
+        ([{"name": "mcp:github"}], "org"),
+        ([{"name": "mcp:github", "as": "org"}], "org"),
+        ([{"name": "mcp:github", "as": "member"}], "member"),
+    ])
+    def test_a_draft_preview_is_409_and_calls_nothing(self, real, connections, whose) -> None:
+        """The org holds a connected row of ``mcp:github``, and the member
+        holds the grant. The read is still refused, and nothing is sent."""
+        manifest = {**LIVE_MANIFEST, "connections": connections}
+        r = _preview(real, _pid(real, manifest=manifest), "issue_a")
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["code"] == "needs_connection"
+        assert (r.json()["detail"]["provider"], r.json()["detail"]["as"]) == ("mcp:github", whose)
+        assert real.lists == [] and real.calls == [] and real.meta_reads == []
+
+    def test_the_rule_is_the_one_of_the_door(self) -> None:
+        """``_live_unmet`` calls ``first_unmet_connection`` with a literal
+        False, as ``_needs_connection`` gets ``org_approved=False`` for a draft."""
+        src = inspect.getsource(invoke._live_unmet)
+        assert "first_unmet_connection(manifest, met, False)" in src
+        met = _resolve.Met(org=frozenset({"mcp:github"}), member=frozenset({"mcp:github"}))
+        assert invoke._live_unmet({"connections": ["mcp:github"]}, met) == ("mcp:github", "org")

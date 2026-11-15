@@ -443,8 +443,8 @@ def lp(pw, monkeypatch):
     async def _servers(_org: str, **_k: Any) -> list[Any]:
         return [server]
 
-    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
-        return frozenset({"mcp:github"})
+    async def _met(db: Any, *, viewer: str) -> Any:
+        return invoke._resolve.Met(org=frozenset({"mcp:github"}), member=frozenset())
 
     stacks: list[list[str]] = []
 
@@ -458,6 +458,14 @@ def lp(pw, monkeypatch):
     monkeypatch.setattr(mcp_registry, "enabled_meta", _servers)
     monkeypatch.setattr(mcp_registry, "servers_for_org", _servers)
     monkeypatch.setattr(invoke._resolve, "met_connections", _met)
+    # ⚠️ A STAND-IN for the decision that the owner has not made (the I11a
+    # row): an org row counts as met, as for an approved install. The real
+    # rule (``invoke._live_unmet``) never meets an ``org`` need of a draft, so
+    # the allowed path is unreachable today.
+    # ``test_with_the_real_rule_a_draft_sends_nothing`` holds that.
+    pw.real_live_unmet = invoke._live_unmet
+    monkeypatch.setattr(invoke, "_live_unmet", lambda manifest, met: (
+        invoke._resolve.first_unmet_connection(manifest, met, True)))
     monkeypatch.setattr(outbound_guard, "mcp_client", _mcp_client)
     monkeypatch.setattr(get_settings(), "studio_live_preview_orgs", "*")
     pw.raw, pw.server, pw.stacks = raw, server, stacks
@@ -512,6 +520,15 @@ class TestTheLivePreview:
         [stack] = lp.stacks
         assert all(name in stack for name in ALLOWED_LIVE_PATH), stack
         assert "_sdk_call" in stack and "_sdk_list" not in stack
+
+    def test_with_the_real_rule_a_draft_sends_nothing(self, lp, monkeypatch):
+        """I9a: a draft never meets an ``org`` need, so the one allowed path
+        is closed today: 409, and no hit."""
+        monkeypatch.setattr(invoke, "_live_unmet", lp.real_live_unmet)
+        lp.warm()
+        r = _post(_gclient(lp), _live_pid(lp), "issue_a", {})
+        assert (r.status_code, _code(r)) == (409, "needs_connection")
+        assert lp.hits == []
 
     def test_a_cold_list_reaches_the_network_for_the_list_only(self, lp):
         """A cold list reads ``tools/list`` first. Its failure stops the read,

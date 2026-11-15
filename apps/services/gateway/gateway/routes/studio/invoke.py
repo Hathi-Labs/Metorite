@@ -2358,9 +2358,9 @@ async def _held_live_read(db: Any, member: str, package: _App, ref: UsesRef, out
     catalog label *cls*, and the live read checks the class again on a fresh
     list. These refuse with :data:`SOURCE_NOT_OPEN`: another ``uses``, a
     viewer, the switch off, and a manifest whose ``connections`` does not
-    name ``mcp:<server>``. A named connection that the member does not hold
-    now refuses with :data:`NEEDS_CONNECTION`, also with the I1a gate off,
-    through the one rule ``resolve.connections_met``."""
+    name ``mcp:<server>``. Each need that :func:`_live_unmet` finds unmet
+    refuses with :data:`NEEDS_CONNECTION` and names its provider and ``as``,
+    also with the I1a gate off."""
     if (ref.source != "mcp" or out.uses != uses or out.viewer
             or not isinstance(package, packages_store.Package) or not live_preview_on(org)):
         out.refusal = SOURCE_NOT_OPEN
@@ -2371,10 +2371,26 @@ async def _held_live_read(db: Any, member: str, package: _App, ref: UsesRef, out
         out.refusal, out.live_note = SOURCE_NOT_OPEN, LIVE_NOT_DECLARED
         return False
     met = await _resolve.met_connections(db, viewer=member)
-    if not _resolve.connections_met(package.manifest, met):
-        out.refusal = NEEDS_CONNECTION
+    unmet = _live_unmet(package.manifest, met)
+    if unmet is not None:
+        out.refusal, out.unmet = NEEDS_CONNECTION, _Unmet(*unmet)
         return False
     return True
+
+
+def _live_unmet(manifest: Any, met: Any) -> tuple[str | None, str | None] | None:
+    """The first unmet connection need of the draft *manifest* in a live
+    preview, or None (I11a after I9a).
+
+    The one rule ``resolve.first_unmet_connection``, called as
+    :func:`_needs_connection` calls it for a preview of each other source: a
+    draft is no install, so ``org_approved`` is False. So an ``org`` need is
+    NEVER met here, and ``mcp:<server>`` is an ``org`` need (an MCP server is
+    an org row, and I9 opens no ``as: member`` for it). Today a live read of a
+    draft therefore never calls a server. Whether a preview of the owner may
+    count the org row is a question for the owner (the I11a row). Do not open
+    it here without that decision."""
+    return _resolve.first_unmet_connection(manifest, met, False)
 
 
 def _live_args(raw: bytes) -> dict[str, Any] | None:

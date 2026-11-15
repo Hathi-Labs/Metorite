@@ -258,8 +258,10 @@ async def test_r8_the_connections_read_binds_the_org_of_the_session(two_orgs) ->
     w = two_orgs
     async with tenant_session(w.p.org_a) as db:
         met = await resolve.met_connections(db, viewer=ANA)
-    assert f"mcp:{w.names['reg_a']}" in met and f"mcp:{SHARED}" in met
-    assert f"mcp:{w.names['reg_b']}" not in met and f"mcp:{w.names['old_b']}" not in met
+    # I9a: the answer keeps the org rows and the member rows apart.
+    assert f"mcp:{w.names['reg_a']}" in met.org and f"mcp:{SHARED}" in met.org
+    assert f"mcp:{w.names['reg_b']}" not in met.org and f"mcp:{w.names['old_b']}" not in met.org
+    assert not any(n.startswith("mcp:") for n in met.member)
 
 
 async def test_r8_a_class_b_tool_of_a_real_row_makes_no_call(two_orgs) -> None:
@@ -304,3 +306,19 @@ async def test_r8_a_refresh_needs_the_grant_and_the_scope(two_orgs) -> None:
     # Not vacuous: with the grant and the scope, the refresh reads.
     assert (await mcp_tools.refresh(w.p.org_a, SHARED, may_use=lambda _p: True)).ok is True
     assert w.lists == [f"https://shared-a-{w.tag}.example.com/mcp"]
+
+
+
+async def test_r8_a_draft_never_meets_the_mcp_need_on_real_rows(two_orgs) -> None:
+    """I9a on the real registry: org A holds a connected ``mcp:<reg_a>`` row,
+    and the rule of a draft preview still finds the need unmet."""
+    from gateway.db import tenant_session
+    from gateway.package_host import resolve
+    from gateway.routes.studio import invoke
+
+    w = two_orgs
+    async with tenant_session(w.p.org_a) as db:
+        met = await resolve.met_connections(db, viewer=ANA)
+    name = f"mcp:{w.names['reg_a']}"
+    assert name in met.org
+    assert invoke._live_unmet({"connections": [name]}, met) == (name, "org")
