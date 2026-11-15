@@ -78,7 +78,8 @@ export function tableFields(fields: readonly FieldSpec[]): FieldSpec[] {
  * holds no value, and the store refuses one. The grid of D17 edits the lines.
  */
 export function formFields(fields: readonly FieldSpec[], computed: ReadonlySet<string>): FieldSpec[] {
-  return fields.filter((f) => !computed.has(f.key) && !isLinesField(f));
+  // C15a: the store fills an autonumber, so no form holds it.
+  return fields.filter((f) => !computed.has(f.key) && !isLinesField(f) && f.type !== "autonumber");
 }
 
 /**

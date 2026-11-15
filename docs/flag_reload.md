@@ -68,6 +68,21 @@ connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
+put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
+upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
+MCP edge maps both to one fixed text (`tools.TEXT_IMAGES_OFF`). A person's upload
+in the app does not read it. Its one reader is
+`acb_auth.agent_oauth.image_upload_allowed`. The gateway asks it at each call,
+so a reload applies a change there. The agent edge asks it too (CIV-14b fix
+round 1). It hides `upload_task_image` for an org off the flag, and
+`ask_on_task` checks it before a run starts. Since fix round 2, a body over
+1 MiB of an org off the flag gets the 413 of the old cap, with no slot and no
+read. The edge reads its flags at
+start. So set the same value in the env file of both units, reload
+`acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
 also selects the orgs where the daily expiry tick may delete installs
 (PKG-10b). A reload that widens it to `*` widens the delete to every org at
