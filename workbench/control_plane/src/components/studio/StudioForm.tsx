@@ -11,7 +11,7 @@
  * once (`lib/studio/formModel.ts`). A refusal of the server shows under its
  * field. Controls are the house ones in `components/ui/`.
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import Button from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
@@ -196,6 +196,12 @@ export interface FormViewProps {
   submitting?: boolean;
   /** The line under the button: a saved note, or a refusal with no field. */
   status?: { ok: boolean; text: string } | null;
+  /**
+   * WFC-4a-2b-1. A control beside the label of each field, such as the remove
+   * button of a field that a workflow step changes. Absent: the label stands
+   * alone, and the markup is the same as before.
+   */
+  fieldAction?: (field: FieldSpec) => ReactNode;
   onDraft: (key: string, d: Draft) => void;
   onBlur: (key: string) => void;
   onSubmit: () => void;
@@ -225,7 +231,7 @@ function QuantityFlagLine({ field, draft }: { field: FieldSpec; draft: Draft }) 
 
 /** The form, drawn from props. No state, so a test can draw each case. */
 export function FormView({
-  fields, drafts, errors, formId, title, submitLabel = "Save", submitting = false, status,
+  fields, drafts, errors, formId, title, submitLabel = "Save", submitting = false, status, fieldAction,
   onDraft, onBlur, onSubmit,
 }: FormViewProps) {
   return (
@@ -237,12 +243,20 @@ export function FormView({
         const message = errors[f.key];
         const errorId = message ? errorIdOf(formId, f.key) : undefined;
         const hint = hintOf(f);
+        const label = (
+          <label htmlFor={id} className="block text-xs font-medium text-foreground">
+            {labelOf(f)}
+            {f.required && <span className="font-normal text-muted-foreground"> (required)</span>}
+          </label>
+        );
         return (
           <div key={f.key} className="space-y-1" data-field={f.key} data-type={f.type}>
-            <label htmlFor={id} className="block text-xs font-medium text-foreground">
-              {labelOf(f)}
-              {f.required && <span className="font-normal text-muted-foreground"> (required)</span>}
-            </label>
+            {fieldAction ? (
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                {label}
+                {fieldAction(f)}
+              </div>
+            ) : label}
             <Control field={f} draft={drafts[f.key]} id={id} errorId={errorId}
               onChange={(d) => onDraft(f.key, d)} onBlur={() => onBlur(f.key)} />
             {hint && !message && <p className="text-xs text-muted-foreground">{hint}</p>}

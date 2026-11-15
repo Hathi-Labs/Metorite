@@ -10,13 +10,15 @@
  *
  * Mutation 1: add a `pm_task` item to the Logic section. "no item" turns red.
  * Mutation 2: map `pm_task` in `dropForResult`. "drops nothing" turns red.
+ * Mutation 3 (WFC-4a-2b-1): draw "Change a record" outside `studioWriteOffered`.
+ * "is not in the palette of a member who is not the owner" turns red.
  */
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import NodePalette, { dropForResult, humanStepDrop, studioWriteDrop } from "./NodePalette";
+import NodePalette, { dropForResult, humanStepDrop, studioWriteChangeDrop, studioWriteDrop } from "./NodePalette";
 import type { Catalog, SearchResult } from "../lib/types";
 
 const catalog: Catalog = {
@@ -73,16 +75,32 @@ describe("NodePalette", () => {
   });
 });
 
-describe("the pair that adds a record (WFC-4a-2a)", () => {
+describe("the pairs that add or change a record (WFC-4a-2a, WFC-4a-2b-1)", () => {
   it("is not in the palette of a member who is not the owner", () => {
-    expect(draw()).not.toContain("Add a record");
-    expect(draw(false)).not.toContain("Add a record");
+    for (const html of [draw(), draw(false)]) {
+      expect(html).not.toContain("Add a record");
+      expect(html).not.toContain("Change a record");
+    }
   });
 
   it("is in the palette of the owner", () => {
     const html = draw(true);
     expect(html).toContain("Add a record");
     expect(html).toContain("approval, then a new record in your app");
+    expect(html).toContain("Change a record");
+    expect(html).toContain("approval, then a change to a record in your app");
+  });
+
+  it("drops the change as a Human approval, then a write with no action", () => {
+    const drop = studioWriteChangeDrop();
+    expect(drop.nodeType).toBe("approval");
+    expect(drop.config).toEqual({ message: "Change this record in the app?" });
+    expect(drop.then).toHaveLength(1);
+    expect(drop.then?.[0]).toEqual({
+      nodeType: "studio_write",
+      label: "Change a record",
+      config: { package_id: "", action: "", data: {} },
+    });
   });
 
   it("drops a Human approval, then the write, as one chain", () => {
@@ -104,7 +122,7 @@ describe("the source", () => {
   });
 
   it("shows the pair only when the editor says the member is the owner", () => {
-    expect(src).toContain("studioWriteOffered &&");
+    expect(src.match(/studioWriteOffered &&/g) ?? []).toHaveLength(2);
     expect(src).not.toContain('nodeType: "studio_write"');
     expect(src).not.toContain('r.key === "studio_write"');
   });
