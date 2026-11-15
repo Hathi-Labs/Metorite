@@ -46,7 +46,7 @@ export function periodFilter(field: string | null, period: string | undefined, n
 /** The state with a period set. `all` takes the key away, so the URL stays short. */
 export function withPeriod(state: PageState, period: string): PageState {
   const next = { ...state };
-  if (isPeriod(period) && period !== DEFAULT_PERIOD) next.period = period;
+  if (period === "7d" || period === "30d" || period === "90d") next.period = period;
   else delete next.period;
   return next;
 }

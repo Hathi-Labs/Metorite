@@ -56,7 +56,7 @@ describe("periodNode", () => {
     expect(out).not.toBe(node);
   });
   it("adds the first filter to a source with no args", () => {
-    const bare = { props: { source: { action: "object:v.list" } } };
+    const bare: { props: { source: { action: string; args?: Record<string, unknown> } } } = { props: { source: { action: "object:v.list" } } };
     expect(periodNode(bare, f).props.source.args).toEqual({ filter: [f] });
   });
   it("returns the node itself for no filter or no source", () => {
