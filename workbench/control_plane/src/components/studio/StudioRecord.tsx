@@ -8,6 +8,8 @@
  * Related draws a table for each relation field that points here, read through the door with a
  * filter on the link, so the rows are what the viewer reads. "New" opens the Form block over the
  * create action of the child, with the link filled by `linkedDoor`. Files lists the file fields.
+ * Activity (STU-C4b) is the last tab, when the app declares `object:<name>.history`. It lists the changes of
+ * the record through the door, and the door drops each key that the viewer may not read.
  * Lines draws the sheet of each `lines` field (`StudioSheet`, STU-D17a): the lines of the record edit
  * in a buffer and save with the record in one call.
  * It reuses `Tabs`, `StudioDetail`, `StudioForm` and `GenerativeUINode`, and holds no control of
@@ -18,6 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import Tabs from "@/components/Tabs";
 import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioActivity from "@/components/studio/StudioActivity";
 import StudioDetail from "@/components/studio/StudioDetail";
 import DeleteRecordButton from "@/components/studio/DeleteRecordButton";
 import StudioFormDialog from "@/components/studio/StudioFormDialog";
@@ -182,7 +185,8 @@ function Files({ object, recordId, door, actions }: Pick<StudioRecordProps, "obj
 }
 
 export default function StudioRecord({ object, objects, recordId, door, actions, owner, tab, onTab, recordBase, onTitle, onDeleted }: StudioRecordProps) {
-  const tabs = useMemo(() => recordTabs(object, objects), [object, objects]);
+  const historyDeclared = verbMap(actions)[`object:${object.name}.history`] !== undefined;
+  const tabs = useMemo(() => recordTabs(object, objects, historyDeclared), [object, objects, historyDeclared]);
   const active = pickRecordTab(tabs, tab);
   const lists = useMemo(() => relatedLists(object.name, objects), [object.name, objects]);
   const sheets = useMemo(() => linesFields(object.name, objects), [object.name, objects]);
@@ -219,6 +223,7 @@ export default function StudioRecord({ object, objects, recordId, door, actions,
           ) : <p role="status" className={NOTE}>No other object of this app links to {object.label ?? object.name}.</p>
         ) : null}
         {active === "files" ? <Files object={object} recordId={recordId} door={door} actions={actions} /> : null}
+        {active === "activity" ? <StudioActivity object={object} recordId={recordId} door={door} declared={historyDeclared} /> : null}
       </div>
     </StudioDataContext.Provider>
   );

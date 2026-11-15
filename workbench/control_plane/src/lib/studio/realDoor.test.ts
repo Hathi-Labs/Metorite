@@ -24,6 +24,10 @@
  *    Mutation: post `source.args` whole for an aggregate. "an aggregate body holds
  *    only" turns red. Mutation: drop `aggregate` from `READ_SOURCE`. "an aggregate
  *    reads one row" turns red.
+ * 8. The history (STU-C4b). `door.read` sends `object:<name>.history` with only `id`, `after` and
+ *    `limit`, always with a `limit`, so the body is never the `{id}` of a delete.
+ *    Mutation: drop `history` from `READ_SOURCE`. "a history reads" turns red.
+ *    Mutation: post `source.args` whole for a history. "a history body holds only" turns red.
  * 7. No file address (STU-D19a). The real door has no `fileAddress` until D24 serves a file.
  *    Mutation: give the door one. "the real door gives no file address" turns red.
  */
@@ -33,7 +37,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
-  AGGREGATE_KEYS, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
+  AGGREGATE_KEYS, HISTORY_KEYS, HISTORY_LIMIT, aggregateBody, historyBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
   NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
 } from "./realDoor";
@@ -504,5 +508,53 @@ describe("STU-D19a: the real door gives no file address", () => {
     const { impl } = fakeFetch();
     expect(createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl }).fileAddress).toBeUndefined();
     expect(createRealDoor({ packageId: PKG, actions: readActions(ACTIONS), fetchImpl: impl }).fileAddress).toBeUndefined();
+  });
+});
+
+describe("the history (STU-C4b)", () => {
+  const WITH_HISTORY = [...ACTIONS, { id: "past", uses: "object:visit.history" }];
+  const ANSWER = { history: [{ id: 7, op: "create", actor: "a@x.test", via_kind: null, via_id: null, changes: { title: { new: "A" } }, at: "2026-11-15T10:00:00Z" }], next: null };
+
+  it("a history reads one row, the answer of the door, from the declared id", async () => {
+    const { impl, calls } = fakeFetch(200, ANSWER);
+    const door = createRealDoor({ packageId: PKG, actions: WITH_HISTORY, fetchImpl: impl });
+    const rows = await door.read({ action: "object:visit.history", args: { id: "r1", after: 3 } });
+    expect(rows).toEqual([ANSWER]);
+    expect(calls[0]).toEqual({ url: `/api/studio/apps/${PKG}/actions/past`, body: { id: "r1", after: 3, limit: HISTORY_LIMIT } });
+  });
+  it("a history body holds only id, after and limit, and always a limit", async () => {
+    const { impl, calls } = fakeFetch(200, ANSWER);
+    const door = createRealDoor({ packageId: PKG, actions: WITH_HISTORY, fetchImpl: impl });
+    await door.read({ action: "object:visit.history", args: { id: "r1", data: { a: 1 }, read: true, after: null } });
+    expect(calls[0].body).toEqual({ id: "r1", limit: HISTORY_LIMIT });
+    expect(historyBody({ id: "r1", limit: 5 })).toEqual({ id: "r1", limit: 5 });
+    expect(Object.keys(historyBody(undefined))).toEqual(["limit"]);
+    expect([...HISTORY_KEYS]).toEqual(["id", "after", "limit"]);
+  });
+  it("the keys equal HISTORY_INPUT_KEYS of the gateway door", () => {
+    const src = readFileSync(new URL("../../../../../apps/services/gateway/gateway/routes/studio/invoke.py", import.meta.url), "utf8");
+    const m = /HISTORY_INPUT_KEYS[^=]*=\s*frozenset\(\{([^}]*)\}\)/.exec(src);
+    expect(m).not.toBeNull();
+    expect([...m![1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]).sort()).toEqual([...HISTORY_KEYS].sort());
+  });
+  it("a history the package does not declare makes no call", async () => {
+    const { impl, spy } = fakeFetch();
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    await expect(door.read({ action: "object:visit.history", args: { id: "r1" } })).rejects.toThrow(/does not declare/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+  it("a viewer door keeps the history read and drops each write", () => {
+    expect(readActions(WITH_HISTORY).map((a) => a.id)).toContain("past");
+    expect(readActions(WITH_HISTORY).map((a) => a.id)).not.toContain("remove");
+  });
+  it("an answer that is no history fails with a plain sentence", async () => {
+    const { impl } = fakeFetch(200, { records: [] });
+    const door = createRealDoor({ packageId: PKG, actions: WITH_HISTORY, fetchImpl: impl });
+    await expect(door.read({ action: "object:visit.history", args: { id: "r1" } })).rejects.toThrow("That did not work. Try again.");
+  });
+  it("a 404 shows the gone sentence", async () => {
+    const { impl } = fakeFetch(404, { detail: { code: "not_found" } });
+    const door = createRealDoor({ packageId: PKG, actions: WITH_HISTORY, fetchImpl: impl });
+    await expect(door.read({ action: "object:visit.history", args: { id: "r1" } })).rejects.toThrow(/gone/);
   });
 });

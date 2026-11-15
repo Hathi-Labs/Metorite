@@ -13,7 +13,8 @@
  * Two guards hold, and each one alone is not enough.
  *
  * 1. The client guard: `door.read` accepts only `object:<name>.list`,
- *    `object:<name>.get` and `object:<name>.aggregate` (STU-D4b), and refuses every
+ *    `object:<name>.get`, `object:<name>.aggregate` (STU-D4b) and `object:<name>.history`
+ *    (STU-C4b), and refuses every
  *    other source with no network call. It
  *    holds for the manifest that the page read at open. The door maps a verb to the
  *    action id of that manifest. A later draft can re-point an id at a write, and the
@@ -26,6 +27,9 @@
  * 3. The aggregate body: the door sends only `filter`, `group_by` and `measures` of
  *    `source.args` (`AGGREGATE_KEYS`). So an aggregate body never holds `id` or
  *    `data`, and a re-pointed id cannot match the keys of a write.
+ * 4. The history body (STU-C4b): the door takes only `id`, `after` and `limit`, and refuses a
+ *    `read` marker. So the body holds `id` and ALWAYS a `limit` (`historyBody`). A delete takes
+ *    exactly `{id}`, an update `{id, data}`, so a re-pointed id still cannot match a write.
  *
  * A page reads on mount, on focus and on refresh, and none of those may write.
  * Fence: `realDoor.test.ts`.
@@ -40,7 +44,7 @@ import type { NavSection, PageDef, ViewDef } from "./manifest";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
-const READ_SOURCE = /^object:[a-z][a-z0-9_]{0,47}\.(?:list|get|aggregate)$/;
+const READ_SOURCE = /^object:[a-z][a-z0-9_]{0,47}\.(?:list|get|aggregate|history)$/;
 /**
  * The keys of an aggregate body: the C2b input schema (`AGGREGATE_INPUT_KEYS` of
  * `gateway/routes/studio/invoke.py`). `realDoor.test.ts` holds the two equal.
@@ -140,6 +144,22 @@ export function flattenRecord(answer: unknown): Row | null {
 export function aggregateBody(args: Record<string, unknown> | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of AGGREGATE_KEYS) if (args && args[k] !== undefined) out[k] = args[k];
+  return out;
+}
+
+/** The keys of a history body: the C4a-2 input (`HISTORY_INPUT_KEYS` of `invoke.py`). */
+export const HISTORY_KEYS = ["id", "after", "limit"] as const;
+/** The page size of a history read. The door allows 1 to 25. */
+export const HISTORY_LIMIT = 20;
+
+/**
+ * The body of a history read: `id`, `after` when a cursor is given, and ALWAYS a `limit`, so the
+ * body is never the `{id}` of a delete (see the file header, guard 4).
+ */
+export function historyBody(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of HISTORY_KEYS) if (args && args[k] !== undefined && args[k] !== null) out[k] = args[k];
+  if (typeof out.limit !== "number") out.limit = HISTORY_LIMIT;
   return out;
 }
 
@@ -268,8 +288,10 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       // The marker is the second guard (see the file header). Only a get carries it.
       const isGet = source.action.endsWith(".get");
       const isAggregate = source.action.endsWith(".aggregate");
+      const isHistory = source.action.endsWith(".history");
       const out = await post(id, isGet ? { ...(source.args ?? {}), read: true }
-        : isAggregate ? aggregateBody(source.args) : (source.args ?? {}));
+        : isAggregate ? aggregateBody(source.args)
+          : isHistory ? historyBody(source.args) : (source.args ?? {}));
       if (out.status < 200 || out.status >= 300) {
         const failed = mapAnswer(out.status, out.body, out.wait);
         throw new DoorReadError(failed.message ?? ACTION_FAILED, out.status);
@@ -282,6 +304,11 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       // An aggregate answers ONE row, the C2b result, as `parseAggregate` reads it.
       if (isAggregate) {
         if (!isObject(out.body) || !Array.isArray(out.body.measures)) throw new DoorReadError(ACTION_FAILED, 502);
+        return [out.body];
+      }
+      // A history answers ONE row, `{history, next}`, as `parseHistory` reads it.
+      if (isHistory) {
+        if (!isObject(out.body) || !Array.isArray(out.body.history)) throw new DoorReadError(ACTION_FAILED, 502);
         return [out.body];
       }
       const rows = flattenRecords(out.body);
