@@ -65,6 +65,10 @@ class InstalledApp:
     id: str
     version: int
     manifest: dict[str, Any]
+    #: WS-STU I9a. The scope of the install and the review status of its
+    #: version. The action door reads them for an ``org`` connection need.
+    scope_kind: str | None = None
+    review_status: str | None = None
 
     @property
     def name(self) -> str:
@@ -155,7 +159,8 @@ def installed(rows: list[resolve.InstallRow], app_id: str) -> InstalledApp | Non
         manifest = _manifest(row.manifest)
         if row.version is None or manifest is None:
             return None
-        return InstalledApp(id=row.app_id, version=row.version, manifest=manifest)
+        return InstalledApp(id=row.app_id, version=row.version, manifest=manifest,
+                            scope_kind=row.scope_kind, review_status=row.review_status)
     return None
 
 
