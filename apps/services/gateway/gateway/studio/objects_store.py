@@ -670,13 +670,6 @@ _SET_HOT_SQL = (
     "AND key = :key"
 )
 
-#: C15a. The new spec of an autonumber field, for a change of its prefix or pad.
-_SET_SPEC_SQL = (
-    "UPDATE studio_object_fields SET spec = CAST(:spec AS jsonb) "
-    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
-    "AND key = :key AND type = 'autonumber'"
-)
-
 _UNHOT_SQL = (
     "DELETE FROM studio_record_hot "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
@@ -1451,6 +1444,15 @@ _FIELD_ATTRS = (
     "type", "many", "options", "to", "required", "label", "lines", "min", "max", "units", "format")
 
 
+#: C15a. The parts of an autonumber field that a sync cannot change, each read
+#: as the store reads it (a default for a part that the manifest leaves out).
+_AUTONUMBER_ATTRS = (
+    ("prefix", lambda f: f.prefix or ""),
+    ("pad", autonumber_pad),
+    ("reset", autonumber_reset),
+)
+
+
 @dataclass(frozen=True)
 class SyncProblem:
     """One reason that a manifest does not fit the stored objects. ``message``
@@ -1482,13 +1484,11 @@ class SyncResult:
     rules_set: tuple[str, ...] = ()
     #: C8a. The objects whose grants changed.
     access_set: tuple[str, ...] = ()
-    #: C15a. The autonumber fields whose prefix or pad changed, as (object, key).
-    fields_respecced: tuple[tuple[str, str], ...] = ()
 
     @property
     def changed(self) -> bool:
         return bool(self.objects_created or self.fields_added or self.hot_changed or self.rules_set
-                    or self.access_set or self.fields_respecced)
+                    or self.access_set)
 
 
 @dataclass
@@ -1504,9 +1504,6 @@ class _Item:
     row: StudioObject | None = None
     add: list[Mapping[str, Any]] = dc_field(default_factory=list)
     heat: list[tuple[str, bool]] = dc_field(default_factory=list)
-    #: C15a. The autonumber fields whose prefix or pad changed: the new spec. It
-    #: binds new numbers only, and no record is rewritten.
-    respec: list[FieldSpec] = dc_field(default_factory=list)
     set_rules: bool = False
     #: C8a. The grants of the manifest, or None for an open object.
     access: tuple[Grant, ...] | None = None
@@ -1586,10 +1583,18 @@ async def _plan_fields(db: Any, item: _Item, row: StudioObject,
             item.add.append(raw)
             continue
         changed = [a for a in _FIELD_ATTRS if getattr(cur, a) != getattr(spec, a)]
-        autonumber = cur.type == spec.type == "autonumber"
-        if autonumber and autonumber_reset(cur) != autonumber_reset(spec):
-            # C15a. A new reset rule would start a counter of the old one at 1 again.
-            changed.append("reset")
+        if cur.type == spec.type == "autonumber":
+            # C15a. The three are read as the store reads them, so an unset pad or
+            # reset equals its default and an unchanged manifest is no change.
+            changed += [a for a, read in _AUTONUMBER_ATTRS
+                        if read(cur) != read(spec)]
+        if changed and set(changed) <= {a for a, _ in _AUTONUMBER_ATTRS}:
+            problems.append(SyncProblem(
+                FIELD_CHANGED, item.name, field=spec.key,
+                message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
+                "A prefix, a pad and a reset of a published auto-number cannot change. "
+                "Make a new field."))
+            continue
         if changed:
             problems.append(SyncProblem(
                 FIELD_CHANGED, item.name, field=spec.key,
@@ -1598,9 +1603,6 @@ async def _plan_fields(db: Any, item: _Item, row: StudioObject,
         else:
             if cur.hot != spec.hot:
                 item.heat.append((spec.key, spec.hot))
-            if autonumber and ((cur.prefix or "", autonumber_pad(cur))
-                               != (spec.prefix or "", autonumber_pad(spec))):
-                item.respec.append(spec)
     wanted = {f.key for f in item.fields}
     for key in old:
         if key not in wanted:
@@ -1652,7 +1654,6 @@ class _Done:
     heated: list[tuple[str, str, bool]] = dc_field(default_factory=list)
     ruled: list[str] = dc_field(default_factory=list)
     accessed: list[str] = dc_field(default_factory=list)
-    respecced: list[tuple[str, str]] = dc_field(default_factory=list)
 
 
 async def _sync_new_objects(db: Any, who: str, pid: str, items: Sequence[_Item],
@@ -1676,18 +1677,6 @@ async def _sync_new_fields(db: Any, items: Sequence[_Item], done: _Done) -> None
             if await add_field(db, done.ids[it.name], raw) is None:
                 raise ObjectStoreError("The object is gone.")
             done.added.append((it.name, str(raw["key"])))
-
-
-async def _sync_respec(db: Any, items: Sequence[_Item], done: _Done) -> None:
-    """C15a. A new prefix or pad of an autonumber field binds new numbers only.
-    The records keep the numbers that they hold."""
-    for it in items:
-        for spec in it.respec:
-            done.where, done.field = it.name, spec.key
-            await db.execute(text(_SET_SPEC_SQL), {
-                "oid": done.ids[it.name], "key": spec.key,
-                "spec": json.dumps(spec.stored_spec(), ensure_ascii=False)})
-            done.respecced.append((it.name, spec.key))
 
 
 async def _flip(db: Any, it: _Item, done: _Done, key: str, hot: bool) -> None:
@@ -1803,7 +1792,6 @@ async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> Sy
             await _sync_heat(db, items, done, hot=False)
             await _sync_new_objects(db, who, pid, items, done)
             await _sync_new_fields(db, items, done)
-            await _sync_respec(db, items, done)
             await _sync_heat(db, items, done, hot=True)
             await _sync_rules_full(db, pid, items, done, first)
             await _sync_access_full(db, pid, items, done)
@@ -1824,7 +1812,7 @@ async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> Sy
             STORE_REFUSED, done.where, field=done.field, message=str(exc))]) from None
     return SyncResult(
         tuple(done.created), tuple(done.added), tuple(done.heated), tuple(done.ruled),
-        tuple(done.accessed), tuple(done.respecced))
+        tuple(done.accessed))
 
 
 async def sync_objects(db: Any, actor: str, *, package_id: str,
@@ -4030,8 +4018,14 @@ def _refuse_autonumber_keys(held: _Held, data: Any) -> None:
     value. The refusal names the field and shows no value."""
     if not isinstance(data, Mapping):
         return
+    hidden = (held.scope.maybe_hidden()
+              if held.scope is not None and not held.scope.open else frozenset())
     for f in autonumber_fields(held.fields):
         if f.key in data:
+            if f.key in hidden:
+                # The same sentence as any hidden key: it must not tell the type.
+                raise FieldError(
+                    f.key, f"Field `{f.key}` is hidden from you, so a write cannot set it.")
             raise FieldError(
                 f.key, f"Field `{f.key}` is filled by the store, one number for each new "
                 "record. Write no value for it.")
