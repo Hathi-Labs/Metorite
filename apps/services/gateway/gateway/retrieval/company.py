@@ -16,11 +16,13 @@ answers ``{query, hits, skipped}``. No chat model runs.
   member to its app.
 * **Each source checks its own gate.** The route adds no visibility rule of
   its own. A member without an app gets nothing from it.
-* **One source at a time**, never at once, because the pool budget is small
-  (``routes/shell/search.py`` records why). Each source has
-  :data:`SOURCE_TIMEOUT_S`, and the whole answer has :data:`TOTAL_BUDGET_S`.
-  A source that fails, refuses or runs out of time is left out and named in
-  ``skipped``. It never fails the call.
+* **The sources run at once, four at most** (HRD-4, D-FIND-6). The pool
+  budget is small (``routes/shell/search.py`` records why), so
+  :data:`FIND_SESSIONS` caps the sources of one gateway process. A fifth source
+  waits for a slot. Each source has :data:`SOURCE_TIMEOUT_S` from the time it
+  starts, and the whole answer has :data:`TOTAL_BUDGET_S`. A source that
+  fails, refuses or runs out of time is left out and named in ``skipped``, in
+  the order of the registry. It never fails the call.
 * **Fusion by rank.** The scores of two apps do not compare, so the answer
   takes every app's first hit, then every app's second. An app named in
   ``apps`` goes first, in the order named.
@@ -89,6 +91,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import weakref
 from datetime import UTC, datetime
 from typing import Any
 
@@ -96,7 +99,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
-from gateway.retrieval import turn_vector
+from gateway.retrieval import find, turn_vector
 from gateway.retrieval.sources import REGISTRY, Hit, email_meaning_on, holds
 
 logger = logging.getLogger(__name__)
@@ -353,11 +356,15 @@ def _interleave(order: list[str], found: dict[str, list[Hit]]) -> list[Hit]:
     return out
 
 
-def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime) -> list[Hit]:
+def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime,
+              *, covered: bool = False) -> list[Hit]:
     """ONE list for every app, sorted by :func:`score` (KG-3b).
 
     Each app's list is ranked from 1 in the order it arrived. A tie goes to
     the app that comes first in *order*, then to the lower rank. Pure.
+
+    *covered* (FIND-2, ``find_engine.md`` §3.4) puts two keys before the
+    score: the hit that holds more of the query's words, then the lower rung.
     """
     place = {key: i for i, key in enumerate(order)}
     scored = [
@@ -365,7 +372,13 @@ def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime) -> l
         for key, hits in found.items()
         for rank, h in enumerate(hits, start=1)
     ]
-    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    if covered:
+        scored.sort(key=lambda item: (
+            -(item[3].covers or 0), find.rung_of(item[3].matched_by),
+            -item[0], item[1], item[2],
+        ))
+    else:
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
     return [h for _s, _p, _r, h in scored]
 
 
@@ -382,49 +395,64 @@ def _never_open(user: UserContext, key: str) -> bool:
     return key == "studio" and not REGISTRY[key].reaches(user)
 
 
-async def _ask_each(
-    user: UserContext, words: str, order: list[str], per_app: int, *,
+#: The most sources one gateway process asks at once (D-FIND-6, HRD-4). One
+#: process has 7 async sessions and 2 more, and a search must leave room for
+#: every other request. A fifth source waits for a slot.
+FIND_SESSIONS = 4
+
+#: One semaphore for each running event loop, so the cap holds for the whole
+#: process, and a test that starts a new loop gets a fresh one.
+_SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _slots() -> asyncio.Semaphore:
+    """The semaphore of :data:`FIND_SESSIONS` slots for the running loop."""
+    loop = asyncio.get_running_loop()
+    slots = _SLOTS.get(loop)
+    if slots is None:
+        slots = _SLOTS[loop] = asyncio.Semaphore(FIND_SESSIONS)
+    return slots
+
+
+async def _ask_one(
+    user: UserContext, key: str, words: str, per_app: int, *,
     hybrid: bool, options: dict[str, Any], since: datetime | None,
     deadline: float, timed: bool,
-) -> tuple[dict[str, list[Hit]], list[str], int | None]:
-    """Ask each source of *order* once, one at a time, before *deadline*.
+) -> tuple[str, list[Hit] | None]:
+    """Ask one source for a slot, then for its hits (HRD-4).
 
-    It returns the hits of each app that answered, the apps it skipped, and
-    the hits Knowledge answered before ``after`` filtered them (KB-9a).
-    *timed* gives each source its true time left as ``budget_s`` (KG-3b).
+    It returns ``("ok", hits)``, ``("skip", None)`` or ``("quiet", None)``. A
+    source that was never open and has no time left is ``quiet``: it is not
+    named in ``skipped``. Its time starts when it takes a slot, not before.
     """
-    found: dict[str, list[Hit]] = {}
-    skipped: list[str] = []
-    knowledge_hits: int | None = None
     loop = asyncio.get_running_loop()
-    for key in order:
+    async with _slots():
         left = deadline - loop.time()
         if left <= 0.05:
-            if _never_open(user, key):
-                continue
-            skipped.append(key)
-            continue
+            return ("quiet", None) if _never_open(user, key) else ("skip", None)
         try:
             # With `after`, an app that cannot filter by date is asked for a
             # pool, and the filter runs before the cut to `per_app`.
             source = REGISTRY[key]
             ask = pool(per_app) if since is not None and not source.dated else per_app
             allowed = min(SOURCE_TIMEOUT_S, left)
+            # Each source has its own copy: the sources run at once.
+            mine = dict(options)
             if timed:
                 # KG-3b: the vector half of a source gets the true time left.
-                options["budget_s"] = allowed
+                mine["budget_s"] = allowed
             hits = await asyncio.wait_for(
-                source.find(user, words, ask, hybrid=hybrid, **options),
+                source.find(user, words, ask, hybrid=hybrid, **mine),
                 allowed,
             )
         except HTTPException:
             # The app's own refusal: a query too short for it, an access rule.
-            skipped.append(key)
-            continue
+            return "skip", None
         except TimeoutError:
             logger.info("search.company source timed out", extra={"source": key})
-            skipped.append(key)
-            continue
+            return "skip", None
         except Exception as exc:
             # The error's TYPE only. A database error's text can carry the
             # query's parameters, which hold the member's words and address.
@@ -432,13 +460,44 @@ async def _ask_each(
                 "search.company source failed",
                 extra={"source": key, "error": type(exc).__name__},
             )
+            return "skip", None
+    return "ok", list(hits)
+
+
+async def _ask_each(
+    user: UserContext, words: str, order: list[str], per_app: int, *,
+    hybrid: bool, options: dict[str, Any], since: datetime | None,
+    deadline: float, timed: bool,
+) -> tuple[dict[str, list[Hit]], list[str], int | None]:
+    """Ask each source of *order* once, at once, before *deadline*.
+
+    At most :data:`FIND_SESSIONS` sources run together, and each has its own
+    :data:`SOURCE_TIMEOUT_S` from the moment it starts, so a slow source does
+    not hold a fast one. It returns the hits of each app that answered, the
+    apps it skipped, and the hits Knowledge answered before ``after`` filtered
+    them (KB-9a). Both lists follow *order*, whatever finishes first.
+    *timed* gives each source its true time left as ``budget_s`` (KG-3b).
+    """
+    answers = await asyncio.gather(*(
+        _ask_one(
+            user, key, words, per_app, hybrid=hybrid, options=options,
+            since=since, deadline=deadline, timed=timed,
+        )
+        for key in order
+    ))
+    found: dict[str, list[Hit]] = {}
+    skipped: list[str] = []
+    knowledge_hits: int | None = None
+    for key, (state, hits) in zip(order, answers, strict=True):
+        if state == "skip":
             skipped.append(key)
-            continue
-        if key == "knowledge":
-            knowledge_hits = len(hits)
-        if since is not None:
-            hits = [h for h in hits if _kept(h, since)]
-        found[key] = list(hits)[:per_app]
+        elif state == "ok":
+            assert hits is not None
+            if key == "knowledge":
+                knowledge_hits = len(hits)
+            if since is not None:
+                hits = [h for h in hits if _kept(h, since)]
+            found[key] = hits[:per_app]
     return found, skipped, knowledge_hits
 
 
@@ -492,12 +551,14 @@ def _merge(order: list[str], passes: list[dict[str, list[Hit]]],
 async def _broaden(
     user: UserContext, alone: list[str], asked: list[str], per_app: int, *,
     options: dict[str, Any], since: datetime | None, until: float,
+    tag: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[Hit]]]:
     """Ask the apps of *asked* again with each word alone, before *until*.
 
     Each word takes an equal share of the time left, and an unused share
     goes to the next word. No vector half runs. It returns what each word
-    found (``broadened``) and the merged hits of each app (KR-ZERO).
+    found (``broadened``) and the merged hits of each app (KR-ZERO). *tag* is
+    the content words of the query, set only with ``FIND_ORGS`` on (FIND-2).
     """
     loop = asyncio.get_running_loop()
     lexical = {k: v for k, v in options.items() if k not in ("vectors", "budget_s")}
@@ -509,6 +570,12 @@ async def _broaden(
             user, word, asked, per_app, hybrid=False, options=dict(lexical),
             since=since, deadline=loop.time() + share, timed=False,
         )
+        if tag is not None:
+            # FIND-2: each hit says which word found it, and how many it holds.
+            found = {
+                key: [find.stamped(h, tag, "word", word=word) for h in hits]
+                for key, hits in found.items()
+            }
         passes.append(found)
         report.append({
             "word": word, "hits": sum(len(hits) for hits in found.values()),
@@ -583,6 +650,12 @@ async def company_search(
     # A filtered search that finds nothing says nothing about a gap (KB-AI-4).
     _note_gap(background, user, words, None if only_verified else knowledge_hits)
 
+    # FIND-2: with the flag on, each hit says how it matched. It acts only with
+    # CONTEXT_RECENCY on, so the flag-off answer below is untouched.
+    words_of = find.content_words(words) if recency and find.find_allowed(user.organization_id) else None
+    if words_of is not None:
+        found = {key: [find.stamped(h, words_of, "exact") for h in hits]
+                 for key, hits in found.items()}
     if not recency:
         return {
             "query": words,
@@ -592,11 +665,15 @@ async def company_search(
     # KR-ZERO: every app that answered found nothing. Ask again, each word alone.
     broadened: list[dict[str, Any]] | None = None
     alone = alone_words(words) if found and not any(found.values()) else []
+    if words_of is not None and alone:
+        # The fold of §3.3: "Sharath's" is searched as "sharath".
+        alone = words_of
     until = min(loop.time() + BROADEN_BUDGET_S, began + ANSWER_CAP_S)
     if alone and until - loop.time() >= BROADEN_FLOOR_S:
         started = loop.time()
         broadened, found = await _broaden(
             user, alone, list(found), per_app, options=options, since=since, until=until,
+            tag=words_of,
         )
         _events.info(
             "search.company.broaden", words=len(alone),
@@ -606,7 +683,8 @@ async def company_search(
     now = datetime.now(UTC)
     answer: dict[str, Any] = {
         "query": words,
-        "hits": [h.as_dict(stamp=True) for h in by_fusion(order, found, now)],
+        "hits": [h.as_dict(stamp=True, find=words_of is not None)
+                 for h in by_fusion(order, found, now, covered=words_of is not None)],
         "searched": [key for key in order if key in found and REGISTRY[key].reaches(user)],
         "skipped": skipped,
         "meaning": meaning,

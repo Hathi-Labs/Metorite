@@ -3,6 +3,7 @@
 **Status: ACCEPTED, 2026-11-12 (D217). BUILT: HRD-6 part 1 (the line of a slow
 tool), dark, 2026-11-13 (PR 2238). HRD-1 (an unknown tool name), 2026-11-14:
 the answer is live, and the auto-load is dark behind `CHAT_TOOL_AUTOLOAD`.
+HRD-4 (search in parallel, `find_tasks` on most of the words, task 2983), 2026-11-16.
 HRD-18a (names as people say them), 2026-11-14. HRD-22 (a late approve acts
 once, task 3231) is BUILT dark, 2026-11-14. Its flag is
 `CHAT_LATE_APPROVE_ORGS`. CS-1 (the first line, client only) and CS-2 (the

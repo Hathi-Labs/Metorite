@@ -165,6 +165,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # moves what the chat can do and spends model tokens, so only the owner
     # writes it (work_plan.md §6 D4). The `TOOL_` prefix covers it too.
     "TOOL_SEARCH_ORGS",
+    # WS-FIND FIND-2 (find_engine.md section 8): the orgs whose search hits say
+    # how they matched. It changes the order and the text of each answer, so
+    # only the owner writes it (work_plan.md section 6 D4).
+    "FIND_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
