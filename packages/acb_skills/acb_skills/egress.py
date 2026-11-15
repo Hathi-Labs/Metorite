@@ -123,6 +123,7 @@ __all__ = [
     "held_param_refusal",
     "hold_is_for_mail",
     "is_card_bound_send",
+    "is_card_write_tool",
     "is_delegation_tool",
     "is_egress_tool",
     "is_held_card_write",
@@ -1579,11 +1580,23 @@ def is_held_card_write(item: Any) -> bool:
     also with a borrowed name and a borrowed annotation. With the org off
     (:func:`held_card_writes_on`), no tool passes.
     """
+    return is_card_write_tool(item) and held_card_writes_on()
+
+
+def is_card_write_tool(item: Any) -> bool:
+    """The three tests of :func:`is_held_card_write`, with no org switch.
+
+    The name is on :data:`HELD_CARD_WRITE_TOOLS`, the tool's own annotation
+    says :data:`CARD_WRITE_KEY`, and the parameters are the pinned set. A tool
+    of an MCP server never passes. The late-approve grant (HRD-22,
+    ``acb_skills.late_approve``) reads it for the tool of a card, because
+    only such a write may skip its card on a grant. Each test fails closed.
+    """
     if not isinstance(item, str) and _from_mcp(item):
         return False
     name = item if isinstance(item, str) else tool_name(item)
     allowed = HELD_CARD_WRITE_TOOLS.get(name)
-    if allowed is None or not held_card_writes_on():
+    if allowed is None:
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
     if not (isinstance(hints, Mapping) and hints.get(CARD_WRITE_KEY) is True):

@@ -14,6 +14,7 @@
  */
 import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 import GenerativeUINode from "@/components/GenerativeUINode";
 import { EmptyState } from "@/components/EmptyState";
@@ -41,7 +42,9 @@ import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
-import { hasRail, railFor } from "@/lib/studio/railModel";
+import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
+import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
+import { useRailCounts } from "@/lib/studio/useRailCounts";
 import { READ_ONLY_SENTENCE, type PackageDetail } from "@/lib/studio/realDoor";
 import { type ViewDetail, type ViewMapContext, type ViewLens, mapView } from "@/lib/studio/viewBlocks";
 import {
@@ -57,6 +60,8 @@ export interface AppFrameProps {
   controls: PreviewControls;
   /** Called after the owner deleted the app. */
   onDeleted: () => void;
+  /** A card above the app (the setup card of I8c). */
+  above?: React.ReactNode;
 }
 
 /** A detail view: the sheet of the picked record, or of the first one. */
@@ -98,7 +103,7 @@ function FilteredList({ source, door, active, onClear, children }: {
   );
 }
 
-export default function AppFrame({ pkg, detail, door, controls, onDeleted }: AppFrameProps) {
+export default function AppFrame({ pkg, detail, door, controls, onDeleted, above }: AppFrameProps) {
   const params = useSearchParams();
   const pageParam = params.get("page");
   const search = params.toString();
@@ -136,9 +141,12 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
     .filter((o) => controls.actions.some((a) => a.uses === `object:${o.name}.get`)).map((o) => o.name)),
   [detail.objects, controls.actions]);
   const recordBase = useCallback((object: string) => (getters.has(object) ? recordLinkBase(search, object) : null), [getters, search]);
+  // The signed-in member, for the `me` token of a view filter (STU-AF3b). The page and the rail counts both use it.
+  const { data: session } = useSession();
+  const email = session?.user?.email?.trim().toLowerCase() || null;
   const ctx: ViewMapContext = useMemo(
-    () => ({ actions: controls.actions, objects: detail.objects, owner: controls.owner, lens: bar?.lens ?? null, recordBase }),
-    [controls.actions, controls.owner, detail.objects, bar?.lens, recordBase]);
+    () => ({ actions: controls.actions, objects: detail.objects, owner: controls.owner, lens: bar?.lens ?? null, recordBase, email }),
+    [controls.actions, controls.owner, detail.objects, bar?.lens, recordBase, email]);
 
   const opened = openedRecord(state);
   const recordObject = opened ? detail.objects.find((o) => o.name === opened.object) : undefined;
@@ -168,6 +176,8 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
             onClear={() => update(clearedBar)}>{node}</FilteredList>
         );
       }
+      case "loading":
+        return <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>Loading…</p>;
       case "problem":
         return <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>{model.reason}</p>;
       case "form":
@@ -191,6 +201,22 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
   [cells, detail.views, detail.objects, controls.actions, controls.owner]);
   // The rail replaces the page picker. An app with one page draws neither (nothing to pick).
   const railed = hasRail(built.pages);
+  // The rail hides a page whose object the viewer cannot read (rule 5), then counts the rows that remain (rule 6).
+  const sections = useMemo(() => {
+    const objectOf = (page: string) => {
+      const p = built.pages.find((x) => x.id === page);
+      return p ? pageObject(p, detail.views, controls.actions) : null;
+    };
+    const objects = new Map(detail.objects.map((o) => [o.name, detail.objectAccess?.[o.name] ?? null] as const));
+    return visibleRail(railFor(built.pages, detail.nav), { owner: controls.owner, objects, objectOf });
+  }, [built.pages, detail.nav, detail.views, detail.objects, detail.objectAccess, controls.actions, controls.owner]);
+  const countRows = useMemo(() => sections.flatMap((s) => s.rows).filter((r) => r.count).map((r) => {
+    const p = built.pages.find((x) => x.id === r.page);
+    const source = p ? countSourceFor(p, detail.views, detail.objects, controls.actions) : null;
+    const object = source ? detail.objects.find((o) => source.action === `object:${o.name}.list`) : undefined;
+    return { page: r.page, source: source ? sourceWithMe(source, email, object) : null };
+  }), [sections, built.pages, detail.views, detail.objects, controls.actions, email]);
+  const counts = useRailCounts(door, countRows);
   const { isMobile } = useViewMode();
   // The owner verbs sit in the app bar on a desktop. A phone bar is too narrow, so they sit in the
   // toolbar above the page there, and the title keeps its room.
@@ -215,8 +241,10 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
     <StudioDataContext.Provider value={door}>
       <StudioAppFrame title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
         actions={isMobile ? undefined : ownerBar}
-        rail={railed ? { sections: railFor(built.pages, detail.nav), activePage: built.page.id, onPick: setPage } : undefined}>
-      <div className="h-full" onClickCapture={onLinkClick}>
+        rail={railed ? { sections, activePage: built.page.id, onPick: setPage, counts } : undefined}>
+      <div className="flex h-full flex-col" onClickCapture={onLinkClick}>
+      {above ? <div className="shrink-0 px-3 pt-3 sm:px-4 sm:pt-4">{above}</div> : null}
+      <div className="min-h-0 flex-1">
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
         onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar}
@@ -244,6 +272,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted }: App
             onGroup={(g) => update((s) => withGroup(s, g))}
             onClear={() => update(clearedBar)} />
         ) : undefined} />
+      </div>
       </div>
       </StudioAppFrame>
     </StudioDataContext.Provider>
