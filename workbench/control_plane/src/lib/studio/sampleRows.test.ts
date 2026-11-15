@@ -3,7 +3,7 @@
  *
  * Mutation 1: make `makeDraftDoor().run` return `{ ok: true }`. "refuses every write" turns red.
  * Mutation 2: use `Math.random` or `Date.now` in `sampleRowsFor`. "is fixed" and "calls no network" turn red.
- * Mutation 3: drop a field type from `one()`. "gives a value for each of the 23 types" turns red.
+ * Mutation 3: drop a field type from `one()`. "gives a value for each of the 24 types" turns red.
  * Mutation 4: call `fetch` in `sampleRows.ts`. "calls no network" turns red.
  */
 import { readFileSync } from "node:fs";
@@ -19,13 +19,14 @@ const all: FieldSpec[] = FIELD_TYPE_LIST.map((type) => ({
   ...(type === "relation" ? { to: "site" } : {}),
   ...(type === "quantity" ? { units: ["kg", "t"] } : {}),
   ...(type === "barcode" ? { format: "ean13" } : {}),
+  ...(type === "coded" ? { system: "X-SYS" } : {}),
 }));
 
 describe("sampleRowsFor", () => {
-  it("gives a value for each of the 23 types", () => {
+  it("gives a value for each of the 24 types", () => {
     const [row] = sampleRowsFor(all, 1);
     for (const f of all) expect(row[f.key], f.type).not.toBeUndefined();
-    expect(all).toHaveLength(23);
+    expect(all).toHaveLength(24);
   });
 
   it("is fixed: the same fields give the same rows", () => {
