@@ -4603,22 +4603,42 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
 #: 2,000 nodes in one read.
 MAX_TREE_NODES = 2_000
 
+#: The object test of a lookup in ``studio_record_hot`` BY RECORD ID (the parent step, the
+#: roots). The primary key is ``(organization_id, record_id, field_key)``. With a plain
+#: ``object_id = ...`` test the planner can also take an index that leads with
+#: ``(organization_id, object_id, field_key)`` and filter ``record_id`` row by row, and under
+#: stale statistics it does: 2,000 lookups of 2,000 rows (task 3308, measured). Written as
+#: ``IS NOT DISTINCT FROM`` the test is no index qual, so the primary key is the one path
+#: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
+#: the object in the index prefix, or it scans the whole org.
+_HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+#: The same for the lookup of a PARENT RECORD by id in ``studio_records``. CI plan of run
+#: 43682459066 (task 3308): with ``p.object_id = ...`` the planner took
+#: ``studio_records_object_id_key`` (organization, object) as the index condition and filtered
+#: ``id`` row by row: 1,999 lookups of 675 rows, 3.7 s. The primary key is the path with a full
+#: equality on ``id``.
+_REC_OF_OBJECT = "p.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
 _TREE_PARENT = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
-    "AND h.object_id = CAST(:oid AS uuid) AND h.record_id = u.id "
-    "AND h.field_key = CAST(:fk AS text) "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
+    "JOIN LATERAL (SELECT h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " "
+    "AND " + _HOT_OF_OBJECT + " AND h.record_id = u.id "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
+    "JOIN LATERAL (SELECT p.id FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
+    "AND " + _REC_OF_OBJECT + " "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "OFFSET 0) p ON true "
 )
 
 #: The children of a record, by the text index of the hot rows.
 _TREE_CHILDREN = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "JOIN LATERAL (SELECT h.record_id FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " "
     "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
-    "AND h.v_text = CAST(t.id AS text) "
+    "AND h.v_text = CAST(t.id AS text) OFFSET 0) h ON true "
 )
 
 #: The walk of each record of `:rids` (C18): its level (the walk up, which stops
@@ -4661,18 +4681,35 @@ _TREE_OBJECT_SQL = (
 _TREE_ALL_ROOTS = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
-    "SELECT 1 FROM studio_record_hot h "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
+    "SELECT 1 FROM (SELECT h.v_text FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND " + _HOT_OF_OBJECT + " AND h.record_id = r.id "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
+    "JOIN LATERAL (SELECT 1 FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
+    "AND " + _REC_OF_OBJECT + " "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
-    f"WHERE h.{_OF_ORG} AND h.{_OF_OBJECT} AND h.record_id = r.id "
-    "AND h.field_key = CAST(:fk AS text))"
+    "OFFSET 0) p ON true)"
 )
 
 #: The root of a read of one tree: the record `:root` of the object.
 _TREE_ONE_ROOT = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = CAST(:root AS uuid)"
+)
+
+
+#: The child edges of the field, read once: one range scan on the full prefix
+#: ``(organization_id, object_id, field_key)`` of the object. The walk of a READ then joins this
+#: set by the text of the parent id, so the plan does not choose an index for each step, and the
+#: cost is one scan of the field plus the join (task 3308). The write check keeps a lookup for
+#: each step, because a write must not scan the whole field. RESIDUAL (follow-up of 3308): with
+#: stale statistics a write that moves a node with a LARGE subtree (about 2,000 nodes) can still
+#: take the wrong index for those lookups (about 0.9 s on the box, past the batch deadline on a
+#: slow runner). Writes of leaves and small subtrees are not affected.
+_TREE_KIDS = (
+    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
 )
 
 
@@ -4691,15 +4728,15 @@ def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     root_rule = " AND " + _q_access("r.id") if scoped else ""
     step_rule = " AND " + _q_access("h.record_id") if scoped else ""
     return (
-        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
-        "tree(id, parent, depth, path) AS ("
-        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
+        "WITH RECURSIVE " + _TREE_KIDS + ", roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
+        "tree(id, parent, depth, path, key) AS ("
+        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id], CAST(roots.id AS text) FROM roots "
         "UNION ALL "
-        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
-        + _TREE_CHILDREN +
+        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+        "FROM tree t JOIN kids h ON h.v_text = t.key "
         "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)" + step_rule + ") "
         "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
-        "JOIN studio_records r ON r." + _OF_ORG + " AND r." + _OF_OBJECT + " AND r.id = t.id "
+        + _q_lookup("t.id") + " "
         "ORDER BY t.depth, t.parent NULLS FIRST, r.created_at, r.id "
         "LIMIT CAST(:limit AS int) + 1"
     )
