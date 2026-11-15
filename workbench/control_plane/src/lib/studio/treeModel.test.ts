@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  MAX_TREE_DEPTH, MAX_TREE_NODES, applyMove, buildTree, canMove, compareLabels, hierarchyField, initialExpanded, moveRefusal, movePatch,
+  MAX_TREE_DEPTH, MAX_TREE_NODES, applyMove, buildTree, canMove, compareLabels, hierarchyField, initialExpanded, menuReason, moveRefusal, movePatch,
   treeRows, type TreeNodeIn,
 } from "./treeModel";
 
@@ -298,5 +298,19 @@ describe("the constants equal the Python twins", () => {
     const m = /^MAX_TREE_DEPTH\s*=\s*(\d+)/m.exec(py("packages/acb_common/acb_common/studio_rules.py"));
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBe(MAX_TREE_DEPTH);
+  });
+});
+
+describe("menuReason", () => {
+  const codes = ["self", "descendant", "too_deep", "unknown_node", "unknown_parent", "same_parent"] as const;
+  it("gives each refusal code a short phrase, and no two phrases are the same", () => {
+    const phrases = codes.map((c) => menuReason(c));
+    for (const p of phrases) expect(p.length).toBeLessThanOrEqual(24);
+    expect(new Set(phrases).size).toBe(codes.length);
+    expect(menuReason("self")).toBe("This is the node itself.");
+    expect(menuReason("too_deep")).toBe("Too deep: 20 levels.");
+  });
+  it("is shorter than the full sentence, which stays for the alert", () => {
+    for (const c of codes) expect(menuReason(c).length).toBeLessThan(moveRefusal(c).length + 1);
   });
 });

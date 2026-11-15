@@ -26,7 +26,7 @@ import { displayValue } from "@/lib/studio/blocks";
 import { rowsMeta, sourceKey, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import { TREE_PARENT } from "@/lib/studio/realDoor";
 import {
-  buildTree, canMove, initialExpanded, MAX_TREE_NODES, moveRefusal, treeRows, type TreeNodeIn,
+  buildTree, canMove, initialExpanded, MAX_TREE_NODES, menuReason, treeRows, type TreeNodeIn,
 } from "@/lib/studio/treeModel";
 import {
   createTreeMover, placedNodes, TOP_OVER, type TreeMover, type TreeMoveState,
@@ -254,19 +254,19 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
 
 /**
  * The parents that node `id` may take: "Top level", then every node in tree order. A node that the
- * move would break stays in the list, disabled, and a line under it says why (the model's sentence).
+ * move would break stays in the list, disabled, and a line under it says why (a short phrase, `menuReason`).
  * The line wraps (`description`), so a long sentence cannot widen the list past a phone screen.
  */
 export function parentOptions(nodes: ReadonlyArray<TreeNodeIn>, id: string): SelectOption[] {
   const all = treeRows(nodes, new Set(nodes.map((n) => n.id)), { sort: "label" });
   const out: SelectOption[] = [];
   const top = canMove(nodes, id, null);
-  out.push({ value: TOP_OVER, label: "Top level", ...(top.ok ? {} : { disabled: true, description: moveRefusal(top.reason) }) });
+  out.push({ value: TOP_OVER, label: "Top level", ...(top.ok ? {} : { disabled: true, description: menuReason(top.reason) }) });
   for (const r of all) {
     const check = canMove(nodes, id, r.id);
     out.push({
       value: r.id, label: r.label, depth: Math.min(r.depth, OPTION_DEPTH_CAP),
-      ...(check.ok ? {} : { disabled: true, description: moveRefusal(check.reason) }),
+      ...(check.ok ? {} : { disabled: true, description: menuReason(check.reason) }),
     });
   }
   return out;

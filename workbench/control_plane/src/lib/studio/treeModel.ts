@@ -236,6 +236,22 @@ export function moveRefusal(reason: MoveRefusalReason): string {
 }
 
 /**
+ * A short reason for one line under a disabled option in the Move menu. The full sentence
+ * (`moveRefusal`) stays for the alert. A long sentence widened the menu past a 320 px phone.
+ */
+export function menuReason(reason: MoveRefusalReason): string {
+  switch (reason) {
+    case "self": return "This is the node itself.";
+    case "descendant": return "It is inside this node.";
+    case "too_deep": return `Too deep: ${MAX_TREE_DEPTH} levels.`;
+    case "unknown_node": return "Node not found.";
+    case "unknown_parent": return "Parent not found.";
+    case "same_parent": return "It is already there.";
+    default: return "Not available.";
+  }
+}
+
+/**
  * The call for the update action: `door.run("object:<name>.update", movePatch(...))`.
  * A relation value is `{id}` (`fieldCheck.ts` `relation`). A move to the top level
  * sends `null`: `fieldCheck` reads null as empty, and `tree_parent` in

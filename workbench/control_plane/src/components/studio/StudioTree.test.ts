@@ -253,11 +253,13 @@ describe("the Move under list", () => {
     expect(opts.map((o) => o.label)).toEqual(["Top level", "A", "B", "C", "E"]);
     const by = Object.fromEntries(opts.map((o) => [o.label, o]));
     expect(by["Top level"].disabled).toBe(true);
-    expect(by["Top level"].description).toBe("The node is already there.");
-    expect(by.A.description).toBe("A node cannot move under itself.");
-    expect(by.C.description).toBe("A node cannot move under one of its own children.");
+    expect(by["Top level"].description).toBe("It is already there.");
+    expect(by.A.description).toBe("This is the node itself.");
+    expect(by.C.description).toBe("It is inside this node.");
     // The reason wraps. A one-line hint made the list wider than a phone.
     expect(opts.every((o) => o.hint === undefined)).toBe(true);
+    // A long reason widened the menu past a 320 px phone: the lines are short phrases.
+    expect(opts.every((o) => (o.description ?? "").length <= 24)).toBe(true);
     expect(by.E.disabled).toBeUndefined();
     expect(by.C.depth).toBe(2);
   });
