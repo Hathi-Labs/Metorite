@@ -152,11 +152,31 @@ def test_a_test_that_is_red_on_main_alone_does_not_block(repo):
     assert "did not cause them" in res.stdout
 
 
-def test_a_test_file_that_only_main_has_is_not_blamed_on_the_pr(repo):
-    """A test that is new on main cannot pass on the branch alone: no file."""
+def test_a_test_file_that_only_main_has_blocks_when_it_passes_on_main_alone(repo):
+    """2026-11-14: main added a fence (new file), the PR added a source. The fence
+    fails on the merge, passes on main alone, and has no file on the branch.
+    No file is no evidence, so the merge is blamed."""
     _both_sides_change_shared(repo)
     cmd = 'echo "FAILED tests/new_on_main.py::test_x - boom"; exit 1'
+    # main (a detached head) has the file. Make the re-run pass there.
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, "tests/new_on_main.py")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "checkout", "-q", "feat")
     res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD="true")
+    assert res.returncode == 1, res.stdout
+    assert "tests/new_on_main.py::test_x" in res.stderr
+
+
+def test_a_test_file_that_only_main_has_and_is_red_on_main_does_not_block(repo):
+    _both_sides_change_shared(repo)
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, "tests/new_on_main.py")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "checkout", "-q", "feat")
+    cmd = 'echo "FAILED tests/new_on_main.py::test_x - boom"; exit 1'
+    rerun = "f() { git symbolic-ref -q HEAD >/dev/null || { echo 'FAILED tests/new_on_main.py::test_x - boom'; return 1; }; }; f"
+    res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD=rerun)
     assert res.returncode == 0, res.stderr
     assert "did not cause them" in res.stdout
 

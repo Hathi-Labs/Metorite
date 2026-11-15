@@ -44,7 +44,12 @@ def _tests(files: list[str], root: Path) -> set[str]:
 
 def _by_size(files: set[str], root: Path) -> list[str]:
     """Small files first: more tests a minute, so a red shows sooner."""
-    return sorted(files, key=lambda f: ((root / f).stat().st_size, f))
+    def size(f: str) -> int:
+        try:
+            return (root / f).stat().st_size
+        except OSError:
+            return 0
+    return sorted(files, key=lambda f: (size(f), f))
 
 
 def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[list[str], int] | None:

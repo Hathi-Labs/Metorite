@@ -209,11 +209,15 @@ RERUN_CMD="${PREMERGE_RERUN_CMD:-env -u VIRTUAL_ENV uv run pytest -q -p no:cache
 # and a cut id selects nothing on the re-run. The re-run takes whole functions.
 failed_ids() { { grep -E '^(FAILED|ERROR) ' "$1" || true; } | awk '{print $2}' | sed 's/\[.*//' | sort -u; }
 # rerun_fail <log>: the ids that fail in THIS checkout. An id whose file is not
-# here cannot pass here, so it counts as failing (it is new on the other side).
+# here gives no evidence (the file is new on the other side), so it is neither run
+# nor counted: pytest stops on a missing path and would hide the other ids.
 rerun_fail() {
-  local log="$1" id
-  timeout "$RERUN_TIMEOUT" bash -c "$RERUN_CMD \"\$@\"" _ $merged_fail > "$log" 2>&1 || true
-  { failed_ids "$log"; for id in $merged_fail; do [ -f "${id%%::*}" ] || echo "$id"; done; } | sort -u
+  local log="$1" id here=""
+  for id in $merged_fail; do [ -f "${id%%::*}" ] && here="$here $id"; done
+  [ -n "$here" ] || { : > "$log"; return 0; }
+  # shellcheck disable=SC2086
+  timeout "$RERUN_TIMEOUT" bash -c "$RERUN_CMD \"\$@\"" _ $here > "$log" 2>&1 || true
+  failed_ids "$log"
 }
 
 if [ -n "$overlap" ]; then
