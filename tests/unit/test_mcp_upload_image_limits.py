@@ -712,6 +712,29 @@ class TestARefusedQuestionLeavesNoOpenRun:
         assert len(gw.starts()) == 2
         assert gw.releases() == []
 
+    async def test_b7_a_question_that_never_left_the_edge_releases_the_run(self, gw):
+        """Fix round 3, item 2. A connect error means no byte of the question
+        went out, so the gateway wrote nothing. The call answers the busy
+        text, and still releases the run that it started. Mutation: drop the
+        ``_NotSent`` check of ``tools._refused``, and no release goes out."""
+        up = await _upload(_args(TINY_PNG))
+        aid = up["structuredContent"]["attachment"]["attachment_id"]
+        inner = httpx.ASGITransport(app=gw)
+
+        class _Refusing(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                if request.method == "POST" and request.url.path.endswith("/activities"):
+                    raise httpx.ConnectError("refused", request=request)
+                return await inner.handle_async_request(request)
+
+        with gateway_client.use_transport(_Refusing()):
+            result = await self._ask_again(aid)
+        assert _text(result) == tools.TEXT_BUSY
+        assert len(gw.starts()) == 1
+        assert not [r for r in gw.requests if r.path.endswith("/activities")]
+        (release,) = gw.releases()
+        assert json.loads(release.body) == {}
+
 
 class TestTheBodyCapOfMcp:
     """Check 5 of §9.6 (CIV-14b): 6 MiB for one upload call, 1 MiB for any other."""
