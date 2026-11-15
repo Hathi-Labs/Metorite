@@ -314,6 +314,11 @@ class FieldDef(_Strict):
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
+    #: C15a. The parts of an `autonumber`: the text before the number, the pad
+    #: width and `never` or `day`. `studio_fields._check_extras` holds the rules.
+    prefix: str | None = None
+    pad: int | None = None
+    reset: str | None = None
 
 
 class ObjectDef(_Strict):
