@@ -103,6 +103,35 @@
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
+        "conversions": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversions"
+        },
+        "critical": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Critical"
+        },
         "format": {
           "anyOf": [
             {
@@ -177,6 +206,19 @@
           ],
           "default": null,
           "title": "Min"
+        },
+        "normal": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normal"
         },
         "options": {
           "anyOf": [

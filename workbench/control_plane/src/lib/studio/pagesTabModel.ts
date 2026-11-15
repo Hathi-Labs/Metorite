@@ -6,8 +6,10 @@
  * act calls a function of `frameEdit.ts`, and `applyFrame` sends the result only when it differs.
  */
 import { colsFloor } from "./frameEdit";
-import { MAX_NAV_ROWS, MAX_NAV_SECTIONS } from "./manifest";
+import { MAX_NAV_ROWS, MAX_NAV_SECTIONS, type StudioManifest } from "./manifest";
+import { cellCapRoom, type Loc } from "./pageLayout";
 import { defaultPages, PAGE_CAPS, readPage, type PageModel } from "./pageModel";
+import { removeCellWhy, removeTabWhy } from "./tabEdit";
 import { DEFAULT_RAIL_ICON, railFor, type RailSectionModel } from "./railModel";
 
 type Obj = Record<string, unknown>;
@@ -143,4 +145,126 @@ export function colsOptions(floor: number): { value: string; label: string; disa
     const n = i + 1;
     return n < floor ? { value: String(n), label: String(n), disabled: true, hint: COLS_HINT } : { value: String(n), label: String(n) };
   });
+}
+
+// ── The layout of one page (AF-8b-3b) ───────────────────────────────────────
+
+export const CELL_CAP_NOTE = `A list holds at most ${PAGE_CAPS.cellsPerList} cells.`;
+export const TAB_CAP_NOTE = `A page holds at most ${PAGE_CAPS.tabsPerPage} tabs.`;
+export const BROKEN_NOTE = "This page has tabs and cells together. Fix it in the code.";
+export const USE_TABS_HINT = "All current cells go into the first tab. A blank title gets a default name.";
+export const TAB_NAME_HINT = "A blank title gets a default name.";
+
+/** The title of a new tab: what the member typed, or "Tab N" when it is blank. `count` is the tabs now on the page. */
+export function tabTitleOrDefault(typed: string, count: number): string {
+  const t = typeof typed === "string" ? typed.trim() : "";
+  const n = Number.isInteger(count) && count >= 0 ? count : 0;
+  return t || `Tab ${n + 1}`;
+}
+
+/** The two places of one cell move, one step up (-1) or down (+1) inside its list. The editor calls `moveCell` with these only. */
+export function moveCellArgs(tabId: string | null, index: number, delta: -1 | 1): { from: Loc; to: Loc } {
+  return { from: { tabId, index }, to: { tabId, index: index + delta } };
+}
+
+export interface LayoutCell {
+  index: number;
+  view: string;
+  /** The title of the view, or its id when the view has no title. */
+  viewLabel: string;
+  span: number | null;
+  /** The sentence that says why Remove is refused, or null when it is allowed. */
+  removeWhy: string | null;
+  canUp: boolean;
+  canDown: boolean;
+}
+export interface LayoutList {
+  /** Null for the cells of a flat page. */
+  tabId: string | null;
+  title: string;
+  cells: LayoutCell[];
+  /** Free slots in this list. */
+  room: number;
+  /** Tab acts. Always false and null for the list of a flat page. */
+  tabCanUp: boolean;
+  tabCanDown: boolean;
+  tabWhy: string | null;
+}
+export interface LayoutView {
+  flat: boolean;
+  cols: number;
+  lists: LayoutList[];
+  tabCount: number;
+  tabFull: boolean;
+  /** The page has tabs and cells together, or neither. */
+  broken: boolean;
+}
+
+const EMPTY_LAYOUT: LayoutView = { flat: true, cols: 2, lists: [], tabCount: 0, tabFull: false, broken: false };
+
+/** The views of the draft as choices: the id, and the title when the view has one. */
+export function viewChoices(manifest: unknown): { id: string; label: string }[] {
+  const m = isObj(manifest) ? manifest : {};
+  return list(m.views).map((v) => ({ id: str(v.id), label: str(v.title).trim() || str(v.id) })).filter((v) => v.id);
+}
+
+/** The cells and tabs of one page, for the cells editor. Never throws. Junk gives an empty view. */
+export function layoutView(
+  manifest: unknown,
+  pageId: string,
+  views: { id: string; label: string }[] = viewChoices(manifest),
+): LayoutView {
+  try {
+    const m = isObj(manifest) ? manifest : null;
+    const page = m && Array.isArray(m.pages) ? list(m.pages).find((p) => str(p.id) === pageId) : undefined;
+    if (!m || !page) return EMPTY_LAYOUT;
+    const labels = new Map(views.map((v) => [v.id, v.label]));
+    const cols = typeof page.cols === "number" && Number.isInteger(page.cols) && page.cols >= 1 && page.cols <= PAGE_CAPS.maxCols ? page.cols : 2;
+    const tabs = Array.isArray(page.tabs) ? page.tabs : [];
+    const flatCells = Array.isArray(page.cells) ? page.cells : [];
+    const hasTabs = tabs.length > 0;
+    const hasCells = flatCells.length > 0;
+    if (hasTabs === hasCells) {
+      return { flat: !hasTabs, cols, lists: [], tabCount: tabs.length, tabFull: tabs.length >= PAGE_CAPS.tabsPerPage, broken: true };
+    }
+    const typed = m as unknown as StudioManifest;
+    const cellsOf = (raw: unknown[], tabId: string | null): LayoutCell[] => {
+      // The index is the place in the RAW list, as `pageLayout` reads it. A junk entry is skipped in the output only.
+      const out: LayoutCell[] = [];
+      raw.forEach((c, index) => {
+        if (!isObj(c)) return;
+        out.push({
+          index,
+          view: str(c.view),
+          viewLabel: labels.get(str(c.view)) || str(c.view),
+          span: typeof c.span === "number" ? c.span : null,
+          removeWhy: removeCellWhy(m, pageId, { tabId, index }),
+          canUp: index > 0,
+          canDown: index < raw.length - 1,
+        });
+      });
+      return out;
+    };
+    if (!hasTabs) {
+      return {
+        flat: true, cols, tabCount: 0, tabFull: false, broken: false,
+        lists: [{ tabId: null, title: "Cells", cells: cellsOf(flatCells, null), room: cellCapRoom(typed, pageId, null),
+          tabCanUp: false, tabCanDown: false, tabWhy: null }],
+      };
+    }
+    const real = tabs.filter(isObj);
+    return {
+      flat: false, cols, tabCount: real.length, tabFull: real.length >= PAGE_CAPS.tabsPerPage, broken: false,
+      lists: real.map((t, i) => {
+        const tabId = str(t.id);
+        return {
+          tabId, title: str(t.title) || tabId, cells: cellsOf(Array.isArray(t.cells) ? t.cells : [], tabId),
+          room: cellCapRoom(typed, pageId, tabId), tabCanUp: i > 0, tabCanDown: i < real.length - 1,
+          tabWhy: removeTabWhy(m, pageId, tabId),
+        };
+      }),
+    };
+  } catch {
+    return EMPTY_LAYOUT;
+  }
 }
