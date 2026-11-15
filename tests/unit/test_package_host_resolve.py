@@ -552,7 +552,7 @@ class _CountingDb:
         if sql == resolve.BOUND_ORG_SQL:
             return _Answer(self.bound)
         assert sql == connections._MET_SQL, sql[:80]
-        return _Answer([(p + ([],) if len(p) == 2 else p) if isinstance(p, tuple) else (p, "org", [])
+        return _Answer([((*p, []) if len(p) == 2 else p) if isinstance(p, tuple) else (p, "org", [])
                         for p in self.providers])
 
 

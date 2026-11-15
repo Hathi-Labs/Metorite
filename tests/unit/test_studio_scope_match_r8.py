@@ -45,12 +45,11 @@ from gateway.connections import store as connections_store
 from gateway.routes.studio import invoke
 from sqlalchemy import text
 
-from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     promoted,
 )
-from tests.unit.test_studio_connections_whose_r8 import (  # noqa: F401
+from tests.unit.test_studio_connections_whose_r8 import (
     _DENIED,
     _WAITS,
     TALLY,
@@ -58,14 +57,20 @@ from tests.unit.test_studio_connections_whose_r8 import (  # noqa: F401
     _installed,
     _live,
     _run,
-    world,
 )
+from tests.unit.test_studio_connections_whose_r8 import world as _whose_world  # noqa: F401
 from tests.unit.test_studio_package_approval_routes_r8 import ADA, MEL, OWEN, ZED
 from tests.unit.test_studio_package_approval_routes_r8 import (  # noqa: F401
     world as _base_world,
 )
 
 pytestmark = _DB_GATE
+
+
+@pytest.fixture
+def world(_whose_world):  # noqa: F811
+    """The world of ``test_studio_connections_whose_r8.py`` (gate on, spy on the list action)."""
+    return _whose_world
 
 RECONNECT = {"code": invoke.NEEDS_CONNECTION, "reason": "reconnect",
              "message": f"Reconnect {TALLY}: your connection does not grant what this app needs."}
