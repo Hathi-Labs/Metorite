@@ -4052,6 +4052,15 @@ async def _apply_tool_packs(
     OA-7i: with the loader offered, ONE plan decides the offer and the
     replacement of a specialist (:func:`_plan_pack_loader`). *is_authorized*
     is the run's grant check, which the MCP lookahead reads.
+
+    WS-67 TS-2a (D222 decision 13): with *offer_loader* and
+    ``tool_packs.tool_search_on`` of the bound tenant, the run also holds
+    ``find_tools`` on every turn. It counts in the base before the first
+    choice, as the load tool does. The candidates come from ONE guarded
+    build of each pack to search (:func:`_find_candidates`), and the apply
+    then returns a ``PackApply`` also with no build and no offer, so that
+    the executor binds the run key and the record. With the flag off,
+    nothing of this runs.
     """
     import secrets
 
@@ -4064,7 +4073,8 @@ async def _apply_tool_packs(
     if not isinstance(pool, list):
         _log.warning("executor.packs_refused", reason="agent_shape")
         return None
-    if not current_tenant():
+    org = current_tenant()
+    if not org:
         _log.warning("executor.packs_refused", reason="no_tenant")
         return None
     # PJP-2 fix round 3 (P3-1): a pack of FOLLOWS is off where an admin turned
@@ -4075,6 +4085,17 @@ async def _apply_tool_packs(
     turn = await _turn_with_skills(turn)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
+    # WS-67 TS-2a (D222 decision 13): ``find_tools`` rides in each request of
+    # a run where the search is on, so the cap counts it before the first
+    # choice. The org is the bound tenant, never a request field (R5). At the
+    # cap, this count can make ``choose`` drop the last pack, and the owner
+    # accepted that trade. With the flag off the count does not change. The
+    # setup needs the choice, so it runs later: when it gives no finder (an
+    # agent that is no MAF ``Agent``, or a fault), the count is one high,
+    # which errs on the safe side.
+    search_on = offer_loader and tool_packs.tool_search_on(org)
+    if search_on:
+        base += 1
     specialists = _specialist_counts(pool)
     choice = tool_packs.choose(
         turn, allowed=allow, base_tools=base, specialists=specialists)
@@ -4124,6 +4145,15 @@ async def _apply_tool_packs(
     kept = [t for t in pool if _delegates_to(t) not in draft.replaced]
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
+    # TS-2a: the candidates of ``find_tools``, from the ``allow`` of this apply
+    # (the admin's toggles widened by FOLLOWS), never a fresh flag read, and
+    # the ONE test of the owners that the plan reads too. Both None when the
+    # search is off. A sticky pack that left at the start of the turn
+    # (``choice.evicted``) counts as held, so it is no candidate: the line of
+    # the turn tells the model not to call its tools (``left_line``).
+    available, candidates = await _search_setup(
+        search_on, agent, allow, (*choice.slugs, *choice.evicted), frozenset(holds), build_ctx,
+        persona=str(opts.get("instructions") or ""), bullets=bullets)
     if offer_loader:
         # RX-1: a spare pack gives way to a load, so the plan counts it free:
         # an old sticky pack, and (task 1747, D169 item 8 as amended) a pack
@@ -4136,8 +4166,9 @@ async def _apply_tool_packs(
             pool=kept, persona=str(opts.get("instructions") or ""), bullets=bullets,
             agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
             is_authorized=is_authorized,
-            spare={slug: built[slug] for slug in draft.spare() if slug in built})
-    if not builds and not plan.offered and not skills:
+            spare={slug: built[slug] for slug in draft.spare() if slug in built},
+            available=available)
+    if not builds and not plan.offered and not skills and candidates is None:
         return None
     via = plan.via_loader
     try:
@@ -4154,7 +4185,8 @@ async def _apply_tool_packs(
                                    skills=skill_slugs, needs=needs)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
-    # (with the load tool only when the plan offers it), the pack tools, less
+    # (with the load tool only when the plan offers it, and with
+    # ``find_tools`` when the search is on, TS-2a), the pack tools, less
     # each specialist tool that leaves (a pack's, and an owner the loader
     # reaches). The inject step after this one adds nothing to the count.
     planned_tools = (base - int(loader_counted) + int(bool(plan.offered))
@@ -4186,9 +4218,11 @@ async def _apply_tool_packs(
     )
     _log_skills_loaded(skills, choice.skills_skipped)
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key)
-    if offer_loader and not _offer_pack_loader(agents, applied, plan) and via:
+    if offer_loader and not _offer_pack_loader(agents, applied, plan, candidates) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
-    return applied if builds or plan.offered or skills else None
+    # TS-2a: with the search on, the run holds ``find_tools`` also with no
+    # build, no offer and no candidate, so the run key and the record bind.
+    return applied if builds or plan.offered or skills or candidates is not None else None
 
 
 # ── Published skills as packs (WS-STU F3) ───────────────────────────────────
@@ -4342,45 +4376,21 @@ async def _mcp_may_attach(
     return False
 
 
-async def _plan_pack_loader(
-    agent: Any, allow: frozenset[str], held: list[str], *, builds: Sequence[PackBuild],
-    current: int, pool: Sequence[Any], persona: str, bullets: Mapping[str, str],
-    agent_name: str, no_egress: bool, is_authorized: Any,
-    spare: Mapping[str, int] | None = None,
-) -> Any:
-    """THE one plan of the loader in a run (OA-7i): ``tool_packs.plan_loader``
-    with the facts of this run. Its answer drives the offer
-    (:func:`_offer_pack_loader`) AND the removal of a specialist tool and of
-    its persona text, so the two cannot disagree.
+async def _pack_available(
+    allow: frozenset[str], *, persona: str, bullets: Mapping[str, str],
+) -> Callable[[str], bool]:
+    """THE one test of the owner of a pack that a run may still add: the test
+    of the loader plan (OA-7i) and of the ``find_tools`` candidates (TS-2a).
 
-    An owner can be reached only when the agent is a native MAF ``Agent``, the
-    owner's module loads (:func:`_pack_owner_module`), and the persona holds
-    the owner's delegation text exactly once. The MCP rule reads the registry
-    (:func:`_mcp_may_attach`) and only for a pack of an owner that reads
-    stranger text, and only while the run holds none of them. *spare* names
-    the packs that can give way to a load, each with its tool count (RX-1,
-    ``PackRun.spare``). For the Projects owner the plan reaches through them
-    (task 1747)."""
+    It awaits :func:`_studio_member_open` once, and only when ``studio`` is
+    in *allow*. The test that it gives then reads no member again. An owner
+    passes when its module loads (:func:`_pack_owner_module`), its pack can
+    build a tool for this org and member, and the persona holds the owner's
+    delegation text exactly once (or has none by design)."""
     from acb_skills import tool_packs
 
-    if not _loader_agent_ok(agent):
-        return tool_packs.LoaderPlan()
-    removable: dict[str, int] = {}
-    for item in pool:
-        target = _delegates_to(item)
-        if target:
-            removable[target] = removable.get(target, 0) + 1
-    unheld = tool_packs.loadable(allow, held)
-    mcp = False
-    reads_mail = any(
-        str(tool_packs.SKILL_FAMILIES[slug].get("owner")) in UNTRUSTED_INPUT_AGENTS
-        for slug in unheld)
-    if len(held) < tool_packs.MAX_PACKS and reads_mail:
-        mcp = await _mcp_may_attach(
-            agent, agent_name, no_egress=no_egress, is_authorized=is_authorized,
-            held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
     # STU-G1 and J1-1: the one check of the studio pack filter, read once for
-    # the plan. A run whose packs hold no ``studio`` reads no member.
+    # the run. A run whose packs hold no ``studio`` reads no member.
     # WS-67 TS-1b: it relies on FOLLOWS (``studio-more`` follows ``studio``).
     studio_ok = "studio" in allow and await _studio_member_open()
 
@@ -4401,8 +4411,55 @@ async def _plan_pack_loader(
         old = str(bullets.get(owner) or "")
         return bool(old) and persona.count(old) == 1
 
+    return _available
+
+
+async def _plan_pack_loader(
+    agent: Any, allow: frozenset[str], held: list[str], *, builds: Sequence[PackBuild],
+    current: int, pool: Sequence[Any], persona: str, bullets: Mapping[str, str],
+    agent_name: str, no_egress: bool, is_authorized: Any,
+    spare: Mapping[str, int] | None = None,
+    available: Callable[[str], bool] | None = None,
+) -> Any:
+    """THE one plan of the loader in a run (OA-7i): ``tool_packs.plan_loader``
+    with the facts of this run. Its answer drives the offer
+    (:func:`_offer_pack_loader`) AND the removal of a specialist tool and of
+    its persona text, so the two cannot disagree.
+
+    An owner can be reached only when the agent is a native MAF ``Agent``, the
+    owner's module loads (:func:`_pack_owner_module`), and the persona holds
+    the owner's delegation text exactly once. The MCP rule reads the registry
+    (:func:`_mcp_may_attach`) and only for a pack of an owner that reads
+    stranger text, and only while the run holds none of them. *spare* names
+    the packs that can give way to a load, each with its tool count (RX-1,
+    ``PackRun.spare``). For the Projects owner the plan reaches through them
+    (task 1747).
+
+    *available* is the test of :func:`_pack_available` when the caller made
+    it already (TS-2a, the search is on). With None the plan makes it here,
+    after the MCP lookahead, as before TS-2a."""
+    from acb_skills import tool_packs
+
+    if not _loader_agent_ok(agent):
+        return tool_packs.LoaderPlan()
+    removable: dict[str, int] = {}
+    for item in pool:
+        target = _delegates_to(item)
+        if target:
+            removable[target] = removable.get(target, 0) + 1
+    unheld = tool_packs.loadable(allow, held)
+    mcp = False
+    reads_mail = any(
+        str(tool_packs.SKILL_FAMILIES[slug].get("owner")) in UNTRUSTED_INPUT_AGENTS
+        for slug in unheld)
+    if len(held) < tool_packs.MAX_PACKS and reads_mail:
+        mcp = await _mcp_may_attach(
+            agent, agent_name, no_egress=no_egress, is_authorized=is_authorized,
+            held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
+    if available is None:
+        available = await _pack_available(allow, persona=persona, bullets=bullets)
     return tool_packs.plan_loader(
-        allow, held, current=current, removable=removable, mcp=mcp, available=_available,
+        allow, held, current=current, removable=removable, mcp=mcp, available=available,
         spare=spare)
 
 
@@ -4427,7 +4484,77 @@ async def _build_pack_for_load(
     return await _pack_tools(slug, run_ctx, holds=holds)
 
 
-def _offer_pack_loader(agents: list[Any], applied: PackApply, plan: Any) -> bool:
+async def _search_setup(
+    search_on: bool, agent: Any, allow: frozenset[str], loaded: Sequence[str],
+    holds: frozenset[str], build_ctx: Mapping[str, Any], *, persona: str,
+    bullets: Mapping[str, str],
+) -> tuple[Callable[[str], bool] | None, Any]:
+    """The test of the owners and the candidates of ``find_tools`` for ONE
+    run (WS-67 TS-2a), or ``(None, None)``.
+
+    It acts only when *search_on* (the flag, read by the caller for the bound
+    tenant) and the agent is a native MAF ``Agent``, the one shape that
+    :func:`_offer_pack_loader` serves. Then it makes :func:`_pack_available`
+    once, so the loader plan and the search read the member's Studio access
+    once, and :func:`_find_candidates`. With the flag off it awaits nothing,
+    so the run is as before TS-2a."""
+    if not search_on or not _loader_agent_ok(agent):
+        return None, None
+    available = await _pack_available(allow, persona=persona, bullets=bullets)
+    return available, await _find_candidates(allow, loaded, holds, build_ctx, available)
+
+
+async def _find_candidates(
+    allow: frozenset[str], loaded: Sequence[str], holds: frozenset[str],
+    build_ctx: Mapping[str, Any], available: Callable[[str], bool] | None,
+) -> Any:
+    """The candidates of ``find_tools`` for ONE run (WS-67 TS-2a), or None
+    when the setup fails, so the run then gets no search.
+
+    It calls ``tool_packs.setup_candidates`` inside the apply, with
+    *build_ctx*: the run context that the server bound, with this run's key
+    (``PACK_RUN_KEY``), as layer (a) and ``load_early`` build. A context with
+    no key builds nothing, and the tool would ship with an empty catalog.
+    The owners are ``PACK_ONLY_OWNERS``, the builder is the guarded builder
+    of layer (a), and *available* is :func:`_pack_available`. *allow* is the
+    ``allow`` of the apply, so a pack that an admin turned off is never a
+    candidate. The log line gives the cost of the setup builds."""
+    import time
+
+    from acb_skills import tool_packs
+
+    started = time.perf_counter()
+    try:
+        found = await tool_packs.setup_candidates(
+            allow, loaded, holds, owners=tool_packs.PACK_ONLY_OWNERS,
+            build=_build_pack_for_load, ctx=build_ctx, available=available)
+    except Exception as exc:  # a search never costs the turn
+        _log.error("executor.find_tools_refused", reason="setup_failed",
+                   error_type=type(exc).__name__)
+        return None
+    _log.info("executor.find_tools_setup", packs=list(found.packs), tools=len(found.tools),
+              ms=round((time.perf_counter() - started) * 1000, 1))
+    return found
+
+
+def _make_finder(applied: PackApply, candidates: Any) -> Any:
+    """THE ``FindTools`` of one run (TS-2a). Its record is the record of the
+    apply, the same ``PackRun`` that the loader holds, so the two share
+    ``PackRun.lock``. Its builder is the guarded builder of layer (a), and
+    its measure is ``_maf_mcp.schema_tokens``."""
+    from acb_skills import tool_packs
+
+    from orchestrator import _maf_mcp
+
+    return tool_packs.FindTools(
+        candidates=candidates, run_key=applied.run_key, record=applied.record,
+        build=_build_pack_for_load, measure=_maf_mcp.schema_tokens,
+    )
+
+
+def _offer_pack_loader(
+    agents: list[Any], applied: PackApply, plan: Any, candidates: Any = None,
+) -> bool:
     """Put ``load_skill_tools`` on the view of the run (layer (b), OA-7e).
 
     It offers the packs of *plan* (``tool_packs.LoaderPlan``, from
@@ -4438,11 +4565,17 @@ def _offer_pack_loader(agents: list[Any], applied: PackApply, plan: Any) -> bool
     agent object of another run never changes. Each later step reads
     ``agents`` again, and each view that the injection makes keeps the
     provider. True when the run offers a load.
+
+    TS-2a: with *candidates* (the search is on), the same ONE list puts
+    ``tool_packs.FindToolsProvider`` BEFORE ``LoadSkillToolsProvider``. So
+    ``find_tools`` is in ``context.tools`` when layer (c) counts the live
+    list (``LoadSkillTools.load_early``). With no offer, the list holds the
+    finder alone. With None the list is as before TS-2a.
     """
     from acb_skills import tool_packs
 
     offered = tuple(plan.offered)
-    if not offered:
+    if not offered and candidates is None:
         return False
     try:
         from agent_framework import Agent
@@ -4454,11 +4587,21 @@ def _offer_pack_loader(agents: list[Any], applied: PackApply, plan: Any) -> bool
         return False
     from orchestrator._native_run_context import agent_with_providers
 
-    loader = tool_packs.LoadSkillTools(
-        offered=offered, run_key=applied.run_key, record=applied.record,
-        build=_build_pack_for_load,
-    )
-    agents[0] = agent_with_providers(agent, [tool_packs.LoadSkillToolsProvider(loader)])
+    providers: list[Any] = []
+    if candidates is not None:
+        providers.append(tool_packs.FindToolsProvider(_make_finder(applied, candidates)))
+    if offered:
+        loader = tool_packs.LoadSkillTools(
+            offered=offered, run_key=applied.run_key, record=applied.record,
+            build=_build_pack_for_load,
+        )
+        providers.append(tool_packs.LoadSkillToolsProvider(loader))
+    agents[0] = agent_with_providers(agent, providers)
+    if candidates is not None:
+        _log.info("executor.find_tools_offered", packs=list(candidates.packs),
+                  tools=len(candidates.tools), loaded=list(applied.record.slugs))
+    if not offered:
+        return False
     _log.info("executor.pack_loader_offered", packs=list(offered),
               loaded=list(applied.record.slugs))
     return True

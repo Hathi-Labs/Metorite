@@ -89,6 +89,22 @@ def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not agent_questions_allowed("globex")
 
 
+def test_tool_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-67 TS-2a, one_assistant_context.md §4.2.9. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from acb_skills.tool_packs import tool_search_on
+
+    assert fr.reloadable("TOOL_SEARCH_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("TOOL_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not tool_search_on("acme")
+    env(**{**_START, "TOOL_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("TOOL_SEARCH_ORGS",)
+    assert tool_search_on("acme")
+    assert not tool_search_on("globex")
+
+
 def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
     the one reader sees a change with no restart."""
@@ -232,6 +248,22 @@ def test_studio_connection_gate_orgs_reloads_and_its_reader_follows(env, monkeyp
     assert fr.reload_flags().applied == ("STUDIO_CONNECTION_GATE_ORGS",)
     assert connection_gate_on("ACME ")
     assert not connection_gate_on("globex")
+
+
+def test_studio_live_preview_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU I11a, ai_studio.md §14 I11a. The reload list holds the key, and the
+    one reader of the live preview sees a change with no restart."""
+    from acb_common.studio_flags import live_preview_on
+
+    assert fr.reloadable("STUDIO_LIVE_PREVIEW_ORGS")
+    monkeypatch.setenv("STUDIO_LIVE_PREVIEW_ORGS", "")
+    get_settings.cache_clear()
+    assert not live_preview_on("acme")
+    assert not live_preview_on(None)
+    env(**{**_START, "STUDIO_LIVE_PREVIEW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_LIVE_PREVIEW_ORGS",)
+    assert live_preview_on("ACME ")
+    assert not live_preview_on("globex")
 
 
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:

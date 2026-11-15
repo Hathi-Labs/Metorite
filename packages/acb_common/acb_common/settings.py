@@ -760,6 +760,16 @@ class Settings(BaseSettings):
     # change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`, after the pre-check of ai_studio.md section 14 I1a.
     studio_connection_gate_orgs: str = ""
+    # STU-I11a: STUDIO_LIVE_PREVIEW_ORGS lists the org ids where a preview of
+    # the Studio action door reads a class A `mcp:` action live. The read
+    # calls the MCP server of the org once, through the pinned client, and
+    # caches the cut answer for 60 s. `*` opens every org. Empty opens none,
+    # and the door then answers `source_not_open` for each `mcp:` action, as
+    # before I11a. Reader: `acb_common.studio_flags.live_preview_on`. A
+    # SIGHUP reload applies a change (docs/flag_reload.md). A flip in
+    # production is the gate `enforcement-flip`. Spec: ai_studio.md section
+    # 14 I11a.
+    studio_live_preview_orgs: str = ""
     # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
     # the Studio object query adds a float8 test on `studio_record_hot.
     # v_num_f8`, so the app role can use its index (`numeric` comparisons are
@@ -1319,6 +1329,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_tool_packs_registry.py.
     tool_packs: str = ""
     tool_packs_orgs: str = ""
+
+    # ── Tool search of the one assistant (WS-67 TS-2a, D222) ────────────────
+    #
+    # `tool_search_orgs` lists the organization ids whose chat holds
+    # `find_tools`, or `*` for each one. Empty means off, and the run is then
+    # byte-identical to a run with no search. The one reader is
+    # `acb_skills.tool_packs.tool_search_on`, and it fails closed. It acts
+    # only where the tool pack flags give a pack. A SIGHUP reload applies a
+    # change (docs/flag_reload.md).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4). The dev-phase window does not open it, because a found tool moves
+    # what the chat can do and spends model tokens.
+    # Fence: tests/unit/test_tool_search_off.py.
+    tool_search_orgs: str = ""
 
     # ── The floor trim of the one assistant (WS-67 OA-8f) ──────────────────
     #

@@ -1996,6 +1996,19 @@ def _pack_loader(agent: Any) -> Any | None:
     return None
 
 
+def _pack_finder(agent: Any) -> Any | None:
+    """The ``FindTools`` of the run's view of *agent* (WS-67 TS-2a), or None.
+    Only a run with ``TOOL_SEARCH_ORGS`` on for its org holds one."""
+    try:
+        from acb_skills.tool_packs import FindToolsProvider
+    except ImportError:
+        return None
+    for provider in getattr(agent, "context_providers", None) or []:
+        if isinstance(provider, FindToolsProvider):
+            return provider.finder
+    return None
+
+
 def _pack_loader_offer(agent: Any) -> tuple[str, ...]:
     """The packs that the run still offers to load (layer (b)), for the pack
     items of the turn-kind request (WS-67 OA-7f). Empty when the run has no
@@ -2068,6 +2081,10 @@ def _log_pack_request_tools(agents: list[Any]) -> None:
     # OA-8f: the load tool rides in a context provider, so no pool holds it.
     # The estimate counts it (``_apply_tool_packs``), so the true count does too.
     if agents and _pack_loader_offer(agents[0]):
+        count += 1
+    # WS-67 TS-2a: ``find_tools`` rides in a context provider too, and the
+    # estimate counts it when the search is on (D222 decision 13).
+    if agents and _pack_finder(agents[0]) is not None:
         count += 1
     log = _log.warning if count > MAX_REQUEST_TOOLS else _log.info
     log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)

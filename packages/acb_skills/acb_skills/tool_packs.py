@@ -1510,6 +1510,36 @@ def packs_on(org: object) -> frozenset[str]:
     return with_followers(known & slugs) & known
 
 
+def tool_search_on(org: object) -> bool:
+    """True when ``find_tools`` is on for organization *org*. THE one reader
+    of ``TOOL_SEARCH_ORGS`` (WS-67 TS-2a, D222).
+
+    ``TOOL_SEARCH_ORGS`` lists the organization ids, or ``*`` for each one,
+    in any case and with spaces. It reads the setting on each call, so a
+    SIGHUP reload applies a change (``docs/flag_reload.md``). It fails
+    closed: an empty list, an empty *org*, an org that the list does not
+    name and a fault in the settings read each give False.
+
+    It asks only its own setting. The caller holds the allowed packs of the
+    run already. The caller passes the bound tenant of the run, never a value
+    from request input (R5). Any value other than empty on a box is
+    OWNER-ONLY (``work_plan.md`` §6 D4). Its one caller is
+    ``orchestrator._tool_injection._apply_tool_packs``. Fence:
+    ``tests/unit/test_tool_search_off.py``.
+    """
+    org_id = str(org or "").strip().lower()
+    if not org_id:
+        return False
+    try:
+        from acb_common import get_settings
+
+        orgs = _entries(getattr(get_settings(), "tool_search_orgs", ""))
+    except Exception:  # never turn the search on after a fault
+        _log.warning("tool_packs.search_flag_read_failed")
+        return False
+    return ALL in orgs or org_id in orgs
+
+
 # ── OA-7c: layer (a), the sticky state and the persona (§4.2.2) ─────────────
 #
 # Layer (a) takes three inputs in OA-7c: the sticky packs of the chat, a
@@ -3885,8 +3915,12 @@ class LoadSkillToolsProvider(ContextProvider):
 # refusal and the run key hold with no new code. The pack stays the unit of
 # the guards, the rules and the state: a found tool never joins
 # ``PackRun.holds``, so a sub-agent never gets one (``_child_pack_tools``).
-# NO CALLER yet: TS-2a PR 3 wires the provider behind ``TOOL_SEARCH_ORGS``.
-# Fence: ``tests/unit/test_find_tools_guards.py``.
+# TS-2a PR 3 wires it behind ``TOOL_SEARCH_ORGS`` (:func:`tool_search_on`):
+# ``_tool_injection._apply_tool_packs`` makes the candidates and
+# ``_offer_pack_loader`` attaches the provider. Fences:
+# ``tests/unit/test_find_tools_guards.py``,
+# ``tests/unit/test_find_tools_maf_loop.py`` and
+# ``tests/unit/test_tool_search_off.py``.
 
 #: The name of the search tool.
 FIND_TOOL = "find_tools"
@@ -4363,8 +4397,9 @@ class FindTools(FunctionMiddleware):
 class FindToolsProvider(ContextProvider):
     """Adds ``find_tools`` and its middleware to ONE run (TS-2a).
 
-    NO CALLER yet. TS-2a PR 3 attaches it to the run's own view of the agent
-    (``agent_with_providers``), BEFORE :class:`LoadSkillToolsProvider`, so
+    ``_tool_injection._offer_pack_loader`` attaches it to the run's own view
+    of the agent (``agent_with_providers``), BEFORE
+    :class:`LoadSkillToolsProvider` in the same list (TS-2a PR 3), so
     the tool is in ``context.tools`` when layer (c) counts the live list
     (:meth:`LoadSkillTools.load_early`). It adds no instruction. The packs
     ride in the description of the tool."""
