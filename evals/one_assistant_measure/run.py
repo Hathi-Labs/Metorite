@@ -83,10 +83,11 @@ PACK_ARMS = ck.PACK_ARMS
 STUDIO_PACKS = ("studio",)
 
 
-#: TS-5b sets this True when the scripted plans that call ``find_tools`` are in.
+#: TS-5b. True: the scripted plans that call ``find_tools`` are in (``Plan.find``,
+#: :func:`scripted_models`). Set it False and the ``search`` arm prints SKIP again.
 #: TS-2a PR 3 added the field ``tool_search_orgs`` first, so the field alone no
 #: longer tells that the arm can run.
-SEARCH_PLANS = False
+SEARCH_PLANS = True
 
 
 def search_built() -> bool:
@@ -103,7 +104,7 @@ def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
     """The arms that run *sc*: a fan-out chat runs on ``pack`` and ``packs+spawn``
     (delegation holds no spawn tool), a Studio chat on ``pack`` and ``search``
     (``studio-builder`` takes no hand-off), any other chat on ``delegation`` and
-    ``pack``. The ``search`` arm drops out while :func:`search_built` is False."""
+    ``pack``. The ``search`` arm drops out when :func:`search_built` is False."""
     if sc.set == "fanout":
         want = (ARMS[1], SPAWN_ARM)
     elif sc.set == "studio":
@@ -327,8 +328,6 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
     """
     from acb_skills import tool_packs
 
-    if arm == SEARCH_ARM:
-        raise NotImplementedError("the scripted plans that call find_tools are TS-5b")
     in_pack = pack_tool_names()
     orch: list[Any] = []
     subs: dict[str, list[Any]] = {}
@@ -338,6 +337,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
     for turn in sc.turns:
         plan = turn.plan
         calls_of = plan.calls if (arm == SPAWN_ARM or not plan.solo) else plan.solo
+        if arm == SEARCH_ARM and plan.search_calls is not None:
+            calls_of = plan.search_calls
         # The web tools and the spawn tool belong to no owner: the orchestrator
         # calls them itself, in every arm that holds them.
         direct = [c for c in calls_of if c[0] in BASE_DIRECT]
@@ -358,6 +359,13 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
             for name, args in direct:
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
+            # TS-5b. The model searches first: one ``find_tools`` call for each query of
+            # the plan, then the tools that the find added (no ``load_skill_tools``).
+            searched = arm == SEARCH_ARM and bool(plan.find)
+            if arm == SEARCH_ARM:
+                for query in plan.find:
+                    n += 1
+                    orch.append(tool_turn(ck.FIND_TOOL, {"query": query}, call_id=f"call_{n}"))
             mine = [c for c in calls_of if c[0] in in_pack]
             setup = [c for c in calls_of
                      if c[0] not in in_pack and owner_of_tool(c[0]) == EA]
@@ -380,7 +388,7 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                 work = []
             for name, args in work:
                 slug = pack_of_tool(name)
-                if slug not in held and not (
+                if slug not in held and not searched and not (
                         tool_packs.matched_layer(slug, turn.words)
                         or sc.surface in tool_packs.PACKS[slug].surface_slugs):
                     n += 1
@@ -537,8 +545,10 @@ def tap_schemas(mp: Any) -> None:
     arm need their names, the description of ``find_tools`` and the schema tokens.
     This wraps ``_WireTap.handle_async_request`` from here and edits no harness
     file: it reads the body that the tap reads, and sets three attributes on the
-    call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``).
-    It changes nothing on the wire."""
+    call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``,
+    and ``find_answers``: the FULL text of each ``find_tools`` answer that this request
+    carries, because the event stream cuts a tool result at 2000 characters and the hold
+    note of a found pack comes after that cut). It changes nothing on the wire."""
     real = harness_mod._WireTap.handle_async_request
 
     async def handle(tap: Any, request: httpx.Request) -> httpx.Response:
@@ -562,6 +572,7 @@ def tap_schemas(mp: Any) -> None:
             mine.find_description = next(
                 (str(f.get("description") or "") for f in funcs if f.get("name") == ck.FIND_TOOL), "")
             mine.schema_tokens = ck.schema_tokens_of(tools)
+            mine.find_answers = ck.find_answers_in(body if isinstance(body, dict) else {})
         return response
 
     mp.setattr(harness_mod._WireTap, "handle_async_request", handle)
@@ -790,7 +801,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 needs=next((str(c.arg) for c in turn.checks if c.kind == "right_pack"), ""),
                 reachable=reachable_of(tap.events[marks[3]:]),
                 write_cards=ck.write_cards_of(record.events),
-                trace=ck.trace_of(record.events),
+                trace=ck.full_find_results(
+                    ck.trace_of(record.events),
+                    [a for c in orch_calls for a in getattr(c, "find_answers", ())]),
                 tool_names=frozenset(n for c in orch_calls for n in getattr(c, "tool_names", ())),
                 find_description=next((d for c in orch_calls
                                        if (d := getattr(c, "find_description", ""))), ""),
@@ -1702,8 +1715,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         return EXIT_NO_GO
     arms = tuple(a for a in asked if a in ALL_ARMS)
     if SEARCH_ARM in arms and (args.scripted or args.live) and not search_built():
-        print(f"SKIP: arm {SEARCH_ARM}: it waits for the plans of TS-5b (SEARCH_PLANS). "
-              "The arm runs when they are in, beside the flag tool_search_orgs.")
+        print(f"SKIP: arm {SEARCH_ARM}: it needs the flag tool_search_orgs (TS-2a) in the "
+              "settings and SEARCH_PLANS on (the plans of TS-5b). One of them is missing.")
         arms = tuple(a for a in arms if a != SEARCH_ARM)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
     chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)

@@ -4,7 +4,7 @@
 OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
-TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `search` arm, scripted only, in `evals/one_assistant_measure`. The `search` arm itself waits for TS-5b (task 3289) and the flag `TOOL_SEARCH_ORGS`. No live run, no spend.
+TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `search` arm, scripted only, in `evals/one_assistant_measure`. TS-5b is BUILT (2026-11-15, task 3289, stacked on TS-2a PR 3): the `find_tools` plans and the scripted pass of the `search` arm. No live run, no spend.
 
 §9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-1b and WT-4 to WT-6 are not built.
 
@@ -1775,7 +1775,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 | TS-3 | 3197 | Layer (a′) | STD, shared seam, Opus builder | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
 | TS-4 | 3198 | Sticky state for each tool, its line, the unknown-name line, the room order and the budget | STD, shared seam, Opus builder (D218) | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
 | TS-5a | 3288 | The Studio chats, the six checks and stop result 12 of the `search` arm, scripted only. BUILT 2026-11-14 | LOW | AGENT-SAFE | 3 | none |
-| TS-5b | 3289 | The `find_tools` plans and the scripted pass on `search` | LOW | AGENT-SAFE | 3 | PR 2318 and TS-2a PR 3 |
+| TS-5b | 3289 | The `find_tools` plans and the scripted pass on `search`. BUILT 2026-11-15 | LOW | AGENT-SAFE | 3 | PR 2318 and TS-2a PR 3 |
 | TS-7 | 3201 | The live measure, in two parts: TS-7a on Studio chats, TS-7b on CRM and Projects chats | LOW | OWNER-GATE (spend) | 3 | TS-5a and TS-5b for TS-7a, TS-6 for TS-7b |
 | TS-6 | 3200 | Search over every pack | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 3 | After TS-5b, and its flip after TS-7 |
 | TS-9 | 3203 | MCP tools and published skills in the index | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 4 | TS-6 |
@@ -1986,7 +1986,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - Six pure checks: `found_tool`, `search_round`, `not_searched`, `no_studio_names`, `held_note` and `schema_tokens`.
   - Stop result 12 and the search numbers join the report.
   - The numbers are the searches per turn, the tools that ran after a find, the false searches on their own, and the schema tokens per request.
-  - `search` is listed in `--arms`. It prints SKIP until the plans of TS-5b are in (`run.SEARCH_PLANS`) and the settings hold `tool_search_orgs`. TS-2a PR 3 added the field first, so TS-5b sets `SEARCH_PLANS` to True. An unknown `--arms` value exits with status 2.
+  - `search` is listed in `--arms`. It prints SKIP when `run.SEARCH_PLANS` is False or the settings hold no `tool_search_orgs`. TS-5b set `SEARCH_PLANS` to True. An unknown `--arms` value exits with status 2.
 - **One chat list for each arm.**
 
   | Arm | Chats | Runs when |
@@ -2004,7 +2004,8 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **Order.** After PR 2318 and TS-2a PR 3, because the arm needs the flag `tool_search_orgs` and the tool `find_tools`.
 - **Files.** `evals/one_assistant_measure/run.py` (`scripted_models` raises `NotImplementedError` for `search` today) and `scenarios_studio.py`.
 - **Acceptance.** A scripted plan on the `search` arm calls `find_tools` once, then the Studio tool. `--scripted --arms pack,search` passes on both arms, with `found_tool`, `search_round`, `not_searched` and `schema_tokens` giving True. The layer of each found tool joins the report here, because it needs the product log of TS-2a.
-- **Held chat.** The check `held_note` may be impossible to satisfy if the Studio pack is not held in the product. TS-5b must check that the pack is held in a held chat before it relies on the check. On the `pack` arm the held answer of the `studio` load has no hold note, and the note is in the persona.
+- **Held chat.** The check `held_note` is satisfiable. The product holds the Studio pack in a chat that read mail, and the answer of `find_tools` carries the hold note after the rules text. On the `pack` arm the held answer of the `studio` load has no hold note, and the note is in the persona. The event stream keeps 2000 characters of a tool result. The note comes after them. So the harness reads the full answer from the next request.
+- **BUILT (2026-11-15).** `Plan.find` and `Plan.search_calls` (`scenarios.py`) carry the plans. `scripted_models` (`run.py`) plays `find_tools`, then the Studio tool, with no `load_skill_tools`. The queries are `list my saved skills` (`stu_skills`, `stu_no_feature`, `stu_held` turn 2) and `draft a new app` (`stu_new_app`). `stu_plain` makes no find. For `stu_no_feature` the find answers `FIND_NONE` and no Studio tool runs. `make a new app` does NOT rank `studio_draft` in the top 5, so the plan uses `draft a new app`. `--scripted --arms pack,search` passes on both arms. Stop result 12 reads STOP on a Studio-only set, because 3 of 3 app turns search. The rule counts the full app set (decision 12), so this is no finding against the product. The layer of each found tool is NOT in the report yet: it needs the log line `tool_packs.found`, and the report does not read it. A later slice owns it.
 - **Fence.** `tests/unit/test_one_assistant_measure_search.py`.
 
 **TS-6. Search over every pack (task 3200).**

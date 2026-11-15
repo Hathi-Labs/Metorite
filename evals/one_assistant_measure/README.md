@@ -256,10 +256,34 @@ hand-off (`run.arms_for`). They are outside `WORK_SCENARIOS`. The member of
 `stu_no_feature` lacks the feature through the `Scenario` field `without_features`, which
 the run reads. The harness file is not edited.
 
-**The arm.** `--arms` lists `search`. It prints `SKIP: arm search` until the plans of
-TS-5b are in (`run.SEARCH_PLANS`) and the settings hold `tool_search_orgs`
-(`run.search_built`). TS-2a PR 3 added the field first, so TS-5b sets `SEARCH_PLANS`
-to True with its plans. An unknown `--arms` value exits with status 2.
+**The arm.** `--arms` lists `search`. TS-5b is BUILT: `run.SEARCH_PLANS` is True, so the arm
+runs when the settings hold `tool_search_orgs` (`run.search_built`). It prints
+`SKIP: arm search` when either one is missing. An unknown `--arms` value exits with status 2.
+
+**The plans of the `search` arm (TS-5b).** `Plan.find` holds the query of each
+`find_tools` call. The scripted model calls `find_tools` first, then the Studio tool, and
+it never calls `load_skill_tools` for a Studio tool. `Plan.search_calls` replaces the calls
+on this arm when the model heeds an empty find. The real loop runs: the MAF loop, the
+function middleware, the ranker and the guarded build. The harness swaps only the HTTP
+transport.
+
+| Chat | Query | Tool that must rank in the top 5 |
+|---|---|---|
+| `stu_skills` | `list my saved skills` | `studio_skill_list` (rank 1) |
+| `stu_new_app` | `draft a new app` | `studio_draft` (rank 1) |
+| `stu_plain` | none (`not_searched`) | none |
+| `stu_no_feature` | `list my saved skills` | none runs: the answer is `FIND_NONE`, because the pack is no candidate for this member |
+| `stu_held` turn 2 | `list my saved skills` | `studio_skill_list` (rank 1), and the answer carries the hold note |
+
+The query `make a new app` does NOT rank `studio_draft` (the ranker gives `studio_app_read`
+first), so the plan uses `draft a new app`. A test ranks each query with
+`tool_search.rank` and names the registry when a tool leaves the top 5.
+
+**The held chat.** The product holds the Studio pack in a chat that read mail, so `held_note`
+is satisfiable. The hold note comes after the rules text, past the 2000 characters that the
+event stream keeps of a tool result. The tap reads the full answer from the next request
+(`checks.find_answers_in`, `checks.full_find_results`). A found answer that starts `Found` is a
+round, also when its rules text holds a refusal sentence (`checks._find_refused`).
 
 **The flags.** A Studio chat adds `studio` BY NAME to `TOOL_PACKS` and the eval org to
 `STUDIO_ORGS` (`run.flag_for`). It never uses `owner_packs("studio-builder")`, because
@@ -288,6 +312,12 @@ wraps the wire tap and sets three attributes on `ModelCall`. It changes nothing 
 `find_tools`: STOP. 15 of 100 is ok, and 16 of 100 is a STOP. A find on a turn that needs
 no tool is a false search, and the report counts it on its own. The report adds the
 searches per turn, the tools that ran after a find, and the schema tokens per request.
+
+The report prints the same columns for `pack` and `search`, side by side. They are the pass
+rate, the calls per turn, the input tokens, the tools per request and the schema tokens. The
+live `--out` file holds them in `summary`. A set of Studio chats alone gives 3 of 3 app
+turns that searched, so result 12 reads STOP on it. The rule counts the full app set
+(spec decision 12).
 
 ```bash
 uv run python -m evals.one_assistant_measure.run --scripted --arms pack,search

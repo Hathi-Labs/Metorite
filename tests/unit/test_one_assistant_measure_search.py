@@ -7,8 +7,9 @@ or spends money.
 
 * Each new check has a case that passes, a case that fails, and a case that is the
   named MUTATION of it (the line that a mutation of the check would flip).
-* The Studio chats run on the ``pack`` arm through the real orchestrator run. The
-  ``search`` arm prints SKIP, because the plans of TS-5b are not in (``SEARCH_PLANS``).
+* The Studio chats run on the ``pack`` arm and on the ``search`` arm (TS-5b) through the
+  real orchestrator run. Only the HTTP transport is the script. The ``search`` arm
+  prints SKIP again when ``SEARCH_PLANS`` is False.
 * No word of any pack matches a Studio chat, so layer (a) never loads ``studio``.
 * ``studio-workflows`` stays OFF in the flag of every arm.
 
@@ -46,9 +47,22 @@ OK_ANSWER = '{"ok": true, "skills": []}'
 
 
 @pytest.fixture(scope="module")
-def scripted() -> tuple[list[dict[str, Any]], list[str]]:
-    """The five Studio chats on the pack arm (and the search arm, which drops out)."""
+def both() -> tuple[list[dict[str, Any]], list[str]]:
+    """The five Studio chats on the pack arm and on the search arm (TS-5b)."""
     return run.run_scripted(STUDIO_SCENARIOS, (PACK, SEARCH))
+
+
+@pytest.fixture(scope="module")
+def scripted(both) -> tuple[list[dict[str, Any]], list[str]]:
+    """The rows of the pack arm, and the problems of both arms."""
+    rows, problems = both
+    return [r for r in rows if r["arm"] == PACK], problems
+
+
+@pytest.fixture(scope="module")
+def searched(both) -> list[dict[str, Any]]:
+    """The rows of the search arm."""
+    return [r for r in both[0] if r["arm"] == SEARCH]
 
 
 def _obs(
@@ -151,6 +165,7 @@ def test_every_studio_turn_passes_on_the_pack_arm(scripted) -> None:
     assert problems == [], problems
     assert {r["arm"] for r in rows} == {PACK}
     assert len(rows) == sum(len(s.turns) for s in STUDIO_SCENARIOS)
+    assert all(r["passed"] for r in rows)
 
 
 def test_the_studio_tools_ran_in_the_orchestrators_own_run(scripted) -> None:
@@ -351,11 +366,13 @@ def test_search_is_a_listed_arm() -> None:
 
 def test_the_search_arm_waits_for_the_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     """``search_built`` needs the plans of TS-5b (``SEARCH_PLANS``) and the field
-    ``tool_search_orgs``. TS-2a PR 3 added the field, and the plans are not in yet.
+    ``tool_search_orgs``. TS-2a PR 3 added the field, and TS-5b added the plans.
     It reads the settings with ``getattr``, so it needs no import of the field."""
     from types import SimpleNamespace
 
-    assert run.SEARCH_PLANS is False and run.search_built() is False  # no TS-5b plans
+    assert run.SEARCH_PLANS is True and run.search_built() is True  # TS-5b built the plans
+    monkeypatch.setattr(run, "SEARCH_PLANS", False)
+    assert run.search_built() is False  # the field is there, the plans are off
     monkeypatch.setattr(run, "SEARCH_PLANS", True)
     assert run.search_built() is True  # TS-2a PR 3 added tool_search_orgs
     monkeypatch.setattr("acb_common.get_settings", lambda: SimpleNamespace())
@@ -379,11 +396,11 @@ def test_arms_pack_search_prints_skip_and_runs_the_pack_arm(
     out = capsys.readouterr().out
     assert code == run.EXIT_PASS
     assert "SKIP: arm search" in out
-    assert "waits for the plans of TS-5b (SEARCH_PLANS)" in out
+    assert "needs the flag tool_search_orgs (TS-2a)" in out and "SEARCH_PLANS" in out
     assert seen == [(PACK,)]
 
 
-@pytest.mark.parametrize("arm", [PACK, SEARCH, "delegation"])
+@pytest.mark.parametrize("arm", [PACK, SEARCH, "delegation", run.SPAWN_ARM])
 def test_only_the_search_arm_holds_tool_search_orgs(arm: str) -> None:
     """TS-2a PR 3. ``PRODUCTION`` pins ``tool_search_orgs`` to "", so a developer .env
     that sets ``TOOL_SEARCH_ORGS`` changes no number of the other arms. The search arm
@@ -404,9 +421,28 @@ def test_the_search_arm_does_not_skip_when_built(
     assert seen == [(PACK, SEARCH)]
 
 
-def test_the_scripted_plan_of_the_search_arm_is_not_built() -> None:
-    with pytest.raises(NotImplementedError, match="TS-5b"):
-        run.scripted_models(scenario("stu_skills"), SEARCH)
+def test_the_scripted_plan_of_the_search_arm_is_built() -> None:
+    """TS-5b. ``scripted_models`` no longer raises. The orchestrator plays ``find_tools``
+    BEFORE the Studio tool, and never ``load_skill_tools`` for it."""
+    models = run.scripted_models(scenario("stu_skills"), SEARCH)
+    names = [t["tool_calls"][0]["function"]["name"] for t in _turns(models) if t.get("tool_calls")]
+    assert names == [ck.FIND_TOOL, "studio_skill_list"]
+    pack_names = [
+        t["tool_calls"][0]["function"]["name"]
+        for t in _turns(run.scripted_models(scenario("stu_skills"), PACK))
+        if t.get("tool_calls")
+    ]
+    assert pack_names == [ck.LOAD_TOOL, "studio_skill_list"]  # the pack arm still loads
+    plain = run.scripted_models(scenario("stu_plain"), SEARCH)
+    assert not [t for t in _turns(plain) if t.get("tool_calls")]  # a plain chat makes no find
+
+
+def _turns(models: dict[str, Any]) -> list[dict[str, Any]]:
+    """The assistant messages of the orchestrator's script, in order."""
+    out: list[dict[str, Any]] = []
+    for turn in models[run.ORCHESTRATOR].turns:
+        out += [m for m in turn if m.get("role") == "assistant"]
+    return out
 
 
 def test_an_unknown_arm_exits_with_status_2(capsys: pytest.CaptureFixture[str]) -> None:
@@ -417,9 +453,11 @@ def test_an_unknown_arm_exits_with_status_2(capsys: pytest.CaptureFixture[str]) 
     assert "serach" in out and "no such arm" in out
 
 
-def test_the_default_arms_run_no_search_arm_row(scripted) -> None:
-    rows, _ = scripted
-    assert SEARCH not in {r["arm"] for r in rows}
+def test_the_default_arms_run_no_search_arm_row() -> None:
+    """A run that asks for ``delegation,pack`` only gets no search row. (The default of
+    ``--arms`` is every arm, and the search arm joins when ``search_built``.)"""
+    assert run.SEARCH_ARM not in run.ARMS
+    assert run.arms_for(scenario("stu_skills"), run.ARMS) == (PACK,)
 
 
 # ── found_tool ───────────────────────────────────────────────────────────────
@@ -761,6 +799,280 @@ def test_the_report_prints_the_new_rows_and_stop_12() -> None:
     assert "Searches (find_tools) per turn" in text and "False searches" in text
     assert "Schema tokens in a request, most" in text
     assert re.search(r"\| 12 \| STOP \|", text)
+
+
+# ── TS-5b: the plans that call find_tools ────────────────────────────────────
+
+#: The tool that each Studio turn must find. Names only, from the real chats: the pack
+#: of each tool comes from ``tool_packs`` (``pack_of``), and no count of a pack is here.
+EXPECTED = {
+    ("stu_skills", 1): "studio_skill_list",
+    ("stu_new_app", 1): "studio_draft",
+    ("stu_no_feature", 1): "studio_skill_list",  # the tool that the query would find
+    ("stu_held", 2): "studio_skill_list",
+}
+
+
+def _queries() -> list[tuple[str, int, str, str]]:
+    return [
+        (sc.id, i + 1, q, EXPECTED[(sc.id, i + 1)])
+        for sc in STUDIO_SCENARIOS
+        for i, t in enumerate(sc.turns)
+        for q in t.plan.find
+    ]
+
+
+def test_every_find_turn_has_an_expected_tool_and_the_plain_chat_has_none() -> None:
+    assert {(a, b) for a, b, _, _ in _queries()} == set(EXPECTED)
+    assert all(not t.plan.find for t in scenario("stu_plain").turns)  # not_searched needs no find
+    for sc in STUDIO_SCENARIOS:  # a chat that needs a tool searches once
+        for t in sc.turns:
+            assert len(t.plan.find) <= 1
+
+
+@pytest.mark.parametrize("sid,turn,query,tool", _queries())
+def test_each_query_ranks_its_tool_in_the_top_five(
+    sid: str, turn: int, query: str, tool: str
+) -> None:
+    """The query is a real call to the real ranker. When the registry changes and the tool
+    leaves the top 5, this test names the registry and the query to fix. The pack of the
+    tool comes from ``SKILL_FAMILIES``/``FOLLOWS`` through ``tool_packs`` (``pack_of``)."""
+    from acb_skills import tool_search
+
+    got = [name for name, _, _ in tool_search.rank(query, limit=5)]
+    assert tool in got, (
+        f"{sid} turn {turn}: the query {query!r} no longer ranks {tool} (pack {pack_of(tool)}) "
+        f"in the top 5 of tool_search.rank. Top 5 now: {got}. The tool registry changed "
+        "(SKILL_FAMILIES, FOLLOWS, or the tool text): fix the query in scenarios_studio.py."
+    )
+
+
+def test_a_query_of_stop_words_ranks_nothing() -> None:
+    """The base of mutation (c): a query that ranks nothing finds no tool."""
+    from acb_skills import tool_search
+
+    assert tool_search.rank("the a for to of", limit=5) == []
+
+
+def test_the_search_arm_passes_each_studio_check(both) -> None:
+    rows, problems = both
+    assert problems == [], problems
+    mine = [r for r in rows if r["arm"] == SEARCH]
+    assert len(mine) == sum(len(s.turns) for s in STUDIO_SCENARIOS)
+    assert all(r["passed"] for r in mine)
+
+
+def test_the_search_rows_show_what_the_model_searched_and_found(searched) -> None:
+    by = {(r["scenario"], r["turn"]): r for r in searched}
+    for key, tool in (("stu_skills", "studio_skill_list"), ("stu_new_app", "studio_draft")):
+        row = by[(key, 1)]
+        assert row["searches"] == 1 and row["found_tools"] == [tool]
+        assert row["checks"]["found_tool"] is True and row["checks"]["search_round"] is True
+        assert row["loaded_by_model"] == []  # the model searched, and loaded no pack
+        assert row["checks"]["schema_tokens"] is True and row["schema_tokens"] > 0
+    plain = by[("stu_plain", 1)]
+    assert plain["searches"] == 0 and plain["checks"]["not_searched"] is True
+    nofeat = by[("stu_no_feature", 1)]
+    assert nofeat["searches"] == 1 and nofeat["found_tools"] == []
+    assert nofeat["work_tools"] == []  # no Studio tool ran
+    assert nofeat["checks"]["no_studio_names"] is True
+    assert nofeat["checks"]["no_studio_ran"] is True
+    assert by[("stu_held", 1)]["searches"] == 0 and by[("stu_held", 1)]["held"] is False
+
+
+def test_the_held_chat_finds_the_studio_pack_with_its_hold_note(searched) -> None:
+    """The held finding of TS-5b. The product DOES hold the Studio pack in a chat that read
+    mail, so ``held_note`` can pass. The note comes AFTER the rules text, past the 2000
+    characters that the event stream keeps of a tool result, so the harness reads the full
+    answer from the next request (``checks.find_answers_in``)."""
+    row = next(r for r in searched if r["scenario"] == "stu_held" and r["turn"] == 2)
+    assert row["held"] is True
+    assert row["searches"] == 1 and row["found_tools"] == ["studio_skill_list"]
+    assert row["checks"]["held_note"] is True
+
+
+def test_the_full_find_answer_is_read_from_the_request() -> None:
+    long = "Found 5 tools.\n" + "x" * 3000 + "\n## Held in this chat\nnote"
+    body = {
+        "messages": [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": ck.FIND_TOOL}},
+                    {"id": "c2", "function": {"name": "other"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": long},
+            {"role": "tool", "tool_call_id": "c2", "content": "not a find"},
+        ]
+    }
+    assert ck.find_answers_in(body) == [long]
+    cut = [(ck.FIND_TOOL, {}, long[: ck.RESULT_CUT])]
+    assert ck.full_find_results(cut, [long])[0][2] == long
+    assert ck.full_find_results(cut, [])[0][2] == long[: ck.RESULT_CUT]  # no request, no note
+
+
+def test_a_found_answer_with_card_words_is_a_round() -> None:
+    """The rules text of a found pack says "nothing was created". ``refused`` reads that as a
+    refusal, so the round did not count (the first scripted run). An answer that starts
+    ``Found`` is a round. Mutation: use ``refused`` in ``_search_round`` again -> red."""
+    text = (
+        "Found 1 tools. Call them from your next step.\n- x: y\n"
+        "For the other decisions, nothing was created: say so."
+    )
+    assert ck.refused(text) is True  # the trap is real
+    assert ck._search_round(_obs(trace=[_find(text), _studio()]), None) is True
+    refusal = _find("Not found. find_tools acts only in the run that offered it.")
+    assert ck._search_round(_obs(trace=[refusal]), None) is False
+
+
+def test_stop_12_and_the_search_numbers_run_on_real_search_rows(both) -> None:
+    rows, _ = both
+    mine = [r for r in rows if r["arm"] == SEARCH]
+    summary = run.summarise(rows)[SEARCH]
+    assert summary["false_searches"] == 0  # stu_plain must not search
+    assert summary["app_turns"] == 3 and summary["app_turns_searched"] == 3
+    assert summary["searches_per_turn"] == round(sum(r["searches"] for r in mine) / len(mine), 3)
+    assert summary["found_tools_per_turn"] > 0
+    assert summary["schema_tokens_max"] >= summary["schema_tokens_mean"] > 0
+    state, why = next((st, w) for n, st, w in run.stop_results({SEARCH: summary}) if n == 12)
+    # Every Studio app turn needs a find, so a Studio-only set cannot pass result 12:
+    # the rule counts the FULL app set (spec decision 12). The state is computed, not n/a.
+    assert state == "STOP" and "3 of 3 app turns" in why and "False searches" in why
+
+
+def test_the_report_and_the_out_file_hold_the_same_columns_for_pack_and_search(
+    both, tmp_path: Path
+) -> None:
+    """A live run compares the arms column by column: pass rate, calls per turn, input
+    tokens per turn, tools per request and schema tokens. ``--out`` writes the summary
+    through ``_write`` (the live path), and ``report`` prints it."""
+    import json
+
+    rows, _ = both
+    out = tmp_path / "chunk.json"
+    run._write(out, {"rows": rows, "spent_usd": 0.0, "spent_before_usd": 0.0})
+    data = json.loads(out.read_text(encoding="utf-8"))
+    keys = (
+        "turns_passed",
+        "turns",
+        "calls_per_turn",
+        "prompt_per_turn",
+        "tools_per_call_mean",
+        "tools_per_call_max",
+        "schema_tokens_max",
+        "schema_tokens_mean",
+        "searches_per_turn",
+        "false_searches",
+    )
+    for arm in (PACK, SEARCH):
+        assert all(k in data["summary"][arm] for k in keys), arm
+    assert data["summary"][SEARCH]["turns_passed"] == data["summary"][SEARCH]["turns"]
+    assert data["summary"][PACK]["tools_per_call_mean"]
+    assert data["summary"][SEARCH]["schema_tokens_mean"]
+    text = run.report(data)
+    for label in (
+        "Tools in a request, mean",
+        "Schema tokens in a request, mean",
+        "Searches (find_tools) per turn",
+        "False searches",
+        "Layer (b) turns",
+    ):
+        assert label in text
+    assert re.search(r"\| 12 \| (STOP|ok) \|", text)
+    header = next(line for line in text.splitlines() if line.startswith("| Loader and cap"))
+    assert PACK in header and SEARCH in header  # one column for each arm, side by side
+
+
+# ── mutations: each one runs the REAL loop and must go red ───────────────────
+
+
+def _mutated(sid: str, edit: Any, arms: tuple[str, ...] = (SEARCH,)) -> tuple[list, list]:
+    """Run the Studio chat *sid* with the turn plans changed by *edit*."""
+    import dataclasses
+
+    sc = scenario(sid)
+    turns = tuple(dataclasses.replace(t, plan=edit(t.plan)) for t in sc.turns)
+    return run.run_scripted((dataclasses.replace(sc, turns=turns),), arms, None)
+
+
+def test_mutation_a_no_find_for_stu_skills_goes_red() -> None:
+    """The model calls the Studio tool and never searches: the tool is not in the request."""
+    import dataclasses
+
+    rows, problems = _mutated("stu_skills", lambda p: dataclasses.replace(p, find=()))
+    checks = rows[0]["checks"]
+    assert checks["found_tool"] is False and checks["search_round"] is False
+    assert problems and not rows[0]["passed"]
+
+
+def test_mutation_b_a_find_on_the_plain_chat_goes_red_and_counts_a_false_search() -> None:
+    import dataclasses
+
+    rows, problems = _mutated("stu_plain", lambda p: dataclasses.replace(p, find=("write a note",)))
+    assert rows[0]["checks"]["not_searched"] is False and problems
+    assert run.extra_summary(rows)["false_searches"] == 1  # counted on its own
+
+
+def test_mutation_c_a_query_that_ranks_nothing_goes_red() -> None:
+    import dataclasses
+
+    rows, problems = _mutated(
+        "stu_skills", lambda p: dataclasses.replace(p, find=("the a for to",))
+    )
+    assert rows[0]["checks"]["found_tool"] is False
+    assert problems and not rows[0]["passed"]
+
+
+def test_mutation_d_an_empty_flag_runs_no_find_and_fails_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The arm runs with ``tool_search_orgs`` empty. The product offers no ``find_tools``, the
+    call is refused, and the checks fail. No silent pass."""
+    real = run.flag_for
+    monkeypatch.setattr(run, "flag_for", lambda sc, arm: {**real(sc, arm), "tool_search_orgs": ""})
+    rows, problems = run.run_scripted((scenario("stu_skills"),), (SEARCH,), None)
+    row = rows[0]
+    assert row["found_tools"] == []  # no Studio tool ran
+    assert row["checks"]["found_tool"] is False and row["checks"]["search_round"] is False
+    assert problems and not row["passed"]
+
+
+def test_mutation_e_plans_off_prints_skip_again(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(run, "SEARCH_PLANS", False)
+    monkeypatch.setattr(run, "run_scripted", lambda s, arms, tm: ([], []))
+    run.main(["--scripted", "--arms", "pack,search", "--scenarios", "stu_skills"])
+    assert "SKIP: arm search" in capsys.readouterr().out
+    assert run.arms_for(scenario("stu_skills"), run.ALL_ARMS) == (PACK,)
+
+
+def test_mutation_f_a_studio_tool_mapped_to_email_goes_red(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``owner_of_tool`` sent a Studio tool to email before TS-5a. The scripted model then
+    hands the work to the email owner, and the Studio tool never runs."""
+    assert run.owner_of_tool("studio_skill_list") == pack.STUDIO
+    monkeypatch.setattr(run, "owner_of_tool", lambda name: run.EA)
+    rows, problems = run.run_scripted((scenario("stu_skills"),), (PACK, SEARCH), None)
+    by_arm = {r["arm"]: r for r in rows}
+    # The pack arm loads the wrong pack, the Studio tool is not in the request: red.
+    assert not by_arm[PACK]["passed"] and by_arm[PACK]["checks"]["found_tool"] is False
+    assert problems
+    # The search arm finds the tool anyway, but the wrong mapping adds a stray load of an
+    # email pack. The row test (``loaded_by_model == []``) is the fence on that arm.
+    assert by_arm[SEARCH]["loaded_by_model"] != []
+
+
+def test_mutation_g_studio_workflows_on_in_the_flag_is_seen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``studio-workflows`` in ``STUDIO_PACKS`` the flag of the search arm turns the
+    DARK pack on. ``test_studio_workflows_stays_off`` (both arms) is the fence, and it fails."""
+    monkeypatch.setattr(run, "STUDIO_PACKS", ("studio", "studio-workflows"))
+    flag = run.flag_for(scenario("stu_skills"), SEARCH)
+    assert "studio-workflows" in flag["tool_packs"].split(",")
 
 
 # ── the harness stays as it was, and the docs agree ──────────────────────────

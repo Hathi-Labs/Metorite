@@ -34,6 +34,15 @@ APP_ASK = "Make me a small app to log visitor badges."
 PLAIN_ASK = "Give me a one-line thank-you note for the team."
 MAIL_ASK = "What does Priya want about the board order?"
 
+#: TS-5b. What the model passes to ``find_tools`` on the ``search`` arm. A test ranks
+#: each query with ``tool_search.rank`` and needs the expected tool in the top 5. The
+#: words of the member ("make me a small app ...") do NOT rank ``studio_draft``: the
+#: query "make a new app" gives ``studio_app_read`` first, so the model that wrote the
+#: spec example would miss. The draft query names the act, as a model asked for a tool
+#: would ("draft a new app" ranks ``studio_draft`` first).
+SKILLS_QUERY = "list my saved skills"
+APP_QUERY = "draft a new app"
+
 #: A tool that the member's own skills answer. The two drafts of the fixture.
 _DRAFTS = (r"Weekly digest writer", r"Meeting notes tidy")
 #: The skill that is live. A list of drafts must not name it.
@@ -62,7 +71,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                     Check("search_round"),
                     Check("no_unasked_write", 0),
                 ),
-                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER),
+                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER, find=(SKILLS_QUERY,)),
             ),
         ),
     ),
@@ -84,6 +93,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                     (("studio_draft", {"brief": "Log visitor badges"}),),
                     "I drafted a Visitor badges app. Tell me what it should hold, "
                     "and I will add it.",
+                    find=(APP_QUERY,),
                 ),
             ),
         ),
@@ -124,6 +134,10 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                 Plan(
                     (("studio_draft", {"brief": "Skills"}), ("studio_skill_list", {})),
                     "I cannot read saved skills in this chat.",
+                    # The search arm: the find answers FIND_NONE (the pack is not a
+                    # candidate for this member), the model heeds it and calls no tool.
+                    find=(SKILLS_QUERY,),
+                    search_calls=(),
                 ),
             ),
         ),
@@ -159,7 +173,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                     Check("search_round"),
                     Check("no_unasked_write", 0),
                 ),
-                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER),
+                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER, find=(SKILLS_QUERY,)),
             ),
         ),
     ),
