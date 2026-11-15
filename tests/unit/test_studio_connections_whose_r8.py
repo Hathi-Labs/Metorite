@@ -155,14 +155,14 @@ async def _installed(org: str, who: str, connections: list[Any]) -> str:
 
 
 def _connect(world: Any, org: str, *, member: str | None = None, provider: str = TALLY,
-             status: str = "connected") -> None:
+             status: str = "connected", scopes: str = "{}") -> None:
     with world.p.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO integration_connections (organization_id, provider, owning_app, "
-            "scope_kind, member_email, status) VALUES (CAST(:o AS uuid), :p, 'integrations', "
-            ":k, :m, :s)"),
+            "scope_kind, member_email, status, scopes) VALUES (CAST(:o AS uuid), :p, "
+            "'integrations', :k, :m, :s, CAST(:sc AS text[]))"),
             {"o": org, "p": provider, "k": "member" if member else "org",
-             "m": member.lower() if member else None, "s": status})
+             "m": member.lower() if member else None, "s": status, "sc": scopes})
 
 
 def _run(world: Any, fn: Any) -> Any:
@@ -367,7 +367,7 @@ def test_r8_a_version_that_widens_scopes_waits_for_an_approval(world) -> None:
         small = [{"name": TALLY, "as": "org", "scopes": ["read"]}]
         wide = [{"name": TALLY, "as": "org", "scopes": ["read", "write"]}]
         pid = await _installed(world.a, OWEN, small)
-        _connect(world, world.a)
+        _connect(world, world.a, scopes="{read,write}")
         v1 = await _door(world.a, MEL, pid)
         saved = await _pkg_call("save_draft", world.a, OWEN, package_id=pid,
                                 payload=_manifest(_MIDS[pid], wide, "Wider."))

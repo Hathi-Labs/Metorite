@@ -2845,7 +2845,8 @@ def test_r8_a_missing_connection_refuses_each_action_until_a_member_row_connects
     for (status, detail), action in zip(_run(world, every), _EVERY_ACTION, strict=True):
         assert (status, detail) == (409, {"code": invoke.NEEDS_CONNECTION,
                                           "message": invoke.CONNECTION_TEXT,
-                                          "provider": TALLY, "as": "member"}), action
+                                          "provider": TALLY, "as": "member",
+                                          "reason": "missing"}), action
     assert (_record_row(world, world.rec), _record_count(world, world.obj)) == (before, count)
     rows = _audits(world, world.pkg)
     assert [r[3]["reason"] for r in rows] == [invoke.NEEDS_CONNECTION] * len(_EVERY_ACTION)

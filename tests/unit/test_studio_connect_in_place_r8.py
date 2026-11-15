@@ -88,7 +88,7 @@ ADMIN = ("feature:studio", "integrations:manage")
 TALLY = f"mcp:tally-{TAG}"
 LEDGER = f"ledger_{TAG}"
 DIARY = f"diary_{TAG}"
-ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "met", "reason", "checkable", "setup_href", "can_connect"}
 
 
 def _manifest(names: list[str]) -> dict[str, Any]:
@@ -211,7 +211,10 @@ def test_r8_a_an_org_row_meets_the_need_and_the_rows_keep_the_draft_order(world)
     assert status == 200, got
     assert [r["name"] for r in got["connections"]] == [LEDGER, TALLY]
     assert all(set(r) == ROW_KEYS for r in got["connections"])
-    assert _met(got) == {LEDGER: False, TALLY: True}
+    # I9b-1: a plain name is an ORG need, and a draft is never an approved install.
+    assert _met(got) == {LEDGER: False, TALLY: False}
+    assert {r["name"]: r["reason"] for r in got["connections"]} == {
+        LEDGER: "missing", TALLY: "org_approval"}
     tally = got["connections"][1]
     assert tally["label"] == f"tally-{TAG}"
     assert tally["setup_href"] == f"/integrations?add=mcp&name=tally-{TAG}"
@@ -227,10 +230,12 @@ def test_r8_b_a_row_of_one_org_never_meets_a_need_of_the_other(world) -> None:
     owen = _run(world, lambda: _new(world.a, OWEN, [TALLY, LEDGER]))
     status, got = _run(world, lambda: _read(world.b, ZED, zed))
     assert status == 200, got
-    assert _met(got) == {TALLY: False, LEDGER: True}
+    reasons = {r["name"]: r["reason"] for r in got["connections"]}
+    assert reasons == {TALLY: "missing", LEDGER: "org_approval"}
     status, got = _run(world, lambda: _read(world.a, OWEN, owen))
     assert status == 200, got
-    assert _met(got) == {TALLY: True, LEDGER: False}
+    reasons = {r["name"]: r["reason"] for r in got["connections"]}
+    assert reasons == {TALLY: "org_approval", LEDGER: "missing"}
 
 
 # ── c. The member row of X never counts for Y ─────────────────────────────
@@ -327,7 +332,7 @@ def test_r8_i_a_name_outside_the_registry_is_not_checkable_and_offers_no_connect
             ("mailbox", False, False, False),
             ("whatsapp", False, False, False),
             ("apollo", False, False, False),
-            (TALLY, True, True, grants == ADMIN),
+            (TALLY, False, True, grants == ADMIN),
         ], grants
 
 
@@ -344,5 +349,5 @@ def test_r8_j_a_bare_mcp_and_an_id_off_the_list_are_blocked(world) -> None:
                 for r in got["connections"]] == [
             ("mcp", False, False, False),
             ("slack", False, False, False),
-            (TALLY, True, True, grants == ADMIN),
+            (TALLY, False, True, grants == ADMIN),
         ], grants
