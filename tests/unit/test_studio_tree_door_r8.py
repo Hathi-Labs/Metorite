@@ -594,9 +594,10 @@ def test_r8_a_write_that_moves_a_2000_node_subtree_stays_cheap(world, stats: str
 
 
 #: The most buffers that the SCOPED read of 2,000 nodes may touch. The plain read touches about
-#: 20,000, and the scoped read on the box 18,217 (stale) and 20,146 (never analyzed). A bound
-#: that CI passes proves the runner's plan is of the same order; a failure prints the plan.
-MAX_SCOPED_READ_BUFFERS = 50_000
+#: 20,000. The scoped read with the row rule as a probe touches 44,161 (stale) and 44,168 (never
+#: analyzed) on the box. The rule as a flattened semi-join touched 267,466 never analyzed
+#: (task 3375, 1.4 s on the box).
+MAX_SCOPED_READ_BUFFERS = 100_000
 
 
 class _Recording:
@@ -658,16 +659,16 @@ def test_r8_the_scoped_read_of_2000_nodes_stays_cheap(world, stats: str) -> None
             c.execute(text("ANALYZE studio_record_hot"))
 
     async def build() -> None:
-        [root] = await _put(world.a, world.site2, _site(world.site2, "bigroot", E1, None))
+        [root] = await _put(world.a, world.site, _site(world.site, "bigroot", E1, None))
         for start in range(0, 1999, 50):
-            await _put(world.a, world.site2, *[
-                Write("create", world.site2.id, data={
+            await _put(world.a, world.site, *[
+                Write("create", world.site.id, data={
                     "name": f"n{i}", "keeper": E1, "secret": f"s{i}", "parent": {"id": root.id}})
                 for i in range(start, min(start + 50, 1999))])
 
     try:
         _run(world, build)
-        page, buffers, report = _run(world, lambda: _scoped_read(world.a, world.site2, AS_E1))
+        page, buffers, report = _run(world, lambda: _scoped_read(world.a, world.site, AS_E1))
         print(f"scoped tree read buffers ({stats}): {buffers}")
         if len(page.nodes) < 2000 or not 0 <= buffers < MAX_SCOPED_READ_BUFFERS:
             raise AssertionError(f"read {len(page.nodes)} nodes and touched {buffers} buffers "
