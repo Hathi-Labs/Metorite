@@ -362,6 +362,7 @@ follow-up is already published." The strict check failed it. Now the answer must
 
 A sentence or line that names the live skill must not say "draft". It may say "draft" when it also
 says published, live, already or not a draft (`checks.calls_live_skill_a_draft`).
+The check also reads headings. A list item under a heading that says "draft" counts as a draft. A blank line, a prose line or a new heading ends the block. The check reads English only.
 
 ## Run it with no model
 

@@ -1485,3 +1485,39 @@ def test_the_cap_comment_and_the_docs_name_the_design() -> None:
         encoding="utf-8"
     )
     assert "**Cap turn.**" in spec
+
+
+# ── TS-5b fix: the fair check reads a Drafts heading ─────────────────────────
+
+
+def test_a_live_skill_as_a_bare_bullet_under_a_drafts_heading_fails() -> None:
+    assert not _fair("Drafts:\n- Weekly digest writer\n- Meeting notes tidy\n- Quote follow-up")
+    assert not _fair(
+        "Your drafts are:\n1. Weekly digest writer\n2. Meeting notes tidy\n3. Quote follow-up"
+    )
+
+
+def test_a_live_skill_under_its_own_published_heading_passes() -> None:
+    assert _fair(
+        "Drafts:\n- Weekly digest writer\n- Meeting notes tidy\n\nPublished:\n- Quote follow-up"
+    )
+    assert _fair(
+        "Drafts:\n- Weekly digest writer\n- Meeting notes tidy\nPublished:\n- Quote follow-up"
+    )
+    assert _fair(
+        "Two of your three skills are still drafts:\n- Weekly digest writer\n"
+        "- Meeting notes tidy\nQuote follow-up is already published."
+    )
+    assert _fair(PILOT)
+    assert _fair(
+        "Quote follow-up is not a draft. Drafts: Weekly digest writer, Meeting notes tidy."
+    )
+
+
+def test_mutation_the_heading_rule_removed_lets_the_bare_bullet_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Drafts:\n- Weekly digest writer\n- Meeting notes tidy\n- Quote follow-up"
+    assert not _fair(text)
+    monkeypatch.setattr(ck, "_named_under_draft_heading", lambda answer, live: False)
+    assert _fair(text)  # red: the false pass is back

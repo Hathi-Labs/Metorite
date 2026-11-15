@@ -982,6 +982,34 @@ def calls_live_skill_a_draft(answer: str, live: tuple[str, ...]) -> bool:
             continue
         if any(_found(rf"\b{re.escape(name)}\b", unit) for name in live):
             return True
+    return _named_under_draft_heading(answer, live)
+
+
+_LIST_ITEM = r"^\s*(?:[-*\u2022]|\d+[.)])\s+"
+
+
+def _named_under_draft_heading(answer: str, live: tuple[str, ...]) -> bool:
+    """True when a list item that names a live skill sits under a heading (a line that
+    ends with a colon) that says "draft" and says none of published, live or not.
+    A blank line, a prose line or a new heading ends the block. English only."""
+    in_drafts = False
+    for line in (answer or "").split("\n"):
+        text = line.strip()
+        if not text:
+            in_drafts = False
+        elif re.match(_LIST_ITEM, line):
+            if (
+                in_drafts
+                and not re.search(_NOT_A_DRAFT, text, re.IGNORECASE)
+                and any(_found(rf"\b{re.escape(name)}\b", text) for name in live)
+            ):
+                return True
+        elif text.endswith(":"):
+            in_drafts = bool(re.search(_DRAFT_WORD, text, re.IGNORECASE)) and not re.search(
+                _NOT_A_DRAFT, text, re.IGNORECASE
+            )
+        else:
+            in_drafts = False
     return False
 
 
