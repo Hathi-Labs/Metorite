@@ -58,9 +58,18 @@ def sort_flag_doc_text(text: str) -> str:
     return text[:start] + body + "\n\n" + text[end:]
 
 
+def crowded_lines(text: str) -> list[str]:
+    """Lines of tests/fences.json that hold two test paths. The sorter cannot read them."""
+    return [ln.strip()[:60] for ln in text.splitlines() if ln.count('"tests/') > 1 or ln.count('"workbench/') > 1]
+
+
 def main(argv: list[str]) -> int:
     check = "--check" in argv
     bad = []
+    crowded = crowded_lines(FENCES.read_text(encoding="utf-8"))
+    if crowded:
+        print("more than one entry on a line (put each entry on its own line): " + "; ".join(crowded))
+        return 1
     for path, fn in ((FENCES, sort_fences_text), (FLAG_DOC, sort_flag_doc_text)):
         old = path.read_text(encoding="utf-8")
         new = fn(old)

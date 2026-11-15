@@ -83,3 +83,8 @@ def test_the_real_files_are_in_order():
 def test_lane_rules_name_the_script():
     rules = (ROOT / "scripts/home_server/lanes/lane-rules.md").read_text(encoding="utf-8")
     assert "scripts/sort_fence_lists.py" in rules
+
+
+def test_a_crowded_line_is_reported_not_skipped():
+    text = '{"python": {"safety": [\n  "tests/unit/test_b.py", "tests/unit/test_a.py"\n]}}'
+    assert sfl.crowded_lines(text)

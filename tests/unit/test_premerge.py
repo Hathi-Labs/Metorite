@@ -237,10 +237,12 @@ def test_a_picker_that_does_not_finish_is_unproven_not_a_hang(repo):
     """CIV-MT-3: on the merger PC the default ran past 1000 s. The picker has its own cap."""
     _stub_picker(repo, "import time\ntime.sleep(60)\n")
     _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
     res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="1",
-               PREMERGE_PYTEST_CMD="false")
+               PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
     assert res.returncode == 0, res.stderr
-    assert "UNPROVEN. The picker did not finish in 1s" in res.stdout
+    assert "UNPROVEN. The picker had no verdict within 1s" in res.stdout
+    assert not (repo.parent / "pytest-args").exists(), "no test may run after a picker timeout"
 
 
 def test_no_tests_start_when_the_budget_is_spent(repo):
@@ -252,6 +254,28 @@ def test_no_tests_start_when_the_budget_is_spent(repo):
     assert res.returncode == 0, res.stderr
     assert "UNPROVEN. No test ran: only" in res.stdout
     assert not (repo.parent / "pytest-args").exists()
+
+
+def test_a_picker_that_needs_the_kill_is_unproven_too(repo):
+    """timeout -k ends with 137 when the child ignores TERM. That is a timeout, not a failure."""
+    _stub_picker(repo, "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n")
+    _advance_main(repo, "other.py")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="1",
+               PREMERGE_PYTEST_CMD="false")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The picker had no verdict" in res.stdout
+
+
+def test_a_spent_budget_runs_no_picker_and_no_tsc(repo):
+    """Finding 1 and 2 of the review of PR 2407: the picker and the baseline run took their full cap."""
+    _frontend_pair(repo)
+    _stub_picker(repo, _PICKER_CRLF)
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="150",
+               PREMERGE_TSC_CMD=f"touch {marker.as_posix()}", PREMERGE_PYTEST_CMD="false")
+    assert res.returncode == 0, res.stderr
+    assert not marker.exists()
+    assert "UNPROVEN" in res.stdout
 
 
 def test_each_stage_says_how_long_it_took(repo):
