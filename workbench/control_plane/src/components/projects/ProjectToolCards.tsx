@@ -47,7 +47,7 @@ import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
 import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
-import { cardOutcomeOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
+import { cardOutcomeOf, memberLineOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -853,7 +853,8 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
-  const detail = forPeopleFenced(result);
+  // HRD-7: a card outcome shows its head only. Its next step is for the model.
+  const detail = forPeopleFenced(memberLineOf(result));
   const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed"
@@ -885,8 +886,10 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // list: the parent of new subtasks prints its id with no row.
   const linkOut = (outcome === "done" || outcome === "partial") && !!rowId && !tasks.some((t) => t.id === rowId);
   // A receipt whose whole body is one short line draws it on the title row:
-  // "Not done  Nothing was created." is one row, not two.
-  const aside = tasks.length === 0 && !linkOut && oneLine(detail) ? detail : "";
+  // "Not done  Nothing was created." is one row, not two. A card outcome
+  // (HRD-7) is a sentence or two, so it draws under the title: on a phone, a
+  // line beside the title cut "Cancelled" to "Ca…".
+  const aside = tasks.length === 0 && !linkOut && oneLine(detail) && cardOutcomeOf(result) === null ? detail : "";
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
   // no toggle of its own. Its title row is the header (`header="own"`).
@@ -1103,7 +1106,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   const tasks = kind.rows === "task" ? parseTaskRows(result) : [];
   const words = kind.rows === "task" ? [] : parseVocabRows(result);
   const rows: readonly unknown[] = kind.rows === "task" ? tasks : words;
-  const head = forPeopleFenced(withoutLegend(result).split(NL)[0] ?? "");
+  const head = forPeopleFenced(withoutLegend(memberLineOf(result)).split(NL)[0] ?? "");
   const notes = batchNotes(result);
   const icon =
     outcome === "failed" ? "X"
@@ -1126,8 +1129,9 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   // its count and the rows' names on one line. That row is the card's own
   // (`header="own"`), so there is one title and one toggle.
   // No rows and one short line (a refusal, "Nothing was created."): the line
-  // sits on the title row, and the card is one row.
-  const aside = rows.length === 0 && notes.length === 0 && oneLine(head) ? head : "";
+  // sits on the title row, and the card is one row. A card outcome (HRD-7)
+  // draws under the title, so a phone never cuts the title.
+  const aside = rows.length === 0 && notes.length === 0 && oneLine(head) && cardOutcomeOf(result) === null ? head : "";
   const names = kind.rows === "task"
     ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`)
     : words.map((r) => r.name);

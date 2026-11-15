@@ -44,6 +44,7 @@ import { fieldSpec } from "@/lib/cardFields";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
+import { memberLineOf } from "@/lib/cardOutcomes";
 import { argFields, needsClamp } from "@/lib/toolArgs";
 import {
   COMMAND_CAP,
@@ -408,7 +409,8 @@ export function ClampText({ text, clamp }: { text: string; clamp: boolean }) {
 
 /** Any other step expands into its arguments and its result. */
 function ArgsDetail({ event, step, dur }: { event: ToolEvent; step: ToolStep; dur?: number }) {
-  const out = event.result ? capOutput(String(event.result), 2000) : null;
+  // HRD-7: a card outcome shows its head only. Its next step is for the model.
+  const out = event.result ? capOutput(memberLineOf(String(event.result)), 2000) : null;
   // Each key in product words (`fieldSpec`, the one map of a key to its
   // label), and each value in full. The keys that the row already shows are
   // left out.
@@ -496,10 +498,10 @@ function SubAgentSteps({ event }: { event: ToolEvent }) {
                   // One line, and an ellipsis where it stops: `truncate`,
                   // never a silent cut. The tooltip holds the rest.
                   <span
-                    title={capOutput(String(st.result)).text}
+                    title={capOutput(memberLineOf(String(st.result))).text}
                     className="text-[10px] text-muted-foreground font-mono truncate min-w-0"
                   >
-                    {capOutput(String(st.result), 400).text}
+                    {capOutput(memberLineOf(String(st.result)), 400).text}
                   </span>
                 )}
               </li>

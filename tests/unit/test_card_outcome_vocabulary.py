@@ -467,13 +467,29 @@ def test_the_projects_cancel_constant_is_gone() -> None:
     assert not hasattr(writes, "CARD_REVISED")
 
 
-# ── 5. The chat cards read the same leads ───────────────────────────────────
+# ── 5. The chat cards read the same rows ────────────────────────────────────
 
 
-def test_the_chat_cards_hold_the_same_leads() -> None:
-    """``src/lib/cardOutcomes.ts``. Its own test reads this side."""
+def test_the_chat_cards_hold_the_same_rows() -> None:
+    """``src/lib/cardOutcomes.ts`` holds each lead, what happened and the next
+    step, so its ``memberLineOf`` cuts the next step off a receipt. Its own
+    test reads this side."""
     ts = CARD_OUTCOMES_TS.read_text(encoding="utf-8")
-    body = ts[ts.index("CARD_OUTCOME_LEADS"):]
+    body = ts[ts.index("export const CARD_OUTCOME_TEXTS"):]
     body = body[:body.index("};")]
-    pairs = re.findall(r'^\s+"?([a-z ]+?)"?: "([^"]+)",$', body, re.MULTILINE)
-    assert pairs == [(k, o.lead) for k, o in at.CARD_OUTCOMES.items()]
+    rows = re.findall(
+        r'^\s+"?([a-z ]+?)"?: \{ lead: "([^"]+)", happened: "([^"]+)", next: "([^"]+)" \},$',
+        body, re.MULTILINE)
+    assert rows == [(k, o.lead, o.happened, o.next) for k, o in at.CARD_OUTCOMES.items()]
+
+
+@pytest.mark.parametrize("outcome", list(at.CARD_OUTCOMES))
+def test_the_member_line_is_the_head(outcome: str) -> None:
+    """The cut that ``memberLineOf`` makes, at the next step of the row, gives
+    ``card_outcome_head`` exactly. So a receipt shows the head, and the next
+    step stays for the model."""
+    text = at.card_outcome_text(outcome, "No lead was created for Veena.")
+    nxt = at.CARD_OUTCOMES[outcome].next
+    assert text.endswith(" " + nxt)
+    assert text[: text.index(nxt)].strip() == at.card_outcome_head(
+        outcome, "No lead was created for Veena.")

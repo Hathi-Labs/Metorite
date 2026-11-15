@@ -64,7 +64,7 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
 import { DRAFT_TOOLS, DraftPinContext } from "@/lib/pinnedDraft";
-import { cardOutcomeOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
+import { cardOutcomeOf, memberLineOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -2350,7 +2350,8 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
             <p className="mt-0.5 text-xs text-muted-foreground">{REVISED_NOTE}</p>
           ) : result && (
             <div className="mt-0.5">
-              <Readout result={result} />
+              {/* HRD-7: a card outcome shows its head only. Its next step is for the model. */}
+              <Readout result={memberLineOf(result)} />
             </div>
           )}
       </RollupBody>
