@@ -624,6 +624,8 @@ async def _scoped_read(org: str, obj: store.StudioObject, viewer: Viewer) -> tup
         page = await store.read_tree(rec, package_id=obj.package_id, object_id=obj.id,
                                      viewer=viewer, limit=2000)
         (sql, binds), = rec.calls
+    # The statement is the SCOPED one: it carries the binds of the row rule of the viewer.
+    assert binds.get("me") == viewer.email.strip().lower() and binds.get("akeys"), binds
     try:
         async with tenant_session(org) as db:
             await db.execute(text("SET LOCAL statement_timeout = 60000"))
