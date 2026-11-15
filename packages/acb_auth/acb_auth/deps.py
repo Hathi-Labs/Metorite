@@ -421,7 +421,7 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 
 def _verify_signed_request(
-    request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
+    request: Request, keys: dict[str, str], body: bytes | None, nonce: str | None,
 ) -> tuple[str, str, str, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
     session key)`` of a well-signed, fresh request, or the reason to
@@ -433,8 +433,12 @@ def _verify_signed_request(
     header, never from a body or a query.
 
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
-    ``_agent_user`` read and the nonce it checked, and both are signed.
+    ``_signed_body`` read and the nonce it checked, and both are signed.
+    CIV-14b: a write whose body ``_signed_body`` could not give (``None``) is
+    the refusal ``body``.
     """
+    if body is None:
+        return "body"
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
     timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
@@ -758,6 +762,27 @@ async def _door_gate(
     return refused
 
 
+async def _signed_body(request: Request) -> bytes | None:
+    """The body bytes that the signature of a write covers, or ``None``.
+
+    EA-6a: the ONE reader of the body in branch 0. A JSON route reads its body
+    with ``request.body()``, which keeps the bytes. CIV-14b: a form route
+    parses a multipart body BEFORE any dependency runs, so the stream is gone
+    here. For the upload of ``upload_task_image``, the gateway wrapper
+    ``AgentUploadBody`` puts the whole body in the scope, as ``bytes``, under
+    the key ``agent_signing.SIGNED_BODY_SCOPE_KEY``, and this reads it. A
+    client cannot set a scope key. A consumed stream with no copy gives
+    ``None``, and :func:`_verify_signed_request` refuses it as ``body``.
+    """
+    kept = request.scope.get("acb.agent_signed_body")
+    if isinstance(kept, bytes):
+        return kept
+    try:
+        return await request.body()
+    except RuntimeError:  # "Stream consumed": a form route with no copy
+        return None
+
+
 
 async def _agent_user(request: Request) -> UserContext:
     """Branch 0 of :func:`get_current_user`: the seven steps of spec §10.1.
@@ -829,7 +854,7 @@ async def _agent_user(request: Request) -> UserContext:
         nonce = _one_header(request, agent_signing.HEADER_NONCE)
         if not agent_signing.nonce_is_well_formed(nonce):
             return _refuse_agent("nonce")
-        body = await request.body()
+        body = await _signed_body(request)
 
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     signed = _verify_signed_request(request, keys, body, nonce)

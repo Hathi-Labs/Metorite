@@ -1,6 +1,6 @@
 # Studio layouts: standard page layouts by use case
 
-**Status: DRAFT for owner review (2026-11-14, task 3312). Not yet ACTIVE.** Board: WS-STU, Metorite task 3312, slices 3313 to 3322. Parent spec: `ai_studio.md` (§5.5 is the app frame, D219). Research note: the lane file `studio_layouts.md` of 2026-11-14. This spec holds the result, and the note is not a source of record.
+**Status: DRAFT (2026-11-14, task 3312). The owner answered the three questions of §9 on 2026-11-14, and the spec is not yet ACTIVE. LY-0 is BUILT, dark (2026-11-15, task 3313, PR 2354): the model, the validator and the TS twin, with no renderer.** Board: WS-STU, Metorite task 3312, slices 3313 to 3322. Parent spec: `ai_studio.md` (§5.5 is the app frame, D219). Research note: the lane file `studio_layouts.md` of 2026-11-14. This spec holds the result, and the note is not a source of record.
 
 **Bottom line.** Studio ships 12 page presets and 2 patterns (record 360 and form wizard). A page preset is one enum value plus named regions. The author and Mira pick a preset, and the app draws it. A page with no preset keeps today's grid, so stored manifests stay valid. Build six first: table workspace, record 360, board, form wizard, work queue with approval, and dashboard. Record 360 and form wizard build as the record page and a Form mode (§6).
 
@@ -244,7 +244,7 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 
 | Id | Task | Slice | Done when |
 |---|---|---|---|
-| LY-0 | 3313 | Preset model: `layout`, `regions`, validator, TS twin, golden, the four validator changes of §6 | An old manifest validates. A bad region fails to publish. First six values only. HIGH, dark. |
+| LY-0 | 3313 | Preset model: `layout`, `regions`, validator, TS twin, golden, the four validator changes of §6 | An old manifest validates. A bad region fails to publish. First six values only. HIGH, dark **Status: BUILT, dark (2026-11-15, PR 2354).** No renderer yet: a layout page draws "This page has no views." until LY-2. Nothing writes `layout` before LY-8. |
 | LY-1 | 3314 | Shared states component | Every preset uses it. A test refuses a local copy. |
 | LY-2 | 3315 | Table workspace | Meets the L2 bar, with bulk bar. |
 | LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). |
@@ -255,13 +255,13 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 | LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. |
 | LY-9 to LY-15 | 3322 | Calendar, list and detail, gallery, map, timeline, checklist, document and settings | One slice each, after its block. |
 
-## 9. Open questions for the owner
+## 9. Owner decisions (2026-11-14, task 3312)
 
-1. **Does the preset replace the grid for a page, or only fill it?** Recommended: replace (rule 6.2), so a page has one source of layout.
-2. **Is the `layout` enum closed?** Recommended: closed, 12 values, extended by a spec change. A free string would let an app invent a layout.
-3. **Which block gaps does the owner want first?** Recommended: D9 (Checklist) and D22 (Activity feed), because L13 and L6 need them.
+The owner took the recommendation on all three questions.
 
-Nobody builds against an answer until the owner gives it on task 3312.
+1. **The preset replaces the grid for a page.** A page has one source of layout (rule 6.2).
+2. **The `layout` enum is closed.** A spec change adds a value, in the slice of its block.
+3. **D9 (Checklist) and D22 (Activity feed) come first** among the missing blocks, because L13 and L6 need them.
 
 ## 10. Limits of the research
 
