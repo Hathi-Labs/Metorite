@@ -58,7 +58,8 @@ const WRITE_ACTION = /^object:[a-z][a-z0-9_]{0,47}\.(?:create|update|delete)$/;
 const ACTION_ID = /^[a-z][a-z0-9_]{0,47}$/;
 const PACKAGE_ID = /^[0-9a-fA-F-]{36}$/;
 
-export const NOT_DECLARED_SENTENCE = "This package does not declare that action, so it cannot run here.";
+export const NOT_DECLARED_SENTENCE =
+  "This app does not declare that action yet, so it cannot run here. Ask Mira to add the action to the app.";
 export const NEEDS_CONNECTION_SENTENCE =
   "This app needs a connection first. Connect it on the card at the top of the app, then try again.";
 export const NOT_OPEN_SENTENCE = "This action is not open on this page.";
