@@ -43,7 +43,15 @@ export interface ConnectionRow {
   setupHref: string | null;
   /** The caller may start the connect (an org connection needs `integrations:manage`). */
   canConnect: boolean;
+  /**
+   * Why the need is unmet (WS-STU I9b-1): `reconnect` when a row exists and grants fewer scopes than the
+   * app asks, `org_approval` when an `org` need waits for an admin to approve the app. `missing` otherwise.
+   */
+  reason?: ConnectReason;
 }
+
+/** The reasons that a row is not met, as the gateway answers them (`ok` for a met row). */
+export type ConnectReason = "ok" | "missing" | "reconnect" | "org_approval";
 
 /** One line of the IDE. */
 export type ConnectLine =
@@ -56,6 +64,9 @@ export type ConnectLine =
 export const MCP_PREFIX = "mcp:";
 /** The bare id of the family row "Another system". No server row has it, so it never meets. */
 export const BARE_MCP = "mcp";
+
+/** The line of an `org` need that no admin approved yet (WS-STU I9b-1). */
+export const ORG_APPROVAL_LINE = "An admin must approve this app before it can use the org account.";
 
 /** The words of the read that failed. They say what happened and the next step. */
 export const CONNECTIONS_READ_FAILED =
@@ -112,6 +123,15 @@ export function connectLines(rows: readonly ConnectionRow[], pkg: string, return
         row,
         text: `${capital(what)} cannot be connected from Studio yet. This app will not run while the draft names it. ${next}`,
       };
+    }
+    if (row.reason === "org_approval") {
+      return { kind: "ask", row, text: ORG_APPROVAL_LINE };
+    }
+    if (row.reason === "reconnect") {
+      const text = `Reconnect ${what}: your connection does not grant what this app needs.`;
+      return row.canConnect
+        ? { kind: "connect", row, text, href: connectHref(row, pkg, returnTo) }
+        : { kind: "ask", row, text };
     }
     if (!row.canConnect) {
       return { kind: "ask", row, text: `An admin must connect ${what}. Ask one, then come back.` };
@@ -197,6 +217,10 @@ export function parseConnections(body: unknown): ConnectionRow[] {
       checkable: item.checkable !== false,
       setupHref: safeLocalPath(item.setup_href),
       canConnect: item.can_connect === true,
+      // An older gateway sends no key: a met row is ok, any other row is missing.
+      reason: item.reason === "reconnect" || item.reason === "org_approval" || item.reason === "ok"
+        ? item.reason
+        : item.met === true ? "ok" : "missing",
     });
   }
   return out;
