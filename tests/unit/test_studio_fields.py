@@ -215,7 +215,7 @@ def _words(message: str) -> int:
 
 
 def test_the_types_are_the_spec_list() -> None:
-    assert len(sf.FIELD_TYPES) == 23
+    assert len(sf.FIELD_TYPES) == 24
     assert set(_GOOD) == set(sf.FIELD_TYPES)
     assert {kind for kind, _, _ in _BAD} == set(sf.FIELD_TYPES)
     assert set(sf.HOT_TYPES) <= set(sf.FIELD_TYPES)
