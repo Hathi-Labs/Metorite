@@ -4646,7 +4646,10 @@ _TREE_ONE_ROOT = (
 #: ``(organization_id, object_id, field_key)`` of the object. The walk of a READ then joins this
 #: set by the text of the parent id, so the plan does not choose an index for each step, and the
 #: cost is one scan of the field plus the join (task 3308). The write check keeps a lookup for
-#: each step, because its subtrees are small and a write must not scan the whole field.
+#: each step, because a write must not scan the whole field. RESIDUAL (follow-up of 3308): with
+#: stale statistics a write that moves a node with a LARGE subtree (about 2,000 nodes) can still
+#: take the wrong index for those lookups (about 0.9 s on the box, past the batch deadline on a
+#: slow runner). Writes of leaves and small subtrees are not affected.
 _TREE_KIDS = (
     "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
     "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "

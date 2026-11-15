@@ -420,7 +420,9 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> Non
     def prepare_stats() -> None:
         # STU-C18 finding (task 3308): a table that is filled in bulk keeps the planner
         # statistics of the time before the fill until autovacuum runs. The statements of
-        # the tree read and of the C18 write check must not depend on them. Two states:
+        # the tree read must not depend on them, and the C18 write check must not for a
+        # write of a leaf or a small subtree (a write that moves a node with a LARGE subtree
+        # is the residual named at `_TREE_KIDS`). Two states:
         # "stale" analyzes both tables while they hold only the fixture rows, and
         # "never_analyzed" wipes every statistic (pg_statistic and reltuples). In both,
         # autovacuum is off and the test fills 2,000 nodes through the real writes.
