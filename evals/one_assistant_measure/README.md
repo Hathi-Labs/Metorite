@@ -326,6 +326,43 @@ uv run python -m evals.one_assistant_measure.run --scripted --scenarios stu_skil
 
 The fence is `tests/unit/test_one_assistant_measure_search.py`.
 
+### TS-5b: the cap chat, the offered field and a fair skill check
+
+**The cap chat `stu_cap`** is the case that the tool-search design exists for. It has four turns
+on the CRM surface.
+
+| Turn | Words | Pack that loads by words | Tool that runs |
+|---|---|---|---|
+| 1 | Show my open deals. | `crm-records` | `get_pipeline` |
+| 2 | Check my inbox for Priya. | `email` | `query_inbox` |
+| 3 | What reminders do I have? | `projects-reminders` | `list_reminders` |
+| 4 | Which of my saved skills are still drafts? | none | see below |
+
+A pack is sticky only after one of its tools ran, so turns 1 to 3 each run one. After turn 3 the
+run holds three packs, the cap (`tool_packs.MAX_PACKS`). Turn 4 matches no pack, so Studio does
+not load by words, and `plan_loader` offers nothing. `load_skill_tools` is not in the request.
+
+* **`search` arm.** `find_tools` is in the request. A found tool takes no place of `MAX_PACKS`.
+  The model finds `studio_skill_list` in `studio-more`. Checks: `found_tool`, `search_round`.
+* **`pack` arm.** The model has no way to a Studio tool. No Studio tool runs, and the answer says
+  that it cannot. Checks: `no_studio_ran`, `no_load_offered`, `says_it_cannot`.
+
+A `Check` has an `arms` field, so one turn holds the checks of each arm. `Plan.search_answer`
+gives the answer of the `search` arm when it differs. A test proves the words of each turn with the
+real `matched_layer`. It also proves the three held packs and the empty offer from the log of the loader.
+
+**`find_tools_offered` and `find_tools_requests`.** Each row (live and scripted) says whether
+`find_tools` was in a request of the turn, and in how many requests. A `pack` row holds False and 0.
+The report prints the requests per turn and a line `offered but not called: N of M` for the
+`search` arm. It tells "offered and ignored" from "not offered". It is a count, not a check.
+
+**`drafts_listed_fairly`** replaces `answer_none` for the live skill in `stu_skills`. The first
+live pilot (2026-11-15) gave a right answer: "Two of your three skills are still drafts: ... Quote
+follow-up is already published." The strict check failed it. Now the answer must name both drafts.
+
+A sentence or line that names the live skill must not say "draft". It may say "draft" when it also
+says published, live, already or not a draft (`checks.calls_live_skill_a_draft`).
+
 ## Run it with no model
 
 ```bash

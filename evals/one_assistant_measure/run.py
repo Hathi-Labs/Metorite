@@ -412,7 +412,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                     n += 1
                     orch.append(tool_turn(name, args, call_id=f"call_{n}"))
             used = used or bool(mine)
-        orch.append(text_turn(plan.answer))
+        answer = plan.search_answer if arm == SEARCH_ARM and plan.search_answer else plan.answer
+        orch.append(text_turn(answer))
     models = {ORCHESTRATOR: ReplyModel(orch)}
     models.update({owner: ReplyModel(turns) for owner, turns in subs.items()})
     if arm == SPAWN_ARM:
@@ -812,6 +813,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 held=marked,
             )
             result = ck.check_turn(turn, obs)
+            find_requests = find_requests_of(orch_calls)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
             # A send that reached the Router and that no tap saw is counted at
             # the worst case, never at zero (2026-10-30 drain).
@@ -858,6 +860,11 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                                        if name not in (ck.FIND_TOOL, ck.LOAD_TOOL)
                                        and not ck.refused(result)}),
                 "schema_tokens": obs.schema_tokens, "held": obs.held,
+                # TS-5b. Was ``find_tools`` in the request? A turn with 0 searches is then
+                # "offered and ignored" (True) or "not offered" (False). On the pack arms
+                # the tool is never offered, so a pack row holds False and 0.
+                "find_tools_offered": find_requests > 0,
+                "find_tools_requests": find_requests,
             }
             marked = marked or row["mark_writes"] > 0
             rows.append(row)
@@ -866,6 +873,13 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
             history += [{"role": "user", "content": turn.words},
                         {"role": "assistant", "content": record.answer}]
     return rows
+
+
+def find_requests_of(calls: list[Any]) -> int:
+    """TS-5b. How many of the orchestrator's *calls* (requests) carried ``find_tools``.
+    The tap sets ``tool_names`` on a live and on a scripted call alike, so a row says
+    "offered and ignored" (offered, 0 searches) apart from "not offered"."""
+    return sum(1 for c in calls if ck.FIND_TOOL in getattr(c, "tool_names", ()))
 
 
 def reachable_of(events: list[dict[str, Any]]) -> frozenset[str] | None:
@@ -1126,6 +1140,7 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
         for agent, n in (r.get("handoffs_refused") or {}).items():
             refused[agent] += n
     searched = [r for r in app if r.get("searches")]
+    offered = [r for r in rs if r.get("find_tools_offered")]
     tokens = [r["schema_tokens"] for r in rs if r.get("schema_tokens")]
     return {
         "app_turns": len(app),
@@ -1136,6 +1151,12 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
         "search_turn_share_pct": _pct(len(searched), len(app)),
         "searches_per_turn": _mean([float(r.get("searches", 0)) for r in rs]),
         "found_tools_per_turn": _mean([float(len(r.get("found_tools") or [])) for r in rs]),
+        # TS-5b. A turn where ``find_tools`` was in a request and the model made no
+        # search: "offered and ignored". It is a count, never a check.
+        "find_offered_turns": len(offered),
+        "find_requests_per_turn": _mean([float(r.get("find_tools_requests", 0)) for r in rs]),
+        "find_offered_not_called": sum(1 for r in offered if not r.get("searches")),
+        "offered_not_called": f"{sum(1 for r in offered if not r.get('searches'))} of {len(offered)}",
         "false_searches": sum(r.get("searches", 0) for r in rs
                               if r["checks"].get("not_searched") is not None),
         "schema_tokens_max": max(tokens, default=None),
@@ -1370,9 +1391,15 @@ def report(data: dict[str, Any]) -> str:
                 ("Tools that ran after a find or a load, per turn", "found_tools_per_turn"),
                 ("App turns that searched", "app_turns_searched"),
                 ("False searches (a find on a turn that needs no tool)", "false_searches"),
+                ("Turns where find_tools was offered", "find_offered_turns"),
+                ("Requests that carried find_tools, per turn", "find_requests_per_turn"),
                 ("Schema tokens in a request, most", "schema_tokens_max"),
                 ("Schema tokens in a request, mean", "schema_tokens_mean")):
             lines.append(f"| {label} | " + " | ".join(str(s[a].get(key)) for a in arms) + " |")
+        # TS-5b. Check-free: it tells "offered and ignored" from "not offered".
+        for a in arms:
+            if s[a].get("find_offered_turns"):
+                lines += ["", f"{a}: offered but not called: {s[a].get('offered_not_called')}"]
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
         lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]
     return "\n".join(lines)

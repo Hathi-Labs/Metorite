@@ -140,6 +140,9 @@ class Check:
     arg: Any = None
     #: The name in the report. The kind, when empty.
     label: str = ""
+    #: TS-5b. The arms that run this check. Empty: every arm. A turn at the pack cap
+    #: has one outcome on the ``search`` arm and another on the ``pack`` arm.
+    arms: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -169,6 +172,9 @@ class Plan:
     #: :attr:`calls`. None: the same calls. ``()``: the model heeds an empty find and
     #: calls no tool (the member without ``feature:studio``).
     search_calls: tuple[tuple[str, dict[str, Any]], ...] | None = None
+    #: TS-5b. The answer of the ``search`` arm, when it differs from :attr:`answer`
+    #: (the cap chat: the search arm finds the tool, the pack arm cannot). None: the same.
+    search_answer: str | None = None
 
 
 @dataclass(frozen=True)

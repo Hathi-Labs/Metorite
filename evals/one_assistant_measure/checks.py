@@ -958,6 +958,42 @@ def _answer_none(obs: Observation, arg: Any) -> bool:
     return not any(_found(p, obs.answer) for p in arg)
 
 
+#: TS-5b. A sentence or line that says a skill is a draft, and one that says it is not.
+_DRAFT_WORD = r"\bdrafts?\b"
+_NOT_A_DRAFT = (
+    r"\b(?:published|live|already|not (?:a |still )?drafts?|no longer (?:a )?drafts?|"
+    r"isn't (?:a |still )?drafts?|is not (?:a |still )?drafts?)\b"
+)
+
+
+def calls_live_skill_a_draft(answer: str, live: tuple[str, ...]) -> bool:
+    """True when the sentence or line of *answer* that names a live skill calls it a draft.
+
+    Pure and deterministic (TS-5b, the pilot of 2026-11-15). The first live answer
+    "Two of your three skills are still drafts: ... Quote follow-up is already
+    published." is right, and the strict check ``answer_none`` failed it, because it
+    names the live skill. Now the unit (a sentence or a line, :func:`sentences`) that
+    names a live skill fails only when it says "draft" and holds none of
+    "published", "live", "already" or a negated draft."""
+    for unit in sentences(answer):
+        if not re.search(_DRAFT_WORD, unit, re.IGNORECASE):
+            continue
+        if re.search(_NOT_A_DRAFT, unit, re.IGNORECASE):
+            continue
+        if any(_found(rf"\b{re.escape(name)}\b", unit) for name in live):
+            return True
+    return False
+
+
+def _drafts_listed_fairly(obs: Observation, arg: Any) -> bool:
+    """The answer names EVERY draft skill and does not call a live skill a draft.
+    *arg* is ``((draft patterns, ...), (live names, ...))``. A live skill may be NAMED,
+    when its sentence says that it is published (:func:`calls_live_skill_a_draft`)."""
+    drafts, live = arg
+    return (all(_found(p, obs.answer) for p in drafts)
+            and not calls_live_skill_a_draft(obs.answer, tuple(live)))
+
+
 def _right_pack(obs: Observation, arg: Any) -> bool | None:
     """Pack arm: a tool of pack *arg* ran in the orchestrator's own run, or the
     route went to the owner's specialist AND the needed pack was not reachable
@@ -1289,6 +1325,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_unasked_write": _no_unasked_write,
     "work_write": _work_write,
     "answer_none": _answer_none,
+    "drafts_listed_fairly": _drafts_listed_fairly,
     "count_stated": _count_stated,
     "body_figure": _body_figure,
     "answer_not_mine": _answer_not_mine,
@@ -1322,6 +1359,8 @@ def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
     """Each check of *turn* on *obs*, plus ``ran`` and the :data:`AUTO` checks."""
     out: dict[str, bool | None] = {"ran": obs.error is None}
     for c in turn.checks:
+        if getattr(c, "arms", ()) and obs.arm not in c.arms:
+            continue  # TS-5b: a check of one arm (the cap chat)
         out[c.name] = KINDS[c.kind](obs, c.arg)
     for name in AUTO:
         out[name] = KINDS[name](obs, None)

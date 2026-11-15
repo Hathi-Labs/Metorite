@@ -36,19 +36,19 @@ from evals.one_assistant_measure import checks as ck
 from evals.one_assistant_measure import pack, run
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import all_scenarios, scenario
-from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS, pack_of
+from evals.one_assistant_measure.scenarios_studio import CAP_TURNS, STUDIO_SCENARIOS, pack_of
 from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
 from evals.routing import dataset as ds
 
 SEARCH, PACK = ck.SEARCH_ARM, "pack"
-STUDIO_IDS = ("stu_skills", "stu_new_app", "stu_plain", "stu_no_feature", "stu_held")
+STUDIO_IDS = ("stu_skills", "stu_new_app", "stu_plain", "stu_no_feature", "stu_held", "stu_cap")
 NOT_FOUND = 'Error: Requested function "studio_skill_list" not found'
 OK_ANSWER = '{"ok": true, "skills": []}'
 
 
 @pytest.fixture(scope="module")
 def both() -> tuple[list[dict[str, Any]], list[str]]:
-    """The five Studio chats on the pack arm and on the search arm (TS-5b)."""
+    """The Studio chats on the pack arm and on the search arm (TS-5b)."""
     return run.run_scripted(STUDIO_SCENARIOS, (PACK, SEARCH))
 
 
@@ -84,7 +84,7 @@ def _studio(
 # ── the chats ────────────────────────────────────────────────────────────────
 
 
-def test_the_five_studio_chats_are_in_the_set_and_in_no_work_set() -> None:
+def test_the_studio_chats_are_in_the_set_and_in_no_work_set() -> None:
     assert tuple(s.id for s in STUDIO_SCENARIOS) == STUDIO_IDS
     assert not {s.id for s in STUDIO_SCENARIOS} & {s.id for s in WORK_SCENARIOS}
     assert all(s.set == "studio" for s in STUDIO_SCENARIOS)
@@ -122,14 +122,26 @@ def test_no_word_of_any_pack_matches_a_studio_chat() -> None:
     """The proof that layer (a) loads no pack by the words of a Studio chat. The
     pack arm then needs ``load_skill_tools``, and the search arm needs ``find_tools``.
     Mutation: put "ai studio" in a chat → ``matched_layer("studio", ...)`` is "words" → red."""
+    # TS-5b. The first three turns of ``stu_cap`` load a pack BY WORDS on purpose (the
+    # next test proves which). No turn of any chat matches a Studio pack.
+    cap_loads = {words for words, _, _, _ in CAP_TURNS}
     hits = [
         (sc.id, slug, tool_packs.matched_layer(slug, turn.words))
         for sc in STUDIO_SCENARIOS
         for turn in sc.turns
         for slug in tool_packs.PACKS
         if tool_packs.matched_layer(slug, turn.words)
+        and not (sc.id == "stu_cap" and turn.words in cap_loads)
     ]
     assert hits == [], hits
+    studio = [s for s in tool_packs.PACKS if tool_packs.PACKS[s].owner == "studio-builder"]
+    assert [
+        (sc.id, slug)
+        for sc in STUDIO_SCENARIOS
+        for turn in sc.turns
+        for slug in studio
+        if tool_packs.matched_layer(slug, turn.words)
+    ] == []
 
 
 def test_the_proof_can_fail() -> None:
@@ -194,6 +206,7 @@ def test_the_rows_hold_the_numbers_of_the_search_arm(scripted) -> None:
     rows, _ = scripted
     for r in rows:
         assert r["searches"] == 0  # no find_tools call exists on the pack arm
+        assert r["find_tools_offered"] is False and r["find_tools_requests"] == 0
         assert r["schema_tokens"] > 0
         assert all(c["schema_tokens"] > 0 for c in r["model_calls"] if c["agent"] == "orchestrator")
     skills = next(r for r in rows if r["scenario"] == "stu_skills")
@@ -810,12 +823,24 @@ EXPECTED = {
     ("stu_new_app", 1): "studio_draft",
     ("stu_no_feature", 1): "studio_skill_list",  # the tool that the query would find
     ("stu_held", 2): "studio_skill_list",
+    ("stu_cap", 4): "studio_skill_list",
 }
+
+
+def _expected(sid: str, turn: int) -> str:
+    """The tool that turn *turn* of chat *sid* must find, or a clear failure that names the
+    chat. A new plan with a ``find`` needs a line in ``EXPECTED`` (a bare KeyError told nothing)."""
+    if (sid, turn) not in EXPECTED:
+        raise AssertionError(
+            f"scenario {sid} turn {turn} has a find plan and no entry in EXPECTED of this "
+            "test file: add (scenario id, turn) -> the tool that its query must find."
+        )
+    return EXPECTED[(sid, turn)]
 
 
 def _queries() -> list[tuple[str, int, str, str]]:
     return [
-        (sc.id, i + 1, q, EXPECTED[(sc.id, i + 1)])
+        (sc.id, i + 1, q, _expected(sc.id, i + 1))
         for sc in STUDIO_SCENARIOS
         for i, t in enumerate(sc.turns)
         for q in t.plan.find
@@ -878,6 +903,10 @@ def test_the_search_rows_show_what_the_model_searched_and_found(searched) -> Non
     assert nofeat["checks"]["no_studio_names"] is True
     assert nofeat["checks"]["no_studio_ran"] is True
     assert by[("stu_held", 1)]["searches"] == 0 and by[("stu_held", 1)]["held"] is False
+    # TS-5b: the new field. Every search turn carried find_tools: the plain chat offered
+    # and ignored it, the others offered and used it.
+    assert all(r["find_tools_offered"] and r["find_tools_requests"] >= 1 for r in searched)
+    assert plain["find_tools_offered"] is True and plain["searches"] == 0
 
 
 def test_the_held_chat_finds_the_studio_pack_with_its_hold_note(searched) -> None:
@@ -1118,3 +1147,341 @@ def test_the_spec_splits_ts5_and_names_the_report_and_the_proposal() -> None:
     assert "--scenarios <ids>" in spec and "--scenarios <set>" not in spec
     assert "The owner has NOT approved it" in spec
     assert (ROOT / "docs" / "one_assistant_measure_oa8e_run5_2026-10-30.md").is_file()
+
+
+# ── TS-5b: a fair check of the skill list ────────────────────────────────────
+
+#: The answer of the first live pilot (2026-11-15): right, and the strict check failed it.
+PILOT = (
+    "Two of your three skills are still drafts: Weekly digest writer and Meeting notes tidy. "
+    "Quote follow-up is already published."
+)
+LIVE = ("Quote follow-up",)
+DRAFTS = (r"Weekly digest writer", r"Meeting notes tidy")
+
+
+def _fair(answer: str) -> bool:
+    return ck._drafts_listed_fairly(_obs(answer=answer), (DRAFTS, LIVE))
+
+
+def _strict(answer: str) -> bool:
+    """The old check: ``answer_all`` of the drafts, and ``answer_none`` of the live name."""
+    obs = _obs(answer=answer)
+    return ck._answer_all(obs, DRAFTS) and ck._answer_none(obs, (r"Quote follow-up",))
+
+
+def test_the_pilot_answer_passes_the_fair_check_and_failed_the_strict_one() -> None:
+    assert _fair(PILOT) is True
+    assert _strict(PILOT) is False  # the finding: a correct answer failed
+
+
+def test_the_fair_check_passes_other_correct_shapes() -> None:
+    assert _fair("The drafts are Weekly digest writer and Meeting notes tidy.") is True
+    assert (
+        _fair("Drafts:\n- Weekly digest writer\n- Meeting notes tidy\nQuote follow-up is live.")
+        is True
+    )
+    assert _fair(
+        "Weekly digest writer and Meeting notes tidy are drafts, and Quote follow-up is published."
+    )
+    assert _fair(
+        "Drafts: Weekly digest writer, Meeting notes tidy. Quote follow-up is not a draft."
+    )
+
+
+def test_the_fair_check_fails_a_live_skill_listed_as_a_draft() -> None:
+    assert not _fair("Three drafts: Weekly digest writer, Meeting notes tidy and Quote follow-up.")
+    assert not _fair(
+        "Drafts:\n- Weekly digest writer\n- Meeting notes tidy\n- Quote follow-up (draft)"
+    )
+    assert not _fair(
+        "Weekly digest writer and Meeting notes tidy are drafts. Quote follow-up is a draft too."
+    )
+
+
+def test_the_fair_check_fails_when_a_draft_is_missing() -> None:
+    assert not _fair("One skill is a draft: Weekly digest writer. Quote follow-up is published.")
+    assert not _fair("Meeting notes tidy is a draft.")
+    assert not _fair("")
+
+
+def test_calls_live_skill_a_draft_is_a_pure_function_of_the_text() -> None:
+    assert ck.calls_live_skill_a_draft(PILOT, LIVE) is False
+    assert ck.calls_live_skill_a_draft("Quote follow-up is still a draft.", LIVE) is True
+    assert ck.calls_live_skill_a_draft("No skill is named here.", LIVE) is False
+    assert ck.calls_live_skill_a_draft("quote FOLLOW-UP is still a draft.", LIVE) is True
+
+
+def test_mutation_the_strict_check_back_fails_the_pilot_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old behaviour: a live skill that the answer NAMES fails. With it, the pilot answer
+    goes red on the real check."""
+
+    def strict(answer: str, live: tuple[str, ...]) -> bool:
+        return any(ck._found(rf"\b{re.escape(n)}\b", answer) for n in live)
+
+    monkeypatch.setattr(ck, "calls_live_skill_a_draft", strict)
+    assert _fair(PILOT) is False  # red: the finding is back
+
+
+def test_the_stu_skills_chat_uses_the_fair_check_and_no_strict_one() -> None:
+    checks = scenario("stu_skills").turns[0].checks
+    assert "drafts_listed_fairly" in {c.kind for c in checks}
+    assert not any(c.kind == "answer_none" and "Quote" in str(c.arg) for c in checks)
+
+
+# ── TS-5b: was find_tools offered? ───────────────────────────────────────────
+
+
+def test_a_search_row_with_the_tool_offered_and_no_search(searched) -> None:
+    """The plain chat on the search arm: the tool was in the request, and the model made no
+    search. That is "offered and ignored", and it is not "not offered"."""
+    row = next(r for r in searched if r["scenario"] == "stu_plain")
+    assert row["find_tools_offered"] is True
+    assert row["find_tools_requests"] >= 1 and row["searches"] == 0
+
+
+def test_a_pack_row_never_offers_the_tool(scripted) -> None:
+    rows, _ = scripted
+    assert rows
+    assert all(r["find_tools_offered"] is False and r["find_tools_requests"] == 0 for r in rows)
+
+
+def test_find_requests_of_counts_the_requests_that_held_the_tool() -> None:
+    class Call:
+        def __init__(self, names: list[str]) -> None:
+            self.tool_names = names
+
+    calls = [Call(["a", ck.FIND_TOOL]), Call(["a"]), Call([ck.FIND_TOOL])]
+    assert run.find_requests_of(calls) == 2
+    assert run.find_requests_of([Call([])]) == 0
+    assert run.find_requests_of([object()]) == 0  # a call that the tap did not read
+
+
+def test_the_summary_and_the_report_say_offered_but_not_called() -> None:
+    rows = [
+        _row(
+            SEARCH, {"right_pack": True}, searches=1, find_tools_offered=True, find_tools_requests=2
+        ),
+        _row(SEARCH, {"not_searched": True}, find_tools_offered=True, find_tools_requests=1),
+        _row(SEARCH, {"right_pack": True}, find_tools_offered=False, find_tools_requests=0),
+    ]
+    out = run.extra_summary(rows)
+    assert out["find_offered_turns"] == 2 and out["find_offered_not_called"] == 1
+    assert out["offered_not_called"] == "1 of 2"
+    assert out["find_requests_per_turn"] == 1.0
+    base = {
+        "turns": 1,
+        "turns_passed": 1,
+        "checks_passed": 1,
+        "checks": 1,
+        "errors": 0,
+        "first_text_s": {"mean": 1, "median": 1, "p90": 1},
+        "total_s": {"mean": 1, "median": 1, "p90": 1},
+        "calls_per_turn": 1,
+        "calls_orchestrator_per_turn": 1,
+        "calls_email_per_turn": 0,
+        "prompt_per_turn": 1,
+        "cached_per_turn": 0,
+        "completion_per_turn": 1,
+        "cost_per_turn_usd": 0,
+        "cost_usd": 0,
+        "per_check": {},
+        "by_scenario": {},
+    }
+    text = run.report({"summary": {SEARCH: {**base, **out}}})
+    assert f"{SEARCH}: offered but not called: 1 of 2" in text
+    assert "Requests that carried find_tools, per turn" in text
+    # a pack-only report has no turn with the tool, so it prints no such line
+    pack_out = run.extra_summary([_row(PACK, {"right_pack": True})])
+    assert "offered but not called" not in run.report({"summary": {PACK: {**base, **pack_out}}})
+    # an old row with no field counts as not offered
+    assert run.extra_summary([_row(SEARCH, {"right_pack": True})])["find_offered_turns"] == 0
+
+
+# ── TS-5b: the cap chat ──────────────────────────────────────────────────────
+
+CAP_SLUGS = ("crm-records", "email", "projects-reminders")
+
+
+def _packs_of(row: dict[str, Any], event: str, key: str) -> list[str]:
+    import ast
+
+    for e in row["pack_events"]:
+        if e["event"] == event:
+            return list(ast.literal_eval(str(e[key])))
+    return []
+
+
+def _cap_problems(rows: list[dict[str, Any]]) -> list[str]:
+    """What the cap chat must show. Empty when it holds. Each mutation of the chat gives a
+    non-empty list. It reads the REAL run: the plan of the loader and the request."""
+    out: list[str] = []
+    mine = [r for r in rows if r["scenario"] == "stu_cap"]
+    by = {}
+    for arm in (PACK, SEARCH):  # the LAST turn of each arm: the Studio ask (4, or 3 when mutated)
+        turns = [r for r in mine if r["arm"] == arm]
+        if not turns:
+            return [f"no turn on the {arm} arm"]
+        by[(arm, 4)] = max(turns, key=lambda r: r["turn"])
+    for arm in (PACK, SEARCH):
+        row = by[(arm, 4)]
+        held = _packs_of(row, "executor.packs_loaded", "packs")
+        offered = _packs_of(row, "executor.pack_plan", "offered")
+        if len(held) != tool_packs.MAX_PACKS:
+            out.append(f"{arm}: holds {held}, not {tool_packs.MAX_PACKS} packs")
+        if offered:
+            out.append(f"{arm}: the loader offers {offered} (load_skill_tools is in the request)")
+        if row["loaded_by_model"]:
+            out.append(f"{arm}: the model loaded {row['loaded_by_model']}")
+    pack_row, find_row = by[(PACK, 4)], by[(SEARCH, 4)]
+    if pack_row["find_tools_offered"] or pack_row["work_tools"]:
+        out.append("pack arm: a Studio tool ran or find_tools was offered")
+    if not find_row["find_tools_offered"]:
+        out.append("search arm: find_tools was not in the request")
+    if find_row["found_tools"] != ["studio_skill_list"]:
+        out.append(f"search arm: found {find_row['found_tools']}")
+    return out
+
+
+@pytest.fixture(scope="module")
+def cap(both) -> list[dict[str, Any]]:
+    return [r for r in both[0] if r["scenario"] == "stu_cap"]
+
+
+def test_the_cap_chat_loads_three_packs_by_words_and_studio_by_none() -> None:
+    """The proof with the real ``matched_layer``: each of turns 1 to 3 loads its pack by
+    words, and turn 4 loads no pack and no Studio pack."""
+    sc = scenario("stu_cap")
+    assert len(sc.turns) == 4 and sc.surface == "crm"
+    assert tuple(slug for _, slug, _, _ in CAP_TURNS) == CAP_SLUGS
+    for turn, (words, slug, _, _) in zip(sc.turns, CAP_TURNS, strict=False):
+        assert turn.words == words
+        assert tool_packs.matched_layer(slug, words) in ("words", "reference"), (slug, words)
+        others = [s for s in tool_packs.PACKS if s != slug and tool_packs.matched_layer(s, words)]
+        assert others == [], (words, others)  # one pack for each turn, never two
+    ask = sc.turns[3].words
+    assert ask == "Which of my saved skills are still drafts?"
+    assert [s for s in tool_packs.PACKS if tool_packs.matched_layer(s, ask)] == []
+
+
+def test_the_loader_has_no_room_at_three_packs_and_a_control_has_room() -> None:
+    allow = frozenset(tool_packs.PACKS)
+    full = tool_packs.plan_loader(allow, CAP_SLUGS, current=100)
+    assert full.offered == ()
+    assert len(CAP_SLUGS) == tool_packs.MAX_PACKS == 3
+    room = tool_packs.plan_loader(allow, CAP_SLUGS[:2], current=60)
+    assert "studio-more" in room.offered  # the control: with two packs the loader offers
+    found = tool_packs.search_packs(allow, CAP_SLUGS, owners=tool_packs.PACK_ONLY_OWNERS)
+    assert "studio-more" in found and "studio" in found  # find_tools still reaches Studio
+
+
+def test_the_cap_chat_runs_the_real_plan_of_the_loader(both) -> None:
+    """On turn 4 of the REAL run, three packs are held and the loader offers nothing, so
+    ``load_skill_tools`` is not in the request. On the search arm ``find_tools`` is, and the
+    found tool lives in ``studio-more``. Mutations: two packs by words, a flag with no search."""
+    rows, problems = both
+    assert problems == [], problems
+    assert _cap_problems(rows) == []
+    by = {(r["arm"], r["turn"]): r for r in rows if r["scenario"] == "stu_cap"}
+    for arm in (PACK, SEARCH):
+        assert _packs_of(by[(arm, 4)], "executor.packs_loaded", "packs") == list(CAP_SLUGS)
+        assert _packs_of(by[(arm, 3)], "executor.packs_loaded", "packs") == list(CAP_SLUGS)
+    assert pack_of(by[(SEARCH, 4)]["found_tools"][0]) == "studio-more"
+
+
+def test_the_cap_chat_search_arm_finds_the_tool(cap) -> None:
+    row = next(r for r in cap if r["arm"] == SEARCH and r["turn"] == 4)
+    for name in ("read_the_skills", "found_tool", "search_round", "drafts_listed_fairly"):
+        assert row["checks"][name] is True, name
+    assert row["searches"] == 1 and row["find_tools_offered"] is True
+    assert row["work_tools"] == ["studio_skill_list"]
+    assert {"no_studio_ran", "says_it_cannot", "no_load_offered"}.isdisjoint(row["checks"])
+
+
+def test_the_cap_chat_pack_arm_cannot_reach_studio(cap) -> None:
+    """The expected outcome, from the real scripted run: no loader is offered, so no Studio
+    tool runs and the answer says that it cannot."""
+    row = next(r for r in cap if r["arm"] == PACK and r["turn"] == 4)
+    for name in ("no_studio_ran", "no_load_offered", "says_it_cannot", "lists_no_skill"):
+        assert row["checks"][name] is True, name
+    assert row["work_tools"] == [] and row["found_tools"] == [] and row["searches"] == 0
+    assert row["find_tools_offered"] is False
+    assert {"found_tool", "search_round", "read_the_skills"}.isdisjoint(row["checks"])
+    assert "cannot" in row["answer"]
+    assert all(r["passed"] for r in cap)
+
+
+def test_a_check_with_arms_runs_on_those_arms_only() -> None:
+    from evals.one_assistant_measure.scenarios import Check, Turn
+
+    turn = Turn("x", (Check("answer_all", (r"a",), "only_search", arms=(SEARCH,)),), None)  # type: ignore[arg-type]
+    assert "only_search" in ck.check_turn(turn, _obs(answer="a"))
+    assert "only_search" not in ck.check_turn(turn, _obs(arm=PACK, answer="a"))
+
+
+def _cap_run(arms: tuple[str, ...] = (PACK, SEARCH), edit: Any = None) -> tuple[list, list]:
+    import dataclasses
+
+    sc = scenario("stu_cap")
+    if edit is not None:
+        sc = dataclasses.replace(sc, turns=tuple(edit(sc.turns)))
+    return run.run_scripted((sc,), arms, None)
+
+
+def test_mutation_h_two_packs_by_words_leaves_room_and_the_proof_goes_red() -> None:
+    """Turn 3 (reminders) is dropped, so the run holds 2 packs and the loader offers."""
+    rows, _ = _cap_run(edit=lambda turns: (*turns[:2], turns[3]))
+    problems = _cap_problems(rows)
+    assert problems and any("offers" in p for p in problems), problems
+    assert any("not 3 packs" in p for p in problems), problems
+
+
+def test_mutation_i_turn_4_without_find_tools_goes_red() -> None:
+    import dataclasses
+
+    def edit(turns: Any) -> Any:
+        last = dataclasses.replace(turns[3], plan=dataclasses.replace(turns[3].plan, find=()))
+        return (*turns[:3], last)
+
+    rows, problems = _cap_run((SEARCH,), edit)
+    row = next(r for r in rows if r["turn"] == 4)
+    assert row["checks"]["found_tool"] is False and row["checks"]["search_round"] is False
+    assert problems and not row["passed"]
+
+
+def test_mutation_j_find_tools_offered_always_false_goes_red(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run, "find_requests_of", lambda calls: 0)
+    rows, _ = _cap_run()
+    problems = _cap_problems(rows)
+    assert any("find_tools was not in the request" in p for p in problems), problems
+    mine = [r for r in rows if r["arm"] == SEARCH]
+    assert mine and not any(r["find_tools_offered"] for r in mine)  # a reader would be misled
+
+
+def test_mutation_k_an_empty_search_flag_on_the_cap_chat_goes_red(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = run.flag_for
+    monkeypatch.setattr(run, "flag_for", lambda sc, arm: {**real(sc, arm), "tool_search_orgs": ""})
+    rows, problems = _cap_run()
+    row = next(r for r in rows if r["arm"] == SEARCH and r["turn"] == 4)
+    assert row["find_tools_offered"] is False and row["found_tools"] == []
+    assert row["checks"]["found_tool"] is False
+    assert problems and _cap_problems(rows)
+
+
+def test_the_cap_comment_and_the_docs_name_the_design() -> None:
+    src = (ROOT / "evals" / "one_assistant_measure" / "scenarios_studio.py").read_text(
+        encoding="utf-8"
+    )
+    assert "THE CASE THAT THE TOOL-SEARCH DESIGN EXISTS FOR" in src
+    readme = (ROOT / "evals" / "one_assistant_measure" / "README.md").read_text(encoding="utf-8")
+    assert "stu_cap" in readme and "offered but not called" in readme
+    spec = (ROOT / "project-docs" / "specs" / "one_assistant_context.md").read_text(
+        encoding="utf-8"
+    )
+    assert "**Cap turn.**" in spec
