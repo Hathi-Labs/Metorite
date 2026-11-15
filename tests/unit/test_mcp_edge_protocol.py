@@ -611,11 +611,23 @@ class TestTheOrderOfTheChecks:
         assert armed.store.calls == 0
 
     async def test_a_body_over_one_mib_is_413_before_any_parse(self, armed):
+        """CIV-14b (§9.6 "The body size"): a large body runs the token check
+        first, from the headers only. With a token, a body that is not one
+        upload call is 413, and no gateway request goes out."""
         raw = b"[" + b" " * mcp.MAX_BODY_BYTES + b"]"
-        r = await _post(None, token=None, raw=raw)
+        r = await _post(None, raw=raw)
         assert r.status_code == 413
         assert r.json()["id"] is None
+        assert not armed.gateway.requests
+
+    async def test_a_body_over_one_mib_with_no_token_is_401_before_any_read(self, armed):
+        """CIV-14b: a client with no token never makes the edge read or hold
+        a large body. So the answer is the 401 of check 6, and no 413."""
+        raw = b"[" + b" " * mcp.MAX_BODY_BYTES + b"]"
+        r = await _post(None, token=None, raw=raw)
+        _assert_error_body(r, 401, -32600)
         assert armed.store.calls == 0
+        assert mcp._LARGE_BODIES == [0]
 
     async def test_a_body_of_exactly_one_mib_is_read(self, armed):
         msg = json.dumps(_rpc("ping")).encode()
