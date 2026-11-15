@@ -42,6 +42,7 @@ import EntityPill from "@/components/ui/EntityPill";
 import { agentName } from "@/lib/agentName";
 import { fieldSpec } from "@/lib/cardFields";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
+import { FIRST_STEP } from "@/lib/runStatus";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
 import { argFields, needsClamp } from "@/lib/toolArgs";
@@ -768,7 +769,7 @@ export default function ThinkingContainer({
     ? (hasRunningTool && lastLabel ? lastLabel : null)
       ?? liveReasoningTail
       ?? lastLabel
-      ?? "Thinking…"
+      ?? FIRST_STEP
     : summaryTitle;
 
   const totalMs = useMemo(() => {

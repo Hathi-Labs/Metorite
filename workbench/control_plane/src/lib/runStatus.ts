@@ -568,11 +568,18 @@ export function formatElapsed(ms: number): string {
  * for `RESTING_SHOW_MS`, then the row goes quiet. `failed` draws nothing
  * here: the error card in the thread says it.
  */
+/**
+ * The words of the first line (CS-1, `chat_failure_modes.md`). They show from the moment of Send, before
+ * the server has said anything, because the first model request takes 5 to 10 seconds. The line
+ * says what Mira does now: she reads the message. One fixed phrase, never model text.
+ */
+export const FIRST_STEP = "Reading your message";
+
 export function runView(s: RunStatus, now: number): RunView | null {
   const elapsed = s.startedAt !== null ? formatElapsed(now - s.startedAt) : null;
   switch (s.phase) {
     case "starting":
-      return { tone: "working", label: "Starting", elapsed };
+      return { tone: "working", label: FIRST_STEP, elapsed };
     case "working":
       return { tone: "working", label: s.step || "Working", elapsed };
     case "waiting_for_you":
