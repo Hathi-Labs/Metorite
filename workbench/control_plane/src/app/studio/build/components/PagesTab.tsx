@@ -7,7 +7,8 @@
  * Reading this as: a member who builds an app sees its pages and its rail, and changes them
  * without JSON. Interaction: the member adds, renames, orders or deletes a page, and does the same
  * for the sections and the rows of the rail. Each act changes the draft once, and the bar then shows
- * "Unsaved changes". A delete asks first. Tabs and cells show as read-only text (AF-8b-3 edits them).
+ * "Unsaved changes". A delete asks first. A closed Layout shows the tabs and cells as one read-only
+ * line. An open Layout edits them (`CellsEditor`, AF-8b-3b).
  *
  * Every act calls one function of `frameEdit.ts` through `applyFrame`. This file edits nothing
  * by itself, so a bad request sends nothing. It never calls the network. The toolbar of the page saves.
@@ -24,8 +25,10 @@ import {
 } from "@/lib/studio/frameEdit";
 import { NAV_ICONS } from "@/lib/studio/manifest";
 import {
-  CAP_NOTE, MATERIALIZE_NOTE, PAGES_TAB_LINE, applyFrame, colsOptions, pagesView, railView,
+  CAP_NOTE, MATERIALIZE_NOTE, PAGES_TAB_LINE, applyFrame, colsOptions, layoutView, pagesView, railView, viewChoices,
 } from "@/lib/studio/pagesTabModel";
+import { removeTab } from "@/lib/studio/tabEdit";
+import CellsEditor from "./CellsEditor";
 import CommitInput from "./CommitInput";
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -40,7 +43,7 @@ export interface PagesTabProps {
   focusPage?: string | null;
 }
 
-type Ask = { kind: "page"; id: string } | { kind: "section"; index: number } | null;
+type Ask = { kind: "page"; id: string } | { kind: "section"; index: number } | { kind: "tab"; page: string; tab: string } | null;
 
 const cardClass = "flex flex-col gap-2 rounded-xl border border-border bg-card px-3 py-2";
 
@@ -55,6 +58,8 @@ export default function PagesTab({ manifest, onChange, locked, focusPage = null 
   const [sectionTitle, setSectionTitle] = useState("");
   const [rowPick, setRowPick] = useState<Record<number, string>>({});
   const [ask, setAsk] = useState<Ask>(null);
+  const [open, setOpen] = useState<Set<string>>(() => new Set(focusPage ? [focusPage] : []));
+  const choices = viewChoices(manifest);
 
   const act = (fn: (m: unknown) => unknown) => applyFrame(manifest, onChange, fn);
   const viewChoice = views.includes(newView) ? newView : views[0] ?? "";
@@ -65,6 +70,20 @@ export default function PagesTab({ manifest, onChange, locked, focusPage = null 
   useEffect(() => {
     if (focusPage) document.getElementById(`pages-tab-${focusPage}`)?.scrollIntoView?.({ block: "nearest" });
   }, [focusPage]);
+
+  // The page in focus opens its Layout. A page that the member closed stays closed until the focus moves.
+  useEffect(() => {
+    if (focusPage) setOpen((s) => (s.has(focusPage) ? s : new Set(s).add(focusPage)));
+  }, [focusPage]);
+  const toggleOpen = (id: string) => setOpen((s) => {
+    const next = new Set(s);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
+  const askLayout = ask?.kind === "tab" ? layoutView(manifest, ask.page, choices) : null;
+  const askTab = askLayout?.lists.find((l) => l.tabId === (ask?.kind === "tab" ? ask.tab : null));
+  const askCount = askTab?.cells.length ?? 0;
+  const askCells = `${askCount} ${askCount === 1 ? "cell" : "cells"}`;
 
   const pagesBlock = !pages.declared ? (
     <>
@@ -109,7 +128,10 @@ export default function PagesTab({ manifest, onChange, locked, focusPage = null 
                   onClick={() => setAsk({ kind: "page", id: p.id })} />
               </div>
             </div>
-            {p.parts.length ? <p className="break-words text-xs text-muted-foreground">{p.parts.join(" · ")}</p> : null}
+            {p.parts.length && !open.has(p.id) ? <p className="break-words text-xs text-muted-foreground">{p.parts.join(" · ")}</p> : null}
+            <CellsEditor page={{ ...layoutView(manifest, p.id, choices), id: p.id, title: p.title }} views={choices} act={act}
+              locked={locked} open={open.has(p.id)} onToggle={() => toggleOpen(p.id)}
+              onRemoveTab={(tab) => setAsk({ kind: "tab", page: p.id, tab })} />
           </li>
         ))}
       </ul>
@@ -214,15 +236,20 @@ export default function PagesTab({ manifest, onChange, locked, focusPage = null 
         {railBlock}
       </section>
       <p className="text-xs text-muted-foreground">A change is a draft until you press Save. A page holds no records, so a delete never touches data.</p>
-      <ConfirmDialog open={ask !== null} title={ask?.kind === "section" ? "Delete this section?" : "Delete this page?"}
-        subject={ask?.kind === "page" ? ask.id : ask?.kind === "section" ? rail.sections[ask.index]?.title ?? null : null}
+      <ConfirmDialog open={ask !== null} title={ask?.kind === "section" ? "Delete this section?" : ask?.kind === "tab" ? "Remove this tab?" : "Delete this page?"}
+        subject={ask?.kind === "page" ? ask.id : ask?.kind === "section" ? rail.sections[ask.index]?.title ?? null : ask?.kind === "tab" ? askTab?.title ?? ask.tab : null}
         body={ask?.kind === "section"
           ? "The section leaves this draft with its rows. The pages stay. The live app keeps the section until you publish."
+          : ask?.kind === "tab"
+          ? (askLayout?.tabCount === 1
+            ? `The tab goes. Its ${askCells} stay on the page, with no tab.`
+            : `The tab and its ${askCells} leave this draft. The views stay.`)
           : "The page leaves this draft, and so do the rail rows that name it. The views stay. The live app keeps the page until you publish."}
-        confirmLabel="Delete" cancelLabel="Keep it" icon="Trash2"
+        confirmLabel={ask?.kind === "tab" ? "Remove" : "Delete"} cancelLabel="Keep it" icon="Trash2"
         onConfirm={() => {
           if (ask?.kind === "page") act((m) => removePage(m, ask.id));
           else if (ask?.kind === "section") act((m) => removeSection(m, ask.index));
+          else if (ask?.kind === "tab") act((m) => removeTab(m, ask.page, ask.tab));
           setAsk(null);
         }} onCancel={() => setAsk(null)} />
     </div>
