@@ -214,6 +214,54 @@ describe("the words of the sheet", () => {
   });
 });
 
+describe("the reasons of an unmet row (I9b-1)", () => {
+  it("a reconnect row of an org need says ask an admin and offers no Connect", () => {
+    const [ask] = connectLines([row({ reason: "reconnect", as: "org", canConnect: true })], PKG);
+    expect(ask).toMatchObject({
+      kind: "ask",
+      text: "Ask an admin to reconnect Zoho CRM with the scopes this app needs.",
+    });
+    expect(ask).not.toHaveProperty("href");
+    const [mem] = connectLines([row({ reason: "reconnect", as: "member" })], PKG);
+    expect(mem).toMatchObject({
+      kind: "connect",
+      text: "Reconnect Zoho CRM: your connection does not grant what this app needs.",
+    });
+  });
+
+  it("parseConnections reads the account of a row", () => {
+    const rows = parseConnections({ connections: [{ name: "a", as: "org" }, { name: "b" }] });
+    expect(rows.map((r) => r.as)).toEqual(["org", "member"]);
+  });
+
+  it("a reconnect row says Reconnect, and an org_approval row says an admin must approve", () => {
+    const [re] = connectLines([row({ reason: "reconnect" })], PKG);
+    expect(re).toMatchObject({
+      kind: "connect",
+      text: "Reconnect Zoho CRM: your connection does not grant what this app needs.",
+    });
+    const [ask] = connectLines([row({ reason: "reconnect", canConnect: false })], PKG);
+    expect(ask.kind).toBe("ask");
+    const [org] = connectLines([row({ reason: "org_approval" })], PKG);
+    expect(org).toMatchObject({
+      kind: "ask",
+      text: "An admin must approve this app before it can use the org account.",
+    });
+  });
+
+  it("parses the reason, and an older answer reads from met", () => {
+    const rows = parseConnections({
+      connections: [
+        { name: "a", reason: "reconnect" },
+        { name: "b", reason: "org_approval" },
+        { name: "c", reason: "nonsense" },
+        { name: "d", met: true },
+      ],
+    });
+    expect(rows.map((r) => r.reason)).toEqual(["reconnect", "org_approval", "missing", "ok"]);
+  });
+});
+
 describe("the read", () => {
   it("parses the answer and trusts none of it", () => {
     const rows = parseConnections({
@@ -225,8 +273,8 @@ describe("the read", () => {
       ],
     });
     expect(rows).toEqual([
-      { name: "zoho", label: "Zoho CRM", met: true, checkable: true, setupHref: "/crm", canConnect: false },
-      { name: "mcp:tally", label: "mcp:tally", met: false, checkable: true, setupHref: null, canConnect: false },
+      { name: "zoho", label: "Zoho CRM", met: true, checkable: true, setupHref: "/crm", canConnect: false, as: "member", reason: "ok" },
+      { name: "mcp:tally", label: "mcp:tally", met: false, checkable: true, setupHref: null, canConnect: false, as: "member", reason: "missing" },
     ]);
     expect(parseConnections({ connections: [{ name: "mailbox", checkable: false }] })[0].checkable).toBe(false);
     expect(parseConnections(null)).toEqual([]);

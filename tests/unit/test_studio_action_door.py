@@ -2769,7 +2769,8 @@ class TestTheConnections:
             # I9a: the detail adds the provider and the account kind, as data.
             assert r.json()["detail"] == {"code": invoke.NEEDS_CONNECTION,
                                           "message": invoke.CONNECTION_TEXT,
-                                          "provider": "mcp:tally", "as": "member"}, action
+                                          "provider": "mcp:tally", "as": "member",
+                                          "reason": "missing"}, action
         assert _record_reads(cw) == [] and cw.queries == [] and cw.aggregates == []
         assert "catalog" not in cw.log
         assert cw.met_reads == [ANA] * len(actions_of)
@@ -2881,6 +2882,61 @@ class TestTheConnections:
         assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION)
         assert r.json()["detail"]["as"] == "org"
 
+    def test_i9b1_the_409_says_one_sentence_for_each_reason(self, cw, monkeypatch):
+        """I9b-1: ``provider``, ``as``, ``reason`` and one sentence for each reason.
+        The detail names no other member and no scope."""
+        pid = _package(cw, owner=BEN, manifest=MANIFEST)
+        state: dict[str, Any] = {"manifest": NEEDS_TALLY}
+
+        async def _installed(db: Any, *, viewer: str, app_id: str) -> Any:
+            return _viewer.InstalledApp(id=app_id, version=2, manifest=state["manifest"],
+                                        scope_kind="org", review_status=state["review"])
+
+        monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
+        monkeypatch.setattr(invoke._viewer, "installed_app", _installed)
+        scoped = {**MANIFEST, "connections": [
+            {"name": "mcp:tally", "as": "member", "scopes": ["Mail.Read", "Mail.Send"]}]}
+        org_scoped = {**MANIFEST, "connections": [
+            {"name": "mcp:tally", "as": "org", "scopes": ["Mail.Read"]}]}
+        cases = [
+            (scoped, "approved", invoke._resolve.Met(), "missing", invoke.CONNECTION_TEXT),
+            (scoped, "approved", invoke._resolve.Met(member={"mcp:tally": (frozenset({"Mail.Read"}),)}),
+             "reconnect", "Reconnect tally: your connection does not grant what this app needs."),
+            (org_scoped, "pending", invoke._resolve.Met(org={"mcp:tally": (frozenset({"Mail.Read"}),)}),
+             "org_approval", "An admin must approve this app before it can use the org account."),
+            # An unapproved org need hides the org rows: org_approval, even with a row that lacks scopes.
+            (org_scoped, "pending", invoke._resolve.Met(org={"mcp:tally": (frozenset({"x"}),)}),
+             "org_approval", "An admin must approve this app before it can use the org account."),
+            (org_scoped, "pending", invoke._resolve.Met(),
+             "org_approval", "An admin must approve this app before it can use the org account."),
+            # An approved install whose org row lacks scopes: the viewer asks an admin.
+            (org_scoped, "approved", invoke._resolve.Met(org={"mcp:tally": (frozenset({"x"}),)}),
+             "reconnect", "Ask an admin to reconnect tally with the scopes this app needs."),
+        ]
+        for manifest, review, met, reason, text in cases:
+            state.update(manifest=manifest, review=review)
+            cw.met = met
+            r = _call(_client(cw), pid, "find", {})
+            assert (r.status_code, _code(r)) == (409, invoke.NEEDS_CONNECTION), reason
+            detail = r.json()["detail"]
+            assert detail["reason"] == reason and detail["message"] == text
+            assert detail["provider"] == "mcp:tally"
+            assert detail["as"] == ("org" if "org" in str(manifest) else "member")
+            assert "Mail" not in str(detail) and BEN not in str(detail) and ANA not in str(detail)
+        state.update(manifest=scoped, review="approved")
+        cw.met = invoke._resolve.Met(member={"mcp:tally": (frozenset({"Mail.Read", "Mail.Send", "x"}),)})
+        assert _call(_client(cw), pid, "find", {}).status_code != 409
+
+    def test_the_reconnect_text_of_each_account_uses_the_label(self):
+        """I9b-1 review. A member reconnects its own row. An org row is an admin's."""
+        assert invoke.connection_text("reconnect", "google_drive", "member") == (
+            "Reconnect Google Drive: your connection does not grant what this app needs.")
+        assert invoke.connection_text("reconnect", "google_drive", "org") == (
+            "Ask an admin to reconnect Google Drive with the scopes this app needs.")
+        assert "your connection" not in invoke.connection_text("reconnect", "zoho", "org")
+        assert invoke.connection_text("reconnect", "unknown_id", "member").startswith(
+            "Reconnect unknown_id:")
+
     def test_the_gate_off_answers_the_same_with_or_without_connections(self, monkeypatch, cw):
         """I9a: with the org off the list, `connections` (any form, any `as`)
         change nothing, so the status and the record data equal those of an app with none."""
@@ -2897,12 +2953,12 @@ class TestTheConnections:
         assert cw.met_reads == []
 
     def test_the_door_and_the_resolve_share_one_rule(self):
-        """``_needs_connection`` asks ``resolve.first_unmet_connection`` and
+        """``_needs_connection`` asks ``resolve.first_unmet_need`` and
         ``resolve.met_connections``, and keeps no copy of either."""
         import ast
         import inspect
 
         src = inspect.getsource(invoke._needs_connection).replace("\r\n", "\n")
         named = {n.attr for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Attribute)}
-        assert {"connection_names", "first_unmet_connection", "met_connections"} <= named
+        assert {"connection_names", "first_unmet_need", "met_connections"} <= named
         assert "integration_connections" not in inspect.getsource(invoke)

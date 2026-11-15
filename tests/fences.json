@@ -353,6 +353,7 @@
       "tests/unit/test_studio_row_rules_r8.py",
       "tests/unit/test_studio_run_as_r8.py",
       "tests/unit/test_studio_saved_views_r8.py",
+      "tests/unit/test_studio_scope_match_r8.py",
       "tests/unit/test_studio_search_r8.py",
       "tests/unit/test_studio_state_machine_r8.py",
       "tests/unit/test_studio_templates_r8.py",
