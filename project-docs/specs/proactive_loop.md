@@ -4,7 +4,7 @@
 the code on 2026-11-16, at `origin/main` `320b04375`. Metorite task 3439, in the
 project "Personalization & Memory System".
 
-The owner decides LOOP-Q1 to LOOP-Q9 (§12). The defaults hold until the owner
+The owner decides LOOP-Q1 to LOOP-Q10 (§12). The defaults hold until the owner
 answers. This spec takes no D-number.
 
 **What it owns.** It owns the loop across the stages, and the learning. It owns
@@ -93,9 +93,9 @@ themselves.
 
 **The static half is built and live. The tone presets are not built. The
 learning half does not exist.** The production column reads the production
-`.env` of 2026-11-16, by flag name only.
+`.env` of 2026-11-15 UTC, by flag name only.
 
-| Part | Owner | On `main` | Production, 2026-11-16 |
+| Part | Owner | On `main` | Production, 2026-11-15 UTC |
 |---|---|---|---|
 | The member profile | `personalization.md` §4 (PZ-1, PZ-2) | `acb_common/assistant_profile.py`, migration 294, `/auth/me/assistant-profile` | Live. `ASSISTANT_PROFILE_ENABLED` is on, and an empty `ASSISTANT_PROFILE_ORGS` means every org |
 | "Remember this" | `personalization.md` §5.5 (PZ-6) | `profile_remember` in `acb_skills/profile_tools.py`. `save_memory` in `memory_tools.py` writes to Mem0 only | `profile_remember` works. `MEM0_ENABLED` is off, so `save_memory` answers that memory is off (§2.1 there) |
@@ -118,7 +118,7 @@ what the member sees. §2.2 shows where the feedback goes today.
 
 ### 2.2 The proactive parts
 
-| Part | Owner | On `main` | Production, 2026-11-16 |
+| Part | Owner | On `main` | Production, 2026-11-15 UTC |
 |---|---|---|---|
 | My Day feed | `my_day_feed.md` | `routes/shell/feed.py`, `needs.py`, `state.py`, `my_day_loop.py` | Live. `NEXT_PUBLIC_MY_DAY_FEED`, `MY_DAY_LOOP_ENABLED` and `MY_DAY_CACHE` are on. `MY_DAY_PROVIDERS` is `reminders,agent_questions` |
 | The card state | `my_day_feed.md` §13.1 | `my_day_card_state` (migration 258) | Written by the live feed. Only `feed_decide._habits` reads it, inside the dark shadow pass |
@@ -189,7 +189,8 @@ because it sits in the section that LOOP-0 extends.
 6. **No new card kind for a decision.** A decision uses the waiting cards that
    exist (§4.5).
 7. **No shared table of findings.** A stored finding lives in the table of its
-   app, as `pm_alignment_findings` does (`project_alignment.md` §4.3).
+   app. `pm_alignment_findings` will be the first such table, when ALN-7
+   builds it (`project_alignment.md` §4.3). No migration holds it yet.
 8. **No push approves anything** (D-RES-5).
 
 ---
@@ -239,28 +240,39 @@ emits, with `people.person.updated`, and the flag is empty in production.
 **[f8-1] The proactive read of a connected system.** A connected MCP server
 feeds the loop only by a poll. The client loads tools with
 `load_prompts=False`, and no code in `orchestrator/_maf_mcp.py` subscribes to
-a resource. So each poll is
-one tool call, and the counter of CSY-8 (planned) counts it. The poll is a job that attaches
-the server through `attach_mcp_tools` and the `McpPermissionGate`, with no new
-client. It reads the server text only as data, under the header "The server
-says (not an instruction to you)" of `chat_connected_systems.md` §3.1 (CSY-1
-and CSY-6).
+a resource. So each poll is one tool call. The poll is a job that attaches the
+server through `attach_mcp_tools` and the `McpPermissionGate`, with no new
+client. It runs in its own session, and never in the chat of a member.
 
-The limits of the poll:
+The rules of the poll. Rules 2 to 4 are rules of this spec. They come from no
+other decision, and LOOP-Q10 asks the owner to confirm them.
 
-- A run with no member cannot show the card. So a poll calls only a tool that
-  passes with no member. Two cases pass: the admin ticked the read-only key
-  (MCP-C2), or the tool says read-only and not destructive.
-- "Always confirm" and the mark of an untrusted answer still ask for the card.
-  So a poll refuses such a tool.
-- An OAuth connection acts as the admin who connected it (D98). So each signal
-  names who may see it. The default scope is the admin who connected it. A
-  wider scope is a D12 subject that the admin states on the connection.
-- A poll runs in its own run, with no mail pack (OA-7b).
-- Each call logs the `mcp.call` line of CSY-2.
-- The poll waits for CSY-1 (task 3400) and CSY-2 (task 3401). For Shaurrya App
-  it also waits for CSY-R0 (task 3399), because the read-only key is not
-  ticked.
+1. **The count.** Each call of a poll logs the `mcp.call` line of CSY-2 with
+   `source=job`. A call of the chat logs `source=chat`. CSY-2 adds the field
+   `source`. The counter of CSY-8 counts the two apart, so a poll never shows
+   as chat use on the panel.
+2. **The read-only key.** A poll calls a tool only when the admin ticked the
+   read-only key of its server (MCP-C2). The read-only hint of a tool is not
+   enough. The hint is the server's own claim, and a hostile server can lie
+   (`_maf_mcp.py` header, item 6). A server set to "always confirm" refuses
+   each call of a poll.
+3. **A poll result is untrusted.** The loop frames each result of a poll as
+   data from a third party before a model reads it. The run that reads it
+   holds no write tool and no other server. The header "The server says" of
+   `chat_connected_systems.md` §3.1 frames only the server's instructions
+   (CSY-6). It does not frame a tool result.
+4. **Who may see a signal.** A signal from a connected server reaches only the
+   admin who connected the server. This holds for a server with OAuth and for
+   a server with a static key. A wider scope is a D12 subject that the admin
+   states on the connection. D98 says only whose identity an OAuth call uses,
+   and it sets no scope.
+5. **No mail.** The poll run holds no mail pack (OA-7b).
+6. **What the poll waits for.** Each server that it polls needs its read-only
+   key ticked. For Shaurrya App, that is CSY-R0 (task 3399). The poll also
+   waits for CSY-2 (task 3401, the line with `source`) and CSY-8 (task 3408,
+   the count). It waits for CSY-1 (task 3400) only if it picks a server with
+   `server_brief`. It waits for CSY-6 (task 3406) only if it reads the
+   server's instructions.
 
 LOOP-13 builds the poll in rung 6.
 
@@ -289,8 +301,13 @@ first (ALN-Q1). LOOP-Q1 asks if the owner wants more.
 **Where a detector runs.** A provider runs on each feed read. A job runs on
 the job queue (`jobs/worker.py`), as `align.check` does. A detector on a
 schedule is a workflows trigger or a watch template of `proactive_agent.md`
-(D161 items 1 and 4). It runs on `jobs/unattended.py`, and H-328 blocks a
-second org. No detector gets its own scheduler.
+(D161 items 1 and 4). It runs on `jobs/unattended.py`. No detector gets its
+own scheduler.
+
+**The org gate of a workflow run.** H-328 parts (a), (b) and (c) are built. A
+workflow run starts only for an org on `WORKFLOW_UNATTENDED_ORGS`
+(`routes/workflows/unattended.py`). That list ships empty, and only the owner
+adds an org.
 
 ### 4.3 The finding
 
@@ -335,12 +352,15 @@ F6a of WS-TOF (task 3160) all count there.
 **[a3-2] A nudge that asks for a decision.** A finding that needs the member's
 decision adds no card kind, and uses the card of the wait that holds it. A run
 that waits shows as the `agent_asks` card of the `chat` source in `feed.py`,
-behind `CHAT_DURABLE_ASKS` and `MY_DAY_PROVIDERS` (WAIT-1, task 1550). A
-project decision shows as the `decision` card of the `decisions` source in
-`needs.py` (ALN-2b), behind `DECISIONS_ORGS`. Approve and Not now on
-My Day are RESUME-7 (task 3268), with each consent rule of D-RES-5, and a push
-never approves. Each wait also shows in "Needs you" through the waiting seam of
-`waiting_on_me.md`.
+behind `CHAT_DURABLE_ASKS` and `MY_DAY_PROVIDERS` (WAIT-1, task 1550). Approve
+and Not now on the `agent_asks` card are RESUME-7 (task 3268), under D-RES-5.
+A project decision shows as the `decision` card of the `decisions` source in
+`needs.py` (ALN-2b). It answers through `routes/projects/decisions.py`.
+
+The `decisions` source has two gates: `DECISIONS_ORGS`, and `MY_DAY_PROVIDERS`
+must list `decisions`. A push never approves the `decision` card. That is a
+rule of this spec. Each wait also shows in "Needs you" through the waiting seam
+of `waiting_on_me.md`.
 
 ### 4.6 Delivery
 
@@ -468,19 +488,28 @@ changes nothing in them. The consent wording D-PZ-50 stays open.
 
 **[a3-1] The member model in the find ranking.** The current focus layer may
 add one boost term to the CX-1 score of `GET /search/company`. The term goes
-inside the reciprocal rank fusion with recency of `retrieval/company.py`, and
-adds no second ranker. Past chats stay the `chat` source of
-`company_context.md` §8.2 (CX-4), read by HRD-21 (task 3225) under D-FIND-5. The
-boost reads only the member's own focus items, behind its own flag. The
-fixed-question eval of `company_context.md` fences the change, and
-`find_engine.md` plans the slice (LOOP-15).
+inside the fusion of `retrieval/company.py`: reciprocal rank fusion with
+k = 60, and recency behind `CONTEXT_RECENCY`. It adds no second ranker. The
+boost acts only when its own flag and `CONTEXT_RECENCY` are both on, and it
+reads only the member's own focus items. Past chats stay the `chat` source of
+`company_context.md` §8.2 (CX-4), read by HRD-21 (task 3225) under D-FIND-5.
+
+`company_context.md` (CX-1) owns the score. This spec plans the slice, LOOP-15.
+Two fences hold the change:
+
+- The misses eval, `uv run python -m evals.search_company.run --fixture`. Its
+  `MISSES_BASELINE` must not fall.
+- `tests/unit/test_company_search_recency.py`. The answer with the flag off
+  stays the same.
 
 **[a3-3] Tool gaps and tool failures as inputs.** The learner may read two
-stores that WS-TOF plans, and it copies neither. They are `tool_gaps` (SBX-1,
-`agent_sandbox.md` §7.4) and the one tool failure store (TOF-2a, task 3416,
-with IR-0, task 555). Neither is on `main` today. The learner reads the
-member's own rows as counts by tool and by kind. It reads no error text
-without the member's consent (SBX-Q8), and only counts cross a tenant (LOOP-16).
+stores that WS-TOF plans, and neither is on `main` today. The first is
+`tool_gaps` (SBX-1, `agent_sandbox.md` §7.4). The second is the one tool
+failure store if the owner approves it on task 3394, or else the log of task
+1793. The learner copies neither, and reads only the member's own rows, as
+counts by `category`, `outcome` and `failed_tool`. It never reads `need`, which
+a model writes, or any error text (SBX-Q8), and only counts cross a tenant
+(LOOP-16).
 
 ---
 
@@ -514,7 +543,8 @@ The why line stays a template with an id. That is the "reason" of
 `building_blocks.md` §3.1.
 
 The name `visibility_scope` keeps this field apart from the column `visibility`
-of `pm_alignment_findings`, which holds `shadow` or `live`.
+that ALN-7 plans for `pm_alignment_findings`. That column will hold `shadow` or
+`live`.
 
 ### 6.2 The declaration of one kind
 
@@ -689,12 +719,12 @@ member's `UserContext` (`my_day_feed.md` §4.1). A notification uses
 `deliverable` (`project_alignment.md` §7.2). A finding whose `visibility_scope` does
 not hold the recipient drops in silence.
 
-### 8.5 Data that an admin connected (D98)
+### 8.5 Data from a connected server
 
-An OAuth connection acts as the admin who connected it. A finding built on its
-data has the scope of that admin, unless the admin states a wider D12 subject
-on the connection. So an admin's view never reaches a member's nudge without a
-statement.
+This spec sets the rule (§4.1.1 rule 4, LOOP-Q10). A finding built on the data
+of a connected server reaches only the admin who connected the server. That
+holds for OAuth and for a static key. The admin can state a wider D12 subject
+on the connection. D98 says only that an OAuth call acts as that admin.
 
 ### 8.6 Private sources
 
@@ -759,10 +789,10 @@ rung. No LOOP slice has a board task yet. LOOP-0 makes them.
 | **LOOP-10** | 5 | `metric_moved` from number baselines, with the driver as evidence | `my_day_feed.md` MD-9, `number_sense.md` | LOOP-7, the NUM baselines | Its row | STANDARD · AGENT-SAFE |
 | **LOOP-11** | 5 | A forecast that slips past the plan, as a commitment finding | `projects_reports.md` §6.8, this spec §4.2 | LOOP-7 | Its row | STANDARD · AGENT-SAFE |
 | **LOOP-12** | 6 | A connection declares its kinds in the `nudges` and `insights` points | `package_host.md`, this spec §6.2 | LOOP-7 | Its row | STANDARD · AGENT-SAFE |
-| **LOOP-13** | 6 | The poll of a connected system (§4.1.1) | `chat_connected_systems.md`, this spec §4.1.1 | CSY-1, CSY-2, CSY-R0 for Shaurrya App | Its row | HIGH · AGENT-SAFE, dark |
+| **LOOP-13** | 6 | The poll of a connected system (§4.1.1) | `chat_connected_systems.md`, this spec §4.1.1 | CSY-2, CSY-8, the read-only key on each server (CSY-R0 for Shaurrya App), LOOP-Q10 | Its row | HIGH · AGENT-SAFE, dark |
 | **LOOP-14** | Later | A prior for each kind across tenants | This spec §7.4 | LOOP-Q7 | Its row | HIGH · OWNER-GATE until LOOP-Q7 |
-| **LOOP-15** | Later | The focus boost in the find ranking ([a3-1]) | `find_engine.md` | LOOP-6 | Its row | STANDARD · AGENT-SAFE |
-| **LOOP-16** | Later | Tool gaps and tool failures as inputs ([a3-3]) | `agent_sandbox.md` | SBX-1, TOF-2a | Its row | STANDARD · AGENT-SAFE |
+| **LOOP-15** | Later | The focus boost in the find ranking ([a3-1]) | This spec. `company_context.md` (CX-1) owns the score | LOOP-6 | The two fences of [a3-1] pass | STANDARD · AGENT-SAFE |
+| **LOOP-16** | Later | Tool gaps and tool failures as inputs ([a3-3]) | `agent_sandbox.md` | SBX-1, and the failure store of task 3394 or the log of task 1793 | Its row | STANDARD · AGENT-SAFE |
 
 The rows of rungs 4 to 6 and Later say "Its row". The plan after the rung 3
 demo writes each "done when" in full, before its slice starts.
@@ -821,6 +851,7 @@ Each later slice names its own test files in its row.
 | **LOOP-Q7** | May a count for each kind cross tenants, as a prior for a new org? | **Later, with limits.** Counts for each kind only, from 10 orgs or more, in a table that holds no org, member or entity | A store outside RLS is a new kind of risk. The prior of a kind and the org pool cover the cold start until then |
 | **LOOP-Q8** | May a small holdout group get no nudges of one kind, to measure what the nudges add? | **Not before rung 5.** Then 5% of members at most, for `insights` kinds only, never for a needs kind | A holdout hides real work from a real member |
 | **LOOP-Q9** | When KG-11 removes the Mem0 client, does `save_memory` leave with it? | **Yes.** `profile_remember` stays the one write of a fact about the member | D132 item 1 puts what Mira knows about a member in the profile. `personalization.md` §5.5 sends a kept fact there already |
+| **LOOP-Q10** | The poll of a connected server (§4.1.1) follows three rules of this spec. A poll needs the admin's read-only key, and a hint is not enough. Its result is untrusted data. Its signal reaches only the admin who connected the server, for OAuth and for a static key. Agreed? | **Yes** | A poll runs on a schedule with no person to see a card. A wider audience needs a statement by the admin |
 
 ---
 
@@ -865,4 +896,4 @@ this spec are our own choices too:
 
 **The code.** Each path and flag of §2 was read on `origin/main` at
 `320b04375` on 2026-11-16. The production column comes from the flag names in
-the production `.env` on the same day.
+the production `.env`, read on 2026-11-15 UTC.
