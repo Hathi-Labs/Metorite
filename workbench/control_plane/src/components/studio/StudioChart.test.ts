@@ -58,13 +58,13 @@ describe("StudioStat icon (STU-LOOK-2)", () => {
   it("draws an icon of the list before the heading", () => {
     const html = draw({ label: "Deals", icon: "Truck" });
     expect(html).toContain("<svg");
-    expect(html.indexOf("<svg")).toBeLessThan(html.indexOf("Deals"));
+    expect(html.indexOf("<svg")).toBeLessThan(html.indexOf("data-stat-heading"));
     expect(html).toContain('data-stat-heading=""');
   });
   it("draws no icon for a name outside the list, a non-string or no icon", () => {
     for (const icon of ["Skull", 5, null, undefined, ""]) {
       const html = draw({ label: "Deals", icon });
-      expect(html.slice(0, html.indexOf("Deals"))).not.toContain("<svg");
+      expect(html.slice(0, html.indexOf("data-stat-heading"))).not.toContain("<svg");
     }
   });
 });
