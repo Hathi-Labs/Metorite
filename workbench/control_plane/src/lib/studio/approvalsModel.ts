@@ -45,7 +45,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A text clipped to *limit* characters, with no control character. A cut ends with `...`. */
 export function clip(value: unknown, limit: number = MAX_NAME_CHARS): string {
   const raw = typeof value === "string" ? value : value == null ? "" : String(value);
-  const clean = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+  const clean = raw.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\u200b-\u200f]/g, " ");
   return clean.length > limit ? `${clean.slice(0, limit - 3)}...` : clean;
 }
 

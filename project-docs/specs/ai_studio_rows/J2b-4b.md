@@ -17,3 +17,5 @@ The Needs-you row of J2b-4a now opens `/studio/approvals?pkg=<id>&v=<n>`. No mig
 ## Done when
 
 A holder opens the row and lands on the pending version
+
+**Notes from the verifier (2026-11-15, no defect):** (1) Fixed: `clip` now also turns bidi overrides and zero-width marks into spaces. (2) The server lets the owner and the publisher REJECT their own pending version (J2b-1 docstring), but the screen hides Reject for them, so an owner cannot withdraw a pending version here. Decide in a follow-up whether to show Reject only. (3) No test covers `page.tsx`. The rule that the owner sees no button is fenced at model level (`standing()`). Add a component test when the repo has a pattern for it.

@@ -93,6 +93,9 @@ describe("the summary", () => {
     expect(clip("x".repeat(200))).toHaveLength(120);
     expect(clip("x".repeat(200)).endsWith("...")).toBe(true);
   });
+  it("a bidi override or a zero-width mark becomes a space, so text cannot reorder what follows", () => {
+    expect(clip("a\u202eb\u2066c\u200bd")).toBe("a b c d");
+  });
   it("keeps markup as text and does not read it", () => {
     const s = summarizeManifest({ actions: [{ id: "<img src=x onerror=1>", title: "**do this**" }] });
     expect(s.actions[0]).toEqual({ id: "<img src=x onerror=1>", title: "**do this**" });
