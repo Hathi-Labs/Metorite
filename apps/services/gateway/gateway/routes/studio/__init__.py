@@ -11,6 +11,7 @@ routes (``packages.py``) on it too. STU-AF-10a adds the saved views
 """
 
 from gateway.routes.studio import connections as _connections  # noqa: F401
+from gateway.routes.studio import csv_import as _csv_import  # noqa: F401
 from gateway.routes.studio import invoke as _invoke  # noqa: F401
 from gateway.routes.studio import packages as _packages  # noqa: F401
 from gateway.routes.studio import skills as _skills  # noqa: F401

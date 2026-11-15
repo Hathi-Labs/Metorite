@@ -123,11 +123,12 @@ NODE_TYPE_META = [
 #: two task types by name. Fence: ``tests/unit/test_workflows_node_offer.py``.
 UNOFFERED_NODE_TYPES = frozenset({"pm_task", "pm_lifecycle", "studio_write"})
 
-#: The `pm.*` topics a workflow can bind an event trigger to (WS-27f).
+#: The topics a workflow can bind an event trigger to: the `pm.*` events
+#: (WS-27f) and the core app events (STU-E12a, `people.person.updated`).
 #: Served rather than typed from memory — an editor offering a topic the app
 #: does not emit is a trigger that silently never fires (D7, the same rule the
 #: agent and integration lists already follow).
-PM_EVENT_TOPICS = [
+EVENT_TOPICS = [
     {"source": "projects", "event_type": "pm.task.created", "label": "Task created"},
     {"source": "projects", "event_type": "pm.task.updated", "label": "Task updated"},
     {
@@ -147,7 +148,11 @@ PM_EVENT_TOPICS = [
     {"source": "projects", "event_type": "pm.project.updated", "label": "Project updated"},
     {"source": "projects", "event_type": "pm.project.moved", "label": "Project moved"},
     {"source": "projects", "event_type": "pm.project.deleted", "label": "Project deleted"},
+    {"source": "people", "event_type": "people.person.updated", "label": "Person updated"},
 ]
+
+#: The old name of the one list, kept for a reader that still imports it.
+PM_EVENT_TOPICS = EVENT_TOPICS
 
 CONDITION_OPS = [
     "equals",
@@ -285,7 +290,7 @@ async def get_catalog(
     return {
         "node_types": NODE_TYPE_META,
         "condition_ops": CONDITION_OPS,
-        "event_topics": PM_EVENT_TOPICS,
+        "event_topics": EVENT_TOPICS,
         "agents": _agent_entries(),
         "integrations": _integration_entries(),
         "tools": [_tool_entry(s) for s in list_tools()],
