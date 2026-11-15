@@ -168,6 +168,67 @@ if [ "${#present[@]}" -gt 0 ] && ! env -u VIRTUAL_ENV uv run pytest -q -p no:cac
   fail "a collision fence fails once $BASE is merged in. Fix it on the branch, push, and wait for pr-check."
 fi
 
+# ── 3b. The type check, on the merge result (CIV-MT-2, task 3369) ──────────
+# 2026-11-15: PR 2354 made `layout` and `regions` required on PageModel, PR 2295 added a
+# test that builds a PageModel without them. Each passed `tsc` alone. After both merged,
+# main's `tsc --noEmit` failed (TS2739), and premerge ran no `tsc`. So when the two
+# sides touch the front end, `tsc` runs on the merge result. An error that `tsc` also
+# reports on $BASE alone is not the merge's (main red must not block every PR).
+# Off with PREMERGE_TSC=0 (or the merge test off). A missing node_modules gets one `npm ci`.
+TSC_TIMEOUT="${PREMERGE_TSC_TIMEOUT:-240}"
+TSC_CMD="${PREMERGE_TSC_CMD:-npx tsc --noEmit -p tsconfig.json}"
+tsc_errors() { { grep -E 'error TS' "$1" || true; } | tr -d '\r' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort -u; }
+run_tsc() {
+  ( cd workbench/control_plane && NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}" \
+      timeout "$TSC_TIMEOUT" bash -c "$TSC_CMD" ) > "$1" 2>&1
+}
+if [ "$merge_test" = 1 ] && [ "${PREMERGE_TSC:-1}" != 0 ] \
+   && grep -qE '^workbench/control_plane/.*\.(ts|tsx|mts|cts|js|mjs|json)$' "$logs/union.txt"; then
+  tsc_started=$SECONDS
+  # A lockfile change on either side makes an old node_modules wrong (a new dependency would
+  # fail with TS2307 here and pass in pr-check), so it gets the same npm ci.
+  if [ ! -d workbench/control_plane/node_modules ] || grep -q '^workbench/control_plane/package-lock\.json$' "$logs/union.txt"; then
+    say "type check: no node_modules here, or a lockfile changed: running npm ci (at most ${PREMERGE_NPM_TIMEOUT:-240}s)"
+    ( cd workbench/control_plane && timeout "${PREMERGE_NPM_TIMEOUT:-240}" npm ci --no-audit --no-fund ) > "$logs/npm.log" 2>&1 || true
+  fi
+  if [ ! -d workbench/control_plane/node_modules ]; then
+    say "UNPROVEN. The type check did not run: no node_modules here, and npm ci did not finish. pr-check is the evidence."
+  else
+    say "type check on the merge result (a front-end file changed), timeout ${TSC_TIMEOUT}s"
+    tsc_rc=0; run_tsc "$logs/tsc.log" || tsc_rc=$?
+    if [ "$tsc_rc" = 0 ]; then
+      say "type check passed"
+    elif [ "$tsc_rc" = 124 ]; then
+      say "UNPROVEN. The type check hit ${TSC_TIMEOUT}s with no verdict. pr-check is the evidence."
+    else
+      merged_errors="$(tsc_errors "$logs/tsc.log")"
+      if [ -z "$merged_errors" ]; then
+        tail -8 "$logs/tsc.log" >&2
+        say "UNPROVEN. The type check failed with no type error (log above): this machine, not the merge."
+      else
+        merge_head="$(git rev-parse HEAD)"
+        git checkout -q --detach "$BASE"
+        base_rc=0; run_tsc "$logs/tsc_main.log" || base_rc=$?
+        git checkout -q --detach "$merge_head"
+        base_errors="$(tsc_errors "$logs/tsc_main.log")"
+        caused="$(comm -23 <(printf '%s\n' "$merged_errors") <(printf '%s\n' "$base_errors"))"
+        if [ "$base_rc" = 124 ] || { [ "$base_rc" != 0 ] && [ -z "$base_errors" ]; }; then
+          # The baseline run did not give a verdict (timeout, crash). It cannot clear or blame.
+          say "UNPROVEN. The type check of $BASE alone gave no verdict (exit $base_rc), so the errors of the merge cannot be compared. pr-check is the evidence."
+        elif [ -n "$caused" ]; then
+          say "the type check took $(( SECONDS - tsc_started )) s"
+          printf '%s\n' "$caused" | head -15 >&2
+          fail "type errors that exist on the merge of the branch and $BASE and not on $BASE alone. Merge $BASE into the branch, fix, push, and wait for pr-check."
+        else
+          say "the type errors also exist on $BASE alone, so the merge did not cause them:"
+          printf '%s\n' "$merged_errors" | head -5 | sed 's/^/  /'
+        fi
+      fi
+    fi
+  fi
+  say "the type check took $(( SECONDS - tsc_started )) s"
+fi
+
 # ── 4. Both sides changed the same files ───────────────────────────────────
 # A test that fails on the merge result is a merge failure only when it PASSES
 # on the branch alone (green alone, red together). A test that fails both ways
@@ -179,6 +240,14 @@ fi
 # re-runs (branch alone, main alone) gets 120 s.
 TEST_TIMEOUT="${PREMERGE_TEST_TIMEOUT:-420}"
 RERUN_TIMEOUT="${PREMERGE_RERUN_TIMEOUT:-120}"
+# Keep the whole run inside PREMERGE_TOTAL_BUDGET (default 760 s of the 900 s, which leaves about 35 s for the picker and the fetch that
+# merge_bot allows): the test cap shrinks by what the fences, the picker and the type
+# check already used. A floor of 60 s keeps a verdict possible.
+left=$(( ${PREMERGE_TOTAL_BUDGET:-760} - (SECONDS - started) - 2 * RERUN_TIMEOUT ))
+if [ "$left" -lt "$TEST_TIMEOUT" ]; then
+  left=$(( left < 60 ? 60 : left ))
+  [ "$left" -lt "$TEST_TIMEOUT" ] && TEST_TIMEOUT=$left
+fi
 both_full=0
 # premerge_select.py picks the tests that BOTH sides can affect, plus each test
 # file that either side changed, those first. The whole union took 974 test files

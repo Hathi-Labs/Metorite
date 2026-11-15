@@ -256,10 +256,10 @@ hand-off (`run.arms_for`). They are outside `WORK_SCENARIOS`. The member of
 `stu_no_feature` lacks the feature through the `Scenario` field `without_features`, which
 the run reads. The harness file is not edited.
 
-**The arm.** `--arms` lists `search`. It prints `SKIP: arm search` until the
-settings hold `tool_search_orgs` (`run.search_built`). Then `scripted_models` still raises
-`NotImplementedError`, because the plans that call `find_tools` are TS-5b. An unknown
-`--arms` value exits with status 2.
+**The arm.** `--arms` lists `search`. It prints `SKIP: arm search` until the plans of
+TS-5b are in (`run.SEARCH_PLANS`) and the settings hold `tool_search_orgs`
+(`run.search_built`). TS-2a PR 3 added the field first, so TS-5b sets `SEARCH_PLANS`
+to True with its plans. An unknown `--arms` value exits with status 2.
 
 **The flags.** A Studio chat adds `studio` BY NAME to `TOOL_PACKS` and the eval org to
 `STUDIO_ORGS` (`run.flag_for`). It never uses `owner_packs("studio-builder")`, because

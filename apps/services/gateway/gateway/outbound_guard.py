@@ -35,6 +35,9 @@ reason. It never holds the path or the query of the URL.
 WS-8c adds :func:`mcp_client`, the client of an MCP session for a native MAF
 agent (``orchestrator/_maf_mcp.py``). It is the third caller, and it keeps
 rules 1 to 3. The section above :func:`mcp_client` says what it adds.
+WS-STU STU-B1b-2 adds an optional :class:`AnswerBudget` to it. With one, each
+answer is counted while it is read, and a cap raises :class:`AnswerTooLarge`.
+A run passes none (fence: ``tests/unit/test_studio_mcp_tools.py``).
 
 WS-54 IN-8a adds :func:`request_https`, the mode of each MCP OAuth fetch
 (``gateway/connections/mcp_oauth.py``). It is :func:`request` with the two MCP
@@ -348,6 +351,50 @@ def _mcp_inner_transport() -> httpx.AsyncBaseTransport:
     return httpx.AsyncHTTPTransport(retries=0)
 
 
+class AnswerTooLarge(OutboundRefused):
+    """An answer of an MCP session passed a byte cap of its :class:`AnswerBudget`."""
+
+
+@dataclass
+class AnswerBudget:
+    """The byte caps of ONE MCP session (WS-STU STU-B1b-2).
+
+    ``per_answer`` caps the bytes of each answer, and ``total`` caps the
+    bytes of all the answers of the session. ``tripped`` is set when a cap
+    fires, so the caller can stop the session at once. The SDK reads an
+    answer with no limit, and it can swallow an exception of its own reader,
+    so the event is the signal that the caller waits on."""
+
+    per_answer: int
+    total: int
+    used: int = 0
+    tripped: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class _CappedStream(httpx.AsyncByteStream):
+    """The byte stream of one answer, counted against an :class:`AnswerBudget`."""
+
+    def __init__(self, inner: Any, budget: AnswerBudget, host: str) -> None:
+        self._inner = inner
+        self._budget = budget
+        self._host = host
+
+    async def __aiter__(self) -> Any:
+        seen = 0
+        async for chunk in self._inner:
+            seen += len(chunk)
+            self._budget.used += len(chunk)
+            if seen > self._budget.per_answer or self._budget.used > self._budget.total:
+                self._budget.tripped.set()
+                raise AnswerTooLarge(self._host, "too large")
+            yield chunk
+
+    async def aclose(self) -> None:
+        close = getattr(self._inner, "aclose", None)
+        if close is not None:
+            await close()
+
+
 class _PinnedTransport(httpx.AsyncBaseTransport):
     """Sends each request to the address of ONE :class:`Target`.
 
@@ -355,8 +402,9 @@ class _PinnedTransport(httpx.AsyncBaseTransport):
     ``Host`` header keeps the name of the URL, and ``sni_hostname`` carries
     the name, so TLS checks the certificate against the name."""
 
-    def __init__(self, target: Target) -> None:
+    def __init__(self, target: Target, budget: AnswerBudget | None = None) -> None:
         self._target = target
+        self._budget = budget
         self._origin = (target.url.scheme, target.host, target.url.port or MCP_PORT)
         self._inner = _mcp_inner_transport()
 
@@ -372,10 +420,16 @@ class _PinnedTransport(httpx.AsyncBaseTransport):
         if request.method == "DELETE":
             cap = MCP_DELETE_TIMEOUT_S
             extensions["timeout"] = {"connect": cap, "read": cap, "write": cap, "pool": cap}
+        headers = request.headers
+        if self._budget is not None:
+            # STU-B1b-2: the cap counts wire bytes, and httpx decodes gzip
+            # after the transport. So a budgeted session asks for no coding.
+            headers = httpx.Headers(request.headers)
+            headers["Accept-Encoding"] = "identity"
         pinned = httpx.Request(
             request.method,
             url.copy_with(host=self._target.ip),
-            headers=request.headers,
+            headers=headers,
             stream=request.stream,
             extensions=extensions,
         )
@@ -383,19 +437,41 @@ class _PinnedTransport(httpx.AsyncBaseTransport):
         if 300 <= response.status_code < 400:
             await response.aclose()
             raise OutboundRefused(self._target.host, f"redirect {response.status_code}")
-        return response
+        if self._budget is None:
+            return response
+        if self._budget.tripped.is_set():
+            await response.aclose()
+            raise AnswerTooLarge(self._target.host, "too large")
+        coding = response.headers.get("content-encoding", "").strip().lower()
+        if coding not in ("", "identity"):
+            # A coded answer can inflate far past the cap after the count, so
+            # it is refused before one byte of it is read.
+            await response.aclose()
+            self._budget.tripped.set()
+            raise AnswerTooLarge(self._target.host, "encoded")
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            stream=_CappedStream(response.stream, self._budget, self._target.host),
+            extensions=response.extensions,
+        )
 
     async def aclose(self) -> None:
         await self._inner.aclose()
 
 
-async def mcp_client(url: str) -> httpx.AsyncClient:
+async def mcp_client(url: str, *, budget: AnswerBudget | None = None) -> httpx.AsyncClient:
     """A client for ONE MCP session to ``url``, or :class:`OutboundRefused`.
 
-    The caller owns the client and closes it when the run ends."""
+    The caller owns the client and closes it when the run ends. With a
+    *budget* (STU-B1b-2), each request asks for ``Accept-Encoding:
+    identity``, an answer with another ``Content-Encoding`` is refused before
+    it is read, and each answer is counted. An answer past a cap raises
+    :class:`AnswerTooLarge` while it is read. A run passes no budget,
+    so its behaviour does not change."""
     target = await check_mcp_url(url)
     return httpx.AsyncClient(
-        transport=_PinnedTransport(target),
+        transport=_PinnedTransport(target, budget),
         follow_redirects=False,
         trust_env=False,
         timeout=MCP_TIMEOUT,
@@ -410,6 +486,8 @@ __all__ = [
     "MCP_TIMEOUT",
     "TOTAL_TIMEOUT_S",
     "Answer",
+    "AnswerBudget",
+    "AnswerTooLarge",
     "OutboundRefused",
     "Target",
     "check_mcp_url",

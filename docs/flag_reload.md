@@ -113,6 +113,16 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`STUDIO_LIVE_PREVIEW_ORGS` lets a preview of the Studio action door read a
+class A MCP action live (`ai_studio.md` §14 I11a). For each listed org, a
+`preview=1` call of an `mcp:<server>.<tool>` action calls that tool of the
+org's server once, and the cut answer stays in the cache for 60 s. `*` lists
+every org, and the default is empty. Empty means each MCP action of a preview
+stays `source_not_open`. Its one reader is
+`acb_common.studio_flags.live_preview_on`, and each call asks it. The door
+also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_LOGIC_ORGS` opens the logic module of the Studio action door
 (`ai_studio.md` §14 B4a). For each listed org, a `logic:<name>` action of a
 package runs a first-party module of the gateway. `*` lists every org, and the
@@ -136,6 +146,14 @@ member owns or has installed. `*` lists every org, and the default is empty.
 Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
 asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
 the flip stays OWNER-GATE (`enforcement-flip`).
+
+`TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
+(`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`
+gives a pack. `*` lists every org, and the default is empty. Its one reader is
+`acb_skills.tool_packs.tool_search_on`. The apply of the tool packs asks it at
+the start of each run, so a reload applies to the next run. Any value other
+than empty is OWNER-ONLY (`work_plan.md` §6 D4), and the §3a window does not
+open it.
 
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is

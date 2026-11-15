@@ -22,8 +22,10 @@ A read. No action runs here. These sources feed it:
 
 6. ``mcp`` (STU-B1b-1): each tool of an MCP server of the org, as
    ``mcp:<server>.<tool>``, class A or B (``gateway.studio.mcp_actions``).
-   B1b-1 has no ``tools/list`` read, so the catalog passes an empty tools
-   map and the source gives no row. The catalog never calls a server.
+   B1b-2 reads the rows from the cache of ``gateway.connections.mcp_tools``
+   only, so the catalog NEVER calls a server. A cold cache gives no row,
+   and the GET answers ``stale: true``. ``POST /studio/mcp/{server}/refresh``
+   is the one member action that reads a server and fills the cache.
 
 Source 2 is empty until a tool registers with an integration. Today the
 registry holds only tools with ``integration=None``.
@@ -67,12 +69,14 @@ import uuid
 from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
+from acb_common import get_logger
 from acb_common.app_manifests import door_ops, every_app
 from acb_common.db import current_tenant
 from acb_common.studio_fields import NAME_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, OBJECT_OPS, parse_uses
 from acb_skills.skill_packs import action_tool
 from fastapi import APIRouter, Depends, HTTPException, Query
+from gateway.connections import mcp_tools
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.agent_apps import args_schema
 from gateway.routes.studio import flags
@@ -89,6 +93,8 @@ router = APIRouter(
 )
 
 NOT_FOUND = "Not found"
+
+_log = get_logger("studio.actions")
 
 _WORKFLOWS_SQL = text(
     "SELECT id, name FROM workflows "
@@ -190,23 +196,42 @@ def _logic_rows() -> list[dict[str, Any]]:
     } for name, module in sorted(_logic.MODULES.items())]
 
 
-def _mcp_rows() -> list[dict[str, Any]]:
-    """The MCP tools of the bound org (B1b-1). No ``tools/list`` read exists
-    yet (B1b-2), so the server list and the tools map are empty, and the
-    source gives no row. It reads no server and opens no session."""
-    return mcp_actions.mcp_rows((), {})
+async def _mcp_rows() -> tuple[list[dict[str, Any]], bool]:
+    """The MCP tools of the bound org from the cache (B1b-2), and ``stale``.
+
+    ``mcp_tools.catalog_tools`` reads the cache and the server list of the
+    org (``enabled_meta``). It NEVER calls a server. With no bound org it
+    gives no row. The rows come from ``mcp_actions.mcp_rows``."""
+    org = current_tenant()
+    if not org:
+        return [], True
+    return await mcp_tools.catalog_tools(str(org))
 
 
-async def catalog_rows() -> list[dict[str, Any]]:
+class CatalogRows(list):
+    """The rows of :func:`catalog_rows`, a plain list with one more field.
+
+    ``stale`` is the answer of the MCP source (B1b-2): true when the cache may
+    not hold every MCP tool of the org. A caller that keys on the rows reads
+    a list as before."""
+
+    stale: bool = True
+
+
+async def catalog_rows() -> CatalogRows:
     """Every row of the catalog: the door ops, the integration tools, the
     published workflows of the bound org, the logic modules (B4a) and the MCP
-    tools (B1b-1). The one source of the catalog.
+    tools (B1b-1, from the cache of B1b-2). The one source of the catalog.
     ``routes/studio/skills.py`` checks a skill's actions against it.
 
     ⚠️ It opens its own ``_tenant_session()`` for the workflows. A caller runs
-    it BEFORE it opens a session of its own, so no request holds two."""
-    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows(), *_logic_rows(),
-            *_mcp_rows()]
+    it BEFORE it opens a session of its own, so no request holds two. The MCP
+    read opens a session only when the cache of the org names a server."""
+    mcp, stale = await _mcp_rows()
+    rows = CatalogRows([*_manifest_rows(), *_integration_rows(), *await _workflow_rows(),
+                        *_logic_rows(), *mcp])
+    rows.stale = stale
+    return rows
 
 
 #: A stored object name that A2 would refuse gives no row. Only a write past the
@@ -302,4 +327,53 @@ async def list_actions(
         user.email, {str(r["id"]): str(r["class"]) for r in base}, app=only)
     if only is not None:
         return {"actions": mine}
-    return {"actions": [*base, *mine]}
+    # B1b-2: ``stale`` is true when the cache may not hold every MCP tool.
+    return {"actions": [*base, *mine], "stale": bool(getattr(base, "stale", True))}
+
+
+#: The words of a failed refresh. They never hold the text of an exception.
+_REFRESH_FAILED = "The server did not give its list of tools. Try again later."
+_REFRESH_SOON = "This server was read a moment ago. Try again in {s} seconds."
+_REFRESH_DOWN = "The tool list cannot be read now. Try again later."
+_REFRESH_REFUSED = (
+    "You cannot refresh this server: it is not a connected server of your organization, "
+    "or you may not use it.")
+
+
+@router.post("/mcp/{server}/refresh")
+async def refresh_mcp_tools(
+    server: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Read the ``tools/list`` of ONE MCP server of the caller's org (B1b-2).
+
+    The one member action that calls a server. It fills the cache that the
+    catalog reads. The org is the bound session's, never request input, so
+    a server of another org is 403 ``mcp_not_allowed``, as a server that the
+    member may not use (the grant ``integrations:use:mcp-<server>`` or the
+    agent scope) is. A bad key is 404. The answer holds the server key, the
+    count and the result, and never a url, a header or an error text."""
+    org = getattr(user, "organization_id", None)
+    if not flags.studio_allowed(org):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    try:
+        done = await mcp_tools.refresh(str(org), server, may_use=user.has_permission)
+    except mcp_tools.ServerNotFound:
+        raise HTTPException(status_code=404, detail=NOT_FOUND) from None
+    except mcp_tools.RefreshRefused:
+        # I11a review: no grant, no agent scope and no such server give one
+        # answer, so the answer does not say that a server exists.
+        raise HTTPException(status_code=403, detail={
+            "code": "mcp_not_allowed", "message": _REFRESH_REFUSED}) from None
+    except mcp_tools.RefreshTooSoon as soon:
+        raise HTTPException(
+            status_code=429, detail=_REFRESH_SOON.format(s=soon.retry_after),
+            headers={"Retry-After": str(soon.retry_after)}) from None
+    except Exception as exc:
+        _log.warning("studio.mcp_refresh_unavailable", kind=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=_REFRESH_DOWN) from None
+    if not done.ok:
+        raise HTTPException(status_code=502, detail={
+            "code": f"mcp_{done.reason}", "message": _REFRESH_FAILED, "server": done.server})
+    return {"server": done.server, "ok": True, "tools": done.tools,
+            "truncated": done.truncated}
