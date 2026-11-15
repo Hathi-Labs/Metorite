@@ -282,16 +282,11 @@ class FieldSpec:
         """The ``spec`` column: every part but the key, the type and ``hot``,
         which have their own columns."""
         out: dict[str, Any] = {"required": self.required, "many": self.many}
-        if self.label is not None:
-            out["label"] = self.label
+        for name in ("label", "to", "min", "max", "format", "lines", "prefix", "pad", "reset", "system"):
+            if getattr(self, name) is not None:
+                out[name] = getattr(self, name)
         if self.options is not None:
             out["options"] = list(self.options)
-        if self.to is not None:
-            out["to"] = self.to
-        if self.min is not None:
-            out["min"] = self.min
-        if self.max is not None:
-            out["max"] = self.max
         if self.units is not None:
             out["units"] = list(self.units)
         if self.normal is not None:
@@ -301,18 +296,6 @@ class FieldSpec:
         if self.conversions is not None:
             out["conversions"] = [
                 {"from": a, "to": b, "factor": c} for a, b, c in self.conversions]
-        if self.format is not None:
-            out["format"] = self.format
-        if self.lines is not None:
-            out["lines"] = self.lines
-        if self.prefix is not None:
-            out["prefix"] = self.prefix
-        if self.pad is not None:
-            out["pad"] = self.pad
-        if self.reset is not None:
-            out["reset"] = self.reset
-        if self.system is not None:
-            out["system"] = self.system
         return out
 
 
