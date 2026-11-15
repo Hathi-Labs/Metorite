@@ -366,3 +366,42 @@ def test_the_hint_picks_the_preset_for_fourteen_prompts(prompt: str, want) -> No
 def test_the_frame_part_still_fits_the_describe_cap_with_the_presets() -> None:
     size = len(json.dumps(run(st.studio_describe("frame")), ensure_ascii=False, separators=(",", ":")))
     assert size <= st.MAX_MANIFEST_CHARS // 2, size
+
+
+# ── The design step of Mira (STU-LOOK-3, `studio_layouts.md` section 11.5) ───────────────────
+
+
+def test_the_frame_part_teaches_the_design_step() -> None:
+    d = run(st.studio_describe("frame"))["frame"]["design"]
+    assert len(d["questions"]) == 3
+    assert "one sentence" in d["note"]
+    assert d["sample_data"] and d["rubric"]
+    for row in d["first_screens"]:
+        assert set(row) == {"audience", "layout", "note"}
+
+
+def test_each_first_screen_is_a_layout_that_the_validator_knows() -> None:
+    for audience, layout, _note in st.DESIGN_SCREENS:
+        assert layout in sm.LAYOUTS, (audience, layout)
+    assert len({a for a, _l, _n in st.DESIGN_SCREENS}) == len(st.DESIGN_SCREENS)
+
+
+def test_a_table_is_the_first_screen_only_for_a_table_audience() -> None:
+    tables = [a for a, lay, _n in st.DESIGN_SCREENS if lay == "table_workspace"]
+    assert len(tables) == 1 and "enters and edits many rows" in tables[0]
+
+
+def test_the_rubric_of_the_tool_equals_the_rubric_of_the_spec() -> None:
+    """R7 fence: the eight checks of section 11.6 and the eight lines of the tool cannot drift apart."""
+    import re
+    from pathlib import Path
+
+    spec = (Path(__file__).resolve().parents[2] / "project-docs/specs/studio_layouts.md").read_text(encoding="utf-8")
+    block = spec.split("**The look rubric.**", 1)[1].split("**G6.**", 1)[0]
+    lines = [m.group(1).strip() for m in re.finditer(r"^\d+\. (.+)$", block, re.M)]
+    assert lines == list(st.DESIGN_RUBRIC)
+
+
+def test_the_design_step_keeps_the_frame_part_inside_the_describe_cap() -> None:
+    size = len(json.dumps(run(st.studio_describe("frame")), ensure_ascii=False, separators=(",", ":")))
+    assert size <= st.MAX_MANIFEST_CHARS // 2, size
