@@ -96,7 +96,7 @@ from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
-from gateway.retrieval import turn_vector
+from gateway.retrieval import find, turn_vector
 from gateway.retrieval.sources import REGISTRY, Hit, email_meaning_on, holds
 
 logger = logging.getLogger(__name__)
@@ -353,11 +353,15 @@ def _interleave(order: list[str], found: dict[str, list[Hit]]) -> list[Hit]:
     return out
 
 
-def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime) -> list[Hit]:
+def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime,
+              *, covered: bool = False) -> list[Hit]:
     """ONE list for every app, sorted by :func:`score` (KG-3b).
 
     Each app's list is ranked from 1 in the order it arrived. A tie goes to
     the app that comes first in *order*, then to the lower rank. Pure.
+
+    *covered* (FIND-2, ``find_engine.md`` §3.4) puts two keys before the
+    score: the hit that holds more of the query's words, then the lower rung.
     """
     place = {key: i for i, key in enumerate(order)}
     scored = [
@@ -365,7 +369,13 @@ def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime) -> l
         for key, hits in found.items()
         for rank, h in enumerate(hits, start=1)
     ]
-    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    if covered:
+        scored.sort(key=lambda item: (
+            -(item[3].covers or 0), find.rung_of(item[3].matched_by),
+            -item[0], item[1], item[2],
+        ))
+    else:
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
     return [h for _s, _p, _r, h in scored]
 
 
@@ -492,12 +502,14 @@ def _merge(order: list[str], passes: list[dict[str, list[Hit]]],
 async def _broaden(
     user: UserContext, alone: list[str], asked: list[str], per_app: int, *,
     options: dict[str, Any], since: datetime | None, until: float,
+    tag: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[Hit]]]:
     """Ask the apps of *asked* again with each word alone, before *until*.
 
     Each word takes an equal share of the time left, and an unused share
     goes to the next word. No vector half runs. It returns what each word
-    found (``broadened``) and the merged hits of each app (KR-ZERO).
+    found (``broadened``) and the merged hits of each app (KR-ZERO). *tag* is
+    the content words of the query, set only with ``FIND_ORGS`` on (FIND-2).
     """
     loop = asyncio.get_running_loop()
     lexical = {k: v for k, v in options.items() if k not in ("vectors", "budget_s")}
@@ -509,6 +521,12 @@ async def _broaden(
             user, word, asked, per_app, hybrid=False, options=dict(lexical),
             since=since, deadline=loop.time() + share, timed=False,
         )
+        if tag is not None:
+            # FIND-2: each hit says which word found it, and how many it holds.
+            found = {
+                key: [find.stamped(h, tag, "word", word=word) for h in hits]
+                for key, hits in found.items()
+            }
         passes.append(found)
         report.append({
             "word": word, "hits": sum(len(hits) for hits in found.values()),
@@ -583,6 +601,12 @@ async def company_search(
     # A filtered search that finds nothing says nothing about a gap (KB-AI-4).
     _note_gap(background, user, words, None if only_verified else knowledge_hits)
 
+    # FIND-2: with the flag on, each hit says how it matched. It acts only with
+    # CONTEXT_RECENCY on, so the flag-off answer below is untouched.
+    words_of = find.content_words(words) if recency and find.find_allowed(user.organization_id) else None
+    if words_of is not None:
+        found = {key: [find.stamped(h, words_of, "exact") for h in hits]
+                 for key, hits in found.items()}
     if not recency:
         return {
             "query": words,
@@ -592,11 +616,15 @@ async def company_search(
     # KR-ZERO: every app that answered found nothing. Ask again, each word alone.
     broadened: list[dict[str, Any]] | None = None
     alone = alone_words(words) if found and not any(found.values()) else []
+    if words_of is not None and alone:
+        # The fold of §3.3: "Sharath's" is searched as "sharath".
+        alone = words_of
     until = min(loop.time() + BROADEN_BUDGET_S, began + ANSWER_CAP_S)
     if alone and until - loop.time() >= BROADEN_FLOOR_S:
         started = loop.time()
         broadened, found = await _broaden(
             user, alone, list(found), per_app, options=options, since=since, until=until,
+            tag=words_of,
         )
         _events.info(
             "search.company.broaden", words=len(alone),
@@ -606,7 +634,8 @@ async def company_search(
     now = datetime.now(UTC)
     answer: dict[str, Any] = {
         "query": words,
-        "hits": [h.as_dict(stamp=True) for h in by_fusion(order, found, now)],
+        "hits": [h.as_dict(stamp=True, find=words_of is not None)
+                 for h in by_fusion(order, found, now, covered=words_of is not None)],
         "searched": [key for key in order if key in found and REGISTRY[key].reaches(user)],
         "skipped": skipped,
         "meaning": meaning,

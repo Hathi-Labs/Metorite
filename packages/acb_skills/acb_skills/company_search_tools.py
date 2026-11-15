@@ -241,6 +241,36 @@ def _dates(hit: dict[str, Any], *, dated: bool) -> str:
     return f"{said}, {changed}"
 
 
+def _how_matched(hit: dict[str, Any]) -> str:
+    """The bracket of §3.5 that says how a hit matched, or ``""`` (FIND-2).
+
+    It reads a closed list. A hit with no ``matched_by`` (the flag is off)
+    gets no bracket, so the text of KR-ZERO stays byte for byte.
+    """
+    rung = hit.get("matched_by")
+    if not isinstance(rung, str):
+        return ""
+    covers, total = hit.get("covers"), hit.get("of")
+    count = (
+        f" · {covers} of {total} words"
+        if isinstance(covers, int) and isinstance(total, int)
+        and not isinstance(covers, bool) and not isinstance(total, bool) else ""
+    )
+    word = _line(hit.get("word"))
+    if rung == "exact":
+        return f"[exact{count}]"
+    if rung == "words":
+        return f"[each word in a field{count}]"
+    if rung == "word":
+        return f"[the word {word} alone{count}]" if word else f"[one word alone{count}]"
+    if rung == "near":
+        spelled = _line(hit.get("as"))
+        return f"[near: {word} as {spelled}{count}]" if word and spelled else f"[near{count}]"
+    if rung == "meaning":
+        return "[by meaning]"
+    return ""
+
+
 def _hit_lines(hit: dict[str, Any], *, dated: bool = False) -> list[str]:
     title = _line(hit.get("title")) or "(untitled)"
     hint = _line(hit.get("hint"))
@@ -248,6 +278,8 @@ def _hit_lines(hit: dict[str, Any], *, dated: bool = False) -> list[str]:
     about = f"{hint}, {dates}" if dates else hint
     href = _line(hit.get("href"))
     first = f"- «{title}»" + (f" ({about})" if about else "") + (f" {href}" if href else "")
+    if dated and _how_matched(hit):
+        first += f" {_how_matched(hit)}"
     if dated:
         # KB-AI-4: a closed list, never page text. The date is cut to ten characters.
         flag = hit.get("flag")
