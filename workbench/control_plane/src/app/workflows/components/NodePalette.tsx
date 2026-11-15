@@ -15,6 +15,8 @@
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
 import { searchCatalog } from "../lib/api";
+import { NEW_HUMAN_STEP_CONFIG } from "../lib/humanStep";
+import { studioWritePair } from "../lib/studioWrite";
 import { FALLBACK_ICON, NODE_ICON } from "../lib/nodeVisuals";
 import { NODE_CATEGORY_STYLE } from "../lib/types";
 import type { Catalog, NodeType, SearchResult } from "../lib/types";
@@ -23,12 +25,17 @@ export type PaletteDrop = {
   nodeType: NodeType;
   label: string;
   config: Record<string, unknown>;
+  /**
+   * Blocks that follow this one, in order (WFC-4a-2a). A drop with a chain adds
+   * each block and joins each to the next with ONE edge.
+   */
+  then?: PaletteDrop[];
 };
 
 type SectionIcon = React.ComponentType<{ className?: string }>;
 
 /** Map one search result onto a draggable drop, joined against the catalog. */
-function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | null {
+export function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | null {
   if (r.kind === "agent")
     return { nodeType: "agent", label: r.key, config: { agent: r.key, message: "" } };
   if (r.kind === "tool")
@@ -51,16 +58,32 @@ function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | 
       return { nodeType: type, label: r.label, config: { seconds: 3600 } };
     if (type === "output")
       return { nodeType: type, label: r.label, config: { value: "" } };
+    if (type === "human_step") return humanStepDrop(r.label);
   }
-  return null; // integrations without actions, trigger, etc. — not droppable
+  // Integrations without actions, the trigger, and a node type that the
+  // palette does not offer (pm_task, pm_lifecycle, studio_write): not droppable.
+  return null;
+}
+
+/** A new human step (WFC-4a-1): the three literal keys, empty. */
+export function humanStepDrop(label = "Human step"): PaletteDrop {
+  return { nodeType: "human_step", label, config: { ...NEW_HUMAN_STEP_CONFIG } };
+}
+
+/** The pair that adds a record: a Human approval, then the Studio write (WFC-4a-2a). */
+export function studioWriteDrop(): PaletteDrop {
+  return studioWritePair();
 }
 
 export default function NodePalette({
   catalog,
   onAdd,
+  studioWriteOffered = false,
 }: {
   catalog: Catalog | null;
   onAdd: (drop: PaletteDrop) => void;
+  /** True for the owner of the workflow only: the step runs as the owner. */
+  studioWriteOffered?: boolean;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({
     agent: true, tool: true, module: true, logic: true, output: false,
@@ -313,7 +336,7 @@ export default function NodePalette({
           )}
 
           {section(
-            "logic", "Logic", themedIcon("GitBranch"), 4,
+            "logic", "Logic", themedIcon("GitBranch"), studioWriteOffered ? 6 : 5,
             <>
               {item(
                 "logic:condition",
@@ -336,6 +359,16 @@ export default function NodePalette({
                 { nodeType: "wait", label: "Wait", config: { seconds: 3600 } },
                 "Wait", "pause for a duration, then continue", "logic",
               )}
+              {item(
+                "logic:human_step", humanStepDrop(),
+                "Human step", "give a member a task, wait until it is done", "logic",
+              )}
+              {studioWriteOffered &&
+                item(
+                  "logic:add_record", studioWriteDrop(),
+                  "Add a record", "approval, then a new record in your app", "tool",
+                  false, "studio_write",
+                )}
             </>,
           )}
 

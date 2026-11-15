@@ -48,6 +48,9 @@
 #   test the tip of main now      -> skip, before the checks and the gate, and
 #                                    again before the merge. The next auto-revert
 #                                    pass tests it (CIV-31b). No state file -> BACK
+#   an auto-revert PR while AUTO_REVERT_MODE of metorite-auto-revert.service is
+#   not on                        -> skip, and one HOLD <pr> <reason> line (CIV-31c).
+#                                    auto_revert_mode.sh reads the mode (CIV-31d)
 #   gh pr merge says "Base branch was modified" -> retry twice, 20 s apart, then skip.
 #                                    An auto-revert PR gets no retry: it skips.
 #   else gh pr ready (if draft), gh pr merge --squash --match-head-commit <sha>,
@@ -123,9 +126,14 @@ HIGH_PATHS_RE+='|packages/acb_graph/acb_graph/db\.py$'
 # The operator console: its DB, the store that writes members, identities, seats
 # and credits (store, main), the money path (payments), the keys that resolve a
 # tenant or a deployment, the provider credentials, the app seats, the operators.
-HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/(db|seats|store|main|payments|keys|deployment_keys|provider_keys|apps|operators|operator_[^/]*)\.py$'
-# The agent edge: POST /oauth/token and the bearer check of /mcp.
-HIGH_PATHS_RE+='|apps/services/agent_edge/agent_edge/(token_endpoint|bearer)\.py$'
+# CIV-31c: lifecycle.py too. Its capabilities_of decides sign-in, AI use, seat
+# writes and provisioning for each state of an org.
+HIGH_PATHS_RE+='|apps/services/customer_console/customer_console/(db|seats|store|main|payments|keys|deployment_keys|provider_keys|apps|operators|operator_[^/]*|lifecycle)\.py$'
+# The agent edge: POST /oauth/token and the bearer check of /mcp. CIV-31c: mcp.py
+# (the read-only narrowing and the insufficient_scope check) and app.py (EdgeGate).
+HIGH_PATHS_RE+='|apps/services/agent_edge/agent_edge/(token_endpoint|bearer|mcp|app)\.py$'
+# CIV-31c: the identity door of the BFF. It sends the member's identity to the gateway.
+HIGH_PATHS_RE+='|workbench/control_plane/src/lib/gateway\.ts$'
 HIGH_PATHS_RE+='|packages/acb_memory/acb_memory/tenant_guard[^/]*$'
 # The members, roles and groups of an org, and the admin API of the UI.
 HIGH_PATHS_RE+='|apps/services/gateway/gateway/routes/admin/(_common|members|roles|groups)\.py$'
@@ -488,8 +496,15 @@ gate() {
   echo "main moved during premerge"; return 1
 }
 
-# ensure_workdir: the bot's own checkout. The first gate, or the first
-# revert_tested, makes it.
+# auto_revert_mode: AUTO_REVERT_MODE of the auto-revert unit. CIV-31d (H1): the
+# bot, the auto-revert pass and lane-merge.md step g all run the ONE reader
+# auto_revert_mode.sh, so they cannot see two modes. Empty when systemctl fails
+# or the unit sets no mode.
+auto_revert_mode() {
+  bash "$ROOT/scripts/home_server/auto_revert_mode.sh" 9>&- 2>/dev/null
+}
+
+# ensure_workdir: the bot's own checkout. The first gate makes it.
 ensure_workdir() {
   [ -e "$WORKDIR/.git" ] || git -C "$ROOT" worktree add -q --detach "$WORKDIR" >/dev/null 2>&1
 }
@@ -503,16 +518,30 @@ ensure_workdir() {
 # with a note: the PR waits in the queue, and the next auto-revert pass tests
 # the new tip. A state file that does not parse waits too: the auto-revert pass
 # writes a PERSON line for it.
+# CIV-31c: it reads the tip with ls-remote in the bot's own checkout ($ROOT), so
+# it needs no workdir. A held PR makes no workdir and runs no git fetch.
+# CIV-31c fix round 1: it holds the PR while the mode of the auto-revert unit is
+# not on, because only mode on opens the culprit's task again after the merge.
+# The bot writes one HOLD line for the PR, and one more after the mode was on.
 revert_tested() {
-  local file="$AUTO_REVERT_STATE/open/$1.json" tested tip
+  local file="$AUTO_REVERT_STATE/open/$1.json" tested tip mode mark="$STATE/held-mode-$1"
   [ -f "$file" ] || { echo "auto-revert PR with no state file $file: a person merges it"; return 1; }
   if ! tested="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["tip"])' "$file" 2>/dev/null | tr -d '\r')" \
     || [ -z "$tested" ]; then
     echo "auto-revert PR: the state file $file does not parse. The auto-revert pass tells a person"
     return 2
   fi
-  ensure_workdir || { echo "no workdir at $WORKDIR"; return 2; }
-  tip="$(git -C "$WORKDIR" ls-remote origin refs/heads/main 2>/dev/null | awk -F'\t' '$2 == "refs/heads/main" {print $1; exit}')"
+  mode="$(auto_revert_mode)"
+  if [ "$mode" != on ]; then
+    if [ ! -e "$mark" ]; then
+      record "HOLD $1 the auto-revert mode is '${mode:-unknown}', not on: nobody opens the culprit's task after a merge, so the bot holds the PR"
+      [ "$DRY" = 1 ] || : > "$mark"
+    fi
+    echo "auto-revert PR: the auto-revert mode is '${mode:-unknown}', not on. The bot holds it"
+    return 2
+  fi
+  rm -f "$mark"
+  tip="$(git -C "$ROOT" ls-remote origin refs/heads/main 9>&- 2>/dev/null | awk -F'\t' '$2 == "refs/heads/main" {print $1; exit}')"
   [ -n "$tip" ] || { echo "git ls-remote of main failed before the auto-revert check"; return 2; }
   if [ "$tested" != "$tip" ]; then
     echo "auto-revert PR: the pass has not tested main at ${tip:0:9} (last ${tested:0:9}). It waits for the next auto-revert pass"
