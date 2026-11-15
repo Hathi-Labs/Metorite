@@ -301,9 +301,10 @@ from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequen
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_common import studio_query
 from acb_common.paging import PAGE_MAX, page_line
@@ -341,6 +342,10 @@ from acb_common.studio_fields import (
     FieldError,
     FieldSpec,
     RecordError,
+    autonumber_fields,
+    autonumber_pad,
+    autonumber_reset,
+    autonumber_text,
     check_can_be_hot,
     entry_bytes,
     hot_value,
@@ -716,6 +721,20 @@ _CREATE_RECORD_SQL = (
     "RETURNING 1) "
     "SELECT r.id::text, r.object_id::text, r.data, r.created_by, r.updated_by, "
     "r.created_at, r.updated_at FROM r"
+)
+
+#: C15a. The next number of one autonumber field, in ONE atomic statement: an
+#: insert that starts at 1, and on a second call an increment of the stored
+#: value, under the row lock of the conflict. It never reads then writes. The
+#: statement runs in the SAVEPOINT of the batch, so a refused batch rolls the
+#: counter back, and a refusal leaves no gap. The org comes from the DEFAULT of
+#: the table, the bound tenant, and the policy binds the row.
+_NEXT_NUMBER_SQL = (
+    "INSERT INTO studio_object_counters (object_id, field_key, period, last_value) "
+    "VALUES (CAST(:oid AS uuid), :key, :period, 1) "
+    "ON CONFLICT (organization_id, object_id, field_key, period) "
+    "DO UPDATE SET last_value = studio_object_counters.last_value + 1, updated_at = now() "
+    "RETURNING last_value"
 )
 
 _GET_RECORD_SQL = (
@@ -1466,6 +1485,15 @@ _FIELD_ATTRS = (
     "normal", "critical", "conversions")
 
 
+#: C15a. The parts of an autonumber field that a sync cannot change, each read
+#: as the store reads it (a default for a part that the manifest leaves out).
+_AUTONUMBER_ATTRS = (
+    ("prefix", lambda f: f.prefix or ""),
+    ("pad", autonumber_pad),
+    ("reset", autonumber_reset),
+)
+
+
 @dataclass(frozen=True)
 class SyncProblem:
     """One reason that a manifest does not fit the stored objects. ``message``
@@ -1596,13 +1624,26 @@ async def _plan_fields(db: Any, item: _Item, row: StudioObject,
             item.add.append(raw)
             continue
         changed = [a for a in _FIELD_ATTRS if getattr(cur, a) != getattr(spec, a)]
+        if cur.type == spec.type == "autonumber":
+            # C15a. The three are read as the store reads them, so an unset pad or
+            # reset equals its default and an unchanged manifest is no change.
+            changed += [a for a, read in _AUTONUMBER_ATTRS
+                        if read(cur) != read(spec)]
+        if changed and set(changed) <= {a for a, _ in _AUTONUMBER_ATTRS}:
+            problems.append(SyncProblem(
+                FIELD_CHANGED, item.name, field=spec.key,
+                message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
+                "A prefix, a pad and a reset of a published auto-number cannot change. "
+                "Make a new field."))
+            continue
         if changed:
             problems.append(SyncProblem(
                 FIELD_CHANGED, item.name, field=spec.key,
                 message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
                 "A published field cannot change yet."))
-        elif cur.hot != spec.hot:
-            item.heat.append((spec.key, spec.hot))
+        else:
+            if cur.hot != spec.hot:
+                item.heat.append((spec.key, spec.hot))
     wanted = {f.key for f in item.fields}
     for key in old:
         if key not in wanted:
@@ -3644,6 +3685,9 @@ class _Batch:
         #: The last write that gave each line a new parent (C13), for the place
         #: of a refusal.
         self.moved: dict[tuple[str, str], int] = {}
+        #: C15a. The day of the batch in the zone of the org, as YYYY-MM-DD. It
+        #: is read once, under the org lock, by :func:`_batch_day`.
+        self.day: str | None = None
 
 
 @dataclass(frozen=True)
@@ -4187,6 +4231,74 @@ def _formulas(held: _Held, checked: Mapping[str, Any],
     return run_formulas(plan, held.name, {**checked, **kept})
 
 
+def _wall_now() -> datetime:
+    """C15a. The wall clock of the store, in UTC. A test patches this name. The
+    period of a counter never comes from SQL ``now()``, which is the start of the
+    transaction, so a batch that waits for the org lock would count the old day."""
+    return datetime.now(UTC)
+
+
+async def _batch_day(db: Any, batch: _Batch) -> str:
+    """C15a. The day of the batch, as YYYY-MM-DD, in ``default_timezone`` of the
+    work-schedule policy of the org (UTC when it has none). It is read once for
+    each batch, and the caller holds the org lock, so two writers of one org
+    never read two days for one batch."""
+    if batch.day is None:
+        from gateway.work_schedule import load_policy  # lazy, as brief/planner does
+
+        batch.day = _wall_now().astimezone(_org_zone(
+            (await load_policy(db)).get("default_timezone"))).date().isoformat()
+    return batch.day
+
+
+def _org_zone(name: Any) -> ZoneInfo:
+    """The zone of a stored name, UTC when it has none, a bad name or a name that
+    no zone has. The shell reads a zone name the same way (``zone_of``), but a
+    store never imports a route, so the three lines are here."""
+    try:
+        return ZoneInfo(str(name or "UTC"))
+    except (ValueError, OSError, ZoneInfoNotFoundError):
+        return ZoneInfo("UTC")
+
+
+def _refuse_autonumber_keys(held: _Held, data: Any) -> None:
+    """C15a. A caller never writes an autonumber field: the store fills it. A body
+    that names the key is refused, on a create and on an update, whatever the
+    value. The refusal names the field and shows no value."""
+    if not isinstance(data, Mapping):
+        return
+    hidden = (held.scope.maybe_hidden()
+              if held.scope is not None and not held.scope.open else frozenset())
+    for f in autonumber_fields(held.fields):
+        if f.key in data:
+            if f.key in hidden:
+                # ``_refuse_hidden_write`` ran first and refused each non-null value of a
+                # hidden key (create and update) with the sentence of any hidden key. A
+                # create may send a hidden key with no value, and the store accepts that
+                # for every type. So a hidden autonumber gets no refusal of its own here:
+                # it must not tell the type (the store then fills the number).
+                continue
+            raise FieldError(
+                f.key, f"Field `{f.key}` is filled by the store, one number for each new "
+                "record. Write no value for it.")
+
+
+async def _fill_autonumbers(db: Any, batch: _Batch, oid: str, held: _Held, data: Any) -> Any:
+    """C15a. The record *data* of a create with the next number of each autonumber
+    field, in the order of the fields. It runs after the lock of the org, inside
+    the SAVEPOINT of the batch, and before ``validate_record``."""
+    fields = autonumber_fields(held.fields)
+    if not fields or not isinstance(data, Mapping):
+        return data
+    out = dict(data)
+    for f in fields:
+        period = await _batch_day(db, batch) if autonumber_reset(f) == "day" else ""
+        number = (await db.execute(text(_NEXT_NUMBER_SQL), {
+            "oid": oid, "key": f.key, "period": period})).scalar_one()
+        out[f.key] = autonumber_text(f, int(number))
+    return out
+
+
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
@@ -4195,12 +4307,15 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     linked = _link(batch, step)
     if step.op == "create":
         _refuse_hidden_write(held, step.data, create=True)
+        _refuse_autonumber_keys(held, step.data)
         if linked is not None and isinstance(step.data, Mapping):
             # C13: the line takes its parent from the batch, never from its data.
             step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
+        # C15a: the number comes in this SAVEPOINT, so a refusal below rolls it back.
+        data = await _fill_autonumbers(db, batch, oid, held, data)
         checked = validate_record(plain, data)
         # Fix round 3 (rule 2): the access rules come before each formula.
         _check_write(held, None, checked, _sent(held, step.data))
@@ -4236,6 +4351,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         # Fix round 4 (rule 19): the test of the link comes after the row rule.
         _check_line_of(held, linked[0], linked[1], mark.after)
     _refuse_hidden_write(held, changes)
+    _refuse_autonumber_keys(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     checked = validate_record(plain, merged)

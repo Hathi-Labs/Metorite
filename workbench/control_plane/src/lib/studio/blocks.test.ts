@@ -38,8 +38,10 @@ const tagOf = (html: string, id: string): string =>
   html.match(new RegExp("<[^>]*id=\"" + id + "\"[^>]*>"))?.[0] ?? "";
 
 describe("the sample fields", () => {
-  it("hold each of the 22 types", () => {
-    expect(new Set(SAMPLE_FIELDS.map((f) => f.type))).toEqual(new Set(FIELD_TYPE_LIST));
+  it("hold each of the 22 types that a member writes", () => {
+    // The store fills an autonumber (C15a), so a form holds none. C15b draws it.
+    expect(new Set(SAMPLE_FIELDS.map((f) => f.type))).toEqual(
+      new Set(FIELD_TYPE_LIST.filter((t) => t !== "autonumber")));
   });
   it("the sample rows pass the check, so the Detail shows real values", () => {
     for (const row of SAMPLE_ROWS) {
