@@ -68,6 +68,7 @@ not as a gate. Fence: ``tests/unit/test_studio_route_gate.py``
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Annotated, Any
@@ -79,7 +80,7 @@ from acb_common.db import current_tenant
 from acb_common.studio_fields import NAME_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, OBJECT_OPS, parse_uses
 from acb_skills.skill_packs import action_tool
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from gateway.connections import mcp_tools
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes import integrations as _integrations
@@ -381,7 +382,7 @@ async def refresh_mcp_tools(
         raise HTTPException(status_code=502, detail={
             "code": f"mcp_{done.reason}", "message": _REFRESH_FAILED, "server": done.server})
     return {"server": done.server, "ok": True, "tools": done.tools,
-            "truncated": done.truncated}
+            "truncated": done.truncated, "items": list(done.items)}
 
 
 #: The words of an approval. They never hold the text of the tool.
@@ -393,12 +394,46 @@ _APPROVE_STALE = (
 _APPROVE_SOON = "This tool was approved a moment ago. Try again in {s} seconds."
 _APPROVE_DOWN = "The approval cannot be saved now. Try again later."
 _APPROVE_NO_TOOL = "The tool list of this server holds no tool of that name."
+_APPROVE_TEXT_CHANGED = (
+    "The text of this tool changed after you read it. Read the catalog again, check the "
+    "tool, then approve it.")
+_APPROVE_BAD_BODY = (
+    'Send {"expected_hash": "<text_hash>"}: the 64 hex characters of the catalog row '
+    "that you read.")
+#: The most bytes of the body of an approval.
+APPROVE_BODY_BYTES = 4096
+_HASH_RE = re.compile(r"[0-9a-f]{64}")
+
+
+async def _expected_hash(request: Request) -> str:
+    """``expected_hash`` of the JSON body, or a 422. The read stops past
+    :data:`APPROVE_BODY_BYTES`. The hash is no secret."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > APPROVE_BODY_BYTES:
+            break
+        chunks.append(chunk)
+    bad = HTTPException(status_code=422, detail={
+        "code": "mcp_expected_hash", "message": _APPROVE_BAD_BODY})
+    if size > APPROVE_BODY_BYTES:
+        raise bad
+    try:
+        body = json.loads(b"".join(chunks) or b"null")
+    except (ValueError, RecursionError):
+        raise bad from None
+    found = body.get("expected_hash") if isinstance(body, dict) else None
+    if not isinstance(found, str) or not _HASH_RE.fullmatch(found):
+        raise bad
+    return found
 
 
 @router.post("/mcp/{server}/tools/{tool}/approve")
 async def approve_mcp_tool(
     server: str,
     tool: str,
+    request: Request,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Approve the CURRENT text of ONE tool of an MCP server of the caller's
@@ -411,20 +446,31 @@ async def approve_mcp_tool(
     approval takes the hash of the tool in the cached list, which must be
     fresh and of the server of now (409 ``mcp_list_stale`` else). A server
     that the org does not hold is 404 and writes nothing. One audit event
-    names the server, the tool and the hash, and no text of the tool."""
+    names the server, the tool and the hash, and no text of the tool.
+
+    **Compare and approve** (B1b-3 review). The body is
+    ``{"expected_hash": "<64 hex>"}``, the ``text_hash`` of the catalog row
+    that the admin read (422 ``mcp_expected_hash`` without it). A tool whose
+    text hashes another way now is 409 ``mcp_tool_text_changed``, and
+    nothing is written."""
     org = getattr(user, "organization_id", None)
     if not flags.studio_allowed(org):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     if not user.has_permission(_integrations.MANAGE_PERMISSION):
         raise HTTPException(status_code=403, detail={
             "code": "mcp_approve_not_allowed", "message": _APPROVE_REFUSED})
+    expected = await _expected_hash(request)
     try:
-        done = await mcp_tools.approve_tool(str(org), server, tool, member=str(user.email))
+        done = await mcp_tools.approve_tool(str(org), server, tool, member=str(user.email),
+                                            expected_hash=expected)
     except mcp_tools.ServerNotFound:
         raise HTTPException(status_code=404, detail=NOT_FOUND) from None
     except mcp_tools.ToolNotListed:
         raise HTTPException(status_code=404, detail={
             "code": "mcp_tool_unknown", "message": _APPROVE_NO_TOOL}) from None
+    except mcp_tools.TextChanged:
+        raise HTTPException(status_code=409, detail={
+            "code": "mcp_tool_text_changed", "message": _APPROVE_TEXT_CHANGED}) from None
     except mcp_tools.ListNotFresh:
         raise HTTPException(status_code=409, detail={
             "code": "mcp_list_stale", "message": _APPROVE_STALE}) from None

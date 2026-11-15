@@ -253,6 +253,10 @@ class Refreshed:
     tools: int = 0
     truncated: bool = False
     reason: str | None = None
+    #: B1b-3 review: ``{tool, text_hash, changed}`` of each tool of the new
+    #: list. It holds no description, so an admin compares the hash with the
+    #: catalog row that they read.
+    items: tuple[dict[str, Any], ...] = ()
 
 
 # ── The cleaning of one list ────────────────────────────────────────────────
@@ -584,8 +588,12 @@ async def refresh(org: str, server: str, *, may_use: Callable[[str], bool],
         await _forget(org, server, started)
         return Refreshed(server=server, ok=False, reason=failed.reason)
     await _store(org, server, listed)
+    approved = await _approvals_or_none(org)
+    items = tuple({"tool": t["name"], "text_hash": mcp_actions.tool_text_hash(t),
+                   "changed": mcp_actions.tool_changed(approved, server, t)}
+                  for t in listed.tools)
     return Refreshed(server=server, ok=True, tools=len(listed.tools),
-                     truncated=listed.truncated)
+                     truncated=listed.truncated, items=items)
 
 
 # ── The approval of the text of one tool (STU-B1b-3) ────────────────────────
@@ -596,6 +604,11 @@ APPROVE_INTERVAL_S = 5
 
 class ToolNotListed(LookupError):
     """The fresh list of the server holds no tool of that name."""
+
+
+class TextChanged(Exception):
+    """The text of the tool in the fresh list is not the text that the admin
+    read: its hash is not ``expected_hash``. Nothing is written."""
 
 
 class ListNotFresh(Exception):
@@ -634,7 +647,8 @@ async def _save_approval(org: str, server: str, tool: str, text_hash: str,
                                    member=member)
 
 
-async def approve_tool(org: str, server: str, tool: str, *, member: str) -> Approved:
+async def approve_tool(org: str, server: str, tool: str, *, member: str,
+                       expected_hash: str) -> Approved:
     """Approve the CURRENT text of ONE tool of a server of *org* (B1b-3).
 
     *org* and *member* come from the session, never from request input
@@ -647,6 +661,11 @@ async def approve_tool(org: str, server: str, tool: str, *, member: str) -> Appr
        the ``_identity`` of the server of now, else :class:`ListNotFresh`.
        The approval never reads a server itself.
     4. The tool is in that list (``unique_tools``), else :class:`ToolNotListed`.
+    4a. Compare and approve (B1b-3 review): the hash of THAT item equals
+       *expected_hash*, the ``text_hash`` of the row that the admin read.
+       Else :class:`TextChanged`, and nothing is written. So a server that
+       changes a tool between the read and the click never gets the new
+       text approved.
     5. One slot of :data:`APPROVE_INTERVAL_S` holds for each tool, else
        :class:`RefreshTooSoon`.
     6. The hash of THAT item (``mcp_actions.tool_text_hash``) is written for
@@ -668,8 +687,10 @@ async def approve_tool(org: str, server: str, tool: str, *, member: str) -> Appr
     item = next((t for t in mcp_actions.unique_tools(tools) if t.get("name") == tool), None)
     if item is None:
         raise ToolNotListed(tool)
-    await _claim_approval(org, server, tool)
     text_hash = mcp_actions.tool_text_hash(item)
+    if not isinstance(expected_hash, str) or text_hash != expected_hash:
+        raise TextChanged(tool)
+    await _claim_approval(org, server, tool)
     await _save_approval(org, server, tool, text_hash, member)
     cls = mcp_actions.mcp_tool_class(mcp_actions.tool_hints(item.get("annotations")),
                                      always_confirm=meta.always_confirm)
@@ -1251,6 +1272,7 @@ __all__ = [
     "RefreshTooSoon",
     "Refreshed",
     "ServerNotFound",
+    "TextChanged",
     "ToolList",
     "ToolNotListed",
     "approve_tool",

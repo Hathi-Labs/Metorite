@@ -198,7 +198,8 @@ def mcp_rows(servers: Iterable[Server],
 
     *approved* maps ``(server, tool)`` to the approved hash of the org (B1b-3).
     A tool that :func:`tool_changed` names gets ``changed: true`` and class
-    B. ``None`` makes each tool changed."""
+    B. ``None`` makes each tool changed. Each row carries ``text_hash``, the
+    hash of the text that it shows, so an approval names that text."""
     rows: list[dict[str, Any]] = []
     for server in sorted(servers, key=lambda s: str(s.name)):
         if server.enabled is not True:
@@ -210,6 +211,9 @@ def mcp_rows(servers: Iterable[Server],
                 continue
             hints = tool_hints(item.get("annotations"))
             changed = tool_changed(approved, server.name, item)
+            # B1b-3 review: the hash that an admin sends back to approve
+            # exactly the text that this row shows (compare and approve).
+            text_hash = tool_text_hash(item)
             rows.append({
                 "id": uses,
                 "title": name,
@@ -228,5 +232,6 @@ def mcp_rows(servers: Iterable[Server],
                 "description": _description(item.get("description")),
                 "hints": hints,
                 "changed": changed,
+                "text_hash": text_hash,
             })
     return rows

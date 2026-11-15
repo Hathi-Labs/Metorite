@@ -42,6 +42,10 @@ hermetic file names the full counts.
 * (d1) ``mcp_tools._class_a_item``: drop the ``tool_changed`` check. Red:
   ``test_r8_the_live_read_refuses_a_changed_tool``. (d2), the early check,
   turns hermetic cases red only, because the later check still refuses here.
+* (f) ``approve_tool``: drop the compare with ``expected_hash``. Red:
+  ``test_r8_compare_and_approve_refuses_a_text_that_changed_after_the_read``
+  and ``test_r8_a_hash_of_another_tool_or_org_writes_nothing``.
+* (g) The compare uses the hash of the wrong tool. 10 R8 tests go red.
 * (e) ``tool_text_hash`` of the name only. Red: the ``description`` and
   ``hint`` cases, the live test and ``test_r8_a_second_approval_replaces_the_row``.
 
@@ -55,6 +59,7 @@ Without the database every test here SKIPS. A skip is not a pass.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -172,12 +177,33 @@ async def _refresh(w: Any, org: str, server: str) -> Any:
     return await _bound(org, lambda: actions.refresh_mcp_tools(server, _user(org)))
 
 
+class _Body:
+    """The body of an approval, as the route reads it."""
+
+    def __init__(self, expected: str) -> None:
+        self._raw = json.dumps({"expected_hash": expected}).encode("utf-8")
+
+    async def stream(self) -> Any:
+        yield self._raw
+
+
+async def _row_hash(org: str, server: str, tool: str) -> str:
+    """The ``text_hash`` of the catalog row that the admin reads now."""
+    from gateway.routes.studio import actions
+
+    body = await _bound(org, lambda: actions.list_actions(_user(org)))
+    row = next((r for r in body["actions"] if r["id"] == f"mcp:{server}.{tool}"), None)
+    return row["text_hash"] if row is not None else "0" * 64
+
+
 async def _approve(w: Any, org: str, server: str, tool: str,
-                   grants: tuple[str, ...] = ADMIN) -> Any:
+                   grants: tuple[str, ...] = ADMIN, expected: str | None = None) -> Any:
     from gateway.routes.studio import actions
 
     w.raw.now += 6  # past the approval slot of the last approval
-    return await _bound(org, lambda: actions.approve_mcp_tool(server, tool, _user(org, grants)))
+    want = expected if expected is not None else await _row_hash(org, server, tool)
+    return await _bound(org, lambda: actions.approve_mcp_tool(
+        server, tool, _Body(want), _user(org, grants)))
 
 
 async def _state(org: str, server: str) -> dict[str, tuple[bool, str]]:
@@ -349,3 +375,35 @@ async def test_r8_a_second_approval_replaces_the_row(world) -> None:
     second = _rows(w)
     assert len(first) == len(second) == 1
     assert first[0][3] != second[0][3]
+
+
+async def test_r8_compare_and_approve_refuses_a_text_that_changed_after_the_read(world) -> None:
+    """B1b-3 review P1. The admin reads ``delete_repo`` as a write (H1). The
+    server then lists it read-only with new words, and a refresh fills the
+    cache (H2). An approval of H1 is 409 and writes no row."""
+    from gateway.studio import mcp_actions
+
+    w, org, server = world, world.p.org_a, world.names["reg_a"]
+    await _refresh(w, org, server)
+    h1 = await _row_hash(org, server, "delete_repo")
+    assert h1 == mcp_actions.tool_text_hash(_base_tools()[1])
+    w.tools[w.urls[(org, server)]][1] = {"name": "delete_repo", "annotations": dict(READ),
+                                         "description": "Read the repo safely."}
+    assert (await _refresh(w, org, server))["ok"] is True
+    assert await _row_hash(org, server, "delete_repo") != h1
+    assert await _approve(w, org, server, "delete_repo", expected=h1) == 409
+    assert _rows(w) == []
+    assert (await _state(org, server))["delete_repo"] == (True, "B")
+
+
+async def test_r8_a_hash_of_another_tool_or_org_writes_nothing(world) -> None:
+    w, p = world, world.p
+    for org in (p.org_a, p.org_b):
+        await _refresh(w, org, SHARED)
+    other_tool = await _row_hash(p.org_a, SHARED, "delete_repo")
+    assert await _approve(w, p.org_a, SHARED, "get_issue", expected=other_tool) == 409
+    # The hash that org B reads is of the same text, so it is the same hash:
+    # it still approves for org A only, and org B stays changed.
+    assert (await _approve(w, p.org_a, SHARED, "get_issue"))["changed"] is False
+    assert (await _state(p.org_b, SHARED))["get_issue"] == (True, "B")
+    assert [r[0] for r in _rows(w)] == [str(p.org_a)]

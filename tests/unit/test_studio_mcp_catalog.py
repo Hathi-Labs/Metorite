@@ -296,7 +296,7 @@ def test_a_row_holds_nothing_else_of_the_server():
     row = _one(_tool("get", {"readOnlyHint": True, "junk": "x"}, "Get one issue."))
     assert set(row) == {"id", "title", "source", "class", "input_schema", "output_schema",
                         "connection", "app", "tool", "server", "mcp_tool", "description",
-                        "hints", "changed"}
+                        "hints", "changed", "text_hash"}
     assert row["source"] == "mcp" and row["server"] == "github" and row["mcp_tool"] == "get"
     assert row["connection"] == "mcp:github" and row["tool"] is None
     assert row["hints"] == {"readOnlyHint": True}

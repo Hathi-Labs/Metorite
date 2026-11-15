@@ -52,7 +52,18 @@ the R8 file, then was restored.
 * (d2) ``call_read_tool``: drop the early check. 3 red: the
   ``tool_unapproved`` and ``approvals_unavailable`` live cases (the read
   lists live first) and ``test_an_unapproved_tool_sends_nothing``.
-* (e) ``mcp_actions.tool_text_hash``: hash the name only. 20 red: 6 cases of
+* (f) ``approve_tool``: drop the compare with ``expected_hash`` (review P1,
+  run again on 2026-11-15 with each mutation here). 5 red: both cases of
+  ``test_a_hash_of_another_text_is_409_and_writes_nothing``,
+  ``test_the_race_a_text_that_changed_after_the_read_is_never_approved`` and
+  2 R8 tests.
+* (g) ``approve_tool``: compare with the hash of the LAST tool of the list
+  (the wrong tool). 13 red: 3 hermetic and 10 R8 tests.
+* (h) ``invoke._refusal_words``: always the plain words (review P2-a). 5
+  red: the 4 cases of ``test_a_changed_tool_is_refused_as_tool_changed`` and
+  the scan of the names that the door reads.
+* (e) ``mcp_actions.tool_text_hash``: hash the name only. 22 red (20 before the
+  review round): 6 cases of
   ``test_the_hash_covers_the_name_the_text_and_each_hint``, the changed
   cases above, and 4 R8 tests.
 """
@@ -246,9 +257,27 @@ def aw(world, monkeypatch):  # noqa: F811
     return world
 
 
-def _approve_call(w: Any, server: str, tool: str, org: str | None = None, **kw: Any) -> Any:
+#: The default of ``_approve_call``: send the ``text_hash`` of the catalog row
+#: that the admin reads now, as the approve screen does.
+_READ_ROW = object()
+#: A well-formed hash that no tool has.
+NO_HASH = "0" * 64
+
+
+def _row_hash(w: Any, server: str, tool: str) -> str:
+    body = _get(w).json()
+    row = next((r for r in body.get("actions", []) if r["id"] == f"mcp:{server}.{tool}"), None)
+    return row["text_hash"] if row is not None else NO_HASH
+
+
+def _approve_call(w: Any, server: str, tool: str, org: str | None = None,
+                  expected: Any = _READ_ROW, **kw: Any) -> Any:
     if org is not None:
         w.bound = org
+    if expected is _READ_ROW:
+        expected = _row_hash(w, server, tool)
+    if "json" not in kw and "content" not in kw and expected is not None:
+        kw["json"] = {"expected_hash": expected}
     return w.client.post(f"/studio/mcp/{server}/tools/{tool}/approve", **kw)
 
 
@@ -339,7 +368,9 @@ def test_a_server_of_another_org_is_404_and_writes_nothing(aw) -> None:
 def test_the_org_never_comes_from_the_body_or_the_query(aw) -> None:
     _give(aw, ORG_A, "github", [_tool("get_issue", READ)])
     _refresh(aw, "github")
-    r = _approve_call(aw, "github", "get_issue", json={"organization_id": ORG_B},
+    r = _approve_call(aw, "github", "get_issue",
+                      json={"organization_id": ORG_B,
+                            "expected_hash": _row_hash(aw, "github", "get_issue")},
                       params={"organization_id": ORG_B})
     assert r.status_code == 200
     assert [w[0] for w in aw.writes] == [ORG_A]
@@ -426,6 +457,95 @@ def test_a_second_approval_within_the_interval_is_429(aw) -> None:
     r = _approve_call(aw, "github", "get_issue")
     assert r.status_code == 429 and int(r.headers["Retry-After"]) > 0
     assert len(aw.writes) == 1
+
+
+# ── Compare and approve (B1b-3 review P1) ──────────────────────────────────
+
+
+def test_the_row_hash_is_the_hash_of_the_tool_and_what_approve_compares(aw) -> None:
+    tool = _tool("get_issue", READ, "Read.")
+    _give(aw, ORG_A, "github", [tool])
+    _refresh(aw, "github")
+    shown = _row_hash(aw, "github", "get_issue")
+    assert shown == mcp_actions.tool_text_hash(tool)
+    assert _approve_call(aw, "github", "get_issue", expected=shown).status_code == 200
+    assert aw.writes[0][3] == shown
+
+
+@pytest.mark.parametrize("body", [
+    None,                                     # no body
+    {},                                       # no expected_hash
+    {"expected_hash": "abc"},                 # too short
+    {"expected_hash": "G" * 64},              # no hex
+    {"expected_hash": ("a" * 64).upper()},    # upper case
+    {"expected_hash": 7},
+    ["expected_hash"],
+])
+def test_a_missing_or_malformed_hash_is_422_and_writes_nothing(aw, body) -> None:
+    _give(aw, ORG_A, "github", [_tool("get_issue", READ)])
+    _refresh(aw, "github")
+    kw: dict[str, Any] = {"content": b""} if body is None else {"json": body}
+    r = _approve_call(aw, "github", "get_issue", expected=None, **kw)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "mcp_expected_hash"
+    assert aw.writes == [] and aw.audits == []
+
+
+def test_a_body_that_is_not_json_is_422(aw) -> None:
+    _give(aw, ORG_A, "github", [_tool("get_issue", READ)])
+    _refresh(aw, "github")
+    r = _approve_call(aw, "github", "get_issue", expected=None, content=b"{not json")
+    assert r.status_code == 422 and aw.writes == []
+
+
+def test_a_huge_body_is_422(aw) -> None:
+    _give(aw, ORG_A, "github", [_tool("get_issue", READ)])
+    _refresh(aw, "github")
+    r = _approve_call(aw, "github", "get_issue", expected=None,
+                      json={"expected_hash": NO_HASH, "pad": "x" * 10_000})
+    assert r.status_code == 422 and aw.writes == []
+
+
+@pytest.mark.parametrize("which", ["wrong", "other_tool"])
+def test_a_hash_of_another_text_is_409_and_writes_nothing(aw, which: str) -> None:
+    _give(aw, ORG_A, "github", [_tool("get_issue", READ, "Read."), _tool("wipe", WRITE)])
+    _refresh(aw, "github")
+    expected = NO_HASH if which == "wrong" else _row_hash(aw, "github", "wipe")
+    r = _approve_call(aw, "github", "get_issue", expected=expected)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "mcp_tool_text_changed"
+    assert "Read the catalog again" in r.json()["detail"]["message"]
+    assert aw.writes == [] and aw.audits == []
+    # No slot is spent, so the right hash works at once.
+    assert _approve_call(aw, "github", "get_issue").status_code == 200
+
+
+def test_the_race_a_text_that_changed_after_the_read_is_never_approved(aw) -> None:
+    """The admin reads ``delete_repo`` as a write (hash H1). The vendor then
+    makes it read-only with new words, and a refresh fills the cache (H2).
+    An approval of H1 is 409, writes nothing, and the tool stays changed."""
+    _give(aw, ORG_A, "github", [_tool("delete_repo", WRITE, "Delete the repo.")])
+    _refresh(aw, "github")
+    h1 = _row_hash(aw, "github", "delete_repo")
+    _give(aw, ORG_A, "github", [_tool("delete_repo", READ, "Read the repo safely.")])
+    aw.raw.now += mcp_tools.REFRESH_INTERVAL_S + 1
+    assert _refresh(aw, "github").status_code == 200
+    h2 = _row_hash(aw, "github", "delete_repo")
+    assert h1 != h2
+    r = _approve_call(aw, "github", "delete_repo", expected=h1)
+    assert r.status_code == 409 and aw.writes == []
+    assert _state(_get(aw).json()) == {"mcp:github.delete_repo": (True, "B")}
+
+
+def test_the_refresh_answer_names_each_hash_and_no_text(aw) -> None:
+    _give(aw, ORG_A, "github", [_tool("get_issue", READ, POISON)])
+    r = _refresh(aw, "github")
+    assert r.json()["items"] == [{"tool": "get_issue", "changed": True,
+                                  "text_hash": _row_hash(aw, "github", "get_issue")}]
+    assert "evil" not in r.text
+    assert _approve_call(aw, "github", "get_issue").status_code == 200
+    aw.raw.now += mcp_tools.REFRESH_INTERVAL_S + 1
+    assert _refresh(aw, "github").json()["items"][0]["changed"] is False
 
 
 def test_a_store_fault_is_503_and_holds_no_text(aw, monkeypatch) -> None:

@@ -528,6 +528,23 @@ def test_a_changed_tool_is_refused_as_tool_changed(lw, monkeypatch, state: str) 
     assert lw.audits[-1]["detail"]["live"] == mcp_tools.LIVE_TOOL_CHANGED
     assert lw.calls == []
     assert "evil" not in r.text and "evil" not in json.dumps(lw.audits)
+    # B1b-3 review P2-a: the code stays, and the words give the next step.
+    assert r.json()["detail"]["message"] == invoke.TOOL_WAITS_TEXT.format(
+        uses="mcp:github.get_issue", server="github")
+    assert "integrations:manage" in r.json()["detail"]["message"]
+
+
+@pytest.mark.parametrize("grants", [("feature:studio",),
+                                    ("feature:studio", "integrations:use:mcp-linear")])
+def test_a_member_without_the_grant_gets_the_plain_words(lw, grants) -> None:
+    """B1b-3 review P2-a: the grant check comes first, so a member who may not
+    use the server never learns that the tool waits for an approval."""
+    lw.approved = {}
+    r = _preview(lw, _pid(lw), "issue_a", grants=grants)
+    assert (r.status_code, _code(r)) == (403, "source_not_open")
+    assert r.json()["detail"]["message"] == invoke.REFUSALS["source_not_open"]
+    assert lw.audits[-1]["detail"]["live"] == mcp_tools.LIVE_NO_GRANT
+    assert lw.calls == [] and lw.approval_reads == []
 
 
 def test_outside_a_preview_an_mcp_action_stays_closed(lw) -> None:
@@ -995,8 +1012,10 @@ def test_one_function_of_the_door_reaches_the_live_read() -> None:
     used = {n.attr for n in ast.walk(ast.parse(source))
             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
             and n.value.id == "mcp_tools"}
+    # B1b-3 review: ``LIVE_TOOL_CHANGED`` picks the words of the refusal only.
     assert used == {"call_read_tool", "LiveRefused", "ListFailed", "LiveLimited",
-                    "LIVE_BAD_INPUT", "REASON_CACHE", "REASON_TOOL_ERROR"}
+                    "LIVE_BAD_INPUT", "REASON_CACHE", "REASON_TOOL_ERROR",
+                    "LIVE_TOOL_CHANGED"}
     assert "call_read_tool" in _calls_in(invoke._run_live_read)
 
 

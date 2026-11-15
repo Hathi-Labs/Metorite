@@ -334,7 +334,15 @@ def test_one_refresh_makes_one_call_and_fills_the_cache(world) -> None:
     _give(world, ORG_A, "github", [_tool("get_issue", READ), _tool("create_issue", WRITE)])
     r = _refresh(world, "github")
     assert r.status_code == 200, r.text
-    assert r.json() == {"server": "github", "ok": True, "tools": 2, "truncated": False}
+    got = r.json()
+    items = got.pop("items")
+    assert got == {"server": "github", "ok": True, "tools": 2, "truncated": False}
+    # B1b-3 review: each tool with its text hash, and no description.
+    assert items == [
+        {"tool": "get_issue", "changed": False,
+         "text_hash": mcp_actions.tool_text_hash(_tool("get_issue", READ))},
+        {"tool": "create_issue", "changed": False,
+         "text_hash": mcp_actions.tool_text_hash(_tool("create_issue", WRITE))}]
     assert world.calls == [("github", f"https://{HOST}/{ORG_A}/github")]
     body = _get(world).json()
     assert _mcp(body) == [("mcp:github.get_issue", "A"), ("mcp:github.create_issue", "B")]
@@ -720,7 +728,9 @@ def test_a_cut_never_leaves_a_hidden_joiner() -> None:
 def test_a_list_of_10000_tools_keeps_200(world) -> None:
     _give(world, ORG_A, "github", [_tool(f"t{i}", READ, "x" * 5000) for i in range(10_000)])
     r = _refresh(world, "github")
-    assert r.json() == {"server": "github", "ok": True, "tools": 200, "truncated": True}
+    got = r.json()
+    assert len(got.pop("items")) == 200
+    assert got == {"server": "github", "ok": True, "tools": 200, "truncated": True}
     value = json.loads(world.raw.data[world.raw.tools_key(ORG_A, "github")])
     assert len(value["tools"]) == 200 and value["truncated"] is True
     assert all(len(t["description"]) == mcp_tools.DESCRIPTION_CHARS for t in value["tools"])
