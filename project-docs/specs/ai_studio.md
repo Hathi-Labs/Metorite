@@ -1212,6 +1212,8 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I8e** | open | HIGH | see row | [row](ai_studio_rows/I8e.md) |
 | **I8f** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8f.md) |
 | **I9** | 🔨 I9a BUILT, dark (2026-11-14, task 3169) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
+| **I9b-1** | 🔨 BUILT, dark (2026-11-15), task 3169 | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9b-1.md) |
+| **I9b-2** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9b-2.md) |
 | **I10** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I10.md) |
 | **I11-0** | 🔨 BUILT, test only (2026-11-14, task 3235) | STD | AGENT-SAFE | [row](ai_studio_rows/I11-0.md) |
 | **I11a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I11a.md) |

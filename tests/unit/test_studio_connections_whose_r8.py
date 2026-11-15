@@ -89,7 +89,11 @@ TALLY = f"mcp:tally-{TAG}"
 _COUNTER = iter(range(10_000))
 _MIDS: dict[str, str] = {}
 _FIELDS = [{"key": "site", "type": "text"}]
-_DENIED = {"code": invoke.NEEDS_CONNECTION, "message": invoke.CONNECTION_TEXT}
+_DENIED = {"code": invoke.NEEDS_CONNECTION, "message": invoke.CONNECTION_TEXT,
+           "reason": "missing"}
+#: I9b-1: an org need with an org row waits for an admin, with its own sentence.
+_WAITS = {"code": invoke.NEEDS_CONNECTION, "message": invoke.ORG_APPROVAL_TEXT,
+          "reason": "org_approval"}
 
 
 def _manifest(mid: str, connections: list[Any], purpose: str = "Track the visits to a site.",
@@ -245,7 +249,7 @@ def test_r8_the_refusal_names_no_other_member(world) -> None:
 
     status, detail = _run(world, go)
     assert status == 409
-    assert set(detail) == {"code", "message", "provider", "as"}
+    assert set(detail) == {"code", "message", "provider", "as", "reason"}
     blob = repr(detail).lower()
     assert ADA.lower() not in blob and OWEN.lower() not in blob and "@" not in blob
 
@@ -269,8 +273,8 @@ def test_r8_an_org_need_runs_only_on_an_approved_org_install(world) -> None:
         return out
 
     none, ok, pending, again = _run(world, go)
-    want = {**_DENIED, "provider": TALLY, "as": "org"}
-    assert none == (409, want) and pending == (409, want)
+    assert none == (409, {**_DENIED, "provider": TALLY, "as": "org"})
+    assert pending == (409, {**_WAITS, "provider": TALLY, "as": "org"})
     assert ok[0] == 200 and again[0] == 200
     assert world.ran == [1, 1]
 
@@ -287,7 +291,7 @@ def test_r8_the_owners_draft_and_a_member_row_never_meet_an_org_need(world) -> N
         return out
 
     got = _run(world, go)
-    assert got == [(409, {**_DENIED, "provider": TALLY, "as": "org"})] * 2
+    assert got == [(409, {**_WAITS, "provider": TALLY, "as": "org"})] * 2
     assert world.ran == []
 
 
@@ -323,7 +327,7 @@ def test_r8_the_owner_of_an_installed_app_gets_one_answer_in_door_and_sidebar(wo
                 "mel_side": await _sidebar(world.a, MEL)}
 
     got = _run(world, go)
-    assert got["owner_door"] == (409, {**_DENIED, "provider": TALLY, "as": "org"})
+    assert got["owner_door"] == (409, {**_WAITS, "provider": TALLY, "as": "org"})
     assert got["owner_side"] is True
     assert got["mel_door"][0] == 200 and got["mel_side"] is False
     assert world.ran == [1]
@@ -350,7 +354,7 @@ def test_r8_the_approval_of_org_a_does_not_apply_to_org_b(world) -> None:
 
     install, door, (_, states) = _run(world, go)
     assert install[0] == 202 and install[1]["review_status"] == "pending", install
-    assert door == (409, {**_DENIED, "provider": TALLY, "as": "org"})
+    assert door == (409, {**_WAITS, "provider": TALLY, "as": "org"})
     assert states == {1: "pending"}
     assert world.ran == []
 
@@ -385,7 +389,7 @@ def test_r8_a_version_that_widens_scopes_waits_for_an_approval(world) -> None:
     got = _run(world, go)
     assert got["v1"][0] == 200 and got["saved"] == 200 and got["published"] == 200
     assert got["ask"][0] == 202 and got["ask"][1]["version"] == 2, got["ask"]
-    assert got["pinned"] == (409, {**_DENIED, "provider": TALLY, "as": "org"})
+    assert got["pinned"] == (409, {**_WAITS, "provider": TALLY, "as": "org"})
     assert got["own"] == 403, "the publisher cannot approve their own version (J2b-1)"
     assert got["approved"] == 200 and got["after"][0] == 200
     assert got["states"] == {1: "approved", 2: "approved"}
