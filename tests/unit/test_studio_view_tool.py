@@ -611,7 +611,8 @@ async def test_each_shared_write_shows_the_value_once_in_guillemets(
         (shown,) = card.shown
         assert shown["context"].count(QUOTED) == 1, shown["context"]
         assert "«status» eq" in shown["context"]
-        assert "roles let them read" in shown["context"]
+        assert ("roles let them read" in shown["context"]
+                or "only you read its name and filter" in shown["context"])  # the unshare
     assert gw.writes() == []
 
 
