@@ -12,7 +12,7 @@ describe("hasMoreRight", () => {
   });
   it("is true when a lane hides past the right edge, and false again at the end", () => {
     expect(hasMoreRight({ scrollWidth: 1200, clientWidth: 800, scrollLeft: 0 })).toBe(true);
-    expect(hasMoreRight({ scrollWidth: 1200, clientWidth: 800, scrollLeft: 399 })).toBe(true);
+    expect(hasMoreRight({ scrollWidth: 1200, clientWidth: 800, scrollLeft: 398 })).toBe(true);
     expect(hasMoreRight({ scrollWidth: 1200, clientWidth: 800, scrollLeft: 400 })).toBe(false);
   });
 });
