@@ -284,10 +284,8 @@ def test_the_flag_ships_off() -> None:
 
 def test_flag_off_each_turn_equals_the_golden_of_main(store, monkeypatch) -> None:
     """The three turns with the flag off give the tool names, their order and
-    the system text that main gave before PR 3. Mutation: ``base += 1`` for
-    ``find_tools`` with no flag -> the cap drops a pack, or a provider attaches
-    -> a name list differs -> red. Mutation: the apply returns a ``PackApply``
-    with the flag off -> the left line or the persona changes -> red."""
+    the system text that main gave before PR 3. Mutation: the search runs with
+    the flag empty -> ``find_tools`` joins -> a name list differs -> red."""
     got = capture(monkeypatch)
     want = _golden()["turns"]
     assert sorted(got) == sorted(want)
@@ -297,6 +295,33 @@ def test_flag_off_each_turn_equals_the_golden_of_main(store, monkeypatch) -> Non
     assert "studio_draft" in got["studio_surface"]["names"]
     assert "load_skill_tools" in got["plain"]["names"]
     assert all(tp.FIND_TOOL not in got[name]["names"] for name in got)
+
+
+def test_flag_off_the_base_has_no_find_tools(store, monkeypatch) -> None:
+    """With the flag off, the first choice of the Studio turn gets the
+    estimate of the base and no more (D222 decision 13 counts ``find_tools``
+    only with the flag on). The turns of the golden are not at the cap, so
+    this case reads the count itself. Mutation: ``base += 1`` with no flag
+    test -> the estimate + 1 -> red."""
+    _flags(monkeypatch, "")
+    _studio(monkeypatch)
+    estimates: list[int] = []
+    bases: list[int] = []
+    real_count, real_choose = ti._pack_base_count, tp.choose
+
+    def count(*a: Any, **k: Any) -> int:
+        estimates.append(real_count(*a, **k))
+        return estimates[-1]
+
+    def choose(*a: Any, **k: Any) -> Any:
+        bases.append(int(k["base_tools"]))
+        return real_choose(*a, **k)
+
+    monkeypatch.setattr(ti, "_pack_base_count", count)
+    monkeypatch.setattr(tp, "choose", choose)
+    drive(monkeypatch, "studio_surface")
+    assert len(estimates) == 1 and len(bases) == 2, (estimates, bases)
+    assert bases == [estimates[0], estimates[0] + 1], "the load tool alone adds 1"
 
 
 def test_flag_off_no_provider_and_no_finder(store, monkeypatch) -> None:
