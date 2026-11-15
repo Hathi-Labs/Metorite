@@ -51,6 +51,14 @@ asks it at the start of each run, so a reload applies to the next run. A
 reload that takes an org off the list while a long WhatsApp run works gives
 that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
+(`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
+`people.person.updated` event after the commit. `*` lists every org, and the
+default is empty. Its one reader is `gateway.core_events.core_events_allowed`,
+and each emit asks it. A
+workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
+reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns
@@ -84,22 +92,6 @@ org, and the default is empty. Its one reader is
 door also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
-`CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
-(`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
-`people.person.updated` event after the commit. `*` lists every org, and the
-default is empty. Its one reader is `gateway.core_events.core_events_allowed`,
-and each emit asks it. A
-workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
-reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
-
-`STUDIO_SEARCH_ORGS` opens the `studio` source of company search
-(`ai_studio.md` §14 C5a). For each listed org, `search_company` reads the
-objects that a package names in `shell.search`, for the packages that the
-member owns or has installed. `*` lists every org, and the default is empty.
-Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
-asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
-the flip stays OWNER-GATE (`enforcement-flip`).
-
 `STUDIO_LOGIC_ORGS` opens the logic module of the Studio action door
 (`ai_studio.md` §14 B4a). For each listed org, a `logic:<name>` action of a
 package runs a first-party module of the gateway. `*` lists every org, and the
@@ -115,6 +107,14 @@ can use the index. `*` lists every org, and the default is empty. Its one
 reader is `acb_common.studio_flags.num_f8_allowed`, and each query asks
 it. The query honours it for an org only after the backfill of migration 433 ends (`_warm_f8`), so the records are right at every step. Runbook: after a restore or any trigger work (`DISABLE TRIGGER`, `session_replication_role = replica`, `pg_restore --disable-triggers`), restart the gateway before you trust the flag, because a ready answer is cached for up to 600 seconds.
 A reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
+`STUDIO_SEARCH_ORGS` opens the `studio` source of company search
+(`ai_studio.md` §14 C5a). For each listed org, `search_company` reads the
+objects that a package names in `shell.search`, for the packages that the
+member owns or has installed. `*` lists every org, and the default is empty.
+Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
+asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
+the flip stays OWNER-GATE (`enforcement-flip`).
 
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is
