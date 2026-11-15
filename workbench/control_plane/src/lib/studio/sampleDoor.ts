@@ -9,10 +9,14 @@
  * Its `run` plays the server: it checks a record with the same check as the
  * client, and it refuses one more rule that only a server can know, a title
  * that is taken. That refusal shows a 422 under its field.
+ *
+ * The Gallery (STU-D19a) draws on sample assets. Its door gives the address of
+ * a picture that ships in this repo (`fileAddress`). No real door has one.
  */
 import type { FieldSpec } from "./fieldCheck";
 import { validateRecord } from "./fieldCheck";
 import type { ActionResult, Row, StudioDataDoor } from "./dataDoor";
+import { sampleRowsFor } from "./sampleRows";
 
 /** One object with a field of each of the 22 types. */
 export const SAMPLE_FIELDS: FieldSpec[] = [
@@ -66,6 +70,56 @@ export const SAMPLE_ROWS: Row[] = [
   },
 ];
 
+// --- the Gallery (STU-D19a) ----------------------------------------------------
+
+/**
+ * The pictures of the sample files. Each one ships in this repo (`public/office-objects`), so
+ * the preview loads nothing from another site. The last digit of a sample file id picks one.
+ */
+export const SAMPLE_PICTURES: readonly string[] = [
+  "/office-objects/printer-3d/south.png",
+  "/office-objects/desk-computer/south.png",
+  "/office-objects/coffee-machine/south.png",
+  "/office-objects/filing-cabinet/south.png",
+  "/office-objects/printer-office/south.png",
+  "/office-objects/water-cooler/south.png",
+  "/office-objects/air-conditioner/south.png",
+  "/office-objects/tv-screen/south.png",
+  "/office-objects/workstation/south.png",
+  "/office-objects/printer-3d-large/south.png",
+];
+
+/**
+ * The image address of a sample file, by the last digit of its id. Null for an id that ends in
+ * no digit. ⚠️ The sample door is the ONLY door with a file address in D19a.
+ */
+export function sampleFileAddress(fileId: string): string | null {
+  const m = /([0-9])$/.exec(fileId);
+  return m ? (SAMPLE_PICTURES[Number(m[1])] ?? null) : null;
+}
+
+/** The object of the Gallery preview: the assets of an office, each with a photo. */
+export const SAMPLE_ASSET_FIELDS: FieldSpec[] = [
+  { key: "name", type: "text", label: "Asset", required: true },
+  { key: "status", type: "select", label: "Status", options: ["Active", "On hold", "Retired"] },
+  { key: "owner", type: "person", label: "Owner" },
+  { key: "photo", type: "file", label: "Photo" },
+  { key: "bought_on", type: "date", label: "Bought on" },
+];
+
+/** Every ninth sample asset has no photo, so its card shows the placeholder. */
+export const NO_PHOTO_EVERY = 9;
+
+/** `count` sample assets, with the ids `s1`, `s2` and on. */
+export function sampleAssetRows(count: number): Row[] {
+  return sampleRowsFor(SAMPLE_ASSET_FIELDS, count).map((row, i) => {
+    if ((i + 1) % NO_PHOTO_EVERY !== 0) return row;
+    const { photo: _photo, ...rest } = row;
+    void _photo;
+    return rest;
+  });
+}
+
 type Measure = { op: "count" | "sum" | "average"; field?: string };
 
 /**
@@ -115,6 +169,8 @@ export function makeSampleDoor(
   let next = store.length + 1;
   return {
     scope: "sample:draft",
+    // The pictures of the sample files, for the Gallery (STU-D19a). No real door has this.
+    fileAddress: sampleFileAddress,
     async read(source) {
       await wait();
       if (source?.action.endsWith(".aggregate")) return [sampleAggregate(store, source.args)];
