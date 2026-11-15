@@ -176,6 +176,12 @@ export interface RunStatus {
    * ends only on a confirmed rest (`restConfirmed`).
    */
   restBlind: boolean;
+  /**
+   * CS-3b: the fixed words of the server's phase ("Gathering what I need"), or null. It lives
+   * only while the run has no real step: the first event, the end of the run and a re-attach
+   * clear it. Never saved, and never a server string (`RUN_PHASE_WORDS` in `runStep.ts`).
+   */
+  phaseWord: string | null;
 }
 
 export const IDLE_RUN: RunStatus = Object.freeze({
@@ -201,6 +207,7 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   writesAsked: [],
   writesDone: [],
   restBlind: false,
+  phaseWord: null,
 }) as RunStatus;
 
 /** One server row, as `lib/liveRuns.ts` reads it. */
@@ -247,6 +254,9 @@ export type RunEvent =
   | { type: "card"; at: number; open: boolean }
   /** A complete server list, taken at `at`. `run` is this thread's row. */
   | { type: "server"; at: number; run: ServerRun | null; streamOpen: boolean }
+  /** CS-3b: the server's phase of the run, as fixed words (`phaseWordOf`). It moves no phase of the
+   *  run: only the words of the row change, and only before the first real event. */
+  | { type: "phase"; at: number; word: string }
   /** Time passes. */
   | { type: "tick"; at: number; streamOpen: boolean };
 
@@ -256,6 +266,8 @@ function to(s: RunStatus, phase: RunPhase, at: number, extra: Partial<RunStatus>
   if (phase !== s.phase && !extra.restBlind) next.restBlind = false;
   // "Checking" lasts only while a remount waits in `finishing`.
   if (phase !== "finishing" && next.checking) next.checking = false;
+  // The phase words last only while the run starts or works (CS-3b).
+  if (phase !== "starting" && phase !== "working") next.phaseWord = null;
   return next;
 }
 
@@ -310,6 +322,7 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         doneMessageId: s.doneMessageId,
         // The new run's identity binds from the first server row after it.
         runKey: null,
+        phaseWord: null,
       };
 
     case "attach": {
@@ -328,7 +341,16 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         writesDone: live ? s.writesDone : [],
         terminalAt: 0,
         staleTail: false,
+        // CS-3b: a joined run has no phase until a new one arrives.
+        phaseWord: null,
       });
+    }
+
+    case "phase": {
+      // Only a run that has shown no real event takes a phase, and the phase moves nothing else.
+      if (s.phase !== "starting" && s.phase !== "working") return s;
+      if (s.seq > 0 || s.step) return s;
+      return s.phaseWord === e.word ? s : { ...s, phaseWord: e.word };
     }
 
     case "event": {
@@ -337,9 +359,10 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       // so a fast stream does not notify the store twice per token.
       const phase: RunPhase = s.phase === "waiting_for_you" && s.cardOpen ? "waiting_for_you" : "working";
       if (s.phase === phase && s.step === e.step && e.at - s.lastEventAt < 1_000) {
-        return s.seq === 0 ? { ...s, seq: 1 } : s;
+        return s.seq === 0 ? { ...s, seq: 1, phaseWord: null } : s;
       }
       return to(s, phase, e.at, {
+        phaseWord: null,
         attachFails: 0,
         step: e.step,
         seq: s.seq + 1,
@@ -465,7 +488,7 @@ function reduceServer(
     const isNew = other || (resting && !same);
     const fresh: Partial<RunStatus> = isNew
       ? {
-        messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false,
+        messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false, phaseWord: null,
         writesAsked: [], writesDone: [],
         startedAt: parseTime(run.startedAt) ?? at,
         // The old run's streaming reply, if any, is not this run's.
@@ -579,9 +602,9 @@ export function runView(s: RunStatus, now: number): RunView | null {
   const elapsed = s.startedAt !== null ? formatElapsed(now - s.startedAt) : null;
   switch (s.phase) {
     case "starting":
-      return { tone: "working", label: FIRST_STEP, elapsed };
+      return { tone: "working", label: s.phaseWord || FIRST_STEP, elapsed };
     case "working":
-      return { tone: "working", label: s.step || "Working", elapsed };
+      return { tone: "working", label: s.step || s.phaseWord || "Working", elapsed };
     case "waiting_for_you":
       return { tone: "waiting", label: "Waiting for your answer", elapsed };
     case "parked":

@@ -38,7 +38,7 @@ import {
   type LiveRun,
 } from "@/lib/liveRuns";
 import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
-import { stepOfMessage } from "@/lib/runStep";
+import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
@@ -845,6 +845,17 @@ export function useAgentChat({
                   const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
                   emitAgentEvent("onGuide", { guideId: String(data?.guide_id ?? ""), threadId });
                 }
+                // CS-3b: the phase of the run shows as fixed words, until the
+                // first real step. An unknown name draws nothing. Never kept.
+                if (evtName === RUN_PHASE_EVENT) {
+                  const word = phaseWordOf(evt.value ?? evt.data);
+                  if (word) {
+                    dispatchRun(threadId, { type: "phase", at: Date.now(), word });
+                    upd((m) => (m.content.trim() || (m.toolEvents?.length ?? 0) > 0 ? m : { ...m, phaseWord: word }));
+                  }
+                  // A phase proves nothing moved: no run event follows it.
+                  continue;
+                }
                 // HRD-6: the line of a slow step shows under that step. Live
                 // loop ONLY, and never kept on the message's custom events.
                 if (evtName === PROGRESS_EVENT) {
@@ -1257,6 +1268,8 @@ export function useAgentChat({
         isThinkingActive: true,
         // CS-1: a run that this tab joins again has no first line, even in the tab that sent it.
         firstLine: undefined,
+        // CS-3b: nor a phase. A joined run has none until a new one arrives.
+        phaseWord: undefined,
         streaming: true,
       } : null;
       const hasBody = (m: ChatMessage | null | undefined) =>
@@ -1373,6 +1386,17 @@ export function useAgentChat({
                 // line that ended or went to a card is gone. Never saved.
                 if (evtName === PROGRESS_EVENT) {
                   updLast((m) => withProgressNotice(m, evt.value ?? evt.data));
+                }
+                // CS-3b: a run phase that arrives on a joined run shows as fixed words, and
+                // only until the first real event. The replay never keeps it on the message.
+                if (evtName === RUN_PHASE_EVENT) {
+                  const word = phaseWordOf(evt.value ?? evt.data);
+                  if (word) {
+                    dispatchRun(threadId, { type: "phase", at: Date.now(), word });
+                    updLast((m) => (m.content.trim() || (m.toolEvents?.length ?? 0) > 0 ? m : { ...m, phaseWord: word }));
+                  }
+                  // A phase proves nothing moved: no run event follows it.
+                  continue;
                 }
                 // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
                 // and it draws nothing either. CS-3a: nor does a run phase.
