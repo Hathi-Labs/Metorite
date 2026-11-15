@@ -107,6 +107,7 @@ from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger, get_settings
 from acb_common.secret_shapes import REDACTION_SHAPES
+from acb_skills.permission_policy import MCP_HINT_NAMES
 
 if TYPE_CHECKING:
     from agent_framework import FunctionInvocationContext
@@ -149,7 +150,8 @@ LOADER_ACTIONS = ("list", "load", "unload")
 #: The longest reason that a log line carries.
 _REASON_CHARS = 80
 #: The MCP hint names, from the ``annotations`` of one tool (MCP 2025-03-26).
-HINT_NAMES = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+#: ``acb_skills.permission_policy`` holds the one copy (STU-B1b-1).
+HINT_NAMES = MCP_HINT_NAMES
 #: The longest server description that a card carries.
 _DESCRIPTION_CHARS = 1000
 #: Seconds for ``on_unauthorized`` to mark ONE row (rule 9). The run waits

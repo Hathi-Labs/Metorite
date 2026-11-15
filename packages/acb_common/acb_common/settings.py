@@ -760,6 +760,16 @@ class Settings(BaseSettings):
     # change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`, after the pre-check of ai_studio.md section 14 I1a.
     studio_connection_gate_orgs: str = ""
+    # STU-I11a: STUDIO_LIVE_PREVIEW_ORGS lists the org ids where a preview of
+    # the Studio action door reads a class A `mcp:` action live. The read
+    # calls the MCP server of the org once, through the pinned client, and
+    # caches the cut answer for 60 s. `*` opens every org. Empty opens none,
+    # and the door then answers `source_not_open` for each `mcp:` action, as
+    # before I11a. Reader: `acb_common.studio_flags.live_preview_on`. A
+    # SIGHUP reload applies a change (docs/flag_reload.md). A flip in
+    # production is the gate `enforcement-flip`. Spec: ai_studio.md section
+    # 14 I11a.
+    studio_live_preview_orgs: str = ""
     # STU-C2c: STUDIO_NUM_F8_ORGS lists the org ids where a number filter of
     # the Studio object query adds a float8 test on `studio_record_hot.
     # v_num_f8`, so the app role can use its index (`numeric` comparisons are
@@ -2477,6 +2487,17 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
     # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     agent_change_access_orgs: str = ""
+    # CIV-14b (external_agent_access.md §12.9): the organizations where an
+    # outside agent may upload an image to a task (`upload_task_image`) and
+    # put up to 4 images on a question or an activity (`attachment_ids`). The
+    # same shape as `agent_access_orgs`: ids with a comma between them, or
+    # `*`. Empty, the default, keeps both dark: for a signed agent the upload
+    # answers 404 and `attachment_ids` answers 422. The gateway reads it at
+    # each call, so a SIGHUP reload applies a change there. The edge reads it
+    # too, to hide the tool, and the edge reads its flags at start
+    # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
+    # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
+    mcp_image_upload_orgs: str = ""
     # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as

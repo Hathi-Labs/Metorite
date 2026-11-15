@@ -9,15 +9,19 @@
  * Mutation 2: pass `floor` to `StudioAppFrame` as `true`. "has no data-floor and no signed-in line" turns red.
  * Mutation 3: pass `opened.full` as `full`. "opens a record as the full page, with no way to the
  * side panel" turns red.
+ * Mutation 4 (STU-D23a-2): draw the page picker in the usual view too (`floorView(false)` with
+ * `pagePicker: true`). "draws no picker in the usual view" turns red.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const nav = vi.hoisted(() => ({ query: "" }));
+const nav = vi.hoisted(() => ({ query: "", pushed: [] as string[] }));
+/** The props of each `SelectButton` that the frame drew, in order (STU-D23a-2). */
+const picks = vi.hoisted(() => [] as Array<{ label: string; value: string; options: unknown[]; onChange: (v: string) => void }>);
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: () => {}, replace: () => {} }),
+  useRouter: () => ({ push: (url: string) => { nav.pushed.push(url); }, replace: () => {} }),
   usePathname: () => "/studio/package-preview",
   useSearchParams: () => new URLSearchParams(nav.query),
 }));
@@ -39,6 +43,15 @@ vi.mock("@/components/studio/DeletePackageButton", stub("data-stub-delete-app"))
 vi.mock("@/components/studio/StudioRecord", stub("data-stub-record"));
 vi.mock("@/components/studio/StudioNewButton", stub("data-stub-new"));
 vi.mock("@/components/studio/StudioForm", stub("data-stub-form"));
+vi.mock("@/components/ui/SelectButton", async () => {
+  const react = await import("react");
+  return {
+    default: (props: (typeof picks)[number]) => {
+      picks.push(props);
+      return react.createElement("i", { "data-stub-select": props.label, "data-value": props.value });
+    },
+  };
+});
 
 import AppFrame from "./AppFrame";
 import type { StudioDataDoor } from "@/lib/studio/dataDoor";
@@ -79,11 +92,11 @@ const DOOR: StudioDataDoor = {
   run: async () => ({ ok: true }),
 } as unknown as StudioDataDoor;
 
-function draw(query: string, owner = true): string {
+function draw(query: string, owner = true, detail: PackageDetail = DETAIL): string {
   nav.query = query;
   return renderToStaticMarkup(createElement(AppFrame, {
     pkg: "p1",
-    detail: owner ? DETAIL : { ...DETAIL, access: "viewer" },
+    detail: owner ? detail : { ...detail, access: "viewer" },
     door: DOOR,
     controls: { owner, actions: owner ? ACTIONS : ACTIONS.slice(0, 2) },
     onDeleted: () => {},
@@ -91,7 +104,11 @@ function draw(query: string, owner = true): string {
   }));
 }
 
-beforeEach(() => { nav.query = ""; });
+beforeEach(() => {
+  nav.query = "";
+  nav.pushed.length = 0;
+  picks.length = 0;
+});
 
 describe("the usual view", () => {
   it("draws the rail, the owner verbs, the end-date bar, the setup card and the list bar", () => {
@@ -168,5 +185,41 @@ describe("the floor view (?floor=1)", () => {
     for (const q of ["floor=0", "floor=true", "floor=", "floor=11", "f.floor=1"]) {
       expect(draw(`pkg=p1&${q}`), q).not.toContain("data-floor");
     }
+  });
+});
+
+describe("the page picker of the floor view (STU-D23a-2)", () => {
+  const pagePick = () => picks.filter((p) => p.label === "Page").at(-1);
+
+  it("draws in the floor view, with the rows of the rail and the page on screen", () => {
+    const html = draw("pkg=p1&floor=1&page=done");
+    expect(html).toContain('data-stub-select="Page"');
+    expect(pagePick()?.value).toBe("done");
+    expect(pagePick()?.options).toEqual([{ value: "today", label: "Today" }, { value: "done", label: "Done" }]);
+  });
+
+  it("draws for a viewer too, who reads the same pages", () => {
+    expect(draw("pkg=p1&floor=1", false)).toContain('data-stub-select="Page"');
+  });
+
+  it("draws no picker in the usual view, where the rail picks", () => {
+    expect(draw("pkg=p1")).not.toContain('data-stub-select="Page"');
+    expect(picks.some((p) => p.label === "Page")).toBe(false);
+  });
+
+  it("draws no picker for an app with one page", () => {
+    const one = { ...DETAIL, pages: [DETAIL.pages[0]] };
+    expect(draw("pkg=p1&floor=1", true, one)).not.toContain('data-stub-select="Page"');
+  });
+
+  it("picks through setPage, as a row of the rail does, and keeps the floor view", () => {
+    draw("pkg=p1&floor=1");
+    pagePick()?.onChange("done");
+    expect(nav.pushed).toHaveLength(1);
+    const url = new URL(nav.pushed[0], "http://localhost");
+    expect(url.pathname).toBe("/studio/package-preview");
+    expect(url.searchParams.get("page")).toBe("done");
+    expect(url.searchParams.get("floor")).toBe("1");
+    expect(url.searchParams.get("pkg")).toBe("p1");
   });
 });
