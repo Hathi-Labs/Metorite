@@ -623,8 +623,12 @@ class TestARefusedQuestionLeavesNoOpenRun:
         up = await _upload(_args(TINY_PNG))
         aid = up["structuredContent"]["attachment"]["attachment_id"]
         gw.answer = answer
+        return await self._ask_again(aid)
+
+    @staticmethod
+    async def _ask_again(aid: str, key: str = "q-3") -> dict[str, Any]:
         return await _tool("ask_on_task", {
-            "task_id": TASK, "question": "Approve this layout?", "idempotency_key": "q-3",
+            "task_id": TASK, "question": "Approve this layout?", "idempotency_key": key,
             "attachment_ids": [aid]})
 
     @pytest.mark.parametrize("answer,text_", [
@@ -637,9 +641,8 @@ class TestARefusedQuestionLeavesNoOpenRun:
         ((403, {"detail": "SECRET"}), tools.TEXT_WRITE_FORBIDDEN),
         ((404, {"detail": "Agent run not found"}), tools.TEXT_RUN_NOT_FOUND),
         ((409, {"detail": "SECRET"}), tools.TEXT_RUN_CONFLICT),
-        ((429, {"detail": "SECRET"}), tools.TEXT_CAP),
     ], ids=["flag_off", "image_removed", "not_an_image", "forbidden", "run_gone",
-            "conflict", "cap"])
+            "conflict"])
     async def test_b1_a_refused_question_releases_the_run_that_it_started(
             self, gw, answer, text_):
         """The probe of the verifier: the edge flag is on, and the gateway
@@ -686,6 +689,27 @@ class TestARefusedQuestionLeavesNoOpenRun:
     async def test_b5_an_answered_question_releases_nothing(self, gw):
         result = await self._ask(gw, None)
         assert result["isError"] is False, result
+        assert gw.releases() == []
+
+    async def test_b6_a_cap_answer_keeps_the_run(self, gw):
+        """Fix round 3, item 1. The write cap counts each write, and the
+        release is a write too. So the real gateway answers the release with
+        429 as well, as this fake does, and the run would stay open anyway.
+        The call keeps the run, as for a busy answer. After the wait, a retry
+        with the same key asks on the same run. Mutation: let
+        ``tools._refused`` count the cap text, and a release goes out here."""
+        gw.release_answer = (429, {"detail": "Too many writes"})
+        result = await self._ask(gw, (429, {"detail": "SECRET"}))
+        assert _text(result) == tools.TEXT_CAP
+        assert "SECRET" not in json.dumps(result)
+        assert len(gw.starts()) == 1
+        assert gw.releases() == []
+        # The wait is over. The start replays the run that the key started.
+        gw.answer, gw.start_created = None, False
+        again = await self._ask_again(gw.rows[-1]["attachment_id"])
+        assert again["isError"] is False, again
+        assert again["structuredContent"]["run"]["id"] == RUN
+        assert len(gw.starts()) == 2
         assert gw.releases() == []
 
 

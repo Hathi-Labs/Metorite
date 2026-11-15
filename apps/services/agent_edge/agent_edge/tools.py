@@ -9492,10 +9492,17 @@ async def _question_images(ctx: Context, task_id: str, ids: list[str]) -> None:
 
 
 def _refused(error: ToolError) -> bool:
-    """True when the gateway refused a write, so it wrote nothing: every
-    tool error but the busy text, and a write that never left the edge. A
-    busy answer can come after the write landed (CIV-14b fix round 2)."""
-    return isinstance(error, _NotSent) or error.text != TEXT_BUSY
+    """True when the gateway refused a write and a release can follow: a
+    write that never left the edge, and every tool error but two texts.
+
+    * The busy text. A busy answer can come after the write landed (CIV-14b
+      fix round 2).
+    * The cap text (fix round 3). The cap counts each write, so the release
+      gets 429 too. The run stays, and after the wait a retry with the same
+      key asks on that run."""
+    if isinstance(error, _NotSent):
+        return True
+    return error.text not in (TEXT_BUSY, TEXT_CAP)
 
 
 async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -9507,7 +9514,7 @@ async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     CIV-14b fix round 2: when the gateway refuses the question, the call
     releases the run that IT started, so no empty run stays open on the
     task. A run that the start found open (``created`` false) stays as it
-    is, and so does each run after a busy answer."""
+    is, and so does each run after a busy or a cap answer (:func:`_refused`)."""
     _check_options(args.get("options"))
     key = str(args["idempotency_key"])
     if IMAGES_INPUT in args:
