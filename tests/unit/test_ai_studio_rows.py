@@ -1,4 +1,4 @@
-"""Section 14 of ai_studio.md holds INDEX lines only (CIV-33 slice 2, task 3337).
+"""Section 14 of ai_studio.md holds INDEX lines only (CIV-HS slice 2, task 3337).
 
 The row text lives in project-docs/specs/ai_studio_rows/<id>.md. Two PRs then conflict
 only when they edit the same row. A conflict resolution that brings a full row body

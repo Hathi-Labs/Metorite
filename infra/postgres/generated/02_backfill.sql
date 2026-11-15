@@ -675,6 +675,9 @@ UPDATE studio_batches SET organization_id = (SELECT id FROM organization WHERE s
 UPDATE studio_saved_views SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE studio_object_counters SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE studio_object_fields SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 

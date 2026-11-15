@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/EmptyState";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioCalendar from "@/components/studio/StudioCalendar";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioNewButton from "@/components/studio/StudioNewButton";
@@ -194,6 +195,10 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
               submitLabel="Add record" savedMessage="Record added" />
           </div>
         );
+      case "calendar":
+        // The block draws its own card. A record link opens in the panel through `onLinkClick`.
+        return <StudioCalendar model={model} door={door}
+          onOpenRecord={(rid) => go((s) => openRecord(s, model.object, rid))} />;
       case "detail":
         return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected} />;
     }

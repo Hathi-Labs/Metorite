@@ -110,7 +110,7 @@ def _one_instant(monkeypatch):
 
 #: The sources of a member with Projects and Email, and no Approvals.
 #: WS-66 RM-2b: `reminders` is a needs source, absent while the flag is off.
-SOURCES = {"tasks": "ok", "reminders": "absent", "approvals": "absent",
+SOURCES = {"tasks": "ok", "reminders": "absent", "studio": "absent", "approvals": "absent",
            "projects": "ok", "email": "ok"}
 
 
@@ -657,3 +657,68 @@ class TestTheReminderBell:
         answer = await _needs(promoted, monkeypatch, _member(ME))
         assert answer["sources"]["reminders"] == "absent"
         assert not [i for i in answer["items"] if i["app"] == "calendar"]
+
+
+# ── Studio: a share that waits for approval (WS-STU J2b-4a) ─────────────────
+#
+# The source adds no SQL. It calls `packages.list_approvals`, which reads the
+# bound org through `packages_store.list_pending_versions`. This runs the real
+# route and store as the app role, on the J2b-1 world (org A has Owen the
+# owner and Ada a holder, org B has Zed a holder).
+
+from acb_auth import build_access  # noqa: E402
+from acb_common.db import bind_tenant, release_tenant  # noqa: E402
+
+from tests.unit._tenant_ladder import tenant_engine_scope  # noqa: E402
+from tests.unit.test_studio_package_approval_routes_r8 import (  # noqa: E402,F401
+    ADA,
+    OWEN,
+    PUBLISHER,
+    ZED,
+    _ask,
+    _decide,
+    _live,
+    world,
+)
+
+
+class TestTheStudioApprovalSource:
+    @staticmethod
+    async def _read(org: str, email: str) -> dict:
+        user = UserContext(email=email, role=UserRole.EMPLOYEE,
+                           access=build_access(list(PUBLISHER)), organization_id=org)
+        token = bind_tenant(org)
+        try:
+            return await shell.shell_needs(limit=50, user=user)
+        finally:
+            release_tenant(token)
+
+    async def test_the_holder_sees_the_pending_version_and_it_leaves_after_the_move(
+        self, world, monkeypatch,  # noqa: F811
+    ):
+        monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 30.0)
+        monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 90.0)
+        url = world.p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(url):
+            pid = await _live(world.a, OWEN)
+            assert (await _ask(world.a, pid, 1))[0] == 202
+            want = f"studio-approval:{pid}:1"
+
+            ada = await self._read(world.a, ADA)
+            assert ada["sources"]["studio"] == "ok"
+            rows = [i for i in ada["items"] if i["app"] == "studio"]
+            assert [r["id"] for r in rows] == [want]
+            assert rows[0]["kind"] == "approval" and rows[0]["href"] == shell.STUDIO_HREF
+            assert "manifest" not in rows[0]
+            # The owner holds the right here, and still gets no row of their own.
+            owen = await self._read(world.a, OWEN)
+            assert owen["sources"]["studio"] == "ok"
+            assert not [i for i in owen["items"] if i["app"] == "studio"]
+            # Org B: the same right, and none of org A's rows.
+            zed = await self._read(world.b, ZED)
+            assert not [i for i in zed["items"] if i["app"] == "studio"]
+            # After the approval the row is gone.
+            assert (await _decide("approve", world.a, pid, 1))[0] == 200
+            after = await self._read(world.a, ADA)
+            assert after["sources"]["studio"] == "ok"
+            assert not [i for i in after["items"] if i["app"] == "studio"]
