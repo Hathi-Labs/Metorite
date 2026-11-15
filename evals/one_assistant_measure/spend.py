@@ -19,6 +19,7 @@ expensive rate of the card (:func:`worst_card`), never the cheapest.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -43,6 +44,11 @@ ASSUMED_COMPLETION_TOKENS = 4096
 UNSEEN_PROMPT_TOKENS = 20_000
 
 
+#: A dated alias of a model: ``claude-sonnet-5-5-20261101``. Only an exact
+#: suffix of 8 digits drops before the lookup. No other part of a name drops.
+DATE_SUFFIX = re.compile(r"-\d{8}$")
+
+
 def model_key(served: str) -> str:
     """The key of *served* in the card: lower case, with no provider prefix.
     ``anthropic/claude-haiku-5-5`` and ``claude-haiku-5-5`` are one model."""
@@ -65,12 +71,15 @@ def card_of(served: str, card: dict[str, Any]) -> dict[str, Any]:
 
     The tier that the call names does not set the price, because the Router
     binds a tier to a model and can change it (``tier-balanced`` served
-    DeepSeek on 2026-10-25 and Claude on 2026-11-15). No served name, or a
-    name that the card does not hold, gets :func:`worst_card`."""
-    entry = card["models"].get(model_key(served)) if served else None
+    DeepSeek on 2026-10-25 and Claude on 2026-11-15). The lookup is exact,
+    after the provider prefix and a date suffix (:data:`DATE_SUFFIX`) drop.
+    It never matches a part of a name. No served name, or a name that the
+    card does not hold, gets :func:`worst_card`."""
+    key = DATE_SUFFIX.sub("", model_key(served)) if served else ""
+    entry = card["models"].get(key) if key else None
     if entry is None:
         return worst_card(card)
-    return {"model": model_key(served), "known": True, "peak": bool(entry.get("peak")),
+    return {"model": key, "known": True, "peak": bool(entry.get("peak")),
             "usd_per_1m": entry["usd_per_1m"]}
 
 

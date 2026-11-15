@@ -922,6 +922,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                                        and not ck.refused(result)}),
                 "schema_tokens": obs.schema_tokens, "held": obs.held,
             }
+            if row["capped"]:
+                # TS-7a-cap: the turn did not end, so no check scores it.
+                row["passed"] = None
             marked = marked or row["mark_writes"] > 0
             rows.append(row)
             if on_turn is not None:
@@ -1053,12 +1056,29 @@ def _packs_before_first_call(row: dict[str, Any]) -> bool:
                for e in row.get("pack_events") or [])
 
 
+def capped_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The turns in which the cap refused a send (TS-7a-cap). Such a turn did
+    not end, so no check scores it. Its spend still counts."""
+    return [r for r in rows if r.get("capped")]
+
+
+def turn_state(row: dict[str, Any]) -> str:
+    """``CAPPED``, ``pass`` or ``FAIL``. A capped turn is not a product failure."""
+    if row.get("capped"):
+        return "CAPPED"
+    return "pass" if row["passed"] else "FAIL"
+
+
 def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The numbers of each arm. A capped turn is not scored: it is not in the
+    pass rate, in a stop result or in a per-arm number. Its spend stays in
+    ``cost_usd`` of the arm, and ``capped_turns`` counts it."""
     by_arm: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         by_arm[r.get("arm_label") or r["arm"]].append(r)
     out: dict[str, Any] = {}
-    for arm, rs in by_arm.items():
+    for arm, every in by_arm.items():
+        rs = [r for r in every if not r.get("capped")]
         totals = [turn_totals(r) for r in rs]
         per_check: dict[str, list[int]] = defaultdict(lambda: [0, 0])
         for r in rs:
@@ -1117,7 +1137,9 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "completion_per_turn": _mean([t["completion"] for t in totals]),
             "cost_per_turn_usd": round(statistics.fmean([t["cost_usd"] for t in totals]), 5)
             if totals else None,
-            "cost_usd": round(sum(t["cost_usd"] for t in totals), 4),
+            # The spend of the arm keeps its capped turns: the Router billed them.
+            "cost_usd": round(sum(turn_totals(r)["cost_usd"] for r in every), 4),
+            "capped_turns": len(every) - len(rs),
             "per_check": {k: f"{p}/{n}" for k, (p, n) in sorted(per_check.items())},
             "by_scenario": {k: f"{p}/{n}" for k, (p, n) in by_scenario.items()},
             **extra_summary(rs),
@@ -1388,6 +1410,11 @@ def report(data: dict[str, Any]) -> str:
     row("Output tokens per turn", lambda v: v["completion_per_turn"])
     row("Cost per turn, USD", lambda v: v["cost_per_turn_usd"])
     row("Cost of the arm, USD", lambda v: v["cost_usd"])
+    capped = capped_rows(data.get("rows") or [])
+    if capped:
+        lines += ["", f"capped: {len(capped)} turns, not scored. Their spend is in the count: "
+                  + ", ".join(f"{r.get('arm_label') or r['arm']} {r['scenario']}#{r['turn']} "
+                              f"r{r.get('repeat', 1)}" for r in capped)]
     if data.get("rows"):
         lines += ["", "Counted spend by agent (USD):", "", spend.spend_table(data["rows"])]
     scen = sorted({k for a in arms for k in s[a]["by_scenario"]})
@@ -1576,12 +1603,12 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
         spent += t["cost_usd"]
         unpriced.extend(c.get("served") or "" for c in row["model_calls"] if c.get("unpriced"))
         print(f"[{row.get('arm_label') or row['arm']:<10}] {row['scenario']}#{row['turn']} r{row['repeat']}: "
-              f"{'pass' if row['passed'] else 'FAIL'} first {row['first_text_s']} s, "
+              f"{turn_state(row)} first {row['first_text_s']} s, "
               f"total {row['total_s']} s, {t['calls']} calls, in {t['prompt']} "
               f"(cached {t['cached']}), out {t['completion']}, USD {t['cost_usd']:.4f}"
               f" | spent USD {spent:.3f} of {budget:.2f}", flush=True)
         bad = [k for k, v in row["checks"].items() if v is False]
-        if bad:
+        if bad and not row.get("capped"):
             print(f"      fails {bad}: {row['answer'][:240]!r}", flush=True)
 
     def finish() -> dict[str, Any]:
@@ -1737,7 +1764,7 @@ def rescore(data: dict[str, Any], when: str = "") -> list[str]:
                                f"no_email_delegation {was} -> {now}")
                 r["checks"]["no_email_delegation"] = now
             r["handoffs"] = [ck.handoff_kind(t) for t in obs.tasks]
-        r["passed"] = ck.passed(r["checks"])
+        r["passed"] = None if r.get("capped") else ck.passed(r["checks"])
     data["rescored"] = {"when": when or datetime.now(UTC).date().isoformat(),
                         "sha": _sha(), "checks": sorted(RESCORED), "changes": changes}
     data["summary"] = summarise(data["rows"])

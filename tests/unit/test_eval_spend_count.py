@@ -360,6 +360,7 @@ def test_a_run_stops_on_a_model_that_the_card_cannot_price(monkeypatch, tmp_path
     data = _live(monkeypatch, tmp_path, _fake_chat(0.01, 1, unpriced_on=0), budget=5.0)
     assert len(data["rows"]) == 1
     assert "no price for the served model 'm'" in data["stopped"]
+    assert "add it to rate_card.json" in data["stopped"].lower()
 
 
 def test_the_run_names_its_start_and_prints_the_bill_check(monkeypatch, tmp_path, capsys) -> None:
@@ -370,3 +371,88 @@ def test_the_run_names_its_start_and_prints_the_bill_check(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert f"check usage_event for member@example.com since {start}" in out
     assert "expected about USD 1.0000" in out and "2 times" in out
+
+
+def test_the_end_line_bounds_hold_on_the_pilot() -> None:
+    """The end line says the bill is at most the count and at least half of it.
+    On the pilot: count / 2 <= bill <= count. Mutation: ``call_row`` triples the
+    count -> count / 2 is above the bill -> red."""
+    pilot = _pilot()
+    count = sum(run.turn_totals(r)["cost_usd"] for r in _reprice(pilot["rows"]))
+    bill = pilot["bill"]["total_usd"]
+    assert count / 2 <= bill <= count, (count, bill)
+    line = spend.bill_check_line("member@example.com", pilot["started_utc"], count)
+    assert "at most that, and at least half of it" in line
+
+
+def test_a_dated_alias_takes_the_card_of_its_model_and_nothing_else_matches() -> None:
+    """Only an exact suffix of 8 digits drops. Mutation: ``card_of`` matches a card
+    key that is a part of the name (a substring) -> the ``-x`` alias gets a card -> red."""
+    card = run.RATE_CARD
+
+    def key(served: str) -> str:
+        return spend.card_of(served, card)["model"]
+
+    assert key("claude-sonnet-5-5-20261101") == "claude-sonnet-5-5"
+    assert key("anthropic/claude-sonnet-5-5-20261101") == "claude-sonnet-5-5"
+    assert key("deepseek-flash-20261101") == "deepseek-flash"
+    for name in (
+        "claude-sonnet-5-5-x",
+        "claude-sonnet-5-5-2026110",
+        "claude-sonnet",
+        "xclaude-haiku-5-5",
+        "claude-haiku-5-5-pro",
+        "deepseek-flash-20261101-b",
+    ):
+        got = spend.card_of(name, card)
+        assert got["model"] == "unknown" and not got["known"], name
+
+
+def _summary_row(turn: int, *, passed: bool | None, usd: float, capped: str | None = None) -> dict:
+    return {
+        "arm": "pack",
+        "scenario": "stu_plain",
+        "turn": turn,
+        "repeat": 1,
+        "checks": {"answer_all": bool(passed)},
+        "passed": passed,
+        "error": None,
+        "first_text_s": 1.0,
+        "total_s": 2.0,
+        "set": "studio",
+        "answer": "",
+        "model_calls": [
+            {
+                "agent": "orchestrator",
+                "cost_usd": usd,
+                "prompt": 10,
+                "cached": 0,
+                "completion": 1,
+                "dur_s": 0.5,
+                "tools": 3,
+            }
+        ],
+        "capped": capped,
+    }
+
+
+def test_a_capped_turn_is_not_scored_and_its_spend_counts() -> None:
+    """Three scored turns (two pass) and one capped turn. The pass rate is over 3,
+    and the spend is over 4. Mutation: ``summarise`` scores the capped row again
+    (``rs = every``) -> 2/4 and the capped turn is a failure -> red."""
+    rows = [
+        _summary_row(1, passed=True, usd=0.1),
+        _summary_row(2, passed=True, usd=0.1),
+        _summary_row(3, passed=False, usd=0.1),
+        _summary_row(4, passed=None, usd=0.5, capped="USD 0.5 counted in this turn"),
+    ]
+    s = run.summarise(rows)["pack"]
+    assert (s["turns"], s["turns_passed"], s["capped_turns"]) == (3, 2, 1)
+    assert s["checks"] == 3 and s["by_scenario"] == {"stu_plain": "2/3"}
+    assert s["by_set"]["studio"]["turns"] == 3 and s["by_set"]["studio"]["pass_pct"] == 66.7
+    assert s["cost_usd"] == pytest.approx(0.8) and s["cost_per_turn_usd"] == pytest.approx(0.1)
+    assert sum(spend.spend_by_agent(rows).values()) == pytest.approx(0.8)
+    assert [run.turn_state(r) for r in rows] == ["pass", "pass", "FAIL", "CAPPED"]
+    text = run.report({"summary": run.summarise(rows), "rows": rows})
+    assert "capped: 1 turns, not scored" in text and "pack stu_plain#4 r1" in text
+    assert "| Turns that pass every check | 2/3 |" in text
