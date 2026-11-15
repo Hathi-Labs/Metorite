@@ -129,7 +129,7 @@ export default function PagesTab({ manifest, onChange, locked, focusPage = null 
               </div>
             </div>
             {p.parts.length && !open.has(p.id) ? <p className="break-words text-xs text-muted-foreground">{p.parts.join(" · ")}</p> : null}
-            <CellsEditor page={{ ...layoutView(manifest, p.id, choices), id: p.id, title: p.title }} views={choices} act={act}
+            <CellsEditor page={{ ...layoutView(manifest, p.id, choices), id: p.id, title: p.title }} views={choices} manifest={manifest} act={act}
               locked={locked} open={open.has(p.id)} onToggle={() => toggleOpen(p.id)}
               onRemoveTab={(tab) => setAsk({ kind: "tab", page: p.id, tab })} />
           </li>
