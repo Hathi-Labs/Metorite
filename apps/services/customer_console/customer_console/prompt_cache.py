@@ -13,12 +13,18 @@ that really runs, so the marks go here, once per step, like ``reasoning.messages
 **What it does, per step, when the flag is on.** For an Anthropic model it puts ``cache_control`` on
 the stable part of the first system message (split at the ``CACHE_BREAK`` sentinel that the executor
 writes between the persona and the member's memory block) and on the last tool, so the whole tool
-array is cached. For every other model it takes the sentinel out, so the text never reaches the
-model. A message that holds block lists, and a request with no system text, pass unchanged.
+array is cached. For every other model it takes the sentinel out of the system messages, so the text
+never reaches the model. It leaves alone: a system message that holds block lists, a message of any
+other role (a user turn that quotes the sentinel keeps its text), and a request that ALREADY carries
+a ``cache_control`` (the caller owns its marks, and Anthropic refuses more than four). A system text
+whose stable part is blank gets no mark, because Anthropic refuses an empty text block. Nothing marks
+a request with no system text and no tools.
 
-**The flag.** ``CUSTOMER_CONSOLE_PROMPT_CACHE``, default OFF, read at each call. With it off this
-module returns its input untouched and the Router behaves as before. The flip is an owner-visible act
-of the box (see ``docs/``), because cached tokens change what a request bills.
+**The flag.** ``CUSTOMER_CONSOLE_PROMPT_CACHE``, default OFF, read from the process environment at
+each call, so it takes effect when the unit restarts with the new env. With it off this module
+returns its input untouched and the Router behaves as before. The flip is the owner's, because cached
+tokens change what a request bills (the PR of task 2875 and
+``deploy/hostinger/customer_console.env.example`` say how).
 
 ⚠️ This package imports no ``acb_*`` package (the Console is the other side of the tenant boundary),
 so this is a COPY of the rule in ``acb_llm/prompt_cache.py``, as ``reasoning.py`` copies the null
@@ -71,18 +77,41 @@ def _strip_sentinel(text: str) -> str:
     return _SENTINEL_RE.sub("\n\n", text).strip()
 
 
-def _mark_system(msg: dict[str, Any]) -> dict[str, Any]:
-    """A copy of a system *msg* as a stable block with the mark, then the dynamic block."""
+def _mark_system(msg: dict[str, Any]) -> dict[str, Any] | None:
+    """A copy of a system *msg* as a stable block with the mark, then the dynamic block.
+
+    None when the stable part is blank: Anthropic refuses an empty text block, so there is nothing to
+    mark and the caller strips the sentinel instead. A second sentinel in the dynamic part is taken
+    out too, so none reaches the vendor.
+    """
     content = msg["content"]
     if CACHE_BREAK in content:
         stable, dynamic = content.split(CACHE_BREAK, 1)
-        stable, dynamic = stable.rstrip(), dynamic.lstrip()
+        stable, dynamic = stable.rstrip(), _strip_sentinel(dynamic.lstrip())
     else:
         stable, dynamic = content, ""
+    if not stable.strip():
+        return None
     blocks: list[dict[str, Any]] = [{"type": "text", "text": stable, "cache_control": dict(_EPHEMERAL)}]
     if dynamic:
         blocks.append({"type": "text", "text": dynamic})
     return {**msg, "content": blocks}
+
+
+def _carries_marks(messages: list[Any], tools: Any) -> bool:
+    """True when the caller already put a ``cache_control`` anywhere in the request."""
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list) and any(isinstance(b, dict) and "cache_control" in b for b in content):
+            return True
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict) and (
+                "cache_control" in tool
+                or (isinstance(tool.get("function"), dict) and "cache_control" in tool["function"])
+            ):
+                return True
+    return False
 
 
 def _mark_last_tool(tools: list[Any]) -> list[Any]:
@@ -125,7 +154,9 @@ def _apply(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
     messages = kwargs.get("messages")
     if not isinstance(model, str) or not isinstance(messages, list):
         return kwargs
-    anthropic = is_anthropic_model(model)
+    tools = kwargs.get("tools")
+    # A caller that marks its own request owns its marks. Anthropic refuses more than four.
+    anthropic = is_anthropic_model(model) and not _carries_marks(messages, tools)
     out_messages: list[Any] = []
     marked = False
     changed = False
@@ -134,10 +165,14 @@ def _apply(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
         if not isinstance(m, dict) or not isinstance(text, str):
             out_messages.append(m)
             continue
-        if anthropic and not marked and m.get("role") == "system" and text.strip():
-            out_messages.append(_mark_system(m))
-            marked = changed = True
-        elif CACHE_BREAK in text:
+        is_system = m.get("role") == "system"
+        if anthropic and not marked and is_system and text.strip():
+            as_marked = _mark_system(m)
+            if as_marked is not None:
+                out_messages.append(as_marked)
+                marked = changed = True
+                continue
+        if is_system and CACHE_BREAK in text:
             out_messages.append({**m, "content": _strip_sentinel(text)})
             changed = True
         else:
@@ -145,7 +180,6 @@ def _apply(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
     out = dict(kwargs)
     if changed:
         out["messages"] = out_messages
-    tools = kwargs.get("tools")
     if anthropic and isinstance(tools, list) and tools:
         marked_tools = _mark_last_tool(tools)
         if marked_tools is not tools:

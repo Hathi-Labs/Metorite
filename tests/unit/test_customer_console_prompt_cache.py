@@ -101,10 +101,14 @@ def test_the_sentinel_is_the_one_of_the_gateway():
 
 
 @pytest.mark.parametrize("model", MODELS)
-@pytest.mark.parametrize("mset", sorted(MESSAGE_SETS))
+@pytest.mark.parametrize("mset", sorted(set(MESSAGE_SETS) - {"sentinel_in_user"}))
 @pytest.mark.parametrize("tset", sorted(TOOL_SETS))
 def test_parity_with_the_gateway_rule(model, mset, tset):
-    """The copy and the original give the same messages and tools."""
+    """The copy and the original give the same messages and tools.
+
+    ``sentinel_in_user`` is left out on purpose: the gateway strips the sentinel from a message of any
+    role, the Router only from a system message (see ``test_a_user_turn_keeps_a_quoted_sentinel``).
+    """
     messages, tools = MESSAGE_SETS[mset], TOOL_SETS[tset]
     want_messages, want_tools, _ = gateway_side.apply_prompt_caching(
         model=model, messages=copy.deepcopy(messages),
@@ -156,6 +160,59 @@ def test_any_other_step_loses_the_sentinel_and_gets_no_mark(model):
     assert "cache_control" not in str(out)
     assert out["messages"][0]["content"].startswith(STABLE)
     assert DYNAMIC in out["messages"][0]["content"]
+
+
+NL = chr(10)
+
+
+def test_a_blank_stable_part_gets_no_mark_because_anthropic_refuses_an_empty_block():
+    """Review of PR 2420 (P2). A system text that starts with the sentinel has an empty stable part."""
+    for text in (CACHE_BREAK + NL + NL + DYNAMIC, CACHE_BREAK, "  " + NL + CACHE_BREAK + NL + DYNAMIC):
+        body = _body([{"role": "system", "content": text}, {"role": "user", "content": "hi"}], [TOOL_A])
+        out = prompt_cache_for_step(body, CLAUDE)
+        system = out["messages"][0]["content"]
+        assert isinstance(system, str)  # no block list, so no empty text block
+        assert CACHE_BREAK not in system
+        assert system == DYNAMIC or system == ""
+        assert '"text": ""' not in str(out) and "'text': ''" not in str(out)
+        # The tools still cache: their prefix does not depend on the system text.
+        assert out["tools"][-1]["function"]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_a_second_sentinel_in_the_dynamic_part_never_reaches_the_vendor():
+    text = STABLE + NL + CACHE_BREAK + NL + "memA" + NL + CACHE_BREAK + NL + "memB"
+    out = prompt_cache_for_step(_body([{"role": "system", "content": text}]), CLAUDE)
+    assert CACHE_BREAK not in str(out)
+    blocks = out["messages"][0]["content"]
+    assert blocks[0]["text"] == STABLE and blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert "memA" in blocks[1]["text"] and "memB" in blocks[1]["text"]
+
+
+@pytest.mark.parametrize("model", [CLAUDE, "deepseek/deepseek-chat"])
+def test_a_user_turn_keeps_a_quoted_sentinel(model):
+    """Review of PR 2420 (P3). Only a system message carries the executor's sentinel."""
+    quoted = "see " + CACHE_BREAK + " in the file"
+    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": quoted},
+                {"role": "tool", "tool_call_id": "1", "content": quoted}]
+    out = prompt_cache_for_step(_body(messages), model)
+    assert out["messages"][1]["content"] == quoted
+    assert out["messages"][2]["content"] == quoted
+
+
+def test_a_request_that_already_carries_a_mark_gets_none_from_the_router():
+    """Review of PR 2420 (P3). The caller owns its marks, and Anthropic refuses more than four."""
+    own = [{"type": "text", "text": "caller block", "cache_control": {"type": "ephemeral"}}]
+    with_block = _body([{"role": "system", "content": SYSTEM}, {"role": "user", "content": own}], [TOOL_A])
+    out = prompt_cache_for_step(with_block, CLAUDE)
+    assert "cache_control" not in str(out["tools"])
+    assert CACHE_BREAK not in str(out)
+    marks = str(out).count("cache_control")
+    assert marks == 1  # only the caller's own
+    marked_tool = {**TOOL_A, "function": {**TOOL_A["function"], "cache_control": {"type": "ephemeral"}}}
+    with_tool = _body([{"role": "system", "content": SYSTEM}, {"role": "user", "content": "hi"}], [marked_tool])
+    out2 = prompt_cache_for_step(with_tool, CLAUDE)
+    assert str(out2).count("cache_control") == 1
+    assert isinstance(out2["messages"][0]["content"], str) and CACHE_BREAK not in out2["messages"][0]["content"]
 
 
 def test_openrouter_claude_is_not_an_anthropic_step():
@@ -254,6 +311,33 @@ def test_litellm_reports_cached_tokens_inside_the_prompt_count():
         reasoning_content=None,
     )
     assert write.prompt_tokens == 46030 and write.cache_read_input_tokens == 0
+
+
+def test_litellm_reports_streamed_cache_reads_inside_the_prompt_count():
+    """The stream is most of the chat. litellm folds the reads of `message_start` into the prompt count.
+
+    Review of PR 2420 (P3): only the buffered shape was pinned. This runs litellm's own Anthropic
+    stream parser on a `message_start` that reads 47,000 cached tokens and a `message_delta` that adds
+    the output, and sends the usage through the Router's extractor, as the stream relay does.
+    """
+    pytest.importorskip("litellm")
+    from customer_console.router import usage_from_response
+    from litellm.llms.anthropic.chat.handler import ModelResponseIterator
+
+    it = ModelResponseIterator(streaming_response=None, sync_stream=True, json_mode=False)
+    start = {"type": "message_start", "message": {
+        "id": "m", "type": "message", "role": "assistant", "model": "claude-haiku-5-5", "content": [],
+        "stop_reason": None,
+        "usage": {"input_tokens": 200, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 47000, "output_tokens": 1},
+    }}
+    delta = {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 50}}
+    first, last = it.chunk_parser(start), it.chunk_parser(delta)
+    seen = [c.usage for c in (first, last) if getattr(c, "usage", None) is not None]
+    assert seen, "litellm gave no usage on the stream chunks"
+    best = max(seen, key=lambda u: (u.completion_tokens or 0, u.prompt_tokens or 0))
+    got = usage_from_response({"usage": best})
+    assert got.prompt_tokens == 47200 and got.cached_tokens == 47000
+    assert got.cached_tokens <= got.prompt_tokens
 
 
 def test_wired_once_per_step():
