@@ -62,7 +62,7 @@ def test_fields_part_equals_the_field_module() -> None:
 
 def test_blocks_part_equals_the_block_list() -> None:
     b = run("blocks")["blocks"]
-    assert b["tokens"] == list(BLOCKS) and len(b["tokens"]) == 13
+    assert b["tokens"] == list(BLOCKS) and len(b["tokens"]) == 14
     assert b["reserved"] == list(RESERVED_BLOCKS)
     assert b["object_ops"] == list(OBJECT_OPS)
     assert not set(b["tokens"]) & set(b["reserved"])

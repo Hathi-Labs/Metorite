@@ -18,7 +18,9 @@ This file proves:
 - a description is data: a prompt-injection marker, a colour and a pixel size
   stay as text and change no class;
 - a tools list of a server outside the list of the caller gives no row;
-- the real catalog gives no ``mcp`` row and calls no server;
+- the real catalog gives no ``mcp`` row and calls no server on an empty
+  cache (B1b-2 adds the cache, ``test_studio_mcp_tools.py``);
+- two items of one name give the stricter class (B1b-2, trap 2);
 - the door refuses an ``mcp:`` action: ``not_in_catalog`` when the catalog
   does not list it, else ``source_not_open``, for a direct call too.
 
@@ -293,10 +295,23 @@ def test_a_row_holds_nothing_else_of_the_server():
     assert "secret-host" not in text and "SECRET" not in text
 
 
-def test_the_first_tool_of_a_name_wins():
-    tools = [_tool("t", {"destructiveHint": True}), _tool("t", {"readOnlyHint": True})]
+@pytest.mark.parametrize("write_first", [True, False])
+def test_the_stricter_tool_of_a_name_wins(write_first):
+    """B1b-2, trap 2: two items of one name give one row of class B, in each
+    order. The first item used to win, so a read-only copy first made a
+    write look like a read."""
+    tools = [_tool("t", {"destructiveHint": True}, "wipe"), _tool("t", {"readOnlyHint": True})]
+    if not write_first:
+        tools.reverse()
     rows = mcp_actions.mcp_rows([_server()], {"github": tools})
-    assert [(r["id"], r["class"]) for r in rows] == [("mcp:github.t", "B")]
+    assert [(r["id"], r["class"], r["description"]) for r in rows] == [
+        ("mcp:github.t", "B", "wipe")]
+
+
+def test_two_items_of_one_class_keep_the_first():
+    tools = [_tool("t", {"readOnlyHint": True}, "one"), _tool("t", {"readOnlyHint": True}, "two")]
+    rows = mcp_actions.mcp_rows([_server()], {"github": tools})
+    assert [r["description"] for r in rows] == ["one"]
 
 
 # ── The org scope of the caller ────────────────────────────────────────────
@@ -322,15 +337,27 @@ def test_a_server_whose_key_the_grammar_refuses_gives_no_row():
 # ── The real catalog calls no server ───────────────────────────────────────
 
 
-def test_the_real_catalog_gives_no_mcp_row_and_reads_no_server(monkeypatch):
-    from gateway.connections import mcp
+async def test_the_real_catalog_gives_no_mcp_row_and_reads_no_server(monkeypatch):
+    """B1b-2: the catalog reads the cache only. With no bound org, and with an
+    empty cache, it gives no row, reads no registry and calls no server."""
+    from acb_common.tenant_redis import TenantRedis
+    from gateway import outbound_guard
+    from gateway.connections import mcp, mcp_tools
+
+    from tests.unit.test_studio_mcp_tools import RawRedis
 
     def _boom(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("the catalog read a server")
 
     for name in ("servers_for_org", "enabled_meta", "list_servers", "get_one"):
         monkeypatch.setattr(mcp, name, _boom)
-    assert actions._mcp_rows() == []
+    monkeypatch.setattr(mcp_tools, "_sdk_list", _boom)
+    monkeypatch.setattr(outbound_guard, "mcp_client", _boom)
+    monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(RawRedis()))
+    monkeypatch.setattr(actions, "current_tenant", lambda: None)
+    assert await actions._mcp_rows() == ([], True)
+    monkeypatch.setattr(actions, "current_tenant", lambda: "org-a")
+    assert await actions._mcp_rows() == ([], True)
 
 
 def test_the_mcp_module_reaches_no_store_and_no_network():

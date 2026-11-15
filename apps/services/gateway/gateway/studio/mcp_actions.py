@@ -32,6 +32,12 @@ The server writes the name, the description and the hints, and a hostile
 server can write anything there. So the description is a capped string that
 nothing reads as an instruction, a colour or a size. A hint counts only as
 a real boolean. A tool name that the ``uses`` grammar refuses gives no row.
+
+**A duplicate name takes the stricter class** (B1b-2, :func:`unique_tools`).
+A hostile server can list one name twice, first as read-only and then as a
+write. The item that needs the confirmation wins, wherever it sits in the
+list. Two items of one class keep the first. The cache of
+``gateway.connections.mcp_tools`` and :func:`mcp_rows` call the same rule.
 """
 
 from __future__ import annotations
@@ -97,6 +103,30 @@ def _description(raw: Any) -> str:
     return raw[:DESCRIPTION_CHARS] if isinstance(raw, str) else ""
 
 
+def _needs_card(item: Mapping[str, Any]) -> bool:
+    return mcp_needs_confirmation(tool_hints(item.get("annotations")))
+
+
+def unique_tools(items: Iterable[Any]) -> list[Mapping[str, Any]]:
+    """The items of one ``tools/list``, one for each name, in the first order.
+
+    An item that is not a mapping, or has no text name, is left out. When two
+    items of one name disagree, the item that needs the confirmation (class
+    B) takes the place of the other. So a later read-only copy can never make
+    a write look like a read."""
+    kept: dict[str, Mapping[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        old = kept.get(name)
+        if old is None or (_needs_card(item) and not _needs_card(old)):
+            kept[name] = item
+    return list(kept.values())
+
+
 def mcp_rows(servers: Iterable[Server],
              tools: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
     """The catalog rows of the MCP tools of ONE org.
@@ -104,23 +134,19 @@ def mcp_rows(servers: Iterable[Server],
     *servers* is the server list of that org, from the caller (see the module
     text). *tools* maps a server name to its ``tools/list`` items. A server
     that is not enabled, a server name that is not in *servers*, an item that
-    is not a mapping, and a name that the grammar refuses give no row. The
-    first item of a name wins, and a later item of the same name gives no
-    row. The order is the server name, then the order of the list."""
+    is not a mapping, and a name that the grammar refuses give no row. Two
+    items of one name give one row, with the stricter class
+    (:func:`unique_tools`). The order is the server name, then the order of
+    the list."""
     rows: list[dict[str, Any]] = []
     for server in sorted(servers, key=lambda s: str(s.name)):
         if server.enabled is not True:
             continue
-        items = tools.get(server.name) or ()
-        seen: set[str] = set()
-        for item in items:
-            if not isinstance(item, Mapping):
-                continue
+        for item in unique_tools(tools.get(server.name) or ()):
             name = item.get("name")
             uses = action_id(server.name, name) if isinstance(name, str) else None
-            if uses is None or uses in seen:
+            if uses is None:
                 continue
-            seen.add(uses)
             hints = tool_hints(item.get("annotations"))
             rows.append({
                 "id": uses,

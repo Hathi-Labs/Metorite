@@ -151,6 +151,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/studio/packages/{package_id}/views/{view_id}"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
+    # B1b-2, the refresh of the tools of one MCP server.
+    ("POST", "/studio/mcp/{server}/refresh"),
 )
 
 _PARAMS = {
@@ -161,6 +163,7 @@ _PARAMS = {
     "action": "peek",
     "email": "ben@example.test",
     "view_id": str(uuid.uuid4()),
+    "server": "github",
     "object_name": "ledger",
 }
 
@@ -219,6 +222,9 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))
+    # B1b-2: the refresh and the cache read of the MCP tools.
+    monkeypatch.setattr(actions.mcp_tools, "refresh", _trip("mcp_tools.refresh"))
+    monkeypatch.setattr(actions.mcp_tools, "catalog_tools", _trip("mcp_tools.catalog_tools"))
     monkeypatch.setattr(actions, "package_rows", _trip("package_rows"))
     return reached
 
