@@ -127,11 +127,11 @@ function WorkflowNodeInner(props: NodeProps) {
           </span>
           <div className="min-w-0 flex-1">
             <div
-              className={`font-mono text-[8.5px] uppercase tracking-[0.12em] leading-tight ${style.text}`}
+              className={`font-mono text-[10px] uppercase tracking-[0.12em] leading-tight ${style.text}`}
             >
               {NODE_KIND_LABEL[type] ?? type}
             </div>
-            <div className="text-[12.5px] font-semibold text-foreground leading-snug truncate">
+            <div className="text-xs font-semibold text-foreground leading-snug truncate">
               {data.label || type}
             </div>
           </div>
@@ -143,7 +143,7 @@ function WorkflowNodeInner(props: NodeProps) {
               >
                 <AppIcon name="AlertTriangle" className="w-3 h-3" />
                 {issues > 1 && (
-                  <span className="text-[9px] font-medium">{issues}</span>
+                  <span className="text-[10px] font-medium">{issues}</span>
                 )}
               </span>
             )}
@@ -156,13 +156,13 @@ function WorkflowNodeInner(props: NodeProps) {
         {(data.summary || data.detail) && (
           <div className="mt-1.5 space-y-1">
             {data.summary && (
-              <p className="text-[10.5px] leading-[1.45] text-muted-foreground line-clamp-2">
+              <p className="text-[11px] leading-[1.45] text-muted-foreground line-clamp-2">
                 {data.summary}
               </p>
             )}
             {data.detail && (
               <p
-                className="font-mono text-[9.5px] leading-tight text-foreground/80 bg-secondary/60 border border-border/60 rounded px-1.5 py-0.5 truncate"
+                className="font-mono text-[10px] leading-tight text-foreground/80 bg-secondary/60 border border-border/60 rounded px-1.5 py-0.5 truncate"
                 title={data.detail}
               >
                 {data.detail}
@@ -176,7 +176,7 @@ function WorkflowNodeInner(props: NodeProps) {
             {(data.badges ?? []).map((badge) => (
               <span
                 key={badge}
-                className="text-[8.5px] uppercase tracking-wide px-1.5 py-px rounded-full border border-border text-muted-foreground"
+                className="text-[10px] uppercase tracking-wide px-1.5 py-px rounded-full border border-border text-muted-foreground"
               >
                 {badge}
               </span>
@@ -191,17 +191,17 @@ function WorkflowNodeInner(props: NodeProps) {
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${tone ? tone.dot : "bg-muted-foreground/40"}`}
         />
         <span
-          className={`font-mono text-[8.5px] uppercase tracking-[0.1em] ${tone ? tone.text : "text-muted-foreground/70"}`}
+          className={`font-mono text-[10px] uppercase tracking-[0.1em] ${tone ? tone.text : "text-muted-foreground/70"}`}
         >
           {status ? STATUS_LABEL[status] : "idle"}
         </span>
         {typeof data.durationMs === "number" && data.durationMs >= 0 && (
-          <span className="font-mono text-[8.5px] text-muted-foreground/70">
+          <span className="font-mono text-[10px] text-muted-foreground/70">
             · {formatDuration(data.durationMs)}
           </span>
         )}
         <span
-          className="ml-auto font-mono text-[8.5px] text-muted-foreground/60 truncate max-w-[46%]"
+          className="ml-auto font-mono text-[10px] text-muted-foreground/60 truncate max-w-[46%]"
           title={`Reference this block's output as {{${props.id}.field}}`}
         >
           {props.id}
@@ -225,10 +225,10 @@ function WorkflowNodeInner(props: NodeProps) {
             className="!w-3 !h-3 !border-2 !bg-card !border-muted-foreground pointer-coarse:!w-5 pointer-coarse:!h-5"
           />
           <div className="flex justify-between px-4 pb-1 -mt-px">
-            <span className="font-mono text-[8px] uppercase tracking-wider text-success">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-success">
               yes
             </span>
-            <span className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
               no
             </span>
           </div>
