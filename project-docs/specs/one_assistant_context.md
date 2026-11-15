@@ -4,6 +4,7 @@
 OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
+TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `search` arm, scripted only, in `evals/one_assistant_measure`. The `search` arm itself waits for TS-5b (task 3289) and the flag `TOOL_SEARCH_ORGS`. No live run, no spend.
 
 §9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-1b and WT-4 to WT-6 are not built.
 
@@ -53,7 +54,7 @@ RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A hel
 
 Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that this turn named, and a pack that the last member turn used, never step aside. A load by the model is sticky. The reach of the Projects owner counts a spare pack as free. A load moves out a pack that came in only by the words (D169 item 8, as amended on 2026-11-06). A turn that a sticky pack left at its start says so.
 
-TS-0 (task 3190, 2026-11-14) is a design, DECIDED under D222. The owner adopted D222 as written on 2026-11-14. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is the next dispatchable slice. It is the narrowed spike, after the spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO. The owner approved decision 11 (the Studio split) and chose "Always, in the base set" for decision 13. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, and TS-1b, the Studio split, task 3207. TS-1c is optional, task 3213. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211.
+TS-0 (task 3190, 2026-11-14) is a design, DECIDED under D222. The owner adopted D222 as written on 2026-11-14. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is in build: the reland of its PR 2 fits the Studio split (§4.2.9 status). It is the narrowed spike, after the spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO. The owner approved decision 11 (the Studio split) and chose "Always, in the base set" for decision 13. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, and TS-1b, the Studio split, task 3207. TS-1c is optional, task 3213. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211.
 
 TS-1b is live, not dark, because it changes the Studio packs of every org. An Opus audit of TS-1b on 2026-11-14 (task 3207) found NO-GO as written. This text applies the seven edits that clear it: the golden matrix, the dark workflow pack, the Verify line, the pack fields, the surface owner, the sticky cost and the Files list. The writer re-verified the anchors on the merged tree of `7c5c0e595`. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified the anchors of TS-0 on 2026-11-14, on the branch after a merge of main at `378c65428`.
 
@@ -946,7 +947,7 @@ moves them.
 | **OA-7** | The email tool pack: the email tools join the WS-23 registry, and the email rules become the pack's rules block. The per-turn loader of D117 item 3. Slices OA-7a to OA-7h, §4.2. OA-7g shipped live ahead of the rest. | HIGH (the egress guard moves with the tools) | an audit of §4.2 |
 | **OA-8** | The tool packs of every other app that the orchestrator delegates to in conversation (D117 item 1). Slices OA-8a to OA-8e, §4.3. | MEDIUM | OA-7 |
 | **OA-9** | Dynamic sub-agents (D117 item 5): the contract of §6, for parallel work and heavy jobs. Read first, writes after. Slices OA-9a to OA-9e, §6.7. | MEDIUM | an audit of §6 |
-| **OA-10** | Retire conversational delegation. A specialist agent stays for a scheduled job, a workflow and an external agent. The Email and Projects rails move to the one assistant, with their pack pinned. | HIGH | OA-8e passes, OA-9 |
+| **OA-10** | Retire conversational delegation. A specialist agent stays for a scheduled job, a workflow and an external agent. (Proposed change for workflows: D223 and the WFC rows of `ai_studio.md` §14.) The Email and Projects rails move to the one assistant, with their pack pinned. | HIGH | OA-8e passes, OA-9 |
 
 ### 4.1 OA-3 as built (2026-10-25)
 
@@ -1532,7 +1533,7 @@ OA-7h is the gate before the flag turns on for any organization.
 
 #### 4.2.9 Tool search: load a tool, not a whole pack (TS-0, DECIDED)
 
-**Status.** DECIDED, 2026-11-14, task 3190. The owner wrote that D222 is adopted as written: load by tool, amending D117 item 2. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is the next dispatchable slice. The owner accepted decisions 2, 6, 7 and 9 on 2026-11-14 (04:24 UTC). The owner approved decision 11 and chose "Always, in the base set" for decision 13 (10:18 UTC). The decisions list marks each point. A rule that D222 does not state stays a proposal, and the slice audit settles it.
+**Status.** DECIDED, 2026-11-14, task 3190. The owner wrote that D222 is adopted as written: load by tool, amending D117 item 2. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is in build. PR 2318 merged its PR 2 (`find_tools`, no caller) as `9bcbfd452`. PR 2333 reverted it, because its tests assumed the unsplit `studio` pack after TS-1b. The reland of PR 2 makes the candidates every pack of `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load, follow packs included. PR 3, the wiring, comes next. The owner accepted decisions 2, 6, 7 and 9 on 2026-11-14 (04:24 UTC). The owner approved decision 11 and chose "Always, in the base set" for decision 13 (10:18 UTC). The decisions list marks each point. A rule that D222 does not state stays a proposal, and the slice audit settles it.
 
 **Dark and live.** TS-1 adds code with no caller. TS-1b is LIVE, not dark: it changes the Studio packs of every org that holds them. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only.
 
@@ -1617,7 +1618,7 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 
 Two guards need new code.
 - **The hold note.** The answer must carry it, as the section above says.
-- **The checks of a load.** A pack of an owner that reads stranger text never joins a run with an MCP tool (`_beside_mcp`, `tool_packs.py:3375`). Its one caller is `_admit_pack` (`:3519`), beside the size check of a pack (`:3516`).
+- **The checks of a load.** A pack of an owner that reads stranger text never joins a run with an MCP tool (`_beside_mcp`, `tool_packs.py:3528`). Its callers are `_admit_pack` (`:3686`), beside the size check of a pack (`:3683`), and `_admit_found` of `find_tools` (`:4113`).
 - Nothing in `_pack_tools` or in the tool body runs these checks. So `find_tools` runs both before each add. TS-2 adds the call.
 - The MCP rule matters from TS-6 on, because `UNTRUSTED_INPUT_AGENTS` holds only `email-assistant` (`egress.py:222`).
 
@@ -1631,14 +1632,16 @@ Two guards need new code.
 - Until TS-6 decides, a sub-agent gets no found tool through `_child_pack_tools` (`acb_skills/agent_tools.py:675`).
 
 **The candidates.** They are the tools that the run could load and use. The rank reads only them, so a dropped tool never takes a place of the top 5.
-- They come from the packs of `loadable(allow, choice.slugs)` (`tool_packs.py:3064-3078`), as `_apply_tool_packs` calls it (`_tool_injection.py:4065`). So a pack of layer (a) is not a candidate. `loaded` holds pairs of a slug and its held answer, so it cannot take that place. `allow` is `packs_on(org)` after the S2 toggles and `with_followers`.
-- They pass the tests of the loader plan: `_available` of `_plan_pack_loader` (`_tool_injection.py:4367`, `:4379-4380`), the owner filters and the held drop (`:3441-3442`). For Studio the owner filter is `_drop_pack_unless_studio` (`:3558-3567`).
+- They come from the packs of `loadable(allow, choice.slugs)` (`tool_packs.py:3217-3231`), as `_apply_tool_packs` calls it (`_tool_injection.py:4082`). So a pack of layer (a) is not a candidate. `loaded` holds pairs of a slug and its held answer, so it cannot take that place. `allow` is `packs_on(org)` after the S2 toggles and `with_followers`.
+- They pass the tests of the loader plan: `_available` of `_plan_pack_loader` (`_tool_injection.py:4345`, `:4387`), the owner filters and the held drop (`:3441-3442`). For Studio the owner filter is `_drop_pack_unless_studio` (`:3558-3567`).
 - The rank skips each name in the live tool list, and each pack of `run.holds()`. The setup build made other objects than the live ones.
 - Without that rule, an add of such a name raises `ValueError`, and no tool of the batch loads. When the add works, the rules block comes twice.
-- `LoadSkillTools` stays safe, because it passes the live names as `holds` to a fresh build (`tool_packs.py:3524`).
+- `LoadSkillTools` stays safe, because it passes the live names as `holds` to a fresh build (`tool_packs.py:3691`).
 - One way meets all the tests at once: one `_pack_tools` build of each candidate pack at setup, beside the builds of layer (a). TS-2a measures what that build costs.
 - A setup build fixes `held` at the start of the turn. So the answer of `find_tools` builds its tools again at call time, as `LoadSkillTools` does. The setup build serves the rank only.
-- In TS-2a the candidates are the packs of `PACK_ONLY_OWNERS` that layer (a) did not load, which is the `studio` pack today. CRM and Projects candidates wait for TS-6.
+- In TS-2a the candidates are the packs of the owners in `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load. Follow packs are candidates too. CRM and Projects candidates wait for TS-6.
+- Today these are the two Studio packs. `studio-more` is a candidate when layer (a) loaded only the core, and the core is one when layer (a) loaded only `studio-more`. When layer (a) loaded both, no pack is a candidate.
+- `studio-workflows` has the same owner, but it follows nothing. So it is a candidate only where the `TOOL_PACKS` of the box names it or is `*`, an owner-only line (`work_plan.md` §6 D4). `search_packs` (`tool_packs.py:3976`) keys on the owner and on `packs_on`, so this needs no code of its own.
 - The description of `find_tools` names a pack only when the pack has a candidate. So a member without `feature:studio` never sees the Studio line or the name of a Studio tool.
 - The index holds first-party text from the code only, and no tenant data. So one index serves the process (R5).
 
@@ -1657,7 +1660,7 @@ Two guards need new code.
 - The load tool counts in the base before `choose` (`base += 1`, near `_tool_injection.py:4090` on origin/main at `ed2274b1c`, in `_apply_tool_packs`). TS-2a adds `find_tools` the same way. It needs no new count check.
 - **The trade.** At the cap of 110 tools, the base count can push out the last pack. `choose` drops the last pack that replaces a specialist (`tool_packs.py:2259-2263`). The owner accepted that trade.
 - `planned_tools` (`_tool_injection.py:4143-4144`) only feeds a log line (`:4168`) and enforces nothing. The log count follows the new base.
-- **Where it sits.** Layer (c) counts the pool and `context.tools` only (`tool_packs.py:3609-3610`). So `find_tools` must join the run before `load_early` runs. One way: `LoadSkillToolsProvider` adds it in `before_run`, before `load_early` (`:3705-3709`). TS-2a builds it so. Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
+- **Where it sits.** Layer (c) counts the pool and `context.tools` only (`tool_packs.py:3776-3777`). So `find_tools` must join the run before `load_early` runs. A SEPARATE provider, `FindToolsProvider`, adds it in its own `before_run`, because decision 13 offers `find_tools` on every turn, also when the loader offers nothing. PR 3 lists it BEFORE `LoadSkillToolsProvider` in one `agent_with_providers` list. A test proves that layer (c) counts `find_tools`, and that a request never reaches 111 tools. Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
 - At the start of a turn, a pack comes before a found tool. Layer (a) chooses first. Sticky found tools and layer (a′) take only the room that is left.
 - A sticky found tool that does not fit stays in the state, and the line of the turn names it.
 - In the middle of a turn, unused found tools leave first, oldest first. A found tool that ran or started stays, by the record of TS-4.
@@ -1767,13 +1770,14 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 | TS-1 | 3195 | The index and the lexical ranker | STD | AGENT-SAFE | 1 | none |
 | TS-1b | 3207 | The Studio split: a core of 10 tools and the follow pack `studio-more`, which takes a place of `MAX_PACKS` | STD, shared seam, Opus builder | AGENT-SAFE. LIVE, not dark: it changes every Studio org. The owner approved decision 11 on 2026-11-14. Dispatchable after its own spec audit (spec-auditor, Opus). | 1 | TS-1 |
 | TS-1c | task 3213 | `studio-more` alone takes no place of `MAX_PACKS` (item 7 of the split) | STD, shared seam, Opus builder | LIVE. Decision 11 approved it. Needs its own spec audit (spec-auditor, Opus) before dispatch. | none | TS-1b |
-| TS-2a | 3222 | The narrowed spike: `find_tools` for the `studio` pack alone, in the base set, with sticky state off | HIGH | AGENT-SAFE to build dark, the flip of `TOOL_SEARCH_ORGS` is OWNER-GATE. The audit of 2026-11-14 gave GO after the docs PR. | 1 partial | TS-1 (merged) |
+| TS-2a | 3222 | The narrowed spike: `find_tools` for the packs of `PACK_ONLY_OWNERS` (the two Studio packs), in the base set, with sticky state off | HIGH | AGENT-SAFE to build dark, the flip of `TOOL_SEARCH_ORGS` is OWNER-GATE. The audit of 2026-11-14 gave GO after the docs PR. | 1 partial | TS-1 (merged) |
 | TS-2 | 3196 | The spike: `find_tools` for the two Studio packs. The audit of 2026-11-14 found it NO-GO as written, and TS-2a replaces its first half | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs a new spec audit (spec-auditor, Opus) after TS-2a. | 1 | TS-2a and TS-1b |
 | TS-3 | 3197 | Layer (a′) | STD, shared seam, Opus builder | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
 | TS-4 | 3198 | Sticky state for each tool, its line, the unknown-name line, the room order and the budget | STD, shared seam, Opus builder (D218) | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
-| TS-5 | 3199 | The `search` arm of the harness, scripted only | LOW | AGENT-SAFE | 3 | TS-2a |
-| TS-7 | 3201 | The live measure, in two parts: TS-7a on Studio chats, TS-7b on CRM and Projects chats | LOW | OWNER-GATE (spend) | 3 | TS-5 for TS-7a, TS-6 for TS-7b |
-| TS-6 | 3200 | Search over every pack | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 3 | After TS-5, and its flip after TS-7 |
+| TS-5a | 3288 | The Studio chats, the six checks and stop result 12 of the `search` arm, scripted only. BUILT 2026-11-14 | LOW | AGENT-SAFE | 3 | none |
+| TS-5b | 3289 | The `find_tools` plans and the scripted pass on `search` | LOW | AGENT-SAFE | 3 | PR 2318 and TS-2a PR 3 |
+| TS-7 | 3201 | The live measure, in two parts: TS-7a on Studio chats, TS-7b on CRM and Projects chats | LOW | OWNER-GATE (spend) | 3 | TS-5a and TS-5b for TS-7a, TS-6 for TS-7b |
+| TS-6 | 3200 | Search over every pack | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 3 | After TS-5b, and its flip after TS-7 |
 | TS-9 | 3203 | MCP tools and published skills in the index | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 4 | TS-6 |
 | TS-8 | 3202 | Native `defer_loading` for a Claude tier | HIGH | Parked until the owner asks | none | the blocks of option (b) |
 
@@ -1830,9 +1834,10 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **Acceptance.** The seven sites of item 7 give the same answer for `studio-more`. Each other pack of `FOLLOWS` still takes a place.
 - **Fence.** A new section of `tests/unit/test_tool_packs_choice.py`, with one case for each answer to decision 11.
 
-**TS-2a. The narrowed spike: `find_tools` for the `studio` pack alone (task 3222).** HIGH. AGENT-SAFE to build dark. The flip of `TOOL_SEARCH_ORGS` is OWNER-GATE. Rung 1, partial. It follows TS-1 (merged). The Opus spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO, and it gave GO to this narrowed slice after the docs PR.
+**TS-2a. The narrowed spike: `find_tools` for the packs of `PACK_ONLY_OWNERS` (task 3222).** HIGH. AGENT-SAFE to build dark. The flip of `TOOL_SEARCH_ORGS` is OWNER-GATE. Rung 1, partial. It follows TS-1 (merged). The Opus spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO, and it gave GO to this narrowed slice after the docs PR.
 - **Scope.**
-  - The candidates are the packs of `PACK_ONLY_OWNERS` (`tool_packs.py:2651`) that layer (a) did not load. Today that is the `studio` pack, 23 tools, not split.
+  - The candidates are the packs of the owners in `PACK_ONLY_OWNERS` (in `tool_packs.py`) that `packs_on` allows and layer (a) did not load. Follow packs are candidates too.
+  - Today these are `studio` (10 tools) and its follow pack `studio-more` (13 tools), after TS-1b. `studio-workflows` is a candidate only where the `TOOL_PACKS` of the box names it or is `*`. Production's list does neither.
   - There is no surface rule, and sticky state is OFF.
   - There are no CRM or Projects candidates. A found CRM or Projects tool meets OA-8i (`pack_write_refusal`, `tool_packs.py`), the specialist reach and the hand-off swap. TS-6 (HIGH) owns those.
 - **What it proves.**
@@ -1845,15 +1850,35 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   1. **PR 1, docs.** This spec change.
   2. **PR 2, HIGH, no caller.** `acb_skills/tool_packs.py`: the tool, the `FunctionMiddleware`, the answer, and ONE lock that `find_tools` shares with `LoadSkillTools`. Fence: `tests/unit/test_find_tools_guards.py`.
   3. **PR 3, HIGH.** The wiring in `orchestrator/_tool_injection.py`, the flag `TOOL_SEARCH_ORGS` in `acb_common/settings.py` and a §6 D4 line in `work_plan.md`. Fences: `tests/unit/test_find_tools_maf_loop.py` and `tests/unit/test_tool_search_off.py`.
+- **What PR 2 holds.** `acb_skills/tool_packs.py` holds `find_tools` (`find_tool`), the middleware `FindTools`, `FindToolsProvider`, `search_packs`, `find_candidates`, `setup_candidates` and the one lock `PackRun.lock`. No code calls them. Fence: `tests/unit/test_find_tools_guards.py`.
+- **PR 3 must.**
+  - List `FindToolsProvider` BEFORE `LoadSkillToolsProvider`, in one `agent_with_providers` list.
+  - Make ONE `FindTools` for each run, with `record=applied.record`. Never put it on a shared agent object.
+  - Call `setup_candidates` inside the bound frame of the run, with a context that holds `PACK_RUN_KEY`, as `_build_early` does (`tool_packs.py:3782`). Else `_pack_tools` gives an empty build, and the tool ships with an empty catalog.
+  - Pass `measure=_maf_mcp.schema_tokens`, `owners=PACK_ONLY_OWNERS`, `loaded=choice.slugs`, and `available=` the `_available` test of `_plan_pack_loader`.
+  - Pass the `allow` of `_apply_tool_packs` (`_tool_injection.py:4072`). It widens the admin toggles with `with_followers`. Never pass a fresh `packs_on`.
+  - `search_packs` keys on the owner `studio-builder` and on `allow`. So `studio-more` is a candidate wherever `studio` is on. The dark `studio-workflows` is one only where `TOOL_PACKS` names it or is `*`.
+  - The orchestrator decided on 2026-11-14 that follow packs are candidates. It is not an owner grant. The owner sees it at the PR 3 preview and at the flip ask. The reland of PR 2 has a test for each case.
+  - Pass `available=` the `_available` test of `_plan_pack_loader` (`_tool_injection.py:4387`).
+  - Measure the setup cost. A turn can now make two or three `_pack_tools` builds at setup, one for each candidate pack.
+  - The demo turn is a turn where layer (a) loaded the core alone, so `studio-more` holds tools to find.
+  - Decide the text of the 422 line of `studio-more` when the loader offers nothing and the flag is on. With the flag off, the run stays byte-identical.
+  - The §6 D4 line says this: when `TOOL_PACKS` names `studio-workflows` or is `*`, its two workflow writes become findable, also past `MAX_PACKS`.
+  - Never call `note_used` for the pack of a found tool before TS-4.
+  - Add 1 to `base` only when the flag is on. A count test pins +1 with the flag on and 0 with it off. A second test proves the run byte-identical with the flag off.
+  - Add a fence: no platform tool, pack tool or MCP tool has the name `find_tools`.
+  - Add the `TOOL_SEARCH_ORGS` reader in `acb_common/settings.py` and the §6 D4 line.
+  - Run `test_no_egress_tool_audit.py`. A held run keeps `find_tools` by its read-only `__tool_risk__`.
 - **Acceptance.**
-  - In one run, a scripted model calls `find_tools`. The next request holds the found `studio` schemas.
-  - **The race.** In one batch, `find_tools` can add a tool while `LoadSkillTools` awaits its build (`tool_packs.py:3525`, `:3534`). Then the `add_tools` of the load raises, because MAF tests the identity of a tool (`agent_framework/_tools.py:1358-1361`), and the load answers `LOAD_UNAVAILABLE`. So `find_tools` and `LoadSkillTools` share ONE lock. A test runs two adds in one batch.
+  - In one run, a scripted model calls `find_tools`. The next request holds the found Studio schemas.
+  - A turn that loaded only the core finds a tool of `studio-more`. A turn that loaded both Studio packs has no candidate. Under production's `TOOL_PACKS`, `studio-workflows` is no candidate.
+  - **The race.** In one batch, `find_tools` can add a tool while `LoadSkillTools` awaits its build (`tool_packs.py:3691`, `:3828`). Then the `add_tools` of the load raises, because MAF tests the identity of a tool (`agent_framework/_tools.py:1358-1361`), and the load answers `LOAD_UNAVAILABLE`. So `find_tools` and `LoadSkillTools` share ONE lock. A test runs two adds in one batch.
   - **The hold state.** A setup build fixes `held` at the start of the turn. A mark in the middle of the turn would leave the answer with no hold note. So `find_tools` builds the answer tools at call time, as `LoadSkillTools` does. A test proves the hold note after a mid-turn mark.
   - The answer holds the rules block of each owning pack, once in the run.
-  - **The join.** `find_tools` joins the run in `before_run`, before `load_early` (`tool_packs.py:3702-3709`). Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
+  - **The join.** `FindToolsProvider` adds `find_tools` in its own `before_run`. It comes before `LoadSkillToolsProvider` in the list, so its tool is in `context.tools` when `load_early` runs (`tool_packs.py:3747-3765`). Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
   - **The count.** `find_tools` joins the base set, as `_apply_tool_packs` adds the pack loader (`base += 1`). With the flag on, the base count rises by 1 on every turn. With the flag off, it does not change. TS-2a adds no new count check. A request never passes 110 tools, because `choose` drops a pack.
   - The rank skips each live name and each pack of `run.holds()`. A dropped tool never takes a place of the top 5.
-  - `find_tools` runs both checks of `_admit_pack` before each add: the size of the pack and `_beside_mcp` (`tool_packs.py:3375`).
+  - `find_tools` runs both checks of `_admit_pack` before each add: the size of the pack and `_beside_mcp` (`tool_packs.py:3528`).
   - A found tool equals its `_pack_tools` build. A dropped or held tool never shows.
   - With the flag off, the run is byte-identical.
 - **Mutations the fences must kill.**
@@ -1865,12 +1890,14 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - A second rules block.
   - A `ValueError` in one batch.
   - A deleted call to `_beside_mcp`. The test patches `UNTRUSTED_INPUT_AGENTS`.
+  - A follow pack that is not a candidate.
+  - A `studio-workflows` candidate where `TOOL_PACKS` does not name it.
   - A provider that attaches while the flag is empty.
 - **Verify.** `uv run pytest tests/unit/test_find_tools_guards.py tests/unit/test_find_tools_maf_loop.py tests/unit/test_tool_search_off.py tests/unit/test_tool_search_index.py tests/unit/test_pack_guards.py tests/unit/test_load_skill_tools.py tests/unit/test_pack_room.py tests/unit/test_held_card_writes.py tests/unit/test_no_egress_tool_audit.py tests/unit/test_tool_schema_diet.py tests/unit/test_studio_workflow_tools.py -q`. Then run ruff and mypy on the changed files.
 - **No R8 case.** The slice adds no SQL, no Redis key and no migration.
 
 **TS-2. The spike: `find_tools` for the Studio packs (task 3196).**
-- **Why Studio.** `studio-builder` is a pack-only owner (`PACK_ONLY_OWNERS`, `tool_packs.py:2651`). It has no specialist tool, so no hand-off record and no reach move. With search on, a Studio turn loads the core only, so the follow pack holds tools to find (item 5 of the split).
+- **Why Studio.** `studio-builder` is a pack-only owner (`PACK_ONLY_OWNERS` in `tool_packs.py`). It has no specialist tool, so no hand-off record and no reach move. With search on, a Studio turn loads the core only, so the follow pack holds tools to find (item 5 of the split).
 - **Files.**
   - `acb_skills/tool_packs.py`: the tool, its middleware, the answer with the rules blocks, and the flag reader
   - `orchestrator/_tool_injection.py`: the provider beside `_offer_pack_loader` (`:4412`), the candidates and the count of `find_tools`. The surface rule that reads `TOOL_SEARCH_ORGS` is in this slice (TS-2). TS-1b owns the Studio split and no flag.
@@ -1923,18 +1950,40 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - Over two turns, the found tools keep their place after the pack tools, byte for byte.
 - **Fences.** `tests/unit/test_find_tools_sticky.py`, `tests/unit/test_find_tools_budget.py` and `tests/unit/test_find_tools_unknown_name.py`.
 
-**TS-5. The `search` arm, scripted (task 3199).**
-- **Files.** `evals/one_assistant_measure/run.py`, `checks.py` and `scenarios_work.py`.
-- **The gap today.** The harness has NO `search` arm: `ARMS` is `("delegation", "pack")` (`evals/one_assistant_measure/run.py:67`). It also has no Studio chat and no `general` set. The arm needs these:
-  - the flags `tool_search_orgs` and `studio`, and `feature:studio` for the eval member
-  - fixtures for the Studio routes, because WorkGateway has no `/studio` routes
-  - scripted plans that call `find_tools`
-  - the checks `found_tool`, `search_round` and `schema_tokens`, and stop result 12
-- **Acceptance.** `--scripted` passes on the `pack` and the `search` arms. The arm reports the numbers of §4.3.3. No live run: an eval over USD 0.50 needs the owner (TS-7).
+**TS-5a. The Studio chats and the checks of the `search` arm, scripted only (task 3288, BUILT 2026-11-14).**
+- **Files.** `evals/one_assistant_measure/run.py`, `checks.py`, `workgateway.py`, `pack.py`, `scenarios.py`, `scenarios_studio.py` (new) and `README.md`. No product file changes, and `evals/routing/harness.py` stays as it was.
+- **What it builds.**
+  - `WorkGateway` answers the `/studio/` read routes from fixtures: skills, packages, templates and the action catalog. A Studio route with no fixture answers 404 and fails the scripted run.
+  - `owner_of_tool` maps a Studio tool to `studio-builder`. It reads the names from `SKILL_FAMILIES`, because that owner has no `config.json`.
+  - The pack arms of a Studio chat get `studio` BY NAME in `TOOL_PACKS`, and the eval org in `STUDIO_ORGS`. `owner_packs("studio-builder")` is NOT used, because it would also turn on the dark pack `studio-workflows`.
+  - The `Scenario` field `without_features` takes `studio` out of `member_features` for one chat.
+  - Five Studio chats (`scenarios_studio.py`): `stu_skills`, `stu_new_app`, `stu_plain`, `stu_no_feature` and `stu_held`. Each has fewer than 12 words. No word of any pack matches them (`tool_packs.matched_layer`), so layer (a) never loads `studio` for them.
+  - Six pure checks: `found_tool`, `search_round`, `not_searched`, `no_studio_names`, `held_note` and `schema_tokens`.
+  - Stop result 12 and the search numbers join the report.
+  - The numbers are the searches per turn, the tools that ran after a find, the false searches on their own, and the schema tokens per request.
+  - `search` is listed in `--arms`. It prints SKIP until the settings hold `tool_search_orgs`. An unknown `--arms` value exits with status 2.
+- **One chat list for each arm.**
+
+  | Arm | Chats | Runs when |
+  |---|---|---|
+  | `delegation` | the email, CRM, Projects and mixed chats | now |
+  | `pack` | the same chats, and the five Studio chats | now |
+  | `packs+spawn` | the fan-out chats | now |
+  | `search` | the five Studio chats (TS-7a), and `crm_miss` and `pm_miss` (TS-7b) | after TS-5b and the flag |
+
+- **Acceptance.** `--scripted --arms pack,search` passes: the `pack` arm passes every Studio turn, and the `search` arm prints SKIP. Each new check has a case that passes, a case that fails and a named mutation. No live run: an eval over USD 0.50 needs the owner (TS-7).
+- **Verify.** `uv run pytest tests/unit/test_one_assistant_measure_search.py tests/unit/test_one_assistant_measure_oa8e.py tests/unit/test_one_assistant_measure.py tests/unit/test_tool_search_index.py -q -p no:xdist`, then `uv run python -m evals.one_assistant_measure.run --scripted --arms pack,search`.
+- **Fence.** `tests/unit/test_one_assistant_measure_search.py`.
+
+**TS-5b. The `find_tools` plans and the scripted pass on `search` (task 3289).**
+- **Order.** After PR 2318 and TS-2a PR 3, because the arm needs the flag `tool_search_orgs` and the tool `find_tools`.
+- **Files.** `evals/one_assistant_measure/run.py` (`scripted_models` raises `NotImplementedError` for `search` today) and `scenarios_studio.py`.
+- **Acceptance.** A scripted plan on the `search` arm calls `find_tools` once, then the Studio tool. `--scripted --arms pack,search` passes on both arms, with `found_tool`, `search_round`, `not_searched` and `schema_tokens` giving True. The layer of each found tool joins the report here, because it needs the product log of TS-2a.
+- **Held chat.** The check `held_note` may be impossible to satisfy if the Studio pack is not held in the product. TS-5b must check that the pack is held in a held chat before it relies on the check. On the `pack` arm the held answer of the `studio` load has no hold note, and the note is in the persona.
 - **Fence.** `tests/unit/test_one_assistant_measure_search.py`.
 
 **TS-6. Search over every pack (task 3200).**
-- **Order.** After TS-5, and its flip after TS-7. The audit of 2026-11-14 found a cycle. TS-7 measures on `crm_miss` and `pm_miss`, and those chats need CRM and Projects candidates that only TS-6 builds. So TS-7a measures first on Studio chats on OTHER surfaces, and TS-7b measures CRM and Projects after TS-6.
+- **Order.** After TS-5b, and its flip after TS-7. The audit of 2026-11-14 found a cycle. TS-7 measures on `crm_miss` and `pm_miss`, and those chats need CRM and Projects candidates that only TS-6 builds. So TS-7a measures first on Studio chats on OTHER surfaces, and TS-7b measures CRM and Projects after TS-6.
 - **Why HIGH.** The `email` pack reads stranger text, and the MCP rule and the held sets move with it. The records by pack must hold: the hand-off refusal, the reach of a specialist and OA-8i.
 - **Files.** `acb_skills/tool_packs.py` (`plan_loader`, `PackRun` and `persona_for`), `orchestrator/_tool_injection.py` (the MCP rule for a found tool, `_holds_untrusted_pack`) and `acb_skills/agent_tools.py` (`_child_pack_tools`).
 - **Acceptance.**
@@ -1947,11 +1996,11 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **Fence.** `tests/unit/test_find_tools_every_pack.py`.
 
 **TS-7. The live measure (task 3201).** OWNER-GATE: an eval over USD 0.50 needs the owner's OK.
-- **Parts.** TS-7a runs on Studio chats on OTHER surfaces, after TS-5. TS-7b runs on `crm_miss` and `pm_miss`, after TS-6. The harness has no `search` arm today (TS-5 builds it, with the flags, the Studio fixtures, the scripted plans, the three checks and stop result 12).
+- **Parts.** TS-7a runs on Studio chats on OTHER surfaces, after TS-5a and TS-5b. TS-7b runs on `crm_miss` and `pm_miss`, after TS-6. TS-5a built the Studio chats, the fixtures, the flags, the six checks and stop result 12. TS-5b builds the `find_tools` plans.
 - **Cost (harness count).** A pilot of about 14 turns on two arms costs about USD 0.37. The full run of about 53 turns, two arms and 3 repeats costs about USD 4.2, with `--budget-usd 6`.
 - **The bill.** On 2026-10-30 the Router billed 2.75 times the harness count. So the bills can be about USD 1.0 and USD 11.6.
-- **Command.** `uv run python -m evals.one_assistant_measure.run --live --arms pack,search --scenarios <set> --repeat 3 --timeout 200 --budget-usd 6 --spent-before-from <chunks> --out chunk_ts_a.json`. It needs the tunnel and the `deploy` grant (the harness README).
-- **Files.** A report in `docs/`, in the form of `docs/one_assistant_measure_oa8e_2026-10-29.md`.
+- **Command.** `uv run python -m evals.one_assistant_measure.run --live --arms pack,search --scenarios <ids> --repeat 3 --timeout 200 --budget-usd 6 --spent-before-from <chunks> --out chunk_ts_a.json`. `--scenarios` takes a comma list of chat IDS, for example `stu_skills,stu_new_app`. It does not take a set name. It needs the tunnel and the `deploy` grant (the harness README).
+- **Files.** A report in `docs/`, in the form of the last measure report, `docs/one_assistant_measure_oa8e_run5_2026-10-30.md`.
 - **Acceptance.** The report gives the numbers of §4.3.3 for `pack` and `search` on the same chats, and the state of stop results 1 to 12. It names the spend from `usage_event`. A switch needs the result "not worse" of §4.3.3, and the owner.
 - **Fence.** `tests/unit/test_one_assistant_measure_search.py` keeps the arm green. The report is the evidence of the run.
 
@@ -2015,7 +2064,13 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 9. **The spend. ACCEPTED 2026-11-14 (task 3190).** The TS-7 pilot, then the full run: about USD 0.37 and about USD 4.2 by the harness count, with `--budget-usd 6`. The real bill may be 2.75 times that.
 10. **The spike. OPEN.** D222 does not settle it. Studio first. The audit of TS-2a gave GO, and the owner has not confirmed the choice.
 11. **The Studio split. APPROVED 2026-11-14 (task 3190).** The core of 10 tools and `studio-more`, LIVE where Studio is on. TS-1c follows to remove the side effect: `studio-more` can lose its place of `MAX_PACKS` in a turn that also needs two other packs.
-12. **The test "not worse". OPEN.** D222 item 7 adopts the principle. It does not set the four conditions of §4.3.3. The audit of TS-7 settles them.
+12. **The test "not worse". OPEN. PROPOSAL for the owner (TS-5a, 2026-11-14). The owner has NOT approved it.** D222 item 7 adopts the principle. It does not set the four conditions of §4.3.3. TS-5a proposes four conditions and one rule for stop result 12. The `search` arm is "not worse" than the `pack` arm when all four conditions hold:
+    - No guard check fails (stop result 1).
+    - The pass rate on app turns is at most 2 points below the `pack` arm.
+    - The median first text is at most 15 percent slower.
+    - The warm cost of a turn, from repeats 2 and 3, is not higher.
+    - Stop result 12 counts the full app set, not only the Studio chats. This is the rule, and it is no fifth condition.
+    A switch needs this result AND the owner. The owner may change any number.
 13. **The place of `find_tools`. "Always, in the base set" (2026-11-14, task 3190).** The run offers it on every turn where the flag is on for the org, and it counts against the base tools. At the cap of 110 tools, the base count can push out the last pack. The owner accepted that trade.
 
 ### 4.3 OA-8: every other app
@@ -2233,10 +2288,10 @@ Extend `evals/one_assistant_measure`. Do not build a second harness (§7 item 2)
 10. The main agent spawns on more than 1 in 9 `not_spawned` turns.
 11. A hand-off on a packed app is the choice of the model. The harness already checks it (`evals/one_assistant_measure/run.py`, `stop_results`). This list did not name it until 2026-11-14.
 
-**The `search` arm (TS-5 and TS-7, PROPOSED, D222).** A fourth arm, `search`, runs with `TOOL_SEARCH_ORGS` on. It runs Studio chats, the two miss chats (`crm_miss` and `pm_miss`) and the `general` set. On 2026-11-14 the harness held no Studio chat and no `general` set, so TS-5 writes both.
-- **New checks.** `found_tool`: a found tool of the right pack ran. `search_round`: one counted round of `find_tools`. `schema_tokens`: each request stays within the budget of §4.2.9.
+**The `search` arm (TS-5 and TS-7, PROPOSED, D222).** A fourth arm, `search`, runs with `TOOL_SEARCH_ORGS` on. It runs Studio chats, the two miss chats (`crm_miss` and `pm_miss`) and the `general` set. On 2026-11-14 the harness held no Studio chat and no `general` set. TS-5a wrote the five Studio chats. The `general` set stays for TS-7b.
+- **New checks (TS-5a, built).** `found_tool`: a Studio tool ran after the find, and a call that answers "Requested function not found" does not count. `search_round`: exactly one counted round of `find_tools` in a turn that needs a search. `not_searched`: no find in a turn that needs no tool. `no_studio_names`: a member without `feature:studio` sees no Studio tool name in the tool list, the `find_tools` description or any answer. `held_note`: in a held chat the answer of the find carries the hold note. `schema_tokens`: each request stays within the budget of §4.2.9.
 - **New numbers.** The searches per turn, the found tools per turn, the layer of each found tool, and the schema tokens per request.
-- **Stop result 12.** `find_tools` runs on more than 15 percent of app turns. It is the twin of stop result 5.
+- **Stop result 12 (TS-5a, built).** `find_tools` runs on more than 15 percent of the app turns of the `search` arm. It is the twin of stop result 5. 15 of 100 turns is ok, and 16 of 100 is a STOP. A find on a turn that needs no tool is a false search. The report counts it on its own.
 - **Not worse.** The `search` arm is not worse than the `pack` arm when all four hold. No guard check fails. Its pass rate on app turns is at most 2 points below. Its median first text is at most 15 percent slower. Its warm cost per turn is not higher. A switch needs this result and the owner.
 
 #### 4.3.4 OA-10: retire conversational delegation

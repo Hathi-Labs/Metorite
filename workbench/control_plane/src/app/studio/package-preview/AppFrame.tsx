@@ -11,6 +11,9 @@
  * page has no rail. `StudioPage` draws `bare` there, with no bar of its own. The dialogs of AF-6 are
  * `StudioNewButton` and `StudioFormDialog`. A viewer (J2a) reads only: the door holds the reads, and the form view says so.
  * This is the one file of the route that holds the page model. `page.tsx` imports none.
+ *
+ * With `?floor=1` the frame draws the floor view (STU-D23a). `lib/studio/floorView.ts` decides
+ * which part stays, and each part below reads its flag there.
  */
 import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -34,6 +37,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
+import { floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
   activeCount, barOf, barTarget, chipsOf, clearedBar, layoutsFor, searchKeyOf, toListArgs, withFilter,
@@ -104,10 +108,13 @@ function FilteredList({ source, door, active, onClear, children }: {
   );
 }
 
-export default function AppFrame({ pkg, detail, door, controls, onDeleted, above }: AppFrameProps) {
+export default function AppFrame({ pkg, detail, door, controls, onDeleted, above: setupCard }: AppFrameProps) {
   const params = useSearchParams();
   const pageParam = params.get("page");
   const search = params.toString();
+  // STU-D23a: the parts of the frame for the floor view, or for the usual view.
+  const parts = floorView(isFloor(search));
+  const above = parts.setupCard ? setupCard : undefined;
   const manifest = useMemo(() => ({
     views: detail.views, pages: detail.pages, actions: detail.actions, objects: detail.objects,
   }), [detail.views, detail.pages, detail.actions, detail.objects]);
@@ -224,16 +231,18 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
   const counts = useRailCounts(door, countRows);
   const { isMobile } = useViewMode();
   // The owner verbs sit in the app bar on a desktop. A phone bar is too narrow, so they sit in the
-  // toolbar above the page there, and the title keeps its room.
-  const ownerBar = controls.owner ? (
+  // toolbar above the page there, and the title keeps its room. The floor view draws neither.
+  const ownerBar = !parts.ownerBar ? null : controls.owner ? (
     <>
       <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>
       <DeletePackageButton id={pkg} onDeleted={onDeleted} />
     </>
   ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>;
+  // The floor view keeps "New <Object>" and drops the end-date bar. With no part left, no toolbar row.
+  const toolbarShown = parts.lifetime || adds.length > 0 || (isMobile && ownerBar !== null);
   const toolbar = (
     <>
-      <PackageLifetimeBar pkg={pkg} />
+      {parts.lifetime ? <PackageLifetimeBar pkg={pkg} /> : null}
       {adds.map((b) => {
         const o = detail.objects.find((x) => x.name === b.object);
         return o ? <StudioNewButton key={b.object} button={b} object={o} door={door} /> : null;
@@ -246,18 +255,19 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     <StudioDataContext.Provider value={door}>
       <StudioAppFrame title={detail.name.trim() || "App"} back={{ href: "/studio", label: "Back to Studio" }}
         actions={isMobile ? undefined : ownerBar}
-        rail={railed ? { sections, activePage: built.page.id, onPick: setPage, counts } : undefined}>
+        floor={parts.floor} subtitle={floorSubtitle(parts, session?.user)}
+        rail={railed && parts.rail ? { sections, activePage: built.page.id, onPick: setPage, counts } : undefined}>
       <div className="flex h-full flex-col" onClickCapture={onLinkClick}>
       {above ? <div className="shrink-0 px-3 pt-3 sm:px-4 sm:pt-4">{above}</div> : null}
       <div className="min-h-0 flex-1">
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
-        onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbar}
+        onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbarShown ? toolbar : undefined}
         record={opened && recordObject ? {
           title: titled && titled.id === opened.id ? titled.text : recordObject.label || recordObject.name,
-          full: opened.full,
+          full: recordFull(parts, opened.full),
           onClose: () => go(closeRecord),
-          onFull: (full) => go((s) => withFullPage(s, full)),
+          onFull: parts.toPanel ? (full) => go((s) => withFullPage(s, full)) : undefined,
           backLabel: built.page.title || "the page",
           body: (
             <StudioRecord object={recordObject} objects={detail.objects} recordId={opened.id} door={door}
@@ -266,7 +276,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
               onDeleted={() => go(closeRecord)} />
           ),
         } : null}
-        filterBar={bar ? (
+        filterBar={bar && parts.filterBar ? (
           <StudioFilterBar fields={bar.fields} chips={chipsOf(bar.fields)} searchKey={searchKeyOf(bar.fields)}
             bar={bar.value} layouts={bar.layouts} layout={bar.layout} lanes={bar.lanes}
             group={state.group ?? null} active={activeCount(bar.fields, bar.value)}

@@ -200,7 +200,11 @@ def test_fields_part_gives_one_value_shape_for_each_new_type() -> None:
     assert list(f["value_shapes"]) == new
     assert "15% is 1500" in f["value_shapes"]["percent"]
     assert "unit" in f["value_shapes"]["quantity"]
-    assert f["spec_parts"] == {"rating": ["min", "max"], "quantity": ["units"], "barcode": ["format"]}
+    assert f["spec_parts"] == {
+        "rating": ["min", "max"], "barcode": ["format"],
+        "quantity": ["units", "normal", "critical", "conversions"],  # C24a
+    }
+    assert "computed" in f["value_shapes"]["quantity"]
 
 
 def test_a_package_read_keeps_the_parts_of_the_new_field_types() -> None:
@@ -224,3 +228,22 @@ def test_the_quantity_refusal_names_the_units() -> None:
     with pytest.raises(sf.FieldError) as refused:
         sf.check_value(field, {"value": "1", "unit": "lb"})
     assert "kg, t" in refused.value.message
+
+
+def test_blocks_part_teaches_the_tree_and_aggregate_actions_with_an_example_that_validates() -> None:
+    """STU-D18-3: a tree view needs ``object:<name>.tree`` declared, and nothing adds it."""
+    oa = run("blocks")["blocks"]["object_actions"]
+    assert oa["declare_yourself"] == ["aggregate", "tree"]
+    assert set(oa["declare_yourself"]) <= set(OBJECT_OPS)
+    assert not set(oa["declare_yourself"]) & set(oa["added_for_you"])
+    assert "tree" in oa["rule"] and "aggregate" in oa["rule"]
+    manifest = {
+        "studio": 1, "id": "sites", "name": "Sites", "purpose": "Sites in a tree.",
+        "connections": [], "views": [], "workflows": [],
+        "objects": [{"name": "site", "fields": [{"key": "name", "type": "text"},
+                                                {"key": "parent", "type": "relation",
+                                                 "to": "sites.site", "hot": True}]}],
+        "actions": [oa["example"]],
+    }
+    from acb_common.studio_manifest import validate_manifest
+    assert validate_manifest(manifest) == []
