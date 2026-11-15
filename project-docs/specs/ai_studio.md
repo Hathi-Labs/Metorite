@@ -1437,7 +1437,7 @@ Each path was read on `82157e5fd`. A3 and C1 added their paths after that commit
 
 **I8b-1a, Ask an admin**
 
-- `infra/postgres/443_integration_attention.sql` — the table `integration_attention` (the number at build, R1)
+- `infra/postgres/449_integration_attention.sql` — the table `integration_attention` (the number at build, R1)
 - `apps/services/gateway/gateway/connections/attention.py` — the one module that runs SQL on the table
 - `apps/services/gateway/gateway/connections/store.py` (`_clear_asks`) — the hook that the six registry writers call
 - `apps/services/gateway/gateway/routes/studio/connections.py` — the two routes of an ask, and `asked` on the read of I8a

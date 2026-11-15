@@ -1,5 +1,5 @@
 -- ============================================================================
--- 443_integration_attention.sql — the items of a connection that need an
+-- 449_integration_attention.sql — the items of a connection that need an
 -- admin (WS-STU I8b-1a, task 3215).
 --
 -- What: one new table. `integration_attention` holds one row for each item
@@ -40,7 +40,7 @@
 -- deletes the asks of the member in the bound org. The column is
 -- `member_email`, the name that the purge fences read.
 --
--- The number is taken at build time (R1): 443 was booked for this task.
+-- The number is taken at build time (R1): 449 was booked for this task (443 before the merge of RESUME-1a took 448).
 -- Check it again at merge. Pinned by tests/unit/test_studio_connection_ask.py
 -- and tests/unit/test_studio_connection_ask_r8.py, which find this file by
 -- CONTENT, never by number (R1).

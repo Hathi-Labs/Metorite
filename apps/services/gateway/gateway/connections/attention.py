@@ -1,7 +1,7 @@
 """The items of a connection that need an admin (WS-STU I8b-1a).
 
 Spec: ``project-docs/specs/ai_studio.md`` §8.2 and §14 I8b-1a. Migration: the
-file that adds ``integration_attention`` (443 at build). The routes are
+file that adds ``integration_attention`` (449 at build). The routes are
 ``routes/studio/connections.py``. ``tests/unit/test_studio_connection_ask_r8.py``
 runs this SQL on a real Postgres.
 
