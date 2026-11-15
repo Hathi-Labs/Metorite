@@ -2566,7 +2566,8 @@ def test_civ31e_the_parent_and_the_revert_tree_pass_when_the_culprit_added_the_t
 ) -> None:
     """The culprit ADDED the failed test. Its parent and the revert tree do not
     hold the test, so the default probe passes there, and the pass can prove the
-    revert. A tree that pytest cannot collect stays unknown, never a pass."""
+    revert. A tree that holds the test and that pytest cannot collect stays
+    unknown, never a pass."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")

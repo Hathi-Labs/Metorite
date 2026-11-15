@@ -24,9 +24,13 @@
 #   - When the collection exits with another code (2: a collection error,
 #     4: a usage or conftest error), or prints no node id that it can read,
 #     no id is left out. pytest runs them all, and its exit code stands.
-#     A broken tree is never a pass.
+#     So while the file of an id is in the tree, a collection error is never
+#     a pass.
 #   - An id with no "::" names a whole path. It is absent only when the path
 #     is not there.
+#   - Two limits. An id whose file is not in the tree passes with no pytest
+#     run, also when the conftest does not load. An id that the -m filter of the
+#     repo deselects is absent, because the batch does not run it either.
 #
 # Exit codes:
 #   0  every id is absent (a test that is not in the tree cannot fail), or

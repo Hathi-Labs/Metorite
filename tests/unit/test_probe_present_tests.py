@@ -3,7 +3,8 @@ scripts/bisect_main.sh and scripts/home_server/auto_revert.py.
 
 A failed test of a red batch can be new in the range. The good commit does not
 hold it. The helper leaves out each test id that is not in the probed tree, so
-that commit is good. A tree that pytest cannot collect is never a pass.
+that commit is good. When the file of an id is in the tree and pytest cannot
+collect it, the probe never passes.
 
 Each case runs the REAL helper in a small tree in tmp_path, with a real pytest
 of the current interpreter (PROBE_PYTEST_CMD). The end-to-end case runs the
