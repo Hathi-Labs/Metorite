@@ -76,6 +76,12 @@ answer cache is ``tenant_redis``, namespace :data:`LIVE_NAMESPACE`, TTL
 member, the server, the tool and a hash of the input with the server
 identity. Its value holds the cut, cleaned answer only.
 
+The live read first needs the grant ``integrations:use:mcp-<server>`` of the
+session member, as the agent run does, and a server whose ``agent_scope``
+holds ``*``. Each read that calls the network passes a rate limit
+(:data:`MEMBER_CALLS_PER_WINDOW`, :data:`ORG_CALLS_PER_WINDOW`) and one of
+:data:`LIVE_PER_ORG` slots. A cache hit passes no limit.
+
 Fences: ``tests/unit/test_studio_mcp_tools.py``,
 ``tests/unit/test_studio_mcp_tools_r8.py`` (R8),
 ``tests/unit/test_studio_live_preview.py`` and
@@ -571,7 +577,7 @@ LIVE_NAMESPACE = "studio-live"
 #: The seconds that one live answer lives in the cache.
 ANSWER_TTL_S = 60
 #: The most bytes of all the answers of one ``tools/call`` session.
-MAX_CALL_BYTES = 2 * MAX_ANSWER_BYTES
+MAX_CALL_BYTES = MAX_ANSWER_BYTES
 #: The most items that a live answer keeps of each array: its rows.
 MAX_ROWS = 50
 #: The most characters of each text of a live answer.
@@ -600,6 +606,40 @@ LIVE_NOT_A = "not_class_a"
 LIVE_NEEDS_CARD = "needs_card"
 LIVE_CHANGED = "server_changed"
 LIVE_BAD_INPUT = "bad_input"
+LIVE_NO_GRANT = "grant_denied"
+LIVE_NO_SCOPE = "scope_denied"
+
+#: The most live reads that make a network call, for one member in one
+#: window of :data:`RATE_WINDOW_S`, and for one org. A cache hit is free.
+MEMBER_CALLS_PER_WINDOW = 10
+ORG_CALLS_PER_WINDOW = 60
+RATE_WINDOW_S = 60
+#: The most live reads of one org that hold the network at one time, in this
+#: process. The gateway runs one uvicorn worker (``invoke.WRITERS_PER_ORG``
+#: has the same reason), so a count in the process is the count of the box,
+#: and a crash cannot leave a count behind as a Redis counter can.
+LIVE_PER_ORG = 3
+
+_LIVE_IN_FLIGHT: dict[str, int] = {}
+
+
+def mcp_service(name: str) -> str:
+    """The service of an MCP server in ``integrations:use:<service>``.
+
+    The same rule as ``orchestrator._maf_mcp.mcp_service``, which the agent
+    run checks. A service never imports another service, so the parity test
+    ``test_studio_live_preview.py::test_the_service_name_is_the_rule_of_the_run``
+    holds the two equal."""
+    return f"mcp-{name}"
+
+
+class LiveLimited(Exception):
+    """The live read is over a limit, and it sends nothing. ``retry_after`` is
+    the seconds to wait."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(str(retry_after))
+        self.retry_after = retry_after
 
 
 class LiveRefused(Exception):
@@ -691,11 +731,18 @@ class _Shaper:
                 self.truncated = True
             out: dict[str, Any] = {}
             for k, v in islice(raw.items(), MAX_KEYS):
-                key = strip_hidden(strip_hidden(str(k))[:200])
+                whole = strip_hidden(str(k))
+                key = strip_hidden(whole[:200])
+                if len(whole) > 200:
+                    self.truncated = True
                 if self.chars + len(key) > MAX_RESULT_CHARS:
                     # No room is left, so the pair goes, and its key is never cut.
                     self.truncated = True
                     break
+                if key in out:
+                    # Two keys that clean to one text: the first stays.
+                    self.truncated = True
+                    continue
                 self.chars += len(key)
                 out[key] = self.value(v, depth + 1)
             return out
@@ -830,19 +877,84 @@ def _decode_answer(raw: Any) -> tuple[dict[str, Any], bool, float] | None:
     return result, truncated, float(fetched)
 
 
+async def _spend(org: str, member: str) -> None:
+    """Count one live read that makes a network call, or raise
+    :class:`LiveLimited`. A fixed window of :data:`RATE_WINDOW_S` in
+    ``tenant_redis``, with INCR and EXPIRE: one counter for the member and
+    one for the org. A member over the limit does not count for the org. A
+    cache that does not answer raises :class:`ListFailed` (fail closed)."""
+    now = _now()
+    window = str(int(now // RATE_WINDOW_S))
+    left = max(1, int(RATE_WINDOW_S - now % RATE_WINDOW_S))
+    try:
+        client = _redis()
+        with _scope(org):
+            for key, cap in ((_live_key("rate", "m", _member_part(member), window),
+                              MEMBER_CALLS_PER_WINDOW),
+                             (_live_key("rate", "org", window), ORG_CALLS_PER_WINDOW)):
+                count = int(await client.incr(key))
+                if count == 1:
+                    await client.expire(key, RATE_WINDOW_S + 1)
+                if count > cap:
+                    raise LiveLimited(left)
+    except LiveLimited:
+        raise
+    except Exception as exc:
+        _log.warning("studio.mcp_tools.cache_unavailable", kind=type(exc).__name__)
+        raise ListFailed(REASON_CACHE) from None
+
+
+def _take_live_slot(org: str) -> None:
+    """Take one of the :data:`LIVE_PER_ORG` slots of *org*, or raise
+    :class:`LiveLimited`."""
+    if _LIVE_IN_FLIGHT.get(org, 0) >= LIVE_PER_ORG:
+        raise LiveLimited(1)
+    _LIVE_IN_FLIGHT[org] = _LIVE_IN_FLIGHT.get(org, 0) + 1
+
+
+def _free_live_slot(org: str) -> None:
+    left = _LIVE_IN_FLIGHT.get(org, 0) - 1
+    if left > 0:
+        _LIVE_IN_FLIGHT[org] = left
+    else:
+        _LIVE_IN_FLIGHT.pop(org, None)
+
+
+def _may_use(may_use: Callable[[str], bool], server: str) -> bool:
+    """True only when the member's access allows ``integrations:use:mcp-<server>``.
+    A fault of the check is False (fail closed)."""
+    from acb_auth import integration_use_permission
+
+    try:
+        return may_use(integration_use_permission(mcp_service(server))) is True
+    except Exception:
+        return False
+
+
 async def call_read_tool(org: str, member: str, server: str, tool: str, args: dict[str, Any], *,
+                         may_use: Callable[[str], bool],
                          lister: Lister | None = None, caller: Caller | None = None) -> LiveRead:
     """The live read of ONE class A tool for a preview of the door (I11a).
 
     *org* and *member* come from the session of the caller, never from
     request input (R5). The order:
 
-    1. The server is a connected server of *org* (``enabled_meta``).
+    0. The member's access allows ``integrations:use:mcp-<server>``
+       (*may_use*, the ``has_permission`` of the session), the grant that
+       the agent run checks. Else :data:`LIVE_NO_GRANT`, before any read.
+    1. The server is a connected server of *org* (``enabled_meta``), and its
+       ``agent_scope`` holds ``*``. A server that the admin gave to no agent,
+       or to named agents only, is :data:`LIVE_NO_SCOPE`: a preview is no
+       agent, so it fails closed.
     2. :func:`fresh_tool_list` gives a list that is fresh and of the
        identity of now, or a live one.
     3. The tool is class A in THAT list, and the gate asks no card.
     4. A cached answer of this org, member, server, tool and input, younger
        than :data:`ANSWER_TTL_S`, is the answer. It makes no call.
+    The first network step (a live list or the call) first passes the
+    limits: :func:`_spend` and one of :data:`LIVE_PER_ORG` slots, else
+    :class:`LiveLimited`. A cache hit with a fresh list passes no limit.
+
     5. Else ONE ``tools/call`` through :func:`_sdk_call`, under
        :data:`READ_TIMEOUT_S`. The answer is cut and cleaned
        (:func:`shape_result`), and only that goes to the cache.
@@ -853,20 +965,39 @@ async def call_read_tool(org: str, member: str, server: str, tool: str, args: di
     if (not _server_key(server) or not isinstance(tool, str) or not _TOOL_NAME.fullmatch(tool)
             or not isinstance(member, str) or not member.strip() or not isinstance(args, dict)):
         raise LiveRefused(LIVE_BAD_INPUT)
+    if not _may_use(may_use, server):
+        raise LiveRefused(LIVE_NO_GRANT)
     meta = next((s for s in await mcp_registry.enabled_meta(org)
                  if s.name == server and s.enabled is True), None)
     if meta is None:
         raise LiveRefused(LIVE_NO_SERVER)
+    if "*" not in tuple(getattr(meta, "agent_scope", None) or ()):
+        raise LiveRefused(LIVE_NO_SCOPE)
     loaded: list[Any] = []
+    held: list[str] = []
 
     async def _load() -> Any:
         if not loaded:
+            await _spend(org, member)
+            _take_live_slot(org)
+            held.append(org)
             try:
                 loaded.append(await _stored(org, server))
             except ServerNotFound:
                 raise LiveRefused(LIVE_NO_SERVER) from None
         return loaded[0]
 
+    try:
+        return await _live(org, member, server, tool, args, meta, _load, lister, caller)
+    finally:
+        for slot in held:
+            _free_live_slot(slot)
+
+
+async def _live(org: str, member: str, server: str, tool: str, args: dict[str, Any], meta: Any,
+                _load: Callable[[], Awaitable[Any]], lister: Lister | None,
+                caller: Caller | None) -> LiveRead:
+    """Steps 2 to 5 of :func:`call_read_tool`."""
     listed = await fresh_tool_list(org, meta, _load, lister=lister)
     _class_a_item(listed, meta, tool)
     identity = _identity(meta)
@@ -919,6 +1050,7 @@ __all__ = [
     "READ_TIMEOUT_S",
     "REFRESH_INTERVAL_S",
     "ListFailed",
+    "LiveLimited",
     "LiveRead",
     "LiveRefused",
     "RefreshTooSoon",
@@ -930,6 +1062,7 @@ __all__ = [
     "clean_tools",
     "fresh_tool_list",
     "list_tools",
+    "mcp_service",
     "refresh",
     "shape_result",
 ]

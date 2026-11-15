@@ -57,6 +57,25 @@ This file proves:
 * (f2) Drop the switch in ``refusal_for`` AND ``_held_live_read``. 5 tests go
   red: the ``flag_off`` and ``flag_other_org`` cases, the two tests of (f1),
   and ``TestTheLivePreview::test_the_switch_off_sends_nothing``.
+
+The review fixes (P1, P2 and the notes on the shape). Each ran on 2026-11-15.
+
+* (g) ``call_read_tool``: drop the grant check. The 3 cases of
+  ``test_a_member_without_the_grant_makes_no_call`` go red.
+* (h) ``call_read_tool``: drop the ``agent_scope`` check. Both cases of
+  ``test_a_server_that_no_agent_may_use_refuses`` go red.
+* (i) ``_spend``: no member limit.
+  ``test_the_11th_call_of_a_member_in_a_minute_is_429`` goes red.
+* (j) ``_spend``: no org limit. ``test_the_org_cap_holds_across_members``
+  goes red.
+* (k) ``_take_live_slot``: no cap.
+  ``test_the_org_holds_at_most_3_live_reads_at_once`` goes red.
+* (l) ``_live``: count each read, a cache hit too. 4 tests go red, among them
+  ``test_a_cache_hit_is_free``.
+* (m) ``_Shaper.value``: cut a long key with no ``truncated``.
+  ``test_a_long_key_is_cut_with_truncated`` goes red.
+* (n) ``_Shaper.value``: let a second key overwrite the first.
+  ``test_two_keys_that_clean_to_one_keep_the_first`` goes red.
 """
 
 from __future__ import annotations
@@ -74,6 +93,7 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_auth import UserContext, UserRole, build_access, get_current_user
 from acb_common import get_settings, tenant_redis
 from acb_common.studio_flags import live_preview_on
 from acb_common.tenant_redis import TenantRedis
@@ -81,7 +101,7 @@ from gateway import outbound_guard
 from gateway.connections import mcp as mcp_registry
 from gateway.connections import mcp_tools
 from gateway.package_host import viewer as _viewer
-from gateway.routes.studio import invoke
+from gateway.routes.studio import actions, invoke
 
 from tests.unit.test_studio_action_door import (  # noqa: F401
     ANA,
@@ -89,7 +109,6 @@ from tests.unit.test_studio_action_door import (  # noqa: F401
     MANIFEST,
     ORG,
     OTHER,
-    _client,
     _code,
     _package,
     dw,
@@ -128,7 +147,8 @@ LIVE_MANIFEST: dict[str, Any] = {
 def _server(org: str, name: str = "github", **over: Any) -> SimpleNamespace:
     base = dict(name=name, enabled=True, always_confirm=False, read_only_key=False,
                 url=f"https://{HOST}/{org}/{name}", headers={"Authorization": SECRET},
-                oauth=False, connected_by="admin@example.test", created_at=CREATED)
+                oauth=False, connected_by="admin@example.test", created_at=CREATED,
+                agent_scope=("*",))
     return SimpleNamespace(**{**base, **over})
 
 
@@ -194,17 +214,40 @@ def lw(dw, monkeypatch):  # noqa: F811
     monkeypatch.setattr(outbound_guard, "mcp_client", _no_client)
     monkeypatch.setattr(invoke._resolve, "met_connections", _met)
     monkeypatch.setattr(get_settings(), "studio_live_preview_orgs", "*")
-    return w
+    mcp_tools._LIVE_IN_FLIGHT.clear()
+    yield w
+    mcp_tools._LIVE_IN_FLIGHT.clear()
 
 
 def _pid(w: Any, org: str = ORG, owner: str = ANA, manifest: dict[str, Any] | None = None) -> str:
     return _package(w, org=org, owner=owner, manifest=manifest or LIVE_MANIFEST)
 
 
+GRANT = "integrations:use:mcp-github"
+
+
+def _client(w: Any, org: str = ORG, email: str = ANA, grants: tuple[str, ...] = (
+        "feature:studio", GRANT), denies: tuple[str, ...] = ()) -> Any:
+    """A client of the door whose member holds *grants* less *denies*."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(actions.router)
+
+    def _user() -> UserContext:
+        w.org = org
+        return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=org,
+                           access=build_access(grants, [(d, "deny") for d in denies]))
+
+    app.dependency_overrides[get_current_user] = _user
+    return TestClient(app)
+
+
 def _preview(w: Any, pid: str, action: str, body: Any = None, *, org: str = ORG,
-             email: str = ANA, preview: bool = True) -> Any:
+             email: str = ANA, preview: bool = True, **who: Any) -> Any:
     params = {"preview": "1"} if preview else {}
-    return _client(w, org=org, email=email).post(
+    return _client(w, org=org, email=email, **who).post(
         f"/studio/apps/{pid}/actions/{action}", json={} if body is None else body, params=params)
 
 
@@ -431,7 +474,8 @@ def test_a_client_error_of_the_call_is_502_and_holds_no_text(lw) -> None:
     assert (r.status_code, _code(r)) == (502, "mcp_timeout")
     assert SECRET not in r.text and HOST not in r.text
     assert lw.audits[-1]["detail"]["outcome"] == "failed"
-    assert not any(k.startswith(f"cc:{ORG}:{mcp_tools.LIVE_NAMESPACE}:") for k in lw.raw.data)
+    assert not any(k.startswith(f"cc:{ORG}:{mcp_tools.LIVE_NAMESPACE}:answer:")
+                   for k in lw.raw.data)
 
 
 def test_an_error_result_of_the_tool_is_an_error_not_data(lw) -> None:
@@ -463,7 +507,8 @@ def test_a_cache_that_does_not_answer_fails_closed(lw) -> None:
 
 
 def _answer_keys(w: Any, org: str = ORG) -> list[str]:
-    return [k for k in w.raw.data if k.startswith(f"cc:{org}:{mcp_tools.LIVE_NAMESPACE}:")]
+    return [k for k in w.raw.data
+            if k.startswith(f"cc:{org}:{mcp_tools.LIVE_NAMESPACE}:answer:")]
 
 
 def test_the_answer_lives_60_seconds(lw) -> None:
@@ -692,7 +737,8 @@ async def _live_with(monkeypatch, call: Any) -> Any:
         "fetched_at": raw.now, "identity": mcp_tools._identity(server)})
     seen: list[str] = []
     _guard_on(monkeypatch, _mcp_handler(seen, call))
-    return await mcp_tools.call_read_tool(ORG, ANA, "github", "get_issue", {})
+    return await mcp_tools.call_read_tool(ORG, ANA, "github", "get_issue", {},
+                                          may_use=lambda _p: True)
 
 
 CHUNK = 64 * 1024
@@ -753,7 +799,8 @@ async def test_the_call_has_one_deadline(monkeypatch) -> None:
     _guard_on(monkeypatch, handle)
     started = time.monotonic()
     with pytest.raises(mcp_tools.ListFailed) as failed:
-        await mcp_tools.call_read_tool(ORG, ANA, "github", "get_issue", {})
+        await mcp_tools.call_read_tool(ORG, ANA, "github", "get_issue", {},
+                                          may_use=lambda _p: True)
     assert failed.value.reason == "timeout"
     assert time.monotonic() - started < 3
 
@@ -811,8 +858,8 @@ def test_one_function_of_the_door_reaches_the_live_read() -> None:
     used = {n.attr for n in ast.walk(ast.parse(source))
             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
             and n.value.id == "mcp_tools"}
-    assert used == {"call_read_tool", "LiveRefused", "ListFailed", "LIVE_BAD_INPUT",
-                    "REASON_CACHE", "REASON_TOOL_ERROR"}
+    assert used == {"call_read_tool", "LiveRefused", "ListFailed", "LiveLimited",
+                    "LIVE_BAD_INPUT", "REASON_CACHE", "REASON_TOOL_ERROR"}
     assert "call_read_tool" in _calls_in(invoke._run_live_read)
 
 
@@ -861,10 +908,217 @@ def test_the_org_and_the_member_never_come_from_the_body(lw) -> None:
 def test_a_bad_server_or_tool_name_is_refused_before_any_read() -> None:
     async def _run(server: str, tool: str) -> str:
         try:
-            await mcp_tools.call_read_tool(ORG, ANA, server, tool, {})
+            await mcp_tools.call_read_tool(ORG, ANA, server, tool, {}, may_use=lambda _p: True)
         except mcp_tools.LiveRefused as refused:
             return refused.reason
         return "ran"
 
     for server, tool in (("github\n", "t"), ("github", "a.b"), ("GitHub", "t"), ("g", "t")):
         assert asyncio.run(_run(server, tool)) == mcp_tools.LIVE_BAD_INPUT
+
+
+# ── The member grant and the agent scope (review fix P1) ───────────────────
+
+
+@pytest.mark.parametrize("who", [
+    {"grants": ("feature:studio",)},                                   # no grant
+    {"grants": ("feature:studio", "integrations:use:*"), "denies": (GRANT,)},  # denied
+    {"grants": ("feature:studio", "integrations:use:mcp-linear")},     # another server
+])
+def test_a_member_without_the_grant_makes_no_call(lw, who) -> None:
+    """The agent run drops a server when ``integrations:use:mcp-<server>`` is
+    refused. The live read does the same, before any read of the registry."""
+    _warm_list(lw)
+    r = _preview(lw, _pid(lw), "issue_a", **who)
+    assert (r.status_code, _code(r)) == (403, "source_not_open")
+    assert lw.lists == [] and lw.calls == [] and lw.meta_reads == []
+    assert lw.audits[-1]["detail"]["live"] == mcp_tools.LIVE_NO_GRANT
+
+
+@pytest.mark.parametrize("grants", [("feature:studio", GRANT),
+                                    ("feature:studio", "integrations:use:*")])
+def test_a_member_with_the_grant_reads(lw, grants) -> None:
+    r = _preview(lw, _pid(lw), "issue_a", grants=grants)
+    assert r.status_code == 200, r.text
+    assert len(lw.calls) == 1
+
+
+@pytest.mark.parametrize("scope", [(), ("agent-sales",)])
+def test_a_server_that_no_agent_may_use_refuses(lw, scope) -> None:
+    """``agent_scope: []`` gives the server to no agent, and a list of names
+    gives it to those agents only. A preview is no agent, so both refuse."""
+    lw.servers[ORG][0].agent_scope = scope
+    r = _preview(lw, _pid(lw), "issue_a")
+    assert (r.status_code, _code(r)) == (403, "source_not_open")
+    assert lw.lists == [] and lw.calls == []
+    assert lw.audits[-1]["detail"]["live"] == mcp_tools.LIVE_NO_SCOPE
+
+
+def test_a_check_that_fails_is_a_refusal() -> None:
+    def _boom(_p: str) -> bool:
+        raise RuntimeError("identity down")
+
+    assert mcp_tools._may_use(_boom, "github") is False
+    assert mcp_tools._may_use(lambda _p: 1, "github") is False  # only a real True
+    assert mcp_tools._may_use(lambda p: p == GRANT, "github") is True
+
+
+def test_the_service_name_is_the_rule_of_the_run() -> None:
+    import importlib.util
+
+    if importlib.util.find_spec("orchestrator") is None:
+        pytest.skip("the orchestrator package is not installed here")
+    from orchestrator import _maf_mcp
+
+    for name in ("github", "a-b", "x9"):
+        assert mcp_tools.mcp_service(name) == _maf_mcp.mcp_service(name)
+
+
+def test_an_outside_agent_makes_no_call(lw) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(actions.router)
+
+    def _user() -> UserContext:
+        lw.org = ORG
+        return UserContext(email=ANA, role=UserRole.AGENT, organization_id=ORG,
+                           access=build_access(["feature:studio", GRANT]))
+
+    app.dependency_overrides[get_current_user] = _user
+    r = TestClient(app).post(f"/studio/apps/{_pid(lw)}/actions/issue_a",
+                             json={}, params={"preview": "1"})
+    assert r.status_code in (403, 404), r.text
+    assert lw.calls == [] and lw.lists == []
+
+
+# ── The limits of the live path (review fix P2) ────────────────────────────
+
+
+def _fresh_calls(w: Any, n: int, *, email: str = ANA, pid: str | None = None,
+                 org: str = ORG) -> list[int]:
+    pid = pid or _pid(w, org=org, owner=email)
+    return [_preview(w, pid, "issue_a", {"n": i, "who": email}, email=email, org=org).status_code
+            for i in range(n)]
+
+
+def test_the_11th_call_of_a_member_in_a_minute_is_429(lw) -> None:
+    lw.raw.now = 6000.0  # the start of a window
+    _warm_list(lw)
+    codes = _fresh_calls(lw, mcp_tools.MEMBER_CALLS_PER_WINDOW)
+    assert codes == [200] * 10
+    r = _preview(lw, _pid(lw), "issue_a", {"n": 99})
+    assert (r.status_code, _code(r)) == (429, "mcp_rate_limited")
+    assert r.headers["Retry-After"] == "60"
+    assert len(lw.calls) == 10
+    assert lw.audits[-1]["detail"]["live"] == "mcp_rate_limited"
+
+
+def test_a_cache_hit_is_free(lw) -> None:
+    lw.raw.now = 6000.0
+    _warm_list(lw)
+    pid = _pid(lw)
+    for _ in range(mcp_tools.MEMBER_CALLS_PER_WINDOW + 5):
+        assert _preview(lw, pid, "issue_a", {"n": 1}).status_code == 200
+    assert len(lw.calls) == 1
+
+
+def test_a_second_member_is_not_blocked_by_the_first(lw) -> None:
+    lw.raw.now = 6000.0
+    _warm_list(lw)
+    _fresh_calls(lw, mcp_tools.MEMBER_CALLS_PER_WINDOW + 1)
+    assert _fresh_calls(lw, 3, email=BEN) == [200, 200, 200]
+
+
+def test_the_org_cap_holds_across_members(lw, monkeypatch) -> None:
+    monkeypatch.setattr(mcp_tools, "ORG_CALLS_PER_WINDOW", 4)
+    lw.raw.now = 6000.0
+    _warm_list(lw)
+    assert _fresh_calls(lw, 3) == [200] * 3
+    assert _fresh_calls(lw, 2, email=BEN) == [200, 429]
+    # Another org has its own count.
+    _warm_list(lw, OTHER)
+    assert _fresh_calls(lw, 2, org=OTHER) == [200, 200]
+
+
+def test_the_window_resets(lw) -> None:
+    lw.raw.now = 6000.0
+    _warm_list(lw)
+    _fresh_calls(lw, mcp_tools.MEMBER_CALLS_PER_WINDOW + 1)
+    lw.raw.now += mcp_tools.RATE_WINDOW_S
+    _warm_list(lw)
+    assert _preview(lw, _pid(lw), "issue_a", {"n": "next"}).status_code == 200
+
+
+def test_a_live_list_counts_once_with_its_call(lw) -> None:
+    lw.raw.now = 6000.0
+    _preview(lw, _pid(lw), "issue_a", {"n": 1})
+    assert len(lw.lists) == 1 and len(lw.calls) == 1
+    window = str(int(lw.raw.now // mcp_tools.RATE_WINDOW_S))
+    member = [k for k in lw.raw.data if ":rate:m:" in k and k.endswith(window)]
+    assert [lw.raw.data[k] for k in member] == ["1"]
+
+
+async def test_the_org_holds_at_most_3_live_reads_at_once(lw) -> None:
+    gate = asyncio.Event()
+    started: list[int] = []
+
+    async def _slow(server: Any, tool: str, args: dict[str, Any]) -> Any:
+        started.append(1)
+        await gate.wait()
+        return _answer()
+
+    _warm_list(lw)
+    reads = [asyncio.ensure_future(mcp_tools.call_read_tool(
+        ORG, f"m{i}@example.test", "github", "get_issue", {"i": i},
+        may_use=lambda _p: True, caller=_slow)) for i in range(mcp_tools.LIVE_PER_ORG)]
+    while len(started) < mcp_tools.LIVE_PER_ORG:
+        await asyncio.sleep(0)
+    with pytest.raises(mcp_tools.LiveLimited):
+        await mcp_tools.call_read_tool(ORG, "late@example.test", "github", "get_issue", {},
+                                       may_use=lambda _p: True, caller=_slow)
+    # Another org is not held by this one.
+    _warm_list(lw, OTHER)
+    other = asyncio.ensure_future(mcp_tools.call_read_tool(
+        OTHER, ANA, "github", "get_issue", {}, may_use=lambda _p: True, caller=_slow))
+    while len(started) < mcp_tools.LIVE_PER_ORG + 1:
+        await asyncio.sleep(0)
+    gate.set()
+    await asyncio.gather(*reads, other)
+    assert mcp_tools._LIVE_IN_FLIGHT == {}
+    # The slots are free again.
+    got = await mcp_tools.call_read_tool(ORG, "late@example.test", "github", "get_issue", {},
+                                         may_use=lambda _p: True, caller=_slow)
+    assert got.cached is False
+
+
+async def test_a_failed_read_frees_its_slot(lw) -> None:
+    async def _bad(server: Any, tool: str, args: dict[str, Any]) -> Any:
+        raise TimeoutError("slow")
+
+    _warm_list(lw)
+    for _ in range(mcp_tools.LIVE_PER_ORG + 1):
+        with pytest.raises(mcp_tools.ListFailed):
+            await mcp_tools.call_read_tool(ORG, ANA, "github", "get_issue", {"x": 1},
+                                           may_use=lambda _p: True, caller=_bad)
+    assert mcp_tools._LIVE_IN_FLIGHT == {}
+
+
+def test_the_limits_are_constants() -> None:
+    assert (mcp_tools.MEMBER_CALLS_PER_WINDOW, mcp_tools.ORG_CALLS_PER_WINDOW,
+            mcp_tools.RATE_WINDOW_S, mcp_tools.LIVE_PER_ORG) == (10, 60, 60, 3)
+    assert mcp_tools.MAX_CALL_BYTES == mcp_tools.MAX_ANSWER_BYTES
+
+
+# ── The two notes of the review on the shape ───────────────────────────────
+
+
+def test_a_long_key_is_cut_with_truncated() -> None:
+    result, cut = mcp_tools.shape_result({"structuredContent": {"k" * 300: 1}})
+    assert cut is True and list(result["structured"]) == ["k" * 200]
+
+
+def test_two_keys_that_clean_to_one_keep_the_first() -> None:
+    result, cut = mcp_tools.shape_result({"structuredContent": {"ab": 1, "a\u200bb": 2}})
+    assert cut is True and result["structured"] == {"ab": 1}

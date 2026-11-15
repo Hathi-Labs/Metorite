@@ -435,7 +435,8 @@ def lp(pw, monkeypatch):
     server = SimpleNamespace(name="github", enabled=True, always_confirm=False,
                              read_only_key=False, url="https://mcp.example.test/github",
                              headers={"Authorization": "Bearer i11-0"}, oauth=False,
-                             connected_by="admin@example.test", created_at=None)
+                             connected_by="admin@example.test", created_at=None,
+                             agent_scope=("*",))
     monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
     monkeypatch.setattr(mcp_tools, "_now", lambda: raw.now)
 
@@ -480,13 +481,32 @@ def _live_pid(lp: Any, connections: bool = True) -> str:
     return _package(lp, manifest=manifest)
 
 
+def _gclient(lp: Any) -> Any:
+    """A client of the door whose member holds ``integrations:use:mcp-github``,
+    the grant that the live read needs (review fix P1)."""
+    from acb_auth import UserContext, UserRole, build_access, get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(actions.router)
+
+    def _user() -> UserContext:
+        lp.org = ORG
+        return UserContext(email="ana@example.test", role=UserRole.EMPLOYEE, organization_id=ORG,
+                           access=build_access(["feature:studio", "integrations:use:mcp-github"]))
+
+    app.dependency_overrides[get_current_user] = _user
+    return TestClient(app)
+
+
 class TestTheLivePreview:
     def test_the_one_allowed_path_reaches_the_network_once(self, lp):
         """A class A read with a fresh list reaches ``mcp_client`` ONCE, for the
         ``tools/call``, through the named path. The tripwire refuses it, so
         the answer is 502 and nothing is sent."""
         lp.warm()
-        r = _post(_client(lp), _live_pid(lp), "issue_a", {})
+        r = _post(_gclient(lp), _live_pid(lp), "issue_a", {})
         assert (r.status_code, _code(r)) == (502, "mcp_unreachable")
         assert lp.hits == ["outbound_guard.mcp_client"]
         [stack] = lp.stacks
@@ -496,7 +516,7 @@ class TestTheLivePreview:
     def test_a_cold_list_reaches_the_network_for_the_list_only(self, lp):
         """A cold list reads ``tools/list`` first. Its failure stops the read,
         so no ``tools/call`` follows."""
-        r = _post(_client(lp), _live_pid(lp), "issue_a", {})
+        r = _post(_gclient(lp), _live_pid(lp), "issue_a", {})
         assert (r.status_code, _code(r)) == (502, "mcp_unreachable")
         assert lp.hits == ["outbound_guard.mcp_client"]
         assert "_sdk_list" in lp.stacks[0] and "_sdk_call" not in lp.stacks[0]
@@ -507,13 +527,13 @@ class TestTheLivePreview:
         ("issue_ghost", "not_in_catalog")])
     def test_each_other_mcp_action_sends_nothing(self, lp, action, code):
         lp.warm()
-        r = _post(_client(lp), _live_pid(lp), action, {})
+        r = _post(_gclient(lp), _live_pid(lp), action, {})
         assert (r.status_code, _code(r)) == (403, code)
         assert lp.hits == []
 
     def test_no_connection_sends_nothing(self, lp):
         lp.warm()
-        r = _post(_client(lp), _live_pid(lp, connections=False), "issue_a", {})
+        r = _post(_gclient(lp), _live_pid(lp, connections=False), "issue_a", {})
         assert (r.status_code, _code(r)) == (403, "source_not_open")
         assert lp.hits == []
 
@@ -523,13 +543,13 @@ class TestTheLivePreview:
         monkeypatch.setattr(get_settings(), "studio_live_preview_orgs", "")
         lp.warm()
         for action in ("issue_a", "issue_b", "issue_c"):
-            r = _post(_client(lp), _live_pid(lp), action, {})
+            r = _post(_gclient(lp), _live_pid(lp), action, {})
             assert (r.status_code, _code(r)) == (403, "source_not_open")
         assert lp.hits == []
 
     def test_outside_a_preview_sends_nothing(self, lp):
         lp.warm()
-        r = _client(lp).post(f"/studio/apps/{_live_pid(lp)}/actions/issue_a", json={})
+        r = _gclient(lp).post(f"/studio/apps/{_live_pid(lp)}/actions/issue_a", json={})
         assert (r.status_code, _code(r)) == (403, "source_not_open")
         assert lp.hits == []
 
@@ -539,9 +559,9 @@ class TestTheLivePreview:
         lp.warm()
         pid = _live_pid(lp)
         for action in ("pull", "flow_a"):
-            assert _code(_post(_client(lp), pid, action, {})) == "source_not_open"
+            assert _code(_post(_gclient(lp), pid, action, {})) == "source_not_open"
         for action in ("flow", "propose", "sync"):
-            assert _post(_client(lp), pid, action, {}).json()["preview"] is True
+            assert _post(_gclient(lp), pid, action, {}).json()["preview"] is True
         assert lp.hits == []
 
 

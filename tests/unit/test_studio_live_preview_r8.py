@@ -33,6 +33,8 @@ d. Each key of an answer carries the org of its read. A key of org A cannot
 e. Two members of org A never share an answer.
 f. The ``connections`` read of the door binds the org of the session.
 g. A class B tool of a real row makes no call.
+h. A member whose access denies ``integrations:use:mcp-<server>`` makes no
+   call on a real row, and a server of ``agent_scope: []`` refuses.
 
 **The mutations (R7).** Each ran on 2026-11-15, then was restored with git.
 
@@ -47,6 +49,8 @@ g. A class B tool of a real row makes no call.
   a second wall, not the first.
 * M3. ``call_read_tool``: key the answer without the member.
   ``test_r8_two_members_never_share_an_answer`` goes red.
+* M4. ``call_read_tool``: drop the grant check.
+  ``test_r8_a_denied_grant_or_no_agent_scope_makes_no_call`` goes red.
 
 Run (one R8 suite at a time on the shared scratch database)::
 
@@ -157,11 +161,15 @@ async def two_orgs(registry_on_promoted, monkeypatch):  # noqa: F811
 
 
 async def _read(org: str, server: str, *, member: str = ANA, tool: str = "get_issue",
-                args: dict[str, Any] | None = None) -> Any:
+                args: dict[str, Any] | None = None, grants: tuple[str, ...] = ("integrations:use:*",),
+                denies: tuple[str, ...] = ()) -> Any:
+    from acb_auth import build_access
     from gateway.connections import mcp_tools
 
+    access = build_access(grants, [(d, "deny") for d in denies])
     try:
-        return await mcp_tools.call_read_tool(org, member, server, tool, args or {})
+        return await mcp_tools.call_read_tool(org, member, server, tool, args or {},
+                                              may_use=access.has)
     except mcp_tools.LiveRefused as refused:
         return refused.reason
 
@@ -255,3 +263,17 @@ async def test_r8_a_class_b_tool_of_a_real_row_makes_no_call(two_orgs) -> None:
     w = two_orgs
     assert await _read(w.p.org_a, w.names["reg_a"], tool="delete_repo") == "not_class_a"
     assert w.calls == [] and w.lists == [_url(w.names["reg_a"])]
+
+
+async def test_r8_a_denied_grant_or_no_agent_scope_makes_no_call(two_orgs) -> None:
+    from gateway.connections import mcp
+
+    w = two_orgs
+    reg_a = w.names["reg_a"]
+    assert await _read(w.p.org_a, reg_a, denies=(f"integrations:use:mcp-{reg_a}",)) == (
+        "grant_denied")
+    assert await _read(w.p.org_a, reg_a, grants=()) == "grant_denied"
+    await mcp.save(w.p.org_a, name=reg_a, url=_url(reg_a), headers={"Authorization": "x"},
+                   connected_by="r8-seed", always_confirm=False, agent_scope=())
+    assert await _read(w.p.org_a, reg_a) == "scope_denied"
+    assert w.calls == [] and w.lists == []

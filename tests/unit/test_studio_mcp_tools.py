@@ -190,6 +190,12 @@ class RawRedis:
             self.expiry.pop(name, None)
         return gone
 
+    async def incr(self, name: str, amount: int = 1) -> int:
+        live = self._live(name)
+        value = (int(self.data[name]) if live else 0) + int(amount)
+        self.data[name] = str(value)
+        return value
+
     async def expire(self, name: str, seconds: int) -> bool:
         if not self._live(name):
             return False

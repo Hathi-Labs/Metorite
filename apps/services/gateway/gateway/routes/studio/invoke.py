@@ -244,7 +244,9 @@ the one path of the door that calls a tool. It checks the class again on a
 fresh list and passes the gate, and its refusal is ``source_not_open``. The
 answer is ``{preview, result, truncated, live_from}``. A failed server or an
 error of the tool is 502 ``mcp_<reason>``, and a cache that does not answer
-is 503 ``mcp_cache_unavailable``. The audit row holds ``live``: ``called``,
+is 503 ``mcp_cache_unavailable``. A member without ``integrations:use:mcp-<server>``
+gets ``source_not_open`` before any read. A read over a limit is 429
+``mcp_rate_limited``. The audit row holds ``live``: ``called``,
 ``cached`` or the code of the refusal, and no data of the answer. Outside a
 preview, an MCP action stays ``source_not_open``.
 
@@ -2181,6 +2183,8 @@ async def _run_door_op(request: Request, door: DoorOp, raw: bytes, out: _Outcome
 LIVE_FAILED = "The server of this action did not answer, so try the preview again later."
 LIVE_TOOL_ERROR = "The tool answered with an error, so check the input and preview it again."
 LIVE_CACHE_DOWN = "The live preview is not available now, so try the preview again later."
+LIVE_LIMITED = "mcp_rate_limited"
+LIVE_LIMITED_TEXT = "This live preview ran too often in a short time, so wait and preview it again."
 #: I11a. The code of the audit row of an MCP action whose manifest does not
 #: name ``mcp:<server>`` in its ``connections``.
 LIVE_NOT_DECLARED = "connection_not_declared"
@@ -2219,20 +2223,32 @@ def _live_args(raw: bytes) -> dict[str, Any] | None:
     return {} if not raw else _json_object(raw)
 
 
-async def _run_live_read(org: str, member: str, ref: UsesRef, raw: bytes, out: _Outcome) -> None:
+async def _run_live_read(org: str, member: str, ref: UsesRef, raw: bytes, out: _Outcome,
+                         may_use: Any = None) -> None:
     """The live read of the class A MCP tool *ref* in a preview (I11a).
 
     The caller holds no session. ``mcp_tools.call_read_tool`` decides the
     rest, and it is the one path of the door that calls a tool. A refusal of
     it is :data:`SOURCE_NOT_OPEN` (the answer before I11a), and a failed
-    server or an error of the tool is a 502 with a code, never data."""
+    server or an error of the tool is a 502 with a code, never data. A read
+    over a limit is 429 ``mcp_rate_limited`` with ``Retry-After``.
+    *may_use* is the ``has_permission`` of the session member. With none,
+    the read fails closed (``grant_denied``)."""
     args = _live_args(raw)
     if args is None:
         out.fail = _Fail("refused", BAD_ARGS, HTTPException(status_code=422, detail={
             "code": BAD_ARGS, "message": BAD_ARGS_TEXT, "field": None}))
         return
     try:
-        read = await mcp_tools.call_read_tool(org, member, str(ref.server), str(ref.tool), args)
+        read = await mcp_tools.call_read_tool(
+            org, member, str(ref.server), str(ref.tool), args,
+            may_use=may_use if callable(may_use) else (lambda _p: False))
+    except mcp_tools.LiveLimited as limited:
+        out.live_note = LIVE_LIMITED
+        out.fail = _Fail("refused", LIVE_LIMITED, HTTPException(
+            status_code=429, detail={"code": LIVE_LIMITED, "message": LIVE_LIMITED_TEXT},
+            headers={"Retry-After": str(limited.retry_after)}))
+        return
     except mcp_tools.LiveRefused as refused:
         out.live_note = refused.reason
         if refused.reason == mcp_tools.LIVE_BAD_INPUT:
@@ -2269,10 +2285,15 @@ async def _run_live(request: Request, user: UserContext, pid: str, action: str,
     the second check runs in a new session. That session closes before the
     server is called, so the door holds no pool connection while the server
     answers. A viewer never comes here (``refusal_for``), so the call takes
-    no reader slot."""
+    no reader slot. A signed outside agent gets ``source_not_open`` before
+    the body read, as a door op refuses it. The grant of the member is the
+    ``has_permission`` of the session (``acb_auth``), the seam of the run."""
     member = str(user.email)
     org = str(user.organization_id or "")
     first_uses, first_cls = out.uses, out.cls
+    if user.agent is not None or getattr(user, "is_agent", False):
+        out.refusal = SOURCE_NOT_OPEN
+        return
     raw = await _read_body(request)
     if raw is None:
         out.too_large = True
@@ -2283,7 +2304,7 @@ async def _run_live(request: Request, user: UserContext, pid: str, action: str,
             return
         if not await _held_live_read(db, member, package, ref, out, first_uses, first_cls, org):
             return
-    await _run_live_read(org, member, ref, raw, out)
+    await _run_live_read(org, member, ref, raw, out, user.has_permission)
 
 
 async def _run_executor(request: Request, user: UserContext, pid: str, action: str,
