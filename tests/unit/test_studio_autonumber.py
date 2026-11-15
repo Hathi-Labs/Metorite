@@ -235,12 +235,26 @@ def _held(hidden: frozenset[str]) -> Any:
     return SimpleNamespace(fields=[_field()], scope=scope)
 
 
-def test_a_hidden_autonumber_key_gets_the_sentence_of_any_hidden_key() -> None:
-    """A viewer who cannot see the field must not learn its type from a refusal."""
-    with pytest.raises(FieldError) as hidden:
-        store._refuse_autonumber_keys(_held(frozenset({"no"})), {"no": None})
-    assert hidden.value.message == "Field `no` is hidden from you, so a write cannot set it."
-    assert "filled by the store" not in hidden.value.message
+def test_a_hidden_autonumber_key_answers_like_a_hidden_field_of_any_other_type() -> None:
+    """A viewer who cannot see the field must not learn its type from an answer.
+    ``_apply_write`` runs ``_refuse_hidden_write`` and then ``_refuse_autonumber_keys``."""
+    def answer(key: str, value: Any, *, create: bool) -> str:
+        held = _held(frozenset({"no", "memo"}))
+        try:
+            store._refuse_hidden_write(held, {key: value}, create=create)
+            store._refuse_autonumber_keys(held, {key: value})
+        except FieldError as exc:
+            return exc.message.replace(f"`{key}`", "`K`")
+        return "accepted"
+
+    for create in (True, False):
+        for value in (None, "FV-0001", 7):
+            assert answer("no", value, create=create) == answer("memo", value, create=create), (
+                create, value)
+    assert answer("no", "FV-0001", create=True) == "Field `K` is hidden from you, so a write cannot set it."
+    assert answer("no", None, create=True) == "accepted"  # the same as a hidden text field
+    assert "filled by the store" not in answer("no", "x", create=False)
+    # A VISIBLE key still says that the store fills it.
     with pytest.raises(FieldError) as shown:
         store._refuse_autonumber_keys(_held(frozenset()), {"no": None})
     assert "filled by the store" in shown.value.message

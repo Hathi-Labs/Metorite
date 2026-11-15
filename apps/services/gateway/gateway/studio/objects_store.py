@@ -4042,9 +4042,12 @@ def _refuse_autonumber_keys(held: _Held, data: Any) -> None:
     for f in autonumber_fields(held.fields):
         if f.key in data:
             if f.key in hidden:
-                # The same sentence as any hidden key: it must not tell the type.
-                raise FieldError(
-                    f.key, f"Field `{f.key}` is hidden from you, so a write cannot set it.")
+                # ``_refuse_hidden_write`` ran first and refused each non-null value of a
+                # hidden key (create and update) with the sentence of any hidden key. A
+                # create may send a hidden key with no value, and the store accepts that
+                # for every type. So a hidden autonumber gets no refusal of its own here:
+                # it must not tell the type (the store then fills the number).
+                continue
             raise FieldError(
                 f.key, f"Field `{f.key}` is filled by the store, one number for each new "
                 "record. Write no value for it.")
