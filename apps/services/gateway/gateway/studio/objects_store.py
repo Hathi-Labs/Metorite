@@ -4630,24 +4630,24 @@ _TREE_KIDS = (
 #: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
 #: the object in the index prefix, or it scans the whole org.
 _HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
-#: The same for the lookup of a PARENT RECORD by id in ``studio_records``. CI plan of run
-#: 43682459066 (task 3308): with ``p.object_id = ...`` the planner took
-#: ``studio_records_object_id_key`` (organization, object) as the index condition and filtered
-#: ``id`` row by row: 1,999 lookups of 675 rows, 3.7 s. The primary key is the path with a full
-#: equality on ``id``.
-_REC_OF_OBJECT = "p.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+#: THE PARENT RECORD by id (task 3308, CI run 43696143611, never analyzed): the parent id is
+#: computed in the hot-row select (``pid``) and the record lookup compares two plain uuids.
+#: The regex of the guard (``v_text ~ uuid-form``) is not leakproof, and the tables are under
+#: FORCE ROW LEVEL SECURITY: a qual with a non-leakproof function cannot be an index
+#: condition, so ``p.id = CASE WHEN v_text ~ ... END`` was a row-by-row FILTER on whatever
+#: index the planner took (the org index: 249,875 buffers for 2,000 lookups on the runner).
 
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
 _TREE_PARENT = (
-    "JOIN LATERAL (SELECT h.v_text FROM studio_record_hot h "
+    "JOIN LATERAL (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
     "WHERE h.organization_id = " + _BOUND_ORG + " "
     "AND " + _HOT_OF_OBJECT + " AND h.record_id = u.id "
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
     "JOIN LATERAL (SELECT p.id FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND " + _REC_OF_OBJECT + " "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
     "OFFSET 0) p ON true "
 )
 
@@ -4691,13 +4691,13 @@ _TREE_OBJECT_SQL = (
 _TREE_ALL_ROOTS = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
-    "SELECT 1 FROM (SELECT h.v_text FROM studio_record_hot h "
+    "SELECT 1 FROM (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
     f"WHERE h.{_OF_ORG} AND " + _HOT_OF_OBJECT + " AND h.record_id = r.id "
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
     "JOIN LATERAL (SELECT 1 FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND " + _REC_OF_OBJECT + " "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
     "OFFSET 0) p ON true)"
 )
 
