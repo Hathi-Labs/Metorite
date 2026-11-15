@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 197
+-- Tables in this phase: 198
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1556,6 +1556,13 @@ ALTER TABLE studio_object_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE studio_object_counters FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS studio_object_counters_tenant_isolation ON studio_object_counters;
 CREATE POLICY studio_object_counters_tenant_isolation ON studio_object_counters
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_record_files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_record_files FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_record_files_tenant_isolation ON studio_record_files;
+CREATE POLICY studio_record_files_tenant_isolation ON studio_record_files
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

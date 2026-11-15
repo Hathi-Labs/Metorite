@@ -105,6 +105,17 @@ class InstalledApp:
         return frozenset(f["key"] for f in fields
                          if isinstance(f, Mapping) and isinstance(f.get("key"), str))
 
+    def field_types(self, object_name: str) -> dict[str, str]:
+        """The type of each field that the installed version declares for
+        *object_name*, by key. A viewer takes the type from here, never from
+        the draft row, so a draft that retypes a field changes nothing."""
+        entry = self._objects().get(object_name)
+        fields = entry.get("fields") if entry is not None else None
+        if not isinstance(fields, list):
+            return {}
+        return {f["key"]: str(f.get("type")) for f in fields
+                if isinstance(f, Mapping) and isinstance(f.get("key"), str)}
+
     def _rules(self, object_name: str) -> tuple[Rule, ...]:
         """The rules that the installed version declares for *object_name*,
         read as a publish reads them. A list that the authoring check refuses
