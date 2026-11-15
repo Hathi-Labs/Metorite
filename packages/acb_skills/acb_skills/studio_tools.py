@@ -1296,6 +1296,7 @@ LAYOUT_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("dashboard", ("overview", "kpi", "summary", "how are we doing", "dashboard")),
     ("list_detail", ("directory", "details beside", "browse")),
     ("table_workspace", ("spreadsheet", "bulk", "inventory", "track", "manage")),
+    ("app_home", ("home page", "first screen", "start page", "my day", "field staff")),
 )
 
 
@@ -1320,8 +1321,8 @@ DESIGN_QUESTIONS: tuple[str, ...] = (
     "What does the sample data look like? It looks real: names, dates, amounts and statuses of a small business.",
 )
 DESIGN_SCREENS: tuple[tuple[str, str, str], ...] = (
-    ("Field staff: visits, jobs, a day to run", "dashboard",
-     "App Home is not built yet. Use a dashboard with the stat views, and name it the first page."),
+    ("Field staff: visits, jobs, a day to run", "app_home",
+     "App Home: a greeting, up to 4 numbers, the work that needs the member, and what changed lately."),
     ("A manager who wants to know how we are doing", "dashboard", "Stat views first, then one or two charts."),
     ("A clerk who enters and edits many rows", "table_workspace", "The table is the first screen for this audience."),
     ("A pipeline: hiring, sales, claims", "board", "One board view, grouped by a status field."),

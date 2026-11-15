@@ -57,11 +57,12 @@ describe("readPage with a preset", () => {
 });
 
 describe("the preset table", () => {
-  it("names a region of the closed list for each preset, with one required", () => {
+  it("names a region of the closed list for each preset, with one required, but App Home", () => {
     for (const name of LAYOUTS) {
       const rules = PRESET_REGIONS[name];
       expect(Object.keys(rules).length).toBeGreaterThan(0);
-      expect(Object.values(rules).some((r) => r.required)).toBe(true);
+      // App Home is the one preset with no required region (LOOK-1): a greeting alone is a valid home.
+      expect(Object.values(rules).some((r) => r.required) || name === "app_home").toBe(true);
     }
   });
 });

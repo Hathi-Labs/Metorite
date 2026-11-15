@@ -562,7 +562,8 @@
                 "board",
                 "dashboard",
                 "work_queue",
-                "approval_queue"
+                "approval_queue",
+                "app_home"
               ],
               "type": "string"
             },
@@ -580,7 +581,7 @@
             },
             "type": "array"
           },
-          "maxProperties": 6,
+          "maxProperties": 7,
           "title": "Regions",
           "type": "object"
         },

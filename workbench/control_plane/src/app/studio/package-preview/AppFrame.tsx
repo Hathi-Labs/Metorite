@@ -15,7 +15,7 @@
  * With `?floor=1` the frame draws the floor view (STU-D23a). `lib/studio/floorView.ts` decides
  * which part stays, and each part below reads its flag there.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 
@@ -37,6 +37,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
+import { homeGreeting } from "@/lib/studio/homeGreeting";
 import { floorPages, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
@@ -187,6 +188,9 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
   // The signed-in member, for the `me` token of a view filter (STU-AF3b). The page and the rail counts both use it.
   const { data: session } = useSession();
   const email = session?.user?.email?.trim().toLowerCase() || null;
+  // The hour of the greeting of App Home (LOOK-1). It is set after the first paint, so the server and the client agree.
+  const [hour, setHour] = useState<number | null>(null);
+  useEffect(() => setHour(new Date().getHours()), []);
   const ctx: ViewMapContext = useMemo(
     () => ({ actions: controls.actions, objects: detail.objects, owner: controls.owner, lens: bar?.lens ?? null, recordBase, email }),
     [controls.actions, controls.owner, detail.objects, bar?.lens, recordBase, email]);
@@ -316,6 +320,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       <div className="min-h-0 flex-1">
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
+        homeGreeting={hour === null ? undefined : homeGreeting(session?.user?.name, hour)}
         onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbarShown ? toolbar : undefined}
         record={opened && recordObject ? {
           title: titled && titled.id === opened.id ? titled.text : recordObject.label || recordObject.name,

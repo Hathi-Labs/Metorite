@@ -398,6 +398,7 @@ class TabDef(_Strict):
 #: region -> (block type, most views, required). ``manifest.ts`` holds the same table.
 LAYOUTS: tuple[str, ...] = (
     "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+    "app_home",
 )  # fmt: skip
 _LIST_DETAIL = {"list": ("table", 1, True), "detail": ("detail", 1, True)}
 PRESET_REGIONS: dict[str, dict[str, tuple[str, int, bool]]] = {
@@ -411,8 +412,15 @@ PRESET_REGIONS: dict[str, dict[str, tuple[str, int, bool]]] = {
     },
     "work_queue": _LIST_DETAIL,
     "approval_queue": _LIST_DETAIL,
+    # LOOK-1: the first screen of an app. No region is required, so an app can start with the
+    # greeting alone. `recent` is the only region name that is new.
+    "app_home": {
+        "kpis": ("stat", 4, False),
+        "worklist": ("table", 1, False),
+        "recent": ("table", 1, False),
+    },
 }
-REGION_NAMES: tuple[str, ...] = ("list", "main", "detail", "kpis", "charts", "worklist")
+REGION_NAMES: tuple[str, ...] = ("list", "main", "detail", "kpis", "charts", "worklist", "recent")
 MAX_REGION_VIEWS = 6
 
 
@@ -426,7 +434,8 @@ class PageDef(_Strict):
     #: A preset replaces the grid (owner, 2026-11-14). A page with a `layout` has `regions`
     #: and no tabs, cells or side. `_check_pages` holds the rest.
     layout: Literal[
-        "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue"
+        "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+        "app_home",
     ] | None = None
     regions: dict[str, list[str]] = Field(default_factory=dict, max_length=len(REGION_NAMES))
 

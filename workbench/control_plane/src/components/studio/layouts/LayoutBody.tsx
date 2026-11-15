@@ -26,15 +26,18 @@ export interface LayoutBodyProps {
   renderView: (id: string) => ReactNode;
   /** The title of a view, for the label of its region. */
   titleOf: (id: string) => string;
+  /** The first line of App Home (LOOK-1). The other presets ignore it. */
+  greeting?: ReactNode;
 }
 
 /** The presets that this file draws. A later slice adds one. */
-export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board", "dashboard"];
+export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board", "dashboard", "app_home"];
 
-export default function LayoutBody({ layout, regions, renderView, titleOf }: LayoutBodyProps) {
+export default function LayoutBody({ layout, regions, renderView, titleOf, greeting }: LayoutBodyProps) {
   if (!DRAWN_LAYOUTS.includes(layout)) {
     return <p data-layout-pending={layout} className="text-sm text-muted-foreground">This layout is not drawn yet.</p>;
   }
+  if (layout === "app_home") return <AppHome regions={regions} renderView={renderView} titleOf={titleOf} greeting={greeting} />;
   if (layout === "dashboard") return <Dashboard regions={regions} renderView={renderView} titleOf={titleOf} />;
   const main = regions.main?.[0];
   const node = main ? renderView(main) : null;
@@ -76,6 +79,41 @@ function Dashboard({ regions, renderView, titleOf }: Pick<LayoutBodyProps, "regi
       <div data-dashboard-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
       {charts.length > 0 ? <div data-dashboard-charts className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2">{charts}</div> : null}
       {work.length > 0 ? <div data-dashboard-worklist>{work}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * App Home (LOOK-1, `studio_layouts.md` section 11). A greeting, up to 4 numbers, the work that needs the member,
+ * and what changed lately. No region is required: a Home with a greeting alone is valid. Each part is its own
+ * labelled region, so one failed view never blanks the page.
+ */
+function AppHome({ regions, renderView, titleOf, greeting }: Pick<LayoutBodyProps, "regions" | "renderView" | "titleOf" | "greeting">) {
+  const part = (id: string) => {
+    const node = renderView(id);
+    return node ? <section key={id} aria-label={titleOf(id)} className="min-w-0">{node}</section> : null;
+  };
+  const kpis = (regions.kpis ?? []).map(part);
+  const work = (regions.worklist ?? []).map((id) => [id, part(id)] as const).filter(([, n]) => n !== null);
+  const recent = (regions.recent ?? []).map((id) => [id, part(id)] as const).filter(([, n]) => n !== null);
+  return (
+    <div data-layout="app_home" className="flex min-w-0 flex-col gap-4 sm:gap-5">
+      {greeting ? <p data-home-greeting className="text-lg font-semibold text-foreground sm:text-xl">{greeting}</p> : null}
+      {kpis.some((x) => x !== null) ? (
+        <div data-home-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
+      ) : null}
+      {work.map(([id, node]) => (
+        <div key={id} data-home-worklist className="flex min-w-0 flex-col gap-2">
+          <h2 className="text-sm font-semibold text-foreground">Needs you</h2>
+          {node}
+        </div>
+      ))}
+      {recent.map(([id, node]) => (
+        <div key={id} data-home-recent className="flex min-w-0 flex-col gap-2">
+          <h2 className="text-sm font-semibold text-foreground">Recent</h2>
+          {node}
+        </div>
+      ))}
     </div>
   );
 }

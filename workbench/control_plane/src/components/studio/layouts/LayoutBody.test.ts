@@ -56,7 +56,7 @@ describe("LayoutBody", () => {
     expect(draw("board", { main: [] })).toContain("no board to show");
   });
   it("draws only the presets that a slice built", () => {
-    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board", "dashboard"]);
+    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board", "dashboard", "app_home"]);
   });
   it("adds no colour and no pixel size", () => {
     const src = readFileSync(join(__dirname, "LayoutBody.tsx"), "utf-8");
@@ -103,3 +103,31 @@ describe("the frame", () => {
     expect(frame).toMatch(/<LayoutList[^>]*tile shape="tile"/);
   });
 });
+
+describe("App Home (LOOK-1)", () => {
+  const home = (regions: Record<string, string[]>, greeting?: string) =>
+    renderToStaticMarkup(createElement(LayoutBody, {
+      layout: "app_home", regions, greeting, renderView: (id) => createElement("div", { "data-view": id }, id),
+      titleOf: (id) => `Title ${id}`,
+    }));
+  it("is drawn, and draws the greeting before the numbers, the work and the recent rows", () => {
+    expect(DRAWN_LAYOUTS).toContain("app_home");
+    const html = home({ kpis: ["a", "b"], worklist: ["w"], recent: ["r"] }, "Good morning, Mira.");
+    const at = (t: string) => html.indexOf(t);
+    expect(at("data-home-greeting")).toBeLessThan(at("data-home-kpis"));
+    expect(at("data-home-kpis")).toBeLessThan(at("data-home-worklist"));
+    expect(at("data-home-worklist")).toBeLessThan(at("data-home-recent"));
+    expect(html).toContain("Needs you");
+    expect(html).toContain("Recent");
+  });
+  it("is valid with a greeting alone, and draws no empty part", () => {
+    const html = home({}, "Good morning.");
+    expect(html).toContain("Good morning.");
+    expect(html).not.toContain("data-home-kpis");
+    expect(html).not.toContain("data-home-worklist");
+  });
+  it("puts 2 numbers per row on a phone and 4 from a tablet", () => {
+    expect(home({ kpis: ["a"] })).toMatch(/data-home-kpis[^>]*grid-cols-2[^>]*sm:grid-cols-4/);
+  });
+});
+

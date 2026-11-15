@@ -86,6 +86,8 @@ export interface StudioPageProps {
   onCloseSide: () => void;
   /** Draw one view, or return `null` when its block is not built. */
   renderView: (viewId: string) => ReactNode;
+  /** The first line of an App Home page (LOOK-1). */
+  homeGreeting?: ReactNode;
   /** Controls above the grid, such as a filter. */
   toolbar?: ReactNode;
   /** The list bar (STU-AF4) in its own row under the toolbar, over the table or board. */
@@ -140,7 +142,7 @@ function NotBuilt({ view, label }: { view: string; label: string }) {
 }
 
 export default function StudioPage({
-  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record, bare = false,
+  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, homeGreeting, toolbar, filterBar, record, bare = false,
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
@@ -212,7 +214,7 @@ export default function StudioPage({
           {filterBar && <div className="mb-3 sm:mb-4">{filterBar}</div>}
           {page.layout ? (
             <LayoutBody layout={page.layout} regions={page.regions} renderView={renderView}
-              titleOf={(id) => titleOf(manifest.views, id)} />
+              titleOf={(id) => titleOf(manifest.views, id)} greeting={homeGreeting} />
           ) : cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
           ) : (
