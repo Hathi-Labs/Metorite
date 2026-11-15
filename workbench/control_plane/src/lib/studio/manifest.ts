@@ -216,6 +216,8 @@ export interface ViewDef {
   text?: string | null;
   // STU-LOOK-2: an icon of the icon list before the title of a stat tile. A stat view only.
   icon?: NavIcon | null;
+  // STU-LOOK-2b: a target for a stat tile (above 0). The tile draws the share of it as a bar. A stat view only.
+  target?: number | null;
 }
 
 // STU-D11a: how the views sit on a page. A view stays one block.

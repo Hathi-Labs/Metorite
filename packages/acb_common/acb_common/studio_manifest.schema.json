@@ -1178,6 +1178,20 @@
           "default": null,
           "title": "Submit"
         },
+        "target": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1000000000000,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
         "text": {
           "anyOf": [
             {
