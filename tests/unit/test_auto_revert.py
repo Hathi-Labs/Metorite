@@ -2843,6 +2843,25 @@ def test_civ31f_a_test_that_main_renames_does_not_close_the_revert_pr(tmp_path: 
     assert state["person"] == moved and state["tip"] == box.tip and "close_at" not in state
 
 
+@pytest.mark.parametrize("name", ["the tip of main", "the culprit"])
+def test_civ31f_absent_on_a_tree_that_must_fail_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """The first tip check and the culprit check want fail. There, ABSENT counts
+    as unknown: the pass stops with a PERSON line, and the case is not vacuous."""
+    repo, commit = _small_repo(tmp_path)
+    sha = commit("base (#100)", {"calc.py": BAD, "test_a.py": CALC_TEST})
+    mod = load_module()
+    cfg = _default_cfg(mod, repo, monkeypatch)
+    case = mod.Case(run_id="1", culprit="c" * 40, pr="", ids=["test_gone.py::test_add"])
+    rep = mod.Report("dry", {"run_id": 1})
+    with pytest.raises(mod.Stop) as stop:
+        mod.same(cfg, case, rep, name, sha, "fail")
+    assert f"give absent on {name}" in stop.value.reason
+    assert "cannot judge" in stop.value.reason
+    assert case.vacuous is False and case.absent == {}
+
+
 def test_civ31f_a_new_tip_with_no_failed_test_is_not_a_fix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
