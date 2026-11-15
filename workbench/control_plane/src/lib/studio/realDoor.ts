@@ -349,6 +349,10 @@ export interface ObjectRow {
     options: string[] | null; to: string | null; hot: boolean;
     // STU-C14: the bounds of a rating, the units of a quantity, the format of a barcode.
     min?: number | null; max?: number | null; units?: string[] | null; format?: string | null;
+    // STU-C24a: the ranges and conversions of a quantity.
+    normal?: { low?: string | null; high?: string | null } | null;
+    critical?: { low?: string | null; high?: string | null } | null;
+    conversions?: Array<{ from: string; to: string; factor: string }> | null;
     /** C13. A lines relation names the field of its line object that points back. */
     lines?: string | null;
   }>;
@@ -373,6 +377,8 @@ export interface PackageDetail {
   pages: PageDef[];
   /** The rail of the manifest (AF-2a). Empty when the manifest has none. */
   nav: NavSection[];
+  /** The `access` of each object of the manifest, by object name (C8a). Absent when the answer has none. */
+  objectAccess?: Record<string, Record<string, unknown>[] | null>;
 }
 
 /**
@@ -473,5 +479,9 @@ export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): P
   const views = Array.isArray(manifest.views) ? (manifest.views.filter(isObject) as unknown as ViewDef[]) : [];
   const pages = Array.isArray(manifest.pages) ? (manifest.pages.filter(isObject) as unknown as PageDef[]) : [];
   const nav = Array.isArray(manifest.nav) ? (manifest.nav.filter(isObject) as unknown as NavSection[]) : [];
-  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages, nav };
+  const objectAccess: Record<string, Record<string, unknown>[] | null> = {};
+  for (const o of Array.isArray(manifest.objects) ? manifest.objects.filter(isObject) : []) {
+    if (typeof o.name === "string") objectAccess[o.name] = Array.isArray(o.access) ? o.access.filter(isObject) : null;
+  }
+  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages, nav, objectAccess };
 }

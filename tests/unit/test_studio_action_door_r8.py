@@ -1975,6 +1975,12 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
     whole history of the member. ``clock_timestamp()`` is volatile and cannot
     bound an index, so the window reads ``now()``.
 
+    Task 3293. The plan check is now a tree walk of ``EXPLAIN (FORMAT JSON)``, and the
+    constraint indexes are dropped too (inside the same rolled-back transaction), so the
+    index under test is the only way into the table. The test no longer depends on the
+    join shape or on the statistics. Mutations: keep no index (a seq scan, red), or take
+    the window out of the SQL (an index read with no ``created_at`` bound, red).
+
     Task 2229. The test used to leave every index of the table in place and
     expect the planner to pick this one. On a table of a few rows the cost of
     ``pm_agent_runs_app_open_connection`` (organization, connection) wins as
@@ -2018,28 +2024,57 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
             )
             for name in others:
                 c.execute(text(f'DROP INDEX "{name}"'))
-            c.execute(text("SET LOCAL enable_seqscan = off"))
-            # Task 3049: migrations 418 and 421 widened pm_agent_runs, and the
-            # planner then drove the read from pm_agent_run_activities and reached
-            # pm_agent_runs through its key (a constraint index, which this test
-            # cannot drop) in a nested loop. With the nested loop off, the plan
-            # shows how pm_agent_runs itself is read, which is what this test pins.
-            # A merge join could still read pm_agent_runs in key order through the
-            # key, so it is off too. A hash join is left, and it reads the table
-            # through the one index that has a condition on it.
-            c.execute(text("SET LOCAL enable_nestloop = off"))
-            c.execute(text("SET LOCAL enable_mergejoin = off"))
-            lines = [
-                r[0] for r in c.execute(text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)
+            # Task 3293. The constraint indexes (the key and each unique) are the ones that a
+            # DROP INDEX cannot reach. They gave the planner a second way to read the table
+            # (a full walk of the key, or a point lookup in a nested loop), and the pick
+            # moved with the statistics and the join shape (tasks 3049 and 3293). DDL is
+            # transactional, so drop each such constraint here (CASCADE drops the foreign
+            # keys that name it) and the rollback restores them. Then the one index left on
+            # pm_agent_runs is the one under test, and no join shape has another way in.
+            owned = [
+                r[0]
+                for r in c.execute(
+                    text(
+                        "SELECT conname FROM pg_constraint"
+                        " WHERE conrelid = 'pm_agent_runs'::regclass AND contype IN ('p', 'u', 'x')"
+                    )
+                )
             ]
+            assert owned, "the table lost its key: this test then proves nothing about the choice"
+            for name in owned:
+                c.execute(text(f'ALTER TABLE pm_agent_runs DROP CONSTRAINT "{name}" CASCADE'))
+            c.execute(text("SET LOCAL enable_seqscan = off"))
+            raw = c.execute(
+                text(f"EXPLAIN (FORMAT JSON) {app_requests._OPEN_OF_CHANGE_SQL}"), params
+            ).scalar()
         finally:
             trans.rollback()
-    plan = "\n".join(lines)
-    assert "Seq Scan on pm_agent_runs" not in plan, plan
-    at = next(i for i, line in enumerate(lines) if "on pm_agent_runs r" in line)
-    assert keep in lines[at], plan
-    cond = lines[at + 1]
-    assert "Index Cond" in cond and "created_at >" in cond, plan
+    doc = json.loads(raw) if isinstance(raw, str) else raw
+    plan = json.dumps(doc, indent=1)
+    reads = _reads_of_table(doc[0]["Plan"], "pm_agent_runs")
+    assert reads, plan
+    for index, cond in reads:
+        # Never a walk of the whole table, whatever the join shape.
+        assert index == keep, (f"pm_agent_runs is read through {index!r}, not through {keep}", plan)
+        # The window of a live request is part of the index condition: the range is bounded.
+        assert "created_at >" in cond, ("the index read has no bound on created_at", plan)
+
+
+def _reads_of_table(node: dict, table: str) -> list[tuple]:
+    """Each read of *table* in a JSON plan: ``(index name or None, index condition)``.
+    A seq scan has no index. A bitmap heap scan takes the index and the condition from
+    its bitmap index scan child."""
+    out: list[tuple] = []
+    if node.get("Relation Name") == table:
+        index, cond = node.get("Index Name"), str(node.get("Index Cond", ""))
+        if node.get("Node Type") == "Bitmap Heap Scan":
+            for child in node.get("Plans", []):
+                if child.get("Node Type") == "Bitmap Index Scan":
+                    index, cond = child.get("Index Name"), str(child.get("Index Cond", ""))
+        out.append((index, cond))
+    for child in node.get("Plans", []):
+        out.extend(_reads_of_table(child, table))
+    return out
 
 
 # ── ap. The chat tools of B2c-2b on the real door ──────────────────────────
