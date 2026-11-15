@@ -17,7 +17,16 @@ def _flag_blocks() -> list[str]:
     start = text.index("## The flags that reload")
     end = text.index("A reload does NOT apply any other key")
     blocks = text[start:end].split("\n\n")[2:]  # the heading, then the intro paragraph
-    return [b for b in blocks if b.strip()]
+    # A paragraph that does not start with a flag name continues the one before it.
+    out: list[str] = []
+    for b in blocks:
+        if not b.strip():
+            continue
+        if re.match(r"`[A-Z][A-Z0-9_]+`", b) or not out:
+            out.append(b)
+        else:
+            out[-1] += "\n\n" + b
+    return out
 
 
 def test_each_flag_paragraph_starts_with_its_flag_name():
