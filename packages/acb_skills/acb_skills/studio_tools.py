@@ -98,6 +98,8 @@ from acb_common.door_values import KEY_RE, compact_json, door_value
 from acb_common.paging import bounds, page_line, paged
 from acb_common.studio_manifest import (
     BLOCKS,
+    LAYOUTS,
+    PRESET_REGIONS,
     MAX_CELLS_PER_PAGE,
     MAX_COLS,
     MAX_NAV_COUNTS,
@@ -1284,6 +1286,49 @@ FRAME_STEPS: list[dict[str, Any]] = [
 ]
 
 
+#: Which words in a description point to which page preset (STU-LY-8, ``studio_layouts.md`` section 7).
+#: Only a preset of the closed enum (`LAYOUTS`) can be a target, so a later preset joins here with its block.
+#: The order is the order of the check: the first row that matches wins.
+LAYOUT_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("approval_queue", ("approve", "approval", "sign off", "needs approval")),
+    ("work_queue", ("inbox", "ticket", "triage", "requests to handle", "work queue")),
+    ("board", ("pipeline", "stages", "status columns", "kanban", "hiring")),
+    ("dashboard", ("overview", "kpi", "summary", "how are we doing", "dashboard")),
+    ("list_detail", ("directory", "details beside", "browse")),
+    ("table_workspace", ("spreadsheet", "bulk", "inventory", "track", "manage")),
+)
+
+
+def layout_hint(description: str) -> str | None:
+    """The page preset that a description points to, or ``None`` when no built preset fits.
+
+    A word list, not a judgement: Mira reads the table of `studio_describe` and decides.
+    The IDE picker uses this as a first guess only. A preset that is not built yet gives ``None``."""
+    text = (description or "").lower()
+    for layout, words in LAYOUT_WORDS:
+        if layout in LAYOUTS and any(w in text for w in words):
+            return layout
+    return None
+
+
+def _describe_layouts() -> dict[str, Any]:
+    """The page presets and their regions, from the model (STU-LY-8)."""
+    return {
+        "note": "A page with a `layout` has `regions` and no tabs, cells or side. "
+                "One primary layout for each page. When two fit, give the second its own page. "
+                "Tell the member your choice in one sentence. They may change it.",
+        "presets": {
+            name: {
+                region: {"block": block, "most_views": cap, "required": required}
+                for region, (block, cap, required) in regions.items()
+            }
+            for name, regions in PRESET_REGIONS.items()
+        },
+        "words": {name: list(words) for name, words in LAYOUT_WORDS if name in LAYOUTS},
+        "example": {"id": "all", "layout": "table_workspace", "regions": {"main": ["all_visits"]}},
+    }
+
+
 def _describe_frame() -> dict[str, Any]:
     """The rules of the app frame that a schema cannot say (AF-8a, ``ai_studio.md`` 5.5).
 
@@ -1300,7 +1345,7 @@ def _describe_frame() -> dict[str, Any]:
             "nav_counts": MAX_NAV_COUNTS,
         },
         "rules": [
-            "A page has tabs or cells, not both.",
+            "A page has tabs or cells, not both. A page with a `layout` has `regions` instead of both.",
             "A cell names a view id that the manifest declares.",
             "A span is at most the columns of the page.",
             "A nav needs pages, so write `pages` before `nav`.",
@@ -1320,6 +1365,7 @@ def _describe_frame() -> dict[str, Any]:
             "pages": "One page for each object that has a view, and a dashboard page when a chart or a stat view exists.",
             "nav": "One rail row for each page. The app frame draws the rail.",
         },
+        "layouts": _describe_layouts(),
         "steps": FRAME_STEPS,
         "icons": list(NAV_ICONS),
         "example": FRAME_EXAMPLE,
