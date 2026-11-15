@@ -29,25 +29,32 @@ This file proves:
   differs shows as changed again;
 - the audit event and the answer hold no text of the tool.
 
-**The mutations (R7).** Each ran on 2026-11-15, then was restored.
+**The mutations (R7).** Each ran on 2026-11-15 over this file,
+``test_studio_live_preview.py``, ``test_studio_preview_sends_nothing.py`` and
+the R8 file, then was restored.
 
 * (a) ``mcp_actions.tool_changed``: return False when an approval exists
-  (skip the hash compare). Red: the changed cases of
+  (skip the hash compare). 13 red: the 3 cases of
   ``test_each_change_of_the_text_shows_as_changed``,
-  ``test_a_replaced_server_with_another_text_shows_as_changed`` and the R8
-  file (see there).
-* (b) ``mcp_approvals._READ_SQL``: drop the ``organization_id`` filter. Red:
-  ``test_the_read_of_the_approvals_names_the_bound_org``. The R8 file stays
-  green, because FORCE RLS still binds the read (two walls).
+  ``test_a_change_after_the_approval_shows_as_changed_again``,
+  ``test_a_replaced_server_with_another_text_shows_as_changed``, 4 live
+  cases, ``test_a_changed_tool_sends_nothing`` (I11-0) and 3 R8 tests.
+* (b) ``mcp_approvals._READ_SQL``: drop the ``organization_id`` filter. 1
+  red: ``test_the_read_of_the_approvals_names_the_bound_org``. The R8 file
+  stays green, because FORCE RLS still binds the read (the second wall).
 * (c) ``actions.approve_mcp_tool``: drop the ``integrations:manage`` check.
-  Red: both cases of ``test_an_approval_needs_the_right_of_the_connections``
-  and the R8 test of the refusal.
-* (d) ``mcp_tools._class_a_item``: drop the ``tool_changed`` check, and
-  ``call_read_tool``: drop the early check. Red: the B1b-3 cases of
-  ``test_studio_live_preview.py`` and the R8 live test.
-* (e) ``mcp_actions.tool_text_hash``: hash the name only. Red: the
-  description and hint cases of ``test_the_hash_covers_the_name_the_text_and_each_hint``
-  and of ``test_each_change_of_the_text_shows_as_changed``.
+  3 red: both cases of ``test_an_approval_needs_the_right_of_the_connections``
+  and ``test_r8_a_member_without_the_right_cannot_approve``.
+* (d1) ``mcp_tools._class_a_item``: drop the ``tool_changed`` check. 6 red:
+  the ``tool_changed`` and ``tool_changed_fresh_list`` live cases (4),
+  ``test_a_changed_tool_sends_nothing`` and
+  ``test_r8_the_live_read_refuses_a_changed_tool``.
+* (d2) ``call_read_tool``: drop the early check. 3 red: the
+  ``tool_unapproved`` and ``approvals_unavailable`` live cases (the read
+  lists live first) and ``test_an_unapproved_tool_sends_nothing``.
+* (e) ``mcp_actions.tool_text_hash``: hash the name only. 20 red: 6 cases of
+  ``test_the_hash_covers_the_name_the_text_and_each_hint``, the changed
+  cases above, and 4 R8 tests.
 """
 
 from __future__ import annotations

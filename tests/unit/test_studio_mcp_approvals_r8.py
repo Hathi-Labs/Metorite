@@ -27,19 +27,23 @@ d. A changed description, a changed hint, a renamed tool and a new tool each
 e. The live read refuses a changed tool and an unapproved tool, and makes no
    call. It calls an approved tool once.
 
-**The mutations (R7).** Each ran on 2026-11-15, then was restored.
+**The mutations (R7).** Each ran on 2026-11-15, then was restored. The
+hermetic file names the full counts.
 
 * (a) ``mcp_actions.tool_changed``: return False when an approval exists.
-  Red: ``test_r8_each_change_of_the_text_shows_as_changed`` and
+  Red: the ``description`` and ``hint`` cases of
+  ``test_r8_each_change_of_the_text_shows_as_changed`` and
   ``test_r8_the_live_read_refuses_a_changed_tool``.
 * (b) ``mcp_approvals._READ_SQL``: drop the ``organization_id`` filter. This
   file stays GREEN, because FORCE RLS still binds the read. The hermetic
   ``test_the_read_of_the_approvals_names_the_bound_org`` goes red.
 * (c) ``actions.approve_mcp_tool``: drop the ``integrations:manage`` check.
   Red: ``test_r8_a_member_without_the_right_cannot_approve``.
-* (d) ``mcp_tools``: drop both ``tool_changed`` checks of the live read.
-  Red: ``test_r8_the_live_read_refuses_a_changed_tool`` and
-  ``test_r8_an_approval_of_org_b_never_opens_a_tool_of_org_a``.
+* (d1) ``mcp_tools._class_a_item``: drop the ``tool_changed`` check. Red:
+  ``test_r8_the_live_read_refuses_a_changed_tool``. (d2), the early check,
+  turns hermetic cases red only, because the later check still refuses here.
+* (e) ``tool_text_hash`` of the name only. Red: the ``description`` and
+  ``hint`` cases, the live test and ``test_r8_a_second_approval_replaces_the_row``.
 
 Run (one R8 suite at a time on the shared scratch database)::
 
