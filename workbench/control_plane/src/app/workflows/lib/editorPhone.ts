@@ -25,9 +25,10 @@ export type EditorLayout = "phone" | "wide";
  *
  * Measured on 2026-11-15: the palette column takes 241 px, and the inspector
  * 256 px (288 px from a 1280 px window). At 900 px the canvas keeps 371 px or
- * more. The toolbar needs 681 px with no notice, so the name keeps about 219 px.
+ * more. The toolbar needs 681 px with no notice and up to 993 px with a long notice
+ * on a published workflow, so below 1000 px a long notice could cut Publish off.
  */
-export const WIDE_EDITOR_MIN_PX = 900;
+export const WIDE_EDITOR_MIN_PX = 1000;
 
 /**
  * The layout of the editor. A phone always takes the phone layout. On a
