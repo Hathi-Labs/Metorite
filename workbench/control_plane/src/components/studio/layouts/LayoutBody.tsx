@@ -38,7 +38,13 @@ export default function LayoutBody({ layout, regions, renderView, titleOf }: Lay
   return (
     <div data-layout={layout} className="flex min-w-0 flex-col gap-3">
       {main && node ? (
-        <section aria-label={titleOf(main)} className="min-w-0">{node}</section>
+        <section aria-label={titleOf(main)} className="min-w-0">
+          {layout === "table_workspace" ? (
+            // With the record panel open the page is narrow. The table keeps a readable width and scrolls
+            // inside its own strip, so no column shrinks to one character (capture finding, task 3315).
+            <div data-table-strip className="overflow-x-auto"><div className="min-w-[40rem]">{node}</div></div>
+          ) : node}
+        </section>
       ) : (
         <p className="text-sm text-muted-foreground">{`This page has no ${layout === "board" ? "board" : "table"} to show.`}</p>
       )}

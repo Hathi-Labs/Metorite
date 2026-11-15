@@ -202,7 +202,8 @@ export default function StudioRecord({ object, objects, recordId, door, actions,
   return (
     <StudioDataContext.Provider value={door}>
       <div className="min-w-0 space-y-3" data-record={recordId} data-record-tab={active}>
-        {facts.length > 0 ? (
+        {/* The Details tab lists every field, so the header would repeat it there (capture finding, task 3316). */}
+        {facts.length > 0 && active !== "details" ? (
           <dl aria-label="Key facts" data-record-facts className="flex flex-wrap gap-x-5 gap-y-2 rounded-lg border border-border bg-card px-3 py-2">
             {facts.map((f) => (
               <div key={f.key} className="min-w-0">

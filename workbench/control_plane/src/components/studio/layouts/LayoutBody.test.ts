@@ -26,6 +26,11 @@ describe("LayoutBody", () => {
     expect(html).toContain('aria-label="Title all"');
     expect(html).toContain('data-view="all"');
   });
+  it("keeps a table readable beside the record panel: it scrolls in its own strip at a minimum width", () => {
+    const html = draw("table_workspace", { main: ["all"] });
+    expect(html).toMatch(/data-table-strip[^>]*overflow-x-auto[^>]*><div class="min-w-\[40rem\]">/);
+    expect(html.indexOf("data-table-strip")).toBeLessThan(html.indexOf('data-view="all"'));
+  });
   it("says so when the main region has no view", () => {
     expect(draw("table_workspace", { main: [] })).toContain("no table to show");
   });
