@@ -8,7 +8,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { addPage, addRow, addSection, materializePages, moveRow, movePage, removePage, removeSection, setPageCols } from "./frameEdit";
-import { COLS_HINT, applyFrame, colsOptions, pagesView, railView } from "./pagesTabModel";
+import { moveCell } from "./pageLayout";
+import {
+  COLS_HINT, applyFrame, colsOptions, layoutView, moveCellArgs, pagesView, railView, tabTitleOrDefault,
+} from "./pagesTabModel";
+import { layoutAct } from "./tabEdit";
 
 const base = {
   studio: 1, id: "shop", name: "Shop", purpose: "p",
@@ -104,5 +108,51 @@ describe("applyFrame", () => {
   it("section delete and add a row each send one manifest", () => {
     expect((run(declared, (m) => removeSection(m, 1)) as typeof declared).nav).toHaveLength(1);
     expect((run(declared, (m) => addRow(m, 1, "home")) as typeof declared).nav[1].rows).toEqual([{ page: "home" }]);
+  });
+});
+
+describe("tabTitleOrDefault (AF-8b-3b fix)", () => {
+  it("keeps a typed title, and names a blank one from the count", () => {
+    expect(tabTitleOrDefault("Details", 2)).toBe("Details");
+    expect(tabTitleOrDefault("  Details  ", 2)).toBe("Details");
+    expect(tabTitleOrDefault("", 0)).toBe("Tab 1");
+    expect(tabTitleOrDefault("   ", 0)).toBe("Tab 1");
+    expect(tabTitleOrDefault("", 3)).toBe("Tab 4");
+  });
+});
+
+describe("moveCellArgs (AF-8b-3b fix)", () => {
+  it("steps one place up or down, in a flat list and in a tab", () => {
+    expect(moveCellArgs(null, 2, -1)).toEqual({ from: { tabId: null, index: 2 }, to: { tabId: null, index: 1 } });
+    expect(moveCellArgs(null, 2, 1)).toEqual({ from: { tabId: null, index: 2 }, to: { tabId: null, index: 3 } });
+    expect(moveCellArgs("a", 0, 1).to).toEqual({ tabId: "a", index: 1 });
+    expect(moveCellArgs("a", 1, -1).to).toEqual({ tabId: "a", index: 0 });
+  });
+  const flat3 = { ...base, pages: [{ id: "home", cells: [{ view: "a" }, { view: "b" }, { view: "c" }] }] };
+  const tab3 = { ...base, pages: [{ id: "home", tabs: [{ id: "t", title: "T", cells: [{ view: "a" }, { view: "b" }, { view: "c" }] }] }] };
+  const order = (m: unknown, tab: boolean) => {
+    const p = (m as { pages: { cells?: { view: string }[]; tabs?: { cells: { view: string }[] }[] }[] }).pages[0];
+    return (tab ? p.tabs![0].cells : p.cells!).map((c) => c.view).join("");
+  };
+  const step = (m: unknown, tabId: string | null, index: number, delta: -1 | 1) => {
+    const a = moveCellArgs(tabId, index, delta);
+    return layoutAct(m, (t) => moveCell(t, "home", a.from, a.to));
+  };
+  it("gives the order that a member expects, through the real moveCell", () => {
+    for (const [m, id, tab] of [[flat3, null, false], [tab3, "t", true]] as const) {
+      expect(order(step(m, id, 0, 1), tab)).toBe("bac");
+      expect(order(step(m, id, 2, -1), tab)).toBe("acb");
+      expect(order(step(m, id, 1, 1), tab)).toBe("acb");
+      expect(order(step(m, id, 1, -1), tab)).toBe("bac");
+    }
+  });
+});
+
+describe("layoutView keeps the raw index (AF-8b-3b fix)", () => {
+  it("skips a junk entry in the output only", () => {
+    const m = { ...base, pages: [{ id: "home", cells: [null, 3, { view: "a" }] }] };
+    const cells = layoutView(m, "home").lists[0].cells;
+    expect(cells).toHaveLength(1);
+    expect(cells[0].index).toBe(2);
   });
 });

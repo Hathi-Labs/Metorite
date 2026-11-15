@@ -1431,7 +1431,8 @@ ACCESS_REFUSED = "access_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
 _FIELD_ATTRS = (
-    "type", "many", "options", "to", "required", "label", "lines", "min", "max", "units", "format")
+    "type", "many", "options", "to", "required", "label", "lines", "min", "max", "units", "format",
+    "normal", "critical", "conversions")
 
 
 @dataclass(frozen=True)
