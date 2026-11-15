@@ -128,7 +128,7 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Push only on a pass. Push once for each round of fixes, not once for
       each commit.
     - Do not push to "see what CI says". Run the test here.
-16. **A conflict in `ai_studio.md` section 14 (CIV-33, task 3337).** Section 14
+16. **A conflict in `ai_studio.md` section 14 (CIV-HS, task 3337).** Section 14
     holds one index line for each slice. The row text is in
     `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
     put your row text in its row file and your index line back. Run

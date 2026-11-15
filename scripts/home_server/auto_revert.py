@@ -120,6 +120,11 @@ Commands, for a test or another setup:
   BISECT_TEST_CMD [the default of bisect_main.sh]  the probe. bash -c runs it
       in a temp worktree, and the test ids are "$@". Exit 0 is a pass, exit 1
       is a fail. Any other code means "cannot judge", and the pass stops.
+      The default (CIV-31e) runs scripts/probe_present_tests.sh of this
+      checkout by its absolute path. It leaves out a failed test that is not
+      in the probed tree, and when none is there, the probe passes. So the
+      parent of a culprit that ADDED the test passes, and so does the revert
+      tree. PROBE_PYTEST_CMD sets its pytest command.
   AUTO_REVERT_TIMEOUT_S [1800]   the limit of one probe
   GH_CMD [gh]
   AUTO_REVERT_CLAUDE_CMD [claude]   the headless session that opens the task
@@ -155,8 +160,11 @@ MAX_REVERTS_PER_HOUR = 3
 #: A lock older than this is from a dead pass. The unit stops a pass at 14 hours
 #: (TimeoutStartSec in systemd/metorite-auto-revert.service).
 STALE_LOCK_S = 15 * 3600
+#: CIV-31e: the probe helper of the running checkout, by its absolute path. A
+#: probed commit can be older than the helper, and a relative path exits 127.
+PROBE_HELPER = ROOT / "scripts" / "probe_present_tests.sh"
 #: The same probe as the default of scripts/bisect_main.sh.
-DEFAULT_TEST_CMD = 'uv run python -m pytest -x -q -p no:cacheprovider -- "$@"'
+DEFAULT_TEST_CMD = f'bash {shlex.quote(PROBE_HELPER.as_posix())} "$@"'
 BRANCH_PREFIX = "auto-revert/"
 #: The merge bot refuses HIGH. A revert goes in as STANDARD.
 HANDOVER_TIER = "STANDARD"
@@ -590,7 +598,10 @@ def poll(cfg: Config) -> dict[str, Any] | None:
 
 
 def probe(cfg: Config, sha: str, ids: list[str]) -> str:
-    """Run the failed tests on `sha`. Return pass, fail, or unknown (why)."""
+    """Run the failed tests on `sha`. Return pass, fail, or unknown (why).
+
+    The default probe passes a tree that holds none of the failed tests (CIV-31e).
+    """
     with worktree(cfg.repo, sha) as wt:
         try:
             res = run([bash(), "-c", cfg.test_cmd, "probe", *ids], cwd=wt, timeout=cfg.timeout_s)
