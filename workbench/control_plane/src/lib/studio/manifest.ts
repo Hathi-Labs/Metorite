@@ -28,7 +28,8 @@ export type FieldType =
   | "duration"
   | "quantity"
   | "percent"
-  | "barcode";
+  | "barcode"
+  | "autonumber";
 
 export type BlockName =
   | "table"
@@ -162,6 +163,10 @@ export interface FieldDef {
   format?: string | null;
   // C13. A lines relation: the field of the object `to` that names this one.
   lines?: string | null;
+  // C15a. The parts of an autonumber: the text before the number, the pad width and `never` or `day`.
+  prefix?: string | null;
+  pad?: number | null;
+  reset?: string | null;
 }
 
 export interface ObjectDef {
