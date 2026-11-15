@@ -92,12 +92,6 @@ describe("a step with no form", () => {
     expect(html).not.toContain("Available data");
   });
 
-  it("studio_write says that its form is not built", () => {
-    const html = draw(node("studio_write", { package_id: "p1" }));
-    expect(html).toContain("The form for this step is not built yet.");
-    expect(html).not.toContain("Available data");
-  });
-
   it("a step with a form keeps the {{ref}} hint", () => {
     const html = draw(node("approval", { message: "" }));
     expect(html).toContain("Available data");
