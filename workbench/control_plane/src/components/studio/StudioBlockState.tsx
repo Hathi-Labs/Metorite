@@ -39,7 +39,7 @@ export default function StudioBlockState(props: StudioBlockStateProps) {
 
   if (kind === "loading") {
     const label = blockLoadingLabel(props.noun);
-    if (shape === "board") return <SkeletonBoard columns={3} />;
+    if (shape === "board") return <SkeletonBoard columns={3} label={label} />;
     // One tile of a dashboard (STU-LY-7): the block is a single card, so the skeleton is one card.
     if (shape === "tile") return <Skeleton className="h-24 w-full" />;
     if (shape === "stats") {
@@ -49,7 +49,7 @@ export default function StudioBlockState(props: StudioBlockStateProps) {
         </div>
       );
     }
-    return <SkeletonRows count={6} className="p-3" />;
+    return <SkeletonRows count={6} className="p-3" label={label} />;
   }
 
   const copy = blockStateCopy(kind, props);
