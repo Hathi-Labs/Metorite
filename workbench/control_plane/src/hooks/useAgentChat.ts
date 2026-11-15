@@ -1254,6 +1254,8 @@ export function useAgentChat({
         progressLines: [],
         customEvents: [],
         isThinkingActive: true,
+        // CS-1: a run that this tab joins again has no first line, even in the tab that sent it.
+        firstLine: undefined,
         streaming: true,
       } : null;
       const hasBody = (m: ChatMessage | null | undefined) =>

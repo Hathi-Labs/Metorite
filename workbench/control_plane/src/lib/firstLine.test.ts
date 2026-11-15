@@ -176,6 +176,9 @@ describe("the first line of a turn (CS-1)", () => {
     const read = (rel: string) => readFileSync(path.join(here, rel), "utf8").replace(/\r\n/g, "\n");
     const hook = read("../hooks/useAgentChat.ts");
     expect(hook.match(/firstLine: true/g)).toHaveLength(1);
+    // The attach shadow spreads the message of the session, so it must clear the flag by name.
+    expect(hook).toContain("// CS-1: a run that this tab joins again has no first line, even in the tab that sent it.");
+    expect(hook.match(/firstLine: undefined/g)).toHaveLength(1);
     // The save maps each field by name, so a field that it does not name is not saved.
     const chat = read("../components/AgentChat.tsx");
     expect(chat).not.toContain("firstLine");
