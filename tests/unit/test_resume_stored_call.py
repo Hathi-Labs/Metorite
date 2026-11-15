@@ -340,7 +340,8 @@ _REPLY = {"recipients": {"reply": {"to": ["a@b.test"]}, "reply_all": {"to": ["a@
     {"title": _TITLE, "reply": _REPLY, "close_on_steer": False},
     # Mutation: drop `request_id is None` from the plain test -> red.
     {"title": _TITLE, "request_id": "ab" * 16},
-    # Mutation: drop `not _with_answer` from the plain test -> red.
+    # A held send needs rows. Mutation: drop `_rows is None` and
+    # `not _with_answer` from the plain test -> red.
     {"title": _TITLE, "rows": [{"id": "r1", "label": "One", "checked": True}],
      "with_answer": True},
     # C2. Mutation: drop the cut test of `late_approve.act_of` -> red.
@@ -364,8 +365,9 @@ def test_the_same_tool_with_a_plain_card_stores_one(durable_on, resume_on, liven
 
 
 def test_an_email_tool_stores_none(durable_on, resume_on, liveness, no_persist):
-    """A send is no listed write, even with the mark of one. Mutation: test the
-    card mark alone in place of ``late_approve.act_of`` -> red."""
+    """A send is no listed write, even with the mark of one. Two tests refuse
+    it. Mutation: drop the tool test of ``late_approve.act_of`` and the name
+    test of ``late_approve.keys_wire`` -> red."""
     fn = _stand_in("send_email", {"to", "subject"})
     out = _run(liveness, "t-res-mail", fn, {"to": f"x-{_SENTINEL}@a.test", "subject": "Hi"})
     assert out["bound"] is False
@@ -373,8 +375,9 @@ def test_an_email_tool_stores_none(durable_on, resume_on, liveness, no_persist):
 
 
 def test_an_mcp_tool_with_a_borrowed_name_stores_none(durable_on, resume_on, liveness, no_persist):
-    """The name, the mark and the parameters match, and the tool came from an
-    MCP server. Mutation: test the name in place of ``late_approve.act_of`` -> red."""
+    """The name, the mark, the parameters and the act keys match, and the tool
+    of the card came from an MCP server. Mutation: drop the tool test of
+    ``late_approve.act_of`` -> red."""
     from agent_framework import FunctionTool
 
     fn = _stand_in("set_reminder", _SET_REMINDER)
@@ -383,7 +386,19 @@ def test_an_mcp_tool_with_a_borrowed_name_stores_none(durable_on, resume_on, liv
                         approval_mode="never_require")
     assert eg._from_mcp(tool) and not eg.is_card_write_tool(tool)
     kwargs = {"title": f"x-{_SENTINEL}"}
-    out = _run(liveness, "t-res-mcp", fn, kwargs, scope=card_call(tool, (), kwargs))
+
+    @contextlib.contextmanager
+    def _mcp_call() -> Any:
+        # The act keys of the listed write, and the MCP tool as the tool of
+        # the card: only the tool test of `act_of` refuses it.
+        with card_call(fn, (), kwargs):
+            token = ask_tools._CARD_TOOL.set(tool)
+            try:
+                yield
+            finally:
+                ask_tools._CARD_TOOL.reset(token)
+
+    out = _run(liveness, "t-res-mcp", fn, kwargs, scope=_mcp_call())
     assert out["bound"] is False
     assert "stored_call" not in _row(durable_on, out["rid"])
 
@@ -393,7 +408,7 @@ def test_a_delegation_scope_and_a_card_with_no_call_store_none(
 ):
     """A card of a child run never takes the call that started the child, and
     a card outside a gated call has no tool. Mutation: give a keyless scope
-    the tool -> red."""
+    the tool, the keys and the arguments -> red."""
     fn = _stand_in("set_reminder", _SET_REMINDER)
     kwargs = {"title": f"x-{_SENTINEL}"}
     keyless = _run(liveness, "t-res-keyless", fn, kwargs,

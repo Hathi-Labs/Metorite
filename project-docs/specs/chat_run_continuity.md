@@ -5,7 +5,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 `e5644259b`.
 
 **§4.12 (RESUME, task 3255) is a SPEC of 2026-11-14, verified at
-`3040ac9e4`. Nothing of it is built.** It makes a chat pick up exactly where
+`3040ac9e4`. Only RESUME-1a is built, and it is dark (the row below).** It makes a chat pick up exactly where
 it left off. A late Approve runs the stored call of its card once, and a
 release keeps the work.
 
@@ -26,7 +26,8 @@ release keeps the work.
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | §4.11 — the line of a slow tool (HRD-6 part 1, task 2985) | **BUILT** 2026-11-13, branch `mt-83488e2c-long-reads`, dark behind `CHAT_PROGRESS_NOTICE_ORGS` |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
-| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. D-RES-1 to D-RES-8 wait for the owner. Nothing built |
+| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. D-RES-1 to D-RES-8 wait for the owner. Only RESUME-1a is built (the row below) |
+| §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. No route reads it yet. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1535,7 +1536,8 @@ names (`bot_run.long_reads_on`). Every other org keeps 240 s and 300 s.
 
 ### §4.12 — a chat picks up exactly where it left off (RESUME, task 3255, SPEC 2026-11-14)
 
-**Status: 📋 SPEC, 2026-11-14. Nothing is built.** Metorite task 3255
+**Status: 📋 SPEC, 2026-11-14. RESUME-1a is built and dark (2026-11-15).
+Nothing else is built.** Metorite task 3255
 (RESUME-0). Verified against code at `origin/main` `3040ac9e4`. HRD-22 (task
 3231) is in flight on branch `mt-1740009c-late-approve`, and this section
 read its commits too.
@@ -1682,29 +1684,56 @@ only for a card that equals the stored card text.
 
 **1. The stored call (RESUME-1).** When a tool draws a card, the card gate
 binds the open call to the request id. The row of `chat_pending_ask` keeps it
-in a new nullable column, `stored_call` (jsonb).
+in a new nullable column, `stored_call` (jsonb). RESUME-1a built it on
+2026-11-15 with migration 448, dark behind `CHAT_RESUME_ORGS`.
 
-Take the migration number at build time (R1). The migration only adds the
-column (R6). The column holds these parts:
+The audit of 2026-11-15 split the slice and set corrections C1 to C9.
+RESUME-1a stores the call of a plain card. RESUME-1b (task 3434) stores the
+question cards. Task 3435 owns the prune of old values.
 
-- The tool name, its module, and the keyword arguments as JSON gives them
-  back (`whatsapp_acts._stored_arguments`).
-- The MAF call id, the run id, and the message id of the reply.
-- The card text (`whatsapp_acts.card_text` of the clipped title, detail,
-  context and facts) and the act keys (`ask_tools.act_keys`).
+The migration only adds the column (R6). The column holds version 1 of this
+shape. `acb_skills.stored_call.stored_call_of` builds it:
+
+- `v`, `kind` (`confirmation`), `tool`, `module` and `agent`. A module that
+  the loader makes for one run reads as `agent:<name>` (C7). The agent lets
+  RESUME-2 refuse a card of a delegated child run (C8).
+- `arguments`: the bound arguments of the call, as JSON gives them back
+  (`whatsapp_acts._stored_arguments`).
+- `call_id`: the MAF call id (C4). A function middleware reads it from
+  `context.metadata["call_id"]` (`stored_call.CallIdMiddleware`). The
+  progress notice is dark, so it cannot be the source. With no middleware,
+  the value is null.
+- `card_text`, `act_keys` and `digest`, from `late_approve.act_of`. The act
+  keys are the `late_approve.keys_wire` strings (C7).
+- No org, member or thread. The columns of the row hold them. The run id is
+  a column too, and no source gives the message id of the reply at the card
+  (C6).
+
+The card gate binds the call BEFORE the card goes out, out of band, by the
+request id (C3). On path A the executor's drain writes the row, and the drain
+cannot read the context of the tool. `pending_ask.note_event` takes the call
+into the row. The wait of the card drops what is left, so nothing stays in
+the process while `CHAT_DURABLE_ASKS` is off.
 
 The row writes the call when the card opens, not at the park. So a crash, a
-release and a park all keep it. `GET /chat/pending-asks` never returns it.
+release and a park all keep it. A move to `answered` or `closed`, and
+`close_thread_asks`, set it to NULL (C9). `pending_ask._COLUMNS` leaves it
+out. So `GET /chat/pending-asks`, `GET /chat/active-sessions`, the My Day
+chat card and the waiting list never return it. `pending_ask.read_stored_call`
+is the one reader, and no route calls it in RESUME-1a.
 
-Only a resumable call stores one (D-RES-2):
+Only a call that can resume stores one (D-RES-2):
 
-- A plain confirmation card of a write in `egress.HELD_CARD_WRITE_TOOLS`,
-  with no rows, no reply form and no held send. Each of these tools draws
-  its card before it writes, and the RESUME-1 fence holds that.
-- A question card (`ask_questions`, `ask_user`). Its result is the member's
-  answer, so no tool runs again.
+- A plain confirmation card: no rows, no reply form and no held send. Then
+  `late_approve.act_of` is the one resumable test (C1). It refuses a cut
+  card (C2), a tool that fails the three tests of
+  `egress.is_card_write_tool`, and act keys that do not read. Each listed
+  tool draws its card before it writes, and the RESUME-1 fence holds that.
+- A question card (`ask_questions`, `ask_user`), in RESUME-1b. Its result is
+  the member's answer, so no tool runs again.
 
-A call with arguments that JSON cannot hold, or above 64 KB, stores none.
+A call with arguments that JSON cannot hold, or above 64 KB of UTF-8, stores
+none. `CHAT_RESUME_ORGS` must name the org of the run (C5).
 
 **2. The late Approve (RESUME-2).** `POST /agent/respond-input` finds no
 Future and reads the row, as today. When `CHAT_RESUME_ORGS` names the org, a
@@ -1917,7 +1946,7 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 |---|---|---|---|---|---|---|
 | RESUME-0 (task 3255) | — | This section, the INDEX row and the WS-51 row (task 3255) | STE lint and the doc fences pass | `tests/unit/test_index_completeness.py` | LOW | none |
 | RESUME-0a (task 3259) | 0 | A failed read of the pending asks settles no card | The BFF route answers a failure as a failure. The chat closes no card on a failed read | `src/lib/pendingAsks.test.ts` | STANDARD | none |
-| RESUME-1 (task 3260) | 1 | The card stores its call: the `stored_call` column, the bind at the card, and the resumable list | A plain card of each listed write stores its tool, arguments, call id, card text and act keys. A rows card, an email card and a large call store none. The browser never reads it. Each listed tool writes nothing before its card. R8 holds the column under FORCE RLS | `tests/unit/test_resume_stored_call.py`, `tests/unit/test_resume_stored_call_r8.py`, `tests/unit/test_tenant_coverage.py` | HIGH (a migration, consent) | none |
+| RESUME-1 (task 3260) | 1 | The card stores its call: the `stored_call` column, the bind at the card, and the resumable list. RESUME-1a (task 3260) is the plain card, BUILT 2026-11-15 and dark. RESUME-1b (task 3434) is the question cards | A plain card of each listed write stores its tool, arguments, call id, card text and act keys. A rows card, an email card and a large call store none. The browser never reads it. Each listed tool writes nothing before its card. R8 holds the column under FORCE RLS | `tests/unit/test_resume_stored_call.py`, `tests/unit/test_resume_stored_call_r8.py`, `tests/unit/test_tenant_coverage.py` | HIGH (a migration, consent). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | none |
 | RESUME-2 (task 3261) | 1 | A late Approve resumes the stored call: the 200 `resumed`, the continuation run, the shared stored-call yes, the note path, and cases A, B and C | The sequence of 2026-11-14 on a real Postgres and a private Redis gives one card, one write, no 409 and no member turn. A changed record writes nothing and shows the new card. Another member, thread or org runs nothing. A second answer runs nothing. Flag off, the bytes are as before | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (consent, the run loop) | RESUME-1 |
 | RESUME-3 (task 3262) | 1 | The chat takes the resume: no envelope, no notice, the same bubble, the BFF keeps `parked`, and the words of §4.12.4 | A parked card approved after a reload turns to "Approved", and the same reply goes on. No "restarted" shows, before or after a reload. A park shows no "Done". Visual review of the card and the row | `src/lib/chatResume.test.ts`, `e2e/chat-card-restart.spec.ts` | HIGH (the attach loop) | RESUME-2 |
 | RESUME-D1 (task 3263) | 1 | Chat · Rung 1 demo · Approve a card an hour later, and the work goes on | The owner runs the script below on production and says so on the task | none | demo | RESUME-0a to RESUME-3 |
@@ -2059,6 +2088,8 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`) |
 | `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2), and the grant write of a late approve (S2 item 8) |
 | `packages/acb_skills/acb_skills/late_approve.py` | A late approve acts once: the flag, the offer, the grant and its one use (S2 item 8) |
+| `packages/acb_skills/acb_skills/stored_call.py` | A card stores its call: the flag, the shape and the call id (§4.12 RESUME-1a) |
+| `apps/services/orchestrator/orchestrator/pending_ask.py` | The row of a waiting card, and its stored call: `bind_call`, `read_stored_call` (S2, §4.12 RESUME-1a) |
 | `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2) |
 | `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `list_live_runs`, `drop_run_slot` |
 | `apps/services/orchestrator/orchestrator/run_cap.py` | The run cap: the count, the lock and the reservation (D-3) |
@@ -2112,6 +2143,18 @@ uv run pytest tests/unit/test_late_approve_grant.py tests/unit/test_pending_ask_
 docker run -d --rm --name late-approve-r8-redis -p 127.0.0.1:16398:6379 redis:7-alpine
 HELD_R8_REDIS_URL=redis://127.0.0.1:16398/0 \
   uv run pytest tests/unit/test_late_approve_grant_r8.py tests/unit/test_pending_ask_store.py -rs
+```
+
+For §4.12 RESUME-1a, from the repo root. Start the scratch database first
+(`engineering_practice.md` §1.1). The R8 files need a real Postgres. A skip
+is not a pass.
+
+```bash
+uv run pytest tests/unit/test_resume_stored_call.py tests/unit/test_pending_ask_flow.py \
+  tests/unit/test_held_card_writes.py tests/unit/test_late_approve_grant.py \
+  tests/unit/test_tenant_coverage.py tests/unit/test_flag_doc_sorted.py
+uv run pytest tests/unit/test_resume_stored_call_r8.py -rs
+uv run pytest tests/unit/test_pending_ask_store.py -rs
 ```
 
 ## 8. Waiting cards reach My Day (D171, 2026-11-03)
