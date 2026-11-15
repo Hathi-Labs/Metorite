@@ -730,6 +730,13 @@ class Settings(BaseSettings):
     # a change (docs/flag_reload.md). A flip in production is the gate
     # `enforcement-flip`. Spec: ai_studio.md section 14 B2b-2.
     studio_door_ops_orgs: str = ""
+    # STU-E12a: CORE_EVENTS_ORGS lists the org ids where a core app emits its
+    # events on the one event bus (`people.person.updated` first). `*` opens
+    # every org. Empty opens none. Reader:
+    # `gateway.core_events.core_events_allowed`. A SIGHUP reload applies a
+    # change (docs/flag_reload.md). A flip in production is the gate
+    # `enforcement-flip`. Spec: ai_studio.md section 14 E12a.
+    core_events_orgs: str = ""
     # STU-C5a: STUDIO_SEARCH_ORGS lists the org ids where company search reads
     # the objects that an app names in `shell.search`, for the packages that the
     # member owns or has installed. `*` opens every org. Empty opens none, and
