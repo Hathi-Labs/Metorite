@@ -324,6 +324,78 @@ def test_flag_off_the_base_has_no_find_tools(store, monkeypatch) -> None:
     assert bases == [estimates[0], estimates[0] + 1], "the load tool alone adds 1"
 
 
+async def _apply_nothing(monkeypatch) -> tuple[Any, Any, Any]:
+    """``_apply_tool_packs`` for a turn with nothing to give: the org has no
+    pack on (``allowed`` is empty), so no pack loads, the loader offers
+    nothing and no skill is named. Gives the apply, the agent that the turn
+    started with and the agent of the run after the apply."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    from tests.unit.test_tool_packs_choice import _bullets, _run_ctx
+
+    routes_agent = pytest.importorskip("gateway.routes.agent", reason="gateway not installed")
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _name: frozenset())
+    from orchestrator.agents import build_orchestrator_agent
+
+    agent = build_orchestrator_agent(with_history=False)
+    agents = [agent]
+    token = bind_tenant(ORG)
+    try:
+        turn = await tp.begin_turn(ORG, "chat-ts2a-nothing", MEMBER, "hello there")
+        applied = await ti._apply_tool_packs(
+            agents,
+            turn,
+            _run_ctx(),
+            allowed=frozenset(),
+            agent_name="orchestrator",
+            tool_scope=list(CONFIG["tool_scope"]),
+            agent_config=CONFIG,
+            bullets=_bullets(),
+            offer_loader=True,
+        )
+    finally:
+        release_tenant(token)
+    return applied, agent, agents[0]
+
+
+async def test_a_turn_with_nothing_to_give_binds_nothing_with_the_flag_off(
+    store,
+    monkeypatch,
+) -> None:
+    """Verifier P2. With the flag off, a turn that loads no pack, offers no
+    loader and names no skill returns None, as main does. So the executor
+    binds no run key and no record (``_pack_apply.context()`` never runs),
+    the agent object stays the same, and the apply marks nothing on it.
+    Mutation: the early return of such a turn is gone -> the apply marks the
+    agent (``PACK_REFUSED_ATTR``) -> red. Mutation: both returns give the
+    apply -> a run key binds -> red. The final return alone giving the apply
+    is an equivalent mutant: the early return stops the turn first."""
+    _flags(monkeypatch, "")
+    applied, before, after = await _apply_nothing(monkeypatch)
+    assert applied is None
+    assert after is before and ex._pack_finder(after) is None
+    assert not hasattr(before, ti.PACK_REFUSED_ATTR)
+
+
+async def test_the_same_turn_with_the_flag_on_holds_find_tools(store, monkeypatch) -> None:
+    """The decision of the audit: ``find_tools`` joins every turn where the
+    flag is on, also with nothing to give. The apply comes back with a run
+    key and a record, so ``FindTools._gate`` finds them, and the finder has
+    no candidate. Mutation: the early return or the final return drops the
+    test of ``candidates`` -> None -> red."""
+    _flags(monkeypatch, ORG)
+    applied, before, after = await _apply_nothing(monkeypatch)
+    assert applied is not None and applied.run_key
+    assert applied.record.slugs == () and applied.builds == ()
+    finder = ex._pack_finder(after)
+    assert after is not before and finder is not None
+    assert finder.record is applied.record and finder.run_key == applied.run_key
+    assert finder.candidates.packs == () and ex._pack_loader(after) is None
+    context = applied.context()
+    assert context[tp.PACK_RUN_KEY] == applied.run_key and context[tp.PACKS_KEY] is applied.record
+
+
 def test_flag_off_no_provider_and_no_finder(store, monkeypatch) -> None:
     """With the flag empty, the run holds no ``FindToolsProvider`` and the
     apply makes no ``FindTools``. Mutation: attach the provider while the flag

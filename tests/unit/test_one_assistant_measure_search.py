@@ -379,7 +379,18 @@ def test_arms_pack_search_prints_skip_and_runs_the_pack_arm(
     out = capsys.readouterr().out
     assert code == run.EXIT_PASS
     assert "SKIP: arm search" in out
+    assert "waits for the plans of TS-5b (SEARCH_PLANS)" in out
     assert seen == [(PACK,)]
+
+
+@pytest.mark.parametrize("arm", [PACK, SEARCH, "delegation"])
+def test_only_the_search_arm_holds_tool_search_orgs(arm: str) -> None:
+    """TS-2a PR 3. ``PRODUCTION`` pins ``tool_search_orgs`` to "", so a developer .env
+    that sets ``TOOL_SEARCH_ORGS`` changes no number of the other arms. The search arm
+    sets the eval org after it. Mutation: drop the key from ``PRODUCTION`` -> red."""
+    assert run.PRODUCTION["tool_search_orgs"] == ""
+    merged = {**run.PRODUCTION, **run.flag_for(scenario("stu_skills"), arm)}
+    assert merged["tool_search_orgs"] == (ds.ORG if arm == SEARCH else "")
 
 
 def test_the_search_arm_does_not_skip_when_built(

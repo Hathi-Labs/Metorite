@@ -4089,7 +4089,10 @@ async def _apply_tool_packs(
     # a run where the search is on, so the cap counts it before the first
     # choice. The org is the bound tenant, never a request field (R5). At the
     # cap, this count can make ``choose`` drop the last pack, and the owner
-    # accepted that trade. With the flag off the count does not change.
+    # accepted that trade. With the flag off the count does not change. The
+    # setup needs the choice, so it runs later: when it gives no finder (an
+    # agent that is no MAF ``Agent``, or a fault), the count is one high,
+    # which errs on the safe side.
     search_on = offer_loader and tool_packs.tool_search_on(org)
     if search_on:
         base += 1
@@ -4145,9 +4148,11 @@ async def _apply_tool_packs(
     # TS-2a: the candidates of ``find_tools``, from the ``allow`` of this apply
     # (the admin's toggles widened by FOLLOWS), never a fresh flag read, and
     # the ONE test of the owners that the plan reads too. Both None when the
-    # search is off.
+    # search is off. A sticky pack that left at the start of the turn
+    # (``choice.evicted``) counts as held, so it is no candidate: the line of
+    # the turn tells the model not to call its tools (``left_line``).
     available, candidates = await _search_setup(
-        search_on, agent, allow, choice.slugs, frozenset(holds), build_ctx,
+        search_on, agent, allow, (*choice.slugs, *choice.evicted), frozenset(holds), build_ctx,
         persona=str(opts.get("instructions") or ""), bullets=bullets)
     if offer_loader:
         # RX-1: a spare pack gives way to a load, so the plan counts it free:

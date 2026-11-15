@@ -709,7 +709,23 @@ def _names_held(agent: Any) -> set[str]:
     for tool in getattr(agent, "mcp_tools", None) or []:
         held |= {tool_name(f) for f in getattr(tool, "functions", None) or []}
         held |= {tool_name(f) for f in getattr(tool, "_functions", None) or []}
+    held |= _finder_names(agent)
     return {n for n in held if n}
+
+
+def _finder_names(agent: Any) -> set[str]:
+    """WS-67 TS-2a: the name of ``find_tools`` when a ``FindToolsProvider`` of
+    the run is on *agent*. That provider adds the tool in ``before_run``, so
+    ``default_options`` never holds it, and a server tool of the same name
+    would fail the turn. Only a run with ``TOOL_SEARCH_ORGS`` on holds the
+    provider, so a run with the flag off reads nothing new here."""
+    try:
+        from acb_skills.tool_guard import tool_name
+        from acb_skills.tool_packs import FindToolsProvider
+    except ImportError:  # pragma: no cover - acb_skills ships with the platform
+        return set()
+    return {tool_name(p.finder.tool) for p in getattr(agent, "context_providers", None) or []
+            if isinstance(p, FindToolsProvider)}
 
 
 def _choose_disclosure(tool: Any) -> None:

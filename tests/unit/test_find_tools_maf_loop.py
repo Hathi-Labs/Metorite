@@ -293,7 +293,12 @@ async def test_with_no_offer_the_list_holds_the_finder_alone() -> None:
 # ── 3. The allow rule ───────────────────────────────────────────────────────
 
 
-async def _apply_plain(monkeypatch, store: Any, disabled: frozenset[str]) -> Any:  # noqa: F811
+async def _apply_plain(
+    monkeypatch,
+    store: Any,  # noqa: F811
+    disabled: frozenset[str],
+    turn: Any = None,
+) -> Any:
     from tests.unit.test_tool_packs_choice import _bullets, _run_ctx
 
     routes_agent = pytest.importorskip("gateway.routes.agent", reason="gateway not installed")
@@ -304,7 +309,8 @@ async def _apply_plain(monkeypatch, store: Any, disabled: frozenset[str]) -> Any
     agents = [build_orchestrator_agent(with_history=False)]
     token = bind_tenant(ORG)
     try:
-        turn = await tp.begin_turn(ORG, "chat-ts2a-allow", MEMBER, "hello there")
+        if turn is None:
+            turn = await tp.begin_turn(ORG, "chat-ts2a-allow", MEMBER, "hello there")
         applied = await ti._apply_tool_packs(
             agents,
             turn,
@@ -339,6 +345,35 @@ async def test_an_admin_who_turned_studio_off_gets_no_studio_more_candidate(
     assert finder is not None and finder.candidates.packs == ()
     assert not set(finder.candidates.tools) & (MORE_TOOLS | CORE_TOOLS)
     assert "- studio" not in finder.tool.description
+
+
+async def test_a_sticky_pack_that_left_at_the_start_is_no_candidate(
+    store,  # noqa: F811
+    monkeypatch,
+) -> None:
+    """Opus review P2-1. A sticky ``studio-more`` that leaves at the start of
+    the turn (decay: no use in 19 member turns) is in ``PackRun.gone``, and the
+    line of the turn names it (``left_line``). The search must not offer it
+    again in the same turn, so it is no candidate. The core stays one. The
+    line of the turn is the same text with the flag on and off. Mutation L7
+    (the setup gets ``choice.slugs`` only) -> ``studio-more`` is a candidate
+    -> red."""
+    _studio(monkeypatch)
+    old = tp.Sticky(slug=MORE, first=(1, 0), used=1)
+    lines: dict[bool, str] = {}
+    for on in (False, True):
+        _flags(monkeypatch, ORG if on else "")
+        turn = tp.PackTurn(
+            ORG, "chat-ts2a-gone", tp._member_part(MEMBER), 20, (old,), "hello there", True
+        )
+        applied, finder = await _apply_plain(monkeypatch, store, frozenset(), turn=turn)
+        assert applied is not None and MORE in applied.record.gone, "non-vacuity: it left"
+        lines[on] = tp.left_line(applied.record)
+        assert (finder is not None) is on
+        if on:
+            assert finder.candidates.packs == ("studio",)
+            assert not set(finder.candidates.tools) & MORE_TOOLS
+    assert lines[True] == lines[False] and "left this chat" in lines[True]
 
 
 # ── 4. The name ─────────────────────────────────────────────────────────────
