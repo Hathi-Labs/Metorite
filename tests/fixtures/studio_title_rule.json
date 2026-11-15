@@ -1,0 +1,13 @@
+{
+  "_comment": "REL-R1. One table of cases for the title rule of a record. The pytest of acb_common.studio_fields (title_key_of, record_title) and the vitest of packagePreview.ts (titleKeyOf, recordTitle) both read it. A case that differs between the two sides fails one of them. A title of no text is null here, and the client then shows the id.",
+  "cases": [
+    {"name": "the first text field", "fields": [{"key": "n", "type": "number"}, {"key": "name", "type": "text"}, {"key": "b", "type": "text"}], "data": {"n": 1, "name": "Plant 4", "b": "x"}, "key": "name", "title": "Plant 4"},
+    {"name": "a many text field is skipped", "fields": [{"key": "tags", "type": "text", "many": true}, {"key": "name", "type": "text"}], "data": {"tags": ["a"], "name": "Plant"}, "key": "name", "title": "Plant"},
+    {"name": "no text field falls to the first field", "fields": [{"key": "team", "type": "relation", "to": "team"}, {"key": "n", "type": "number"}], "data": {"team": {"id": "x"}, "n": 3}, "key": "team", "title": null},
+    {"name": "a text title is trimmed", "fields": [{"key": "name", "type": "text"}], "data": {"name": "  Plant 4  "}, "key": "name", "title": "Plant 4"},
+    {"name": "a blank title is no title", "fields": [{"key": "name", "type": "text"}], "data": {"name": "   "}, "key": "name", "title": null},
+    {"name": "a missing title is no title", "fields": [{"key": "name", "type": "text"}], "data": {}, "key": "name", "title": null},
+    {"name": "no fields", "fields": [], "data": {"a": "b"}, "key": null, "title": null},
+    {"name": "a first field that is a select", "fields": [{"key": "status", "type": "select"}, {"key": "note", "type": "longText"}], "data": {"status": "open"}, "key": "status", "title": "open"}
+  ]
+}

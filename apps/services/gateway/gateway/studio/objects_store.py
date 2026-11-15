@@ -349,9 +349,11 @@ from acb_common.studio_fields import (
     max_entry_bytes,
     parse_field_spec,
     record_json,
+    record_title,
     relation_key,
     storable_text,
     stored_field,
+    title_key_of,
     validate_record,
 )
 from acb_common.studio_flags import num_f8_org
@@ -738,6 +740,15 @@ _GET_RECORD_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
     f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE}"
 )
+
+#: REL-R1. The records of one object by id, for the titles of a page of relation
+#: cells. One statement for the whole page. The scoped form adds the row rule.
+_GET_RECORDS_SQL = (
+    f"SELECT {_RECORD_COLUMNS} FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    f"AND id = ANY(CAST(:rids AS uuid[])) AND {_IN_PACKAGE}"
+)
+_GET_RECORDS_SCOPED_SQL = f"{_GET_RECORDS_SQL} AND {_ACCESS_ROW_SQL}"
 
 #: A batch locks each record that it changes, before its first write.
 _LOCK_RECORD_SQL = _GET_RECORD_SQL + " FOR NO KEY UPDATE"
@@ -2220,6 +2231,55 @@ async def get_record(db: Any, object_id: str, record_id: str, *,
     sql = _scoped(_GET_RECORD_SQL, _GET_RECORD_SCOPED_SQL, view.scope, binds)
     row = (await db.execute(text(sql), binds)).first()
     return None if row is None else view.shown(_record(row))
+
+
+#: REL-R1. A page names at most this many relation targets. Later ids get None.
+RELATION_NAMES_CAP = 200
+
+
+async def record_titles(db: Any, object_id: str, ids: Sequence[str], *, package_id: str,
+                        viewer: Viewer,
+                        only_keys: Collection[str] | None = None) -> dict[str, str | None]:
+    """REL-R1. The title of each record in *ids* of the object *object_id* of
+    the package *package_id*, as *viewer* may read it. The key is the id as the
+    caller gave it. The value is None when the viewer may not read the record,
+    when the record is not there, when the id is no UUID, when the viewer's
+    ``hide`` hides the title field, or when the id is past the first
+    :data:`RELATION_NAMES_CAP` distinct ids. A hidden record and a missing one
+    look the same, so the answer is no oracle for an id.
+
+    The page costs a constant count of statements: the view, the fields and one
+    read of the records. The view and the row rule are those of
+    :func:`get_record`. A record with no title text is named by its id, as the
+    client does. *only_keys* limits the fields to the keys that an installed
+    version declares (J2a), so its title key is the one of that version."""
+    who = _check_viewer(viewer)
+    oid, pid = _uuid(object_id, "object_id"), _uuid(package_id, "package_id")
+    wanted = list(dict.fromkeys(str(i) for i in ids))[:RELATION_NAMES_CAP]
+    out: dict[str, str | None] = dict.fromkeys((str(i) for i in ids), None)
+    by_uuid: dict[str, list[str]] = {}
+    for given in wanted:
+        try:
+            by_uuid.setdefault(_uuid(given, "record_id"), []).append(given)
+        except ObjectStoreError:
+            continue  # not a UUID: no record can have it, so no statement
+    if not by_uuid:
+        return out
+    view = await _view(db, oid, pid, who)
+    if view is None or not view.scope.reads:
+        return out
+    fields = [f for f in await _fields(db, oid) if only_keys is None or f.key in only_keys]
+    key = title_key_of(fields)
+    binds: dict[str, Any] = {"oid": oid, "pid": pid, "rids": sorted(by_uuid)}
+    sql = _scoped(_GET_RECORDS_SQL, _GET_RECORDS_SCOPED_SQL, view.scope, binds)
+    for row in (await db.execute(text(sql), binds)).all():
+        rec = _record(row)
+        if key is not None and key in view.hidden(rec.data):
+            continue  # the viewer may not read the title: the same None
+        title = record_title(fields, rec.data) or rec.id
+        for given in by_uuid.get(str(uuid.UUID(rec.id)), ()):
+            out[given] = title
+    return out
 
 
 async def update_record(db: Any, actor: str, object_id: str, record_id: str,

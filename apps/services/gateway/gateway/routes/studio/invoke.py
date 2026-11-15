@@ -676,6 +676,10 @@ class _Outcome:
     unmet: _Unmet | None = None
     record: objects_store.Record | None = None
     page: objects_store.RecordPage | None = None
+    #: REL-R1. The titles of the records that the relation cells of a get or a list
+    #: name: ``{id: title or None}``. None when the object has no relation to an
+    #: object of its own app.
+    names: dict[str, str | None] | None = None
     #: The result of an aggregate (D4b).
     aggregate: objects_store.AggregateResult | None = None
     #: The nodes of a tree read (D18-2a).
@@ -918,6 +922,55 @@ def _installed_object(package: _App, name: str) -> bool:
     return not isinstance(package, _viewer.InstalledApp) or name in package.object_names
 
 
+def _relation_ids(fields: Any, records: Any) -> dict[str, list[str]] | None:
+    """REL-R1. The ids that the relation cells of *records* name, by target object
+    name, for each relation field of *fields* whose ``to`` is a bare name. None
+    when no field is one. A lines relation holds no value, and a core target
+    (``<app>.<object>``) is not in this slice."""
+    targets = [f for f in fields if f.type == "relation" and f.lines is None
+               and isinstance(f.to, str) and "." not in f.to]
+    if not targets:
+        return None
+    found: dict[str, list[str]] = {}
+    for f in targets:
+        into = found.setdefault(str(f.to), [])
+        for rec in records:
+            raw = rec.data.get(f.key)
+            for one in (raw if isinstance(raw, list) else [raw]):
+                rid = one.get("id") if isinstance(one, dict) else None
+                if isinstance(rid, str) and rid not in into:
+                    into.append(rid)
+    return found
+
+
+async def _relation_names(db: Any, package: _App, obj: Any, records: Any,
+                          viewer: Viewer) -> dict[str, str | None] | None:
+    """REL-R1. The titles of the records that the relation cells of *records*
+    (of *obj*) name, as *viewer* may read them. Each id of a record that the
+    viewer may not read, that is not there, that no installed version declares,
+    or that is no UUID, answers None, with no way to tell the cases apart."""
+    installed = isinstance(package, _viewer.InstalledApp)
+    fields = package.project(obj).fields if installed else obj.fields
+    wanted = _relation_ids(fields, records)
+    if wanted is None:
+        return None
+    names: dict[str, str | None] = {}
+    for target_name, ids in wanted.items():
+        titles: dict[str, str | None] = dict.fromkeys(ids)
+        try:
+            target = await objects_store.get_object_by_name(db, target_name, package_id=package.id)
+            if target is not None and _installed_object(package, target.name) and ids:
+                titles = await objects_store.record_titles(
+                    db, target.id, ids, package_id=package.id, viewer=viewer,
+                    only_keys=package.field_keys(target.name) if installed else None)
+        except objects_store.ObjectStoreError:
+            pass  # a name that cannot be read is None, and the page still draws
+        for rid, title in titles.items():
+            if names.get(rid) is None:
+                names[rid] = title
+    return names
+
+
 async def _run_object_get(db: Any, package: _App, ref: UsesRef,
                           raw: bytes, out: _Outcome, viewer: Viewer) -> None:
     """Read one record of the object *ref* of *package*. The id comes from
@@ -946,6 +999,8 @@ async def _run_object_get(db: Any, package: _App, ref: UsesRef,
         out.record = package.project_record(obj.name, rec)
     else:
         out.record = rec
+    if out.record is not None:
+        out.names = await _relation_names(db, package, obj, [out.record], viewer)
 
 
 async def _run_object_list(db: Any, package: _App, ref: UsesRef,
@@ -988,6 +1043,7 @@ async def _run_object_list(db: Any, package: _App, ref: UsesRef,
         out.object_missing = True
     else:
         out.page = page
+        out.names = await _relation_names(db, package, obj, page.records, viewer)
 
 
 def _aggregate_input(raw: bytes) -> dict[str, Any]:
@@ -2569,7 +2625,7 @@ def _read_answer(out: _Outcome) -> dict[str, Any]:
     """The answer of a read that ran: a page, an aggregate, a tree (D18-2a), or
     the record of a get or a write."""
     if out.page is not None:
-        return dataclasses.asdict(out.page)
+        return {**dataclasses.asdict(out.page), **_names_of(out)}
     if out.aggregate is not None:
         return _aggregate_answer(out.aggregate)
     if out.tree is not None:
@@ -2601,8 +2657,14 @@ def _record_answer(out: _Outcome) -> dict[str, Any]:
     if out.missing or out.record is None:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     if out.lines:
-        return {"record": dataclasses.asdict(out.record), "lines": out.lines, **mark}
-    return {"record": dataclasses.asdict(out.record), **mark}
+        return {"record": dataclasses.asdict(out.record), "lines": out.lines,
+                **mark, **_names_of(out)}
+    return {"record": dataclasses.asdict(out.record), **mark, **_names_of(out)}
+
+
+def _names_of(out: _Outcome) -> dict[str, Any]:
+    """REL-R1. The ``names`` key of a get or a list answer, or nothing."""
+    return {} if out.names is None else {"names": out.names}
 
 
 @router.post("/apps/{app_id}/actions/{action}", response_model=None)

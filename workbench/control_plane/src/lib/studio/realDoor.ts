@@ -136,6 +136,19 @@ export function flattenRecord(answer: unknown): Row | null {
   return flattenRecords({ records: [answer.record] })?.[0] ?? null;
 }
 
+/**
+ * REL-R1. The `names` of a get or a list answer, as `{id: title or null}`, or undefined.
+ * An entry that is not text or null is dropped, so a block never reads a wrong type.
+ */
+export function answerNames(answer: unknown): Record<string, string | null> | undefined {
+  if (!isObject(answer) || !isObject(answer.names)) return undefined;
+  const out: Record<string, string | null> = {};
+  for (const [id, title] of Object.entries(answer.names)) {
+    if (id !== "__proto__" && (typeof title === "string" || title === null)) out[id] = title;
+  }
+  return out;
+}
+
 /** The body of an aggregate: the keys of `AGGREGATE_KEYS` of the args, and no other. */
 export function aggregateBody(args: Record<string, unknown> | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -277,7 +290,7 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       if (source.action.endsWith(".get")) {
         const one = flattenRecord(out.body);
         if (!one) throw new DoorReadError(GONE_SENTENCE, 404);
-        return [one];
+        return withMeta([one], { names: answerNames(out.body) });
       }
       // An aggregate answers ONE row, the C2b result, as `parseAggregate` reads it.
       if (isAggregate) {
@@ -290,6 +303,7 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       return withMeta(rows, {
         ...(typeof b.total === "number" ? { total: b.total } : {}),
         ...(typeof b.total_at_least === "number" ? { atLeast: b.total_at_least } : {}),
+        names: answerNames(b),
       });
     },
 

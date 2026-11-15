@@ -31,9 +31,9 @@ import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
-import { sourceKey } from "./dataDoor";
+import { rowsMeta, sourceKey } from "./dataDoor";
 import {
-  AGGREGATE_KEYS, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
+  AGGREGATE_KEYS, aggregateBody, answerNames, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
   NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
 } from "./realDoor";
@@ -155,6 +155,27 @@ describe("the rows", () => {
   it("gives null for an answer with no records list", () => {
     expect(flattenRecords({})).toBeNull();
     expect(flattenRecords("x")).toBeNull();
+  });
+  it("REL-R1: a list and a get carry the names of the answer through unchanged", async () => {
+    const names = { "id-1": "Plant 4", "id-2": null };
+    const list = fakeFetch(200, { records: [{ id: "r1", data: { team: { id: "id-1" } } }], total: 1, names });
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: list.impl });
+    const rows = await door.read({ action: "object:visit.list" });
+    expect(rowsMeta(rows)?.names).toEqual(names);
+    expect(rows).toEqual([{ id: "r1", team: { id: "id-1" } }]);
+    const get = fakeFetch(200, { record: { id: "r1", data: {} }, names });
+    const one = await createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: get.impl })
+      .read({ action: "object:visit.get", args: { id: "r1" } });
+    expect(rowsMeta(one)?.names).toEqual(names);
+  });
+  it("REL-R1: an answer with no names, or a wrong type, gives no names", async () => {
+    expect(answerNames({ records: [] })).toBeUndefined();
+    expect(answerNames({ names: ["a"] })).toBeUndefined();
+    expect(answerNames({ names: { a: 3, b: "ok", c: null, d: { x: 1 } } })).toEqual({ b: "ok", c: null });
+    const plain = fakeFetch(200, { records: [], total: 0 });
+    const rows = await createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: plain.impl })
+      .read({ action: "object:visit.list" });
+    expect(rowsMeta(rows)?.names).toBeUndefined();
   });
   it("a read of a bad answer fails with a plain sentence", async () => {
     const { impl } = fakeFetch(200, { oops: 1 });

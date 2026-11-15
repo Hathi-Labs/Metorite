@@ -1163,6 +1163,32 @@ def max_entry_bytes(field: FieldSpec) -> int:
     return len(json.dumps(field.key)) + 4 + value
 
 
+#: REL-R1. A record title that a relation name carries is cut at this many characters.
+MAX_TITLE_CHARS = 160
+
+
+def title_key_of(fields: Sequence[FieldSpec]) -> str | None:
+    """REL-R1. The key of the field that names a record: the first text field
+    that holds one value, else the first field. It is the twin of ``titleKeyOf``
+    in ``packagePreview.ts``. ``tests/fixtures/studio_title_rule.json`` holds
+    the cases that both sides pass."""
+    for f in fields:
+        if f.type == "text" and not f.many:
+            return f.key
+    return fields[0].key if fields else None
+
+
+def record_title(fields: Sequence[FieldSpec], data: Mapping[str, Any]) -> str | None:
+    """REL-R1. The words that name a record: the trimmed text of its title
+    field, cut at :data:`MAX_TITLE_CHARS`. None when the field holds no text,
+    and then the caller falls back to the id, as ``recordTitle`` does."""
+    key = title_key_of(fields)
+    value = data.get(key) if key is not None else None
+    if isinstance(value, str) and value.strip():
+        return value.strip()[:MAX_TITLE_CHARS]
+    return None
+
+
 def relation_key(value: str) -> str:
     """The text that a hot relation row holds for the id *value*. An id of 32 hex
     digits, with or without the four dashes and in any case, gets the one

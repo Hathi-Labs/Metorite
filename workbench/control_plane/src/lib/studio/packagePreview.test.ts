@@ -12,9 +12,11 @@
  * field out" turns red. Verifier P2: the Detail showed "Order lines" with a dash
  * for an order that holds lines.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { detailFields, fieldSpecs, formFields, isLinesField, tableFields } from "./packagePreview";
+import type { FieldSpec } from "./fieldCheck";
+import { detailFields, fieldSpecs, formFields, isLinesField, recordTitle, tableFields, titleKeyOf } from "./packagePreview";
 import type { ObjectRow } from "./realDoor";
 
 const field = (key: string, type: string, more: Partial<ObjectRow["fields"][number]> = {}) => ({
@@ -50,4 +52,18 @@ describe("a lines relation in the installed app", () => {
   it("the Table leaves a lines field out, and keeps a plain relation", () => {
     expect(tableFields(fieldSpecs(order)).map((f) => f.key)).toEqual(["title", "customer", "total"]);
   });
+});
+
+describe("REL-R1: the title rule, shared with the gateway", () => {
+  // The gateway reads the same table (tests/unit/test_studio_relation_names.py). It cuts a
+  // title at 160 characters, and the client does not, so no case holds a longer one.
+  const table = JSON.parse(
+    readFileSync(new URL("../../../../../tests/fixtures/studio_title_rule.json", import.meta.url), "utf8"),
+  ) as { cases: { name: string; fields: FieldSpec[]; data: Record<string, unknown>; key: string | null; title: string | null }[] };
+  for (const c of table.cases) {
+    it(c.name, () => {
+      expect(titleKeyOf(c.fields)).toBe(c.key);
+      expect(recordTitle(c.fields, { id: "the-id", ...c.data })).toBe(c.title ?? "the-id");
+    });
+  }
 });

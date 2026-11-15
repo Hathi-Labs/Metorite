@@ -998,6 +998,10 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C24b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C24b.md) |
 | **C25** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C25.md) |
 | **C26** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C26.md) |
+| **REL-R1** | 🔨 BUILT, dark (2026-11-15, task 3381) | HIGH | AGENT-SAFE | [row](ai_studio_rows/REL-R1.md) |
+| **REL-R2** | open | STD | AGENT-SAFE | [row](ai_studio_rows/REL-R2.md) |
+| **REL-R3** | open | STD | AGENT-SAFE | [row](ai_studio_rows/REL-R3.md) |
+| **REL-R4** | open | HIGH | OWNER-GATE: one answer | [row](ai_studio_rows/REL-R4.md) |
 
 ### Group D — Blocks and the renderer
 
@@ -1508,7 +1512,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A skill loads only in the state `published`, and only when the member owns it or the org shares it. Org B's skill never loads for org A | New with F3: `tests/unit/test_skill_packs_r8.py` (R8) |
 | A skill pack takes a place of the 3 packs, loads in a fixed order, and fails to load with an unresolved variable, an action with no chat tool or a tool that the run does not hold | New with F3: `tests/unit/test_skill_packs.py` |
 | A record and its lines are one batch of at most 50 writes, and a line names a parent of its own package and org only | New with C13: `tests/unit/test_studio_lines.py` and `tests/unit/test_studio_lines_r8.py` (R8) |
-| Each call of the six record functions, of `read_tree` (D18-2a) and of `aggregate_records` (C2d-a) passes a `viewer`. Each takes it as a required keyword. The test lists each reader path | New with C8a: `test_each_call_of_the_six_passes_a_viewer` and `test_the_six_take_viewer_as_a_required_keyword` in `tests/unit/test_studio_row_rules.py` |
+| Each call of the six record functions, of `read_tree` (D18-2a), of `aggregate_records` (C2d-a) and of `record_titles` (REL-R1) pass a `viewer`. Each takes it as a required keyword. The test lists each reader path | New with C8a: `test_each_call_of_the_six_passes_a_viewer` and `test_the_six_take_viewer_as_a_required_keyword` in `tests/unit/test_studio_row_rules.py` |
 | A viewer reads only the rows of its grants, and a hidden key leaves each answer. A change or a delete of a record that the viewer cannot read answers not found | New with C8a: `tests/unit/test_studio_row_rules_r8.py` (R8) |
 | Each part of a page statement holds the row rule, and a check of a rule reads every record | New with C8a: `test_a_page_with_a_row_rule_holds_it_in_each_part` and `test_a_check_of_a_rule_reads_every_record` in `tests/unit/test_studio_row_rules.py` |
 | The door builds the viewer from the session's member only | New with C8a: `test_the_door_builds_the_viewer_from_the_session_member_only` in `tests/unit/test_studio_row_rules.py`, and `test_the_door_passes_the_owner_of_the_session_as_the_viewer` in `tests/unit/test_studio_action_door.py` |

@@ -25,12 +25,18 @@ export interface RowsMeta {
   total?: number;
   /** The store counted this far and stopped. */
   atLeast?: number;
+  /**
+   * REL-R1. The title of each record that a relation cell of the answer names:
+   * `{<record id>: <title or null>}`. A null means the viewer may not read the record, or
+   * it is not there, and a block then shows "Restricted". A core target has no entry.
+   */
+  names?: Record<string, string | null>;
 }
 const META = Symbol.for("studio.rowsMeta");
 
 /** Attach the paging facts of an answer to its rows. Returns the same array. */
 export function withMeta(rows: Row[], meta: RowsMeta): Row[] {
-  if (meta.total === undefined && meta.atLeast === undefined) return rows;
+  if (meta.total === undefined && meta.atLeast === undefined && meta.names === undefined) return rows;
   Object.defineProperty(rows, META, { value: meta, enumerable: false, configurable: true });
   return rows;
 }

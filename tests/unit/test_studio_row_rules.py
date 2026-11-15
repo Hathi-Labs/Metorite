@@ -60,9 +60,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 _STORE = _ROOT / "apps/services/gateway/gateway/studio/objects_store.py"
 _DRAFT_EDIT = _ROOT / "workbench/control_plane/src/lib/studio/draftEdit.ts"
 #: The store calls that take a REQUIRED ``viewer``: the six of C8a, ``read_tree`` since
-#: its door (D18-2a), and ``aggregate_records`` since C2d-a. The name stays ``_SIX``.
+#: its door (D18-2a), ``aggregate_records`` since C2d-a, and ``record_titles`` since REL-R1.
+#: The name stays ``_SIX``.
 _SIX = ("get_record", "query_records", "apply_writes", "create_record", "update_record",
-        "delete_record", "read_tree", "aggregate_records")
+        "delete_record", "read_tree", "aggregate_records", "record_titles")
 
 ME = "ana@x.test"
 SLIP_FIELDS = [
@@ -654,6 +655,7 @@ def test_the_second_list_of_hot_types_in_draft_edit_equals_the_first() -> None:
     "_GET_RECORD_SCOPED_SQL", "_LOCK_RECORD_SCOPED_SQL", "_LINE_PARENTS_SCOPED_SQL",
     "_SHARE_OBJECT_SQL", "_VIEW_SQL", "_SOURCE_ACCESS_SQL", "_OBJECT_ACCESS_SQL",
     "_SET_ACCESS_SQL", "_TREE_ALL_SCOPED_SQL", "_TREE_ROOT_SCOPED_SQL",
+    "_GET_RECORDS_SQL", "_GET_RECORDS_SCOPED_SQL",
 ])
 def test_each_statement_of_the_row_rules_names_the_org_and_the_package(name: str) -> None:
     sql = getattr(store, name)
