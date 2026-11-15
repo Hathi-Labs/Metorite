@@ -6,6 +6,7 @@ import {
   buildWeek,
   dayLabel,
   hourWindow,
+  initialScrollTop,
   nowDayIndex,
   nowTop,
   shiftAnchor,
@@ -201,6 +202,24 @@ describe("hourWindow", () => {
   it("keeps a valid window when the defaults are reversed", () => {
     const w = hourWindow([], 20, 10);
     expect(w.endHour).toBeGreaterThan(w.startHour);
+  });
+});
+
+describe("initialScrollTop", () => {
+  const H = 46;
+  it("is one hour above the earliest block", () => {
+    expect(initialScrollTop([{ topPx: 300 }, { topPx: 138 }], 500, H, 7)).toBe(92);
+  });
+  it("is one hour above the now line when no block exists", () => {
+    expect(initialScrollTop([], 161, H, 7)).toBe(115);
+  });
+  it("is the default hour of the window when nothing else exists", () => {
+    expect(initialScrollTop([], null, H, 7)).toBe(0);
+    expect(initialScrollTop([], null, H, 0)).toBe(7 * H);
+  });
+  it("never goes below 0", () => {
+    expect(initialScrollTop([{ topPx: 10 }], null, H, 7)).toBe(0);
+    expect(initialScrollTop([], 20, H, 7)).toBe(0);
   });
 });
 

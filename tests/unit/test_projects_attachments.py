@@ -93,6 +93,11 @@ class FakeDB:
         ]
 
 
+#: CIV-14b: the route checks that a file labelled ``image/png`` holds a PNG,
+#: by its first bytes (``attachments.stored_type``). So a stub image is one.
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+
 class UploadStub:
     def __init__(self, filename: str, content: bytes, content_type: str = "image/png"):
         self.filename = filename
@@ -245,7 +250,7 @@ def test_visibility_is_checked_BEFORE_the_bytes_are_read(db):
 
 
 def test_an_upload_writes_the_file_row_and_the_join(db, wiring):
-    upload = UploadStub("photo.png", b"bytes")
+    upload = UploadStub("photo.png", PNG)
     result = run(pm_attachments.attach_file("t1", upload, user=user()))
     assert result["kind"] == "image"
     assert result["name"] == "photo.png"
@@ -256,11 +261,11 @@ def test_an_upload_writes_the_file_row_and_the_join(db, wiring):
     # …and the bytes actually landed.
     written = list(Path(wiring).iterdir())
     assert len(written) == 1
-    assert written[0].read_bytes() == b"bytes"
+    assert written[0].read_bytes() == PNG
 
 
 def test_the_uploader_is_recorded_as_the_file_owner_and_the_adder(db):
-    run(pm_attachments.attach_file("t1", UploadStub("a.png", b"z"), user=user("her@x.in")))
+    run(pm_attachments.attach_file("t1", UploadStub("a.png", PNG), user=user("her@x.in")))
     file_params = db.params[db.statements.index(
         db.sql_touching("INSERT INTO attachments")[0]
     )]
@@ -297,7 +302,7 @@ def test_the_disk_path_cannot_be_steered_by_the_filename(db, wiring):
     """Safe BY CONSTRUCTION, not by sanitisation: the destination is
     `<uuid><suffix>`, so the supplied name never reaches the path at all."""
     run(pm_attachments.attach_file(
-        "t1", UploadStub("../../etc/passwd.png", b"z"), user=user(),
+        "t1", UploadStub("../../etc/passwd.png", PNG), user=user(),
     ))
     written = list(Path(wiring).iterdir())
     assert len(written) == 1
@@ -315,7 +320,7 @@ def test_a_hostile_filename_is_sanitised_in_the_STORED_name(db):
     disk path alone let a mutant that removed `_safe_name` entirely survive.
     """
     result = run(pm_attachments.attach_file(
-        "t1", UploadStub('../../etc/pa"ss\nwd.png', b"z"), user=user(),
+        "t1", UploadStub('../../etc/pa"ss\nwd.png', PNG), user=user(),
     ))
     assert "/" not in result["name"]
     assert ".." not in result["name"]
