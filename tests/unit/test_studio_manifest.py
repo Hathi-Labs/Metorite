@@ -1626,7 +1626,6 @@ def test_every_first_party_template_still_validates():
         assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
 
 
-<<<<<<< HEAD
 def test_a_null_scopes_saves_but_reads_as_a_wrong_shape():
     """I9b-1 review. The draft save accepts ``scopes: null`` (an optional field), so
     the reader of a stored manifest must not read it as "no scope asked" (met by any
@@ -1639,7 +1638,8 @@ def test_a_null_scopes_saves_but_reads_as_a_wrong_shape():
     assert connection_scopes({"name": "zoho", "as": "org"}) == ()
     assert connection_scopes("zoho") == ()
     assert connection_scopes({"name": "zoho", "scopes": []}) == ()
-=======
+
+
 # ── Page presets (STU-LY-0, specs/studio_layouts.md section 6) ──────────────────────────────
 
 _LY_VIEWS = [
@@ -1739,4 +1739,3 @@ def test_the_region_table_matches_the_validator_and_the_names():
     assert {r for t in PRESET_REGIONS.values() for r in t} <= set(REGION_NAMES)
     schema = Manifest.model_json_schema()
     assert schema["$defs"]["PageDef"]["properties"]["layout"]["anyOf"][0]["enum"] == list(LAYOUTS)
->>>>>>> origin/main
