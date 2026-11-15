@@ -496,7 +496,7 @@ export function useAgentChat({
       const assistantId = adopt?.assistantId ?? nanoid();
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
-        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
+        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true, firstLine: true,
         // Who this turn is from: the agent it was sent to (S9 fix round 3).
         ...agentAuthor(agentNameRef.current),
       };
@@ -1254,6 +1254,8 @@ export function useAgentChat({
         progressLines: [],
         customEvents: [],
         isThinkingActive: true,
+        // CS-1: a run that this tab joins again has no first line, even in the tab that sent it.
+        firstLine: undefined,
         streaming: true,
       } : null;
       const hasBody = (m: ChatMessage | null | undefined) =>

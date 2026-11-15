@@ -764,6 +764,7 @@ function MessageBubble({
         progressLines={message.progressLines}
         progressNotice={message.progressNotice?.text}
         isThinkingActive={message.isThinkingActive}
+        firstLine={message.firstLine}
         reasoningBlocks={message.reasoningBlocks}
         segments={flow ? (head ? [{ id: "flow-head", text: head }] : undefined) : message.segments}
         onChoice={onChoice}

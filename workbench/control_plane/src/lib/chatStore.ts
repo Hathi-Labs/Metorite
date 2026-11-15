@@ -72,6 +72,12 @@ export interface ChatMessage {
    *  step, answer text or the run's end takes it away. Never saved. */
   progressNotice?: { text: string; toolId?: string };
   isThinkingActive?: boolean;
+  /**
+   * CS-1: true only on the placeholder that Send puts in the thread. The header of the thinking trail
+   * says "Reading your message" while this is true and nothing has arrived. A run that this tab joins
+   * again (attach) never has it, because the server may be far past reading by then. Never saved.
+   */
+  firstLine?: boolean;
   /** Sequential reasoning blocks — each displayed as a separate timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3a, message-id-native): one entry
