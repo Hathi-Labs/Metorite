@@ -274,6 +274,12 @@ describe("the count guard", () => {
       expect(countHolds(j)).toBe(true);
     }
   });
+  it("reads the regions of a preset page, as _check_nav does", () => {
+    const m = counted([{ id: "p", layout: "table_workspace", regions: { main: ["list"] } }]);
+    expect(countHolds(m)).toBe(true);
+    const none = counted([{ id: "p", layout: "board", regions: { main: ["week"] } }]);
+    expect(countHolds(none)).toBe(false);
+  });
   it("refuses a removal of the only table cell of a counted page", () => {
     const m = deepFreeze(counted([{ id: "p", cells: [{ view: "list" }, { view: "week" }] }]));
     expect(countHolds(m)).toBe(true);

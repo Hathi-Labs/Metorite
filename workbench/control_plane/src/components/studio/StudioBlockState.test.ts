@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import StudioBlockState, { type StudioBlockStateProps } from "@/components/studio/StudioBlockState";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 const base: StudioBlockStateProps = {
   loading: false, error: null, forbidden: false, rows: 0, filtersActive: false, noun: "visits", create: "visit",
@@ -23,6 +24,18 @@ describe("StudioBlockState", () => {
     const html = draw({ loading: true });
     expect(html).toContain('aria-busy="true"');
     expect(html).toContain("animate-pulse");
+  });
+  it("tells a screen reader what loads, in every shape", () => {
+    for (const shape of ["rows", "board", "stats"] as const) {
+      const html = draw({ loading: true, shape });
+      expect(html, shape).toContain('aria-label="Loading visits"');
+      expect(html, shape).toContain('aria-busy="true"');
+      expect(html, shape).toContain('role="status"');
+    }
+  });
+  it("keeps the plain Loading label on a bare skeleton", () => {
+    const html = renderToStaticMarkup(createElement(SkeletonRows, {}));
+    expect(html).toContain('aria-label="Loading"');
   });
   it("draws the empty state with the create action", () => {
     const html = draw({ onCreate: () => {} });
@@ -50,13 +63,25 @@ describe("StudioBlockState", () => {
   });
 });
 
+const LOCAL_COPY = /animate-pulse|<Skeleton|SkeletonRows|SkeletonBoard|ui\/Skeleton|EmptyState|Retry/;
+
+describe("the fence regex", () => {
+  it("matches each known bad line, so an empty folder is never the only proof", () => {
+    for (const bad of ['<div className="animate-pulse" />', "<Skeleton className=\"h-4\" />", "<SkeletonRows />", 'import { SkeletonBoard } from "x"',
+      'import { Skeleton } from "@/components/ui/Skeleton"', 'import { EmptyState } from "../../EmptyState"', "<Button>Retry</Button>"]) {
+      expect(LOCAL_COPY.test(bad), bad).toBe(true);
+    }
+    expect(LOCAL_COPY.test('<StudioBlockState loading rows={0} />')).toBe(false);
+  });
+});
+
 describe("no local copy of a state in a layout preset", () => {
   it("keeps skeletons, retry buttons and empty sentences out of the layout files", () => {
     const dir = join(__dirname, "layouts");
     if (!existsSync(dir)) return;
     for (const f of readdirSync(dir).filter((n) => /\.tsx$/.test(n) && !/\.test\./.test(n))) {
       const src = readFileSync(join(dir, f), "utf-8");
-      expect(src, f).not.toMatch(/animate-pulse|<Skeleton|SkeletonRows|SkeletonBoard|ui\/Skeleton|EmptyState|Retry/);
+      expect(src, f).not.toMatch(LOCAL_COPY);
     }
   });
 });

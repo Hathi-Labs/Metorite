@@ -44,6 +44,14 @@ authenticated ``UserContext``, never from request input (contract R11).
 
 **Rights.** The function checks only that the sharer is the owner of the
 install. The route of PKG-11b or J2 checks ``studio:publish``.
+
+**The per-person unshare (WS-STU J2b-5).** :func:`unshare_person` deletes
+the one row of ``app_grants`` that ``sharing.SHARE_ROW`` counts for the
+install and the person, and only when this sharer made it. It takes the same
+locks in the same order as the share. A consent row and a row of another
+sharer stay. It requires a private install of the sharer, in any state: a
+pause, an end date or an archive never blocks the owner from taking access
+back. An address that has no share row answers ``False`` and writes nothing.
 """
 
 from __future__ import annotations
@@ -54,11 +62,13 @@ from typing import Any
 from acb_auth.permissions import normalize_grant_subject
 from sqlalchemy import text
 
+from gateway.package_host.sharing import SHARE_ROW
 from gateway.package_host.store import (
     _BOUND_ORG,
     MAX_SUBJECT_BYTES,
     InstallError,
     NotTheOwner,
+    PromotionRefused,
     _install_id,
     _member,
     _plain,
@@ -99,6 +109,20 @@ _SHARE_SQL = (
     f"WHERE app_grants.organization_id = {_BOUND_ORG} "
     "AND (lower(app_grants.granted_by) = lower(app_grants.subject) "
     "OR lower(app_grants.granted_by) = excluded.granted_by)"
+)
+
+#: The one share row of the private install ``:install`` for the person
+#: ``:person``, when the sharer ``:sharer`` made it (J2b-5). The row must pass
+#: the three tests of ``sharing.SHARE_ROW`` too, so a consent row and a row of
+#: another sharer stay. Both tables name the bound org beside RLS.
+_UNSHARE_PERSON_SQL = (
+    "DELETE FROM app_grants AS g USING package_install "
+    f"WHERE g.organization_id = {_BOUND_ORG} "
+    f"AND package_install.organization_id = {_BOUND_ORG} "
+    "AND package_install.id = CAST(:install AS uuid) "
+    "AND package_install.scope_kind = 'private' "
+    "AND lower(g.subject) = :person AND lower(g.granted_by) = :sharer "
+    f"AND {SHARE_ROW} RETURNING g.subject"
 )
 
 
@@ -176,3 +200,40 @@ async def share_with_people(db: Any, *, install_id: str, emails: Sequence[str],
     await db.execute(text(_SHARE_SQL), [
         {"app": str(row[0]), "subject": p, "sharer": by} for p in people])
     return people
+
+
+def person_address(email: object, sharer: str) -> str:
+    """The normalised address of one person to unshare, or a refusal.
+
+    It runs the checks of a share list on one address: ``bad_people``,
+    ``not_a_person`` and ``own_address`` (each 422). The route calls it
+    before the session, and :func:`unshare_person` calls it again.
+    """
+    return _people([email], _member(sharer))[0]
+
+
+async def unshare_person(db: Any, *, install_id: str, email: str, sharer: str) -> bool:
+    """Take the share of the private install *install_id* back from *email*.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *sharer* is the address of the session member, who must own the install
+    (:class:`NotTheOwner`). The install must be private (``not_private``). Its
+    state does not matter: a pause, an end date and an archive never block
+    the unshare. The DELETE takes only the share row of this person that the
+    sharer made. Answers True when a row went, and False when the person had
+    no such row. False is no refusal, so a repeat is idempotent.
+
+    Lock order: the same as :func:`share_with_people`. The caller MUST hold
+    the ``apps`` row (``studio/packages_store.lock_for_install``) first.
+    """
+    install = _install_id(install_id)
+    by = _member(sharer)
+    person = person_address(email, by)
+    row = await locked_install(db, install, "an unshare")
+    if str(row[4]) != by:
+        raise NotTheOwner("not_owner", "Only the owner of the install can take a share back.")
+    if row[2] != "private":
+        raise PromotionRefused("not_private", "Only a private install has a share with people.")
+    gone = (await db.execute(text(_UNSHARE_PERSON_SQL), {
+        "install": install, "person": person, "sharer": by})).all()
+    return bool(gone)

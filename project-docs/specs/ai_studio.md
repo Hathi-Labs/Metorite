@@ -916,7 +916,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **B1** | 🔨 BUILT, dark (2026-10-31) | STD | AGENT-SAFE | [row](ai_studio_rows/B1.md) |
 | **B1c** | 🔨 BUILT, dark (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/B1c.md) |
-| **B1b-1** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
+| **B1b-1** | 🔨 BUILT (2026-11-14, task 3278) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
 | **B1b-2** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-2.md) |
 | **B1b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-3.md) |
 | **B2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2a.md) |
@@ -959,6 +959,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2a.md) |
 | **C2b** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2b.md) |
 | **C2c** | 🔨 BUILT, dark (2026-11-13, task 1349) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2c.md) |
+| **C2d-a** | 🔨 BUILT, dark (2026-11-14, task 3311) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2d-a.md) |
 | **C3** | 🔨 BUILT, dark (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/C3.md) |
 | **C4** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4.md) |
 | **C4a-1** | 🔨 BUILT, dark (2026-11-13, task 3084) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4a-1.md) |
@@ -982,7 +983,9 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C12** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C12.md) |
 | **C13** | 🔨 BUILT (2026-11-09) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C13.md) |
 | **C14** | 🔨 BUILT (2026-11-09) | STD | AGENT-SAFE | [row](ai_studio_rows/C14.md) |
-| **C15** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15.md) |
+| **C15a** | 🔨 BUILT, dark (2026-11-14, task 2345) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15a.md) |
+| **C15b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C15b.md) |
+| **C15c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15c.md) |
 | **C16** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C16.md) |
 | **C17** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C17.md) |
 | **C18** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C18.md) |
@@ -1006,7 +1009,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D3** | 🔨 BUILT, preview only (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/D3.md) |
 | **D3b** | 🔨 BUILT, preview only (2026-11-05) | STD | AGENT-SAFE | [row](ai_studio_rows/D3b.md) |
 | **D4** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/D4.md) |
-| **D5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D5.md) |
+| **D5** | 🔨 BUILT, part (2026-11-13, STU-D5 and D5-W2, task 1165) | STD | AGENT-SAFE | [row](ai_studio_rows/D5.md) |
 | **D6** | 🔨 BUILT, part (2026-11-13, STU-D6, task 1166) | STD | AGENT-SAFE | [row](ai_studio_rows/D6.md) |
 | **D7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D7.md) |
 | **D8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D8.md) |
@@ -1037,6 +1040,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D21** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D21.md) |
 | **D22** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D22.md) |
 | **D23a** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D23a.md) |
+| **D23a-2** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D23a-2.md) |
 | **D23b** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/D23b.md) |
 | **D24** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/D24.md) |
 | **D25** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D25.md) |
@@ -1071,7 +1075,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **AF-10b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-10b.md) |
 | **AF-10b-3** | 🔨 BUILT, dark (2026-11-14, task 3292) | STD | AGENT-SAFE | [row](ai_studio_rows/AF-10b-3.md) |
 | **AF-11a** | open | STD | see row | [row](ai_studio_rows/AF-11a.md) |
-| **AF-11b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
+| **AF-11b** | 🔨 BUILT, dark (2026-11-15, AF-11b-1 and AF-11b-2, tasks 3326 and 3327) | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
 
 ### Group E — Workflows in Studio
 
@@ -1211,7 +1215,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I8d** | 🔨 BUILT, dark (2026-11-14), task 3217 | STD | AGENT-SAFE | [row](ai_studio_rows/I8d.md) |
 | **I8e** | open | HIGH | see row | [row](ai_studio_rows/I8e.md) |
 | **I8f** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8f.md) |
-| **I9** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
+| **I9** | 🔨 I9a BUILT, dark (2026-11-14, task 3169) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
 | **I10** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I10.md) |
 | **I11-0** | 🔨 BUILT, test only (2026-11-14, task 3235) | STD | AGENT-SAFE | [row](ai_studio_rows/I11-0.md) |
 | **I11a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I11a.md) |
@@ -1229,8 +1233,10 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **J2b-1** | 🔨 BUILT, dark (2026-11-13, task 3088) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-1.md) |
 | **J2b-2** | 🔨 BUILT, dark (2026-11-13, task 3089) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-2.md) |
 | **J2b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-3.md) |
+| **J2b-4a** | 🔨 BUILT, dark (2026-11-13, task 3091) | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4a.md) |
+| **J2b-4b** | open | STD | see row | [row](ai_studio_rows/J2b-4b.md) |
 | **J2b-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4.md) |
-| **J2b-5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
+| **J2b-5** | 🔨 BUILT, dark (2026-11-13, task 3103) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
 | **J3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3.md) |
 | **J3a** | 🔨 BUILT, dark (2026-11-11, task 1201) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3a.md) |
 | **J3b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3b.md) |
@@ -1503,7 +1509,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A skill loads only in the state `published`, and only when the member owns it or the org shares it. Org B's skill never loads for org A | New with F3: `tests/unit/test_skill_packs_r8.py` (R8) |
 | A skill pack takes a place of the 3 packs, loads in a fixed order, and fails to load with an unresolved variable, an action with no chat tool or a tool that the run does not hold | New with F3: `tests/unit/test_skill_packs.py` |
 | A record and its lines are one batch of at most 50 writes, and a line names a parent of its own package and org only | New with C13: `tests/unit/test_studio_lines.py` and `tests/unit/test_studio_lines_r8.py` (R8) |
-| Each call of the six record functions and of `read_tree` (D18-2a) passes a `viewer`. Each takes it as a required keyword, and the test lists each reader path. Only the owner's door calls `aggregate_records`, which takes no viewer | New with C8a: `test_each_call_of_the_six_passes_a_viewer`, `test_the_six_take_viewer_as_a_required_keyword` and `test_no_code_calls_a_reader_that_takes_no_viewer` in `tests/unit/test_studio_row_rules.py` |
+| Each call of the six record functions, of `read_tree` (D18-2a) and of `aggregate_records` (C2d-a) passes a `viewer`. Each takes it as a required keyword. The test lists each reader path | New with C8a: `test_each_call_of_the_six_passes_a_viewer` and `test_the_six_take_viewer_as_a_required_keyword` in `tests/unit/test_studio_row_rules.py` |
 | A viewer reads only the rows of its grants, and a hidden key leaves each answer. A change or a delete of a record that the viewer cannot read answers not found | New with C8a: `tests/unit/test_studio_row_rules_r8.py` (R8) |
 | Each part of a page statement holds the row rule, and a check of a rule reads every record | New with C8a: `test_a_page_with_a_row_rule_holds_it_in_each_part` and `test_a_check_of_a_rule_reads_every_record` in `tests/unit/test_studio_row_rules.py` |
 | The door builds the viewer from the session's member only | New with C8a: `test_the_door_builds_the_viewer_from_the_session_member_only` in `tests/unit/test_studio_row_rules.py`, and `test_the_door_passes_the_owner_of_the_session_as_the_viewer` in `tests/unit/test_studio_action_door.py` |

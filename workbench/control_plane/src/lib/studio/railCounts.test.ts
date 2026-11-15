@@ -17,7 +17,7 @@ const VIEWS: ViewDef[] = [
   { id: "ghost", block: "table", object: "nothing" },
 ];
 const page = (over: Partial<PageModel>): PageModel => ({
-  id: "p", title: "P", cols: 1, tabs: [], cells: [], side: null, ...over,
+  id: "p", title: "P", cols: 1, tabs: [], cells: [], side: null, layout: null, regions: {}, ...over,
 });
 
 describe("countSourceFor", () => {
@@ -40,6 +40,17 @@ describe("countSourceFor", () => {
   it("names the object of the page", () => {
     expect(pageObject(page({ cells: [{ view: "ghost", span: 1 }] }), VIEWS)).toBe("nothing");
     expect(pageObject(page({ cells: [{ view: "chart", span: 1 }] }), VIEWS)).toBeNull();
+  });
+});
+
+describe("a page with a preset (STU-LY-0)", () => {
+  const preset = page({ layout: "table_workspace", regions: { main: ["mine"] } });
+  it("reads its views from its regions", () => {
+    expect(pageViewIds(preset)).toEqual(["mine"]);
+  });
+  it("gives the count source and the object of the view in its region", () => {
+    expect(pageObject(preset, VIEWS, ACTIONS)).toBe("task");
+    expect(countSourceFor(preset, VIEWS, OBJECTS, ACTIONS)?.args).toMatchObject({ limit: 1 });
   });
 });
 
