@@ -366,7 +366,7 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     if not term or _short_text(term):
         return _short_query(term)
     cap = max(1, min(int(limit or 10), MAX_PAGE))
-    payload = await get("/projects/search", {"q": term, "limit": cap})
+    payload = await get("/projects/search", {"q": term, "limit": cap, "most_words": "true"})
     rows = (payload or {}).get("rows") or []
     if not rows:
         return f"No task matches {data(term)}. Try a shorter fragment."

@@ -417,6 +417,10 @@ async def search_tasks(
     # picker needs the flag on, since "is this already captured" is a question
     # about triage-parked tasks specifically. One predicate, in core.
     include_triage: bool = False,
+    # HRD-4: opt in. Only `find_tasks` asks for the tasks that hold most of the
+    # words. The company search and every other caller keep the all-words
+    # answer, so a partial row is never read as a match of every word.
+    most_words: bool = False,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Ranked task hits across every project the caller can see.
@@ -482,7 +486,7 @@ async def search_tasks(
 
         # HRD-4: no task holds every word. Rank by how many words each holds.
         partial = False
-        if not rows and number is None and len(words) >= 2:
+        if most_words and not rows and number is None and len(words) >= 2:
             held, any_word = _partial_clauses(words)
             rows = (await db.execute(
                 text(_PARTIAL_SQL.format(

@@ -29,7 +29,23 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (
     _DB_GATE,
     promoted,  # noqa: F401 - a fixture, used by name
 )
-from tests.unit.test_projects_search_description_r8 import _ids, _project, _search, _task
+from tests.unit.test_projects_search_description_r8 import _ids, _project, _task
+from tests.unit.test_projects_search_description_r8 import _search as _plain_search
+
+
+async def _search(ns, monkeypatch, *, who, org, q, most_words=True):
+    """The route as ``find_tasks`` asks it: with ``most_words`` on."""
+    from gateway.routes.projects import search as pm_search
+
+    real = getattr(pm_search.search_tasks, "_real", pm_search.search_tasks)
+
+    async def ask(**kw):
+        return await real(most_words=most_words, **kw)
+
+    ask._real = real  # a second call in one test wraps the real route again
+    monkeypatch.setattr(pm_search, "search_tasks", ask)
+    return await _plain_search(ns, monkeypatch, who=who, org=org, q=q)
+
 
 pytestmark = _DB_GATE
 
@@ -123,4 +139,13 @@ async def test_r8_no_word_at_all_is_a_plain_zero(seeded, monkeypatch):
 async def test_r8_a_number_query_is_not_a_fallback(seeded, monkeypatch):
     ns, _ids_unused = seeded
     out = await _search(ns, monkeypatch, who=ANA, org=ns.org_a, q="#999999")
+    assert out["rows"] == [] and "partial" not in out
+
+
+async def test_the_company_search_does_not_ask_for_most_words(seeded, monkeypatch) -> None:
+    """The company search keeps the all-words answer, so a partial row is never
+    read as a hit of every word (the route is opt-in)."""
+    ns, _ids_unused = seeded
+    out = await _search(ns, monkeypatch, who=ANA, org=ns.org_a,
+                        q=f"{W1} {W2} {W3}", most_words=False)
     assert out["rows"] == [] and "partial" not in out
