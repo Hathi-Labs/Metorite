@@ -3210,7 +3210,8 @@ def build_aggregate_cells(agg: studio_query.Aggregate, *, object_id: str, packag
     does. Then it holds the count of the distinct values of each axis (a
     record with no value is one value), and one row for each cell: the two
     keys, the records, and the sum and the count of each field of the
-    measures. A cell row exists only when each axis holds at most
+    measures. A money field adds its lowest and its highest currency in the
+    cell. A cell row exists only when each axis holds at most
     ``:axis`` values. The count reads the records under the row rule *access*,
     so the cap never shows how many values hidden rows hold.
     """
@@ -3229,6 +3230,9 @@ def build_aggregate_cells(agg: studio_query.Aggregate, *, object_id: str, packag
         joins += f" {_q_agg_value(j)}"
         cols += f", mv{j}.v_num AS n{j}"
         sums += f", sum(x.n{j}) AS s{j}, count(x.n{j}) AS c{j}"
+        if field.type == "money":
+            cols += f", {_q_agg_currency(j)} AS q{j}"
+            sums += f", min(x.q{j}) AS lo{j}, max(x.q{j}) AS hi{j}"
     head = (f"{with_sql}v AS ({_STILL_HOT_SQL}), "
             f"x AS (SELECT {key} AS k, {key2} AS k2{cols} FROM {cands}{joins}), "
             "d AS (SELECT (SELECT count(*) FROM (SELECT x.k FROM x GROUP BY x.k) s1) AS d1, "
@@ -3308,11 +3312,21 @@ _AXIS_MESSAGE = ("An axis of a matrix takes at most {cap} values, and this read 
                  "Filter first, or bucket the date.")
 
 
-def _cell_rows(agg: studio_query.Aggregate, rows: Sequence[Any]) -> tuple[AggregateCell, ...]:
+_RACE_MESSAGE = "The data changed during the read. Try again."
+
+
+def _cell_rows(agg: studio_query.Aggregate, rows: Sequence[Any], n_records: int,
+               currency: Mapping[str, str | None]) -> tuple[AggregateCell, ...]:
     """C2d-b. The cells of the rows of :func:`build_aggregate_cells`, in the
     order of the first key and then the second. A count past
     :data:`~acb_common.studio_query.MAX_AXIS_VALUES` on an axis raises
-    :class:`QueryError` ``query_too_big``."""
+    :class:`QueryError` ``query_too_big``.
+
+    The cells come from a second statement, so a write may land between the
+    two. Each cell holds one currency per money measure, as the total does
+    (else the same refusal), and that currency is the one that the first
+    statement found. The counts of the cells add up to *n_records*, the count
+    of the first statement. Any gap raises the retryable ``query_timeout``."""
     assert agg.group is not None and agg.group2 is not None
     first = rows[0]
     if int(first[2]) > studio_query.MAX_AXIS_VALUES or int(first[3]) > studio_query.MAX_AXIS_VALUES:
@@ -3320,13 +3334,25 @@ def _cell_rows(agg: studio_query.Aggregate, rows: Sequence[Any]) -> tuple[Aggreg
                          _AXIS_MESSAGE.format(cap=studio_query.MAX_AXIS_VALUES))
     fields = agg.measure_fields()
     cells: list[AggregateCell] = []
+    seen = 0
     for row in rows:
         if row[6] is None:
             continue  # no record, so no cell
         count = int(row[6])
-        sums = {f.key: (row[7 + 2 * i], int(row[8 + 2 * i] or 0)) for i, f in enumerate(fields)}
+        seen += count
+        at = 7
+        sums: dict[str, tuple[Any, Any]] = {}
+        for f in fields:
+            sums[f.key] = (row[at], int(row[at + 1] or 0))
+            at += 2
+            if f.type == "money":
+                if _one_currency(f, row[at], row[at + 1]) != currency.get(f.key):
+                    raise QueryError(studio_query.TIMEOUT, _RACE_MESSAGE)
+                at += 2
         cells.append(AggregateCell(_group_key(agg.group, row[4]), _group_key(agg.group2, row[5]),
                                    count, _measure_values(agg, count, sums)))
+    if seen != n_records:
+        raise QueryError(studio_query.TIMEOUT, _RACE_MESSAGE)
     by_first, by_second = _group_order(agg.group), _group_order(agg.group2)
     cells.sort(key=lambda c: (by_first(AggregateGroup(c.key, 0, ())),
                               by_second(AggregateGroup(c.key2, 0, ()))))
@@ -3370,7 +3396,8 @@ def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any],
         else:
             other = AggregateGroup(None, count, values)
     kept.sort(key=_group_order(agg.group))
-    cells = _cell_rows(agg, cell_rows) if agg.group2 is not None else ()
+    cells = (_cell_rows(agg, cell_rows, n_records, currency)
+             if agg.group2 is not None else ())
     return AggregateResult(agg.measures, currencies, tuple(kept), other,
                            max(0, n_groups - studio_query.MAX_GROUPS), total, cells)
 
@@ -3395,6 +3422,7 @@ async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_
             sql, params = build_aggregate_cells(agg, object_id=oid, package_id=pid, access=access)
             cells = (await timed.execute(text(sql), params)).all()
             if int(cells[0][0]) == len(agg.hot_keys()):
+                _check_hot_or_small(cells, agg.query())
                 return agg, rows, cells
     raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
 

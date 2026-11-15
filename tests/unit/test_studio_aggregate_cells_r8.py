@@ -27,6 +27,10 @@ and the named test goes red. Each result was run on 2026-11-14.
   ``test_r8_cells_a_hidden_key_is_refused_on_both_axes`` goes red.
 * H3. ``build_aggregate_cells``: count the axes over all rows, with no row rule. ``test_r8_cells_the_cap_counts_only_the_rows_the_viewer_reads`` goes red.
 * H4. ``_cell_rows``: leave out the cap check. The too_big tests go red.
+* H6. `_cell_rows`: drop the per-cell currency check. The race test of a second currency goes red.
+* H7. `_cell_rows`: drop the check that the cell counts equal the total. The retryable-error test goes red.
+* H8. `_read_aggregate`: drop `_check_hot_or_small` on the cells. The cold-guard test goes red.
+* H9. `build_aggregate_cells`: count the axis with count(DISTINCT x.k). The cap test of a missing value goes red.
 * H5. ``_aggregate_result``: sort ``groups`` the other way round.
   ``test_r8_cells_a_5_by_5_matrix_gives_25_cells_with_the_counts_and_the_sums`` goes red.
 """
@@ -262,3 +266,161 @@ def test_r8_cells_a_viewer_with_no_read_gets_no_cells(world) -> None:
 def test_r8_cells_org_b_reads_nothing_of_org_a(world) -> None:
     assert _agg(world, AS_OWNER, world.deal, org=world.b, pkg=world.pkg_b,
                 group_by=_GROUPS) is None
+
+
+# ── The second statement: a money cell, a race and the guard ────────────────
+
+_CASH_FIELDS: list[dict[str, Any]] = [
+    {"key": "kind", "type": "select", "options": ["n", "m"], "hot": True},
+    {"key": "region", "type": "select", "options": ["a", "b"], "hot": True},
+    {"key": "amt", "type": "money", "hot": True},
+    {"key": "day", "type": "date", "hot": True},
+    {"key": "long", "type": "text", "hot": True},
+    {"key": "tag", "type": "text", "hot": True},
+    {"key": "note", "type": "text"},
+]
+_AMT = [{"op": "count"}, {"op": "sum", "field": "amt"}]
+_KR = [{"field": "kind"}, {"field": "region"}]
+
+
+def _money(minor: int, cur: str = "INR") -> dict[str, Any]:
+    return {"minor": minor, "currency": cur}
+
+
+_MADE: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _drop_made(world):
+    """The org holds at most 24 hot fields, so each test frees its objects."""
+    yield
+
+    async def go() -> None:
+        async with tenant_session(world.a) as db:
+            for obj in _MADE:
+                await store.drop_object(db, obj.id)
+    if _MADE:
+        _run(world.p, go)
+        _MADE.clear()
+
+
+def _make(w: Any, name: str, rows: list[dict[str, Any]]) -> Any:
+    async def go() -> Any:
+        async with tenant_session(w.a) as db:
+            obj = await store.define_object(db, OWNER, package_id=w.pkg, name=name,
+                                            fields=_CASH_FIELDS)
+            assert obj
+            _MADE.append(obj)
+            await store.apply_writes(db, OWNER, package_id=w.pkg, viewer=AS_OWNER, writes=[
+                Write("create", obj.id, data=r) for r in rows])
+            return obj
+    return _run(w.p, go)
+
+
+def _insert(w: Any, obj: Any, data: dict[str, Any]) -> Any:
+    async def go() -> None:
+        async with tenant_session(w.a) as db:
+            await store.apply_writes(db, OWNER, package_id=w.pkg, viewer=AS_OWNER, writes=[
+                Write("create", obj.id, data=data)])
+    return go()
+
+
+def _race(monkeypatch: pytest.MonkeyPatch, w: Any, obj: Any, data: dict[str, Any]) -> list[int]:
+    """Commit one record between the statement of the groups and the one of
+    the cells, in another transaction, as a write of another session does."""
+    hits: list[int] = []
+    orig = store._Timed.execute
+
+    async def racing(self: Any, stmt: Any, params: dict[str, Any]) -> Any:
+        if "AS d1" in str(stmt) and not hits:
+            hits.append(1)
+            await _insert(w, obj, data)
+        return await orig(self, stmt, params)
+    monkeypatch.setattr(store._Timed, "execute", racing)
+    return hits
+
+
+def test_r8_cells_a_money_measure_with_two_keys_gives_the_sums_of_each_cell(world) -> None:
+    obj = _make(world, "cash_sums", [
+        {"kind": "n", "region": "a", "amt": _money(100)},
+        {"kind": "n", "region": "a", "amt": _money(50)},
+        {"kind": "n", "region": "b", "amt": _money(7)},
+        {"kind": "m", "region": "a", "amt": _money(3)}])
+    got = _agg(world, AS_OWNER, obj, group_by=_KR, measures=_AMT)
+    assert got is not None and got.currencies == (None, "INR")
+    assert _cells(got) == {("n", "a"): (2, (2, 150)), ("n", "b"): (1, (1, 7)),
+                           ("m", "a"): (1, (1, 3))}
+    assert got.total.values == (4, 160)
+
+
+def test_r8_cells_a_second_currency_between_the_statements_is_never_one_cell(
+        world, monkeypatch) -> None:
+    obj = _make(world, "cash_usd", [{"kind": "n", "region": "a", "amt": _money(100)}])
+    hits = _race(monkeypatch, world, obj, {"kind": "n", "region": "a", "amt": _money(9999, "USD")})
+    with pytest.raises(QueryError) as refused:
+        _agg(world, AS_OWNER, obj, group_by=_KR, measures=_AMT)
+    assert hits and refused.value.field == "amt"
+    assert refused.value.code == "query_op_not_allowed"
+
+
+def test_r8_cells_a_record_between_the_statements_is_a_retryable_error(
+        world, monkeypatch) -> None:
+    obj = _make(world, "cash_same", [{"kind": "n", "region": "a", "amt": _money(100)}])
+    hits = _race(monkeypatch, world, obj, {"kind": "n", "region": "b", "amt": _money(5)})
+    with pytest.raises(QueryError) as changed:
+        _agg(world, AS_OWNER, obj, group_by=_KR, measures=_AMT)
+    assert hits and changed.value.code == "query_timeout"
+    assert "changed" in changed.value.message
+
+
+def test_r8_cells_a_month_and_a_long_text_on_the_second_axis(world) -> None:
+    long_a, long_b = "x" * 300, "y" * 300
+    obj = _make(world, "cash_axes", [
+        {"kind": "n", "day": "2026-01-05", "long": long_a},
+        {"kind": "n", "day": "2026-01-20", "long": long_a},
+        {"kind": "n", "day": "2026-02-03", "long": long_b},
+        {"kind": "m", "long": long_b}])
+    by_month = _agg(world, AS_OWNER, obj, group_by=[{"field": "kind"},
+                                                    {"field": "day", "bucket": "month"}])
+    assert by_month is not None
+    assert _cells(by_month) == {("n", "2026-01"): (2, (2,)), ("n", "2026-02"): (1, (1,)),
+                                ("m", None): (1, (1,))}
+    by_text = _agg(world, AS_OWNER, obj, group_by=[{"field": "kind"}, {"field": "long"}])
+    assert by_text is not None
+    assert _cells(by_text) == {("n", long_a): (2, (2,)), ("n", long_b): (1, (1,)),
+                               ("m", long_b): (1, (1,))}
+
+
+def test_r8_cells_a_missing_value_counts_toward_the_cap_of_an_axis(world) -> None:
+    rows = [{"kind": "n", "tag": f"t{i}"} for i in range(20)]
+    over = _make(world, "cash_cap21", [*rows, {"kind": "n"}])
+    with pytest.raises(QueryError) as big:
+        _agg(world, AS_OWNER, over, group_by=[{"field": "kind"}, {"field": "tag"}])
+    assert big.value.code == "query_too_big"
+    with pytest.raises(QueryError) as swapped:
+        _agg(world, AS_OWNER, over, group_by=[{"field": "tag"}, {"field": "kind"}])
+    assert swapped.value.code == "query_too_big", "the first axis counts a missing value too"
+    ok = _make(world, "cash_cap20", [*rows[:19], {"kind": "n"}])
+    got = _agg(world, AS_OWNER, ok, group_by=[{"field": "kind"}, {"field": "tag"}])
+    assert got is not None and len(got.cells) == 20
+    assert [c.key2 for c in got.cells][-1] is None
+    flip = _agg(world, AS_OWNER, ok, group_by=[{"field": "tag"}, {"field": "kind"}])
+    assert flip is not None and len(flip.cells) == 20 and flip.cells[-1].key is None
+
+
+def test_r8_cells_a_cold_guard_that_flips_between_the_statements_is_refused(
+        world, monkeypatch) -> None:
+    from acb_common import studio_query
+    obj = _make(world, "cash_cold", [{"kind": "n", "region": "a", "note": "x"} for _ in range(3)])
+    orig = store.build_aggregate_cells
+    flips: list[int] = []
+
+    def flipping(*args: Any, **kwargs: Any) -> Any:
+        flips.append(1)
+        monkeypatch.setattr(studio_query, "SMALL_OBJECT", 1)
+        return orig(*args, **kwargs)
+    monkeypatch.setattr(store, "build_aggregate_cells", flipping)
+    with pytest.raises(QueryError) as refused:
+        _agg(world, AS_OWNER, obj, group_by=_KR,
+             filter=[{"field": "note", "op": "eq", "value": "x"}])
+    assert flips and refused.value.code == "query_not_indexed"

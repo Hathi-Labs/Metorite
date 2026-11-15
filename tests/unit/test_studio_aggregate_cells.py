@@ -132,14 +132,14 @@ def test_the_cell_rows_become_cells_in_order_and_past_the_cap_they_raise() -> No
     def row(k: Any, k2: Any, n: Any) -> tuple[Any, ...]:
         return (*head, k, k2, n)
     got = store._cell_rows(agg, [row("done", "b", 2), row("open", None, 1), row("open", "a", 3),
-                                 row("done", "a", 4)])
+                                 row("done", "a", 4)], 10, {})
     assert [(c.key, c.key2, c.count) for c in got] == [
         ("open", "a", 3), ("open", None, 1), ("done", "a", 4), ("done", "b", 2)]
     assert got[0].values == (3,)
-    assert store._cell_rows(agg, [(*head, None, None, None, None, None)]) == ()
+    assert store._cell_rows(agg, [(*head, None, None, None, None, None)], 0, {}) == ()
     with pytest.raises(QueryError) as big:
-        store._cell_rows(agg, [(1, None, 21, 2, None, None, None)])
+        store._cell_rows(agg, [(1, None, 21, 2, None, None, None)], 0, {})
     assert big.value.code == "query_too_big" and "Filter first" in big.value.message
     with pytest.raises(QueryError):
-        store._cell_rows(agg, [(1, None, 2, 21, None, None, None)])
-    assert store._cell_rows(agg, [(1, None, 20, 20, None, None, None)]) == ()
+        store._cell_rows(agg, [(1, None, 2, 21, None, None, None)], 0, {})
+    assert store._cell_rows(agg, [(1, None, 20, 20, None, None, None)], 0, {}) == ()
