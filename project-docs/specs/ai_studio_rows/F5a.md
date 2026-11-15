@@ -1,0 +1,13 @@
+# F5a
+
+Tier: STD
+
+Gate: AGENT-SAFE. Rung 4. Dark: `STUDIO_ORGS` is empty on every box
+
+## What
+
+🔨 **BUILT, dark (2026-11-13, task 1183).** Skill cards (F5), part 1: **the live records card.** F5 is now three rows: F5a, F5b and F5c. For each finished call of `studio_record_list` in a turn, `StudioToolCards` draws one card after the approval cards. `MessageBubble` mounts it once, so it shows in `/chat`, in the dock and on a phone. The card reads the package (`GET /api/studio/packages/<id>`). Then it reads `object:<name>.list` with the filter and the sort of the call when they parse, and with none when they do not. It reads at most 25 rows (`MAX_RECORD_ROWS`, the page of the tool), and it never sends the offset. Two calls of the same read in one turn draw one card. A refusal of the tool, a 404, a 403, an object that the member cannot read and an object with no declared list draw nothing. A room sends the tool events of a run to each member, so a 403 is the case of a guest or of a member with no Studio. A 401 says to sign in, with no retry. A record write of Mira drops the reads of every live door (`announceAssistantWrite`, `isLiveDoorKey`), so the card reads its rows again. The table is the `dataGrid` template on the D1 bind path, with no `editable`. ⚠️ **The door is read-only for every member, the owner too.** The BFF signs every same-origin POST to the action route, and a typed button on a door calls `door.run`. So `cardDoor` builds `createRealDoor` on `readActions`. A write then answers "not declared", with no network call. The card draws no Board, no Form, no button and no delete. `chatPlacement.ts` names `studio_record_list` an answer, as `render_tasks` is. **Files:** `lib/studio/recordsCard.ts`, `components/studio/StudioRecordsCard.tsx` and `components/studio/StudioToolCards.tsx`. `emit_generative_ui` still refuses `source` (`genui_refusal`). `DEBT_CEILING["studio"]` of `chat_parity.py` is 3, and no F5 slice may raise it
+
+## Done when
+
+`StudioRecordsCard.test.ts`: one card for each read, with live rows through the real door. A mount, a focus and a refresh send no write, for an owner and for a viewer. `door.run` of a create, an update and a delete answers "not declared" and calls no fetch. A viewer sees the rows of the installed version only. A 404 and a 403 draw no card and no error. A 401 says to sign in. After a record write of Mira, the card shows the new row. A card holds at most 25 rows. The one `MessageBubble` mount draws it. `chatCardConformance.test.ts` passes, `DEBT_CEILING["studio"]` stays 3, and `test_genui_catalog_lockstep.py` passes with no edit
