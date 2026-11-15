@@ -673,6 +673,79 @@ async def test_a_long_value_gives_no_card_in_any_chat(
     assert "too long to show" in out["errors"][0]["message"]
 
 
+async def test_a_shared_write_shows_every_condition_and_every_list_value_once(
+    gw: Gateway, card: Card,
+) -> None:
+    """Mutation: ``conds[:1]`` in ``_view_spec_rows``, or a list value left out -> red."""
+    card.answer = False
+    spec = {"filter": [
+        {"field": "status", "op": "eq", "value": "first-value-aaa"},
+        {"field": "region", "op": "in", "value": ["north-bbb", "south-ccc"]}]}
+    shared = gw.add(name="Team", shared=True)
+    for make in (lambda: _call(op="save", name="New", shared=True, spec=spec),
+                 lambda: _call(op="update", view_id=shared, spec=spec),
+                 lambda: _call(op="update", view_id=shared, position=3)):
+        if make is not None and card.shown:
+            gw.views[shared]["spec"] = copy.deepcopy(spec)
+        card.shown.clear()
+        await make()
+        (shown,) = card.shown
+        ctx = shown["context"]
+        for value in ("first-value-aaa", "north-bbb", "south-ccc"):
+            assert ctx.count(value) == 1, (value, ctx)
+            assert re.search(rf"«[^»]*{value}[^»]*»", ctx), (value, ctx)
+        assert "Filter 1: " in ctx and "Filter 2: " in ctx
+
+
+@pytest.mark.parametrize("held", [True, False])
+async def test_values_that_overflow_the_card_give_no_card_and_no_write(
+    gw: Gateway, card: Card, mark: Mark, held: bool,
+) -> None:
+    """Each value is at the cap, yet the rows together pass ``CARD_CLIP`` (the
+    ``_VIEW_WONT_FIT`` path). Mutation: drop the ``CardWontFit`` branch -> red."""
+    mark.held = held
+    spec = {"filter": [{"field": f"f{i}", "op": "eq", "value": "v" * st.MAX_VIEW_CARD_VALUE}
+                       for i in range(8)]}
+    out = await _call(op="save", name="N", shared=True, spec=spec)
+    assert out["ok"] is False and card.shown == [] and gw.writes() == []
+    assert out["errors"][0]["message"] == st._VIEW_WONT_FIT
+
+
+async def test_every_line_of_a_shared_card_is_a_row_the_card_can_parse(
+    gw: Gateway, card: Card,
+) -> None:
+    """The card draws rows only when each line after the note matches ``FIELD`` of
+    ``workbench/control_plane/src/components/ConfirmationCard.tsx`` line 106
+    (``/^([^:«»]{1,48}):\\s(.*)$/``). Mutation: a spec line with no colon -> red."""
+    field = re.compile(r"^([^:«»]{1,48}):\s(.*)$")
+    card.answer = False
+    shared = gw.add(name="Team", shared=True)
+    spec = {"filter": [{"field": "status", "op": "eq", "value": "a"}],
+            "sort": {"field": "status", "dir": "desc"}, "layout": "board", "columns": ["status"]}
+    for make in (lambda: _call(op="update", view_id=shared, spec=spec),
+                 lambda: _call(op="update", view_id=shared, shared=False),
+                 lambda: _call(op="delete", view_id=shared),
+                 lambda: _call(op="save", name="N", shared=True, spec={})):
+        card.shown.clear()
+        await make()
+        lines = [x for x in card.shown[0]["context"].split("\n") if x.strip()]
+        assert len(lines) > 3
+        for line in lines[1:]:  # the first line is the one fixed note
+            assert field.match(line), line
+
+
+async def test_an_unshare_card_says_only_the_owner_reads_the_filter_after_it(
+    gw: Gateway, card: Card,
+) -> None:
+    card.answer = False
+    shared = gw.add(name="Team", shared=True)
+    await _call(op="update", view_id=shared, shared=False)
+    ctx = card.shown[0]["context"]
+    assert "the view will be private, so only you read its name and filter" in ctx
+    assert "Every member who opens this app reads the filter" not in ctx
+    assert "every member who opens this app reads the filter" not in ctx
+
+
 async def test_a_list_leaves_the_hidden_characters_out_of_the_values(
     gw: Gateway, card: Card,
 ) -> None:
