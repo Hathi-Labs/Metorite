@@ -146,6 +146,44 @@ def trace_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], st
     return [(c[0], _args(c[1] or c[3]), c[2]) for c in calls.values()]
 
 
+#: The event stream cuts a tool result at this many characters
+#: (``executor.py``: ``result_str[:2000]``).
+RESULT_CUT = 2000
+
+
+def find_answers_in(body: dict[str, Any]) -> list[str]:
+    """TS-5b. The FULL text of each ``find_tools`` answer in the messages of one
+    model request (``body`` is the JSON of the request). The event stream cuts a
+    result at :data:`RESULT_CUT`, and the hold note of a found pack comes after
+    that cut, so the held check reads the request, the text that the model read."""
+    messages = [m for m in (body.get("messages") or []) if isinstance(m, dict)]
+    ids = {str(c.get("id")) for m in messages for c in (m.get("tool_calls") or [])
+           if isinstance(c, dict) and (c.get("function") or {}).get("name") == FIND_TOOL}
+    out: list[str] = []
+    for m in messages:
+        if m.get("role") == "tool" and str(m.get("tool_call_id")) in ids:
+            content = m.get("content")
+            if isinstance(content, list):
+                content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
+            out.append(str(content or ""))
+    return out
+
+
+def full_find_results(
+    trace: list[tuple[str, dict[str, Any], str]], answers: list[str],
+) -> list[tuple[str, dict[str, Any], str]]:
+    """*trace* with each cut ``find_tools`` result swapped for its full text, taken
+    from *answers* (:func:`find_answers_in`). A result that no answer extends stays as
+    it is, so a missing request never invents a note."""
+    out = []
+    for name, args, result in trace:
+        if name == FIND_TOOL and len(result) >= RESULT_CUT:
+            result = next((a for a in answers if a.startswith(result[:RESULT_CUT]) and len(a) > len(result)),
+                          result)
+        out.append((name, args, result))
+    return out
+
+
 def schema_tokens_of(tools: list[dict[str, Any]]) -> int:
     """TS-5a. The schema tokens of the *tools* of one request, summed.
 
@@ -920,6 +958,70 @@ def _answer_none(obs: Observation, arg: Any) -> bool:
     return not any(_found(p, obs.answer) for p in arg)
 
 
+#: TS-5b. A sentence or line that says a skill is a draft, and one that says it is not.
+_DRAFT_WORD = r"\bdrafts?\b"
+_NOT_A_DRAFT = (
+    r"\b(?:published|live|already|not (?:a |still )?drafts?|no longer (?:a )?drafts?|"
+    r"isn't (?:a |still )?drafts?|is not (?:a |still )?drafts?)\b"
+)
+
+
+def calls_live_skill_a_draft(answer: str, live: tuple[str, ...]) -> bool:
+    """True when the sentence or line of *answer* that names a live skill calls it a draft.
+
+    Pure and deterministic (TS-5b, the pilot of 2026-11-15). The first live answer
+    "Two of your three skills are still drafts: ... Quote follow-up is already
+    published." is right, and the strict check ``answer_none`` failed it, because it
+    names the live skill. Now the unit (a sentence or a line, :func:`sentences`) that
+    names a live skill fails only when it says "draft" and holds none of
+    "published", "live", "already" or a negated draft."""
+    for unit in sentences(answer):
+        if not re.search(_DRAFT_WORD, unit, re.IGNORECASE):
+            continue
+        if re.search(_NOT_A_DRAFT, unit, re.IGNORECASE):
+            continue
+        if any(_found(rf"\b{re.escape(name)}\b", unit) for name in live):
+            return True
+    return _named_under_draft_heading(answer, live)
+
+
+_LIST_ITEM = r"^\s*(?:[-*\u2022]|\d+[.)])\s+"
+
+
+def _named_under_draft_heading(answer: str, live: tuple[str, ...]) -> bool:
+    """True when a list item that names a live skill sits under a heading (a line that
+    ends with a colon) that says "draft" and says none of published, live or not.
+    A blank line, a prose line or a new heading ends the block. English only."""
+    in_drafts = False
+    for line in (answer or "").split("\n"):
+        text = line.strip()
+        if not text:
+            in_drafts = False
+        elif re.match(_LIST_ITEM, line):
+            if (
+                in_drafts
+                and not re.search(_NOT_A_DRAFT, text, re.IGNORECASE)
+                and any(_found(rf"\b{re.escape(name)}\b", text) for name in live)
+            ):
+                return True
+        elif text.endswith(":"):
+            in_drafts = bool(re.search(_DRAFT_WORD, text, re.IGNORECASE)) and not re.search(
+                _NOT_A_DRAFT, text, re.IGNORECASE
+            )
+        else:
+            in_drafts = False
+    return False
+
+
+def _drafts_listed_fairly(obs: Observation, arg: Any) -> bool:
+    """The answer names EVERY draft skill and does not call a live skill a draft.
+    *arg* is ``((draft patterns, ...), (live names, ...))``. A live skill may be NAMED,
+    when its sentence says that it is published (:func:`calls_live_skill_a_draft`)."""
+    drafts, live = arg
+    return (all(_found(p, obs.answer) for p in drafts)
+            and not calls_live_skill_a_draft(obs.answer, tuple(live)))
+
+
 def _right_pack(obs: Observation, arg: Any) -> bool | None:
     """Pack arm: a tool of pack *arg* ran in the orchestrator's own run, or the
     route went to the owner's specialist AND the needed pack was not reachable
@@ -1128,13 +1230,28 @@ def _found_tool(obs: Observation, arg: Any) -> bool | None:
     return False
 
 
+def _find_refused(result: str) -> bool:
+    """True when the answer of ``find_tools`` is a refusal. An answer that starts
+    ``Found`` is a round, whatever its body says: the rules text of a found pack
+    holds sentences such as "nothing was created" (the card text), and
+    :func:`refused` reads them as a refusal (TS-5b, the first scripted run). An answer
+    that starts ``Not `` is a refusal of the product (``tool_packs.FIND_REFUSED``,
+    ``FIND_PAST_*``)."""
+    text = str(result).lstrip()
+    if text.startswith("Found"):
+        return False
+    # The refusals of the product start "Not found.", "Not searched." or "Not added.",
+    # and ``refused`` knows only the prefixes "Error:", "Refused" and "Not run".
+    return text.startswith("Not ") or refused(text)
+
+
 def _search_round(obs: Observation, _arg: Any) -> bool | None:
     """Search arm: EXACTLY one counted round of ``find_tools`` in a turn that needs
     a search. Zero fails (the model never searched), and two fail (it searched
     again). A refused call is no round. None off the search arm."""
     if obs.arm != SEARCH_ARM:
         return None
-    return sum(1 for name, _, r in obs.trace if name == FIND_TOOL and not refused(r)) == 1
+    return sum(1 for name, _, r in obs.trace if name == FIND_TOOL and not _find_refused(r)) == 1
 
 
 def _not_searched(obs: Observation, _arg: Any) -> bool | None:
@@ -1236,6 +1353,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_unasked_write": _no_unasked_write,
     "work_write": _work_write,
     "answer_none": _answer_none,
+    "drafts_listed_fairly": _drafts_listed_fairly,
     "count_stated": _count_stated,
     "body_figure": _body_figure,
     "answer_not_mine": _answer_not_mine,
@@ -1269,6 +1387,8 @@ def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
     """Each check of *turn* on *obs*, plus ``ran`` and the :data:`AUTO` checks."""
     out: dict[str, bool | None] = {"ran": obs.error is None}
     for c in turn.checks:
+        if getattr(c, "arms", ()) and obs.arm not in c.arms:
+            continue  # TS-5b: a check of one arm (the cap chat)
         out[c.name] = KINDS[c.kind](obs, c.arg)
     for name in AUTO:
         out[name] = KINDS[name](obs, None)
