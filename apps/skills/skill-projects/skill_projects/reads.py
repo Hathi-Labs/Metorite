@@ -370,13 +370,22 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     rows = (payload or {}).get("rows") or []
     if not rows:
         return f"No task matches {data(term)}. Try a shorter fragment."
-    out = [legend(), f"Tasks matching {data(term)} in title or description ({len(rows)}):"]
+    if payload.get("partial"):
+        # HRD-4: no task holds every word, so the rows hold some of them.
+        out = [legend(), (
+            f"No task has all the words. These have most of them"
+            f" ({len(rows)}), for {data(term)}:"
+        )]
+    else:
+        out = [legend(), f"Tasks matching {data(term)} in title or description ({len(rows)}):"]
     for row in rows:
         out.extend(_task_line(row))
         # The route cuts this only for a description hit. It goes AFTER the
         # `full_id` line, so the card's row-and-id pair stays adjacent.
         if row.get("snippet"):
             out.append(f"  description match: {data(str(row['snippet'])[:SNIPPET_MAX])}")
+        if payload.get("partial") and row.get("matched"):
+            out.append(f"  holds {int(row['matched'])} of {int(payload.get('words') or 0)} words")
     if payload.get("truncated"):
         # The search route stops at 50 hits and has no offset. list_tasks
         # runs the same word rule and pages, so every match stays in reach.

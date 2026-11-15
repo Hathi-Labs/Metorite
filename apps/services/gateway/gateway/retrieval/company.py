@@ -16,11 +16,13 @@ answers ``{query, hits, skipped}``. No chat model runs.
   member to its app.
 * **Each source checks its own gate.** The route adds no visibility rule of
   its own. A member without an app gets nothing from it.
-* **One source at a time**, never at once, because the pool budget is small
-  (``routes/shell/search.py`` records why). Each source has
-  :data:`SOURCE_TIMEOUT_S`, and the whole answer has :data:`TOTAL_BUDGET_S`.
-  A source that fails, refuses or runs out of time is left out and named in
-  ``skipped``. It never fails the call.
+* **The sources run at once, four at most** (HRD-4, D-FIND-6). The pool
+  budget is small (``routes/shell/search.py`` records why), so
+  :data:`FIND_SESSIONS` caps the sources of one gateway process. A fifth source
+  waits for a slot. Each source has :data:`SOURCE_TIMEOUT_S` from the time it
+  starts, and the whole answer has :data:`TOTAL_BUDGET_S`. A source that
+  fails, refuses or runs out of time is left out and named in ``skipped``, in
+  the order of the registry. It never fails the call.
 * **Fusion by rank.** The scores of two apps do not compare, so the answer
   takes every app's first hit, then every app's second. An app named in
   ``apps`` goes first, in the order named.
@@ -89,6 +91,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import weakref
 from datetime import UTC, datetime
 from typing import Any
 
@@ -382,49 +385,64 @@ def _never_open(user: UserContext, key: str) -> bool:
     return key == "studio" and not REGISTRY[key].reaches(user)
 
 
-async def _ask_each(
-    user: UserContext, words: str, order: list[str], per_app: int, *,
+#: The most sources one gateway process asks at once (D-FIND-6, HRD-4). One
+#: process has 7 async sessions and 2 more, and a search must leave room for
+#: every other request. A fifth source waits for a slot.
+FIND_SESSIONS = 4
+
+#: One semaphore for each running event loop, so the cap holds for the whole
+#: process, and a test that starts a new loop gets a fresh one.
+_SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _slots() -> asyncio.Semaphore:
+    """The semaphore of :data:`FIND_SESSIONS` slots for the running loop."""
+    loop = asyncio.get_running_loop()
+    slots = _SLOTS.get(loop)
+    if slots is None:
+        slots = _SLOTS[loop] = asyncio.Semaphore(FIND_SESSIONS)
+    return slots
+
+
+async def _ask_one(
+    user: UserContext, key: str, words: str, per_app: int, *,
     hybrid: bool, options: dict[str, Any], since: datetime | None,
     deadline: float, timed: bool,
-) -> tuple[dict[str, list[Hit]], list[str], int | None]:
-    """Ask each source of *order* once, one at a time, before *deadline*.
+) -> tuple[str, list[Hit] | None]:
+    """Ask one source for a slot, then for its hits (HRD-4).
 
-    It returns the hits of each app that answered, the apps it skipped, and
-    the hits Knowledge answered before ``after`` filtered them (KB-9a).
-    *timed* gives each source its true time left as ``budget_s`` (KG-3b).
+    It returns ``("ok", hits)``, ``("skip", None)`` or ``("quiet", None)``. A
+    source that was never open and has no time left is ``quiet``: it is not
+    named in ``skipped``. Its time starts when it takes a slot, not before.
     """
-    found: dict[str, list[Hit]] = {}
-    skipped: list[str] = []
-    knowledge_hits: int | None = None
     loop = asyncio.get_running_loop()
-    for key in order:
+    async with _slots():
         left = deadline - loop.time()
         if left <= 0.05:
-            if _never_open(user, key):
-                continue
-            skipped.append(key)
-            continue
+            return ("quiet", None) if _never_open(user, key) else ("skip", None)
         try:
             # With `after`, an app that cannot filter by date is asked for a
             # pool, and the filter runs before the cut to `per_app`.
             source = REGISTRY[key]
             ask = pool(per_app) if since is not None and not source.dated else per_app
             allowed = min(SOURCE_TIMEOUT_S, left)
+            # Each source has its own copy: the sources run at once.
+            mine = dict(options)
             if timed:
                 # KG-3b: the vector half of a source gets the true time left.
-                options["budget_s"] = allowed
+                mine["budget_s"] = allowed
             hits = await asyncio.wait_for(
-                source.find(user, words, ask, hybrid=hybrid, **options),
+                source.find(user, words, ask, hybrid=hybrid, **mine),
                 allowed,
             )
         except HTTPException:
             # The app's own refusal: a query too short for it, an access rule.
-            skipped.append(key)
-            continue
+            return "skip", None
         except TimeoutError:
             logger.info("search.company source timed out", extra={"source": key})
-            skipped.append(key)
-            continue
+            return "skip", None
         except Exception as exc:
             # The error's TYPE only. A database error's text can carry the
             # query's parameters, which hold the member's words and address.
@@ -432,13 +450,44 @@ async def _ask_each(
                 "search.company source failed",
                 extra={"source": key, "error": type(exc).__name__},
             )
+            return "skip", None
+    return "ok", list(hits)
+
+
+async def _ask_each(
+    user: UserContext, words: str, order: list[str], per_app: int, *,
+    hybrid: bool, options: dict[str, Any], since: datetime | None,
+    deadline: float, timed: bool,
+) -> tuple[dict[str, list[Hit]], list[str], int | None]:
+    """Ask each source of *order* once, at once, before *deadline*.
+
+    At most :data:`FIND_SESSIONS` sources run together, and each has its own
+    :data:`SOURCE_TIMEOUT_S` from the moment it starts, so a slow source does
+    not hold a fast one. It returns the hits of each app that answered, the
+    apps it skipped, and the hits Knowledge answered before ``after`` filtered
+    them (KB-9a). Both lists follow *order*, whatever finishes first.
+    *timed* gives each source its true time left as ``budget_s`` (KG-3b).
+    """
+    answers = await asyncio.gather(*(
+        _ask_one(
+            user, key, words, per_app, hybrid=hybrid, options=options,
+            since=since, deadline=deadline, timed=timed,
+        )
+        for key in order
+    ))
+    found: dict[str, list[Hit]] = {}
+    skipped: list[str] = []
+    knowledge_hits: int | None = None
+    for key, (state, hits) in zip(order, answers, strict=True):
+        if state == "skip":
             skipped.append(key)
-            continue
-        if key == "knowledge":
-            knowledge_hits = len(hits)
-        if since is not None:
-            hits = [h for h in hits if _kept(h, since)]
-        found[key] = list(hits)[:per_app]
+        elif state == "ok":
+            assert hits is not None
+            if key == "knowledge":
+                knowledge_hits = len(hits)
+            if since is not None:
+                hits = [h for h in hits if _kept(h, since)]
+            found[key] = hits[:per_app]
     return found, skipped, knowledge_hits
 
 

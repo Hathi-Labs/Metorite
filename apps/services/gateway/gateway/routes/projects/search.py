@@ -193,6 +193,50 @@ SELECT h.id, h.title, h.task_number, h.project_id, h.status_id, h.due_at,
  ORDER BY h.rank, h.updated_at DESC, h.id
 """
 
+#: The fallback of HRD-4. It runs only when the query above found no row and
+#: the query holds two words or more. A task needs ONE word, and the rows rank
+#: by how many distinct words each holds, in the title or the description (the
+#: arms of ``filters.text_match_clause``). Ties break on recency, then on id.
+#: ``rank`` is 5 for every row, so a snippet cuts around the first word the
+#: description holds, as it does for a tier 5 hit. Visibility, triage and the
+#: archived rule are the same fragments, so the fallback shows no task that the
+#: search would hide.
+_PARTIAL_SQL = """
+WITH hits AS (
+SELECT t.id, t.title, t.task_number, t.project_id, t.status_id, t.due_at,
+       t.completed_at, t.parent_task_id, t.updated_at, t.description,
+       p.name AS project_name, s.name AS status_name, s.category,
+       5 AS rank, {held} AS held
+  FROM pm_tasks t
+  JOIN pm_projects p ON p.id = t.project_id
+  JOIN pm_task_statuses s ON s.id = t.status_id
+ WHERE {visible}
+   AND {triage}
+   AND t.archived_at IS NULL{exclude}
+   AND {any_word}
+ ORDER BY held DESC, t.updated_at DESC, t.id
+ LIMIT :cap
+)
+SELECT h.id, h.title, h.task_number, h.project_id, h.status_id, h.due_at,
+       h.completed_at, h.parent_task_id, h.updated_at, h.project_name,
+       h.status_name, h.category, h.rank, h.held,
+       greatest(n.at - :snippet_lead, 1) AS snippet_from,
+       CASE WHEN n.at IS NOT NULL
+            THEN substr(h.description, greatest(n.at - :snippet_lead, 1),
+                        :snippet_window)
+       END AS snippet_raw,
+       length(h.description) AS description_length
+  FROM hits h
+  LEFT JOIN LATERAL (
+    SELECT strpos(lower(h.description), lower(x.needle)) AS at
+      FROM unnest(CAST(:needles AS text[])) WITH ORDINALITY AS x(needle, ord)
+     WHERE strpos(lower(h.description), lower(x.needle)) > 0
+     ORDER BY x.ord
+     LIMIT 1
+  ) n ON TRUE
+ ORDER BY h.held DESC, h.updated_at DESC, h.id
+"""
+
 #: The arm for a task-number query: an exact match, served by an index.
 #: A text query's arm is ``filters.text_match_clause``: every word, in the
 #: title or the description, the same predicate the list endpoint runs.
@@ -210,6 +254,18 @@ SNIPPET_LEAD = 50
 #: The window SQL cuts. Whitespace collapses after the cut, so the window is
 #: wider than the cap, and :func:`snippet_of` trims to the cap.
 SNIPPET_WINDOW = SNIPPET_CHARS + 80
+
+
+def _partial_clauses(words: list[str], param: str = "q") -> tuple[str, str]:
+    """``(held, any_word)`` for :data:`_PARTIAL_SQL`: the count of words that a
+    task holds, and "at least one word". The arms are those of
+    ``filters.text_match_clause``, with its parameter names."""
+    arms = [
+        f"(t.title ILIKE :{param}_w{i} OR t.description ILIKE :{param}_w{i})"
+        for i in range(len(words))
+    ]
+    held = " + ".join(f"(CASE WHEN {arm} THEN 1 ELSE 0 END)" for arm in arms)
+    return held, "(" + " OR ".join(arms) + ")"
 
 
 def _title_words_clause(words: list[str]) -> str:
@@ -424,6 +480,30 @@ async def search_tasks(
             },
         )).fetchall()
 
+        # HRD-4: no task holds every word. Rank by how many words each holds.
+        partial = False
+        if not rows and number is None and len(words) >= 2:
+            held, any_word = _partial_clauses(words)
+            rows = (await db.execute(
+                text(_PARTIAL_SQL.format(
+                    held=held,
+                    any_word=any_word,
+                    visible=task_visibility_clause(vis),
+                    triage="TRUE" if include_triage else triage_exclusion_clause(),
+                    exclude=exclude_sql,
+                )),
+                {
+                    **vis.params,
+                    **exclude_params,
+                    **word_params,
+                    "needles": list(dict.fromkeys(words)),
+                    "snippet_lead": SNIPPET_LEAD,
+                    "snippet_window": SNIPPET_WINDOW,
+                    "cap": cap + 1,
+                },
+            )).fetchall()
+            partial = bool(rows)
+
         hits = [
             {
                 "id": str(r.id),
@@ -451,12 +531,20 @@ async def search_tasks(
         # D-PM-38. Search always shows subtasks, so each hit names its parent,
         # under the reader's grants.
         await attach_parent_context(db, vis, hits)
-        return {
+        answer: dict[str, Any] = {
             "rows": hits,
             "total": len(hits),
             "truncated": len(rows) > cap,
             "query": term,
         }
+        if partial:
+            # Each row names the words it holds, and the answer says it is a
+            # fallback. An all-words answer carries neither key.
+            for hit, r in zip(hits, rows, strict=False):
+                hit["matched"] = int(r.held)
+            answer["partial"] = True
+            answer["words"] = len(words)
+        return answer
 
 
 # ── Task references: `#171` in a chat answer (owner report, 2026-10-13) ──────
