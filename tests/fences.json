@@ -317,6 +317,7 @@
       "tests/unit/test_studio_catalog_r8.py",
       "tests/unit/test_studio_chat_build_r8.py",
       "tests/unit/test_studio_connect_in_place_r8.py",
+      "tests/unit/test_studio_csv_import_r8.py",
       "tests/unit/test_studio_door_op_r8.py",
       "tests/unit/test_studio_expr.py",
       "tests/unit/test_studio_formula_r8.py",
