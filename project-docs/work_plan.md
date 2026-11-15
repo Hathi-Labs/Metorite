@@ -6312,6 +6312,18 @@ The owner asked in chat on 2026-11-14 whether the workflow elements match the mo
 
 Fence: each WFC row of `ai_studio.md` §14 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D223 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D222 at most, and no open PR or remote branch held D223.
 
+### D224 — Tools on the fly go first: the chat saves, finds, repairs and shares chains of existing actions before it builds sandbox code (2026-11-15)
+
+On 2026-11-15 the owner asked that the chat fix tools, and build the tools that do not exist from the apps and integrations that it has. The owner asked that these tools persist for a member and for the org, and fit the tool loading that exists. Then the owner wrote "Go in the order that you recommend". `agent_sandbox.md` §0b holds the order. Epic 3393 (WS-TOF) holds the slices.
+
+1. The order has six rungs: save and reuse, the tool failure log, repair, share with the org, connected systems, and sandbox code tools. Each rung ends in a demo on production (D211).
+2. A chain of existing actions comes before code. It needs no sandbox and no owner hardware gate.
+3. A saved tool lives in the Studio skill store (`studio_skills`). A code tool is an `app_versions` row (D187). This adds no store.
+4. The chat loads a saved tool through the one path: `_apply_tool_packs`, the F3 skill packs and `find_tools` (D222). This adds no loader.
+5. This decision changes no rule of D187 or D222. `agent_sandbox.md` §0b proposes two merges of their parts, and the owner decides them on task 3394.
+
+Fence: none new, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D224 entries merge. **Re-check this number at merge.** On 2026-11-15, main held D223 at most.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
