@@ -4553,12 +4553,14 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
 #: 2,000 nodes in one read.
 MAX_TREE_NODES = 2_000
 
-#: The object test of a lookup in ``studio_record_hot`` by record id or by parent text.
-#: ``IS NOT DISTINCT FROM`` is no index qual, so the planner cannot take an index that
-#: leads with ``(organization_id, object_id, field_key)`` and filter the rest row by row.
-#: Without it, a table whose statistics are stale (analyzed while it was small) made the
-#: planner pick ``studio_record_hot_num_f8_idx`` for every step: 2,000 lookups of 2,000
-#: rows, 895 ms against 29 ms (task 3308, measured on 2,000 nodes).
+#: The object test of a lookup in ``studio_record_hot`` BY RECORD ID (the parent step, the
+#: roots). The primary key is ``(organization_id, record_id, field_key)``. With a plain
+#: ``object_id = ...`` test the planner can also take an index that leads with
+#: ``(organization_id, object_id, field_key)`` and filter ``record_id`` row by row, and under
+#: stale statistics it does: 2,000 lookups of 2,000 rows (task 3308, measured). Written as
+#: ``IS NOT DISTINCT FROM`` the test is no index qual, so the primary key is the one path
+#: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
+#: the object in the index prefix, or it scans the whole org.
 _HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
 
 #: The parent of a record, by the primary key of the hot row. A parent id that
@@ -4579,7 +4581,7 @@ _TREE_PARENT = (
 _TREE_CHILDREN = (
     "JOIN LATERAL (SELECT h.record_id FROM studio_record_hot h "
     "WHERE h.organization_id = " + _BOUND_ORG + " "
-    "AND " + _HOT_OF_OBJECT + " AND h.field_key = CAST(:fk AS text) "
+    "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
     "AND h.v_text = CAST(t.id AS text) OFFSET 0) h ON true "
 )
 
@@ -4640,6 +4642,18 @@ _TREE_ONE_ROOT = (
 )
 
 
+#: The child edges of the field, read once: one range scan on the full prefix
+#: ``(organization_id, object_id, field_key)`` of the object. The walk of a READ then joins this
+#: set by the text of the parent id, so the plan does not choose an index for each step, and the
+#: cost is one scan of the field plus the join (task 3308). The write check keeps a lookup for
+#: each step, because its subtrees are small and a write must not scan the whole field.
+_TREE_KIDS = (
+    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
+)
+
+
 def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     """The one statement of a tree read, from the SQL of its *roots* (one of
     the two constants above). Each node comes once, with its level and the id
@@ -4655,12 +4669,12 @@ def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     root_rule = " AND " + _q_access("r.id") if scoped else ""
     step_rule = " AND " + _q_access("h.record_id") if scoped else ""
     return (
-        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
-        "tree(id, parent, depth, path) AS ("
-        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
+        "WITH RECURSIVE " + _TREE_KIDS + ", roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
+        "tree(id, parent, depth, path, key) AS ("
+        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id], CAST(roots.id AS text) FROM roots "
         "UNION ALL "
-        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
-        + _TREE_CHILDREN +
+        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+        "FROM tree t JOIN kids h ON h.v_text = t.key "
         "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)" + step_rule + ") "
         "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
         + _q_lookup("t.id") + " "

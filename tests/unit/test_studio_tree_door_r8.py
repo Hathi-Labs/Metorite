@@ -413,24 +413,29 @@ def test_r8_the_switch_off_is_404_and_reads_nothing(world, monkeypatch) -> None:
     assert _audits(world, world.pkg) == []
 
 
-def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
+@pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
+def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> None:
     """One root and 1,999 children: 2,000 nodes are not cut, and one more is."""
 
-    def stale_stats() -> None:
+    def prepare_stats() -> None:
         # STU-C18 finding (task 3308): a table that is filled in bulk keeps the planner
         # statistics of the time before the fill until autovacuum runs. The statements of
-        # the tree read and of the C18 write check must not depend on them. This test
-        # analyzes both tables while they hold only the fixture rows, turns autovacuum
-        # off, and fills 2,000 nodes through the real writes. It never analyzes again.
-        # (A table that was NEVER analyzed is not a state of production: the tables are
-        # shared by every tenant. It reads 2,000 nodes in about 0.9 s, measured, and it
-        # is not fenced here.)
+        # the tree read and of the C18 write check must not depend on them. Two states:
+        # "stale" analyzes both tables while they hold only the fixture rows, and
+        # "never_analyzed" wipes every statistic (pg_statistic and reltuples). In both,
+        # autovacuum is off and the test fills 2,000 nodes through the real writes.
         with world.p.admin_engine.begin() as c:
             for t in ("studio_records", "studio_record_hot"):
                 c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
-        with world.p.admin_engine.begin() as c:
-            c.execute(text("ANALYZE studio_records"))
-            c.execute(text("ANALYZE studio_record_hot"))
+                if stats == "never_analyzed":
+                    c.execute(text("DELETE FROM pg_statistic WHERE starelid = CAST(:t AS regclass)"),
+                              {"t": t})
+                    c.execute(text("UPDATE pg_class SET reltuples = -1, relpages = 0 "
+                                   "WHERE oid = CAST(:t AS regclass)"), {"t": t})
+        if stats == "stale":
+            with world.p.admin_engine.begin() as c:
+                c.execute(text("ANALYZE studio_records"))
+                c.execute(text("ANALYZE studio_record_hot"))
 
     def stats_back() -> None:
         with world.p.admin_engine.begin() as c:
@@ -460,7 +465,7 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
             event.remove(eng, "before_cursor_execute", _on)
         return got, len([s for s in seen if "WITH RECURSIVE" in s])
 
-    stale_stats()
+    prepare_stats()
     try:
         root = _run(world, build)
         began = time.monotonic()
