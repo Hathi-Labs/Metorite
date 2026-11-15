@@ -62,7 +62,7 @@ import {
   validateWorkflow,
 } from "@/app/workflows/lib/api";
 import { readOnlyNote } from "@/app/workflows/lib/humanStep";
-import { writerRole } from "@/app/workflows/lib/studioWrite";
+import { studioWriteSummary, writerRole } from "@/app/workflows/lib/studioWrite";
 import type {
   Catalog,
   GraphIssue,
@@ -259,15 +259,9 @@ function describeNode(
     };
   }
 
-  // WFC-4a-2a: a Studio write names its action. The owner approves each record.
-  if (type === "studio_write") {
-    const action = String(config.action ?? "").trim();
-    return {
-      summary: action ? "Adds a record after the owner approves it." : "No action picked yet.",
-      detail: action,
-      badges: ["needs approval"],
-    };
-  }
+  // WFC-4a-2a and 2b-1: a Studio write names its action. The owner approves each
+  // record. The words come from the config alone and never name the record.
+  if (type === "studio_write") return studioWriteSummary(config);
 
   // WFC-4a-1: a human step names its person, and the two types with no form
   // say why they cannot be set here.

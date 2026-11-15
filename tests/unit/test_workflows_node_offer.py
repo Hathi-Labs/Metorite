@@ -21,10 +21,18 @@ WFC-4a-2a adds section 5: the pair that the Studio write form writes. The
 TypeScript rules (``studioWrite.ts``) are read as text, as ``_form_keys`` does
 for the human step. The pair must pass ``validate_graph``.
 
-* M3. Add ``record_id`` to ``STUDIO_WRITE_KEYS`` of ``studioWrite.ts``: the key
-  case turns red.
+WFC-4a-2b-1 adds the update. The form keys now EQUAL the engine keys, with
+``record_id``. A create still holds no ``record_id`` (``CREATE_KEYS``), because
+publish ties no rule to the verb: a create that holds a record id publishes,
+and then fails at run time after the owner approved it.
+
+* M3. Drop ``"record_id"`` from ``STUDIO_WRITE_KEYS`` of ``studioWrite.ts``: the
+  key case turns red. Add ``"record_id"`` to ``CREATE_KEYS``: the create case
+  turns red.
 * M4. Drop ``"studio_write"`` from ``catalog.UNOFFERED_NODE_TYPES``: the offer
   cases turn red.
+* M5. Drop the ``record_id`` check of ``graph._validate_studio_write_config``:
+  the null and empty record id cases turn red.
 """
 from __future__ import annotations
 
@@ -252,12 +260,22 @@ def test_the_copilot_round_accepts_a_human_step_graph(monkeypatch, bare_catalog)
 _PACKAGE = "11111111-1111-4111-8111-111111111111"
 
 
-def _studio_form_keys() -> set[str]:
-    """``STUDIO_WRITE_KEYS`` of the form rules, read from the TypeScript."""
+def _ts_keys(name: str) -> set[str]:
+    """One key list of the form rules, read from the TypeScript."""
     text = _STUDIO_WRITE_RULES.read_text(encoding="utf-8")
-    found = re.search(r"export const STUDIO_WRITE_KEYS = \[([^\]]*)\] as const;", text)
-    assert found, "studioWrite.ts lost STUDIO_WRITE_KEYS"
+    found = re.search(rf"export const {name} = \[([^\]]*)\] as const;", text)
+    assert found, f"studioWrite.ts lost {name}"
     return set(re.findall(r'"([a-z_]+)"', found.group(1)))
+
+
+def _studio_form_keys() -> set[str]:
+    """``STUDIO_WRITE_KEYS`` of the form rules: every key that the form writes."""
+    return _ts_keys("STUDIO_WRITE_KEYS")
+
+
+def _create_keys() -> set[str]:
+    """``CREATE_KEYS`` of the form rules: the keys of a create step."""
+    return _ts_keys("CREATE_KEYS")
 
 
 def _pair_graph(write: dict[str, Any], *, second_write: bool = False,
@@ -283,12 +301,22 @@ def _pair_graph(write: dict[str, Any], *, second_write: bool = False,
 
 
 _WRITE = {"package_id": _PACKAGE, "action": "add_ticket", "data": {"title": "Fix the door"}}
+_RECORD = "22222222-2222-4222-8222-222222222222"
+_UPDATE = {"package_id": _PACKAGE, "action": "edit_ticket", "record_id": _RECORD,
+           "data": {"title": "Fixed"}}
 
 
-def test_the_studio_form_keys_are_the_engine_keys_without_the_record_id() -> None:
-    """A create has no record id, and the form writes no key that publish refuses."""
-    assert _studio_form_keys() == {"package_id", "action", "data"}
-    assert _studio_form_keys() == set(STUDIO_WRITE_KEYS) - {"record_id"}
+def test_the_studio_form_keys_are_the_engine_keys() -> None:
+    """The form writes no key that publish refuses, and misses none (WFC-4a-2b-1)."""
+    assert _studio_form_keys() == {"package_id", "action", "record_id", "data"}
+    assert _studio_form_keys() == set(STUDIO_WRITE_KEYS)
+
+
+def test_a_create_step_holds_no_record_id() -> None:
+    """Publish ties no rule to the verb, so the form keeps the record id off a create."""
+    assert _create_keys() == {"package_id", "action", "data"}
+    assert _create_keys() == set(STUDIO_WRITE_KEYS) - {"record_id"}
+    assert set(_WRITE) == _create_keys()
 
 
 def test_a_studio_write_stays_unoffered_in_search_and_has_no_node_type_meta() -> None:
@@ -323,3 +351,35 @@ def test_a_write_with_no_approval_above_it_fails() -> None:
 def test_a_second_write_under_one_approval_fails() -> None:
     issues = validate_graph(_pair_graph(_WRITE, second_write=True))
     assert any(i.code == "approval_clears_one_write" for i in issues), issues
+
+
+# -- 6. The update that the Studio write form writes (WFC-4a-2b-1) ------------------
+
+
+def test_the_update_pair_as_the_form_writes_it_has_no_issue() -> None:
+    """An update step holds exactly the four keys, and the pair passes publish."""
+    assert set(_UPDATE) == _studio_form_keys()
+    assert validate_graph(_pair_graph(_UPDATE)) == []
+
+
+def test_an_update_with_an_empty_data_object_still_passes_publish() -> None:
+    """The form writes no empty update, and the engine does not refuse one either."""
+    assert validate_graph(_pair_graph({**_UPDATE, "data": {}})) == []
+
+
+@pytest.mark.parametrize("record_id", [None, "", "not-a-uuid", "{{trigger.id}}"])
+def test_a_record_id_that_is_not_a_uuid_fails_publish(record_id: Any) -> None:
+    """The form never writes null or an empty record id, because publish refuses both."""
+    issues = validate_graph(_pair_graph({**_UPDATE, "record_id": record_id}))
+    assert any(i.code == "missing_config" and i.node_id == "write" for i in issues), issues
+
+
+def test_a_ref_in_the_data_of_an_update_fails() -> None:
+    write = {**_UPDATE, "data": {"title": "Fix {{trigger.door}}"}}
+    issues = validate_graph(_pair_graph(write))
+    assert any(i.code == "templated_config" and i.node_id == "write" for i in issues), issues
+
+
+def test_an_update_with_no_approval_above_it_fails() -> None:
+    issues = validate_graph(_pair_graph(_UPDATE, gate=False))
+    assert any(i.code == "studio_write_without_approval" for i in issues), issues

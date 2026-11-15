@@ -16,7 +16,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
 import { searchCatalog } from "../lib/api";
 import { NEW_HUMAN_STEP_CONFIG } from "../lib/humanStep";
-import { studioWritePair } from "../lib/studioWrite";
+import { studioWriteChangePair, studioWritePair } from "../lib/studioWrite";
 import { FALLBACK_ICON, NODE_ICON } from "../lib/nodeVisuals";
 import { NODE_CATEGORY_STYLE } from "../lib/types";
 import type { Catalog, NodeType, SearchResult } from "../lib/types";
@@ -73,6 +73,11 @@ export function humanStepDrop(label = "Human step"): PaletteDrop {
 /** The pair that adds a record: a Human approval, then the Studio write (WFC-4a-2a). */
 export function studioWriteDrop(): PaletteDrop {
   return studioWritePair();
+}
+
+/** The pair that changes a record (WFC-4a-2b-1): the same chain, and the owner picks the change action. */
+export function studioWriteChangeDrop(): PaletteDrop {
+  return studioWriteChangePair();
 }
 
 export default function NodePalette({
@@ -336,7 +341,7 @@ export default function NodePalette({
           )}
 
           {section(
-            "logic", "Logic", themedIcon("GitBranch"), studioWriteOffered ? 6 : 5,
+            "logic", "Logic", themedIcon("GitBranch"), studioWriteOffered ? 7 : 5,
             <>
               {item(
                 "logic:condition",
@@ -367,6 +372,12 @@ export default function NodePalette({
                 item(
                   "logic:add_record", studioWriteDrop(),
                   "Add a record", "approval, then a new record in your app", "tool",
+                  false, "studio_write",
+                )}
+              {studioWriteOffered &&
+                item(
+                  "logic:change_record", studioWriteChangeDrop(),
+                  "Change a record", "approval, then a change to a record in your app", "tool",
                   false, "studio_write",
                 )}
             </>,
