@@ -255,19 +255,32 @@ def test_any_value_that_is_not_an_off_word_leaves_the_tests_on(repo):
 
 
 def test_a_function_that_one_side_lacks_gives_no_evidence_there(repo):
-    """Review of 2026-11-15, P2: pytest exits 4 on a missing id and runs nothing, so
-    a red that main caused was blamed on the PR. The id for a function that is not in
-    the file of a side is neither run nor counted there."""
+    """Review of 2026-11-15, P2: pytest exits 4 on a missing id and runs nothing, so a red
+    that main caused was blamed on the PR. The id of a function that is not in the file of
+    a side is neither run nor counted there. The fake pytest below does what the real one does."""
     _both_sides_change_shared(repo)
-    # The branch adds test_g to tests/t.py. Main does not have it. Main is red on test_a.
+    # The branch adds test_g to tests/t.py. Main does not have it, and main is red on test_a.
     _commit(repo, "tests/t.py", "def test_a():\n    pass\n\ndef test_g():\n    pass\n")
     cmd = 'echo "FAILED tests/t.py::test_a - boom"; echo "FAILED tests/t.py::test_g - boom"; exit 1'
-    rerun = "f() { git symbolic-ref -q HEAD >/dev/null || { echo 'FAILED tests/t.py::test_a - boom'; return 1; }; }; f"
+    rerun = (
+        'f() { for a in "$@"; do case "$a" in *test_g) echo "ERROR: not found: $a"; return 4;; esac; done;'
+        " git symbolic-ref -q HEAD >/dev/null || { echo 'FAILED tests/t.py::test_a - boom'; return 1; }; }; f"
+    )
     res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD=rerun)
-    # test_a is red on main alone, so it is not the merge's. test_g has no evidence on main
-    # (no such function there) and is red on the merge: that one is the merge's to answer for.
-    assert res.returncode in (0, 1)
-    assert "tests/t.py::test_a" not in res.stderr
+    # test_a is red on main alone: not the merge's. test_g is not on main (no evidence there) and
+    # passes on the branch alone here: the merge is to blame, and only for test_g.
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "tests/t.py::test_g" in res.stderr and "tests/t.py::test_a" not in res.stderr
+
+
+def test_a_collection_error_red_on_both_sides_does_not_block(repo):
+    """Review of 2026-11-15, finding 1: an id with no `::` is a whole file. The file alone decides."""
+    _both_sides_change_shared(repo)
+    cmd = 'echo "ERROR tests/t.py - ImportError"; exit 1'
+    rerun = 'echo "ERROR tests/t.py - ImportError"; exit 1'
+    res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD=rerun)
+    assert res.returncode == 0, res.stderr
+    assert "did not cause them" in res.stdout
 
 
 def test_an_unknown_flag_is_refused(repo):

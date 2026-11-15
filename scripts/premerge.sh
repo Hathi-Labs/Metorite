@@ -18,7 +18,7 @@
 #
 # WHAT. When the branch is behind origin/main, this script:
 #   1. refuses a new migration numbered at or below main's highest (R1);
-#   2. merges origin/main into the worktree WITHOUT a commit;
+#   2. merges origin/main into a detached trial commit (no ref moves);
 #   3. runs the collision fences on that result;
 #   4. runs the tests that BOTH sides can affect (the branch's diff and main's
 #      diff since the merge base), on the merge result (CIV-MT, task 3277).
@@ -32,7 +32,7 @@
 # `gh pr merge --squash` lands the same tree that step 2 built. So a pass
 # tests what lands, with no second CI run.
 #
-# DEFAULT = the fences plus the union affected run (CIV-MT). It runs only when
+# DEFAULT = the fences plus the tests that both sides can affect (CIV-MT). It runs only when
 # the branch is behind main. A branch that contains main exits at once, as
 # pr-check tested exactly what lands. Off: PREMERGE_MERGE_TEST=0 or --no-tests.
 #
@@ -216,7 +216,7 @@ fi
 RERUN_CMD="${PREMERGE_RERUN_CMD:-$PYT}"
 # Ids at the function level: a parameter such as [Earlier reply] holds a space,
 # and a cut id selects nothing on the re-run. The re-run takes whole functions.
-failed_ids() { { grep -E '^(FAILED|ERROR) ' "$1" || true; } | awk '{print $2}' | sed 's/\[.*//' | sort -u; }
+failed_ids() { { grep -E '^(FAILED|ERROR) ' "$1" || true; } | tr -d '\r' | awk '{print $2}' | sed 's/\[.*//' | sort -u; }
 # rerun_fail <log>: the ids that fail in THIS checkout. An id whose file is not
 # here gives no evidence (the file is new on the other side), so it is neither run
 # nor counted: pytest stops on a missing path and would hide the other ids.
@@ -226,7 +226,9 @@ rerun_fail() {
     file="${id%%::*}"; name="${id##*::}"
     # No file, or no such function, on this side: no evidence. pytest stops on a
     # missing id (exit 4) and runs nothing, so such an id is neither run nor counted.
-    [ -f "$file" ] && grep -qE "def[[:space:]]+${name}\b" "$file" && here="$here $id"
+    # An id with no `::` is a collection error (the whole file): the file alone decides.
+    if [ "$file" = "$id" ]; then [ -f "$file" ] && here="$here $id"
+    else [ -f "$file" ] && grep -qE "def[[:space:]]+${name}\b" "$file" && here="$here $id"; fi
   done
   [ -n "$here" ] || { : > "$log"; return 0; }
   local rc=0

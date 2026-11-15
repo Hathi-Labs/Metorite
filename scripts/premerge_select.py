@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import affected_tests as at  # noqa: E402
+import affected_tests as at
 
 
 def _read(path: str) -> list[str]:
@@ -65,11 +65,16 @@ def _reach(files: list[str], root: Path, *, src_only: bool = False) -> tuple[set
 def _reach_uncached(files: list[str], root: Path, *, src_only: bool = False) -> tuple[set[str], bool]:
     """(the test files these changes reach, whether the selector says FULL).
 
-    This is pr-check's own selector, `affected_tests.gate`, so a data file, a flag,
-    a registry and a scanner count as they do in pr-check. If the selector fails
+    This is the selector of pr-check, `affected_tests.gate`, without the diff text that its
+    flag rule and fence rule read. So a data file, a registry and a scanner count as they
+    do in pr-check, and a flag or fence-list change does not. If the selector fails
     it answers FULL, and the caller then says UNPROVEN. An older `affected_tests.py`
     with no `gate` falls back to `select`."""
     files = [f for f in files if f not in _tests(files, root)] if src_only else files
+    # gate() reads tests/fences.json only with the text of the change, which this
+    # picker does not have, and it answers FULL when it cannot. A changed fence list is
+    # covered by the fence tests that it changes, which run first.
+    files = [f for f in files if f != "tests/fences.json"]
     if not files:
         return set(), False
     if hasattr(at, "gate"):
