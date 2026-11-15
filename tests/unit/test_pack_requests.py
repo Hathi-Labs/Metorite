@@ -16,9 +16,9 @@ Run: ``uv run pytest tests/unit/test_pack_requests.py -q``.
 from __future__ import annotations
 
 import pytest
-
 from acb_skills import skill_families as sf
 from acb_skills import tool_packs as tp
+
 from tests.unit.test_tool_packs_choice import EVERY, MEMBER, ORG, SESSION
 
 #: The base of the real run, in tools (the staging shape of OA-8e).
@@ -277,6 +277,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_publish": ("publish my studio app",),
     # -- studio package delete (STU-A5c-2) --
     "studio_delete_package": ("delete my studio app", "delete the studio package of Ravi, who left"),
+    # -- studio ready apps (STU-K1d) --
+    "studio_template_list": ("list my studio app templates",),
+    "studio_create_from_template": ("create my studio app from a template",),
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),
@@ -284,6 +287,18 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_record_create": ("add a record to my studio package",),
     "studio_record_update": ("change a record in my studio package",),
     "studio_record_delete": ("delete a record from my studio package",),
+    # -- studio door read (STU-B2b-2c) --
+    "studio_app_read": ("read a knowledge page through my studio app",),
+    # -- studio workflow read (STB-6a) --
+    "studio_workflow_read": ("list my studio workflows",
+                             "read the studio workflow that chases invoices",
+                             # STU-E4b: the run id mode, the steps of a run.
+                             "list the steps of the playbook run in my studio app"),
+    # -- studio-workflows: the workflow writes (STB-6b) --
+    "studio_workflow_publish": ("publish the workflow that chases invoices",
+                                "roll back the workflow to version 2"),
+    "studio_workflow_live": ("pause the workflow that chases invoices",
+                             "turn on the workflow again"),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

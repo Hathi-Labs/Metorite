@@ -179,8 +179,8 @@ class Scenario:
     #: Earlier turns of the chat, as the browser sends them, before turn 1.
     history: tuple[dict[str, str], ...] = ()
     tags: tuple[str, ...] = field(default_factory=tuple)
-    #: OA-8e. The set of the chat: ``email``, ``crm``, ``projects``, ``mixed``
-    #: or ``fanout``. Only ``email`` runs with the email pack alone.
+    #: OA-8e. The set of the chat: ``email``, ``crm``, ``projects``, ``mixed``,
+    #: ``fanout`` or ``studio`` (TS-5a). Only ``email`` runs with the email pack alone.
     set: str = "email"
     #: OA-8e. The app the member is in, as the dock sends it: ``crm``,
     #: ``projects``, ``tasks``, ``calendar``, ``email``, or "" for none. The
@@ -191,6 +191,11 @@ class Scenario:
     #: OA-8e. A reason to leave the chat out of a run, or "". A skipped chat
     #: is listed and never run. The fan-out chats wait for OA-9b.
     skip: str = ""
+    #: TS-5a. Features that the member of this chat LACKS, for example
+    #: ``("studio",)``. The harness grants every feature of a pane
+    #: (``evals/routing/harness.py``, ``_member_features``), and the run takes these
+    #: out after it. The measure never edits the harness for this.
+    without_features: tuple[str, ...] = ()
 
 
 def _link(m: Mail) -> str:
@@ -395,7 +400,10 @@ def scenario(sid: str) -> Scenario:
 
 
 def all_scenarios() -> tuple[Scenario, ...]:
-    """The email chats, then the CRM, Projects, mixed and fan-out chats."""
+    """The email chats, then the CRM, Projects, mixed and fan-out chats, then the
+    Studio chats (TS-5a). The Studio chats are in no work set: the delegation arm
+    never runs them."""
+    from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS
     from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
 
-    return (*SCENARIOS, *WORK_SCENARIOS)
+    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS)

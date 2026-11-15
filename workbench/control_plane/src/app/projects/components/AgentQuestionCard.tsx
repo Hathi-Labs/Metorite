@@ -59,6 +59,7 @@ import {
   firstName,
 } from "../lib/agentRuns";
 import { readOnlyLine } from "../lib/agentQuestions";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 import { AgentImageStrip } from "./AgentImageStrip";
 
 /** The line beside the card's Submit. The chat's own line names "the assistant". */
@@ -128,7 +129,7 @@ export function AgentQuestionCard({
       >
         <Icon name="CircleCheck" size={12} className="mt-0.5 shrink-0" aria-hidden />
         <span className="min-w-0 break-words">
-          {answeredLine(answer, elicitation, personLabels)}
+          <MarkdownBody content={answeredLine(answer, elicitation, personLabels)} inline />
         </span>
       </p>
     );
@@ -144,9 +145,9 @@ export function AgentQuestionCard({
           data-agent-question="readonly"
           className="space-y-1 rounded-md border border-border p-2 text-xs"
         >
-          <p className="min-w-0 whitespace-pre-wrap break-words text-foreground">
-            {elicitation.content.body?.trim() || "The agent asks a question."}
-          </p>
+          <div className="min-w-0 whitespace-pre-wrap break-words text-foreground">
+            <MarkdownBody content={elicitation.content.body?.trim() || "The agent asks a question."} inline />
+          </div>
           <AgentImageStrip images={images} agentLabel={clientLabel} />
           <p className="text-muted-foreground" data-agent-question-readonly="">
             {readOnlyLine(who)}
@@ -227,7 +228,10 @@ export function AgentQuestionCard({
       <p className="flex items-start gap-1.5 text-foreground">
         <Icon name="Archive" size={12} className="mt-0.5 shrink-0" aria-hidden />
         <span className="min-w-0 whitespace-pre-wrap break-words">
-          {elicitation.content.body?.trim() || `${clientLabel} asks to archive this task.`}
+          <MarkdownBody
+            content={elicitation.content.body?.trim() || `${clientLabel} asks to archive this task.`}
+            inline
+          />
         </span>
       </p>
       <p className="text-muted-foreground" data-archive-waiting="">

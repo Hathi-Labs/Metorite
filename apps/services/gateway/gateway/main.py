@@ -424,6 +424,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.kb_sync_skipped", error=str(exc))
 
+    # Start the calendar sync loop (gateway/calendar_sync/scheduler.py; spec
+    # calendar_events_reminders.md §8.1, WS-CAL CE-10). It READS Google (and
+    # later Outlook) events into calendar_entries. Dark by default: with
+    # CALENDAR_SYNC_READ empty it starts no task and logs once. The gate lives
+    # inside the start function.
+    try:
+        from gateway.calendar_sync.scheduler import start_calendar_sync
+        calendar_sync_started = await start_calendar_sync()
+        _log.info("gateway.calendar_sync", started=calendar_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.calendar_sync_skipped", error=str(exc))
+
     # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
     # WS-58 MD-5b). It trims the active set of each org and sweeps old card
     # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
@@ -677,6 +689,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.kb_sync.scheduler import stop_kb_sync
         await stop_kb_sync()
+    except Exception:
+        pass
+
+    # Stop the calendar sync loop. Unconditional, like the Knowledge stop.
+    try:
+        from gateway.calendar_sync.scheduler import stop_calendar_sync
+        await stop_calendar_sync()
     except Exception:
         pass
 
@@ -1183,6 +1202,27 @@ async def _db_unavailable(request: Request, exc: Exception):
             },
         )
     return PlainTextResponse("Internal Server Error", status_code=500)
+
+
+# ── A mail provider that did not answer a write is a 503, not a 500 ──────────
+# HRD-20 (task 3224). Graph answered 502 to a reply and a draft, and the
+# route answered 500 with a traceback. The provider raises one typed error, and
+# this handler answers 503 with its words. The words never say "nothing was
+# sent", because a 502 can hide a write that landed. The error holds no URL.
+# Fence: tests/unit/test_outlook_gateway_faults.py.
+from email_ingestion.providers.base import ProviderDidNotAnswer  # noqa: E402
+
+
+@app.exception_handler(ProviderDidNotAnswer)
+async def _provider_did_not_answer(request: Request, exc: ProviderDidNotAnswer):
+    _log.warning(
+        "email.provider_did_not_answer",
+        extra={"mail_path": request.url.path, "mail_kind": exc.kind},
+    )
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "60"},
+        content={"detail": exc.detail, "code": "provider_did_not_answer"},
+    )
 
 
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant

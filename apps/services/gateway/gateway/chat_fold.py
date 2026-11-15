@@ -286,9 +286,12 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                 **sub_fields,
             })
 
-        elif t == "CUSTOM" and ev.get("name") == "frontend_tool":
+        elif t == "CUSTOM" and ev.get("name") in ("frontend_tool", "progress"):
             # A dispatched browser action (H-164): a side effect, not part of
             # the answer. The page ran it live; the message never keeps it.
+            # HRD-6: the line of a slow tool (`acb_skills.progress_notice`
+            # EVENT) shows while the tool runs, and a stored chat never
+            # holds it.
             pass
 
         elif t == "CUSTOM":

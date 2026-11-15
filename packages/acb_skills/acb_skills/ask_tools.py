@@ -37,6 +37,7 @@ import contextvars as _contextvars
 import json as _json
 import re as _re
 from collections.abc import Iterator as _Iterator
+from dataclasses import dataclass as _dataclass
 from typing import Any
 
 from acb_common.no_person import no_person_present as _no_person_present
@@ -420,6 +421,16 @@ _QUESTIONS_SHAPE_HINT = (
 _QUESTIONS_SHAPE_ERROR = "Error: questions is not valid JSON of the expected shape. " + _QUESTIONS_SHAPE_HINT
 
 
+def _member_waits() -> None:
+    """Tell the line of a slow tool (HRD-6) that this call now waits for the
+    member on a card (``progress_notice.member_wait``). Never raises."""
+    try:
+        from acb_skills.progress_notice import member_wait
+    except Exception:  # pragma: no cover — ships with the package
+        return
+    member_wait()
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -547,6 +558,10 @@ async def ask_questions(questions: str) -> str:
         if crm_card_tag(q):
             entry["crm_question"] = crm_card_tag(q)
         cleaned.append(entry)
+
+    # HRD-6: a card is the sign of a wait for the member. A tool call that
+    # asks here gets no "Please wait" line, and a line that shows goes.
+    _member_waits()
 
     # ── Emit elicitation event ──────────────────────────────────────────
     # Two paths, unified on the same _pending_user_input mechanism as the
@@ -1394,6 +1409,467 @@ async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int],
             _steer_forget(thread_id, rid)
 
 
+# ── A card that the member's chat message closed (task 3130) ─────────────────
+#
+# Production, 2026-11-13: a member asked for an email reply, and the reply
+# card opened. The member typed two more messages, and the first one closed
+# the card (``close_on_steer``). The answer of the turn met only the last
+# message, and it never said that the reply was not sent. So the SERVER, not
+# the model, ends that answer with one line (:func:`take_closed_card_line`).
+# Every app's write card closes in :func:`request_confirmation`, so this one
+# record covers email, Projects, CRM, Studio and each later app.
+
+#: The outcome of a card that a chat message of the member closed before the
+#: member answered it. HRD-7 (``chat_failure_modes.md`` C1) grows ONE
+#: vocabulary of card outcomes from this word: approved, declined, closed by
+#: your message, timed out, parked, changed since. Add each outcome here, and
+#: never start a second list.
+CLOSED_BY_YOUR_MESSAGE = "closed by your message"
+
+
+#: The act keys of one card: one key for each act that the card can do. A
+#: single card has one key. A batch card has one key for each item.
+ActKeys = frozenset[tuple[Any, ...]]
+
+
+class ClosedCards:
+    """The write cards of one run that a chat message closed (task 3130).
+
+    Each entry is a card title and the act keys of the tool call that drew
+    the card (:func:`card_call`). A later card takes the place of a closed
+    one ONLY when it holds every act key of the closed card. A card with no
+    keys takes the place of none, and a closed card with no keys is never
+    taken. A card that the member approved or declined is never in the list."""
+
+    __slots__ = ("entries",)
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, ActKeys | None]] = []
+
+    def opened(self, keys: ActKeys | None) -> None:
+        """A card opens: it takes the place of each closed card whose every
+        act it draws again."""
+        if not keys:
+            return
+        self.entries = [(t, k) for t, k in self.entries if not (k and k <= keys)]
+
+    def closed(self, title: str, keys: ActKeys | None) -> None:
+        """A chat message closed the card titled *title*."""
+        self.entries.append((title, keys))
+
+    def take(self) -> list[str]:
+        """Each closed title once, in order. The list is then empty."""
+        out = list(dict.fromkeys(t for t, _k in self.entries))
+        self.entries = []
+        return out
+
+
+# ⚠️ The default is None, never a mutable object. A module-level object would
+# be shared by each run and each org (orchestrator ``AGENTS.md`` rule 23).
+_RUN_CLOSED_CARDS: _contextvars.ContextVar[ClosedCards | None] = _contextvars.ContextVar(
+    "acb_closed_cards", default=None,
+)
+
+
+def open_closed_cards_for_run() -> _contextvars.Token[ClosedCards | None]:
+    """Open a fresh record for the run that starts now. ``run_agent_stream``
+    calls it beside ``crm_tools.open_asks_for_run``, and gives the token to
+    :func:`release_closed_cards` in the same ``finally``. One object for the
+    run, so a tool call in its own copy of the context still records."""
+    return _RUN_CLOSED_CARDS.set(ClosedCards())
+
+
+def release_closed_cards(token: _contextvars.Token[ClosedCards | None]) -> None:
+    """Undo :func:`open_closed_cards_for_run`. A token of another context sets
+    the default, so a record never leaks into the next run on this task."""
+    try:
+        _RUN_CLOSED_CARDS.reset(token)
+    except ValueError:
+        _RUN_CLOSED_CARDS.set(None)
+
+
+# ── The act key of a card: the tool call that drew it ────────────────────────
+#
+# Review of task 3130: a title names no act. "Update this task?" is the title
+# of each task, so a card for task 15 erased the line of task 12. The key is
+# the tool and the arguments that name the act:
+#
+# * Each id, and the people of ``to``, are always in the key.
+# * A call with no OBJECT id adds its identity arguments (:data:`IDENTITY_ARGS`):
+#   a new lead is "Veena" or "Raj", a new task is its title. An id names an
+#   object when the tool does not create one (:data:`_CREATE_VERBS`) and the
+#   id is not a container (:data:`CONTAINER_IDS`, such as ``project_id``).
+# * A batch tool shares its family with the single tool
+#   (:data:`ACT_FAMILIES`), and each of its items is one key.
+#
+# Each error goes to the fail-closed side: a key that differs keeps the line.
+# A renamed redraft of a new object keeps a line that is no longer true. A
+# change to an object with an id never changes its key, so two changes to one
+# task share a key, and an approved second change takes away the line of the
+# first.
+
+#: The arguments of a tool call that name a target and are not ids.
+_TARGET_ARGS = frozenset({"to"})
+
+#: The arguments that name a NEW object: what tells "lead Veena" from "lead
+#: Raj". They count only in a call with no object id. A dict argument (a
+#: Studio ``manifest``) gives the same keys one level down.
+IDENTITY_ARGS = frozenset({
+    "title", "name", "lead_name", "subject", "deal_name", "contact_name",
+    "company_name", "account_name", "project_name", "app_name",
+})
+
+#: Ids of a place, never of the object that the act changes.
+CONTAINER_IDS = frozenset({
+    "account_id", "project_id", "parent_task_id", "parent_id", "folder_id",
+    "mailbox_id", "workspace_id", "space_id", "pipeline_id", "board_id",
+    "organization_id", "org_id",
+})
+
+#: A tool whose name holds one of these verbs makes a new object, so each of
+#: its ids is a place (``log_activity`` on ``record_id``).
+_CREATE_VERBS = frozenset({"create", "add", "log", "new", "make", "send"})
+
+#: The batch tools, by name: the single tool of the family, the argument that
+#: holds the items, and how one item reads. "json" is a JSON list of objects.
+#: "ids" is a list of ids, each one ``id_arg`` of one item.
+ACT_FAMILIES: dict[str, tuple[str, str, str, str]] = {
+    "create_tasks": ("create_task", "tasks", "json", ""),
+    "update_tasks": ("update_task", "changes", "json", ""),
+    "bulk_update": ("update_task", "task_ids", "ids", "task_id"),
+}
+
+#: The single tools that a batch tool shares a family with.
+_FAMILY_SINGLES = frozenset(f for f, _a, _k, _i in ACT_FAMILIES.values())
+
+_CARD_CALL: _contextvars.ContextVar[ActKeys | None] = _contextvars.ContextVar(
+    "acb_card_call", default=None,
+)
+
+#: HRD-22: the tool of the call that a card belongs to (:func:`card_call`),
+#: so the late-approve grant tests the REAL tool and not the family head of
+#: its act key (``bulk_update`` keys as ``update_task``). ⚠️ The default is
+#: None, never a mutable object.
+_CARD_TOOL: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
+    "acb_card_tool", default=None,
+)
+
+
+@_dataclass(frozen=True)
+class PlainCard:
+    """A plain confirmation card, as the late-approve grant reads it (HRD-22).
+
+    The clipped title, detail and context, the facts that the tool bound
+    (``whatsapp_acts.card_facts``), the act keys and the tool of the call, and
+    *cut*: True when the gate clipped a field or the body holds a cut."""
+
+    title: str
+    detail: str
+    context: str
+    facts: dict[str, Any] | None
+    keys: ActKeys | None
+    tool: Any
+    cut: bool
+
+
+#: HRD-22: the plain card that waits on this frame, with its request id.
+#: ``_block_on`` sets it around its wait, so ``orchestrator.pending_ask.park``,
+#: which runs in that wait, reads the card it parks (:func:`waiting_card`).
+#: ⚠️ The default is None, never a mutable object.
+_WAITING_CARD: _contextvars.ContextVar[tuple[str, PlainCard] | None] = (
+    _contextvars.ContextVar("acb_waiting_card", default=None))
+
+
+def waiting_card(request_id: str) -> PlainCard | None:
+    """The plain card *request_id* that waits on this frame, or None (HRD-22,
+    ``acb_skills.late_approve``). Only a plain confirmation card is held: no
+    rows, no reply form and no held send id. A card of another id gives None."""
+    held = _WAITING_CARD.get()
+    if held is None or held[0] != request_id:
+        return None
+    return held[1]
+
+
+async def _late_approved(card: PlainCard) -> bool:
+    """True when the member of this run approved this very card late, in this
+    thread, and the grant is unused (HRD-22). It reads the grant once. Off, a
+    miss and each fault give False, and the card shows as before."""
+    try:
+        from acb_skills.late_approve import take_grant
+
+        return await take_grant(card)
+    except Exception:  # fail closed: the card shows
+        return False
+
+
+def _take_card_facts() -> dict[str, Any] | None:
+    """The facts that the tool bound for this card
+    (``whatsapp_acts.take_card_facts``), or None. A fault gives None."""
+    try:
+        from acb_skills.whatsapp_acts import take_card_facts
+
+        return take_card_facts()
+    except Exception:
+        return None
+
+
+def _body_cut(text: Any) -> bool:
+    """True when a card body holds a cut (``card_body.is_cut``). A fault
+    reads True, so a card that cannot be read takes no grant."""
+    try:
+        from acb_common.card_body import is_cut
+
+        return bool(is_cut(text or ""))
+    except Exception:
+        return True
+
+
+async def _late_approve_spent(card: PlainCard) -> None:
+    """The member approved this card live (HRD-22): no stale twin of it may
+    act again on a late approve. Off, it does nothing. Never raises."""
+    try:
+        from acb_skills.late_approve import note_approved
+
+        await note_approved(card)
+    except Exception:  # the answer stands
+        return
+
+
+def _is_id_arg(name: str) -> bool:
+    return name == "id" or name.endswith(("_id", "_ids"))
+
+
+def _norm(value: Any) -> str:
+    return " ".join(str(value).split()).lower()
+
+
+def _key_value(value: Any) -> Any:
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(sorted(_norm(v) for v in value))
+    return _norm(value)
+
+
+def _given(value: Any) -> bool:
+    return value not in (None, "", [], (), {}) and value is not False
+
+
+def _creates(name: str) -> bool:
+    head, _, rest = str(name).lower().partition("_")
+    return bool({head, rest.partition("_")[0]} & _CREATE_VERBS)
+
+
+def _identity(arguments: dict[str, Any]) -> list[tuple[str, Any]]:
+    out: list[tuple[str, Any]] = []
+    for k, v in arguments.items():
+        if k in IDENTITY_ARGS and _given(v):
+            out.append((k, _norm(v)))
+        elif isinstance(v, dict):
+            out.extend((f"{k}.{ik}", _norm(iv)) for ik, iv in v.items()
+                       if ik in IDENTITY_ARGS and _given(iv))
+    return out
+
+
+def act_key(module: str, name: str, arguments: dict[str, Any]) -> tuple[Any, ...] | None:
+    """The act key of one act: who does it, and its targets. None with no name.
+
+    The head is the family for a tool of :data:`ACT_FAMILIES`, else the
+    module and the tool. The targets are each id and ``to``, and, in a call
+    with no object id, the identity arguments (:data:`IDENTITY_ARGS`)."""
+    if not name:
+        return None
+    args = {str(k): v for k, v in (arguments or {}).items()}
+    targets = [(k, _key_value(v)) for k, v in args.items()
+               if (_is_id_arg(k) or k in _TARGET_ARGS) and _given(v)]
+    object_id = not _creates(name) and any(
+        _is_id_arg(k) and k not in CONTAINER_IDS and _given(v) for k, v in args.items())
+    if not object_id:
+        targets.extend(_identity(args))
+    head = ("family", name) if name in _FAMILY_SINGLES else (module, name)
+    return (*head, tuple(sorted(targets)))
+
+
+def _batch_items(spec: tuple[str, str, str, str], arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    """The items of one batch call, each with the batch's own arguments. A
+    value that does not read gives no item."""
+    _family, field, kind, id_arg = spec
+    raw = arguments.get(field)
+    shared = {k: v for k, v in arguments.items() if k != field}
+    if kind == "ids":
+        values = raw if isinstance(raw, (list, tuple)) else _re.split(r"[\s,]+", str(raw or ""))
+        return [{**shared, id_arg: v} for v in values if str(v).strip()]
+    try:
+        items = _json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    return [{**shared, **item} for item in items if isinstance(item, dict)]
+
+
+def act_keys(module: str, name: str, arguments: dict[str, Any]) -> ActKeys | None:
+    """The act keys of one tool call: one key, or one key for each item of a
+    batch tool (:data:`ACT_FAMILIES`). None when no key reads."""
+    spec = ACT_FAMILIES.get(name)
+    if spec is None:
+        key = act_key(module, name, arguments)
+        return frozenset({key}) if key else None
+    keys = {act_key(module, spec[0], item) for item in _batch_items(spec, arguments)}
+    keys.discard(None)
+    return frozenset(keys) or None
+
+
+@_contextlib.contextmanager
+def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
+              keyless: bool = False) -> _Iterator[None]:
+    """Name the tool call that a card of this call belongs to (task 3130).
+
+    ``orchestrator._tool_injection`` opens it around each tool call that it
+    gates, beside ``whatsapp_acts.tool_call``. A nested call opens its own,
+    so a card reads the innermost call. *keyless* (a delegation tool) opens
+    a scope with no key, so a card of a child run never takes the key of
+    the call that started the child. A fault gives no key. Never raises."""
+    keys: ActKeys | None = None
+    if not keyless:
+        try:
+            import inspect as _inspect
+
+            try:
+                bound = dict(_inspect.signature(fn).bind_partial(*args, **kwargs).arguments)
+            except (TypeError, ValueError):
+                bound = {} if args else dict(kwargs)
+            keys = act_keys(str(getattr(fn, "__module__", "") or ""),
+                            str(getattr(fn, "__name__", "") or ""), bound)
+        except Exception:
+            keys = None
+    token = _CARD_CALL.set(keys)
+    tool_token = _CARD_TOOL.set(None if keyless else fn)
+    try:
+        yield
+    finally:
+        try:
+            _CARD_TOOL.reset(tool_token)
+        except ValueError:
+            _CARD_TOOL.set(None)
+        try:
+            _CARD_CALL.reset(token)
+        except ValueError:
+            _CARD_CALL.set(None)
+
+
+def _card_opened(keys: ActKeys | None) -> None:
+    holder = _RUN_CLOSED_CARDS.get()
+    if holder is not None:
+        holder.opened(keys)
+
+
+def _card_closed_by_message(title: str, keys: ActKeys | None) -> None:
+    holder = _RUN_CLOSED_CARDS.get()
+    if holder is not None:
+        holder.closed(title, keys)
+
+
+#: The characters that markdown or a link reads, and the fence marks. An
+#: underscore is apart (:func:`_edge_underscores`): inside a word it is part
+#: of an address, and GFM never reads it as emphasis there.
+_INERT_DROP = _re.compile(r"[\[\]()<>*`#!~|\\«»]")
+
+#: A run of slashes after a colon: "https://", "https:////".
+_SCHEME_SLASHES = _re.compile(r":/+")
+
+#: "www." that a GFM renderer links with no scheme.
+_WWW = _re.compile(r"(?i)\bwww\.")
+
+#: The longest act in the line, in characters.
+ACT_MAX = 120
+
+
+def _edge_underscores(text: str) -> str:
+    """*text* with each underscore that can open or close emphasis removed.
+    An underscore between two letters or digits stays: ``john_doe@a.test``."""
+    def keep(m: Any) -> str:
+        s, e = m.start(), m.end()
+        inside = s > 0 and e < len(text) and text[s - 1].isalnum() and text[e].isalnum()
+        return m.group(0) if inside else ""
+
+    return _re.sub(r"_+", keep, text)
+
+
+def card_act(title: str) -> str:
+    """The act of a card, from its title, as INERT text (task 3130).
+
+    "Reply to kim@a.test?" gives "reply to kim@a.test". A title can hold a
+    record name, a display name or an address that a stranger wrote. So no
+    markdown or link character stays, an underscore stays only inside a
+    word, a line break is a space, slashes after a colon go, "www." loses
+    its dot, and no fence mark stays: the line puts the act in « ». At most
+    :data:`ACT_MAX` characters. No words give "the act on the card"."""
+    import unicodedata as _ud
+
+    text = "".join(
+        " " if ch in "\r\n\t" else ("" if _ud.category(ch) in ("Cc", "Cf") else ch)
+        for ch in str(title or "")
+    )
+    text = _INERT_DROP.sub("", text)
+    text = _edge_underscores(_SCHEME_SLASHES.sub(":", text))
+    text = _WWW.sub(lambda m: str(m.group(0))[:3] + " ", text)
+    text = " ".join(text.split()).rstrip("?.:;, ").strip()
+    if not text:
+        return "the act on the card"
+    first, _, rest = text.partition(" ")
+    if str(first)[:1].isupper() and first[1:].islower():
+        # "Reply" reads as "reply". A name in capitals, such as "CRM", stays.
+        first = first.lower()
+    text = f"{first} {rest}".strip()
+    if len(text) > ACT_MAX:
+        text = str(text)[: ACT_MAX - 1].rstrip() + "…"
+    return text
+
+
+def closed_card_line(titles: list[str]) -> str:
+    """The line that ends the answer of a run whose write cards a chat message
+    closed (task 3130). Empty for no title. Each act comes from the card's
+    own title (:func:`card_act`), in a « » fence. The words hold in a shared
+    room too, where another member's message can close the card."""
+    acts = list(dict.fromkeys(f"«{card_act(t)}»" for t in titles or []))
+    if not acts:
+        return ""
+    if len(acts) == 1:
+        return (f"Not done: {acts[0]}. The card closed when a new message came in. "
+                "Say 'do it' to get it back.")
+    joined = (f"{acts[0]} and {acts[1]}" if len(acts) == 2
+              else ", ".join(acts[:-1]) + f", and {acts[-1]}")
+    return (f"Not done: {joined}. The cards closed when a new message came in. "
+            "Say 'do it' to get them back.")
+
+
+def take_closed_card_line() -> str:
+    """The line of this run's closed cards, once (:func:`closed_card_line`).
+
+    The executor takes it before it saves the native session, and sends it
+    as the last text of the answer, just before ``RUN_FINISHED``. A parked
+    run sends it before its own ``RUN_FINISHED`` (``pending_ask.park``).
+    Empty when the run has no record, or no closed card."""
+    holder = _RUN_CLOSED_CARDS.get()
+    if holder is None:
+        return ""
+    return closed_card_line(holder.take())
+
+
+def closed_card_text_events(line: str) -> list[dict[str, Any]]:
+    """The chat events of *line*: one text message, or none. One delta, as
+    the CRM note, so no word chunk leaves a space after the line."""
+    if not line:
+        return []
+    import uuid as _uuid
+
+    mid = _uuid.uuid4().hex
+    return [
+        {"type": "TEXT_MESSAGE_START", "messageId": mid, "role": "assistant"},
+        {"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": "\n\n" + line},
+        {"type": "TEXT_MESSAGE_END", "messageId": mid},
+    ]
+
+
 class ReplyAnswer:
     """The member's answer to a reply card: the exact text, and its parse.
 
@@ -1713,6 +2189,13 @@ async def request_confirmation(
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
+    #: True when a field lost text to the clip above.
+    _clipped = (len(str(title or "").strip()) > len(_title)
+                or len(str(detail or "").strip()) > len(_detail)
+                or len(str(context or "").strip()) > len(_context))
+    #: HRD-22: the ids that the tool bound for this card. Read on each card,
+    #: so they never reach a later one.
+    _facts = _take_card_facts()
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
@@ -1727,9 +2210,7 @@ async def request_confirmation(
     # goes on below, as before.
     _email = await _whatsapp_email_answer(
         _title, _detail, _context, _rows, _reply, request_id, _with_answer,
-        cut=(len(str(title or "").strip()) > len(_title)
-             or len(str(detail or "").strip()) > len(_detail)
-             or len(str(context or "").strip()) > len(_context)))
+        cut=_clipped)
     if _email is not _NOT_EMAIL:
         return _email
     if _reply is not None:
@@ -1750,6 +2231,22 @@ async def request_confirmation(
         if _with_answer:
             return None
         return frozenset() if _rows is not None else False
+    # HRD-22 (chat_run_continuity.md S2 item 8): a plain card only. No rows,
+    # no reply form and no held send id ever take a late approve, and a cut
+    # card never does (the WhatsApp Confirm refuses one too).
+    _plain = _rows is None and _reply is None and not _with_answer and request_id is None
+    _card = PlainCard(
+        _title, _detail, _context, _facts, _CARD_CALL.get(), _CARD_TOOL.get(),
+        _clipped or _body_cut(context)) if _plain else None
+    if _card is not None and await _late_approved(_card):
+        # The member approved this very card late, in this thread. The grant
+        # is gone, so this is its one use. It shows no card, and it takes the
+        # place of a closed card with the same act (task 3130).
+        _card_opened(_CARD_CALL.get())
+        return True
+    # HRD-6: the card is the sign of the wait. The tool call that shows it
+    # gets no "Please wait" line, and a line that shows goes.
+    _member_waits()
     _offered = frozenset(r["id"] for r in _rows or [])
     _steer_closes = (_reply is not None) if close_on_steer is None else bool(close_on_steer)
     #: The member whose answer alone counts (PZ-32), or "" to bind none.
@@ -1842,11 +2339,17 @@ async def request_confirmation(
         _answer = "REJECT"
         _ticked: frozenset[str] | None = None
         _watch = None
+        # Task 3130: the act key binds when the card opens. This card takes
+        # the place of a closed card with the same key, and of no other.
+        _act = _CARD_CALL.get()
+        _card_opened(_act)
         if _baseline is not None:
             # The card's id and title: a steer closes only the card it is
             # about (item 5, owner 2026-10-24).
             _watch = _asyncio.ensure_future(
                 _close_on_new_steer(_fut, *_baseline, _rid, _title))
+        # HRD-22: the park reads this card in this wait, to record its offer.
+        _waiting = _WAITING_CARD.set((_rid, _card) if _card is not None else None)
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
@@ -1857,6 +2360,10 @@ async def request_confirmation(
         except TimeoutError:
             _answer = "TIMEOUT"
         finally:
+            try:
+                _WAITING_CARD.reset(_waiting)
+            except ValueError:
+                _WAITING_CARD.set(None)
             if _watch is not None:
                 _watch.cancel()
             _pending.pop(_rid, None)
@@ -1867,6 +2374,8 @@ async def request_confirmation(
                 if not _was_parked(_rid):
                     await _publish(_resolved_event(_rid, _answer))
         if _answer == REVISED_ANSWER:
+            # Task 3130: the run's answer ends with the "Not done" line.
+            _card_closed_by_message(_title, _act)
             if _with_answer:
                 return REVISED
             return REVISED_ROWS if _rows is not None else REVISED
@@ -1876,6 +2385,10 @@ async def request_confirmation(
             return _rows_replied[0] if _answer == "APPROVE" and _rows_replied else None
         if _rows is not None:
             return _ticked or frozenset()
+        if _answer == "APPROVE" and _card is not None:
+            # HRD-22: the act runs now, so no stale twin of this card may run
+            # it again on a late approve.
+            await _late_approve_spent(_card)
         return _answer == "APPROVE"
 
     # ── Path A: _active_run_queue (native MAF / Tier 2 blocking) ──────────

@@ -349,11 +349,12 @@ class TestOneRegistry:
         # WS-61 KB-9a adds the gated `knowledge`. WS-66 RM-2b makes `reminders`
         # a needs provider: it registers before `approvals`, which stays last.
         # WS-ALN ALN-2b adds the gated `decisions` at the end of `needs.py`.
+        # WS-55 EA-18c adds the gated `agent_questions`, after `chat`.
         assert list(shell.REGISTRY) == ["tasks", "projects", "email", "reminders",
                                         "approvals", "decisions", "calendar",
                                         "tasks_followups",
                                         "email_followups", "crm", "people", "chat",
-                                        "knowledge"]
+                                        "agent_questions", "knowledge"]
         again = shell.Provider("tasks", ("projects",), shell.REGISTRY["tasks"].run,
                                frozenset({"overdue"}))
         with pytest.raises(ValueError, match="registers twice"):

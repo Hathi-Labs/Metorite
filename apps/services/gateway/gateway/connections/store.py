@@ -353,6 +353,52 @@ _DELETE_SQL = (
     f"DELETE FROM integration_connections WHERE {_KEY_WHERE} RETURNING id"
 )
 
+#: The providers that one member may use now (WS-STU I1a, split by I9a): each
+#: ``connected`` org row, and each ``connected`` member row of that member.
+#: The row of another member never counts. It reads the provider and the kind
+#: of the row only, never the blob.
+_MET_SQL = (
+    "SELECT DISTINCT provider, scope_kind FROM integration_connections "
+    f"WHERE organization_id = CAST(:org AS uuid) AND status = '{STATUS_CONNECTED}' "
+    f"AND (scope_kind = '{SCOPE_ORG}' OR (scope_kind = '{SCOPE_MEMBER}' "
+    "AND member_email = :member))"
+)
+
+#: The table that holds the connection of an owning app OUTSIDE this
+#: registry (WS-STU I8a): a mailbox is a row of ``email_accounts``, and a
+#: WhatsApp number a row of ``wa_accounts``.
+_OUTSIDE_APPS: dict[str, str] = {"email": "email_accounts", "whatsapp": "wa_accounts"}
+#: The table of a key that the console stores (``signin: key`` and owning app
+#: ``console`` in the connector list). The key flow of Studio is I8e.
+_KEY_TABLE = "provider_keys"
+
+
+def _outside_registry() -> dict[str, str]:
+    """Each provider of the connector list (IN-11) whose connection lives
+    outside this registry, with the table that holds it. It is computed from
+    the list, so a new row of an owning app above, or a new key of the console,
+    joins it with no second list."""
+    from acb_common.connector_list import connector_rows
+
+    out: dict[str, str] = {}
+    for row in connector_rows():
+        if row["owning_app"] in _OUTSIDE_APPS:
+            out[row["id"]] = _OUTSIDE_APPS[row["owning_app"]]
+        elif row["signin"] == "key" and row["owning_app"] == "console":
+            out[row["id"]] = _KEY_TABLE
+    return out
+
+
+#: The providers that :func:`met_providers` never meets, each with its table
+#: (WS-STU I8a). Studio shows such a name as blocked and offers no Connect,
+#: because the action door refuses each action of the app while it names one.
+#: ⚠️ The set is computed. When I9 or IN-3 makes a ``_MET*`` statement read
+#: one of these tables, change the rule in :func:`_outside_registry` in the
+#: same change. ``test_studio_connect_in_place.py`` fails while the two
+#: disagree, and when a listed provider has neither a registry writer nor an
+#: entry here.
+OUTSIDE_REGISTRY: dict[str, str] = _outside_registry()
+
 
 @dataclass(frozen=True)
 class Connection:
@@ -532,6 +578,36 @@ async def list_all(db: Any, org: str) -> list[Connection]:
     org = str(uuid.UUID(str(org)))
     rows = (await db.execute(text(_LIST_SQL), {"org": org})).fetchall()
     return [_connection(r) for r in rows]
+
+
+async def met_providers(
+    db: Any, org: str, member: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The providers that *member* may use now in *org*, as
+    ``(org_met, member_met)`` (WS-STU I1a, split by I9a).
+
+    ``org_met`` holds each provider with a ``connected`` org row. ``member_met``
+    holds each provider with a ``connected`` member row of *member* itself. The
+    member row of another member never counts, and ``needs_reconnect``,
+    ``needs_reset`` and ``disconnected`` never count. The two sets stay apart,
+    because a need that asks for the member's own account is never met by an org
+    row, and an org need is never met by a member row. It reads the ``provider``
+    and ``scope_kind`` columns only, never the blob.
+
+    The registry holds ``mcp:<server>``, ``zoho``, ``github``,
+    ``google_calendar``, ``outlook_calendar`` and ``google_drive``. A mailbox
+    lives in ``email_accounts``, so ``mailbox`` is never met here (I9 adds
+    it). A key of the console lives in ``provider_keys`` (I8e).
+    :data:`OUTSIDE_REGISTRY` names each such provider.
+    ``package_host/resolve.met_connections`` is the one caller.
+    """
+    who = (member or "").strip().lower()
+    params = {"org": str(uuid.UUID(str(org))), "member": who}
+    rows = (await db.execute(text(_MET_SQL), params)).all()
+    # An empty member never matches a member row: the CHECK allows
+    # ``member_email = ''``, so the SQL alone would let it match.
+    return (frozenset(str(r[0]) for r in rows if r[1] == SCOPE_ORG),
+            frozenset(str(r[0]) for r in rows if r[1] == SCOPE_MEMBER and who))
 
 
 async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
@@ -732,6 +808,25 @@ async def merge_provider_meta(
     await db.execute(text(_MERGE_META_SQL), {
         "id": str(connection_id), "org": str(org), "extra": json.dumps(kept),
     })
+
+
+_REMOVE_META_SQL = (
+    "UPDATE integration_connections SET provider_meta = provider_meta "
+    "- CAST(:keys AS text[]), updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
+
+async def remove_meta_keys(
+    db: Any, org: str, connection_id: str, keys: Sequence[str],
+) -> None:
+    """Remove keys from ``provider_meta`` of one row, under any status.
+
+    The calendar disconnect drops its cursor and its calendar id here
+    (WS-CAL CE-10). The keys are plain metadata names, never a secret.
+    """
+    await db.execute(text(_REMOVE_META_SQL), {
+        "id": str(connection_id), "org": str(org), "keys": list(keys)})
 
 
 async def merge_meta_by_key(

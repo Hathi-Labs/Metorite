@@ -143,3 +143,65 @@ describe("caps", () => {
     expect(defs.CellDef.properties.span.anyOf[0].maximum).toBe(PAGE_CAPS.maxCols);
   });
 });
+
+describe("default pages (STU-AF1, section 5.5 rule 3)", () => {
+  const ov = (id: string, object: string, block: ViewDef["block"] = "table"): ViewDef => ({ id, block, object });
+  const stat = (id: string, object: string): ViewDef => ({
+    id, block: "stat", source: { object, args: { measures: [{ op: "count" }] } },
+  });
+
+  it("gives a manifest with no pages one page for each object, with that object's views", () => {
+    const v = [ov("v-table", "visit"), ov("v-board", "visit", "board"), ov("c-table", "client")];
+    const b = buildPage({ views: v, objects: [{ name: "visit", label: "Visit" }, { name: "client" }] });
+    expect(b.pages.map((p) => p.id)).toEqual(["visit", "client"]);
+    expect(b.pages.map((p) => p.title)).toEqual(["Visit", "client"]);
+    expect(b.page.id).toBe("visit");
+    expect(b.cells.map((c) => c.view)).toEqual(["v-table", "v-board"]);
+    expect(buildPage({ views: v }, "client").cells.map((c) => c.view)).toEqual(["c-table"]);
+  });
+
+  it("adds a dashboard page for a chart or a stat view, and keeps them off the object pages", () => {
+    const v = [ov("v-table", "visit"), stat("v-stat", "visit"), { id: "v-chart", block: "chart", object: "visit" } as ViewDef];
+    const b = buildPage({ views: v });
+    expect(b.pages.map((p) => p.id)).toEqual(["visit", "dashboard"]);
+    expect(b.pages[0].cells.map((c) => c.view)).toEqual(["v-table"]);
+    expect(b.pages[1].cells.map((c) => c.view)).toEqual(["v-stat", "v-chart"]);
+    expect(b.pages[1].cols).toBe(2);
+  });
+
+  it("reads the object of a view from the action that its source names", () => {
+    const actions = [{ id: "list_visits", uses: "object:visit.list" }];
+    const v: ViewDef[] = [{ id: "v", block: "table", source: { action: "list_visits" } }];
+    expect(buildPage({ views: v, actions }).page.id).toBe("visit");
+  });
+
+  it("keeps the one default page when no view reads an object and none is a chart or a stat", () => {
+    const md: ViewDef[] = [{ id: "n1", block: "markdown" }, { id: "n2", block: "markdown" }];
+    expect(buildPage({ views: md }).page).toEqual(defaultPage(md));
+  });
+
+  it("keeps a view that reads no object on the dashboard", () => {
+    const b = buildPage({ views: [ov("v-table", "visit"), { id: "note", block: "markdown" }] });
+    expect(b.pages.map((p) => p.id)).toEqual(["visit", "dashboard"]);
+    expect(b.pages[1].cells.map((c) => c.view)).toEqual(["note"]);
+  });
+
+  it("gives the dashboard the next id when an object is named dashboard", () => {
+    const b = buildPage({ views: [ov("v1", "dashboard"), stat("s1", "dashboard")] });
+    expect(b.pages.map((p) => p.id)).toEqual(["dashboard", "dashboard-2"]);
+  });
+
+  it("keeps the caps on the generated pages: 8 pages and 12 cells in a page", () => {
+    const many = Array.from({ length: 10 }, (_, i) => ov(`v${i}`, `obj${i}`));
+    expect(buildPage({ views: many }).pages).toHaveLength(PAGE_CAPS.pages);
+    const long = Array.from({ length: 20 }, (_, i) => ov(`w${i}`, "visit"));
+    expect(buildPage({ views: long }).cells).toHaveLength(PAGE_CAPS.cellsPerList);
+  });
+
+  it("leaves a manifest with pages unchanged", () => {
+    const pages: PageDef[] = [{ id: "main", cells: [{ view: "a" }] }];
+    const b = buildPage({ views, pages });
+    expect(b.pages.map((p) => p.id)).toEqual(["main"]);
+    expect(b.cells.map((c) => c.view)).toEqual(["a"]);
+  });
+});

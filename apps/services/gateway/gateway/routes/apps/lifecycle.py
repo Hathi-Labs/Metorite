@@ -36,6 +36,7 @@ from acb_auth import UserContext
 from acb_skills import safe_open
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
+    _BOUND_ORG,
     _log,
     _tenant_session,
     _uid,
@@ -248,10 +249,9 @@ def _sync_workspace_manifest(workspace: Path, fields: dict[str, Any]) -> None:
 #: usable, and the next slug is tried. The row commits with the session, so a
 #: failure after it gives the slug back.
 #:
-#: The conflict clause names no column (A3b-1). While ``apps_slug_key`` (slug
-#: alone) and ``apps_org_slug_key`` (org and slug) both exist, a bare
-#: ``ON CONFLICT DO NOTHING`` skips a conflict on either key. A clause that
-#: names ``(slug)`` fails once A3b-2 drops ``apps_slug_key``. Fence:
+#: The conflict clause names no column (A3b-1). A bare ``ON CONFLICT DO NOTHING``
+#: skips a conflict on any unique key. A clause that names ``(slug)`` fails
+#: since A3b-2 dropped ``apps_slug_key``. Fence:
 #: ``test_no_apps_insert_names_on_conflict_slug``.
 _RESERVE_SQL = (
     """INSERT INTO apps
@@ -264,7 +264,7 @@ _RESERVE_SQL = (
 )
 
 #: The tries of a sequential slug (``name``, ``name-2`` …), when another org
-#: holds it (until A3b-2).
+#: holds it (before A3b-2).
 SLUG_TRIES = 10
 #: Then the tries of a slug with a random suffix, so a common name never runs
 #: out (the ``packages_store.SLUG_HEX`` pattern).
@@ -320,11 +320,11 @@ async def _reserve_app(
     changes the slug. Two orgs can therefore never share a folder.
 
     The read below sees only the slugs of the caller's org (FORCE RLS), so the
-    sequential slugs skip only those. Until A3b-2 drops ``apps_slug_key``, a
-    slug that another org holds still makes no row on the INSERT. The create
-    then takes the next slug, in the same shape as a slug of the own org: a
-    normal answer, never a 500, and nothing that names the other org. A3b-2
-    removes this last sign, because then only the own org's slugs block.
+    sequential slugs skip only those. Since A3b-2 dropped ``apps_slug_key``,
+    a slug that another org holds does not block: org B may take ``foo`` while
+    org A holds it, and the answer has no sign of org A. Only a concurrent
+    INSERT of the own org can still make no row, and then the next slug is
+    tried.
 
     A concurrent INSERT of the same slug waits on the unique key until this
     session ends. When the folder of the new id is there already, the row
@@ -333,7 +333,7 @@ async def _reserve_app(
     root = apps_root()
     taken = {
         r.slug for r in (await db.execute(
-            text("SELECT slug FROM apps"),
+            text("SELECT slug FROM apps WHERE organization_id = " + _BOUND_ORG),
         )).fetchall()
     }
     for slug in _slug_candidates(name, taken):

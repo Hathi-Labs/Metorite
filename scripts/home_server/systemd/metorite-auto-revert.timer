@@ -1,0 +1,11 @@
+# CIV-31: one auto-revert pass every 5 minutes. The orchestrator installs this
+# timer, see the service file.
+[Unit]
+Description=Metorite auto-revert every 5 minutes (CIV-31)
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target

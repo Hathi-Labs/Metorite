@@ -133,7 +133,7 @@ _DELETE_RECORD_SQL = (
 #: whose stored type is the type of the current declaration.
 _GET_SQL = (
     "SELECT CAST(v.install_id AS text), CAST(i.app_id AS text), v.field_key,"
-    " v.field_type, CAST(v.value AS text)"
+    " v.field_type, CAST(v.value AS text), CAST(c.payload AS text)"
     " FROM package_field_value AS v"
     " JOIN package_install AS i"
     " ON i.organization_id = v.organization_id AND i.id = v.install_id"
@@ -297,15 +297,25 @@ async def get_values(db: Any, *, record_kind: str, record_id: str) -> list[Field
     """The extension values of one host record, of active installs only.
 
     A value whose stored type differs from the current declaration is left
-    out. The store does not check that the viewer may see the record or the
+    out. So is a value that the current declaration refuses (STU-C14: the units
+    of a quantity, the format of a barcode, or the bounds of a rating changed).
+    The store does not check that the viewer may see the record or the
     install. The host door of PKG-14 owns that check.
     """
     kind = _record_kind(record_kind)
     record = _record_id(record_id)
     await _bound(db, "a read of field values")
     rows = (await db.execute(text(_GET_SQL), {"kind": kind, "record": record})).all()
-    return [FieldValue(install_id=str(r[0]), app_id=str(r[1]), field_key=str(r[2]),
-                       field_type=str(r[3]), value=json.loads(r[4])) for r in rows]
+    out: list[FieldValue] = []
+    for r in rows:
+        value = json.loads(r[4])
+        try:
+            check_value(declared_field(str(r[2]), json.loads(r[5])), value)
+        except FieldError:
+            continue  # stale: the declaration changed after the value was written
+        out.append(FieldValue(install_id=str(r[0]), app_id=str(r[1]), field_key=str(r[2]),
+                              field_type=str(r[3]), value=value))
+    return out
 
 
 async def delete_values(db: Any, *, record_kind: str, record_id: str) -> int:

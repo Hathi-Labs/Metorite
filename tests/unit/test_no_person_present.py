@@ -20,7 +20,7 @@ model nor a tool argument can clear the mark.
   SDK reader thread. ``carry_run_context`` is verified here, and not by reading.
 * ``no-person-refusal``: each seam refuses a marked run by name, and writes
   nothing. A person still reaches each seam.
-* ``no-person-setter``: only the two listed modules name the setter.
+* ``no-person-setter``: only the three listed modules name the setter.
 * ``no-person-http``: no tool names a route that approves or answers. The mark
   does not cross HTTP, so that tool would pass as the member.
 
@@ -901,6 +901,9 @@ _SETTERS: dict[str, int] = {
     "packages/acb_common/acb_common/no_person.py": 0,
     "apps/services/gateway/gateway/jobs/worker.py": 1,
     "apps/services/gateway/gateway/routes/workflows/service.py": 1,
+    # WS-STU B6a: `run_as_read` is the run boundary of a run with no viewer.
+    # Nobody watches it, so the whole run is marked. No tool reaches it.
+    "apps/services/gateway/gateway/routes/studio/invoke.py": 1,
 }
 #: Who may read the mark: the seams of the refusals. No tool reads it.
 _READERS = frozenset({

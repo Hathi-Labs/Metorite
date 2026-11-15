@@ -88,6 +88,7 @@ from gateway.routes.admin import members
 from gateway.routes.studio import packages
 from sqlalchemy import create_engine, text
 
+from tests.unit._studio_approval import approve_live
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -471,6 +472,9 @@ async def _live_package(user: UserContext) -> str:
 
 async def _install_for_the_org(user: UserContext) -> tuple[int, Any]:
     pid = await _live_package(user)
+    # WS-STU J2b-1 (path A): an org install needs the live version approved by
+    # another holder. The ask and the approval go through the one writer.
+    await approve_live(user.organization_id, user.email, pid, f"approver.{pid}@j2b1.test")
     return await _handler("install_package", user, pid, payload={"scope": "org"})
 
 

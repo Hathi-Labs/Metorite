@@ -63,6 +63,13 @@ gateway reads them.
   404 ``rules_off``. :func:`answer_first_allowed` is the one check, and it
   needs :func:`questions_allowed` too. A name in the list spends nothing, so
   its flip is gate ``enforcement-flip``.
+* ``CRM_LONG_READ_ORGS`` — the organization ids whose CRM totals may take a
+  long read of up to 180 s (WS-53 CRM-Q25e part 5, ``crm_platform.md``
+  §18.11). The grammar is the one of ``CRM_ORGS``. An empty list allows no
+  organization: a total past 10 s answers 503 ``aggregate_timeout`` as
+  before, and the chat tool makes no second call. :func:`long_read_allowed`
+  is the one check. A name in the list spends nothing, so its flip is gate
+  ``enforcement-flip``.
 * ``CRM_DIGEST_ORGS`` — the organization ids that get the weekly CRM digest
   on the powerful tier (WS-53 CRM-Q28, ``crm_platform.md`` §18.11.2). The
   grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
@@ -297,6 +304,27 @@ def answer_first_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_answer_first_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_long_read_orgs() -> frozenset[str]:
+    """The organization ids whose totals may take a long read (CRM-Q25e
+    part 5). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_long_read_orgs or ""))
+
+
+def long_read_allowed(organization_id: str | None) -> bool:
+    """True when a total of this org may run a long read of up to 180 s
+    (CRM-Q25e part 5, task 2985 HRD-6, ``crm_platform.md`` §18.11).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND
+    a place on ``CRM_LONG_READ_ORGS``, or ``*`` there. It reads the settings
+    and nothing else, and no module reads it at import, so a SIGHUP reload
+    applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_long_read_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

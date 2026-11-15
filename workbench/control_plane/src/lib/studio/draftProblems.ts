@@ -80,6 +80,7 @@ export function checkDraft(manifest: unknown): Problem[] {
       err(`$.objects[${i}].fields[${j}].to`, `The field links to ${to}, and the app has no such object.`);
     }
   }));
+  checkAccess(manifest, objects, err);
 
   const actions = list(manifest.actions);
   const actionIds = new Set<string>();
@@ -122,6 +123,66 @@ export function checkDraft(manifest: unknown): Problem[] {
   const size = JSON.stringify(manifest).length;
   if (size > CHAT_CAP) warn("$", `The draft is ${size} characters. Mira can edit ${CHAT_CAP}. Start a new, smaller app, and add the parts to it one at a time.`);
   return out;
+}
+
+/** `<field> = $me`, the one row rule of C8a (`studio_access._WHERE_RE`). */
+const WHERE_RE = /^\s*([a-z][a-z0-9_]{0,47})\s*=\s*\$me\s*$/;
+
+/**
+ * C8a. The row rules of each object, as `studio_access.check_access_fit` checks them: a grant names
+ * a declared role, its read is `all` or a `where` on a person field, and that field is hot. The
+ * server check stays the gate.
+ */
+function checkAccess(
+  manifest: Record<string, unknown>,
+  objects: Record<string, unknown>[],
+  err: (path: string, message: string) => void,
+): void {
+  const roles = new Set((Array.isArray(manifest.roles) ? manifest.roles : []).map(text));
+  // Fix round 4 (rule 19): the field of each line object that links a line to its record.
+  const vias = new Map<string, Set<string>>();
+  objects.forEach((o) => {
+    list(o.fields).forEach((f) => {
+      const child = text(f.lines) ? text(f.to) : "";
+      if (child) vias.set(child, (vias.get(child) ?? new Set<string>()).add(text(f.lines)));
+    });
+  });
+  objects.forEach((o, i) => {
+    const fields = new Map(list(o.fields).map((f) => [text(f.key), f]));
+    list(o.access).forEach((g, k) => {
+      const at = `$.objects[${i}].access[${k}]`;
+      const role = text(g.role);
+      if (!roles.has(role)) err(`${at}.role`, `The role ${role || "(none)"} is not in the roles of the app.`);
+      const hides = Array.isArray(g.hide) ? g.hide.map(text) : [];
+      const via = hides.find((h) => vias.get(text(o.name))?.has(h));
+      if (via) err(`${at}.hide`, `The field ${via} links each line to its record, so a grant cannot hide it.`);
+      if (g.read === "all") return;
+      const where = isObject(g.read) && typeof g.read.where === "string" ? WHERE_RE.exec(g.read.where) : null;
+      if (!where) {
+        err(`${at}.read`, "A read is all, or a where that names a person field: employee = $me.");
+        return;
+      }
+      const field = fields.get(where[1]);
+      if (!field || text(field.type) !== "person" || field.many === true) {
+        err(`${at}.read`, `The row rule reads ${where[1]}, and it is not a person field of this object.`);
+      } else if (field.hot !== true) {
+        err(`${at}.read`, `The row rule reads ${where[1]}, so the field must be hot. Turn it hot.`);
+      }
+    });
+  });
+  // Fix round 1: the lines of a table with access need their own access (`_check_open_lines`).
+  const index = new Map(objects.map((o, i) => [text(o.name), i]));
+  const flagged = new Set<string>();
+  objects.forEach((o) => {
+    if (!Array.isArray(o.access)) return;
+    list(o.fields).forEach((f) => {
+      const child = text(f.lines) ? text(f.to) : "";
+      const ci = index.get(child);
+      if (ci === undefined || flagged.has(child) || Array.isArray(objects[ci].access)) return;
+      flagged.add(child);
+      err(`$.objects[${ci}]`, `The ${child} object is the lines of ${text(o.name)}, which has access. Give it access too.`);
+    });
+  });
 }
 
 export function countProblems(problems: readonly Problem[]): { errors: number; warnings: number } {

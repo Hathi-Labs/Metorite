@@ -28,6 +28,31 @@ export const MAX_ABS_NUMBER = 1_000_000_000_000_000;
 export const MAX_MANY_ITEMS = 500;
 export const MAX_URL_CHARS = 2_048;
 export const MAX_EMAIL_CHARS = 254;
+// STU-C14: the limits of the six more types.
+export const MAX_RATING_BOUND = 100;
+export const MAX_DURATION_SECONDS = 10_000_000_000;
+export const MAX_PERCENT_BP = 1_000_000_000;
+export const MAX_UNITS = 30;
+export const MAX_UNIT_CHARS = 20;
+export const MAX_CODE_CHARS = 80;
+export const MAX_QR_CHARS = 2_000;
+/** A rating with no `min` and `max` runs from 1 to 5. */
+export const DEFAULT_RATING_MIN = 1;
+export const DEFAULT_RATING_MAX = 5;
+export const BARCODE_FORMATS = ["ean13", "code128", "qr"] as const;
+
+export interface QuantityRange {
+  low?: string | null;
+  high?: string | null;
+}
+export interface QuantityConversion {
+  from: string;
+  to: string;
+  factor: string;
+}
+/** STU-C24a. The same list as `QUANTITY_FLAGS` of `studio_fields.py`. */
+export type QuantityFlag =
+  | "none" | "unchecked" | "normal" | "low" | "high" | "critical_low" | "critical_high";
 
 /** One field of an object, as the form needs it. */
 export interface FieldSpec {
@@ -39,6 +64,18 @@ export interface FieldSpec {
   options?: readonly string[];
   /** The target object of a relation. The check does not read it. */
   to?: string;
+  /** STU-C14. The bounds of a rating. */
+  min?: number;
+  max?: number;
+  /** STU-C14. The units of a quantity. */
+  units?: readonly string[];
+  /** STU-C24a. The ranges of a quantity, in its base unit (the first unit). A null bound is open. */
+  normal?: QuantityRange;
+  critical?: QuantityRange;
+  /** STU-C24a. A value in `from` times `factor` is in `to`, the base unit. */
+  conversions?: readonly QuantityConversion[];
+  /** STU-C14. The format of a barcode: `ean13`, `code128` or `qr`. */
+  format?: string;
   /** C13. A lines relation: the field of the object `to` that names this record. It holds no value. */
   lines?: string;
 }
@@ -276,6 +313,129 @@ function geo(v: unknown): CheckResult {
   return fail("Enter a latitude from -90 to 90 and a longitude from -180 to 180.");
 }
 
+// --- STU-C14: the six more types ---------------------------------------------------
+
+/** A tag or a comment in a rich text. The text is markdown, and never HTML. */
+const RAW_HTML = /<[A-Za-z/!?]/;
+
+function richText(v: unknown): CheckResult {
+  const r = text(v, MAX_LONG_TEXT_CHARS);
+  if (!r.ok) return r;
+  return RAW_HTML.test(v as string)
+    ? fail("A < before a letter reads as a tag. Put a space after it.")
+    : r;
+}
+
+const wholeNumber = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v);
+
+/** The bounds of a rating: its own, or 1 to 5. */
+export const ratingRange = (f: FieldSpec): [number, number] => [
+  f.min ?? DEFAULT_RATING_MIN, f.max ?? DEFAULT_RATING_MAX,
+];
+
+function rating(f: FieldSpec, v: unknown): CheckResult {
+  const [lo, hi] = ratingRange(f);
+  return wholeNumber(v) && v >= lo && v <= hi
+    ? pass(v)
+    : fail(`Enter a whole number from ${lo} to ${hi}.`);
+}
+
+function duration(v: unknown): CheckResult {
+  if (wholeNumber(v) && v >= MAX_DURATION_SECONDS) {
+    return fail(`Enter a length of time of at most ${Math.floor((MAX_DURATION_SECONDS - 1) / 3600).toLocaleString("en-US")} hours.`);
+  }
+  return wholeNumber(v) && v >= 0 && v < MAX_DURATION_SECONDS
+    ? pass(v)
+    : fail("Enter a length of time as 1h 30m, 45m or 1:30:00.");
+}
+
+const QUANTITY = /^-?[0-9]{1,15}(?:\.[0-9]{1,6})?$/;
+
+function quantity(f: FieldSpec, v: unknown): CheckResult {
+  if (!isObject(v) || !sameKeys(v, ["value", "unit"]) || typeof v.value !== "string" || !QUANTITY.test(v.value)) {
+    return fail("Enter a quantity: a number with up to 6 decimals, and a unit.");
+  }
+  if (typeof v.unit !== "string" || !(f.units ?? []).includes(v.unit)) {
+    return fail("Choose one of the listed units.");
+  }
+  return pass({ value: v.value, unit: v.unit });
+}
+
+/** Decimal text as a BigInt scaled by 10^6, or null. No float: the compare is exact. */
+function scaled(t: unknown): bigint | null {
+  if (typeof t !== "string" || !QUANTITY.test(t)) return null;
+  const [whole, frac = ""] = t.replace("-", "").split(".");
+  const n = BigInt(whole) * BigInt(1_000_000) + BigInt(frac.padEnd(6, "0"));
+  return t.startsWith("-") ? -n : n;
+}
+
+const SCALE = BigInt(1_000_000);
+
+/**
+ * STU-C24a. The flag of one quantity value: the twin of `quantity_flag`. The value
+ * goes to the base unit (the first unit) at scale 10^12, then meets the ranges
+ * with `critical` first. A bound is inclusive. Nothing rounds before the compare.
+ */
+export function quantityFlag(f: FieldSpec, v: unknown): QuantityFlag {
+  const bound = (r: QuantityRange | undefined, k: "low" | "high"): bigint | null => {
+    const b = scaled(r?.[k]);
+    return b === null ? null : b * SCALE;
+  };
+  const [nLo, nHi] = [bound(f.normal, "low"), bound(f.normal, "high")];
+  const [cLo, cHi] = [bound(f.critical, "low"), bound(f.critical, "high")];
+  if (nLo === null && nHi === null && cLo === null && cHi === null) return "none";
+  const base = f.units?.[0];
+  const n = isObject(v) ? scaled(v.value) : null;
+  if (base === undefined || n === null || !isObject(v)) return "none";
+  let x = n * SCALE;
+  if (v.unit !== base) {
+    const c = (f.conversions ?? []).find((k) => k.from === v.unit && k.to === base);
+    const factor = c ? scaled(c.factor) : null;
+    if (factor === null || factor <= BigInt(0)) return "unchecked";
+    x = n * factor;
+  }
+  if (cLo !== null && x < cLo) return "critical_low";
+  if (cHi !== null && x > cHi) return "critical_high";
+  if (nLo !== null && x < nLo) return "low";
+  if (nHi !== null && x > nHi) return "high";
+  return "normal";
+}
+
+function percent(v: unknown): CheckResult {
+  if (wholeNumber(v) && Math.abs(v) >= MAX_PERCENT_BP) {
+    const top = ((MAX_PERCENT_BP - 1) / 100).toLocaleString("en-US", { minimumFractionDigits: 2 });
+    return fail(`Enter a percent from -${top} to ${top}.`);
+  }
+  return wholeNumber(v) && Math.abs(v) < MAX_PERCENT_BP
+    ? pass(v)
+    : fail("Enter a percent with up to 2 decimals, as 12.5.");
+}
+
+/** True when `code` is 13 digits and the last one is the EAN-13 check digit. */
+export function ean13Valid(code: string): boolean {
+  if (!/^[0-9]{13}$/.test(code)) return false;
+  let total = 0;
+  for (let i = 0; i < 12; i++) total += Number(code[i]) * (i % 2 ? 3 : 1);
+  return (10 - (total % 10)) % 10 === Number(code[12]);
+}
+
+function barcode(f: FieldSpec, v: unknown): CheckResult {
+  const format = f.format ?? "qr";
+  if (format === "ean13") {
+    return typeof v === "string" && ean13Valid(v)
+      ? pass(v)
+      : fail("Enter an EAN-13: 13 digits with a correct check digit.");
+  }
+  if (format === "code128") {
+    return typeof v === "string" && v.length >= 1 && v.length <= MAX_CODE_CHARS && /^[\x20-\x7e]+$/.test(v)
+      ? pass(v)
+      : fail(`Enter 1 to ${MAX_CODE_CHARS} printable ASCII characters.`);
+  }
+  return typeof v === "string" && chars(v) >= 1 && chars(v) <= MAX_QR_CHARS && storable(v) && !/[\x00-\x1f\x7f]/.test(v)
+    ? pass(v)
+    : fail(`Enter text of 1 to ${MAX_QR_CHARS.toLocaleString("en-US")} characters, with no control character.`);
+}
+
 const CHECKS: Record<FieldType, (f: FieldSpec, v: unknown) => CheckResult> = {
   text: (_f, v) => text(v, MAX_TEXT_CHARS),
   longText: (_f, v) => text(v, MAX_LONG_TEXT_CHARS),
@@ -293,6 +453,12 @@ const CHECKS: Record<FieldType, (f: FieldSpec, v: unknown) => CheckResult> = {
   email: (_f, v) => email(v),
   phone: (_f, v) => phone(v),
   geo: (_f, v) => geo(v),
+  richText: (_f, v) => richText(v),
+  rating,
+  duration: (_f, v) => duration(v),
+  quantity,
+  percent: (_f, v) => percent(v),
+  barcode,
 };
 
 /** One value of one field, as the store keeps it. The twin of `check_value`. */

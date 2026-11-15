@@ -232,6 +232,70 @@ Projects chats and the mixed chats, and it lists the fan-out chats as
 skipped. The scripted plan loads the pack with `load_skill_tools` when
 neither the surface nor a word of the turn does.
 
+## TS-5a: the Studio chats and the `search` arm
+
+**Status.** TS-5a was built on 2026-11-14 (task 3288). It runs scripted only, with no live
+run and no spend. The owning spec is `one_assistant_context.md` §4.2.9 (TS-5a, TS-5b)
+and §4.3.3. The last measure report is `docs/one_assistant_measure_oa8e_run5_2026-10-30.md`.
+
+This slice has one test: a tool that no layer loaded before the first request.
+`scenarios_studio.py` holds five Studio chats. No word of any pack matches them, so
+layer (a) never loads `studio`. The `pack` arm needs `load_skill_tools`, and the
+`search` arm needs `find_tools`.
+
+| Chat | Surface | Asks | Checks |
+|---|---|---|---|
+| `stu_skills` | `crm` | Which of my saved skills are still drafts? | `studio_skill_list` ran, `found_tool`, `search_round` |
+| `stu_new_app` | none | Make me a small app to log visitor badges. | `studio_draft` ran, `found_tool`, `search_round` |
+| `stu_plain` | `crm` | Give me a one-line thank-you note for the team. | `not_searched` |
+| `stu_no_feature` | `crm` | the words of `stu_skills`, a member WITHOUT `feature:studio` | `no_studio_names`, `answer_none` |
+| `stu_held` | `crm` | Turn 1 reads Priya's mail. Turn 2 has the words of `stu_skills`. | `held_note`, `found_tool` |
+
+The chats run on the `pack` and `search` arms only, because `studio-builder` takes no
+hand-off (`run.arms_for`). They are outside `WORK_SCENARIOS`. The member of
+`stu_no_feature` lacks the feature through the `Scenario` field `without_features`, which
+the run reads. The harness file is not edited.
+
+**The arm.** `--arms` lists `search`. It prints `SKIP: arm search` until the
+settings hold `tool_search_orgs` (`run.search_built`). Then `scripted_models` still raises
+`NotImplementedError`, because the plans that call `find_tools` are TS-5b. An unknown
+`--arms` value exits with status 2.
+
+**The flags.** A Studio chat adds `studio` BY NAME to `TOOL_PACKS` and the eval org to
+`STUDIO_ORGS` (`run.flag_for`). It never uses `owner_packs("studio-builder")`, because
+that also turns on the dark pack `studio-workflows`. The `search` arm adds
+`TOOL_SEARCH_ORGS`.
+
+**The fake gateway** answers the `/studio/` read routes: skills, packages, templates and
+the action catalog. A Studio route with no fixture answers 404 and fails the scripted run.
+Do not use `list_workflows` in a chat: it reads the local database in process.
+
+**The checks** (all pure, in `checks.py`):
+
+| Check | Passes when |
+|---|---|
+| `found_tool` | A Studio tool ran after the find (`find_tools`, or `load_skill_tools` on the pack arms). A call that answers `Requested function "X" not found` does not count. |
+| `search_round` | Search arm. Exactly one counted `find_tools` call in a turn that needs a search. Zero fails, and two fail. |
+| `not_searched` | A turn that needs no tool makes no find (and no load on the pack arms). |
+| `no_studio_names` | A member without `feature:studio`: no Studio tool name in the tool list, the `find_tools` description or any answer. |
+| `held_note` | Search arm, held chat: the answer of `find_tools` carries the hold note. On the pack arm the note is in the persona, so the check gives None. |
+| `schema_tokens` | Search arm. No request carries more than 30,000 schema tokens. `schema_tokens_of` uses the estimate of `orchestrator._maf_mcp.schema_tokens`. |
+
+The names and the description of the tools of a request come from `run.tap_schemas`. It
+wraps the wire tap and sets three attributes on `ModelCall`. It changes nothing on the wire.
+
+**Stop result 12.** More than 15 percent of the app turns of the `search` arm call
+`find_tools`: STOP. 15 of 100 is ok, and 16 of 100 is a STOP. A find on a turn that needs
+no tool is a false search, and the report counts it on its own. The report adds the
+searches per turn, the tools that ran after a find, and the schema tokens per request.
+
+```bash
+uv run python -m evals.one_assistant_measure.run --scripted --arms pack,search
+uv run python -m evals.one_assistant_measure.run --scripted --scenarios stu_skills,stu_held
+```
+
+The fence is `tests/unit/test_one_assistant_measure_search.py`.
+
 ## Run it with no model
 
 ```bash

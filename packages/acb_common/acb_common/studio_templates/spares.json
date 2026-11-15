@@ -1,0 +1,166 @@
+{
+  "studio": 1,
+  "id": "spares",
+  "name": "Spares",
+  "purpose": "Keep a list of spare parts, their stock and their bins.",
+  "team": "service",
+  "objects": [
+    {
+      "name": "part",
+      "fields": [
+        {
+          "key": "name",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "sku",
+          "type": "text"
+        },
+        {
+          "key": "location",
+          "type": "text"
+        },
+        {
+          "key": "on_hand",
+          "type": "number"
+        },
+        {
+          "key": "reorder_at",
+          "type": "number"
+        },
+        {
+          "key": "supplier",
+          "type": "text"
+        },
+        {
+          "key": "status",
+          "type": "select",
+          "options": [
+            "in stock",
+            "low",
+            "out"
+          ]
+        },
+        {
+          "key": "notes",
+          "type": "longText"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "find",
+      "uses": "object:part.list"
+    },
+    {
+      "id": "part_get",
+      "uses": "object:part.get"
+    },
+    {
+      "id": "part_create",
+      "uses": "object:part.create"
+    },
+    {
+      "id": "part_update",
+      "uses": "object:part.update"
+    },
+    {
+      "id": "part_delete",
+      "uses": "object:part.delete"
+    }
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "source": {
+        "object": "part"
+      },
+      "group_by": "status",
+      "card": {
+        "title": "name",
+        "meta": [
+          "location",
+          "on_hand"
+        ]
+      }
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "source": {
+        "object": "part"
+      },
+      "columns": [
+        "name",
+        "sku",
+        "location",
+        "on_hand",
+        "reorder_at",
+        "status"
+      ]
+    },
+    {
+      "id": "part_page",
+      "block": "detail",
+      "object": "part",
+      "fields": [
+        "name",
+        "sku",
+        "location",
+        "on_hand",
+        "reorder_at",
+        "supplier",
+        "status",
+        "notes"
+      ]
+    },
+    {
+      "id": "new",
+      "block": "form",
+      "object": "part",
+      "fields": [
+        "name",
+        "sku",
+        "location",
+        "on_hand",
+        "reorder_at",
+        "supplier",
+        "notes"
+      ],
+      "submit": "part_create"
+    }
+  ],
+  "skill": {
+    "description": "Use for spare parts: add one, find one, see what runs low.",
+    "instructions": "Ask for the part name first. Show the board card. Change a stock count only on the member's request.",
+    "actions": [
+      "object:part.create"
+    ],
+    "cards": [
+      "board",
+      "new"
+    ]
+  },
+  "shell": {
+    "jobs": [
+      {
+        "verb": "Add a spare part",
+        "view": "new"
+      }
+    ],
+    "needs": [
+      {
+        "object": "part",
+        "where": {
+          "status": "low"
+        }
+      }
+    ],
+    "search": [
+      "part"
+    ]
+  }
+}

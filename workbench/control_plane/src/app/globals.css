@@ -134,6 +134,11 @@
   --violet: hsl(268 80% 70%);
   --violet-foreground: hsl(220 13% 8%);
 
+  /* The stripe of an external event's hatch on the Calendar (CE-5a). A
+     translucent ink over --muted, drawn by a repeating-linear-gradient. A
+     texture, never text. Mirrored in themes.ts; themes.test.ts holds the two. */
+  --hatch-stripe: hsl(215 20% 65% / 0.3);
+
   /* Categorical ramp — eight mutually distinguishable hues for sets whose
      members have no ranking and no meaning (@contexts, tags, custom-field
      options). NOT semantic: use --success/--warning/--destructive for state.
@@ -243,6 +248,7 @@
 
   --violet: hsl(268 70% 50%);
   --violet-foreground: hsl(210 40% 98%);
+  --hatch-stripe: hsl(215 16% 47% / 0.24);
 
   /* Categorical ramp — light mode. Deeper than the dark-mode values because
      these have to clear AA against a white card, not a near-black one. */
@@ -547,8 +553,20 @@ html[data-look="glass"].light {
    coarse, and even no hover, while its member uses the trackpad, so every
    control drew at its 40 to 44 px touch size (owner, 2026-11-01: "the pills
    ... seem a little large", twice). The window width is the signal a hybrid
-   device cannot get wrong: from 1024 px, a control takes the desktop size. */
-@custom-variant pointer-coarse (@media (hover: none) and (pointer: coarse) and (max-width: 1023px));
+   device cannot get wrong: from 1024 px, a control takes the desktop size.
+   The floor view of a Studio app (STU-D23a) asks for the touch size itself.
+   Inside an element with `data-floor`, a control takes it at every width, so
+   a tablet in landscape gets it too. Nothing outside that root changes. The
+   media branch is the rule above, unchanged. Fence:
+   `src/lib/theme/floorTouch.test.ts`. */
+@custom-variant pointer-coarse {
+  @media (hover: none) and (pointer: coarse) and (max-width: 1023px) {
+    @slot;
+  }
+  &:where([data-floor], [data-floor] *) {
+    @slot;
+  }
+}
 
 @theme inline {
   --color-background: var(--background);

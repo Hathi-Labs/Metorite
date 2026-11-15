@@ -1,9 +1,9 @@
 """The headless turn: one capped turn with no person present (WS-AUTO AUTO-8a,
-AUTO-8b-1).
+AUTO-8b-1, AUTO-8b-2a).
 
 Spec: ``project-docs/specs/proactive_agent.md`` §3, §4.3, §4.4, §7 and the
-§9 rows AUTO-8a and AUTO-8b-1. Queue: ``docs/job_queue.md`` §5a and §9.
-Decision: D161.
+§9 rows AUTO-8a, AUTO-8b-1 and AUTO-8b-2a. Queue: ``docs/job_queue.md`` §5a
+and §9. Decision: D161.
 
 **What it is.** The detached kind ``auto.turn`` (:data:`KIND`) runs one turn
 of the assistant for one goal of kind ``headless.turn`` (:data:`GOAL_KIND`).
@@ -27,7 +27,11 @@ contract R11). ``candidate`` names a check of :data:`_CANDIDATES`.
 4. The goal, as its own member, in one ``tenant_session(org)``. A missing
    goal, a goal of another kind and a goal that is not active are ``done``,
    with no model call. A credit cap over :data:`MAX_GOAL_CREDITS` gives up
-   with ``CapTooHigh``.
+   with ``CapTooHigh``. A goal that holds a mark had a call whose round has
+   no record (AUTO-8b-2a, see "The mark"). The turn charges the rest of its
+   budget, so the goal blocks with ``cap_reached``, and reports once. It
+   makes no model call, and it runs no candidate check. A block that does
+   not land gives up with ``LostRound``.
 5. ``my_day_loop.departed``, the one departed check. A member who left is
    ``done``. A failed read gives up with ``IdentityReadFailed``.
 6. The candidate check of the payload (§4.3). An unknown name, or an answer
@@ -35,7 +39,8 @@ contract R11). ``candidate`` names a check of :data:`_CANDIDATES`.
    A check that raises gives up with ``CandidateFailed``.
 7. ``unattended.once``: ``begin``, ``run_guarded`` and ``finish``. A taken
    slot is ``done``. The rounds run inside ``job_member_scope(member,
-   app="auto", agent="auto.headless")``.
+   app="auto", agent="auto.headless")`` and ``run_attribution_scope`` of
+   the same app and agent (AUTO-8b-2c).
 8. ``hold`` and ``complete``, or ``give_up`` with a named reason.
 
 **One round** (:meth:`HeadlessTurn._rounds`):
@@ -46,36 +51,117 @@ b. The goal again: active, of :data:`GOAL_KIND`, and a credit cap at most
    :data:`MAX_GOAL_CREDITS` (:func:`_not_ready`). A goal that another write
    raised over that bound gets no next round (``cap_too_high``). An active
    goal is under both caps, because the CHECK
-   ``goal_records_active_under_caps`` holds it.
+   ``goal_records_active_under_caps`` holds it. A goal that holds a mark
+   gets the charge of step 4 and no call (``lost_round``).
 c. The time left of the turn, from the clock of step 2. None left: the turn
    stops.
 d. The meter for the new run id, BEFORE the call, inside
-   :func:`_settle_limit`. The default meter (:func:`no_cost_reader`) raises
-   :class:`NoCostReader`, and the turn raises it again as it is. So with no
-   cost reader, the turn makes NO model call, gives up with ``NoCostReader``
-   and logs ``headless_turn.no_cost_reader`` at error. A meter that does not
-   answer in time raises it too. AUTO-8b-2 builds the reader.
-e. One call of the runner under ``asyncio.timeout`` of the time left, with a
+   :func:`_settle_limit`. The default meter is :func:`console_meter`
+   (AUTO-8b-2d, see "The meter"). A door error or a bad answer of the door
+   raises :class:`CostReadFailed`: the turn makes NO model call, gives up
+   with ``CostReadFailed`` and logs ``headless_turn.cost_read_failed`` at
+   error. A meter that does not answer in time, or returns a value that is
+   not a number, raises :class:`NoCostReader`: no call, ``NoCostReader``, and
+   ``headless_turn.no_cost_reader`` at error. After an earlier round made a
+   call, each of those failures gives up with ``MeterFailed`` and logs
+   ``headless_turn.meter_failed``, because a reader did answer before.
+e. The mark (:meth:`HeadlessTurn._mark`): the job id in ``job_id`` of the
+   goal, inside :func:`_settle_limit`. A write that fails or does not end in
+   time gives up with ``MarkFailed``, and NO call runs. Another write that
+   came first ends the turn (``stale``), with no call and no mark.
+f. One call of the runner under ``asyncio.timeout`` of the time left, with a
    new run id. No time left after the meter: no call, and the turn stops.
-f. The meter again, inside :func:`_settle_limit`. The cost of the round is
-   the change. A meter that fails after the call, does not answer in time or
-   answers no number charges the rest of the goal's budget (the cap minus
-   the credits used). So the goal blocks with ``cap_reached``: fail closed
-   for money.
-g. ``goal_store.record_round``, inside :func:`_settle_limit`. A
-   ``StaleGoal`` reads the goal again and records the round once on the new
-   version, so its cost is not lost. Then the turn stops, with no second
-   round. A record that does not end in time logs
+   The call runs inside ``acb_llm.attribution.run_ceiling_scope`` of
+   :func:`round_ceiling` (AUTO-8b-2b). So each chat completion of the round sends
+   ``X-CC-Run-Ceiling``: the cap minus the credits used, with 4 places.
+   No time left after the mark: the turn clears the mark, makes no call and
+   stops. A clear that fails keeps the mark, so a later turn blocks the goal.
+g. The meter again. The cost of the round is the change. A meter that
+   fails after the call, does not answer in time or answers no number
+   charges the rest of the goal's budget (the cap minus the credits used).
+   So the goal blocks with ``cap_reached``: fail closed for money.
+   ⚠️ A round that the time cap cut, or whose call raised, reads NO meter
+   and charges the rest too (AUTO-8b-2d), and logs
+   ``headless_turn.round_cut``. The Console route of a call is a sync route
+   in a thread pool, so a cancel here does not stop it. It can finish the
+   provider call and write its usage row AFTER a read, and a later turn
+   would then get room that the goal does not have. The trade-off: a cut
+   turn gives up the rest of that goal's budget. The member who owns the
+   goal can raise its cap. A round whose call raised still gives up with
+   ``TurnFailed``, after the charge and the report.
+h. ``goal_store.record_round(..., clear_job_id=True)``: the round and the
+   end of the mark are ONE write. A ``StaleGoal`` reads the goal again and
+   records the round once on the new version, so its cost is not lost. An
+   unknown cost charges the rest of THAT new version. Then the turn stops,
+   with no second round. A record that does not end in time logs
    ``headless_turn.round_unrecorded`` at error, and the turn raises
-   :class:`TurnFailed`.
-h. ``cap_reached``: the report, ONCE, and the turn stops. The report of
+   :class:`TurnFailed`. The mark stays.
+i. ``cap_reached``: the report, ONCE, and the turn stops. The report of
    record is the write of ``record_round`` on the goal row. A second delivery
    reads a blocked goal at step 4 and reports nothing.
-i. ``go_on(result)``: False stops the turn. The default runs one round.
+j. ``go_on(result)``: False stops the turn. The default runs one round.
 
-The settle of steps d, f and g catches the timeout of its own scope only.
-It never catches a cancel: ``asyncio.CancelledError`` is not an
-``Exception``.
+**The shares of the settle** (:meth:`HeadlessTurn._share`). The meter of
+step g gets ``max(part, deadline + part - clock())``, and the record of step
+h gets ``max(part, deadline + 2 * part - clock())``. ``part`` is
+:func:`_settle_limit`. So a round that ends early may use the time that the
+turn has left, and the record still ends by ``deadline + 2 * part``.
+
+**A cancel.** Each step of the settle catches the timeout of its own scope
+and the errors of its own step. A plain cancel from outside (a stop of the
+worker) is ``asyncio.CancelledError``, which is not an ``Exception``. So it
+goes through, and the mark stays on the goal. ⚠️ A database driver or an
+HTTP client can turn an outer cancel into an error of its own. Then
+:meth:`HeadlessTurn._cost` catches that error and charges the rest of the
+budget, so it fails closed for money. :meth:`HeadlessTurn._record` raises
+such an error again, so the mark stays.
+
+**The mark** (AUTO-8b-2a). Three paths lose the cost of a round: a record
+that does not end in time, a stop of the worker during the call, and a stop
+during the settle. The mark keeps that debt on the goal row. The turn
+writes it before each call, and the record of the round clears it in the
+same UPDATE. So a goal that holds a mark had a call whose round has no
+record, and the next turn charges the rest of the budget (step 4 and step
+b). The mark is the queue claim id, ``Claim.id``: the id of the ``jobs``
+row, the column that ``goal_records.job_id`` names.
+
+⚠️ The reader never compares a mark with its own claim id. Each record of
+a turn clears that turn's mark, and each path that keeps a mark ends the
+turn. So a turn never reads its own live mark. A later try of the same job
+reuses ``Claim.id``, with a new ``token``: a lost lease claims the row
+again. The worker refuses a second try of this kind (``NOT_IDEMPOTENT``),
+but a mark with the id of the current claim is still the mark of an
+earlier try that died. So the turn reads it as a lost round, and a test
+holds that. A mark write is a compare-and-set on the goal version, so a
+second turn of one goal cannot write over a live mark.
+
+**The meter** (AUTO-8b-2d). :func:`console_meter` reads the credits of the
+run of a round at the Console door ``POST /registry/usage/run``, through
+``acb_auth.console_resolve.run_spend_on_console``. It reads as the payer of
+the goal, and only when ``job_member_scope`` bound that member VERIFIED on
+the task. The Console derives the org from the deployment key and the
+member, as the Router did when it metered the call (R11). The door sums
+``usage_event.billed_credits`` for the run, the sum that the Router's
+``RunCeiling`` reads. A failure never reads as 0: before the call it makes
+no call, and after the call it charges the rest of the budget (step g).
+
+* The runner stays NON-STREAMING. ``run_worker`` calls ``run_agent``, the
+  batch path. A streamed call writes its usage row after its last frame
+  (``customer_console/router.py``, ``relay_stream``), so a read just after
+  the call could be low. The buffered path writes the row before it
+  answers. Fence: ``tests/unit/test_headless_turn_meter.py``.
+* ADVISORY (R7), no fence: the Console's ``_record_completion`` logs a write
+  fault (``router.metering_failed``) and still answers the call. Then the
+  read of that round is low. The round cap, the time cap and the goal cap
+  of each later round still bound the turn.
+* A tool that makes a billed call with no run id is not metered, so a turn
+  holds none of :data:`UNMETERED_TOOLS` (:func:`headless_tools`).
+
+**The report** (:meth:`HeadlessTurn._tell`) runs after the commit of the
+round, so it moves no money. It takes at most :func:`_report_limit`, half of
+the last part of the margin, so the ledger and the settle of the job keep
+the other half. AUTO-6 must keep a limit when the report becomes a Reach
+message.
 
 **The caps.** ``goal_store.cap_block`` is the ONE cap rule, and this module
 keeps no counter of its own.
@@ -84,8 +170,9 @@ keeps no counter of its own.
   goal's own round cap binds too.
 * Time: :data:`DEFAULT_TIME_CAP_S` for the whole turn, at most
   :data:`MAX_TIME_CAP_S`. The clock starts in :meth:`HeadlessTurn.run`,
-  before ``unattended.recover``. After the last call, the meter read and the
-  record of the round take at most a third of :data:`SETTLE_MARGIN_S` each.
+  before ``unattended.recover``. After the last call, the meter read ends by
+  the deadline plus a third of :data:`SETTLE_MARGIN_S`, and the record of the
+  round ends by the deadline plus two thirds ("The shares of the settle").
   The time bound plus the margin stays at or below
   ``worker.HANDLER_TIMEOUT`` (240 s), and that stays below ``queue.LEASE``
   (300 s). So the worker does not cancel a turn while it records a round.
@@ -98,12 +185,19 @@ keeps no counter of its own.
   ``customer_console.credits.RunCeiling`` is a fixed tripwire of 500 credits
   for each run, checked before each model call. It does not stop a turn at
   the goal cap.
-* ADVISORY (R7), no fence: three paths lose the cost of a round, so the
-  goal row does not get it. A record that times out (``RecordTimeout``), a
-  stop of the worker during the call, and a stop during the settle. The next
-  turn then starts with too much room. Today no turn can spend, because the
-  default meter raises. AUTO-8b-2 (task 2230) must close this before the
-  real reader: a mark on the goal before each call, cleared by the record.
+* The ceiling of a round (AUTO-8b-2b, dark). The round sends
+  :func:`round_ceiling` as ``X-CC-Run-Ceiling``, and the Router takes the
+  lower of it and 500. So a model call of the round starts only while the
+  run is under the rest of the goal's budget. One call can still go past it.
+  The ceiling is inert until the owner turns on
+  ``CUSTOMER_CONSOLE_SPEND_GATE``. The tool ``crm_search_notes`` embeds a
+  query through a billed Console call that carries no run id, so neither the
+  ceiling nor the meter sees it. AUTO-8b-2d closes that gap: a turn holds no
+  tool of :data:`UNMETERED_TOOLS`. Fences: ``tests/unit/test_run_ceiling_header.py``
+  and ``tests/unit/test_customer_console_router.py`` (R8).
+* A round whose cost does not reach the goal row keeps its mark, so the
+  next turn charges the rest of the budget (AUTO-8b-2a, "The mark"). A lost
+  round never gives a later turn more room than the goal has left.
 
 **The round limit inside one call.** One call of the default runner is one
 ``orchestrator.executor.run_agent`` run of the internal agent ``worker``.
@@ -122,27 +216,33 @@ pair ``subagent_contract.child_pin`` withholds and refuses every other tool,
 the floor tools too. :func:`headless_tools` keeps a tool only when the risk
 registry says ``read_only=True`` and ``open_world=False``, and
 ``subagent_contract.child_may_hold`` passes it: no member tool, no card, no
-handoff and no extra model call. An unannotated tool fails closed. The run
+handoff and no extra model call. An unannotated tool fails closed. It also
+drops each tool of :data:`UNMETERED_TOOLS` (AUTO-8b-2d). The run
 also binds ``no_egress`` (H-236). Unattended means untrusted input, so the
 turn reaches nothing outside. ``orchestrator/executor.py`` is not changed.
 
 **No person present.** ``worker._call`` wraps each handler in
 ``no_person_scope`` (AUTO-7a), and the round task copies that context. This
-module names neither the setter nor the reader of the mark.
+module names neither the setter nor the reader of that no-person mark.
 
 **Money.** The handler writes no ``usage_event`` row: the Router writes it.
 The paying member is ``goal_records.member_email``, bound VERIFIED through
-``job_member_scope``. ⚠️ Inside ``run_agent``, the run binds its own agent
-name (``worker``) and the app of the worker's config (``chat``). So the
-usage row names those, not ``auto.headless``. AUTO-8b-2 decides that
-attribution.
+``job_member_scope``. AUTO-8b-2c: the rounds run inside
+``acb_common.run_attribution_scope(app="auto", agent="auto.headless")``.
+So ``run_agent`` binds ``auto.headless`` and ``auto`` in place of the
+worker's ``worker`` and ``chat``, the worker's client sends no fixed
+``X-CC-Agent``, and the usage row names the turn. This module is the one
+binder of the scope.
 
 **Tenancy (R5).** Each step opens ``tenant_session(org)`` with the org of
 the worker. No statement names an org. The module builds no engine, opens
 no connection of its own and holds no Redis key.
 
-Fences: ``tests/unit/test_headless_turn.py`` (hermetic) and
-``tests/unit/test_headless_turn_r8.py`` (R8).
+Fences: ``tests/unit/test_headless_turn.py`` (hermetic),
+``tests/unit/test_headless_turn_r8.py`` (R8) and, for the clear of the mark,
+``tests/unit/test_goal_record_r8.py`` (R8). The meter of AUTO-8b-2d:
+``tests/unit/test_headless_turn_meter.py`` (hermetic) and the door's R8 case
+in ``tests/unit/test_customer_console_billing_reads.py``.
 """
 
 from __future__ import annotations
@@ -157,8 +257,16 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from acb_common import get_logger, get_settings, goal_store, job_member_scope
+from acb_common import (
+    get_logger,
+    get_run_context,
+    get_settings,
+    goal_store,
+    job_member_scope,
+    run_attribution_scope,
+)
 from acb_common.db import tenant_session
+from acb_llm.attribution import run_ceiling_scope
 
 from gateway.jobs import queue, unattended, worker
 
@@ -182,10 +290,10 @@ MAX_ROUNDS = 10
 #: turn records its last round and settles before the worker cancels it.
 DEFAULT_TIME_CAP_S = 120.0
 MAX_TIME_CAP_S = 180.0
-#: The seconds of the settle after a call. It has :data:`SETTLE_PARTS` parts.
-#: The meter read and the record of the round take one part each
-#: (:func:`_settle_limit`). The report, the ledger and the settle of the job
-#: keep the last part.
+#: The seconds of the settle after the deadline. It has :data:`SETTLE_PARTS`
+#: parts. The meter read ends by the first part and the record of the round by
+#: the second (:meth:`HeadlessTurn._share`). The report (half a part,
+#: :func:`_report_limit`), the ledger and the settle of the job keep the last.
 SETTLE_MARGIN_S = 60.0
 SETTLE_PARTS = 3
 #: The most credits that the goal of a turn may allow. A goal that allows more
@@ -210,8 +318,17 @@ DEFAULT_TOOLS: tuple[str, ...] = (
     "crm_stage_dwell",
     "crm_list_owners",
     "crm_list_fields",
-    "crm_search_notes",
 )
+
+#: The tools that make a billed Console call with NO run id, so neither the
+#: meter of a round nor the Router's ceiling of a run sees their cost
+#: (AUTO-8b-2d). :func:`headless_tools` drops each one. ``crm_search_notes``
+#: embeds its query through ``kb_index.embed``, behind the gateway route
+#: ``GET /crm/notes/search``. A name leaves this set only when its billed call
+#: carries the run id of the round. Fence:
+#: ``tests/unit/test_headless_turn_meter.py``, which finds such a tool from
+#: the source.
+UNMETERED_TOOLS = frozenset({"crm_search_notes"})
 
 #: The named reasons of a give-up (``docs/job_queue.md`` §5a). The log line
 #: holds the text before the first colon only.
@@ -220,6 +337,10 @@ CAP_TOO_HIGH = "CapTooHigh: the credit cap of the goal is over the bound of a tu
 IDENTITY_FAILED = "IdentityReadFailed: the member check failed, so no model call ran"
 CANDIDATE_FAILED = "CandidateFailed: the candidate check failed, so no model call ran"
 NO_READER = "NoCostReader: no cost reader, so the turn made no model call"
+METER_FAILED = "MeterFailed: the cost reader failed after an earlier round made a call"
+COST_READ_FAILED = "CostReadFailed: the Console spend door failed before a call, so no call ran"
+MARK_FAILED = "MarkFailed: the mark before a call was not written, so no call ran"
+LOST_ROUND = "LostRound: a round of the goal has no record, and its charge did not land"
 TURN_FAILED = "TurnFailed: a round of the turn failed"
 TURN_STALLED = "TurnStalled: the stall guard stopped the turn"
 
@@ -233,8 +354,9 @@ _NAME = re.compile(r"[a-z][a-z0-9_.]{0,63}")
 
 #: ``await candidate(org, member, payload)``: True when the turn has work.
 CandidateCheck = Callable[[str, str, dict[str, Any]], Awaitable[bool]]
-#: ``await meter(org, run_id)``: the credits that the run *run_id* spent.
-Meter = Callable[[str, str], Awaitable[Any]]
+#: ``await meter(org, member, run_id)``: the credits that the run *run_id*
+#: spent. *member* is the proven payer of the goal, never a payload value.
+Meter = Callable[[str, str, str], Awaitable[Any]]
 #: ``await runner(message, run_id=, org=, member=, tools=)``: one round.
 Runner = Callable[..., Awaitable[Any]]
 #: ``await report(org, member, goal)``: tell of a goal at its cap, once.
@@ -246,11 +368,33 @@ _CANDIDATES: dict[str, CandidateCheck] = {}
 
 
 class NoCostReader(RuntimeError):
-    """No reader of the cost of a run exists, so no round may start."""
+    """The meter did not answer in time, or answered no number, before a
+    round. So no round may start."""
 
 
 class TurnFailed(RuntimeError):
     """A round raised. Its cost is on the goal, and the turn stops."""
+
+
+class MeterFailed(RuntimeError):
+    """The meter failed BEFORE a round, after an earlier round of this turn
+    made a call. The cost of each earlier round is on the goal."""
+
+
+class CostReadFailed(RuntimeError):
+    """The Console spend door gave no number (AUTO-8b-2d): no proven member,
+    an unwired box, no answer, a refusal or a bad answer. Before a call, the
+    call does not run. After a call, the round charges the rest of the
+    budget. The text is a short code of ours, never the Console's words."""
+
+
+class MarkFailed(RuntimeError):
+    """The mark before a call was not written, so the call does not run."""
+
+
+class LostRound(RuntimeError):
+    """A goal holds a mark, and the charge of the rest did not land. No call
+    runs, and the mark stays for the next turn."""
 
 
 @dataclass(frozen=True)
@@ -310,14 +454,15 @@ def headless_tools(names: Iterable[str]) -> tuple[str, ...]:
     A tool stays only when the risk registry says ``read_only=True`` and
     ``open_world=False``, and ``subagent_contract.child_may_hold`` passes it.
     An unannotated tool, a web tool, a member tool, a card, a handoff and a
-    tool that makes its own model call all go (fail closed)."""
+    tool that makes its own model call all go (fail closed). A tool of
+    :data:`UNMETERED_TOOLS` goes too, because the meter cannot see its cost."""
     from acb_skills import subagent_contract as sc
     from acb_skills.tool_annotations import get_annotations
 
     kept: list[str] = []
     for raw in names:
         name = str(raw or "")
-        if not name or name in kept or name in sc.WEB_TOOLS:
+        if not name or name in kept or name in sc.WEB_TOOLS or name in UNMETERED_TOOLS:
             continue
         notes = get_annotations(name) or {}
         if notes.get("read_only") is not True or notes.get("open_world") is not False:
@@ -355,16 +500,96 @@ async def run_worker(message: str, *, run_id: str, org: str, member: str,
 # ── The meter, the report and the next round ────────────────────────────────
 
 
-async def no_cost_reader(org: str, run_id: str) -> Decimal:
-    """The default meter. It raises, so a turn with no cost reader makes no
-    model call. AUTO-8b-2 gives the reader of the Console."""
-    raise NoCostReader("no cost reader: AUTO-8b-2 builds the per-run reader")
+#: The credits that the Console door answers: a decimal string with exactly
+#: 4 places (``customer_console.main._four_places``). Any other shape fails.
+_DOOR_CREDITS = re.compile(r"[0-9]{1,10}\.[0-9]{4}")
+
+
+def _proven(member: str) -> bool:
+    """True when *member* is the member that ``job_member_scope`` bound
+    VERIFIED on this task. The meter reads for no other address."""
+    ctx = get_run_context()
+    bound = str(ctx.get("user") or "").strip().lower()
+    return (ctx.get("member_verified") == "1" and bool(bound)
+            and bound == str(member or "").strip().lower())
+
+
+_HTTP_STATUS = re.compile(r"HTTP ([1-5])[0-9]{2}")
+
+
+def _outage_code(message: str) -> str:
+    """A short code of an outage of the door: ``Unwired``, ``Unavailable
+    HTTP <status>`` (5xx, 401, 408 or 429) or ``Unreachable`` (the network).
+    It keeps the status only, never a body or an address."""
+    head = message.strip()
+    if head == "unwired":
+        return "Unwired"
+    found = _HTTP_STATUS.fullmatch(head)
+    return f"Unavailable {found.group(0)}" if found else "Unreachable"
+
+
+def status_class(code: str) -> str:
+    """The HTTP status class in the code of a :class:`CostReadFailed`
+    (``4xx`` or ``5xx``), or ``none``. So a 403 (a key with no
+    ``billing_read``) and an outage read differently in the log."""
+    found = _HTTP_STATUS.search(code)
+    return f"{found.group(1)}xx" if found else "none"
+
+
+async def console_meter(org: str, member: str, run_id: str) -> Decimal:
+    """The default meter (AUTO-8b-2d): the credits that run *run_id* spent,
+    read at the Console door ``POST /registry/usage/run`` as *member*.
+
+    *member* is the payer of the goal, and it must be the member that
+    ``job_member_scope`` bound VERIFIED on this task (:func:`_proven`). The
+    Console derives the org from the deployment key and the member, as the
+    Router did when it metered the call. So the body names no org (R11), and
+    *org* (the worker's org) is not sent.
+
+    Each door error raises :class:`CostReadFailed`: no proven member, an
+    unwired box, a status with no answer, a refusal (400, 403, 409 or 422),
+    and an answer that is not a string with 4 places. A failure never reads
+    as 0, so no call runs free. The code of the error names the HTTP status,
+    never the body (:func:`_outage_code`)."""
+    from acb_auth.console_resolve import ConsoleBillingUnavailable, run_spend_on_console
+
+    if not _proven(member):
+        raise CostReadFailed("NoProvenMember")
+    try:
+        status, body = await run_spend_on_console(actor_email=member, run_id=run_id)
+    except ConsoleBillingUnavailable as exc:
+        raise CostReadFailed(_outage_code(str(exc))) from None
+    if status != 200:
+        raise CostReadFailed(f"HTTP {status}")
+    raw = body.get("credits")
+    if not isinstance(raw, str) or not _DOOR_CREDITS.fullmatch(raw):
+        raise CostReadFailed("BadAnswer")
+    return Decimal(raw)
 
 
 def _settle_limit() -> float:
-    """The seconds of one step of the settle: one meter read, or the record
-    of one round. It reads :data:`SETTLE_MARGIN_S` on each call."""
+    """The seconds of one part of the settle: the least time of one meter
+    read or of the record of one round, and the most time of the meter read
+    before a call and of the mark. It reads :data:`SETTLE_MARGIN_S` on each
+    call."""
     return SETTLE_MARGIN_S / SETTLE_PARTS
+
+
+def _report_limit() -> float:
+    """The seconds of the report: half of the last part of the settle, so
+    the ledger and the settle of the job keep the other half."""
+    return _settle_limit() / 2
+
+
+def _rest(goal: goal_store.Goal) -> Decimal:
+    """The rest of the budget of *goal*: the cap minus the credits used."""
+    return max(goal.cost_cap_credits - goal.cost_used_credits, Decimal(0))
+
+
+def _charge(goal: goal_store.Goal, cost: Decimal | None) -> Decimal:
+    """The charge of a round on *goal*. An unknown cost (None) charges the
+    rest of THIS goal, so a retry on a new version reads the new caps."""
+    return _rest(goal) if cost is None else cost
 
 
 async def log_report(org: str, member: str, goal: goal_store.Goal) -> None:
@@ -392,6 +617,18 @@ def _credits_of(value: Any) -> Decimal | None:
     if not amount.is_finite() or amount < 0:
         return None
     return amount
+
+
+def round_ceiling(goal: goal_store.Goal) -> Decimal:
+    """The ceiling of one round's run: the credits that *goal* has left.
+
+    That is the cap minus the credits used, and never below 0. The turn reads
+    it from the goal at the start of each round, and
+    ``acb_llm.attribution.run_ceiling_scope`` sends it as
+    ``X-CC-Run-Ceiling`` with 4 places, rounded down (AUTO-8b-2b). The Router
+    takes the lower of it and its own 500. Each round has a new run id, so
+    each run starts at 0 credits spent."""
+    return max(goal.cost_cap_credits - goal.cost_used_credits, Decimal(0))
 
 
 def _answer(result: Any) -> str:
@@ -496,7 +733,7 @@ class HeadlessTurn:
                 0 < time_cap_s <= MAX_TIME_CAP_S):
             raise ValueError(f"time_cap_s must be more than 0 and at most {MAX_TIME_CAP_S:g}")
         self._runner: Runner = runner or run_worker
-        self._meter: Meter = meter or no_cost_reader
+        self._meter: Meter = meter or console_meter
         self._report: Report = report or log_report
         self._go_on = go_on or one_round
         self._candidates = candidates
@@ -534,6 +771,14 @@ class HeadlessTurn:
         if goal is None or why is not None:
             await _skip(org, claim, why or "goal_missing")
             return
+        if goal.job_id is not None:
+            # A call of an earlier run has no record: charge the rest, no call.
+            if await self._settle_lost(org, goal.member_email, goal, deadline) is None:
+                await _give_up(org, claim, LOST_ROUND)
+                return
+            _log.info("headless_turn.ended", outcome="lost_round", rounds=0)
+            await _settle_done(org, claim)
+            return
         member = goal.member_email
         try:
             gone = await _departed(org, member)
@@ -559,14 +804,32 @@ class HeadlessTurn:
     async def _run_once(self, org: str, member: str, goal_id: str, slot: str,
                         claim: queue.Claim, deadline: float) -> None:
         async def work(guard: unattended.StallGuard) -> TurnEnd:
-            with job_member_scope(member, app=APP, agent=AGENT):
-                return await self._rounds(org, member, goal_id, guard, deadline)
+            # AUTO-8b-2c: the one binder of the attribution scope.
+            with (job_member_scope(member, app=APP, agent=AGENT),
+                  run_attribution_scope(app=APP, agent=AGENT)):
+                # The mark of each call is the claim id (the slot).
+                return await self._rounds(org, member, goal_id, slot, guard, deadline)
 
         try:
             ledger, end = await unattended.once(org, KIND, slot, work)
         except NoCostReader:
             _log.error("headless_turn.no_cost_reader")
             await _give_up(org, claim, NO_READER)
+            return
+        except CostReadFailed as exc:
+            _log.error("headless_turn.cost_read_failed", error=str(exc),
+                       status_class=status_class(str(exc)))
+            await _give_up(org, claim, COST_READ_FAILED)
+            return
+        except MeterFailed:
+            _log.error("headless_turn.meter_failed")
+            await _give_up(org, claim, METER_FAILED)
+            return
+        except MarkFailed:
+            await _give_up(org, claim, MARK_FAILED)
+            return
+        except LostRound:
+            await _give_up(org, claim, LOST_ROUND)
             return
         except Exception as exc:
             _log.warning("headless_turn.failed", error=type(exc).__name__)
@@ -581,50 +844,49 @@ class HeadlessTurn:
         _log.info("headless_turn.ended", outcome=end.outcome, rounds=end.rounds)
         await _settle_done(org, claim)
 
-    async def _rounds(self, org: str, member: str, goal_id: str,
+    async def _rounds(self, org: str, member: str, goal_id: str, mark: str,
                       guard: unattended.StallGuard, deadline: float) -> TurnEnd:
         previous = ""
         calls = 0
         for number in range(1, self._rounds_cap + 1):
             guard.progress()
-            if not headless_allowed(org):
-                return TurnEnd("switched_off", calls)
-            async with tenant_session(org) as db:
-                goal = await goal_store.get_goal(db, member, goal_id)
-            why = _not_ready(goal)
-            if goal is None or why is not None:
-                if why == _CAP_TOO_HIGH:
-                    _log.warning("headless_turn.cap_too_high", goal_id=goal_id)
-                return TurnEnd(why or "goal_missing", calls)
-            if deadline - self._clock() <= 0:
-                return TurnEnd("time_cap", calls)
-            run_id = str(uuid.uuid4())
-            # BEFORE the call: the default meter raises here, so no call runs.
-            before = await self._before(org, run_id)
-            left = deadline - self._clock()
-            if left <= 0:
-                return TurnEnd("time_cap", calls)
+            ready = await self._ready(org, member, goal_id, mark, calls, deadline)
+            if isinstance(ready, TurnEnd):
+                return ready
+            goal, run_id, before, left = ready
             result: Any = None
             failure: Exception | None = None
             timed_out = False
             scope = asyncio.timeout(left)
             calls += 1
             try:
+                # AUTO-8b-2b: each chat completion of the round sends the rest of
+                # the goal's budget as `X-CC-Run-Ceiling`, and the Router
+                # stops the run there, or at its own 500, the lower one.
                 async with scope:
-                    result = await self._runner(
-                        _message(goal, number, previous), run_id=run_id, org=org,
-                        member=member, tools=headless_tools(self._tools))
+                    with run_ceiling_scope(round_ceiling(goal)):
+                        result = await self._runner(
+                            _message(goal, number, previous), run_id=run_id, org=org,
+                            member=member, tools=headless_tools(self._tools))
             except Exception as exc:
                 if scope.expired():
                     timed_out = True
                 else:
                     failure = exc
             guard.progress()
-            cost = await self._cost(org, run_id, before, goal)
-            recorded, stale = await self._record(org, member, goal, cost)
+            if timed_out or failure is not None:
+                # AUTO-8b-2d: a cut or failed call can still write its usage
+                # row AFTER a read, so the round charges the rest (cost None).
+                _log.warning("headless_turn.round_cut", goal_id=goal.id,
+                             error="TimeCap" if timed_out else type(failure).__name__)
+                cost = None
+            else:
+                cost = await self._cost(org, member, run_id, before, goal, deadline)
+            recorded, stale = await self._record(org, member, goal, cost, deadline)
             if recorded is not None and recorded.block_code == "cap_reached":
                 await self._tell(org, member, recorded)
-                return TurnEnd("cap_reached", calls)
+                if failure is None:
+                    return TurnEnd("cap_reached", calls)
             if failure is not None:
                 raise TurnFailed(type(failure).__name__) from failure
             if stale:
@@ -638,17 +900,59 @@ class HeadlessTurn:
             previous = _answer(result)
         return TurnEnd("round_cap", calls)
 
-    async def _before(self, org: str, run_id: str) -> Decimal:
+    async def _ready(self, org: str, member: str, goal_id: str, mark: str, calls: int,
+                     deadline: float) -> TurnEnd | tuple[goal_store.Goal, str, Decimal, float]:
+        """Steps a to f of one round, up to the call. Answers how the turn
+        ends with no call, or the marked goal, the new run id, the meter
+        before the call and the seconds left for the call."""
+        if not headless_allowed(org):
+            return TurnEnd("switched_off", calls)
+        async with tenant_session(org) as db:
+            goal = await goal_store.get_goal(db, member, goal_id)
+        why = _not_ready(goal)
+        if goal is None or why is not None:
+            if why == _CAP_TOO_HIGH:
+                _log.warning("headless_turn.cap_too_high", goal_id=goal_id)
+            return TurnEnd(why or "goal_missing", calls)
+        if goal.job_id is not None:
+            # Not this turn's mark: each record of this turn cleared its own.
+            if await self._settle_lost(org, member, goal, deadline) is None:
+                raise LostRound("the charge of a lost round did not land")
+            return TurnEnd("lost_round", calls)
+        if deadline - self._clock() <= 0:
+            return TurnEnd("time_cap", calls)
+        run_id = str(uuid.uuid4())
+        # BEFORE the call: a meter that fails here makes no call.
+        try:
+            before = await self._before(org, member, run_id)
+        except (NoCostReader, CostReadFailed) as exc:
+            if calls:
+                raise MeterFailed(str(exc)) from None
+            raise
+        if deadline - self._clock() <= 0:
+            return TurnEnd("time_cap", calls)
+        # The mark, AFTER the meter: a meter that fails leaves no mark.
+        marked = await self._mark(org, member, goal, mark)
+        if marked is None:
+            return TurnEnd("stale", calls)
+        left = deadline - self._clock()
+        if left <= 0:
+            await self._unmark(org, member, marked)
+            return TurnEnd("time_cap", calls)
+        return marked, run_id, before, left
+
+    async def _before(self, org: str, member: str, run_id: str) -> Decimal:
         """The meter of *run_id* BEFORE the call, inside :func:`_settle_limit`.
 
         A :class:`NoCostReader` of the meter is raised again as it is. A read
         that does not answer in time, or answers no number, raises it too, so
-        no call runs. Another error of the meter is raised again as it is,
-        and a TimeoutError of the meter's own is such an error."""
+        no call runs. Another error of the meter is raised again as it is: a
+        :class:`CostReadFailed` of the door, and a TimeoutError of the
+        meter's own."""
         scope = asyncio.timeout(_settle_limit())
         try:
             async with scope:
-                value = await self._meter(org, run_id)
+                value = await self._meter(org, member, run_id)
         except Exception:
             if scope.expired():
                 raise NoCostReader("the meter did not answer in time") from None
@@ -658,74 +962,171 @@ class HeadlessTurn:
             raise NoCostReader("the meter answered no number of credits")
         return before
 
-    async def _cost(self, org: str, run_id: str, before: Decimal,
-                    goal: goal_store.Goal) -> Decimal:
-        """The credits of one round, read inside :func:`_settle_limit`. A
-        meter that fails, does not answer in time or answers no number
-        charges the rest of the goal's budget, so the goal blocks. A cancel
-        is not an ``Exception``, so it goes through."""
+    def _share(self, deadline: float, parts: int) -> float:
+        """The seconds of a step of the settle that must end by part *parts*
+        of the margin: ``max(part, deadline + parts * part - clock())``.
+
+        ``part`` is :func:`_settle_limit`. The meter after a call takes
+        *parts* 1 and the record takes 2. A round that ends early may use the
+        time that the turn has left. A round that ends at the deadline gets
+        one part. The bound inside ``worker.HANDLER_TIMEOUT`` does not
+        change, because each step still ends by ``deadline + parts * part``
+        when it starts by the deadline."""
+        part = _settle_limit()
+        return max(part, deadline + parts * part - self._clock())
+
+    async def _mark(self, org: str, member: str, goal: goal_store.Goal,
+                    mark: str) -> goal_store.Goal | None:
+        """Write *mark* (the claim id) in ``job_id`` of *goal* BEFORE a call,
+        inside :func:`_settle_limit`. Answers the goal after the write.
+
+        None when another write came first or the goal is gone: no call, and
+        no mark. A write that fails, or does not end in time, logs
+        ``headless_turn.mark_failed`` at error and raises :class:`MarkFailed`,
+        so no call runs (fail closed). A write that timed out can still have
+        landed. Then the next turn charges the rest, which also fails closed."""
         scope = asyncio.timeout(_settle_limit())
         try:
+            async with scope, tenant_session(org) as db:
+                marked = await goal_store.update_goal(
+                    db, member, goal.id, goal.version, job_id=mark)
+        except (goal_store.StaleGoal, goal_store.GoalStateError):
+            _log.info("headless_turn.mark_stale", goal_id=goal.id)
+            return None
+        except Exception as exc:
+            error = "MarkTimeout" if scope.expired() else type(exc).__name__
+            _log.error("headless_turn.mark_failed", goal_id=goal.id, error=error)
+            raise MarkFailed(error) from None
+        if marked is None:
+            return None
+        if marked.job_id != str(uuid.UUID(mark)) or marked.state != "active":
+            _log.error("headless_turn.mark_failed", goal_id=goal.id, error="MarkNotWritten")
+            raise MarkFailed("MarkNotWritten")
+        return marked
+
+    async def _unmark(self, org: str, member: str, goal: goal_store.Goal) -> None:
+        """Clear the mark of *goal* when no call ran after it, inside
+        :func:`_settle_limit`. A clear that fails keeps the mark and logs
+        ``headless_turn.mark_kept``. Then the next turn charges the rest of
+        the budget: fail closed."""
+        scope = asyncio.timeout(_settle_limit())
+        try:
+            async with scope, tenant_session(org) as db:
+                await goal_store.update_goal(db, member, goal.id, goal.version, job_id=None)
+        except Exception as exc:
+            error = "UnmarkTimeout" if scope.expired() else type(exc).__name__
+            _log.warning("headless_turn.mark_kept", goal_id=goal.id, error=error)
+
+    async def _settle_lost(self, org: str, member: str, goal: goal_store.Goal,
+                           deadline: float) -> goal_store.Goal | None:
+        """*goal* holds a mark: a call whose round has no record. Charge the
+        rest of the budget in one round that clears the mark, so the goal
+        blocks with ``cap_reached``, and report once. No call runs.
+
+        Logs ``headless_turn.lost_round`` at error. Answers the goal after
+        the write, or None when the charge did not land. Then the mark
+        stays, and the next turn tries again."""
+        _log.error("headless_turn.lost_round", goal_id=goal.id, job_id=goal.job_id)
+        try:
+            recorded, _stale = await self._record(org, member, goal, None, deadline)
+        except Exception as exc:
+            _log.error("headless_turn.lost_round_unrecorded", goal_id=goal.id,
+                       error=type(exc).__name__)
+            return None
+        if recorded is not None and recorded.block_code == "cap_reached":
+            await self._tell(org, member, recorded)
+        return recorded
+
+    async def _cost(self, org: str, member: str, run_id: str, before: Decimal,
+                    goal: goal_store.Goal, deadline: float) -> Decimal | None:
+        """The credits of one round, read inside ``_share(deadline, 1)``.
+        None when the cost is unknown: a meter that fails, does not answer in
+        time or answers no number. The record then charges the rest of the
+        budget of the goal that it writes, so the goal blocks.
+
+        A plain cancel is not an ``Exception``, so it goes through. ⚠️ A
+        driver that turns an outer cancel into an error of its own is caught
+        here, and the round charges the rest: fail closed for money."""
+        scope = asyncio.timeout(self._share(deadline, 1))
+        try:
             async with scope:
-                after = _credits_of(await self._meter(org, run_id))
+                after = _credits_of(await self._meter(org, member, run_id))
         except Exception as exc:
             error = "MeterTimeout" if scope.expired() else type(exc).__name__
             _log.error("headless_turn.cost_unknown", goal_id=goal.id, error=error)
-            after = None
+            return None
         cost = None if after is None else after - before
         if cost is None or cost < 0 or cost > goal_store.MAX_CREDITS:
             if after is not None:
                 _log.error("headless_turn.cost_unknown", goal_id=goal.id, error="BadCost")
-            return max(goal.cost_cap_credits - goal.cost_used_credits, Decimal(0))
+            return None
         return cost
 
     async def _record(self, org: str, member: str, goal: goal_store.Goal,
-                      cost: Decimal) -> tuple[goal_store.Goal | None, bool]:
-        """:meth:`_write_round` inside :func:`_settle_limit`. A record that
+                      cost: Decimal | None,
+                      deadline: float) -> tuple[goal_store.Goal | None, bool]:
+        """:meth:`_write_round` inside ``_share(deadline, 2)``. A record that
         does not end in time logs ``headless_turn.round_unrecorded`` at error
         and raises :class:`TurnFailed`. Another error is raised again as it
-        is, and a cancel goes through."""
-        scope = asyncio.timeout(_settle_limit())
+        is, and a cancel goes through. In each of those cases the mark stays
+        on the goal."""
+        scope = asyncio.timeout(self._share(deadline, 2))
         try:
             async with scope:
                 return await self._write_round(org, member, goal, cost)
         except Exception:
             if not scope.expired():
                 raise
-        _log.error("headless_turn.round_unrecorded", goal_id=goal.id, credits=str(cost),
-                   error="RecordTimeout")
+        _log.error("headless_turn.round_unrecorded", goal_id=goal.id,
+                   credits=str(_charge(goal, cost)), error="RecordTimeout")
         raise TurnFailed("RecordTimeout")
 
     async def _write_round(self, org: str, member: str, goal: goal_store.Goal,
-                           cost: Decimal) -> tuple[goal_store.Goal | None, bool]:
-        """Record one round on *goal*. Answers the goal after the write, and
-        True when another write came first (``StaleGoal``). Then the round is
-        recorded once on the new version, so its cost is not lost."""
+                           cost: Decimal | None) -> tuple[goal_store.Goal | None, bool]:
+        """Record one round on *goal* and clear its mark, in one write.
+        Answers the goal after the write, and True when another write came
+        first (``StaleGoal``). Then the round is recorded once on the new
+        version, so its cost is not lost. An unknown cost (None) charges the
+        rest of the version that the write names (:func:`_charge`)."""
         try:
             async with tenant_session(org) as db:
-                return await goal_store.record_round(db, member, goal.id, goal.version, cost), False
+                return await goal_store.record_round(
+                    db, member, goal.id, goal.version, _charge(goal, cost),
+                    clear_job_id=True), False
         except goal_store.StaleGoal:
             pass
         except goal_store.GoalStateError:
-            _log.warning("headless_turn.round_unrecorded", goal_id=goal.id, credits=str(cost))
+            _log.warning("headless_turn.round_unrecorded", goal_id=goal.id,
+                         credits=str(_charge(goal, cost)))
             return None, True
         try:
             async with tenant_session(org) as db:
                 fresh = await goal_store.get_goal(db, member, goal.id)
                 if fresh is not None and fresh.state == "active":
                     return await goal_store.record_round(
-                        db, member, fresh.id, fresh.version, cost), True
+                        db, member, fresh.id, fresh.version, _charge(fresh, cost),
+                        clear_job_id=True), True
         except goal_store.GoalStoreError:
             pass
-        _log.warning("headless_turn.round_unrecorded", goal_id=goal.id, credits=str(cost))
+        _log.warning("headless_turn.round_unrecorded", goal_id=goal.id,
+                     credits=str(_charge(goal, cost)))
         return None, True
 
     async def _tell(self, org: str, member: str, goal: goal_store.Goal) -> None:
-        """The one report of a goal that this turn moved to its cap."""
+        """The one report of a goal that this turn moved to its cap.
+
+        It runs after the commit of the round, so it moves no money. It takes
+        at most :func:`_report_limit`, so the ledger and the settle of the
+        job keep the rest of the margin. A report that fails or does not end
+        in time logs ``headless_turn.report_failed``. AUTO-6 must keep a
+        limit when the report becomes a Reach message."""
+        scope = asyncio.timeout(_report_limit())
         try:
-            await self._report(org, member, goal)
+            async with scope:
+                await self._report(org, member, goal)
         except Exception as exc:
-            _log.warning("headless_turn.report_failed", error=type(exc).__name__)
+            error = "ReportTimeout" if scope.expired() else type(exc).__name__
+            _log.warning("headless_turn.report_failed", error=error)
 
 
 #: The turn of the worker. A test replaces it, never a production caller.

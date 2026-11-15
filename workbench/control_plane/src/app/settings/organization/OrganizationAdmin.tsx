@@ -554,6 +554,13 @@ export default function OrganizationAdmin() {
               >
                 Agents
               </Link>
+              {/* PKG-17c-2: the org default of the Home layout. */}
+              <Link
+                href="/settings/layout"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Home layout
+              </Link>
               {!isMobile && (
                 <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
                   Invite

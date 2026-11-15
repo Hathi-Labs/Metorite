@@ -223,8 +223,62 @@ export function parseReasoning(raw: string | null | undefined): string[] | undef
  * `null` for a turn with no segments.
  */
 export function withCustomEvent(m: ChatMessage, name: string, value: unknown): ChatMessage {
+  // HRD-6: the line of a slow step is live only. It is never kept on the
+  // message, so no save posts it as a custom event.
+  if (name === PROGRESS_EVENT) return m;
   const event = { name, value, segmentCutoff: m.segments?.length ?? 0 };
   return { ...m, customEvents: [...(m.customEvents ?? []), event] };
+}
+
+/**
+ * HRD-6 (`chat_failure_modes.md` §4 row B6): the CUSTOM event of a slow
+ * tool's line (`acb_skills.progress_notice`). The live loop shows it under
+ * the running step. The replay ignores it, and no save keeps it.
+ */
+export const PROGRESS_EVENT = "progress";
+
+/** The longest line the chat draws. The server sends one line. */
+const NOTICE_MAX = 300;
+
+/** Show the line of a slow tool on the message. A new line replaces the old
+ *  one, so parallel steps never stack two lines. An empty line takes away
+ *  the line of the step it names: that step ended, or it shows a card. */
+export function withProgressNotice(m: ChatMessage, value: unknown): ChatMessage {
+  if (!value || typeof value !== "object") return m;
+  const v = value as Record<string, unknown>;
+  const text = String(v.text ?? "").replace(/\s+/g, " ").trim().slice(0, NOTICE_MAX);
+  const toolId = typeof v.tool_call_id === "string" && v.tool_call_id ? v.tool_call_id : undefined;
+  if (!text) {
+    if (!m.progressNotice) return m;
+    if (toolId && m.progressNotice.toolId && m.progressNotice.toolId !== toolId) return m;
+    return withoutNotice(m);
+  }
+  return { ...m, progressNotice: { text, ...(toolId ? { toolId } : {}) } };
+}
+
+/** True while a step of the message, or a step of a hand-off, still runs. */
+function anyStepRunning(m: ChatMessage): boolean {
+  return (m.toolEvents ?? []).some(
+    (t) => t.status === "running" || (t.subAgentTools ?? []).some((st) => st.status === "running"),
+  );
+}
+
+/** Take the line away when its step ended, or when no step runs. */
+function settleNotice(m: ChatMessage, endedId: string): ChatMessage {
+  const n = m.progressNotice;
+  if (!n) return m;
+  if (n.toolId === endedId || !anyStepRunning(m)) {
+    const { progressNotice: _gone, ...rest } = m;
+    return rest;
+  }
+  return m;
+}
+
+/** Take the line away, whatever step it names. */
+function withoutNotice(m: ChatMessage): ChatMessage {
+  if (!m.progressNotice) return m;
+  const { progressNotice: _gone, ...rest } = m;
+  return rest;
 }
 
 /** Per-stream fold cursor threaded through {@link applyStreamEvent}. */
@@ -272,8 +326,10 @@ export function applyStreamEvent(
         else cur.push({ id: segId, text: deltaText });
         segments = cur;
       }
+      // HRD-6: answer text came, so the slow step's line goes.
+      const base = deltaText.trim() ? withoutNotice(m) : m;
       return {
-        ...m,
+        ...base,
         content: m.content + deltaText,
         segments,
         streaming: true,
@@ -358,7 +414,8 @@ export function applyStreamEvent(
     }
     case "tool_end": {
       const status: ToolEvent["status"] = evt.success ? "done" : "error";
-      return {
+      // HRD-6: the line of a slow step goes when that step ends.
+      return settleNotice({
         ...m,
         toolEvents: (m.toolEvents ?? []).map((t) =>
           t.id === String(evt.id)
@@ -375,7 +432,7 @@ export function applyStreamEvent(
               }
             : t,
         ),
-      };
+      }, String(evt.id ?? ""));
     }
     case "tool_args": {
       // The running step's arguments, once whole (route.ts). The trail then
@@ -427,7 +484,7 @@ export function applyStreamEvent(
         if (lastText.trim()) content = lastText;
       }
       return {
-        ...m,
+        ...withoutNotice(m),
         content,
         reasoningBlocks: u.reasoningBlocks,
         streaming: false,
@@ -499,7 +556,8 @@ export function applySubAgentEvent(
     }
     case "sub_agent_tool_end": {
       const stId = String(evt.id ?? "");
-      return {
+      // HRD-6: a slow step of a hand-off takes its line away when it ends.
+      return settleNotice({
         ...m,
         toolEvents: evts.map((t) => !t.subAgentTools ? t : {
           ...t,
@@ -507,7 +565,7 @@ export function applySubAgentEvent(
             st.id === stId ? { ...st, result: String(evt.result ?? ""), status: evt.success ? "done" as const : "error" as const } : st,
           ),
         }),
-      };
+      }, stId);
     }
     case "sub_agent_error": {
       const idx = [...evts].reverse().findIndex((t) => t.subAgentActive);

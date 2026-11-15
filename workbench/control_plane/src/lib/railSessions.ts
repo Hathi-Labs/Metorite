@@ -23,6 +23,7 @@ import {
   forgetSession,
   getQueue,
   getSessions,
+  keepSession,
   upsertSession,
   type ChatSession,
 } from "@/lib/sessions";
@@ -124,6 +125,57 @@ export function chatToShow(
 ): ChatSession | null {
   if (!activeId) return null;
   return sessions.find((s) => s.id === activeId) ?? (made?.id === activeId ? made : null);
+}
+
+// ── The chats a page made (WS-BUD BUD-1, task 2459) ─────────────────────────
+//
+// Two tabs of one member share one stored list, and each save writes the
+// whole list. The browser gives each tab its own copy of storage. A write of
+// one tab gets to the copy of the other tab some time later. So a save of tab
+// B can write an old list over the new chat of tab A, also when B read the
+// list just before it wrote. No read before a write can stop this. The page
+// that made the chat puts it back (`keepSession`), and `MadeChats` holds
+// what it puts back.
+
+/**
+ * The chats that one page made, by id. The dock keeps one for each mount.
+ *
+ * ⚠️ `bind` forgets the chats only for a new member or org. In development,
+ * React runs an effect two times on a mount, with the same scope. A reset on
+ * the second run forgot the chat that the dock made just before. The winner
+ * of the hello then had no row to put back, and it showed "Opening your
+ * chat…" with no end (task 2459). Fence: `madeChats.test.ts`.
+ */
+export class MadeChats extends Map<string, ChatSession> {
+  private scope: string | null | undefined = undefined;
+
+  /** Bind the member and org. True when they changed, and then no chat stays. */
+  bind(scope: string | null): boolean {
+    if (scope === this.scope) return false;
+    this.scope = scope;
+    this.clear();
+    return true;
+  }
+
+  /**
+   * Take the newest stored copy of each chat that this page made. A put-back
+   * then has the title and the count of a later save, such as the "Welcome"
+   * of the hello. It never has the empty copy that `startFresh` made.
+   */
+  note(stored: readonly ChatSession[]): void {
+    for (const s of stored) {
+      const mine = this.get(s.id);
+      if (mine && (Date.parse(s.updatedAt) || 0) >= (Date.parse(mine.updatedAt) || 0)) {
+        this.set(s.id, { ...s });
+      }
+    }
+  }
+
+  /** Put the chat back when the stored list lost it. True when it wrote. */
+  keep(id: string): boolean {
+    const mine = this.get(id);
+    return mine ? keepSession(mine) : false;
+  }
 }
 
 /** Open `id` on purpose. A refusal of it is then an error the member sees. */

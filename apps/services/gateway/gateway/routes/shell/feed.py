@@ -1015,6 +1015,93 @@ register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KIN
 register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
 
 
+# ── Questions for me (WS-55 EA-18c, external_agent_access.md §12.8, feed only) ─
+#
+# `agent_questions`: the agent questions that wait on the member, as ONE card.
+# The source reads `agent_questions.read_mine`, which runs `read_questions` and
+# keeps the rows that carry a `why` (the "For me" scope). It writes no SQL.
+# The oldest 3 questions go on the card, and `total` is the count of the list,
+# so the card, the Projects sidebar badge and the Approvals tab say one number.
+#
+# Gated like the other feed-only sources (MD-3b): it runs only while
+# `MY_DAY_PROVIDERS` lists `agent_questions`, so the answer of the feed does not
+# change by one byte before the flip. The flag `AGENT_QUESTIONS_ORGS` gates it
+# inside too (`SourceAbsent`), as the route answers 404. Turn on both to show
+# the card. Its one act opens the list in Projects, where an answer runs the
+# same write as the list (D100, D101). The session is the Projects app's own:
+# `agent_questions.read_mine`. This file opens none.
+#
+# Fence: `tests/unit/test_feed_agent_questions.py` and its `_r8` twin.
+
+QUESTION_KINDS = frozenset({"agent_questions"})
+#: The questions on the card, oldest first.
+QUESTIONS_SHOWN = 3
+#: The longest question, and the longest option label, on the card.
+QUESTION_CLIP = 140
+OPTION_CLIP = 40
+OPTIONS_SHOWN = 4
+#: The link of the card: the Questions section of Projects (``?app=questions``).
+QUESTIONS_HREF = "/projects?app=questions"
+
+
+def _clip(value: Any, size: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= size else text[: size - 1].rstrip() + "\u2026"
+
+
+def _question_fact(row: dict[str, Any]) -> dict[str, Any]:
+    """The facts of one question on the card, from a row of the list."""
+    q = row.get("question") or {}
+    path = " \u203a ".join(str(s.get("name") or "") for s in row.get("project_path") or []
+                           if s.get("name"))
+    return {
+        "activity_id": row["activity_id"], "task_id": row["task_id"],
+        "path": path or str(row.get("task_title") or ""),
+        "question": _clip(q.get("body"), QUESTION_CLIP),
+        "options": [_clip(o.get("label"), OPTION_CLIP) for o in (q.get("options") or [])
+                    if isinstance(o, dict) and o.get("label")][:OPTIONS_SHOWN],
+        "agent": row.get("agent_name"),
+    }
+
+
+def _agent_questions_signal(rows: list[dict[str, Any]], total: int,
+                            newest: Any = None) -> Signal:
+    """The one card of the member's questions: the 3 oldest *rows* of the list,
+    *total*, the whole "mine" count, and *newest*, the time of the newest
+    question of the whole list. ``waiting_since`` is that NEWEST time, as the
+    state fingerprint hashes it, so a new question brings a dismissed card back
+    (the rule of ``agent_asks``)."""
+    shown = [_question_fact(r) for r in rows]
+    title = ("An agent question waits for you" if total == 1
+             else f"{total} agent questions wait for you")
+    asked = _iso(rows[0].get("asked_at"))
+    since = _iso(newest) if newest else asked
+    return Signal(
+        signal_id="questions:mine", app="projects", kind="agent_questions",
+        entity={"type": "questions", "id": "mine", "label": title}, title=title,
+        facts={"total": total, "questions": shown, "waiting_since": since,
+               "request_ids": [q["activity_id"] for q in shown]},
+        href=QUESTIONS_HREF, acts=(link("answer", "Answer", QUESTIONS_HREF),),
+        at=asked,
+    )
+
+
+async def _agent_questions(user: UserContext) -> Found:
+    from gateway.routes.projects import agent_questions as aq
+    from gateway.routes.projects.filters import agent_questions_allowed
+
+    if not agent_questions_allowed(getattr(user, "organization_id", None)):
+        raise needs.SourceAbsent("AGENT_QUESTIONS_ORGS does not hold the org")
+    # The Projects app's own read: its session, its tenant and its visibility.
+    rows, total_mine, newest = await aq.read_mine(user, QUESTIONS_SHOWN)
+    signals = [_agent_questions_signal(rows, total_mine, newest)] if rows else []
+    return Found([], total_mine, capped=False, signals=lambda: signals)
+
+
+register(Provider("agent_questions", ("projects",), _agent_questions, QUESTION_KINDS,
+                  needs=False, gated=True, app="projects"))
+
+
 # ── Knowledge (WS-61 KB-9a and KB-9b, knowledge_base.md §9, feed only, gated) ─
 #
 # Three kinds, one source. `kb_gap` keys on `knowledge:gap:<id>`: a question
@@ -1372,6 +1459,8 @@ _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     "digest_ready": ("digest_ready", lambda f, _tz, _today: _digest_line(f)),
     "crm_open_questions": ("open_questions", lambda f, _tz, _today: _questions_line(f)),
     "kb_gap": ("gap", lambda f, _tz, _today: _gap_line(f)),
+    # WS-55 EA-18c: the agent questions that wait on the member.
+    "agent_questions": ("agent_questions", lambda f, _tz, _today: _questions_card_line(f)),
     # KB-9b: the two page cards.
     "doc_needs_review": ("review_due", _review_line),
     "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
@@ -1431,6 +1520,23 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
                         "The run waits for your answer.")
     raise KeyError(kind)
+
+
+def _questions_card_line(facts: dict[str, Any]) -> str:
+    """The why line of ``agent_questions`` (WS-55 EA-18c): the project path,
+    the oldest question and its options, and how many more wait. The question
+    is the agent's own words, clipped. The card draws no other model text."""
+    shown = facts.get("questions") or []
+    if not shown:
+        return "An agent waits for your answer."
+    first = shown[0]
+    line = f"{first['path']}: {first['question']}" if first.get("question") else str(first["path"])
+    if first.get("options"):
+        line += " Options: " + ", ".join(first["options"]) + "."
+    more = int(facts.get("total") or len(shown)) - 1
+    if more > 0:
+        line += f" {more} more {'question waits' if more == 1 else 'questions wait'}."
+    return line
 
 
 def _decision_line(facts: dict[str, Any], tz: ZoneInfo, today: date, *,

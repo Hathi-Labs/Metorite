@@ -77,6 +77,10 @@ const ANSWER: readonly string[] = [
   "my_tasks_plan_day",
   "my_tasks_replan_day",
   "my_tasks_rollover",
+  // AI Studio (STU-F5a): a read of the records draws a live table, a view of
+  // the read like `render_tasks`. Its text result is for the model, and its
+  // card (`components/studio/StudioRecordsCard.tsx`) never writes.
+  "studio_record_list",
 ];
 
 /** Reads. Projects names are manifest class A (held by the Python fence). */
@@ -179,6 +183,9 @@ const EVIDENCE: readonly string[] = [
   // `narrow_and_read` searches, picks and reads, and changes nothing. One
   // name serves the email and the WhatsApp agents.
   "narrow_and_read",
+  // ── AI Studio (the `studio` pack, `read_only=True`) ────────────────────
+  // STB-6a: the workflows, one workflow, or (STU-E4b) the human steps of one run.
+  "studio_workflow_read",
 ];
 
 /** Writes. Projects names are manifest class B or C. */

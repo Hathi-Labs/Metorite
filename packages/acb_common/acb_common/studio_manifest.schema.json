@@ -100,9 +100,96 @@
       "title": "CellDef",
       "type": "object"
     },
+    "ConnectionNeed": {
+      "additionalProperties": false,
+      "description": "STU-I9a. One connection that the app needs, with the account it uses.\n\n``as_`` (written ``as`` in the manifest) is ``org`` or ``member``. With\nnone, :func:`connection_as` gives the default of the connector list.\n``scopes`` are the scopes that the app asks for. They are a declaration\nonly: no credential is read from them.",
+      "properties": {
+        "as": {
+          "anyOf": [
+            {
+              "enum": [
+                "org",
+                "member"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scopes"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ConnectionNeed",
+      "type": "object"
+    },
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
+        "conversions": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversions"
+        },
+        "critical": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Critical"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Format"
+        },
         "hot": {
           "default": false,
           "title": "Hot",
@@ -141,6 +228,43 @@
           "default": false,
           "title": "Many",
           "type": "boolean"
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max"
+        },
+        "min": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min"
+        },
+        "normal": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normal"
         },
         "options": {
           "anyOf": [
@@ -191,10 +315,31 @@
             "url",
             "email",
             "phone",
-            "geo"
+            "geo",
+            "richText",
+            "rating",
+            "duration",
+            "quantity",
+            "percent",
+            "barcode"
           ],
           "title": "Type",
           "type": "string"
+        },
+        "units": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Units"
         }
       },
       "required": [
@@ -204,9 +349,147 @@
       "title": "FieldDef",
       "type": "object"
     },
+    "NavRow": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "enum": [
+                "Home",
+                "LayoutDashboard",
+                "LayoutGrid",
+                "List",
+                "ListChecks",
+                "Table",
+                "Kanban",
+                "Calendar",
+                "CalendarDays",
+                "Clock",
+                "Users",
+                "User",
+                "Briefcase",
+                "Handshake",
+                "Inbox",
+                "Mail",
+                "Phone",
+                "MessageCircle",
+                "FileText",
+                "Files",
+                "FolderOpen",
+                "Tag",
+                "Star",
+                "Flag",
+                "Bell",
+                "Bookmark",
+                "Wallet",
+                "Receipt",
+                "Package",
+                "Truck",
+                "MapPin",
+                "Wrench",
+                "Settings",
+                "ClipboardList",
+                "CheckSquare",
+                "Target",
+                "Trophy",
+                "Lightbulb",
+                "BookOpen",
+                "Layers",
+                "Activity",
+                "Sparkles"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "page": {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "title": "Page",
+          "type": "string"
+        }
+      },
+      "required": [
+        "page"
+      ],
+      "title": "NavRow",
+      "type": "object"
+    },
+    "NavSection": {
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/NavRow"
+          },
+          "maxItems": 12,
+          "title": "Rows",
+          "type": "array"
+        },
+        "title": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "rows"
+      ],
+      "title": "NavSection",
+      "type": "object"
+    },
     "ObjectDef": {
       "additionalProperties": false,
       "properties": {
+        "access": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Access"
+        },
         "fields": {
           "items": {
             "$ref": "#/$defs/FieldDef"
@@ -270,6 +553,37 @@
           "title": "Id",
           "type": "string"
         },
+        "layout": {
+          "anyOf": [
+            {
+              "enum": [
+                "table_workspace",
+                "list_detail",
+                "board",
+                "dashboard",
+                "work_queue",
+                "approval_queue"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout"
+        },
+        "regions": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maxProperties": 6,
+          "title": "Regions",
+          "type": "object"
+        },
         "side": {
           "anyOf": [
             {
@@ -306,6 +620,33 @@
         "id"
       ],
       "title": "PageDef",
+      "type": "object"
+    },
+    "RuntimeDef": {
+      "additionalProperties": false,
+      "description": "Where member code runs (STU-B7a, ai_studio.md 19.3). Four kinds. It has no\n`hosts` key on purpose, so `_Strict` refuses one.",
+      "properties": {
+        "kind": {
+          "default": "none",
+          "enum": [
+            "none",
+            "browser",
+            "sandbox",
+            "packages"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "packages": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 20,
+          "title": "Packages",
+          "type": "object"
+        }
+      },
+      "title": "RuntimeDef",
       "type": "object"
     },
     "Shell": {
@@ -826,7 +1167,14 @@
     },
     "connections": {
       "items": {
-        "type": "string"
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/$defs/ConnectionNeed"
+          }
+        ]
       },
       "title": "Connections",
       "type": "array"
@@ -881,6 +1229,14 @@
       "default": null,
       "title": "Name"
     },
+    "nav": {
+      "items": {
+        "$ref": "#/$defs/NavSection"
+      },
+      "maxItems": 4,
+      "title": "Nav",
+      "type": "array"
+    },
     "needs": {
       "items": {
         "additionalProperties": true,
@@ -923,6 +1279,24 @@
       ],
       "default": null,
       "title": "Purpose"
+    },
+    "roles": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Roles",
+      "type": "array"
+    },
+    "runtime": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeDef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "shell": {
       "anyOf": [

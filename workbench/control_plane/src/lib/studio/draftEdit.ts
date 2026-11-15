@@ -14,7 +14,7 @@
  * delete, because that field is the member's data model to change.
  * What happens at publish is in `publishEffect`.
  */
-import type { FieldType } from "./manifest";
+import { PRESET_REGIONS, type FieldType, type LayoutName } from "./manifest";
 
 /** Every string inside a rule, for a scan. */
 function ruleStrings(v: unknown, out: string[] = []): string[] {
@@ -47,8 +47,13 @@ export function rulesNaming(m: unknown, object: string, key: string): string[] {
   return out;
 }
 
-/** The field types that may be hot (`studio_fields.HOT_TYPES`). */
-const HOT_TYPES: readonly string[] = ["text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation"];
+/**
+ * The field types that may be hot (`studio_fields.HOT_TYPES`). `test_studio_row_rules.py` holds the
+ * two lists equal. C8a adds `person`, because a row rule reads the hot row of a person field.
+ */
+export const HOT_TYPES: readonly string[] = [
+  "text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation", "person",
+];
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -64,6 +69,8 @@ export const TYPE_LABELS: Record<string, string> = {
   text: "Text", longText: "Long text", number: "Number", money: "Money", date: "Date", datetime: "Date and time",
   checkbox: "Yes or no", select: "One choice", multiSelect: "Many choices", person: "Person", relation: "Link to object",
   file: "File", url: "Web link", email: "Email", phone: "Phone", geo: "Place",
+  richText: "Rich text", rating: "Rating", duration: "Time spent", quantity: "Quantity with unit", percent: "Percent",
+  barcode: "Barcode",
 };
 
 /** The blocks that the Views tab adds. */
@@ -144,6 +151,30 @@ export function linksTo(m: unknown, name: string): string[] {
   return out;
 }
 
+/**
+ * Drop the rail rows that name a removed page (`_check_nav`: a row names a declared page). A
+ * section left with no rows stays, because the server accepts an empty section. Every other key
+ * of a section or a row stays. The same `m` comes back when no row names a page of `gone`.
+ */
+export function dropNavRows(m: Obj, gone: ReadonlySet<string>): Obj {
+  if (gone.size === 0 || !Array.isArray(m.nav)) return m;
+  const named = (r: unknown) => isObj(r) && gone.has(str(r.page));
+  if (!m.nav.some((s) => isObj(s) && Array.isArray(s.rows) && s.rows.some(named))) return m;
+  return {
+    ...m,
+    nav: m.nav.map((s) => (isObj(s) && Array.isArray(s.rows) ? { ...s, rows: s.rows.filter((r) => !named(r)) } : s)),
+  };
+}
+
+/** A page with a preset holds while each required region has a view. `null` for a page with no preset. */
+function layoutHeld(p: Obj): boolean | null {
+  const layout = str(p.layout) as LayoutName;
+  const rules = PRESET_REGIONS[layout];
+  if (!rules) return null;
+  const regions = isObj(p.regions) ? p.regions : {};
+  return Object.entries(rules).every(([name, r]) => !r.required || (Array.isArray(regions[name]) && regions[name].length > 0));
+}
+
 /** The references to a set of views that live outside `views`: page cells, the side view, shell jobs, skill cards. */
 function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
   if (ids.size === 0) return m;
@@ -157,11 +188,20 @@ function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
       if ("cells" in p) next.cells = cells(p.cells);
       if (Array.isArray(p.tabs)) next.tabs = p.tabs.map((t) => (isObj(t) ? { ...t, cells: cells(t.cells) } : t));
       if (isObj(p.side) && ids.has(str(p.side.view))) delete next.side;
+      if (isObj(p.regions)) {
+        next.regions = Object.fromEntries(
+          Object.entries(p.regions).map(([k, v]) => [k, Array.isArray(v) ? v.filter((x) => !ids.has(str(x))) : v]),
+        );
+      }
       return next;
     });
     // A page that loses its last cell has no layout, and the check refuses it. It goes with its views.
-    const held = (p: unknown) => isObj(p) && ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0));
-    out.pages = (out.pages as unknown[]).filter((p, i) => held(p) || !held((m.pages as unknown[])[i]));
+    const held = (p: unknown) => isObj(p) && (layoutHeld(p) ?? ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0)));
+    const kept = (out.pages as unknown[]).filter((p, i) => held(p) || !held((m.pages as unknown[])[i]));
+    // The rail rows of a page that goes would name no page, and the check refuses that.
+    const goneIds = new Set((out.pages as unknown[]).filter((p) => !kept.includes(p)).map((p) => (isObj(p) ? str(p.id) : "")));
+    out.pages = kept;
+    Object.assign(out, dropNavRows(out, goneIds));
   }
   if (isObj(m.shell) && Array.isArray(m.shell.jobs)) {
     out.shell = { ...m.shell, jobs: m.shell.jobs.filter((j) => !(isObj(j) && ids.has(str(j.view)))) };
@@ -425,6 +465,7 @@ export function viewUses(m: unknown, id: string): number {
     count(p.cells);
     if (Array.isArray(p.tabs)) p.tabs.forEach((t) => isObj(t) && count(t.cells));
     if (isObj(p.side) && str(p.side.view) === id) n++;
+    if (isObj(p.regions)) for (const v of Object.values(p.regions)) count(Array.isArray(v) ? v.map((x) => ({ view: x })) : []);
   }
   return n;
 }

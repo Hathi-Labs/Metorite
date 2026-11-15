@@ -1,0 +1,189 @@
+{
+  "studio": 1,
+  "id": "site-survey",
+  "name": "Site survey",
+  "purpose": "Plan and run site surveys. Keep each survey's measurements, labelled photo files and checklist in one app.",
+  "team": "service",
+  "objects": [
+    {
+      "name": "survey",
+      "fields": [
+        {"key": "title", "type": "text", "required": true},
+        {"key": "site", "type": "geo"},
+        {"key": "surveyor", "type": "person"},
+        {"key": "surveyed_on", "type": "date"},
+        {"key": "status", "type": "select", "options": ["planned", "in progress", "done"], "hot": true}
+      ]
+    },
+    {
+      "name": "measurement",
+      "fields": [
+        {"key": "survey", "type": "relation", "to": "survey"},
+        {"key": "label", "type": "text"},
+        {"key": "value", "type": "number"},
+        {"key": "unit", "type": "select", "options": ["mm", "cm", "m"]}
+      ]
+    },
+    {
+      "name": "survey_photo",
+      "fields": [
+        {"key": "survey", "type": "relation", "to": "survey"},
+        {"key": "angle", "type": "select", "options": ["front", "back", "left", "right", "detail"]},
+        {"key": "photo", "type": "file"},
+        {"key": "place", "type": "geo"}
+      ]
+    },
+    {
+      "name": "checklist_item",
+      "fields": [
+        {"key": "survey", "type": "relation", "to": "survey"},
+        {"key": "item", "type": "text"},
+        {"key": "done", "type": "checkbox"}
+      ]
+    }
+  ],
+  "actions": [
+    {"id": "find", "uses": "object:survey.list"},
+    {"id": "survey_get", "uses": "object:survey.get"},
+    {"id": "survey_create", "uses": "object:survey.create"},
+    {"id": "survey_update", "uses": "object:survey.update"},
+    {"id": "survey_delete", "uses": "object:survey.delete"},
+    {"id": "survey_aggregate", "uses": "object:survey.aggregate", "title": "Count surveys"},
+    {"id": "finish_survey", "uses": "object:survey.update", "set": {"status": "done"}},
+    {"id": "measurement_get", "uses": "object:measurement.get"},
+    {"id": "measurement_list", "uses": "object:measurement.list"},
+    {"id": "measurement_create", "uses": "object:measurement.create"},
+    {"id": "measurement_update", "uses": "object:measurement.update"},
+    {"id": "measurement_delete", "uses": "object:measurement.delete"},
+    {"id": "photo_get", "uses": "object:survey_photo.get"},
+    {"id": "photo_list", "uses": "object:survey_photo.list"},
+    {"id": "photo_create", "uses": "object:survey_photo.create"},
+    {"id": "photo_update", "uses": "object:survey_photo.update"},
+    {"id": "photo_delete", "uses": "object:survey_photo.delete"},
+    {"id": "checklist_item_get", "uses": "object:checklist_item.get"},
+    {"id": "checklist_item_list", "uses": "object:checklist_item.list"},
+    {"id": "checklist_item_create", "uses": "object:checklist_item.create"},
+    {"id": "checklist_item_update", "uses": "object:checklist_item.update"},
+    {"id": "checklist_item_delete", "uses": "object:checklist_item.delete"}
+  ],
+  "views": [
+    {
+      "id": "board",
+      "block": "board",
+      "title": "Surveys by status",
+      "source": {"object": "survey"},
+      "group_by": "status",
+      "card": {"title": "title", "meta": ["surveyor", "surveyed_on"]}
+    },
+    {
+      "id": "list",
+      "block": "table",
+      "title": "Surveys",
+      "source": {"object": "survey"},
+      "columns": ["title", "surveyor", "surveyed_on", "status"]
+    },
+    {
+      "id": "surveys_by_status",
+      "block": "stat",
+      "title": "Surveys",
+      "source": {"action": "survey_aggregate", "args": {"group_by": {"field": "status"}, "measures": [{"op": "count"}]}}
+    },
+    {
+      "id": "survey_page",
+      "block": "detail",
+      "title": "Survey",
+      "object": "survey",
+      "fields": ["title", "site", "surveyor", "surveyed_on", "status"]
+    },
+    {
+      "id": "new",
+      "block": "form",
+      "title": "New survey",
+      "object": "survey",
+      "fields": ["title", "site", "surveyor", "surveyed_on", "status"],
+      "submit": "survey_create"
+    },
+    {
+      "id": "measurements",
+      "block": "table",
+      "title": "Measurements",
+      "source": {"object": "measurement"},
+      "columns": ["survey", "label", "value", "unit"]
+    },
+    {
+      "id": "photos",
+      "block": "table",
+      "title": "Photos",
+      "source": {"object": "survey_photo"},
+      "columns": ["survey", "angle", "photo", "place"]
+    },
+    {
+      "id": "checklist",
+      "block": "table",
+      "title": "Checklist",
+      "source": {"object": "checklist_item"},
+      "columns": ["survey", "item", "done"]
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "cols": 3,
+      "cells": [
+        {"view": "surveys_by_status"},
+        {"view": "board", "span": 3}
+      ]
+    },
+    {
+      "id": "surveys",
+      "title": "Surveys",
+      "cols": 3,
+      "side": {"view": "survey_page"},
+      "cells": [
+        {"view": "list", "span": 3}
+      ]
+    },
+    {
+      "id": "photos",
+      "title": "Photos",
+      "cols": 3,
+      "cells": [{"view": "photos", "span": 3}]
+    },
+    {
+      "id": "measurements",
+      "title": "Measurements",
+      "cols": 3,
+      "cells": [{"view": "measurements", "span": 3}]
+    },
+    {
+      "id": "checklist",
+      "title": "Checklist",
+      "cols": 3,
+      "cells": [{"view": "checklist", "span": 3}]
+    }
+  ],
+  "nav": [
+    {
+      "title": "Site survey",
+      "rows": [
+        {"page": "dashboard", "icon": "LayoutDashboard", "label": "Dashboard"},
+        {"page": "surveys", "icon": "ClipboardList", "label": "Surveys"},
+        {"page": "photos", "icon": "Files", "label": "Photos"},
+        {"page": "measurements", "icon": "Wrench", "label": "Measurements"},
+        {"page": "checklist", "icon": "ListChecks", "label": "Checklist"}
+      ]
+    }
+  ],
+  "skill": {
+    "description": "Use for site surveys: plan one, find one, add measurements, photos and checklist items, finish one.",
+    "instructions": "Ask for the survey title first. Show the board card. Finish a survey only on the member's request.",
+    "actions": ["object:survey.create", "finish_survey"],
+    "cards": ["board", "new"]
+  },
+  "shell": {
+    "jobs": [{"verb": "Plan a survey", "view": "new"}],
+    "needs": [{"object": "survey", "where": {"surveyor": "$me", "status": "planned"}}],
+    "search": ["survey"]
+  }
+}

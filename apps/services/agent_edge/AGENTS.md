@@ -81,6 +81,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - The manifests of `acb_common.app_manifests` are the one allowlist. `app_manifests.build_call` builds each call, and `gateway_client.send_call` sends its bytes, for a door pair only.
   - Check 8 asks for `<app>:read` or `<app>:write` of `arguments.app` (`tools.scope_of`). An unknown app gets a tool error and no 403.
   - `tools.door_value` maps each answer (AD-10). Each string is untrusted text, except a `plain` key of the row in a plain shape. A key with a secret word leaves no answer. `tools.door_cut` cuts a result to 256 KiB (AD-12).
+  - The AD-10 rule lives once in `acb_common.door_values` (task 2968). `tools.py` imports `door_value`, `plain_shape`, `untrusted` and `SECRET_WORDS` from it. `KEY_RE` of that module also sets the `move_tasks` `field_map` schema pattern and `_key()`, so a change to it changes a public MCP schema. Do not copy the rule back. Fence: `tests/unit/test_door_values_single_copy.py`.
   - AD-18: a write of class B or C that is not a proposal needs the member's approval. Until MCP-P1b, the edge refuses it with no request. A proposal goes to its route at once, under the idempotency slot of `_claim_slot`.
   - The two door-routed tools leave rules 3 and 4 of the coverage fence. `test_mcp_edge_app_door.py` holds them.
 

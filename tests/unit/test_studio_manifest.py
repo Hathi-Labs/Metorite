@@ -7,6 +7,7 @@ Each refusal has one test. It asserts a JSON path and one sentence of at most
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import time
@@ -16,6 +17,9 @@ import pytest
 from acb_common.studio_manifest import (
     BLOCKS,
     FIELD_TYPES,
+    LAYOUTS,
+    PRESET_REGIONS,
+    REGION_NAMES,
     SOURCE_NOT_A_READ,
     Manifest,
     ManifestError,
@@ -33,7 +37,7 @@ EXAMPLE: dict = {
     "name": "Field visits",
     "purpose": "Plan, run and close customer site visits.",
     "team": "service",
-    "connections": ["whatsapp"],
+    "connections": ["mcp:tally"],
     "objects": [
         {
             "name": "visit",
@@ -49,7 +53,7 @@ EXAMPLE: dict = {
     ],
     "actions": [
         {"id": "close_visit", "uses": "object:visit.update", "set": {"status": "done"}},
-        {"id": "tell_customer", "uses": "integration:whatsapp.send_template"},
+        {"id": "log_visit", "uses": "crm.log_activity"},
     ],
     "views": [
         {
@@ -88,7 +92,7 @@ EXAMPLE: dict = {
     },
 }
 
-CATALOG = {"integration:whatsapp.send_template": "B"}
+CATALOG = {"crm.log_activity": "B"}
 
 
 def doc(**patch) -> dict:
@@ -264,10 +268,10 @@ def test_class_x_action():
     e = one(
         EXAMPLE,
         "$.actions[1].uses",
-        catalog={"integration:whatsapp.send_template": "X"},
+        catalog={"crm.log_activity": "X"},
         contains="class X",
     )
-    assert "integration:whatsapp.send_template" in e.message
+    assert "crm.log_activity" in e.message
 
 
 def test_object_action_is_never_looked_up():
@@ -287,7 +291,8 @@ def test_bad_uses_grammar():
 
 
 @pytest.mark.parametrize(
-    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000"]
+    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000",
+             "mcp:github.get_issue"]
 )
 def test_other_uses_forms_are_valid(uses):
     d = copy.deepcopy(EXAMPLE)
@@ -1208,3 +1213,515 @@ def test_a_package_cannot_extend_itself():
     errors = validate_manifest(bad)
     assert [e.path for e in errors] == ["$.extends"]
     assert "cannot extend itself" in errors[0].message
+
+
+# -- STU-B7a: the runtime key ------------------------------------------------
+
+
+def _with_runtime(rt: object) -> dict:
+    return {**EXAMPLE, "runtime": rt}
+
+
+def test_no_runtime_key_means_kind_none_and_validates() -> None:
+    from acb_common.studio_manifest import runtime_kind
+
+    assert "runtime" not in EXAMPLE
+    assert validate_manifest(EXAMPLE) == []
+    assert runtime_kind(EXAMPLE) == "none"
+    assert runtime_kind(Manifest.model_validate(EXAMPLE)) == "none"
+    assert runtime_kind({**EXAMPLE, "runtime": {}}) == "none"
+
+
+@pytest.mark.parametrize("kind", ["none", "browser", "sandbox", "packages"])
+def test_each_runtime_kind_is_accepted(kind: str) -> None:
+    from acb_common.studio_manifest import runtime_kind
+
+    doc = _with_runtime({"kind": kind})
+    assert validate_manifest(doc) == []
+    assert runtime_kind(doc) == kind
+
+
+def test_a_bad_runtime_kind_is_refused_with_a_path() -> None:
+    errs = validate_manifest(_with_runtime({"kind": "gpu"}))
+    assert [e.path for e in errs] == ["$.runtime.kind"]
+
+
+def test_runtime_has_no_hosts_key() -> None:
+    errs = validate_manifest(_with_runtime({"kind": "sandbox", "hosts": ["a.example"]}))
+    assert [e.path for e in errs] == ["$.runtime.hosts"]
+
+
+def test_runtime_packages_are_pinned_and_bounded() -> None:
+    assert validate_manifest(_with_runtime({"kind": "packages", "packages": {"rich": "13.7.1"}})) == []
+    bad = validate_manifest(_with_runtime({"kind": "packages", "packages": {"rich": ">=13"}}))
+    assert [e.path for e in bad] == ["$.runtime.packages"]
+    many = {f"p{i}": "1.0" for i in range(21)}
+    assert validate_manifest(_with_runtime({"kind": "packages", "packages": many}))
+
+
+def test_a_manifest_without_runtime_hashes_as_before() -> None:
+    """Pin: the hash of a stored manifest without the key. A new optional key must not move it."""
+    from acb_common.studio_manifest import manifest_hash
+
+    doc = {"studio": 1, "id": "pin", "name": "Pin", "purpose": "Hold the hash."}
+    assert manifest_hash(doc) == hashlib.sha256(
+        b'{"id":"pin","name":"Pin","purpose":"Hold the hash.","studio":1}'
+    ).hexdigest()
+    assert validate_manifest(doc) == []
+
+
+# -- STU-I1a: the connections of a package, and no key in a form --------------
+#
+# R7. Mutations, run on 2026-11-14 on this file:
+# * N1. `_semantic_errors`: drop the call of `_check_connections`. The bad
+#   name, the duplicate and the cap tests go red.
+# * N2. `CONNECTION_NAME_RE`: accept any text after `mcp:`. The `mcp:x`,
+#   `mcp:` and `mcp:Tally` cases go red.
+# * N3. `_check_objects`: drop the `is_secret_field_key` check. The secret
+#   field key tests go red.
+# * N4. `_check_objects`: call the wide `is_secret_key` in its place (the rule
+#   before the review). `token_number`, `secretary`, `credential_expiry`,
+#   `token` and `tokens_used` go red.
+
+
+def _with_connections(names: object) -> dict:
+    return {**EXAMPLE, "connections": names}
+
+
+def test_the_example_names_a_registry_connection():
+    """§8.1 rule 10: until IN-3, a package names only registry connections."""
+    assert EXAMPLE["connections"] == ["mcp:tally"]
+    assert not any(a["uses"].startswith("integration:") for a in EXAMPLE["actions"])
+
+
+@pytest.mark.parametrize("names", [
+    [], ["mcp:tally"], ["zoho"], ["google_drive", "outlook_calendar"], ["mcp:my-erp-2", "github"],
+    ["mcp:" + "a" * 50], ["a" * 48],
+])
+def test_a_connection_of_the_grammar_passes(names):
+    assert validate_manifest(_with_connections(names)) == []
+
+
+@pytest.mark.parametrize("name", [
+    "Zoho", "zoho crm", "", "1zoho", "a" * 49, "whats-app", "mcp:x", "mcp:", "mcp:Tally",
+    "mcp:-tally", "mcp:tally-", "mcp:" + "a" * 51, "mcp:tally:x", "MCP:tally", " zoho",
+])
+def test_a_bad_connection_name_is_refused_with_its_path(name):
+    e = one(_with_connections(["zoho", name]), "$.connections[1]", contains="mcp:<server>")
+    assert "provider id" in e.message
+
+
+def test_a_duplicate_connection_is_refused_with_its_path():
+    e = one(_with_connections(["zoho", "mcp:tally", "zoho"]), "$.connections[2]",
+            contains="twice")
+    assert "zoho" in e.message
+    assert [x.path for x in validate_manifest(_with_connections(["zoho", "mcp:tally", "zoho"]))
+            ] == ["$.connections[2]"]
+
+
+def test_a_package_names_at_most_32_connections():
+    from acb_common.studio_manifest import MAX_CONNECTIONS
+
+    assert MAX_CONNECTIONS == 32
+    assert validate_manifest(_with_connections([f"p{i}" for i in range(32)])) == []
+    errs = validate_manifest(_with_connections([f"p{i}" for i in range(33)]))
+    assert [e.path for e in errs] == ["$.connections"]
+    assert "at most 32" in errs[0].message and words(errs[0].message) <= 25
+
+
+@pytest.mark.parametrize("names", ["zoho", [3], [None], {"zoho": True}])
+def test_a_connections_value_that_is_not_a_list_of_text_is_refused(names):
+    errs = validate_manifest(_with_connections(names))
+    assert errs and all(e.path.startswith("$.connections") for e in errs), errs
+
+
+# -- STU-I9a: whose account a connection uses, and its scopes ----------------
+#
+# R7 mutations, run on 2026-11-14:
+# * A1. `connection_as`: ignore the connector list. The default cases go red.
+# * A2. `_check_connection_scopes`: drop the duplicate check. The duplicate
+#   case goes red.
+# * A3. `ConnectionNeed.as_`: widen the Literal to `str`. The unknown `as`
+#   case goes red.
+
+#: The hash of a manifest with plain connection names, computed on the code of
+#: origin/main before I9a (`manifest_hash` of `EXAMPLE` with these names).
+_PLAIN_HASH = "9487d0d12b2b48d94f620335c4641358fabfa100b00b39f831cdce3be6d4a004"
+
+
+def test_a_stored_manifest_with_plain_names_validates_and_hashes_as_before():
+    from acb_common.studio_manifest import manifest_hash
+
+    stored = _with_connections(["mcp:tally", "zoho", "google_drive"])
+    assert validate_manifest(stored) == []
+    assert manifest_hash(stored) == _PLAIN_HASH
+
+
+def test_an_object_connection_passes_with_as_and_scopes():
+    names = ["zoho", {"name": "github"}, {"name": "google_drive", "as": "org",
+                                            "scopes": ["drive.file", "drive.readonly"]},
+             {"name": "mcp:tally", "as": "member", "scopes": []}]
+    assert validate_manifest(_with_connections(names)) == []
+
+
+@pytest.mark.parametrize(("name", "whose"), [
+    ("mailbox", "member"), ("whatsapp", "member"), ("google_calendar", "member"),
+    ("outlook_calendar", "member"), ("google_drive", "member"),
+    ("zoho", "org"), ("github", "org"), ("mcp:tally", "org"), ("not-a-connector", "org"),
+])
+def test_the_default_account_comes_from_the_connector_list(name, whose):
+    from acb_common.connector_list import connector
+    from acb_common.studio_manifest import connection_as, connection_item
+
+    row = connector(name)
+    assert row is None or row["scope"] == whose
+    assert connection_as(name) == whose
+    assert connection_item(name) == (name, whose)
+    assert connection_item({"name": name}) == (name, whose)
+
+
+def test_a_declared_account_wins_over_the_default():
+    from acb_common.studio_manifest import connection_item
+
+    assert connection_item({"name": "google_drive", "as": "org"}) == ("google_drive", "org")
+    assert connection_item({"name": "zoho", "as": "member"}) == ("zoho", "member")
+    assert connection_item({"name": "zoho", "as": None}) == ("zoho", "org")
+    assert connection_item({"as": "org"}) is None and connection_item(3) is None
+
+
+@pytest.mark.parametrize(("item", "path"), [
+    ({"name": "zoho", "as": "all"}, "$.connections[1].as"),
+    ({"name": "zoho", "as": "Org"}, "$.connections[1].as"),
+    ({"name": "zoho", "as": 1}, "$.connections[1].as"),
+    ({"name": "zoho", "scopes": "read"}, "$.connections[1].scopes"),
+    ({"name": "zoho", "scopes": {"read": True}}, "$.connections[1].scopes"),
+    ({"name": "zoho", "scopes": [1]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["read", "read"]}, "$.connections[1].scopes[1]"),
+    ({"name": "zoho", "scopes": [""]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["two words"]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["x" * 201]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "token": "x"}, "$.connections[1].token"),
+    ({"as": "org"}, "$.connections[1].name"),
+    ({"name": "Zoho CRM"}, "$.connections[1]"),
+    (5, "$.connections[1]"),
+])
+def test_a_hostile_connection_item_is_refused_with_a_path_and_one_sentence(item, path):
+    errs = validate_manifest(_with_connections(["github", item]))
+    assert [e.path for e in errs] == [path], errs
+    assert words(errs[0].message) <= 25, errs[0].message
+
+
+def test_too_many_scopes_are_refused_once():
+    from acb_common.studio_manifest import MAX_CONNECTION_SCOPES
+
+    ok = [f"s{i}" for i in range(MAX_CONNECTION_SCOPES)]
+    assert validate_manifest(_with_connections([{"name": "zoho", "scopes": ok}])) == []
+    errs = validate_manifest(_with_connections([{"name": "zoho", "scopes": [*ok, "more"]}]))
+    assert [e.path for e in errs] == ["$.connections[0].scopes"]
+    huge = validate_manifest(_with_connections([{"name": "zoho", "scopes": ["a"] * 5000}]))
+    assert [e.path for e in huge] == ["$.connections[0].scopes"]
+
+
+def test_a_name_in_two_forms_is_a_duplicate():
+    errs = validate_manifest(_with_connections(["zoho", {"name": "zoho", "as": "member"}]))
+    assert [e.path for e in errs] == ["$.connections[1]"]
+
+
+def test_the_old_pure_reader_still_returns_the_names():
+    from gateway.package_host import resolve
+
+    names = ["zoho", {"name": "google_drive", "as": "org", "scopes": ["a"]}]
+    assert resolve.connection_names({"connections": names}) == ("zoho", "google_drive")
+    assert resolve.connection_names({"connections": [{"as": "org"}]}) is None
+
+
+def _with_field(key: str) -> dict:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"].append({"key": key, "type": "text"})
+    return d
+
+
+@pytest.mark.parametrize("key", [
+    "api_key", "apikey", "client_secret", "access_token", "refresh_token", "private_key",
+    "password", "db_passwd", "zoho_api_key", "secret_key", "auth_token", "bearer_token",
+    "api_secret", "app_secret", "webhook_secret", "signing_secret", "consumer_secret",
+    "access_key", "api_token", "aws_secret_access_key",
+])
+def test_a_field_key_that_names_a_secret_is_refused_with_its_path(key):
+    from acb_common.studio_manifest import SECRET_FIELD
+
+    d = _with_field(key)
+    e = one(d, "$.objects[0].fields[6].key", contains="connections")
+    assert e.message.startswith(SECRET_FIELD)
+    assert [x.path for x in validate_manifest(d)] == ["$.objects[0].fields[6].key"]
+
+
+@pytest.mark.parametrize("key", ["apiKey", "x-api-key"])
+def test_a_secret_key_that_breaks_the_field_grammar_is_refused_with_its_path(key):
+    """A field key is snake case, so the grammar refuses these at the same path."""
+    assert [x.path for x in validate_manifest(_with_field(key))] == [
+        "$.objects[0].fields[6].key"]
+
+
+@pytest.mark.parametrize("key", [
+    "site_code", "notes", "visit_count", "key_account", "token_number", "secretary",
+    "credential_expiry", "token", "tokens_used",
+])
+def test_a_field_key_that_names_no_secret_passes(key):
+    """P2-1 of the I1a review: a clinic queue token, a housing society secretary
+    and the expiry of a credential are member data. Only a whole secret name
+    counts (``secret_shapes.is_secret_field_key``)."""
+    assert validate_manifest(_with_field(key)) == []
+
+
+def test_the_field_rule_is_narrower_than_the_key_rule_of_the_scan():
+    """``is_secret_key`` keeps its wide rule for its other callers (the scan of
+    a value under a secret-named key)."""
+    from acb_common.secret_shapes import is_secret_field_key, is_secret_key
+
+    for key in ("token_number", "secretary", "credential_expiry"):
+        assert is_secret_key(key) and not is_secret_field_key(key), key
+    for key in ("api_key", "apiKey", "x-api-key", "X-Api-Key", "client_secret", "APIKey",
+                "old_password_hint"):
+        assert is_secret_field_key(key), key
+
+# --- nav, the rail of the app (STU-AF2a) ---
+
+
+def _nav_doc(*sections: dict, pages: int = 1) -> dict:
+    ps = [_page(id=f"p{i}") for i in range(pages)]
+    return doc(pages=ps, nav=list(sections))
+
+
+def _sec(title: str = "Work", *rows: dict) -> dict:
+    return {"title": title, "rows": list(rows) or [{"page": "p0"}]}
+
+
+def test_nav_is_optional_and_defaults_to_empty():
+    assert "nav" not in EXAMPLE
+    assert validate_manifest(EXAMPLE) == []
+    assert Manifest.model_validate(EXAMPLE).nav == []
+    again = Manifest.model_validate(Manifest.model_validate(EXAMPLE).model_dump(mode="json"))
+    assert again.nav == []
+
+
+def test_valid_nav_with_an_icon_and_a_label():
+    d = _nav_doc(_sec("Work", {"page": "p0", "icon": "Home", "label": "Start"}, {"page": "p1"}), pages=2)
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).nav[0].rows[0].icon == "Home"
+
+
+def test_nav_section_cap_is_four():
+    ok = [_sec(f"S{i}") for i in range(4)]
+    assert validate_manifest(_nav_doc(*ok)) == []
+    one(_nav_doc(*ok, _sec("S4")), "$.nav", contains="at most 4")
+
+
+def test_nav_row_cap_is_twelve():
+    rows = [{"page": "p0"}] * 13
+    assert validate_manifest(_nav_doc(_sec("S", *rows[:12]))) == []
+    one(_nav_doc(_sec("S", *rows)), "$.nav[0].rows", contains="at most 12")
+
+
+def test_nav_row_names_a_declared_page():
+    one(_nav_doc(_sec("S", {"page": "nope"})), "$.nav[0].rows[0].page", contains="not declared")
+
+
+def test_nav_without_pages_is_refused():
+    d = doc(nav=[_sec("S")])
+    one(d, "$.nav[0].rows[0].page", contains="`pages`")
+
+
+def test_duplicate_section_titles_are_refused():
+    one(_nav_doc(_sec("Same"), _sec("Same")), "$.nav[1]", contains="used twice")
+
+
+def test_nav_icon_outside_the_list_is_refused():
+    d = _nav_doc(_sec("S", {"page": "p0", "icon": "Skull"}))
+    one(d, "$.nav[0].rows[0].icon", contains="icon list")
+
+
+def test_nav_icons_equal_the_literal_of_a_row():
+    from typing import get_args
+
+    from acb_common.studio_manifest import NAV_ICONS, NavRow
+
+    literal = [a for a in get_args(NavRow.model_fields["icon"].annotation) if a is not type(None)]
+    assert tuple(get_args(literal[0])) == NAV_ICONS
+    assert len(set(NAV_ICONS)) == len(NAV_ICONS)
+
+
+def test_nav_row_refuses_a_colour_key():
+    d = _nav_doc(_sec("S", {"page": "p0", "color": "red"}))
+    one(d, "$.nav[0].rows[0].color", contains="style")
+    d = _nav_doc(_sec("S", {"page": "p0", "label": "#ff0000"}))
+    one(d, "$.nav[0].rows[0].label", contains="colour")
+
+
+def test_nav_row_refuses_an_unknown_key_and_a_blank_title():
+    assert _at(_nav_doc(_sec("S", {"page": "p0", "badge": 3})), "$.nav[0].rows[0].badge")
+    assert _at(_nav_doc(_sec(" ")), "$.nav[0].title")
+
+
+# --- nav counts (STU-AF3a) ---
+
+
+def _count_doc(rows_by_section: list[list[dict]], pages: list[dict]) -> dict:
+    return doc(pages=pages, nav=[_sec(f"S{i}", *rows) for i, rows in enumerate(rows_by_section)])
+
+
+def test_count_on_a_page_with_a_board_or_table_view_is_ok():
+    d = _count_doc([[{"page": "main", "count": True}]], [_page()])
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).nav[0].rows[0].count is True
+    # A view in a tab or in the side cell counts too.
+    tabbed = {"id": "t", "tabs": [{"id": "a", "title": "A", "cells": [{"view": "board"}]}]}
+    side = {"id": "s", "cells": [{"view": "week"}], "side": {"view": "board"}}
+    d = _count_doc([[{"page": "t", "count": True}, {"page": "s", "count": True}]], [tabbed, side])
+    assert validate_manifest(d) == []
+
+
+def test_count_on_a_page_without_a_table_or_board_view_is_refused():
+    only_week = {"id": "w", "cells": [{"view": "week"}, {"view": "check_in"}]}
+    d = _count_doc([[{"page": "w", "count": True}]], [only_week])
+    one(d, "$.nav[0].rows[0].count", contains="Page `w` has no table or board view")
+
+
+def test_count_false_or_missing_is_never_checked():
+    only_week = {"id": "w", "cells": [{"view": "week"}]}
+    d = _count_doc([[{"page": "w", "count": False}, {"page": "w"}, {"page": "w", "count": None}]], [only_week])
+    assert validate_manifest(d) == []
+
+
+def test_eight_counts_are_ok_and_nine_are_refused():
+    from acb_common.studio_manifest import MAX_NAV_COUNTS
+
+    assert MAX_NAV_COUNTS == 8
+    c = {"page": "main", "count": True}
+    assert validate_manifest(_count_doc([[c] * 4, [c] * 4], [_page()])) == []
+    one(_count_doc([[c] * 5, [c] * 4], [_page()]), "$.nav", contains="at most 8 counts")
+
+
+def test_a_count_cap_error_does_not_hide_other_nav_errors():
+    c = {"page": "main", "count": True}
+    d = _count_doc([[c] * 5, [c] * 3, [{"page": "nope"}]], [_page()])
+    assert _at(d, "$.nav[2].rows[0].page")
+    assert not _at(d, "$.nav")
+
+
+def test_a_manifest_with_no_count_still_validates():
+    assert validate_manifest(_nav_doc(_sec("S", {"page": "p0", "icon": "Home"}))) == []
+
+
+def test_a_row_still_refuses_a_view_filter_or_sort_key():
+    for key in ("view", "filter", "sort"):
+        assert _at(_nav_doc(_sec("S", {"page": "p0", key: "x"})), f"$.nav[0].rows[0].{key}")
+
+
+def test_every_first_party_template_still_validates():
+    root = Path(__file__).resolve().parents[2] / "packages/acb_common/acb_common/studio_templates"
+    files = sorted(root.glob("*.json"))
+    assert files
+    for f in files:
+        assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
+
+
+# ── Page presets (STU-LY-0, specs/studio_layouts.md section 6) ──────────────────────────────
+
+_LY_VIEWS = [
+    {"id": "all_visits", "block": "table", "source": {"object": "visit"}, "columns": ["status"]},
+    {"id": "one_visit", "block": "detail", "object": "visit"},
+    {"id": "n_open", "block": "stat", "source": {"object": "visit"}},
+    {"id": "by_status", "block": "chart", "source": {"object": "visit"}},
+]
+
+
+def _ly(*pages: dict, extra_views=True) -> dict:
+    d = doc(pages=list(pages))
+    if extra_views:
+        d["views"] = [*d["views"], *_LY_VIEWS]
+    return d
+
+
+def _lp(layout: str, **regions) -> dict:
+    return {"id": "main", "layout": layout, "regions": regions}
+
+
+def test_a_page_with_no_layout_is_unchanged():
+    d = _with_pages(_page())
+    assert validate_manifest(d) == []
+    pg = Manifest.model_validate(d).pages[0]
+    assert pg.layout is None and pg.regions == {}
+
+
+def test_each_first_preset_validates_with_its_regions():
+    assert validate_manifest(_ly(_lp("table_workspace", main=["all_visits"]))) == []
+    assert validate_manifest(_ly(_lp("board", main=["board"]))) == []
+    for name in ("list_detail", "work_queue", "approval_queue"):
+        assert validate_manifest(_ly(_lp(name, list=["all_visits"], detail=["one_visit"]))) == []
+    full = _lp("dashboard", kpis=["n_open"], charts=["by_status"], worklist=["all_visits"])
+    assert validate_manifest(_ly(full)) == []
+
+
+def test_the_enum_is_closed_to_a_preset_whose_block_is_not_built():
+    errs = validate_manifest(_ly(_lp("calendar", main=["week"])))
+    assert errs and errs[0].path.startswith("$.pages[0]")
+
+
+def test_a_region_outside_the_preset_is_refused():
+    d = _ly(_lp("board", main=["board"], kpis=["n_open"]))
+    one(d, "$.pages[0].regions.kpis", contains="no region")
+
+
+def test_a_missing_required_region_is_refused():
+    one(_ly(_lp("list_detail", list=["all_visits"])), "$.pages[0].regions.detail", contains="needs region")
+    one(_ly(_lp("board")), "$.pages[0].regions.main", contains="needs region")
+
+
+def test_a_view_of_the_wrong_block_is_refused():
+    one(_ly(_lp("table_workspace", main=["board"])), "$.pages[0].regions.main[0]", contains="table view")
+
+
+def test_an_undeclared_view_in_a_region_is_refused():
+    one(_ly(_lp("table_workspace", main=["ghost"])), "$.pages[0].regions.main[0]", contains="ghost")
+
+
+def test_a_region_cap_is_refused():
+    d = _ly(_lp("table_workspace", main=["all_visits", "all_visits"]))
+    one(d, "$.pages[0].regions.main", contains="at most 1 view")
+    seven = _lp("dashboard", kpis=["n_open"] * 7)
+    one(_ly(seven), "$.pages[0].regions.kpis", contains="at most 6")
+
+
+def test_a_layout_page_has_no_grid():
+    d = _ly({**_lp("board", main=["board"]), "cells": [{"view": "board"}]})
+    one(d, "$.pages[0]", contains="no tabs, cells or side")
+    d = _ly({**_lp("board", main=["board"]), "side": {"view": "board"}})
+    one(d, "$.pages[0]", contains="no tabs, cells or side")
+
+
+def test_regions_need_a_layout():
+    d = _with_pages({"id": "main", "cells": [{"view": "board"}], "regions": {"main": ["board"]}})
+    one(d, "$.pages[0].regions", contains="needs a `layout`")
+
+
+def test_a_colour_or_size_key_in_a_region_is_refused():
+    d = _ly(_lp("board", main=["board"]))
+    d["pages"][0]["regions"]["color"] = ["board"]
+    assert validate_manifest(d)
+    d = _ly(_lp("board", main=["board"]))
+    d["pages"][0]["width"] = 300
+    assert validate_manifest(d)
+
+
+def test_a_rail_count_reads_the_views_of_a_layout_page():
+    d = _ly(_lp("table_workspace", main=["all_visits"]))
+    d["nav"] = [{"title": "Work", "rows": [{"page": "main", "count": True}]}]
+    assert validate_manifest(d) == []
+
+
+def test_the_region_table_matches_the_validator_and_the_names():
+    assert set(PRESET_REGIONS) == set(LAYOUTS)
+    assert {r for t in PRESET_REGIONS.values() for r in t} <= set(REGION_NAMES)
+    schema = Manifest.model_json_schema()
+    assert schema["$defs"]["PageDef"]["properties"]["layout"]["anyOf"][0]["enum"] == list(LAYOUTS)

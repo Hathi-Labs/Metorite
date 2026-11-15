@@ -68,7 +68,11 @@ def _field(spec: dict[str, Any]) -> FieldSpec:
     opts = spec.get("options")
     return FieldSpec(
         key=spec["key"], type=spec["type"], required=spec.get("required", False),
-        many=spec.get("many", False), options=tuple(opts) if opts else None)
+        many=spec.get("many", False), options=tuple(opts) if opts else None,
+        min=spec.get("min"), max=spec.get("max"),
+        units=tuple(spec["units"]) if spec.get("units") else None, format=spec.get("format"),
+        normal=sf.range_of(spec.get("normal")), critical=sf.range_of(spec.get("critical")),
+        conversions=sf.conversions_of(spec.get("conversions")))
 
 
 OPEN_CLOSED = ["Open", "Closed"]
@@ -153,6 +157,37 @@ VALUES: dict[str, tuple[dict[str, Any], list[Any]]] = {
     ]),
 }
 
+# C14. The six more types. A spec extra (`min`, `max`, `units`, `format`) rides in `field`.
+VALUES.update({
+    "richText": ({}, [
+        "# Title\n\nSome **bold** text.", 5, "", "a < b and c > d", "<b>bold</b>", "<script>x</script>",
+        "<!-- note -->", "< div>", "a\u0000b", Rep("a", 20000), Rep("a", 20001),
+    ]),
+    "rating": ({}, [3, 1, 5, 0, 6, 3.5, True, "3", None]),
+    "duration": ({}, [
+        0, 90, 3600, -1, 10**10 - 1, 10**10, 1.5, True, "90", None,
+    ]),
+    "quantity": ({"units": ["kg", "m"]}, [
+        {"value": "12.5", "unit": "kg"}, {"value": "-3", "unit": "m"},
+        {"value": "0.000001", "unit": "kg"}, {"value": "999999999999999", "unit": "kg"},
+        {"value": "1e3", "unit": "kg"}, {"value": "1.5", "unit": "lb"},
+        {"value": "1.1234567", "unit": "kg"}, {"value": "", "unit": "kg"},
+        {"value": 5, "unit": "kg"}, {"value": "5"}, {"value": "5", "unit": "kg", "extra": 1},
+        "5 kg", None,
+    ]),
+    "percent": ({}, [0, 2550, -100, 10**9 - 1, 10**9, 12.5, True, "5%", None]),
+    "barcode": ({"format": "ean13"}, [
+        "4006381333931", "4006381333932", "400638133393", "40063813339311",
+        "400638133393a", 4006381333931, None,
+    ]),
+})
+# A barcode of the other two formats, and a rating with its own bounds.
+EXTRA_CASES: list[tuple[str, dict[str, Any], list[Any]]] = [
+    ("barcode", {"format": "code128"}, ["ABC-123", "", "a" * 80, "a" * 81, "café", "a\tb"]),
+    ("barcode", {"format": "qr"}, ["https://example.com/a", "", "a" * 2000, "a" * 2001, "a\nb"]),
+    ("rating", {"min": 0, "max": 10}, [0, 10, 11, -1]),
+]
+
 MANY_CASES: list[tuple[str, dict[str, Any], Any]] = [
     ("text", {}, ["a", "b"]),
     ("text", {}, []),
@@ -167,6 +202,65 @@ MANY_CASES: list[tuple[str, dict[str, Any], Any]] = [
     ("text", {}, ["a"] * 500),
     ("text", {}, ["a"] * 501),
 ]
+
+def _q(value: str, unit: str) -> dict[str, str]:
+    return {"value": value, "unit": unit}
+
+
+_GLU = _spec(
+    "quantity", units=["mmol/L", "mg/dL", "mEq"],
+    normal={"low": "3.9", "high": "5.6"}, critical={"low": "2.8", "high": "10"},
+    conversions=[{"from": "mg/dL", "to": "mmol/L", "factor": "0.0555"}])
+_MASS = _spec(
+    "quantity", units=["kg", "g"], normal={"low": "1", "high": "2"},
+    conversions=[{"from": "g", "to": "kg", "factor": "0.001"}])
+_BIG = _spec(
+    "quantity", units=["kg", "g"], normal={"low": None, "high": "999999999.999999"},
+    conversions=[{"from": "g", "to": "kg", "factor": "0.000001"}])
+_FACT = _spec(
+    "quantity", units=["a", "b"], normal={"high": "123456999999999.876543"},
+    conversions=[{"from": "b", "to": "a", "factor": "0.123457"}])
+
+# C24a. (id, field spec, value, the flag). The flag is stated here, by hand, and
+# `build_cases` asserts that `quantity_flag` returns it. `fieldCheck.test.ts` holds
+# the TypeScript twin to the same list.
+FLAG_CASES: list[tuple[str, dict[str, Any], dict[str, str], str]] = [
+    ("normal-low-bound", _GLU, _q("3.9", "mmol/L"), "normal"),
+    ("normal-high-bound", _GLU, _q("5.6", "mmol/L"), "normal"),
+    ("just-below-normal", _GLU, _q("3.899999", "mmol/L"), "low"),
+    ("just-above-normal", _GLU, _q("5.600001", "mmol/L"), "high"),
+    ("critical-low-bound-is-low", _GLU, _q("2.8", "mmol/L"), "low"),
+    ("just-below-critical", _GLU, _q("2.799999", "mmol/L"), "critical_low"),
+    ("critical-high-bound-is-high", _GLU, _q("10", "mmol/L"), "high"),
+    ("just-above-critical", _GLU, _q("10.000001", "mmol/L"), "critical_high"),
+    ("negative-value", _GLU, _q("-1", "mmol/L"), "critical_low"),
+    ("converted-low", _GLU, _q("70", "mg/dL"), "low"),
+    ("converted-normal", _GLU, _q("100.9", "mg/dL"), "normal"),
+    ("unit-without-conversion", _GLU, _q("5", "mEq"), "unchecked"),
+    ("converted-on-the-low-edge", _MASS, _q("1000", "g"), "normal"),
+    ("converted-just-below-the-edge", _MASS, _q("999.999", "g"), "low"),
+    ("converted-on-the-high-edge", _MASS, _q("2000", "g"), "normal"),
+    ("converted-just-above-the-edge", _MASS, _q("2000.001", "g"), "high"),
+    ("no-range", _spec("quantity", units=["kg", "g"]), _q("5", "kg"), "none"),
+    ("only-low-below", _spec("quantity", units=["kg"], normal={"low": "1"}), _q("0.999999", "kg"), "low"),
+    ("only-low-far-above", _spec("quantity", units=["kg"], normal={"low": "1"}), _q("999999999999999", "kg"), "normal"),
+    ("only-high-above", _spec("quantity", units=["kg"], normal={"high": "1"}), _q("1.000001", "kg"), "high"),
+    ("critical-only", _spec("quantity", units=["kg"], critical={"high": "9"}), _q("9.000001", "kg"), "critical_high"),
+    ("fifteen-digit-value-exact", _BIG, _q("999999999999999", "g"), "normal"),
+    ("fifteen-digit-value-over", _BIG, _q("999999999999999", "kg"), "high"),
+    ("six-decimal-factor-exact", _FACT, _q("999999999999999", "b"), "normal"),
+    ("six-decimal-factor-over", _FACT, _q("999999999999999", "a"), "high"),
+]
+
+
+def _flag_cases() -> list[dict[str, Any]]:
+    out = []
+    for case_id, spec, value, want in FLAG_CASES:
+        got = sf.quantity_flag(_field(spec), value)
+        assert got == want, (case_id, got, want)
+        out.append({"id": f"flag-{case_id}", "field": spec, "value": value, "flag": got})
+    return out
+
 
 RECORD_FIELDS = [
     {"key": "title", "type": "text", "required": True},
@@ -210,6 +304,9 @@ def build_cases() -> dict[str, Any]:
         spec = _spec(kind, **extra)
         for i, v in enumerate(items):
             values.append(_value_case(f"{kind}-{i}", spec, v))
+    for j, (kind, extra, items) in enumerate(EXTRA_CASES):
+        for i, v in enumerate(items):
+            values.append(_value_case(f"{kind}-extra-{j}-{i}", _spec(kind, **extra), v))
     for i, (kind, extra, v) in enumerate(MANY_CASES):
         values.append(_value_case(f"{kind}-many-{i}", _spec(kind, many=True, **extra), v))
     records: list[dict[str, Any]] = []
@@ -226,6 +323,7 @@ def build_cases() -> dict[str, Any]:
     return {
         "note": "Written by tests/unit/test_studio_field_cases_parity.py. Do not edit by hand.",
         "values": values,
+        "flags": _flag_cases(),
         "records": records,
     }
 
@@ -282,6 +380,13 @@ def test_ts_limits_equal_the_python_constants():
         "MAX_MANY_ITEMS": sf.MAX_MANY_ITEMS,
         "MAX_URL_CHARS": sf.MAX_URL_CHARS,
         "MAX_EMAIL_CHARS": sf.MAX_EMAIL_CHARS,
+        "MAX_RATING_BOUND": sf.MAX_RATING_BOUND,
+        "MAX_DURATION_SECONDS": sf.MAX_DURATION_SECONDS,
+        "MAX_PERCENT_BP": sf.MAX_PERCENT_BP,
+        "MAX_UNITS": sf.MAX_UNITS,
+        "MAX_UNIT_CHARS": sf.MAX_UNIT_CHARS,
+        "MAX_CODE_CHARS": sf.MAX_CODE_CHARS,
+        "MAX_QR_CHARS": sf.MAX_QR_CHARS,
     }
     assert found == want
 

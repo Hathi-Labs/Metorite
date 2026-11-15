@@ -32,6 +32,8 @@ from acb_auth import build_access
 from acb_auth.permissions import FEATURES
 from gateway.routes.admin.me import resolve_features
 
+from tests.unit import _r8_lists as r8_lists
+
 OWNER = build_access(["*"])
 ADMIN = build_access(["feature:*", "admin:members:read"])
 MEMBER = build_access(["feature:chat", "feature:tasks"])
@@ -341,18 +343,11 @@ def test_pkg7_the_resolve_keeps_each_claim_for_the_split():
     assert _every_feature("anything") is True
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_pkg7_the_r8_suite_is_named_in_the_must_run_list(workflow):
+def test_pkg7_the_r8_suite_is_named_in_the_must_run_list():
     """A skip of the R8 twin must fail CI, so both lists name it."""
-    import re
-    from pathlib import Path
 
-    root = Path(__file__).resolve().parents[2]
-    text = (root / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_auth_me_install_features_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_auth_me_install_features_r8.py" in must_run
 
 
 # ── AI Studio (WS-STU J1) ───────────────────────────────────────────────────
