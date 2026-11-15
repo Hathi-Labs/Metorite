@@ -167,14 +167,6 @@ reader is `gateway.routes.workflows.core.author_gate_on`, and each request
 asks it. A reload applies a change, and the flip stays OWNER-GATE
 (`enforcement-flip`).
 
-`TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
-(`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`
-gives a pack. `*` lists every org, and the default is empty. Its one reader is
-`acb_skills.tool_packs.tool_search_on`. The apply of the tool packs asks it at
-the start of each run, so a reload applies to the next run. Any value other
-than empty is OWNER-ONLY (`work_plan.md` §6 D4), and the §3a window does not
-open it.
-
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 
