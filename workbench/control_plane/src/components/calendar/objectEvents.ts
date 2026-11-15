@@ -8,6 +8,9 @@ export type ObjectEventSource = {
   dateField: string;
   /** The field that holds the title of the row. */
   titleField: string;
+  /** The field that holds the end of the row. A row with no usable end after
+   *  its start falls back to `durationMins`. */
+  endField?: string;
   /** Minutes that a datetime row lasts. The default is 60. */
   durationMins?: number;
 };
@@ -37,9 +40,14 @@ export function rowsToEvents(rows: ObjectRow[], src: ObjectEventSource): GridEve
     const d = readDate(row.values[src.dateField]);
     if (!d) continue;
     const title = row.values[src.titleField];
-    const end = d.allDay
+    // A date-only start stays all day. The end field does not change that.
+    let end = d.allDay
       ? new Date(d.at.getFullYear(), d.at.getMonth(), d.at.getDate() + 1)
       : new Date(d.at.getTime() + mins * 60000);
+    if (!d.allDay && src.endField) {
+      const e = readDate(row.values[src.endField]);
+      if (e && e.at.getTime() > d.at.getTime()) end = e.at;
+    }
     out.push({
       id: row.id,
       title: typeof title === "string" && title.trim() ? title : "Untitled",

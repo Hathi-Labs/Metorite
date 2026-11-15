@@ -144,3 +144,12 @@ def test_record_interface_and_cap_match_the_schema():
     assert schema["$defs"]["RecordDef"]["properties"]["tabs"]["maxItems"] == MAX_RECORD_TABS
     m = re.search(r"export const MAX_RECORD_TABS = (\d+);", _ts())
     assert m and int(m.group(1)) == MAX_RECORD_TABS
+
+
+def test_nav_count_cap_equals_the_ts_twin():
+    from acb_common.studio_manifest import MAX_NAV_COUNTS
+
+    m = re.search(r"export const MAX_NAV_COUNTS\s*=\s*(\d+);", _ts())
+    assert m and int(m.group(1)) == MAX_NAV_COUNTS
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    assert schema["$defs"]["NavRow"]["properties"]["count"]["anyOf"][0] == {"type": "boolean"}

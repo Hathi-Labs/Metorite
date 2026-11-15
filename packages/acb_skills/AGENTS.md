@@ -77,6 +77,7 @@ not write a second copy of that seam. A bare test file name is under
    - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
    - WS-67 TS-2a (D222): `find_tools` adds single tools of a pack. `FindTools` is its `FunctionMiddleware`, and `FindToolsProvider` adds both to one run. It has NO caller yet. TS-2a PR 3 wires it behind `TOOL_SEARCH_ORGS`.
    - `find_candidates` gives the candidates. They are the tools of the guarded setup build of each pack of `search_packs`, so a dropped tool never ranks. The caller passes the owners. A pack with no candidate is not in the description.
+   - `search_packs` gives each pack of the owners that the caller passes, that `packs_on` allows and that layer (a) did not load. A follow pack counts too, so `studio-more` is a candidate beside a loaded core. `studio-workflows` is one only where `TOOL_PACKS` names it.
    - `FindTools` builds the found tools again at call time through the guarded builder, so the held answer of the call holds. A found tool never joins `PackRun.holds`.
    - The answer gives `_rules_block` of each owning pack once in a run. A pack that becomes held later gets its hold note alone.
    - `PackRun.lock` is the ONE lock of the live tool list. `LoadSkillTools` and `FindTools` hold it through the check, the build and `add_tools`. Do not give either a lock of its own. Fence: `test_find_tools_guards.py`.
