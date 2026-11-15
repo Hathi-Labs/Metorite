@@ -2472,6 +2472,17 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
     # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     agent_change_access_orgs: str = ""
+    # CIV-14b (external_agent_access.md §12.9): the organizations where an
+    # outside agent may upload an image to a task (`upload_task_image`) and
+    # put up to 4 images on a question or an activity (`attachment_ids`). The
+    # same shape as `agent_access_orgs`: ids with a comma between them, or
+    # `*`. Empty, the default, keeps both dark: for a signed agent the upload
+    # answers 404 and `attachment_ids` answers 422. The gateway reads it at
+    # each call, so a SIGHUP reload applies a change there. The edge reads it
+    # too, to hide the tool, and the edge reads its flags at start
+    # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
+    # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
+    mcp_image_upload_orgs: str = ""
     # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
