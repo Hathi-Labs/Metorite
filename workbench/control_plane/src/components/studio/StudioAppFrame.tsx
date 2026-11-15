@@ -19,6 +19,7 @@ import { useMobileDrawer } from "@/components/AppShell";
 import Button from "@/components/ui/Button";
 import RailRow from "@/components/ui/RailRow";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { FloorContext } from "@/lib/floorContext";
 import { railClass, useRailFold } from "@/lib/railFold";
 import type { RailSectionModel } from "@/lib/studio/railModel";
 
@@ -43,6 +44,7 @@ export interface StudioAppFrameProps {
   /**
    * The floor view (STU-D23a, `lib/studio/floorView.ts`). The root takes `data-floor`, so each
    * control inside it takes its touch size (the `pointer-coarse` variant of `globals.css`).
+   * The frame also gives `FloorContext` to its children (`lib/floorContext.ts`, STU-D23a-2).
    * Off, the root has no attribute and no class changes.
    */
   floor?: boolean;
@@ -102,7 +104,10 @@ export default function StudioAppFrame({ title, back, actions, rail, subtitle, f
     </span>
   ) : title;
 
+  // The context reaches the parts that the root cannot: a dialog in its portal, and the back
+  // link and the cell edit button, which have no touch size outside the floor view (STU-D23a-2).
   return (
+    <FloorContext.Provider value={floor}>
     <div data-floor={floor ? "" : undefined} className="flex h-full w-full flex-col overflow-hidden bg-background">
       <AppTopBar
         title={barTitle}
@@ -120,5 +125,6 @@ export default function StudioAppFrame({ title, back, actions, rail, subtitle, f
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">{children}</main>
       </div>
     </div>
+    </FloorContext.Provider>
   );
 }
