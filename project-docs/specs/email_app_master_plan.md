@@ -21941,7 +21941,7 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
    still right for the new sends? The proposal says yes.
 10. **The flag owner.** The flag moves mail to real people. §3a rule 3 of `CLAUDE.md`
     says that the owner flips it. Confirm that no session may flip it.
-11. **The act of a redraft (HRD-8b, HIGH, task to file).** The held-card record keeps its act kind.
+11. **The act of a redraft (HRD-8b, HIGH, task 3459).** The held-card record keeps its act kind.
     The revise link of §18.11 then covers a forward and a reply, and not only a new mail. A new card with
     another act kind, or other To and Cc, shows a plain line. The owner decides two things. First, the words
     of that line. Second, whether a card with a changed act still takes the revise link. The safe default
