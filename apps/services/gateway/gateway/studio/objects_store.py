@@ -4632,10 +4632,12 @@ _TREE_KIDS = (
 _HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
 #: THE PARENT RECORD by id (task 3308, CI run 43696143611, never analyzed): the parent id is
 #: computed in the hot-row select (``pid``) and the record lookup compares two plain uuids.
-#: The regex of the guard (``v_text ~ uuid-form``) is not leakproof, and the tables are under
-#: FORCE ROW LEVEL SECURITY: a qual with a non-leakproof function cannot be an index
-#: condition, so ``p.id = CASE WHEN v_text ~ ... END`` was a row-by-row FILTER on whatever
-#: index the planner took (the org index: 249,875 buffers for 2,000 lookups on the runner).
+#: Before, ``p.id = CASE WHEN v_text ~ uuid-form THEN CAST(v_text AS uuid) END`` was a
+#: row-by-row FILTER in every CI plan, never an index condition (the org index: 249,875
+#: buffers for 2,000 lookups on the runner). PROBABLE cause, an inference that no planner
+#: trace has confirmed: the regex is not leakproof and the tables are under FORCE RLS. The fix
+#: does not depend on the cause. A lead for later: ``build_query`` compares a relation with
+#: the same regex shape (``_UUID_FORM``) and may be a Filter for the same reason.
 
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
