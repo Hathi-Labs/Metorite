@@ -1099,7 +1099,7 @@ async def test_a_no_on_the_card_of_several_senders_sends_nothing(two: Gateway) -
     two.answer = False
     out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
     assert out.startswith("Declined:") and two.posts == []
-    assert "still subscribed to all 2 senders" in out
+    assert "No sender of the 2 was unsubscribed." in out
 
 
 async def test_email_and_emails_together_are_refused(two: Gateway) -> None:

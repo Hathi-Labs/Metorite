@@ -2311,6 +2311,8 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
   if (outcome === "closed by your message") return "revised";
   // No card could show. Its text of before started "Nothing changed.".
   if (outcome === "no card") return "unchanged";
+  // A parked card still waits for the member: never "Cancelled", never "sent".
+  if (outcome === "parked") return "question";
   if (outcome !== null && NOT_DONE_AT_CARD.has(outcome)) return "cancelled";
   // The texts of before HRD-7, which a stored chat still holds.
   if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";

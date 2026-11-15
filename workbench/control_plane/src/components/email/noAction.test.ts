@@ -32,11 +32,14 @@ describe("a result that did not act", () => {
   it("is cancelled when the card did nothing (HRD-7), and keeps the chip of before", () => {
     // Each outcome of the one table that did nothing, but a chat message and
     // no card. Mutation: drop the `NOT_DONE_AT_CARD` rule → red.
-    for (const lead of ["Declined", "Timed out", "Answered by another member", "Parked", "Changed since the card"]) {
+    for (const lead of ["Declined", "Timed out", "Answered by another member", "Changed since the card"]) {
       expect(noActionOf(`${lead}: nothing was done. The email was not sent.`), lead).toBe("cancelled");
     }
     expect(noActionOf("Not shown: a card cannot show here, so nothing was done.")).toBe("unchanged");
     expect(noActionOf("Closed by your message: the member wrote in the chat.")).toBe("revised");
+    // A parked card still waits for the member. Mutation: put `parked` back
+    // in `NOT_DONE_AT_CARD` → red.
+    expect(noActionOf("Parked: the card waits in the chat for the member's answer, and nothing was done yet.")).toBe("question");
     // A lead with no colon is no outcome.
     expect(noActionOf("Declined offers are listed below")).toBeNull();
   });

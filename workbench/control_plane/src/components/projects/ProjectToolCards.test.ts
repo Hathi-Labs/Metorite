@@ -167,7 +167,7 @@ describe("classifyActionResult", () => {
   it("is cancelled for each card outcome that did nothing (HRD-7)", () => {
     // The chip of before stays for each one (D200). Mutation: drop the
     // `NOT_DONE_AT_CARD` rule of `cancelledAtCard` → red.
-    for (const lead of ["Declined", "Timed out", "Not shown", "Answered by another member", "Parked", "Changed since the card"]) {
+    for (const lead of ["Declined", "Timed out", "Not shown", "Answered by another member", "Changed since the card"]) {
       expect(classifyActionResult(`${lead}: nothing was done. Tell the member.`, "done"), lead).toBe("cancelled");
     }
     // A stored chat of before HRD-7 still draws its cancel.
@@ -178,6 +178,12 @@ describe("classifyActionResult", () => {
     // It is no decline (task 2494), so it keeps the receipt it drew before.
     const closed = "Closed by your message: the member wrote in the chat while the card was open, and nothing was done.";
     expect(classifyActionResult(closed, "done")).toBe("refused");
+  });
+
+  it("never draws a parked card as Cancelled: it still waits", () => {
+    // Mutation: put `parked` back in `NOT_DONE_AT_CARD` → red.
+    const parked = "Parked: the card waits in the chat for the member's answer, and nothing was done yet.";
+    expect(classifyActionResult(parked, "done")).toBe("refused");
   });
 
   it("is refused for a prose refusal, never done", () => {

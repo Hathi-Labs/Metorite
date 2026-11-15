@@ -484,12 +484,34 @@ def test_the_chat_cards_hold_the_same_rows() -> None:
 
 
 @pytest.mark.parametrize("outcome", list(at.CARD_OUTCOMES))
-def test_the_member_line_is_the_head(outcome: str) -> None:
-    """The cut that ``memberLineOf`` makes, at the next step of the row, gives
-    ``card_outcome_head`` exactly. So a receipt shows the head, and the next
-    step stays for the model."""
-    text = at.card_outcome_text(outcome, "No lead was created for Veena.")
-    nxt = at.CARD_OUTCOMES[outcome].next
-    assert text.endswith(" " + nxt)
-    assert text[: text.index(nxt)].strip() == at.card_outcome_head(
-        outcome, "No lead was created for Veena.")
+def test_the_act_sits_between_the_head_and_the_next_step(outcome: str) -> None:
+    """``memberLineOf`` takes the act from between what happened and the next
+    step of the row. The server's text holds it exactly there
+    (``card_outcome_head``), so the member reads the act and never the step."""
+    act = "No lead was created for Veena."
+    text = at.card_outcome_text(outcome, act)
+    o = at.CARD_OUTCOMES[outcome]
+    assert text.endswith(" " + o.next)
+    head = f"{o.lead}: {o.happened}"
+    assert text[len(head): text.index(o.next)].strip() == act
+    assert text[: text.index(o.next)].strip() == at.card_outcome_head(outcome, act)
+
+
+def _member_lines() -> list[tuple[str, str]]:
+    ts = CARD_OUTCOMES_TS.read_text(encoding="utf-8")
+    body = ts[ts.index("export const CARD_OUTCOME_MEMBER_LINES"):]
+    body = body[:body.index("};")]
+    return re.findall(r'^\s+"?([a-z ]+?)"?: "([^"]+)",$', body, re.MULTILINE)
+
+
+def test_the_chat_cards_hold_a_member_line_for_each_outcome() -> None:
+    """The member reads a line in the second person, and never the text for
+    the model. ``CARD_OUTCOME_MEMBER_LINES`` holds one for each outcome of the
+    table, and no line holds a word or a step for the model."""
+    lines = _member_lines()
+    assert [k for k, _ in lines] == list(at.CARD_OUTCOMES)
+    for key, line in lines:
+        o = at.CARD_OUTCOMES[key]
+        assert not re.search(r"the member|\bTell\b|\bRead\b|Do the act", line, re.IGNORECASE), line
+        assert o.next not in line and o.happened not in line, line
+        assert ";" not in line and len(line.split()) <= 20, line

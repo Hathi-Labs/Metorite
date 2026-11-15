@@ -3,9 +3,9 @@
  *
  * The server writes the text of each card outcome from ONE table,
  * `ask_tools.CARD_OUTCOMES` in `packages/acb_skills/acb_skills/ask_tools.py`.
- * Each text is "<lead>: <happened> [act] <next>". The next step is for the
+ * Each text is "<lead>: <happened> [act] <next>". That text is for the
  * model, never for the member, so a receipt draws `memberLineOf` of it: the
- * head, the server's `card_outcome_head`.
+ * member line of the outcome, in the second person, and the act.
  *
  * `CARD_OUTCOME_TEXTS` holds the same three parts of each row.
  * `cardOutcomes.test.ts` reads the Python table and holds the two equal, and
@@ -63,15 +63,33 @@ export function cardOutcomeOf(text: string | null | undefined): CardOutcome | nu
 }
 
 /**
- * The words of a result that a member reads: the head of a card outcome,
- * with no next step. That is the lead, what happened and the act sentence,
- * as the server's `card_outcome_head` builds it. It cuts at the next step of
- * the outcome's row.
+ * What the member reads for each outcome, in the second person. The text of
+ * the table is for the model: it names "the member" and ends with a step for
+ * the model. This line names neither. It is product copy, so only this file
+ * holds it, and `cardOutcomes.test.ts` holds its keys to the Python table.
+ */
+export const CARD_OUTCOME_MEMBER_LINES: Readonly<Record<CardOutcome, string>> = {
+  approved: "You approved the card.",
+  declined: "You said no, so nothing was changed.",
+  "timed out": "The card got no answer in time, so nothing was changed.",
+  "closed by your message": "You wrote in the chat, so the card closed and nothing was changed.",
+  "no card": "A card could not show here, so nothing was changed.",
+  "another member answered": "Another member answered the card, so nothing was changed.",
+  parked: "The card waits for your answer. Nothing was changed yet.",
+  "changed since": "The item changed after the card showed, so nothing was changed.",
+};
+
+/**
+ * The words of a result that a member reads. For a card outcome that is the
+ * member line of the outcome (`CARD_OUTCOME_MEMBER_LINES`), then the act
+ * sentence that the server put between what happened and the next step
+ * ("No lead was created for Veena."). It never holds the model's text: not
+ * "the member", and not the next step.
  *
  * A text that does not start with a head of the table is not a card outcome:
  * it comes back as it was, a stored result of before HRD-7 too. A head with
- * a next step of its own (the email redraft texts) gives the head alone, so
- * no step for the model ever reaches the member.
+ * a next step of its own (the email redraft texts) gives the member line
+ * alone, because its act cannot be told from its steps.
  */
 export function memberLineOf(text: string | null | undefined): string {
   const raw = text ?? "";
@@ -81,23 +99,25 @@ export function memberLineOf(text: string | null | undefined): string {
   const row = CARD_OUTCOME_TEXTS[outcome];
   const head = `${row.lead}: ${row.happened}`;
   if (!t.startsWith(head)) return raw;
+  const line = CARD_OUTCOME_MEMBER_LINES[outcome];
   const at = t.indexOf(row.next, head.length);
-  return (at >= 0 ? t.slice(0, at) : head).trim();
+  const act = at >= 0 ? t.slice(head.length, at).trim() : "";
+  return act ? `${line} ${act}` : line;
 }
 
 /**
  * The outcomes of a card that did nothing and was no message of the member:
- * a no, a timeout, no card, another member's answer, a park, a change since.
- * The receipt draws each one as "Cancelled", as it drew the one text of
- * before (D200: the look does not change). A card that the member's own chat
- * message closed is not in it: it is no decline, and each card file keeps its
- * own receipt for it.
+ * a no, a timeout, no card, another member's answer, a change since. The
+ * receipt draws each one as "Cancelled", as it drew the one text of before
+ * (D200: the look does not change). Two outcomes are not in it. A card that
+ * the member's own chat message closed is no decline, and each card file
+ * keeps its own receipt for it. A parked card still waits for the member, so
+ * it is never "Cancelled".
  */
 export const NOT_DONE_AT_CARD: ReadonlySet<CardOutcome> = new Set<CardOutcome>([
   "declined",
   "timed out",
   "no card",
   "another member answered",
-  "parked",
   "changed since",
 ]);

@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CARD_OUTCOME_LEADS,
+  CARD_OUTCOME_MEMBER_LINES,
   CARD_OUTCOME_TEXTS,
   NOT_DONE_AT_CARD,
   cardOutcomeOf,
@@ -72,10 +73,35 @@ describe("the rows of the card outcomes", () => {
     expect(cardOutcomeOf(undefined)).toBeNull();
   });
 
-  it("draw each outcome that did nothing as cancelled, but a message and an approve", () => {
+  it("draw each outcome that did nothing as cancelled, but a message, a park and an approve", () => {
     expect(NOT_DONE_AT_CARD.has("approved")).toBe(false);
     expect(NOT_DONE_AT_CARD.has("closed by your message")).toBe(false);
-    expect(NOT_DONE_AT_CARD.size).toBe(Object.keys(CARD_OUTCOME_LEADS).length - 2);
+    // A parked card still waits for the member. Mutation: add it back → red.
+    expect(NOT_DONE_AT_CARD.has("parked")).toBe(false);
+    expect(NOT_DONE_AT_CARD.size).toBe(Object.keys(CARD_OUTCOME_LEADS).length - 3);
+  });
+});
+
+/** The words that only the model may read. */
+const MODEL_WORDS = /the member|\bTell\b|\bRead\b|Do the act|Ask whether|Ask them/i;
+
+describe("the member line of each outcome", () => {
+  const rows = pythonTable();
+
+  it("has one line for each outcome of the Python table, and no other", () => {
+    expect(Object.keys(CARD_OUTCOME_MEMBER_LINES)).toEqual(rows.map(([word]) => word));
+  });
+
+  it("speaks to the member, and holds no word or step for the model", () => {
+    for (const [word, r] of rows) {
+      const line = CARD_OUTCOME_MEMBER_LINES[word as CardOutcome];
+      expect(line, word).toMatch(/\.$/);
+      // Mutation: put "the member" in a line → red.
+      expect(line, word).not.toMatch(MODEL_WORDS);
+      expect(line, word).not.toContain(r.next);
+      expect(line, word).not.toContain(r.happened);
+      expect(line, word).not.toContain(";");
+    }
   });
 });
 
@@ -84,27 +110,29 @@ describe("the line that a member reads (memberLineOf)", () => {
   // rows, so the cut is held to the server's own head (`card_outcome_head`).
   const rows = pythonTable();
 
-  it("is the head of each outcome, with its act, and no step for the model", () => {
+  it("is the member line of each outcome, with its act, and nothing for the model", () => {
     for (const [word, r] of rows) {
       const full = `${r.lead}: ${r.happened} ${ACT} ${r.next}`;
       const line = memberLineOf(full);
-      expect(line, word).toBe(`${r.lead}: ${r.happened} ${ACT}`);
+      expect(line, word).toBe(`${CARD_OUTCOME_MEMBER_LINES[word as CardOutcome]} ${ACT}`);
       expect(line, word).not.toContain(r.next);
+      expect(line, word).not.toContain(r.happened);
       // Mutation: return the whole text → red.
-      expect(line, word).not.toMatch(/Tell the member|Read the member|Ask whether|Ask them|Read the item|Do the act/);
+      expect(line, word).not.toMatch(MODEL_WORDS);
     }
   });
 
-  it("is the head alone when a text has no act", () => {
+  it("is the member line alone when a text has no act", () => {
     for (const [word, r] of rows) {
-      expect(memberLineOf(`${r.lead}: ${r.happened} ${r.next}`), word).toBe(`${r.lead}: ${r.happened}`);
+      expect(memberLineOf(`${r.lead}: ${r.happened} ${r.next}`), word).toBe(
+        CARD_OUTCOME_MEMBER_LINES[word as CardOutcome]);
     }
   });
 
   it("drops a next step of a family's own, and keeps no step for the model", () => {
     const own = CARD_OUTCOME_TEXTS["closed by your message"];
     const email = `${own.lead}: ${own.happened} Nothing was sent. The member's words come next, as their own chat message. If they change this mail, change it.`;
-    expect(memberLineOf(email)).toBe(`${own.lead}: ${own.happened}`);
+    expect(memberLineOf(email)).toBe(CARD_OUTCOME_MEMBER_LINES["closed by your message"]);
   });
 
   it("leaves a stored result of before HRD-7 as it was", () => {

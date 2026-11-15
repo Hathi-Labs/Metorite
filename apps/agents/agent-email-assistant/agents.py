@@ -5528,7 +5528,7 @@ async def install_default_rules(
             f"Mailbox: {where}. Every existing rule of this mailbox "
             "(including ones you customised) is deleted first, then these "
             f"{len(presets)} default rules are installed fresh.",
-            "The member's rules were left unchanged.",
+            "No rule was changed.",
             _rule_lines(presets),
         )
         if refusal:
@@ -8538,7 +8538,7 @@ async def _unsubscribe_many(account_id: str, emails: list[str], name: str | None
         context=context,
     ):
         if _channel_open():
-            return _not_done(f"The member is still subscribed to all {len(targets)} senders.")
+            return _not_done(f"No sender of the {len(targets)} was unsubscribed.")
         return _NO_CARD_CHANNEL
     done: list[str] = []
     for email, target in targets:
@@ -8562,7 +8562,7 @@ async def _held_unsubscribe_many(account_id: str, emails: list[str]) -> str:
     each sender, the host of its stored link and the hash of the link."""
     res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
                             "emails": emails},
-                           "Nothing changed", "The member is still subscribed to each sender.")
+                           "Nothing changed", "No sender was unsubscribed.")
     if isinstance(res, str):
         return res
     lines = []
@@ -8617,7 +8617,7 @@ async def unsubscribe_sender(
     if _held_card_mode():
         res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
                                 "email": email},
-                               "Nothing changed", f"The member is still subscribed to {shown}.")
+                               "Nothing changed", f"{shown} was not unsubscribed.")
         if isinstance(res, str):
             return res
         archived = int(res.get("archived") or 0)
@@ -8650,7 +8650,7 @@ async def unsubscribe_sender(
         title=f"Unsubscribe from {shown}?", detail=detail, context=context,
     ):
         if _channel_open():
-            return _not_done(f"The member is still subscribed to {shown}.")
+            return _not_done(f"{shown} was not unsubscribed.")
         return _NO_CARD_CHANNEL
     if target.get("kind") == "block":
         # No link to use. ``POST /unsubscribe`` with no link reads the stored
