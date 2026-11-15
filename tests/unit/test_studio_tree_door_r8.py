@@ -593,6 +593,89 @@ def test_r8_a_write_that_moves_a_2000_node_subtree_stays_cheap(world, stats: str
                 c.execute(text(f"ALTER TABLE {t} RESET (autovacuum_enabled)"))
 
 
+#: The most buffers that the SCOPED read of 2,000 nodes may touch. The plain read touches about
+#: 20,000, and the scoped read on the box 18,217 (stale) and 20,146 (never analyzed). A bound
+#: that CI passes proves the runner's plan is of the same order; a failure prints the plan.
+MAX_SCOPED_READ_BUFFERS = 50_000
+
+
+class _Recording:
+    """A session that remembers each recursive statement and its binds."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._db, name)
+
+    async def execute(self, stmt: Any, params: Any = None, *a: Any, **kw: Any) -> Any:
+        sql = str(stmt)
+        if "WITH RECURSIVE" in sql:
+            self.calls.append((sql, dict(params or {})))
+        return await self._db.execute(stmt, params, *a, **kw)
+
+
+async def _scoped_read(org: str, obj: store.StudioObject, viewer: Viewer) -> tuple[Any, int, str]:
+    """Read the tree as *viewer* through the store, then take EXPLAIN (ANALYZE, BUFFERS) of
+    the recursive statement that the read ran, with its binds (task 3375)."""
+    async with tenant_session(org) as db:
+        rec = _Recording(db)
+        page = await store.read_tree(rec, package_id=obj.package_id, object_id=obj.id,
+                                     viewer=viewer, limit=2000)
+        (sql, binds), = rec.calls
+    try:
+        async with tenant_session(org) as db:
+            await db.execute(text("SET LOCAL statement_timeout = 60000"))
+            plan = [r[0] for r in (await db.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS) " + sql), binds)).all()]
+        top = next((x for x in plan if "Buffers:" in x), "")
+        m = re.search(r"Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?", top)
+        return page, (int(m.group(1) or 0) + int(m.group(2) or 0) if m else -1), "\n".join(plan)
+    except Exception as exc:
+        return page, -1, f"plan failed: {type(exc).__name__}: {str(exc)[:200]}"
+
+
+@pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
+def test_r8_the_scoped_read_of_2000_nodes_stays_cheap(world, stats: str) -> None:
+    """Task 3375: a viewer with a row rule (a keeper who reads the nodes with keeper = me)
+    reads 2,000 nodes. The scoped statement adds the row rule on each root and on each
+    step: its plan must stay near the plain read (about 20,000 buffers), in both
+    statistics states, as on the runner."""
+    with world.p.admin_engine.begin() as c:
+        for t in ("studio_records", "studio_record_hot"):
+            c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
+            if stats == "never_analyzed":
+                c.execute(text("DELETE FROM pg_statistic WHERE starelid = CAST(:t AS regclass)"),
+                          {"t": t})
+                c.execute(text("UPDATE pg_class SET reltuples = -1, relpages = 0 "
+                               "WHERE oid = CAST(:t AS regclass)"), {"t": t})
+    if stats == "stale":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("ANALYZE studio_records"))
+            c.execute(text("ANALYZE studio_record_hot"))
+
+    async def build() -> None:
+        [root] = await _put(world.a, world.site2, _site(world.site2, "bigroot", E1, None))
+        for start in range(0, 1999, 50):
+            await _put(world.a, world.site2, *[
+                Write("create", world.site2.id, data={
+                    "name": f"n{i}", "keeper": E1, "secret": f"s{i}", "parent": {"id": root.id}})
+                for i in range(start, min(start + 50, 1999))])
+
+    try:
+        _run(world, build)
+        page, buffers, report = _run(world, lambda: _scoped_read(world.a, world.site2, AS_E1))
+        print(f"scoped tree read buffers ({stats}): {buffers}")
+        if len(page.nodes) < 2000 or not 0 <= buffers < MAX_SCOPED_READ_BUFFERS:
+            raise AssertionError(f"read {len(page.nodes)} nodes and touched {buffers} buffers "
+                                 f"(limit {MAX_SCOPED_READ_BUFFERS})\n{report}")
+    finally:
+        with world.p.admin_engine.begin() as c:
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} RESET (autovacuum_enabled)"))
+
+
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed."""
