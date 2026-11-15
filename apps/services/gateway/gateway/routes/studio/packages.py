@@ -655,6 +655,8 @@ def _object_out(obj: objects_store.StudioObject) -> dict[str, Any]:
             "to": f.to, "hot": f.hot, "lines": f.lines,
             "min": f.min, "max": f.max,
             "units": None if f.units is None else list(f.units),
+            "normal": f.stored_spec().get("normal"), "critical": f.stored_spec().get("critical"),
+            "conversions": f.stored_spec().get("conversions"),
             "format": f.format} for f in obj.fields],
         "rules": [r.stored() for r in obj.constraints],
         "created_at": obj.created_at, "updated_at": obj.updated_at,

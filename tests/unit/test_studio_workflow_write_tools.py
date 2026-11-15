@@ -833,8 +833,12 @@ def test_the_pack_holds_the_two_writes_of_the_studio_owner() -> None:
     fam = sf.SKILL_FAMILIES[PACK]
     assert fam["owner"] == STUDIO and sf.is_pack(PACK) and fam["core"] is False
     assert tuple(fam["tools"]) == ("studio_workflow_publish", "studio_workflow_live")
-    assert sf.pack_slugs()[-3:] == ("studio", "studio-approvals", PACK), "after studio, so the cap drops it first"
-    assert tp.owner_packs(STUDIO) == ("studio", "studio-approvals", PACK)
+    # WS-67 TS-1b: studio-more and studio-approvals sit between the core and this pack. This pack
+    # does not join studio-more, and it stays out of FOLLOWS.
+    assert sf.pack_slugs()[-4:] == ("studio", "studio-more", "studio-approvals", PACK), (
+        "after studio, so the cap drops it first")
+    assert tp.owner_packs(STUDIO) == ("studio", "studio-more", "studio-approvals", PACK)
+    assert not set(fam["tools"]) & set(sf.SKILL_FAMILIES["studio-more"]["tools"])
     found = tp.PACKS[PACK]
     assert found.owner == STUDIO and found.delegation_refusal and not found.surface_slugs
     named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card"}
@@ -912,8 +916,10 @@ def test_a_studio_turn_with_the_pack_stays_within_the_request_cap(
     monkeypatch, held: str,
 ) -> None:
     """A turn on the Studio surface whose words ask to publish a workflow, at
-    the production base (56) with the load tool (+1): 56 + 1 + 23 + 2 = 82 tools,
-    under ``MAX_REQUEST_TOOLS``. Mutation: grow the pack past the room -> red."""
+    the production base (56) with the load tool (+1): 56 + 1 + 10 + 13 + 2 = 82
+    tools, under ``MAX_REQUEST_TOOLS``. WS-67 TS-1b: the two Studio packs and
+    this pack are the three places of ``MAX_PACKS``. Mutation: grow the pack
+    past the room -> red."""
     from acb_common import get_settings
 
     from tests.unit.test_pack_turn_keeps_used_packs import PROD_BASE, SPECIALISTS
@@ -923,25 +929,29 @@ def test_a_studio_turn_with_the_pack_stays_within_the_request_cap(
                        "publish the workflow Chase invoices", True, surface="studio")
     choice = tp.choose(turn, allowed=frozenset(sf.pack_slugs()), base_tools=PROD_BASE + 1,
                        specialists=SPECIALISTS)
-    assert set(choice.slugs) == {"studio", PACK}, choice
+    assert choice.slugs == ("studio", "studio-more", PACK), choice
     assert choice.skipped == () and choice.evicted == (), choice
     total = PROD_BASE + 1 + sum(len(sf.SKILL_FAMILIES[s]["tools"]) for s in choice.slugs)
     assert total <= tp.MAX_REQUEST_TOOLS == 110, total
 
 
 def test_with_the_email_pack_the_three_packs_do_not_fit() -> None:
-    """The room limit of STB-6a: email, studio and this pack would send 112
-    tools. The cap drops the pack that came by the surface alone first (task
-    1573), so the member's words keep the email and the workflow writes. This
-    test records the limit, and it is an open item of the owner."""
+    """The room limit of STB-6a: email, the Studio tools and this pack would
+    send 112 tools. The cap drops the pack that came by the surface alone first
+    (task 1573), so the member's words keep the email and the workflow writes.
+    WS-67 TS-1b: the last pack that came by the surface alone is studio-more,
+    so the core now stays (99 tools). This test records the limit, and it is
+    an open item of the owner."""
     from tests.unit.test_pack_turn_keeps_used_packs import PROD_BASE, SPECIALISTS
 
     turn = tp.PackTurn(ROOM_ORG, ROOM_SESSION, tp._member_part(MEMBER), 10, (),
                        "check my emails and publish the workflow", True, surface="studio")
     choice = tp.choose(turn, allowed=frozenset(sf.pack_slugs()), base_tools=PROD_BASE + 1,
                        specialists=SPECIALISTS)
-    assert set(choice.slugs) == {"email", PACK} and choice.skipped == ("studio",), choice
-    sizes = {s: len(sf.SKILL_FAMILIES[s]["tools"]) for s in ("email", "studio", PACK)}
+    assert choice.slugs == ("email", "studio", PACK), choice
+    assert choice.skipped == ("studio-more",), choice
+    sizes = {s: len(sf.SKILL_FAMILIES[s]["tools"])
+             for s in ("email", "studio", "studio-more", PACK)}
     every = PROD_BASE + 1 + sum(sizes.values()) - SPECIALISTS["email-assistant"]
     assert every == 112 > tp.MAX_REQUEST_TOOLS
 

@@ -19,6 +19,7 @@ separately). Fan-out from a node is allowed (parallel branches).
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -448,6 +449,37 @@ def runtime_gate_of(serialized: dict[str, Any], node_id: str) -> str | None:
         if str(c.get("source")) == gate and types.get(str(c.get("target"))) == "studio_write"
     ]
     return gate if len(writes) == 1 else None
+
+
+def studio_write_prints(graph: Any) -> set[tuple[str, str, str]]:
+    """Each node of the edit-model *graph* whose type reads as
+    ``studio_write``, as ``(id, type, config)`` (WFC-4a-2s).
+
+    ``crud.update_workflow`` compares the prints of the stored draft and of a
+    Save, so a member who is not the owner cannot add or change a write. The
+    read is wider than ``_parse``, so no shape hides a write. It reads a
+    duplicate id, a node with no id, and a type in another case or with outer
+    spaces. The print keeps the exact type, so a new spelling is a change.
+    The id is the id that ``compile_graph`` gives the block. The config is
+    ``_node_config``, the config of the run, as JSON with sorted keys. So a
+    missing config and ``{}`` give one print, because the run reads both as
+    ``{}``. ``compile_graph`` reads ``nodes`` only, so a write in another key
+    of the draft never runs.
+    """
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    if not isinstance(nodes, list):
+        return set()
+    prints: set[tuple[str, str, str]] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        kind = str(node.get("type") or "")
+        if kind.strip().lower() != "studio_write":
+            continue
+        node_id = str(node["id"]) if node.get("id") else ""
+        config = json.dumps(_node_config(node), sort_keys=True, default=str)
+        prints.add((node_id, kind, config))
+    return prints
 
 
 def _validate_studio_write_config(

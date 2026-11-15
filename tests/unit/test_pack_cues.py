@@ -59,8 +59,12 @@ WHEN = {
         "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
     # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
     # so the line says "read and change". STB-6a adds the workflow reads.
+    # WS-67 TS-1b: the core builds an app, and studio-more holds the rest.
     "studio": (
-        "Load for AI Studio: build an app (manifest, actions), manage skills, read workflows, "
+        "Load for AI Studio: build an app from a brief (manifest, actions), check it, "
+        "show the plan card, save and publish it."),
+    "studio-more": (
+        "Load for AI Studio: manage skills, ready apps, delete an app, read workflows, "
         "or read and change the records of a package."),
     # STU-J2b-3a: the approval follow pack of `studio`. It loads by its own words.
     "studio-approvals": "Load to ask for, list, approve or reject the approval of an AI Studio app version for the organization.",
