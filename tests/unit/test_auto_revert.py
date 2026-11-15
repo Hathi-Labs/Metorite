@@ -13,6 +13,7 @@ reads that file to prove what the pass wrote to GitHub, and what it did not.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import importlib.util
 import json
@@ -2540,6 +2541,70 @@ def test_the_verify_line_needs_a_pure_revert_and_every_proof_run() -> None:
     assert not mod.verify_line(case).startswith("VERIFY")
     case.pure, case.proof_runs = False, mod.FLAKE_RUNS
     assert mod.verify_line(case).startswith("Not verified")
+
+
+# ── CIV-31e: a failed test that the culprit added ─────────────────────────
+
+
+def test_civ31e_the_default_probe_is_the_helper_of_this_checkout() -> None:
+    """The pass and the bisect name one helper, by its absolute path in the
+    running checkout. A probed tree can predate the helper, and a relative
+    path then exits 127: "cannot judge" on every probe."""
+    mod = load_module()
+    helper = ROOT / "scripts" / "probe_present_tests.sh"
+    assert helper.is_file()
+    assert helper.is_absolute()
+    want = f'bash {shlex.quote(helper.as_posix())} "$@"'
+    assert want == mod.DEFAULT_TEST_CMD
+    text = (ROOT / "scripts" / "bisect_main.sh").read_text(encoding="utf-8")
+    assert '"$SCRIPT_DIR/probe_present_tests.sh"' in text
+    assert 'TEST_CMD="${BISECT_TEST_CMD:-$DEFAULT_TEST_CMD}"' in text
+
+
+def test_civ31e_the_parent_and_the_revert_tree_pass_when_the_culprit_added_the_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The culprit ADDED the failed test. Its parent and the revert tree do not
+    hold the test, so the default probe passes there, and the pass can prove the
+    revert. A tree that pytest cannot collect stays unknown, never a pass."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+
+    def commit(message: str, files: dict[str, str]) -> str:
+        for name, text in files.items():
+            (repo / name).write_text(text, encoding="utf-8", newline="\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", message)
+        return git(repo, "rev-parse", "HEAD")
+
+    parent = commit("base (#100)", {"calc.py": GOOD})
+    culprit = commit(
+        "add a test (#104)",
+        {
+            "test_new.py": "import pytest\n\nfrom calc import add\n\n"
+            '@pytest.mark.parametrize("state", ["requests closed"])\n'
+            "def test_rank(state):\n    assert add(1, 2) == 4\n"
+        },
+    )
+    git(repo, "revert", "--no-edit", culprit)
+    revert = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side", culprit)
+    broken = commit("a broken conftest (#105)", {"conftest.py": 'raise RuntimeError("x")\n'})
+
+    mod = load_module()
+    assert BASH is not None
+    monkeypatch.setattr(mod, "bash", lambda: BASH)
+    monkeypatch.delenv("BISECT_TEST_CMD", raising=False)
+    monkeypatch.setenv("PY", PY)
+    monkeypatch.setenv("PROBE_PYTEST_CMD", '"$PY" -m pytest')
+    cfg = dataclasses.replace(_cfg(mod, repo), test_cmd=mod.DEFAULT_TEST_CMD, timeout_s=120)
+    ids = ["test_new.py::test_rank[requests closed]"]
+    assert mod.probe(cfg, parent, ids) == "pass"
+    assert mod.probe(cfg, culprit, ids) == "fail"
+    assert mod.probe(cfg, revert, ids) == "pass"
+    assert mod.probe(cfg, broken, ids).startswith("unknown")
+    assert len(git(repo, "worktree", "list").splitlines()) == 1
 
 
 # ── A reverted patch does not land again unchanged (premerge.sh) ──────────

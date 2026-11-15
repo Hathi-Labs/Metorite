@@ -48,6 +48,12 @@ HIGH tier. It is the last code before `AUTO_REVERT_MODE=on`. The guard fails
 closed and checks the status, the mode has one reader, and one supervised
 reopen comes before `on`. §8.8 holds it.
 
+**CIV-31e is BUILT on 2026-11-15** (task 3359, branch `civ31e-mt-f772bcaf`).
+The probe of the bisect and of the pass leaves out a failed test that is not
+in the probed tree. So a commit before the culprit added the test is good, and
+the revert tree passes. Stdout of `bisect_main.sh` holds only the answer line.
+CIV-5 and §8.8 hold it.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -450,6 +456,18 @@ owner has not installed the timer.
   A probe exit code of 0 is good and 1 is bad. Any other code skips the commit.
   Adjacent commits that cannot be judged give exit 4 and the range. The cap
   is 12 probes (exit 5). It prints `FIRST_BAD <sha> <subject> PR=<n or none>`.
+- **A test that is not in the tree** (CIV-31e, 2026-11-15). The default probe
+  is `scripts/probe_present_tests.sh`. The bisect calls it by the absolute
+  path of the running checkout, because the probed commit can be older than
+  the helper. An id is absent when its file (the text before the first `::`)
+  is not in the tree. It is also absent when the collection of its file exits
+  0 or 5 and does not list its exact node id. When every id is absent, the
+  commit is good. A collection that exits with another code, or prints no node
+  id, leaves nothing out, so a broken tree is never good. On 2026-11-14, 5 of
+  7 red runs stopped with exit 3, because each failed test was new in the range.
+- **Stdout is the answer line** (CIV-31e). The output of each probe goes to
+  stderr. Exits 3 and 5 print their reason as the one stdout line, so the
+  poller result names the reason and not a line of pytest.
 - `scripts/home_server/bisect_poll.sh` is one poll pass. It acts only when the
   newest completed batch run is red and new. It finds the last green batch as
   the good sha, reads the failed ids with `scripts/junit_failed_ids.py`, runs
@@ -457,11 +475,14 @@ owner has not installed the timer.
   `~/.cache/metorite-bisect`. It never reruns or cancels a run.
 - `scripts/home_server/systemd/metorite-bisect-poll.{service,timer}` are unit
   files. Nobody installed them.
-- Fence: `tests/unit/test_bisect_main.py` (18 tests, a fixture repo and a
-  shimmed `gh_cmd`).
+- Fence: `tests/unit/test_bisect_main.py` (21 tests, a fixture repo and a
+  shimmed `gh_cmd`) and `tests/unit/test_probe_present_tests.py` (10 tests,
+  the absent rule and one bisect with the default probe).
 
 **By hand.** `bash scripts/bisect_main.sh <good> <bad> tests/unit/test_x.py::test_y`.
-The default probe is `uv run python -m pytest -x -q -p no:cacheprovider "$@"`.
+The default probe is `bash <checkout>/scripts/probe_present_tests.sh "$@"`. It
+runs `uv run python -m pytest -x -q -p no:cacheprovider -- <the ids in the tree>`.
+`PROBE_PYTEST_CMD` sets its pytest command.
 Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
 `BISECT_MAX_PROBES` set the limits.
 
@@ -1094,6 +1115,12 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   tests 3 times each on the tip of `main`, on the culprit and on its parent.
   Each run must give the same answer. It makes the revert on the tip in a temp
   worktree. The failed tests must pass on that revert tree 3 times (CIV-31c).
+- **A test that the culprit added** (CIV-31e). The default probe of the pass is
+  the one of the bisect, `scripts/probe_present_tests.sh`, by its absolute
+  path in the box checkout. A failed test that is not in the probed tree does
+  not run. When no failed test is in the tree, the probe passes. So the parent
+  of a culprit that added the test passes, and so does the revert tree. A tree
+  that pytest cannot collect still gives `unknown`, and the pass stops.
 - **Main moves.** The probes can take hours, and `main` can move. Before the
   revert goes out, the pass reads `main` again. When the failed tests pass on
   the new tip, a fix landed, and the pass makes no revert (`SKIP`). Else it
