@@ -134,6 +134,9 @@ function humanDuration(seconds: number): string {
 }
 
 /** Single-line clip for card text — the card clamps, this stops giant strings. */
+/** Vertical distance between nodes that the editor places. A card is about 145 px tall on the type scale, so 180 keeps a gap even when a badge row wraps. */
+const NODE_PITCH = 180;
+
 function clip(value: unknown, max = 160): string {
   const s = String(value ?? "").replace(/\s+/g, " ").trim();
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -474,7 +477,7 @@ function EditorInner({ id }: { id: string }) {
       }
       if (!where) {
         const maxY = nodes.reduce((acc, n) => Math.max(acc, n.position.y), 0);
-        where = { x: 140, y: maxY + 160 };
+        where = { x: 140, y: maxY + NODE_PITCH };
       }
       const first = where;
 
@@ -483,7 +486,7 @@ function EditorInner({ id }: { id: string }) {
         ...chain.map((d, i) => ({
           id: ids[i],
           type: "ccNode",
-          position: { x: first.x, y: first.y + i * 160 },
+          position: { x: first.x, y: first.y + i * NODE_PITCH },
           data: {
             label: d.label,
             nodeType: d.nodeType,
