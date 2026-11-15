@@ -122,7 +122,7 @@ def test_the_default_runs_the_affected_tests_and_prints_minutes(repo):
     res = _run(repo, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}", PREMERGE_RERUN_CMD="true")
     assert res.returncode == 0, res.stderr
     assert marker.exists()
-    assert "minute(s)" in res.stdout
+    assert "stage tests:" in res.stdout
 
 
 def test_files_no_side_shares_still_run_the_tests(repo):
@@ -233,6 +233,61 @@ def test_a_cr_in_the_picker_output_never_reaches_pytest(repo):
     assert "\r" not in args and "tests/a.py|" in args and "tests/b.py|" in args
 
 
+def test_a_picker_that_does_not_finish_is_unproven_not_a_hang(repo):
+    """CIV-MT-3: on the merger PC the default ran past 1000 s. The picker has its own cap."""
+    _stub_picker(repo, "import time\ntime.sleep(60)\n")
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="1",
+               PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The picker had no verdict within 1s" in res.stdout
+    assert not (repo.parent / "pytest-args").exists(), "no test may run after a picker timeout"
+
+
+def test_no_tests_start_when_the_budget_is_spent(repo):
+    _stub_picker(repo, _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="100",
+               PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. No test ran: only" in res.stdout
+    assert not (repo.parent / "pytest-args").exists()
+
+
+def test_a_picker_that_needs_the_kill_is_unproven_too(repo):
+    """timeout -k ends with 137 when the child ignores TERM. That is a timeout, not a failure."""
+    _stub_picker(repo, "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n")
+    _advance_main(repo, "other.py")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="1",
+               PREMERGE_PYTEST_CMD="false")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The picker had no verdict" in res.stdout
+
+
+def test_a_spent_budget_runs_no_picker_and_no_tsc(repo):
+    """Finding 1 and 2 of the review of PR 2407: the picker and the baseline run took their full cap."""
+    _frontend_pair(repo)
+    _stub_picker(repo, _PICKER_CRLF)
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="150",
+               PREMERGE_TSC_CMD=f"touch {marker.as_posix()}", PREMERGE_PYTEST_CMD="false")
+    assert res.returncode == 0, res.stderr
+    assert not marker.exists()
+    assert "UNPROVEN" in res.stdout
+
+
+def test_each_stage_says_how_long_it_took(repo):
+    _stub_picker(repo, _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    for stage in ("collision fences", "picker", "tests"):
+        assert f"stage {stage}:" in res.stdout, stage
+
+
 def test_an_empty_selection_runs_no_pytest(repo):
     """Review of 2026-11-15, P2: an empty list made pytest run the whole tree."""
     _stub_picker(repo, "import sys\na = sys.argv\nopen(a[a.index('--first-out') + 1], 'w').write('0\\n')\n")
@@ -301,6 +356,87 @@ def test_an_empty_selection_says_that_nothing_is_proven(repo):
                PREMERGE_PYTEST_CMD="false")
     assert res.returncode == 0, res.stderr
     assert "UNPROVEN. The selector picked no test" in res.stdout
+
+
+def _frontend_pair(repo: Path) -> None:
+    """The branch adds one front-end file, main adds another: two PRs that each pass alone."""
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    _commit(repo, "workbench/control_plane/src/a.ts", "export const a = 1\n")
+    _advance_main(repo, "workbench/control_plane/src/b.ts", "export const b = 2\n")
+
+
+def test_tsc_runs_on_the_merge_result_for_a_front_end_diff(repo):
+    """CIV-MT-2 (task 3369): 2354 and 2295 each passed tsc alone, and main's tsc went red."""
+    _frontend_pair(repo)
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert marker.exists() and "type check passed" in res.stdout
+
+
+def test_tsc_is_skipped_for_a_python_only_diff(repo):
+    _commit(repo, "scripts/x.py")
+    _advance_main(repo, "scripts/y.py")
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert not marker.exists()
+
+
+def test_a_type_error_that_only_the_merge_has_blocks_and_is_named(repo):
+    _frontend_pair(repo)
+    both = ('if [ -f src/a.ts ] && [ -f src/b.ts ]; then '
+            'echo "src/a.ts(3,5): error TS2739: Type is missing the property layout"; exit 1; fi')
+    res = _run(repo, PREMERGE_TSC_CMD=both)
+    assert res.returncode == 1
+    assert "error TS2739" in res.stderr and "src/a.ts" in res.stderr
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert _git(repo, "symbolic-ref", "--short", "HEAD") == "feat"
+
+
+def test_a_type_error_that_main_has_alone_does_not_block(repo):
+    """Main's tsc was red for 50 minutes. That must not block every PR behind it."""
+    _frontend_pair(repo)
+    on_main = 'if [ -f src/b.ts ]; then echo "src/b.ts(1,1): error TS2322: boom"; exit 1; fi'
+    res = _run(repo, PREMERGE_TSC_CMD=on_main)
+    assert res.returncode == 0, res.stderr
+    assert "did not cause them" in res.stdout
+
+
+def test_a_baseline_that_gives_no_verdict_does_not_block(repo):
+    """Review of PR 2394, F1: a baseline run on main that times out or crashes cannot
+    clear or blame the merge. It is UNPROVEN, not a block."""
+    _frontend_pair(repo)
+    cmd = ('if [ -f src/a.ts ] && [ -f src/b.ts ]; then echo "src/a.ts(1,1): error TS2322: boom"; exit 1; fi; '
+           'if [ -f src/b.ts ]; then exit 134; fi')
+    res = _run(repo, PREMERGE_TSC_CMD=cmd)
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The type check of" in res.stdout
+
+
+def test_a_lockfile_change_runs_npm_ci_even_with_node_modules(repo):
+    _commit(repo, "workbench/control_plane/package-lock.json", "{}\n")
+    _advance_main(repo, "workbench/control_plane/src/b.ts", "export const b = 2\n")
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    res = _run(repo, PREMERGE_TSC_CMD="true", PREMERGE_NPM_TIMEOUT="5")
+    assert "a lockfile changed: running npm ci" in res.stdout
+
+
+def test_a_front_end_config_file_triggers_the_type_check(repo):
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    _commit(repo, "workbench/control_plane/vitest.config.ts", "export default {}\n")
+    _advance_main(repo, "scripts/y.py")
+    marker = repo.parent / "tsc-ran"
+    _run(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert marker.exists()
+
+
+def test_tsc_off_switch(repo):
+    _frontend_pair(repo)
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_TSC="0", PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert not marker.exists()
 
 
 def test_an_unknown_flag_is_refused(repo):

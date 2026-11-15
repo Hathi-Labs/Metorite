@@ -133,3 +133,7 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
     put your row text in its row file and your index line back. Run
     `python scripts/ai_studio_rows.py check` before you push.
+18. **A conflict in `tests/fences.json` or `docs/flag_reload.md` (CIV-HS, task 3284).**
+    Take main's side of the file and add your entry anywhere in its list. Then run
+    `python scripts/sort_fence_lists.py`. It sorts both files in place. Do not sort by
+    hand. `--check` only reports.

@@ -27,7 +27,7 @@
 #      A test that fails here and passes on the branch alone blocks. The run
 #      sits under PREMERGE_TEST_TIMEOUT seconds (default 420; merge_bot allows 900 in all). A timeout is
 #      not a red: the script says UNPROVEN and still exits 0. It prints the
-#      minutes it took;
+#      seconds each stage took (the lines `stage <name>: N s`);
 #   5. aborts the merge, so the worktree is as it was.
 # `gh pr merge --squash` lands the same tree that step 2 built. So a pass
 # tests what lands, with no second CI run.
@@ -54,6 +54,18 @@ for arg in "$@"; do
   esac
 done
 started=$SECONDS
+# One budget for the whole run (CIV-MT-3, 2026-11-15: on the merger PC the default ran past
+# 1000 s, above the 900 s of merge_bot). Each stage gets what is left, never more than its own
+# cap, and says how long it took. A stage that has no time left says UNPROVEN and is skipped.
+BUDGET="${PREMERGE_TOTAL_BUDGET:-760}"
+remaining() { echo $(( BUDGET - (SECONDS - started) )); }
+stage_t=$SECONDS
+# `timeout -k` ends with 137 when the child needed the KILL: that is a timeout too.
+timed_out() { [ "$1" = 124 ] || [ "$1" = 137 ]; }
+# What must stay for the stages after the type check: the picker (at least 60 s), the tests
+# (at least 60 s) and a little more for the checkouts and the fetch.
+RESERVE="${PREMERGE_RESERVE:-200}"
+stage() { say "stage $1: $(( SECONDS - stage_t )) s (total $(( SECONDS - started )) s of $BUDGET)"; stage_t=$SECONDS; }
 
 FENCES=(
   tests/unit/test_migration_prefixes.py
@@ -163,9 +175,90 @@ fi
 present=()
 for t in "${FENCES[@]}"; do [ -f "$t" ] && present+=("$t"); done
 say "collision fences on the merge result: ${#present[@]} files"
-if [ "${#present[@]}" -gt 0 ] && ! env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider "${present[@]}" > "$logs/fences.log" 2>&1; then
+fence_rc=0
+if [ "${#present[@]}" -gt 0 ]; then
+  timeout -k 10 "${PREMERGE_FENCE_TIMEOUT:-240}" env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider "${present[@]}" > "$logs/fences.log" 2>&1 || fence_rc=$?
+fi
+if timed_out "$fence_rc"; then
+  fail "the collision fences did not finish in ${PREMERGE_FENCE_TIMEOUT:-240}s. This machine is slow or a fence hangs: run them by hand, or raise PREMERGE_FENCE_TIMEOUT."
+elif [ "$fence_rc" != 0 ]; then
   { grep -E "^(FAILED|ERROR|E )" "$logs/fences.log" || true; } | head -15 >&2
   fail "a collision fence fails once $BASE is merged in. Fix it on the branch, push, and wait for pr-check."
+fi
+stage "collision fences"
+
+# ── 3b. The type check, on the merge result (CIV-MT-2, task 3369) ──────────
+# 2026-11-15: PR 2354 made `layout` and `regions` required on PageModel, PR 2295 added a
+# test that builds a PageModel without them. Each passed `tsc` alone. After both merged,
+# main's `tsc --noEmit` failed (TS2739), and premerge ran no `tsc`. So when the two
+# sides touch the front end, `tsc` runs on the merge result. An error that `tsc` also
+# reports on $BASE alone is not the merge's (main red must not block every PR).
+# Off with PREMERGE_TSC=0 (or the merge test off). A missing node_modules gets one `npm ci`.
+TSC_TIMEOUT="${PREMERGE_TSC_TIMEOUT:-240}"
+TSC_CMD="${PREMERGE_TSC_CMD:-npx tsc --noEmit -p tsconfig.json}"
+tsc_errors() { { grep -E 'error TS' "$1" || true; } | tr -d '\r' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort -u; }
+run_tsc() {
+  local cap=$(( $(remaining) - RESERVE ))
+  [ "$cap" -gt "$TSC_TIMEOUT" ] && cap=$TSC_TIMEOUT
+  if [ "$cap" -lt 20 ]; then echo "no time left for the type check" > "$1"; return 124; fi
+  ( cd workbench/control_plane && NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}" \
+      timeout -k 10 "$cap" bash -c "$TSC_CMD" ) > "$1" 2>&1
+}
+if [ "$merge_test" = 1 ] && [ "${PREMERGE_TSC:-1}" != 0 ] \
+   && grep -qE '^workbench/control_plane/.*\.(ts|tsx|mts|cts|js|mjs|json)$' "$logs/union.txt"; then
+  tsc_started=$SECONDS
+  # The type check needs time for the baseline run too: keep 120 s for the tests, at least.
+  tsc_cap=$(( $(remaining) - RESERVE ))
+  if [ "$tsc_cap" -lt 60 ]; then
+    say "UNPROVEN. The type check did not run: only $(( $(remaining) > 0 ? $(remaining) : 0 )) s of the budget are left. pr-check is the evidence."
+    tsc_cap=0
+  fi
+  # A lockfile change on either side makes an old node_modules wrong (a new dependency would
+  # fail with TS2307 here and pass in pr-check), so it gets the same npm ci.
+  npm_cap="${PREMERGE_NPM_TIMEOUT:-240}"
+  [ "$npm_cap" -gt $(( tsc_cap / 2 )) ] && npm_cap=$(( tsc_cap / 2 ))
+  if [ "$tsc_cap" != 0 ] && { [ ! -d workbench/control_plane/node_modules ] || grep -q '^workbench/control_plane/package-lock\.json$' "$logs/union.txt"; }; then
+    say "type check: no node_modules here, or a lockfile changed: running npm ci (at most ${npm_cap}s)"
+    ( cd workbench/control_plane && timeout -k 10 "$npm_cap" npm ci --no-audit --no-fund ) > "$logs/npm.log" 2>&1 || true
+  fi
+  if [ "$tsc_cap" = 0 ]; then
+    :  # said above: no time left
+  elif [ ! -d workbench/control_plane/node_modules ]; then
+    say "UNPROVEN. The type check did not run: no node_modules here, and npm ci did not finish. pr-check is the evidence."
+  else
+    say "type check on the merge result (a front-end file changed), at most ${TSC_TIMEOUT}s"
+    tsc_rc=0; run_tsc "$logs/tsc.log" || tsc_rc=$?
+    if [ "$tsc_rc" = 0 ]; then
+      say "type check passed"
+    elif timed_out "$tsc_rc"; then
+      say "UNPROVEN. The type check hit its time cap (at most ${TSC_TIMEOUT}s) with no verdict. pr-check is the evidence."
+    else
+      merged_errors="$(tsc_errors "$logs/tsc.log")"
+      if [ -z "$merged_errors" ]; then
+        tail -8 "$logs/tsc.log" >&2
+        say "UNPROVEN. The type check failed with no type error (log above): this machine, not the merge."
+      else
+        merge_head="$(git rev-parse HEAD)"
+        git checkout -q --detach "$BASE"
+        base_rc=0; run_tsc "$logs/tsc_main.log" || base_rc=$?
+        git checkout -q --detach "$merge_head"
+        base_errors="$(tsc_errors "$logs/tsc_main.log")"
+        caused="$(comm -23 <(printf '%s\n' "$merged_errors") <(printf '%s\n' "$base_errors"))"
+        if timed_out "$base_rc" || { [ "$base_rc" != 0 ] && [ -z "$base_errors" ]; }; then
+          # The baseline run did not give a verdict (timeout, crash). It cannot clear or blame.
+          say "UNPROVEN. The type check of $BASE alone gave no verdict (exit $base_rc), so the errors of the merge cannot be compared. pr-check is the evidence."
+        elif [ -n "$caused" ]; then
+          say "the type check took $(( SECONDS - tsc_started )) s"
+          printf '%s\n' "$caused" | head -15 >&2
+          fail "type errors that exist on the merge of the branch and $BASE and not on $BASE alone. Merge $BASE into the branch, fix, push, and wait for pr-check."
+        else
+          say "the type errors also exist on $BASE alone, so the merge did not cause them:"
+          printf '%s\n' "$merged_errors" | head -5 | sed 's/^/  /'
+        fi
+      fi
+    fi
+  fi
+  stage "type check"
 fi
 
 # ── 4. Both sides changed the same files ───────────────────────────────────
@@ -174,29 +267,44 @@ fi
 # is this machine or an older red: six tests fail on the Windows PC and pass
 # in CI (LD-3b, 2026-10-30). So a failure is re-run on the branch before it
 # can block. Both commands can be replaced, for tests and for other stacks.
-# Budget: the callers allow 900 s in all (merge_bot.sh, lane-merge.md). About 100 s
-# go to the fences and the picker. The run gets 420 s, and each of the two
-# re-runs (branch alone, main alone) gets 120 s.
+# Budget: the callers allow 900 s in all (merge_bot.sh, lane-merge.md). PREMERGE_TOTAL_BUDGET
+# (760 s) covers every stage. Each stage gets what is left, minus what the later stages need
+# (RESERVE for the type check, 70 s for the tests when the picker runs, two re-runs for the
+# tests), and never more than its own cap. The rest (fetch, merge, checkouts) is about 40 s.
 TEST_TIMEOUT="${PREMERGE_TEST_TIMEOUT:-420}"
 RERUN_TIMEOUT="${PREMERGE_RERUN_TIMEOUT:-120}"
+# The test cap is set after the picker ran: it is what is left of PREMERGE_TOTAL_BUDGET,
+# minus one re-run, and never more than PREMERGE_TEST_TIMEOUT.
 both_full=0
 # premerge_select.py picks the tests that BOTH sides can affect, plus each test
 # file that either side changed, those first. The whole union took 974 test files
 # and ran past 10 minutes on a 62-file union (measured 2026-11-14).
 sel() {
-  ${PREMERGE_PY:-env -u VIRTUAL_ENV uv run python} scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" \
-    --first-out "$logs/first.txt" --note-out "$logs/note.txt" > "$logs/sel.txt" || return 1
+  # shellcheck disable=SC2086
+  timeout -k 10 "$picker_cap" ${PREMERGE_PY:-env -u VIRTUAL_ENV uv run python} scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" \
+    --first-out "$logs/first.txt" --note-out "$logs/note.txt" > "$logs/sel.txt" || return $?
   # Git Bash keeps a CR that a Windows Python writes, and a CR on a path stops pytest
   # with "file not found" (review of 2026-11-15). Strip it from every list we read.
   for f in sel first note; do tr -d '\r' < "$logs/$f.txt" > "$logs/$f.lf" && mv "$logs/$f.lf" "$logs/$f.txt"; done
 }
 : > "$logs/sel.txt"; : > "$logs/note.txt"; echo 0 > "$logs/first.txt"
-no_picker=0
+no_picker=0; picker_timeout=0; no_time=0
 PYT="${PREMERGE_PYTEST_CMD:-env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE}"
 if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
   if [ "$merge_test" = 1 ]; then
     if [ -f scripts/premerge_select.py ]; then
-      sel || fail "premerge_select.py failed on the merge result."
+      # The picker gets what is left minus 70 s for the tests, and at most its own cap.
+      picker_cap=$(( $(remaining) - 70 ))
+      [ "$picker_cap" -gt "${PREMERGE_PICKER_TIMEOUT:-150}" ] && picker_cap="${PREMERGE_PICKER_TIMEOUT:-150}"
+      sel_rc=0
+      if [ "$picker_cap" -lt 20 ]; then sel_rc=124; else sel || sel_rc=$?; fi
+      if timed_out "$sel_rc"; then
+        say "UNPROVEN. The picker had no verdict within ${picker_cap}s, so no test was picked and none ran. This machine is slow: raise PREMERGE_PICKER_TIMEOUT or PREMERGE_TOTAL_BUDGET, or read pr-check."
+        picker_timeout=1; merge_test=0
+        : > "$logs/sel.txt"; echo 0 > "$logs/first.txt"
+      elif [ "$sel_rc" != 0 ]; then
+        fail "premerge_select.py failed on the merge result."
+      fi
       if [ "$(head -1 "$logs/sel.txt")" = FULL ]; then
         # Both sides are FULL: pr-check and main own the full suite. Run only the changed tests.
         both_full=1; sed -i 1d "$logs/sel.txt"
@@ -212,6 +320,15 @@ if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
   AFFECTED_CMD="rc=0; n=\$(cat $logs/first.txt 2>/dev/null || echo 0); total=\$(grep -c . $logs/sel.txt || true); if [ \"\$total\" -eq 0 ]; then echo 'nothing to run'; exit 0; fi; if [ \"\$n\" -gt 0 ]; then $PYT \$(head -\$n $logs/sel.txt) || rc=1; fi; if [ \"\$total\" -gt \"\$n\" ]; then $PYT \$(tail -n +\$((n+1)) $logs/sel.txt) || rc=1; fi; exit \$rc"
 else
   AFFECTED_CMD="$PREMERGE_AFFECTED_CMD"
+fi
+stage "picker"
+if [ "$merge_test" = 1 ]; then
+  cap=$(( $(remaining) - 2 * RERUN_TIMEOUT ))
+  if [ "$cap" -lt 60 ]; then
+    no_time=1; merge_test=0
+  elif [ "$cap" -lt "$TEST_TIMEOUT" ]; then
+    TEST_TIMEOUT=$cap
+  fi
 fi
 RERUN_CMD="${PREMERGE_RERUN_CMD:-$PYT}"
 # Ids at the function level: a parameter such as [Earlier reply] holds a space,
@@ -231,17 +348,26 @@ rerun_fail() {
     else [ -f "$file" ] && grep -qE "def[[:space:]]+${name}\b" "$file" && here="$here $id"; fi
   done
   [ -n "$here" ] || { : > "$log"; return 0; }
-  local rc=0
+  local rc=0 rcap=$RERUN_TIMEOUT
+  [ "$rcap" -gt $(( $(remaining) - 20 )) ] && rcap=$(( $(remaining) - 20 ))
+  if [ "$rcap" -lt 15 ]; then
+    say "UNPROVEN in part. No time is left for a re-run on $BASE, so these tests count as passing there and the merge is blamed."
+    : > "$log"; return 0
+  fi
   # shellcheck disable=SC2086
-  timeout "$RERUN_TIMEOUT" bash -c "$RERUN_CMD \"\$@\"" _ $here > "$log" 2>&1 || rc=$?
-  [ "$rc" = 124 ] && say "UNPROVEN in part. A re-run hit ${RERUN_TIMEOUT}s, so the tests it did not reach count as passing there and the merge is blamed."
+  timeout -k 10 "$rcap" bash -c "$RERUN_CMD \"\$@\"" _ $here > "$log" 2>&1 || rc=$?
+  timed_out "$rc" && say "UNPROVEN in part. A re-run hit its cap (${rcap}s), so the tests it did not reach count as passing there and the merge is blamed."
   failed_ids "$log"
 }
 
 if [ -n "$overlap" ]; then
   say "both sides changed: $(printf '%s' "$overlap" | tr '\n' ' ')"
 fi
-if [ "$no_picker" = 1 ]; then
+if [ "$no_time" = 1 ]; then
+  say "UNPROVEN. No test ran: only $(( $(remaining) > 0 ? $(remaining) : 0 )) s of the ${BUDGET} s budget are left after the fences, the type check and the picker. Raise PREMERGE_TOTAL_BUDGET if the caller allows more, or read pr-check."
+elif [ "$picker_timeout" = 1 ]; then
+  :  # said above
+elif [ "$no_picker" = 1 ]; then
   say "UNPROVEN. scripts/premerge_select.py is not in the merge result, so no test was picked. Merge $BASE once the script has landed on it."
 elif [ "$merge_test" = 0 ]; then
   say "the affected tests did not run (PREMERGE_MERGE_TEST=0 or --no-tests). pr-check and main run them."
@@ -256,9 +382,9 @@ else
   [ -s "$logs/note.txt" ] && [ "$both_full" = 0 ] && grep -q . "$logs/note.txt" \
     && say "UNPROVEN in part. The selector says every test is affected by: $(cat "$logs/note.txt"). The other side's tests ran alone."
   rc=0
-  timeout "$TEST_TIMEOUT" bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1 || rc=$?
+  timeout -k 10 "$TEST_TIMEOUT" bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1 || rc=$?
   merged_fail="$(failed_ids "$logs/affected.log")"
-  if [ "$rc" = 124 ] && [ -z "$merged_fail" ]; then
+  if timed_out "$rc" && [ -z "$merged_fail" ]; then
     say "UNPROVEN. The affected tests passed no verdict in ${TEST_TIMEOUT}s. The merge is not shown to be red, and not shown to be green. Raise PREMERGE_TEST_TIMEOUT, or read pr-check."
   elif [ "$rc" != 0 ]; then
     if [ -z "$merged_fail" ]; then
@@ -275,19 +401,19 @@ else
     caused="$(comm -23 <(printf '%s\n' "$merged_fail") <(printf '%s\n%s\n' "$alone_fail" "$main_fail" | sort -u))"
     if [ -n "$caused" ]; then
       printf '  %s\n' $caused >&2
-      say "the merge test took $(( (SECONDS - started + 59) / 60 )) minute(s)"
+      stage "tests (a red)"
       fail "these tests pass on the branch alone (or are not there) and pass on $BASE alone, and fail once the two are merged. Merge $BASE into the branch, fix, push, and wait for pr-check."
     fi
     say "these tests fail on the branch alone or on $BASE alone, so the merge did not cause them (this machine, or already red):"
     printf '  %s\n' $merged_fail
   fi
-  [ "$rc" = 124 ] && [ -n "$merged_fail" ] && say "UNPROVEN in part. The run hit ${TEST_TIMEOUT}s after the failures above, so the tests behind them did not finish."
+  timed_out "$rc" && [ -n "$merged_fail" ] && say "UNPROVEN in part. The run hit ${TEST_TIMEOUT}s after the failures above, so the tests behind them did not finish."
   if grep -q '^workbench/' "$logs/union.txt"; then
     say "a frontend file changed. pr-check runs vitest. To run it here:"
     # shellcheck disable=SC2046
-    { env -u VIRTUAL_ENV uv run python scripts/affected_tests.py $(cat "$logs/union.txt") 2>/dev/null | grep -E "^frontend:" || true; } | head -3 | sed 's/^/  /'
+    { timeout -k 5 30 env -u VIRTUAL_ENV uv run python scripts/affected_tests.py $(cat "$logs/union.txt") 2>/dev/null | grep -E "^frontend:" || true; } | head -3 | sed 's/^/  /'
   fi
-  say "the merge test took $(( (SECONDS - started + 59) / 60 )) minute(s)"
+  stage "tests"
 fi
 
 say "PASS. The merge with $BASE is clean and the fences hold. Merge now: gh pr merge --squash"
