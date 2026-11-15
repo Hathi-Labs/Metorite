@@ -18,13 +18,12 @@ Run (a PRIVATE ladder database, one R8 suite at a time)::
 Without the database every test here SKIPS, and the run reads green. A skip
 is not a pass.
 
-**R7: red first, then mutate.**
+**R7: red first, then mutate.** Each mutation ran on 2026-11-15, and the named
+test went red (1 failed). The other R8 tests of this file ran green only.
 
 * M1. ``views_store._LIST_SQL``: drop ``(shared OR owner_email = :me)``.
   ``test_r8_the_tool_lists_the_views_the_member_reads_and_no_private_view_of_another``
   goes red.
-* M2. ``views.list_views``: return the views of a viewer whole.
-  ``test_r8_a_viewer_reads_a_shared_view_through_the_tool_with_dropped`` goes red.
 * M3. ``_view_needs_card``: ``return await _must_ask()``.
   ``test_r8_a_share_through_the_tool_shows_one_card_and_writes_the_audit_row``
   goes red.
