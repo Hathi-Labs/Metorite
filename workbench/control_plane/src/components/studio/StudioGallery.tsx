@@ -83,7 +83,8 @@ export function GalleryGrid({
             const title = config.titleField ? displayValue(config.titleField, row[config.titleField.key]) : "";
             return (
               <li key={key} ref={watch} data-gallery-key={key} className="list-none">
-                <TaskCardShell ariaLabel={title || "Untitled"} className="h-full">
+                {/* A gallery tile has no done state and no keyboard cursor, so both are false. */}
+                <TaskCardShell ariaLabel={title || "Untitled"} completed={false} atCursor={false} className="h-full">
                   <Cover src={coverSrc(config, row, key, seen, address)} />
                   <TaskCardTitle>
                     {id !== null && config.openBase ? (
