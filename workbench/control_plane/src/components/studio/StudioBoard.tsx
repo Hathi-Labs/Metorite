@@ -30,8 +30,8 @@ import { createMover, type MoverState } from "@/lib/studio/boardMove";
 import { moreLine, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
-/** The value of one card field: a chip for a select or a person, else the words. */
-function CardValue({ field, value }: { field: FieldSpec; value: unknown }) {
+/** The value of one card field: a chip for a select or a person, else the words. The Gallery draws with it too. */
+export function CardValue({ field, value }: { field: FieldSpec; value: unknown }) {
   const text = displayValue(field, value);
   if (text === "") return null;
   const items = Array.isArray(value) ? value : [value];

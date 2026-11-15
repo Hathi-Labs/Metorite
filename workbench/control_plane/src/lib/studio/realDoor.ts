@@ -52,7 +52,8 @@ const WRITE_ACTION = /^object:[a-z][a-z0-9_]{0,47}\.(?:create|update|delete)$/;
 const ACTION_ID = /^[a-z][a-z0-9_]{0,47}$/;
 const PACKAGE_ID = /^[0-9a-fA-F-]{36}$/;
 
-export const NOT_DECLARED_SENTENCE = "This package does not declare that action, so it cannot run here.";
+export const NOT_DECLARED_SENTENCE =
+  "This app does not declare that action yet, so it cannot run here. Ask Mira to add the action to the app.";
 export const NEEDS_CONNECTION_SENTENCE =
   "This app needs a connection first. Connect it on the card at the top of the app, then try again.";
 export const NOT_OPEN_SENTENCE = "This action is not open on this page.";
@@ -351,6 +352,10 @@ export interface ObjectRow {
     min?: number | null; max?: number | null; units?: string[] | null; format?: string | null;
     // STU-C15a: the parts of an autonumber.
     prefix?: string | null; pad?: number | null; reset?: string | null;
+    // STU-C24a: the ranges and conversions of a quantity.
+    normal?: { low?: string | null; high?: string | null } | null;
+    critical?: { low?: string | null; high?: string | null } | null;
+    conversions?: Array<{ from: string; to: string; factor: string }> | null;
     /** C13. A lines relation names the field of its line object that points back. */
     lines?: string | null;
   }>;
@@ -375,6 +380,8 @@ export interface PackageDetail {
   pages: PageDef[];
   /** The rail of the manifest (AF-2a). Empty when the manifest has none. */
   nav: NavSection[];
+  /** The `access` of each object of the manifest, by object name (C8a). Absent when the answer has none. */
+  objectAccess?: Record<string, Record<string, unknown>[] | null>;
 }
 
 /**
@@ -475,5 +482,9 @@ export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): P
   const views = Array.isArray(manifest.views) ? (manifest.views.filter(isObject) as unknown as ViewDef[]) : [];
   const pages = Array.isArray(manifest.pages) ? (manifest.pages.filter(isObject) as unknown as PageDef[]) : [];
   const nav = Array.isArray(manifest.nav) ? (manifest.nav.filter(isObject) as unknown as NavSection[]) : [];
-  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages, nav };
+  const objectAccess: Record<string, Record<string, unknown>[] | null> = {};
+  for (const o of Array.isArray(manifest.objects) ? manifest.objects.filter(isObject) : []) {
+    if (typeof o.name === "string") objectAccess[o.name] = Array.isArray(o.access) ? o.access.filter(isObject) : null;
+  }
+  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages, nav, objectAccess };
 }

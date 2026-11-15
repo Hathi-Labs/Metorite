@@ -4576,6 +4576,694 @@
    "ok": false
   }
  ],
+ "flags": [
+  {
+   "id": "flag-normal-low-bound",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "3.9",
+    "unit": "mmol/L"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-normal-high-bound",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "5.6",
+    "unit": "mmol/L"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-just-below-normal",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "3.899999",
+    "unit": "mmol/L"
+   },
+   "flag": "low"
+  },
+  {
+   "id": "flag-just-above-normal",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "5.600001",
+    "unit": "mmol/L"
+   },
+   "flag": "high"
+  },
+  {
+   "id": "flag-critical-low-bound-is-low",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "2.8",
+    "unit": "mmol/L"
+   },
+   "flag": "low"
+  },
+  {
+   "id": "flag-just-below-critical",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "2.799999",
+    "unit": "mmol/L"
+   },
+   "flag": "critical_low"
+  },
+  {
+   "id": "flag-critical-high-bound-is-high",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "10",
+    "unit": "mmol/L"
+   },
+   "flag": "high"
+  },
+  {
+   "id": "flag-just-above-critical",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "10.000001",
+    "unit": "mmol/L"
+   },
+   "flag": "critical_high"
+  },
+  {
+   "id": "flag-negative-value",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "-1",
+    "unit": "mmol/L"
+   },
+   "flag": "critical_low"
+  },
+  {
+   "id": "flag-converted-low",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "70",
+    "unit": "mg/dL"
+   },
+   "flag": "low"
+  },
+  {
+   "id": "flag-converted-normal",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "100.9",
+    "unit": "mg/dL"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-unit-without-conversion",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "mmol/L",
+     "mg/dL",
+     "mEq"
+    ],
+    "normal": {
+     "low": "3.9",
+     "high": "5.6"
+    },
+    "critical": {
+     "low": "2.8",
+     "high": "10"
+    },
+    "conversions": [
+     {
+      "from": "mg/dL",
+      "to": "mmol/L",
+      "factor": "0.0555"
+     }
+    ]
+   },
+   "value": {
+    "value": "5",
+    "unit": "mEq"
+   },
+   "flag": "unchecked"
+  },
+  {
+   "id": "flag-converted-on-the-low-edge",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg",
+     "g"
+    ],
+    "normal": {
+     "low": "1",
+     "high": "2"
+    },
+    "conversions": [
+     {
+      "from": "g",
+      "to": "kg",
+      "factor": "0.001"
+     }
+    ]
+   },
+   "value": {
+    "value": "1000",
+    "unit": "g"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-converted-just-below-the-edge",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg",
+     "g"
+    ],
+    "normal": {
+     "low": "1",
+     "high": "2"
+    },
+    "conversions": [
+     {
+      "from": "g",
+      "to": "kg",
+      "factor": "0.001"
+     }
+    ]
+   },
+   "value": {
+    "value": "999.999",
+    "unit": "g"
+   },
+   "flag": "low"
+  },
+  {
+   "id": "flag-converted-on-the-high-edge",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg",
+     "g"
+    ],
+    "normal": {
+     "low": "1",
+     "high": "2"
+    },
+    "conversions": [
+     {
+      "from": "g",
+      "to": "kg",
+      "factor": "0.001"
+     }
+    ]
+   },
+   "value": {
+    "value": "2000",
+    "unit": "g"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-converted-just-above-the-edge",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg",
+     "g"
+    ],
+    "normal": {
+     "low": "1",
+     "high": "2"
+    },
+    "conversions": [
+     {
+      "from": "g",
+      "to": "kg",
+      "factor": "0.001"
+     }
+    ]
+   },
+   "value": {
+    "value": "2000.001",
+    "unit": "g"
+   },
+   "flag": "high"
+  },
+  {
+   "id": "flag-no-range",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg",
+     "g"
+    ]
+   },
+   "value": {
+    "value": "5",
+    "unit": "kg"
+   },
+   "flag": "none"
+  },
+  {
+   "id": "flag-only-low-below",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg"
+    ],
+    "normal": {
+     "low": "1"
+    }
+   },
+   "value": {
+    "value": "0.999999",
+    "unit": "kg"
+   },
+   "flag": "low"
+  },
+  {
+   "id": "flag-only-low-far-above",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg"
+    ],
+    "normal": {
+     "low": "1"
+    }
+   },
+   "value": {
+    "value": "999999999999999",
+    "unit": "kg"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-only-high-above",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg"
+    ],
+    "normal": {
+     "high": "1"
+    }
+   },
+   "value": {
+    "value": "1.000001",
+    "unit": "kg"
+   },
+   "flag": "high"
+  },
+  {
+   "id": "flag-critical-only",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg"
+    ],
+    "critical": {
+     "high": "9"
+    }
+   },
+   "value": {
+    "value": "9.000001",
+    "unit": "kg"
+   },
+   "flag": "critical_high"
+  },
+  {
+   "id": "flag-fifteen-digit-value-exact",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg",
+     "g"
+    ],
+    "normal": {
+     "low": null,
+     "high": "999999999.999999"
+    },
+    "conversions": [
+     {
+      "from": "g",
+      "to": "kg",
+      "factor": "0.000001"
+     }
+    ]
+   },
+   "value": {
+    "value": "999999999999999",
+    "unit": "g"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-fifteen-digit-value-over",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "kg",
+     "g"
+    ],
+    "normal": {
+     "low": null,
+     "high": "999999999.999999"
+    },
+    "conversions": [
+     {
+      "from": "g",
+      "to": "kg",
+      "factor": "0.000001"
+     }
+    ]
+   },
+   "value": {
+    "value": "999999999999999",
+    "unit": "kg"
+   },
+   "flag": "high"
+  },
+  {
+   "id": "flag-six-decimal-factor-exact",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "a",
+     "b"
+    ],
+    "normal": {
+     "high": "123456999999999.876543"
+    },
+    "conversions": [
+     {
+      "from": "b",
+      "to": "a",
+      "factor": "0.123457"
+     }
+    ]
+   },
+   "value": {
+    "value": "999999999999999",
+    "unit": "b"
+   },
+   "flag": "normal"
+  },
+  {
+   "id": "flag-six-decimal-factor-over",
+   "field": {
+    "key": "f",
+    "type": "quantity",
+    "units": [
+     "a",
+     "b"
+    ],
+    "normal": {
+     "high": "123456999999999.876543"
+    },
+    "conversions": [
+     {
+      "from": "b",
+      "to": "a",
+      "factor": "0.123457"
+     }
+    ]
+   },
+   "value": {
+    "value": "999999999999999",
+    "unit": "a"
+   },
+   "flag": "high"
+  }
+ ],
  "records": [
   {
    "id": "record-0",

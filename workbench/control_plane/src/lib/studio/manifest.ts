@@ -139,6 +139,8 @@ export const NAV_ICONS: readonly NavIcon[] = [
 /** The caps of the rail (STU-AF2a). `navCaps.test.ts` holds them equal to the schema. */
 export const MAX_NAV_SECTIONS = 4;
 export const MAX_NAV_ROWS = 12;
+/** A rail shows at most this many counts (STU-AF3a). `test_studio_manifest_ts_parity.py` holds it equal to the Python twin. */
+export const MAX_NAV_COUNTS = 8;
 
 export interface FieldDef {
   key: string;
@@ -154,6 +156,10 @@ export interface FieldDef {
   min?: number | null;
   max?: number | null;
   units?: string[] | null;
+  // C24a. The ranges of a quantity in its base unit, and the conversions to it.
+  normal?: { low?: string | null; high?: string | null } | null;
+  critical?: { low?: string | null; high?: string | null } | null;
+  conversions?: Array<{ from: string; to: string; factor: string }> | null;
   format?: string | null;
   // C13. A lines relation: the field of the object `to` that names this one.
   lines?: string | null;
@@ -240,6 +246,7 @@ export interface NavRow {
   page: string;
   icon?: NavIcon | null;
   label?: string | null;
+  count?: boolean | null;
 }
 
 export interface NavSection {

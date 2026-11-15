@@ -4,13 +4,20 @@
 Spec: project-docs/specs/ci_velocity.md section 8.8. Metorite task 3056.
 
     python3 scripts/home_server/auto_revert.py run
+    python3 scripts/home_server/auto_revert.py reopen-check <task-uuid>
 
 A user timer of `dev` on the home box runs one pass every 5 minutes
 (systemd/metorite-auto-revert.*). The pass runs the CIV-5 poller
 (bisect_poll.sh). When the poller names the first bad commit of a red push
 batch of main, the pass checks that commit, makes its revert, and proves it.
+`reopen-check` runs one supervised reopen on a scratch task (reopen_check).
 
-The flag AUTO_REVERT_MODE (the code ships dark):
+The flag AUTO_REVERT_MODE (the code ships dark). CIV-31d (H1): it has one
+source, the Environment= of metorite-auto-revert.service as `systemctl --user
+show` merges it. It has one reader, auto_revert_mode.sh (MODE_READER). The
+pass, merge_bot.sh and lanes/lane-merge.md step g run that reader. The pass
+does not read AUTO_REVERT_MODE from its own env. docs/home_box.md 3.8 says
+how a person sets the mode.
   off  Unset, empty or an unknown value is off too. The pass does nothing.
   dry  The pass does every check and the local revert. It writes one log
        line and one report. It writes nothing to GitHub and nothing to main.
@@ -83,7 +90,12 @@ id comes only from a task URL in the culprit's PR body or its commit message.
 Mechanism, not prompt text, holds the call to that one task (fix round 1):
   - A guard (GUARD_PY) runs as a PreToolUse hook of the session. It refuses
     each call on another task, on another project, with another comment
-    text, or of another tool. It fails closed.
+    text, or of another tool. set_task_status must name a status of the
+    category in_progress that get_project gave (CIV-31d, P3).
+  - It fails closed (CIV-31d, G1). The session has no --allowedTools, and
+    --permission-mode dontAsk refuses each call that nothing approves. Only
+    the allow output of the guard approves a call. A guard that is slow,
+    killed or broken prints no allow output, so its call is refused.
   - The pass reads the tool calls from --output-format stream-json. It
     writes REOPENED only when exactly the allowed calls on that one task
     succeeded (audit_calls). A call on another task is a PERSON line, also
@@ -277,6 +289,26 @@ def read_mode(raw: str | None) -> tuple[str, str]:
     if not value:
         return "off", ""
     return "off", f"AUTO_REVERT_MODE={raw!r} is not off, dry or on. The pass acts as off."
+
+
+#: CIV-31d (H1): the ONE reader of the mode. The pass, merge_bot.sh
+#: (auto_revert_mode) and lanes/lane-merge.md step g run it, and nothing reads
+#: the mode another way. Its one source is the Environment= of the unit.
+MODE_READER = ROOT / "scripts" / "home_server" / "auto_revert_mode.sh"
+
+
+def unit_mode() -> str:
+    """AUTO_REVERT_MODE of the auto-revert unit, as MODE_READER prints it.
+
+    An empty string when the reader fails: then the pass acts as off. The pass
+    does not read its own env, because the merge bot cannot see that env. So
+    the pass and the bot always see the same mode (CIV-31d, H1).
+    """
+    try:
+        res = run([bash(), str(MODE_READER)], timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
 
 
 def _cmd(name: str, default: list[str]) -> list[str]:
@@ -1181,24 +1213,52 @@ def mcp_config(path: Path) -> str:
 
 #: The guard of the session (fix round 1, P2-A). Claude Code runs it as a
 #: PreToolUse hook before each tool call, and as a PostToolUse hook after
-#: get_task, where it learns the project of the task. Exit 2 refuses the call.
-#: Any error refuses the call too: it fails closed. guard.json holds the task
-#: id, the comment text, the key and the path of its log.
+#: get_task and get_project. After get_task it learns the project of the task.
+#: After get_project it learns the statuses of the category in_progress of that
+#: project (CIV-31d, P3). guard.json holds the task id, the comment text, the
+#: key and the path of its log.
+#: CIV-31d (G1): an allowed call gets ALLOW on stdout, and exit 0. That output
+#: is the only approval in the session, because the session has no allow list
+#: and runs with dontAsk. Exit 2 refuses a call. An error refuses the call too.
+#: A guard that is slow, killed or broken prints no ALLOW, so dontAsk refuses
+#: its call: the guard fails closed.
 GUARD_PY = r'''"""The guard of the auto-revert reopen session (scripts/home_server/auto_revert.py)."""
 import json
 import os
 import sys
+
+#: The only output that approves a call. The session has no allow list and
+#: runs with dontAsk, so a call with no such output is refused (CIV-31d, G1).
+ALLOW = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
 
 
 def flat(text):
     return "\n".join(line.rstrip() for line in str(text or "").strip().splitlines())
 
 
+def reply_of(data):
+    """The JSON object of a tool result. It can come as an object, as the JSON
+    text of one, or as a list of text blocks. Another shape gives {}."""
+    reply = data.get("tool_response")
+    if isinstance(reply, dict) and isinstance(reply.get("structuredContent"), dict):
+        reply = reply["structuredContent"]
+    elif isinstance(reply, dict) and isinstance(reply.get("content"), list):
+        reply = reply["content"]
+    if isinstance(reply, list):
+        reply = "".join(str(b.get("text") or "") for b in reply
+                        if isinstance(b, dict) and b.get("type") == "text")
+    if isinstance(reply, str):
+        reply = json.loads(reply)
+    return reply if isinstance(reply, dict) else {}
+
+
 def main():
     conf_path, kind = sys.argv[1], sys.argv[2]
     with open(conf_path, encoding="utf-8") as f:
         conf = json.load(f)
-    seen = os.path.join(os.path.dirname(os.path.abspath(conf_path)), "project.json")
+    here = os.path.dirname(os.path.abspath(conf_path))
+    seen = os.path.join(here, "project.json")
+    known = os.path.join(here, "statuses.json")
     data = json.loads(sys.stdin.read() or "{}")
     name = str(data.get("tool_name") or "")
     args = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
@@ -1212,34 +1272,52 @@ def main():
             f.write(json.dumps({"kind": kind, "tool": name, "input": args,
                                 "verdict": verdict, "why": why}) + "\n")
 
+    def load(path, key):
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get(key)
+
+    def keep(path, value, why):
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(value, f)
+        os.replace(tmp, path)
+        note("learned", why)
+
+    project = str(load(seen, "project_id") or "")
     if kind == "post":
         if name == "mcp__metorite__get_task" and same(args.get("task_id"), task):
-            reply = data.get("tool_response")
-            reply = json.loads(reply) if isinstance(reply, str) else reply
-            row = reply.get("task") if isinstance(reply, dict) else None
+            row = reply_of(data).get("task")
             if isinstance(row, dict) and same(row.get("id"), task) \
                     and isinstance(row.get("project_id"), str):
-                tmp = seen + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump({"project_id": row["project_id"].strip().lower()}, f)
-                os.replace(tmp, seen)
-                note("learned", row["project_id"])
+                keep(seen, {"project_id": row["project_id"].strip().lower()}, row["project_id"])
+        elif name == "mcp__metorite__get_project" and same(args.get("project_id"), project):
+            reply = reply_of(data)
+            head, rows = reply.get("project"), reply.get("statuses")
+            if isinstance(head, dict) and same(head.get("id"), project) and isinstance(rows, list):
+                ids = sorted({r["id"].strip().lower() for r in rows
+                              if isinstance(r, dict) and r.get("category") == "in_progress"
+                              and isinstance(r.get("id"), str) and r["id"].strip()})
+                keep(known, {"in_progress": ids}, ",".join(ids))
         return 0
     why = ""
     if name == "mcp__metorite__get_task":
         if set(args) != {"task_id"} or not same(args.get("task_id"), task):
             why = "get_task may read only the culprit's task"
     elif name == "mcp__metorite__get_project":
-        project = ""
-        if os.path.exists(seen):
-            with open(seen, encoding="utf-8") as f:
-                project = str(json.load(f).get("project_id") or "")
         if set(args) != {"project_id"} or not same(args.get("project_id"), project):
             why = "get_project may read only the project of the culprit's task, after get_task"
     elif name == "mcp__metorite__set_task_status":
+        ready = load(known, "in_progress")
+        ready = {s for s in ready if isinstance(s, str)} if isinstance(ready, list) else set()
+        status = args.get("status_id")
         if set(args) != {"task_id", "status_id", "expected_version"} \
                 or not same(args.get("task_id"), task):
             why = "set_task_status may move only the culprit's task"
+        elif not isinstance(status, str) or status.strip().lower() not in ready:
+            why = ("set_task_status may set only a status of the category in_progress"
+                   " that get_project gave for the task's project")
     elif name == "mcp__metorite__add_comment":
         if set(args) != {"task_id", "body", "idempotency_key"} \
                 or not same(args.get("task_id"), task) \
@@ -1253,6 +1331,8 @@ def main():
         sys.stderr.write("Refused by the auto-revert guard: " + why + ".\n")
         return 2
     note("allow")
+    sys.stdout.write(json.dumps(ALLOW) + "\n")
+    sys.stdout.flush()
     return 0
 
 
@@ -1270,6 +1350,8 @@ GUARD_FILE = "reopen_guard.py"
 GUARD_CONF = "guard.json"
 GUARD_LOG = "calls.jsonl"
 SESSION_DIR = "session"
+#: reopen_check keeps the stream-json of the session here (CIV-31d).
+STREAM_FILE = "stream.jsonl"
 
 
 def guard_command(folder: Path, kind: str) -> str:
@@ -1285,7 +1367,8 @@ def guard_command(folder: Path, kind: str) -> str:
 
 
 def reopen_settings(folder: Path) -> str:
-    """The JSON of --settings: the guard before each call, and after get_task."""
+    """The JSON of --settings: the guard before each call, and after get_task and
+    get_project (CIV-31d, P3: it learns the in_progress statuses there)."""
 
     def hook(kind: str) -> list[dict[str, Any]]:
         return [{"type": "command", "command": guard_command(folder, kind), "timeout": 20}]
@@ -1294,7 +1377,10 @@ def reopen_settings(folder: Path) -> str:
         {
             "hooks": {
                 "PreToolUse": [{"matcher": "*", "hooks": hook("pre")}],
-                "PostToolUse": [{"matcher": "mcp__metorite__get_task", "hooks": hook("post")}],
+                "PostToolUse": [
+                    {"matcher": "mcp__metorite__get_task", "hooks": hook("post")},
+                    {"matcher": "mcp__metorite__get_project", "hooks": hook("post")},
+                ],
             }
         },
         separators=(",", ":"),
@@ -1307,9 +1393,13 @@ def reopen_command(cfg: Config, m: Merged, folder: Path) -> list[str]:
     --tools "" removes every built-in tool (no shell, no file tool).
     --strict-mcp-config with --mcp-config loads the pinned Metorite entry only.
     --setting-sources project, in an empty folder, loads no settings file, so
-    no allow rule of a settings file adds a tool. --settings adds only the
-    guard. --permission-mode dontAsk refuses each tool that --allowedTools does
-    not name. stream-json gives the tool calls to audit_calls.
+    no allow rule of a settings file approves a tool. --settings adds only the
+    guard. stream-json gives the tool calls to audit_calls.
+    CIV-31d (G1): the command has no --allowedTools. --permission-mode dontAsk
+    refuses each call that nothing approves, and only the ALLOW output of the
+    guard approves a call. So a guard that is slow, killed or broken approves
+    nothing, and Claude Code refuses the call. An allow list would approve the
+    four tools before the guard, and then only a guard exit 2 would refuse.
     """
     return [
         *cfg.claude,
@@ -1326,8 +1416,6 @@ def reopen_command(cfg: Config, m: Merged, folder: Path) -> list[str]:
         reopen_settings(folder),
         "--tools",
         "",
-        "--allowedTools",
-        ",".join(REOPEN_TOOLS),
         "--permission-mode",
         "dontAsk",
         "--no-session-persistence",
@@ -1350,11 +1438,24 @@ def write_guard(folder: Path, m: Merged) -> None:
     (folder / GUARD_CONF).write_text(json.dumps(conf), encoding="utf-8", newline="\n")
 
 
-def guard_works(folder: Path, task_id: str) -> str:
-    """An empty string when the guard refuses another task and passes the task.
+def approves(out: str) -> bool:
+    """True when the stdout of a PreToolUse hook approves the call (CIV-31d, G1)."""
+    spec = json_object(out.strip()).get("hookSpecificOutput")
+    return (
+        isinstance(spec, dict)
+        and spec.get("hookEventName") == "PreToolUse"
+        and spec.get("permissionDecision") == "allow"
+    )
 
-    A guard that cannot run would let each call through (Claude Code refuses
-    a call only on exit 2), so the pass tests it before the session.
+
+def guard_works(folder: Path, task_id: str) -> str:
+    """An empty string when the guard refuses another task and approves the task.
+
+    CIV-31d (G1): only the allow output of the guard approves a call. So the
+    self-test wants exit 2 and no allow output for another task, and exit 0
+    with the allow output for the task. A guard that cannot run would approve
+    nothing, and a guard that approves another task would leak. In both cases
+    the pass runs no session.
     """
     cmd = shlex.split(guard_command(folder, "pre"))
     probe_call = {"tool_name": "mcp__metorite__get_task", "tool_input": {"task_id": ""}}
@@ -1363,14 +1464,20 @@ def guard_works(folder: Path, task_id: str) -> str:
     )
     mine = json.dumps({**probe_call, "tool_input": {"task_id": task_id}})
     try:
-        refused = run(cmd, stdin=other, timeout=30).returncode
-        passed = run(cmd, stdin=mine, timeout=30).returncode
+        refused = run(cmd, stdin=other, timeout=30)
+        passed = run(cmd, stdin=mine, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"the guard cannot run ({one_line(str(exc), 120)})"
     (folder / GUARD_LOG).unlink(missing_ok=True)
-    if refused != 2 or passed != 0:
+    if refused.returncode != 2 or approves(refused.stdout):
         return (
-            f"the guard self-test failed (exit {refused} for another task, {passed} for the task)"
+            f"the guard self-test failed (exit {refused.returncode} for another task, "
+            f"allow output {'yes' if approves(refused.stdout) else 'no'})"
+        )
+    if passed.returncode != 0 or not approves(passed.stdout):
+        return (
+            f"the guard self-test failed (exit {passed.returncode} for the task, "
+            f"allow output {'yes' if approves(passed.stdout) else 'no'})"
         )
     return ""
 
@@ -1540,13 +1647,15 @@ def guard_refusals(folder: Path) -> int:
     return sum(1 for ln in lines if json_object(ln).get("verdict") == "deny")
 
 
-def reopen(cfg: Config, ledger: Ledger, m: Merged) -> None:
+def reopen(cfg: Config, ledger: Ledger, m: Merged, keep: Path | None = None) -> None:
     """After a REVERTED line, open the culprit's task again (CIV-31c).
 
     Mode on only. Another mode prints the command and runs nothing. One try:
     a REOPENED line when audit_calls finds exactly the allowed calls on that
     one task. Else one PERSON line with reopen=failed (reopen=none when no
     task id is known). The revert stands in each case.
+    keep (CIV-31d, reopen_check): an empty folder that the reopen uses and
+    keeps, with the stream in STREAM_FILE. Else a temp folder that goes.
     """
     head = f"revert_pr={m.pr} culprit={m.culprit}"
     if not (m.pr.isdigit() and SHA_RE.match(m.culprit)):
@@ -1572,8 +1681,10 @@ def reopen(cfg: Config, ledger: Ledger, m: Merged) -> None:
         f"mode={cfg.mode} {head} task_id={m.task_id} reopen=failed The revert stands. A "
         f"person opens {task_url(m.task_id)} again."
     )
-    with tempfile.TemporaryDirectory(prefix="auto-revert-reopen.") as tmp:
-        folder = Path(tmp)
+    with contextlib.ExitStack() as stack:
+        folder = keep or Path(
+            stack.enter_context(tempfile.TemporaryDirectory(prefix="auto-revert-reopen."))
+        )
         try:
             cmd = reopen_command(cfg, m, folder)
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1599,6 +1710,8 @@ def reopen(cfg: Config, ledger: Ledger, m: Merged) -> None:
         except OSError as exc:
             res, why = None, f"the session cannot start: {one_line(str(exc), 120)}"
         if res is not None:
+            if keep is not None:
+                (folder / STREAM_FILE).write_text(res.stdout, encoding="utf-8", newline="\n")
             calls, final = read_stream(res.stdout)
             why = audit_calls(calls, final, m)
             if not why and guard_refusals(folder):
@@ -1619,6 +1732,36 @@ def reopen(cfg: Config, ledger: Ledger, m: Merged) -> None:
         f"{failed} The session did not open the culprit's task again: {why}. The Metorite "
         "sign-in of the box can be broken.",
     )
+
+
+#: CIV-31d: the stand-in facts of a supervised reopen (reopen_check). No revert
+#: PR and no culprit exist, so the comment names PR 0 and the zero sha.
+CHECK_SHA = "0" * 40
+CHECK_TEST = "supervised-reopen-check"
+CHECK_LOG = "check.log"
+
+
+def reopen_check(task_id: str) -> int:
+    """One supervised reopen on a scratch task, before mode on (CIV-31d, §8.8).
+
+    A person runs it on the box as `dev`, on a task that the person made for
+    the check. It runs the same reopen as mode on: the same command, the guard,
+    its self-test and the audit. The mode of the unit does not matter. It never
+    writes the log of the pass. It writes its line to CHECK_LOG in a kept
+    folder, with the stream (STREAM_FILE) and the guard log (GUARD_LOG). It
+    prints that folder. Exit 0 only for a REOPENED line.
+    """
+    task = task_id.strip().lower()
+    if not TASK_ID_RE.match(task):
+        say("usage: auto_revert.py reopen-check <task-uuid>. The id must be a full UUID.")
+        return 2
+    cfg = Config.from_env("on")
+    folder = Path(tempfile.mkdtemp(prefix="auto-revert-check."))
+    ledger = Ledger(folder / CHECK_LOG)
+    reopen(cfg, ledger, Merged("0", CHECK_SHA, task, CHECK_SHA, [CHECK_TEST]), keep=folder)
+    say(f"the check folder: {folder} ({CHECK_LOG}, {STREAM_FILE}, {GUARD_LOG})")
+    last = ledger.entries()[-1:] if ledger.path.exists() else []
+    return 0 if last and last[0].verb == REOPENED else 1
 
 
 @dataclass
@@ -2311,7 +2454,7 @@ def create_pr(cfg: Config, case: Case) -> str:
 
 
 def run_pass() -> int:
-    mode, note = read_mode(os.environ.get("AUTO_REVERT_MODE"))
+    mode, note = read_mode(unit_mode())
     if note:
         say(note)
     if mode == "off":
@@ -2345,7 +2488,9 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, on_sigterm)
     if argv[:1] == ["run"]:
         return run_pass()
-    print("usage: auto_revert.py run", file=sys.stderr)
+    if argv[:1] == ["reopen-check"] and len(argv) == 2:
+        return reopen_check(argv[1])
+    print("usage: auto_revert.py run | auto_revert.py reopen-check <task-uuid>", file=sys.stderr)
     return 2
 
 
