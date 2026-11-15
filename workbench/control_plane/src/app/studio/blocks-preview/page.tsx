@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * /studio/blocks-preview — the Table, Board, Gallery, Form and Detail blocks on
- * sample records (`specs/ai_studio.md` §14 D2a, D3 and D19a).
+ * /studio/blocks-preview — the Table, Board, Gallery, Steps, Form and Detail
+ * blocks on sample records (`specs/ai_studio.md` §14 D2a, D3, D19a and D14a).
  *
  * A member sees each block as an app will draw it. The data is a fake door
  * (`lib/studio/sampleDoor.ts`): nothing is read and nothing is stored, and
@@ -14,6 +14,10 @@
  * most 100 records (`VIEW_LIMIT`), and `moreLine` then names the rest. This
  * page has no record panel, so it plays the app frame: a click on a card
  * shows which record the link opens (`parseRecordLink`).
+ *
+ * The Steps section is the guided step player (D14a). It has its own sample door
+ * (`sampleSteps.ts`) that stamps a sign-off with a member and a time. It is a preview only:
+ * no catalog token, no route and no flag yet.
  */
 import { useMemo, useState } from "react";
 
@@ -21,6 +25,7 @@ import { AppTopBar } from "@/components/AppTopBar";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
+import StudioStepPlayer from "@/components/studio/StudioStepPlayer";
 import Badge from "@/components/ui/Badge";
 import SelectButton from "@/components/ui/SelectButton";
 import { tableBlock } from "@/lib/studio/blocks";
@@ -32,11 +37,14 @@ import { parseRecordLink, recordLinkBase } from "@/lib/studio/recordPageModel";
 import {
   NO_PHOTO_EVERY, SAMPLE_ASSET_FIELDS, SAMPLE_FIELDS, SAMPLE_TABLE_KEYS, makeSampleDoor, sampleAssetRows,
 } from "@/lib/studio/sampleDoor";
+import { makeSampleStepDoor, sampleStepRows } from "@/lib/studio/sampleSteps";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
 const LIST = { action: "object:visit.list" };
 const ASSETS = { action: "object:asset.list" };
+const STEPS = { action: "object:step.list" };
+const VIEWER_DONE = 4;
 /** More than a live door reads, so the preview shows the lazy load over a long list. */
 const GALLERY_COUNT = 200;
 const BOARD_FIELDS = SAMPLE_FIELDS.filter((f) =>
@@ -47,6 +55,13 @@ export default function BlocksPreviewPage() {
   const door = useMemo(() => makeSampleDoor(), []);
   const assetRows = useMemo(() => sampleAssetRows(GALLERY_COUNT), []);
   const assetDoor = useMemo(() => makeSampleDoor(SAMPLE_ASSET_FIELDS, assetRows), [assetRows]);
+  const [member, setMember] = useState("editor");
+  const stepDoors = useMemo(() => ({
+    editor: makeSampleStepDoor(),
+    viewer: makeSampleStepDoor(sampleStepRows(VIEWER_DONE), undefined, undefined, "sample:steps-viewer"),
+  }), []);
+  const stepDoor = member === "viewer" ? stepDoors.viewer : stepDoors.editor;
+  const { data: stepRows } = useCachedResource<Row[]>(sourceKey(stepDoor, STEPS), () => stepDoor.read(STEPS));
   const [opened, setOpened] = useState<string | null>(null);
   const [picked, setPicked] = useState("");
   const { data } = useCachedResource<Row[]>(sourceKey(door, LIST), () => door.read(LIST));
@@ -75,7 +90,7 @@ export default function BlocksPreviewPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <AppTopBar title="Block preview" subtitle="Table, Board, Gallery, Form and Detail on sample records"
+      <AppTopBar title="Block preview" subtitle="Table, Board, Gallery, Steps, Form and Detail on sample records"
         back={{ href: "/studio", label: "Back to Studio" }} />
       <div className="pb-askbar flex flex-1 flex-col gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -117,6 +132,27 @@ export default function BlocksPreviewPage() {
             </p>
           </section>
         </StudioDataContext.Provider>
+
+        <section aria-label="Steps" className={PANEL}>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-foreground">Steps</h2>
+            <SelectButton label="Member" value={member} widthClass="w-40"
+              options={[{ value: "editor", label: "Can sign off" }, { value: "viewer", label: "Read only" }]}
+              onChange={setMember} />
+          </div>
+          <p className="mb-2 text-xs text-muted-foreground">
+            A run of 10 steps. Each step shows its photo and its instruction. Step 4 has a required check. Press Sign off
+            without the tick to see the alert. To see a refusal of the server, sign off step 6 before step 5.
+          </p>
+          {stepRows ? (
+            <StudioStepPlayer key={member} rows={stepRows} door={stepDoor} object="step" canSign={member !== "viewer"} />
+          ) : null}
+          <p className="mt-3 text-xs text-muted-foreground">
+            The sample door stamps each sign-off with the member and the time. A reload restores the first rows, and the
+            sample steps are not stored. So &quot;a reload opens the same step&quot; is shown by tests of the first step
+            that is not done, with 0, 4 and 10 steps done. The Read only view has 4 steps done and opens on step 5.
+          </p>
+        </section>
 
         <StudioDataContext.Provider value={door}>
           <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">
