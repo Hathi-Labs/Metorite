@@ -112,3 +112,12 @@ def test_a_data_file_of_main_reaches_the_tests_that_read_it(monkeypatch):
     ps._CACHE.clear()
     reached, full = ps._reach(["crm.json"], ps.at.ROOT)
     assert reached == {"tests/unit/test_shell_manifests.py"} and not full
+
+
+def test_a_changed_fence_list_adds_the_tests_that_read_it(monkeypatch):
+    """gate() cannot read tests/fences.json without the diff text, so the picker adds
+    the guards by name (finding F2 of the review of 2026-11-15)."""
+    _patch_reach(monkeypatch, {})
+    monkeypatch.setattr(ps.at, "FENCE_GUARD_TESTS", ("tests/unit/test_fence_lists.py",), raising=False)
+    got = ps.pick(["tests/fences.json"], ["tests/fences.json"])
+    assert got == ["tests/unit/test_fence_lists.py"]

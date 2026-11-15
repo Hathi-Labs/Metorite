@@ -247,7 +247,12 @@ elif [ "$merge_test" = 0 ]; then
   say "the affected tests did not run (PREMERGE_MERGE_TEST=0 or --no-tests). pr-check and main run them."
 else
   say "running the tests both sides can affect on the merge result: $(wc -l < "$logs/union.txt" | tr -d ' ') files in the union, $( (wc -l < "$logs/sel.txt" 2>/dev/null || echo 0) | tr -d ' ') tests selected, timeout ${TEST_TIMEOUT}s"
-  [ "$both_full" = 1 ] && say "UNPROVEN in part. Both sides changed a file that makes every test affected. Only the test files that a side changed ran."
+  picked_n="$(grep -c . "$logs/sel.txt" || true)"
+  if [ "$picked_n" = 0 ] && [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
+    say "UNPROVEN. The selector picked no test, so NO test ran on the merge result. Nothing is proven here. pr-check is the evidence."
+  elif [ "$both_full" = 1 ]; then
+    say "UNPROVEN in part. Both sides changed a file that makes every test affected. Only the test files that a side changed ran."
+  fi
   [ -s "$logs/note.txt" ] && [ "$both_full" = 0 ] && grep -q . "$logs/note.txt" \
     && say "UNPROVEN in part. The selector says every test is affected by: $(cat "$logs/note.txt"). The other side's tests ran alone."
   rc=0

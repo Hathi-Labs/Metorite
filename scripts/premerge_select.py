@@ -72,8 +72,8 @@ def _reach_uncached(files: list[str], root: Path, *, src_only: bool = False) -> 
     with no `gate` falls back to `select`."""
     files = [f for f in files if f not in _tests(files, root)] if src_only else files
     # gate() reads tests/fences.json only with the text of the change, which this
-    # picker does not have, and it answers FULL when it cannot. A changed fence list is
-    # covered by the fence tests that it changes, which run first.
+    # picker does not have, and it answers FULL when it cannot. So the file stays out
+    # here, and `pick_tiers` adds the tests that read it (FENCE_GUARD_TESTS) by name.
     files = [f for f in files if f != "tests/fences.json"]
     if not files:
         return set(), False
@@ -100,6 +100,9 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     pr_sel, pr_full = _reach(pr, root)
     main_sel, main_full = _reach(main, root)
     changed = _tests(pr, root) | _tests(main, root)
+    if "tests/fences.json" in (*pr, *main):
+        # A changed fence list: the guards that read tests/fences.json run (tier 2 at least).
+        changed |= {t for t in getattr(at, "FENCE_GUARD_TESTS", ()) if (root / t).is_file()}
     if pr_full and main_full:
         return (["FULL", *_by_size(changed, root)], 0) if changed else None
     if pr_full:

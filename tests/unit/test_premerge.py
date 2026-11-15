@@ -257,13 +257,13 @@ def test_any_value_that_is_not_an_off_word_leaves_the_tests_on(repo):
 def test_a_function_that_one_side_lacks_gives_no_evidence_there(repo):
     """Review of 2026-11-15, P2: pytest exits 4 on a missing id and runs nothing, so a red
     that main caused was blamed on the PR. The id of a function that is not in the file of
-    a side is neither run nor counted there. The fake pytest below does what the real one does."""
+    a side is neither run nor counted there. The fake pytest returns 4 on main (a detached head) for the id main lacks."""
     _both_sides_change_shared(repo)
     # The branch adds test_g to tests/t.py. Main does not have it, and main is red on test_a.
     _commit(repo, "tests/t.py", "def test_a():\n    pass\n\ndef test_g():\n    pass\n")
     cmd = 'echo "FAILED tests/t.py::test_a - boom"; echo "FAILED tests/t.py::test_g - boom"; exit 1'
     rerun = (
-        'f() { for a in "$@"; do case "$a" in *test_g) echo "ERROR: not found: $a"; return 4;; esac; done;'
+        'f() { for a in "$@"; do case "$a" in *test_g) git symbolic-ref -q HEAD >/dev/null || { echo "ERROR: not found: $a"; return 4; };; esac; done;'
         " git symbolic-ref -q HEAD >/dev/null || { echo 'FAILED tests/t.py::test_a - boom'; return 1; }; }; f"
     )
     res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD=rerun)
@@ -281,6 +281,26 @@ def test_a_collection_error_red_on_both_sides_does_not_block(repo):
     res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD=rerun)
     assert res.returncode == 0, res.stderr
     assert "did not cause them" in res.stdout
+
+
+def test_a_cr_in_the_pytest_log_does_not_hide_a_red_on_main(repo):
+    """A Windows pytest ends each summary line with CRLF and an id with no ' - message'
+    keeps the CR through awk, so the re-run cannot match it. failed_ids strips CR."""
+    _both_sides_change_shared(repo)
+    cmd = "printf 'FAILED tests/t.py::test_a\\r\\n'; exit 1"
+    rerun = "f() { git symbolic-ref -q HEAD >/dev/null || { printf 'FAILED tests/t.py::test_a\\r\\n'; return 1; }; }; f"
+    res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD=rerun)
+    assert res.returncode == 0, res.stderr
+    assert "did not cause them" in res.stdout
+
+
+def test_an_empty_selection_says_that_nothing_is_proven(repo):
+    _stub_picker(repo, "import sys\na = sys.argv\nopen(a[a.index('--first-out') + 1], 'w').write('0\\n')\n")
+    _advance_main(repo, "other.py")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3",
+               PREMERGE_PYTEST_CMD="false")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The selector picked no test" in res.stdout
 
 
 def test_an_unknown_flag_is_refused(repo):
