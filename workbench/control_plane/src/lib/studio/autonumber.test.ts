@@ -36,9 +36,8 @@ describe("no form, sheet or cell sends the key", () => {
   it("the form fields leave it out", () => {
     expect(formFields([no, title], new Set())).toEqual([title]);
   });
-  it("it joins the computed keys, and no cell edits it", () => {
-    expect(computedKeys([], [no, title])).toEqual(new Set(["no"]));
-    expect(computedKeys([{ kind: "formula", target: "t" }], [no]).has("t")).toBe(true);
+  it("no cell edits it, and a rule target is still a computed key", () => {
+    expect(computedKeys([{ kind: "formula", target: "t" }]).has("t")).toBe(true);
     expect(isInlineEditable(no, new Set())).toBe(false);
   });
   it("a draft of it makes no value", () => {
