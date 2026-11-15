@@ -12,7 +12,7 @@ R8 half is ``test_studio_row_rules_r8.py``.
 * Each call of the six store functions in ``apps/`` and ``packages/`` passes
   ``viewer`` (``test_each_call_of_the_six_passes_a_viewer``), and the six take
   it as a required keyword. The test lists each reader path.
-* ``aggregate_records`` takes no viewer, so only the owner's door calls it.
+* ``aggregate_records`` takes a REQUIRED ``viewer`` since C2d-a, so it is one of the eight.
 * ``read_tree`` takes a REQUIRED ``viewer`` since D18-2a, so it is one of the
   readers of the first fence, and a call with no viewer fails it.
 * The door builds the viewer from the session's member only.
