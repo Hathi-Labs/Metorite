@@ -18,7 +18,8 @@ import { useEffect, useMemo, useState } from "react";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import Tabs from "@/components/Tabs";
 import RecordsStatus from "@/components/studio/RecordsStatus";
-import StudioDetail from "@/components/studio/StudioDetail";
+import StudioDetail, { Value as DetailValue } from "@/components/studio/StudioDetail";
+import StudioBlockState from "@/components/studio/StudioBlockState";
 import DeleteRecordButton from "@/components/studio/DeleteRecordButton";
 import StudioFormDialog from "@/components/studio/StudioFormDialog";
 import StudioSheet from "@/components/studio/StudioSheet";
@@ -28,9 +29,9 @@ import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio
 import { labelOf, tableBlock } from "@/lib/studio/blocks";
 import { editTitle, recordButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
-import { detailFields, fieldSpecs, formFields, recordTitle, tableFields } from "@/lib/studio/packagePreview";
+import { detailFields, fieldSpecs, formFields, recordTitle, tableFields, titleKeyOf } from "@/lib/studio/packagePreview";
 import {
-  type RelatedList, fileFields, fileLabel, linkedDoor, linesFields, newButtonState, pickRecordTab, recordTabs, relatedArgs, relatedLists,
+  type RelatedList, fileCount, fileFields, fileLabel, linkedDoor, recordFacts, linesFields, newButtonState, pickRecordTab, recordTabs, relatedArgs, relatedLists,
 } from "@/lib/studio/recordPageModel";
 import { type DeclaredAction, type ObjectRow, verbMap } from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -99,7 +100,8 @@ function Details({ object, recordId, door, actions, owner, onDeleted }: Pick<Stu
   if (read.error) {
     // A record that is gone, or that the viewer may not read, says so in plain words.
     return /gone|not found/i.test(read.error)
-      ? <p role="status" className={NOTE}>{read.error}</p>
+      ? <StudioBlockState loading={false} error={null} forbidden={false} missing rows={0} filtersActive={false}
+        noun={(object.label ?? object.name).toLowerCase()} />
       : <RecordsStatus loading={false} error={read.error} onRetry={read.refresh} />;
   }
   return <RecordsStatus loading error={null} onRetry={read.refresh} />;
@@ -190,11 +192,29 @@ export default function StudioRecord({ object, objects, recordId, door, actions,
   const { record } = useRecordRead(object, recordId, door, actions);
   const title = record ? recordTitle(detailFields(fieldSpecs(object)), record) : null;
   useEffect(() => { if (title !== null) onTitle?.(title); }, [title, onTitle]);
+  // The header facts (STU-LY-3): the few values a member needs first, on every tab, above the tabs.
+  const facts = useMemo(() => {
+    if (!record) return [];
+    const specs = fieldSpecs(object);
+    return recordFacts(detailFields(specs) as never, record, titleKeyOf(detailFields(specs)));
+  }, [record, object]);
+  const files = fileCount(fieldSpecs(object), record);
   return (
     <StudioDataContext.Provider value={door}>
       <div className="min-w-0 space-y-3" data-record={recordId} data-record-tab={active}>
+        {facts.length > 0 ? (
+          <dl aria-label="Key facts" data-record-facts className="flex flex-wrap gap-x-5 gap-y-2 rounded-lg border border-border bg-card px-3 py-2">
+            {facts.map((f) => (
+              <div key={f.key} className="min-w-0">
+                <dt className="text-xs text-muted-foreground">{f.label}</dt>
+                <dd className="text-sm text-foreground"><DetailValue field={f.field as never} value={f.value} /></dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
         {tabs.length > 1 ? (
-          <Tabs variant="underline" activeTab={active} onTabChange={onTab} tabs={tabs.map((t) => ({ id: t.id, label: t.title }))} />
+          <Tabs variant="underline" activeTab={active} onTabChange={onTab}
+            tabs={tabs.map((t) => ({ id: t.id, label: t.id === "files" && files > 0 ? `${t.title} (${files})` : t.title }))} />
         ) : null}
         {active === "details" ? <Details object={object} recordId={recordId} door={door} actions={actions} owner={owner} onDeleted={onDeleted} /> : null}
         {active === "lines" ? (
