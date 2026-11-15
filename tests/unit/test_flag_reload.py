@@ -128,94 +128,39 @@ def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> Non
     assert not github_app_org_allowed("acme"), "the master off is off for all"
 
 
-def test_workflow_studio_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
-    """WS-STU J1-3, ai_studio.md §14 J1-3. The reload list holds the key, and
-    the one reader of the authoring gate sees a change with no restart."""
-    from gateway.routes.workflows.core import author_gate_on
+# CIV-HS slice 3 (task 3284): one line for each flag whose reader is `reader(org) -> bool`.
+# Keep the lines SORTED by flag name. A new flag adds one line here, at its sorted place.
+_READERS = {
+    "CORE_EVENTS_ORGS": ("gateway.core_events", "core_events_allowed"),
+    "STUDIO_DOOR_OPS_ORGS": ("gateway.routes.studio.flags", "door_ops_allowed"),
+    "STUDIO_LOGIC_ORGS": ("gateway.routes.studio.flags", "logic_allowed"),
+    "STUDIO_NUM_F8_ORGS": ("acb_common.studio_flags", "num_f8_allowed"),
+    "STUDIO_SEARCH_ORGS": ("gateway.routes.studio.flags", "search_allowed"),
+    "WORKFLOW_STUDIO_GATE_ORGS": ("gateway.routes.workflows.core", "author_gate_on"),
+}
 
-    assert fr.reloadable("WORKFLOW_STUDIO_GATE_ORGS")
+
+@pytest.mark.parametrize("flag", sorted(_READERS))
+def test_a_flag_reloads_and_its_reader_follows(env, monkeypatch, flag) -> None:
+    """The reload list holds the key, and the one reader of the switch sees a
+    change with no restart. Spec rows: `ai_studio_rows/` (E12a, C5a, B4a, C2c, J1-3, B2b-2)."""
+    import importlib
+
+    module, name = _READERS[flag]
+    reader = getattr(importlib.import_module(module), name)
+    assert fr.reloadable(flag)
     # `setenv` records the key, so the teardown takes out what the reload writes.
-    monkeypatch.setenv("WORKFLOW_STUDIO_GATE_ORGS", "")
+    monkeypatch.setenv(flag, "")
     get_settings.cache_clear()
-    assert not author_gate_on("acme")
-    env(**{**_START, "WORKFLOW_STUDIO_GATE_ORGS": "acme"})
-    assert fr.reload_flags().applied == ("WORKFLOW_STUDIO_GATE_ORGS",)
-    assert author_gate_on("acme")
-    assert not author_gate_on("globex")
+    assert not reader("acme")
+    env(**{**_START, flag: "acme"})
+    assert fr.reload_flags().applied == (flag,)
+    assert reader("acme")
+    assert not reader("globex")
 
 
-def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
-    """WS-STU B2b-2b, ai_studio.md §14 B2b-2. The reload list holds the key, and
-    the one reader of the door op switch sees a change with no restart."""
-    from gateway.routes.studio.flags import door_ops_allowed
-
-    assert fr.reloadable("STUDIO_DOOR_OPS_ORGS")
-    # `setenv` records the key, so the teardown takes out what the reload writes.
-    monkeypatch.setenv("STUDIO_DOOR_OPS_ORGS", "")
-    get_settings.cache_clear()
-    assert not door_ops_allowed("acme")
-    env(**{**_START, "STUDIO_DOOR_OPS_ORGS": "acme"})
-    assert fr.reload_flags().applied == ("STUDIO_DOOR_OPS_ORGS",)
-    assert door_ops_allowed("acme")
-    assert not door_ops_allowed("globex")
-
-
-def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
-    """WS-STU E12a, ai_studio.md §14 E12a. The reload list holds the key, and
-    the one reader of the core events switch sees a change with no restart."""
-    from gateway.core_events import core_events_allowed
-
-    assert fr.reloadable("CORE_EVENTS_ORGS")
-    monkeypatch.setenv("CORE_EVENTS_ORGS", "")
-    get_settings.cache_clear()
-    assert not core_events_allowed("acme")
-    env(**{**_START, "CORE_EVENTS_ORGS": "acme"})
-    assert fr.reload_flags().applied == ("CORE_EVENTS_ORGS",)
-    assert core_events_allowed("acme")
-    assert not core_events_allowed("globex")
-
-def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
-    """WS-STU C5a, ai_studio.md §14 C5a. The reload list holds the key, and
-    the one reader of the search switch sees a change with no restart."""
-    from gateway.routes.studio.flags import search_allowed
-
-    assert fr.reloadable("STUDIO_SEARCH_ORGS")
-    monkeypatch.setenv("STUDIO_SEARCH_ORGS", "")
-    get_settings.cache_clear()
-    assert not search_allowed("acme")
-    env(**{**_START, "STUDIO_SEARCH_ORGS": "acme"})
-    assert fr.reload_flags().applied == ("STUDIO_SEARCH_ORGS",)
-    assert search_allowed("acme")
-    assert not search_allowed("globex")
-
-def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
-    """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
-    the one reader of the logic module switch sees a change with no restart."""
-    from gateway.routes.studio.flags import logic_allowed
-
-    assert fr.reloadable("STUDIO_LOGIC_ORGS")
-    monkeypatch.setenv("STUDIO_LOGIC_ORGS", "")
-    get_settings.cache_clear()
-    assert not logic_allowed("acme")
-    env(**{**_START, "STUDIO_LOGIC_ORGS": "acme"})
-    assert fr.reload_flags().applied == ("STUDIO_LOGIC_ORGS",)
-    assert logic_allowed("acme")
-    assert not logic_allowed("globex")
-
-
-def test_studio_num_f8_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
-    """WS-STU C2c, ai_studio.md §14 C2c. The reload list holds the key, and
-    the one reader of the float8 switch sees a change with no restart."""
-    from acb_common.studio_flags import num_f8_allowed
-
-    assert fr.reloadable("STUDIO_NUM_F8_ORGS")
-    monkeypatch.setenv("STUDIO_NUM_F8_ORGS", "")
-    get_settings.cache_clear()
-    assert not num_f8_allowed("acme")
-    env(**{**_START, "STUDIO_NUM_F8_ORGS": "acme"})
-    assert fr.reload_flags().applied == ("STUDIO_NUM_F8_ORGS",)
-    assert num_f8_allowed("acme")
-    assert not num_f8_allowed("globex")
+def test_the_reader_table_is_sorted_by_flag_name() -> None:
+    assert list(_READERS) == sorted(_READERS), "put a new line at its sorted place"
 
 
 def test_studio_connection_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
