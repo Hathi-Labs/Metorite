@@ -997,22 +997,25 @@ async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
     checked first, so a refused body reads nothing. Then the path of the list:
     the object by its name in the package, then the one reader of C2b.
 
-    Only the owner aggregates. A viewer of an install (J2a) reads no sum: the
-    reader of C2b knows neither the installed fields nor the row rules (C8a),
-    so a sum could count a value that the viewer cannot read."""
-    if isinstance(package, _viewer.InstalledApp):
-        out.refusal = SOURCE_NOT_OPEN
-        return
+    C2d-a: a viewer of an install (J2a) aggregates too. The object must be in
+    the installed version, and the one grammar runs on the installed fields
+    first, so a field of a newer version is refused as unknown. The store then
+    reads what ``query_records`` reads for *viewer*: the row rules bind (C8a),
+    and a hidden key is refused. The answer holds field keys only."""
     try:
         body = _aggregate_input(raw)
         obj = await objects_store.get_object_by_name(
             db, str(ref.object), package_id=package.id)
-        if obj is None:
+        if obj is None or not _installed_object(package, obj.name):
             out.object_missing = True
             return
+        if isinstance(package, _viewer.InstalledApp):
+            studio_query.parse_aggregate(package.project(obj).fields, body.get("filter"),
+                                         body.get("group_by"), body.get("measures"))
         result = await objects_store.aggregate_records(
-            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
-            group_by=body.get("group_by"), measures=body.get("measures"))
+            db, package_id=package.id, object_id=obj.id, viewer=viewer,
+            filter=body.get("filter"), group_by=body.get("group_by"),
+            measures=body.get("measures"))
     except studio_query.QueryError as exc:
         out.query_error = exc
         return
