@@ -115,3 +115,29 @@ def test_typed_union_fields_name_their_union_in_ts():
     assert found == len(unions)
     top = _interface_types("StudioManifest")
     assert top["studio"] == "StudioVersion"
+
+
+def test_nav_icons_equal_the_ts_twin():
+    from acb_common.studio_manifest import NAV_ICONS
+
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    assert _union("NavIcon") == list(NAV_ICONS)
+    assert list(schema["$defs"]["NavRow"]["properties"]["icon"]["anyOf"][0]["enum"]) == list(NAV_ICONS)
+    arr = re.search(r"export const NAV_ICONS[^=]*= \[(.*?)\];", _ts(), re.S)
+    assert arr and re.findall(r'"(\w+)"', arr.group(1)) == list(NAV_ICONS)
+
+
+def test_nav_interfaces_match_the_schema():
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    for name in ("NavRow", "NavSection"):
+        assert _interface_keys(name) == set(schema["$defs"][name]["properties"]), name
+    assert _interface_types("NavRow")["icon"] == "NavIcon | null"
+
+
+def test_nav_count_cap_equals_the_ts_twin():
+    from acb_common.studio_manifest import MAX_NAV_COUNTS
+
+    m = re.search(r"export const MAX_NAV_COUNTS\s*=\s*(\d+);", _ts())
+    assert m and int(m.group(1)) == MAX_NAV_COUNTS
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    assert schema["$defs"]["NavRow"]["properties"]["count"]["anyOf"][0] == {"type": "boolean"}

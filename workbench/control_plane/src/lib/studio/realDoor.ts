@@ -36,6 +36,7 @@
  * Pure of React, so a test drives it in the node environment.
  */
 import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, withMeta } from "./dataDoor";
+import type { NavSection, PageDef, ViewDef } from "./manifest";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
@@ -51,7 +52,10 @@ const WRITE_ACTION = /^object:[a-z][a-z0-9_]{0,47}\.(?:create|update|delete)$/;
 const ACTION_ID = /^[a-z][a-z0-9_]{0,47}$/;
 const PACKAGE_ID = /^[0-9a-fA-F-]{36}$/;
 
-export const NOT_DECLARED_SENTENCE = "This package does not declare that action, so it cannot run here.";
+export const NOT_DECLARED_SENTENCE =
+  "This app does not declare that action yet, so it cannot run here. Ask Mira to add the action to the app.";
+export const NEEDS_CONNECTION_SENTENCE =
+  "This app needs a connection first. Connect it on the card at the top of the app, then try again.";
 export const NOT_OPEN_SENTENCE = "This action is not open on this page.";
 export const APPROVAL_SENTENCE =
   "Direct edits are not on for your workspace yet, so this change was not saved.";
@@ -210,6 +214,7 @@ export function mapAnswer(status: number, body: unknown, retryAfter?: string | n
     return { ok: false, message: d.code === "not_declared" ? NOT_DECLARED_SENTENCE : NOT_OPEN_SENTENCE };
   }
   if (status === 401) return { ok: false, message: SIGN_IN_SENTENCE };
+  if (status === 409 && d.code === "needs_connection") return { ok: false, message: NEEDS_CONNECTION_SENTENCE };
   if (status === 404) return { ok: false, message: d.code === "object_missing" ? UNPUBLISHED_SENTENCE : GONE_SENTENCE };
   return { ok: false, message: ACTION_FAILED };
 }
@@ -345,6 +350,10 @@ export interface ObjectRow {
     options: string[] | null; to: string | null; hot: boolean;
     // STU-C14: the bounds of a rating, the units of a quantity, the format of a barcode.
     min?: number | null; max?: number | null; units?: string[] | null; format?: string | null;
+    // STU-C24a: the ranges and conversions of a quantity.
+    normal?: { low?: string | null; high?: string | null } | null;
+    critical?: { low?: string | null; high?: string | null } | null;
+    conversions?: Array<{ from: string; to: string; factor: string }> | null;
     /** C13. A lines relation names the field of its line object that points back. */
     lines?: string | null;
   }>;
@@ -364,6 +373,13 @@ export interface PackageDetail {
   access: PackageAccess;
   actions: DeclaredAction[];
   objects: ObjectRow[];
+  /** The views and the pages of the manifest (AF-1). Empty when the manifest has none. */
+  views: ViewDef[];
+  pages: PageDef[];
+  /** The rail of the manifest (AF-2a). Empty when the manifest has none. */
+  nav: NavSection[];
+  /** The `access` of each object of the manifest, by object name (C8a). Absent when the answer has none. */
+  objectAccess?: Record<string, Record<string, unknown>[] | null>;
 }
 
 /**
@@ -380,12 +396,28 @@ export class StudioOff extends Error {
   constructor() { super(STUDIO_OFF); }
 }
 
+/**
+ * A package route answered with a status that is not 2xx and not 404. The message
+ * stays the plain sentence, and `status` lets a caller tell a refusal (401, 403)
+ * from a fault (STU-F5a: the records card draws no card on a 403).
+ */
+export class PackageReadError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "PackageReadError";
+  }
+}
+
 async function getJson(url: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
   const res = await fetchImpl(url);
   if (res.status === 404) throw new StudioOff();
-  if (!res.ok) throw new Error(ACTION_FAILED);
+  if (!res.ok) throw new PackageReadError(ACTION_FAILED, res.status);
   return res.json().catch(() => ({}));
 }
+
+// The key rule of the live doors lives in `./liveKey` (no import, so the shell
+// can reach it through `lib/assistantWrites.ts`). It stays exported from here.
+export { isLiveDoorKey } from "./liveKey";
 
 export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<PackageSummary[]> {
   const body = await getJson("/api/studio/packages", fetchImpl);
@@ -445,5 +477,12 @@ export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): P
   const manifest = isObject(pkg.manifest) ? pkg.manifest : {};
   const objects = isObject(body) && Array.isArray(body.objects) ? (body.objects.filter(isObject) as unknown as ObjectRow[]) : [];
   const actions = Array.isArray(manifest.actions) ? (manifest.actions.filter(isObject) as unknown as DeclaredAction[]) : [];
-  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects };
+  const views = Array.isArray(manifest.views) ? (manifest.views.filter(isObject) as unknown as ViewDef[]) : [];
+  const pages = Array.isArray(manifest.pages) ? (manifest.pages.filter(isObject) as unknown as PageDef[]) : [];
+  const nav = Array.isArray(manifest.nav) ? (manifest.nav.filter(isObject) as unknown as NavSection[]) : [];
+  const objectAccess: Record<string, Record<string, unknown>[] | null> = {};
+  for (const o of Array.isArray(manifest.objects) ? manifest.objects.filter(isObject) : []) {
+    if (typeof o.name === "string") objectAccess[o.name] = Array.isArray(o.access) ? o.access.filter(isObject) : null;
+  }
+  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages, nav, objectAccess };
 }

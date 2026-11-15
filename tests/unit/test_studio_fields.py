@@ -42,6 +42,8 @@ from acb_common import studio_fields as sf
 from acb_common import studio_manifest
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 _UUID = str(uuid.uuid4())
@@ -565,12 +567,10 @@ def test_one_reader_of_the_org_gauge() -> None:
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The `--must-run` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
+    must_run = r8_lists.must_run()
     for suite in ("test_studio_objects_r8", "test_studio_query_r8",
                   "test_studio_objects_batch_r8", "test_studio_state_machine_r8"):
-        assert re.search(rf"^[ \t]+tests/unit/{suite}\.py(?: \\)?$", block.group(1), re.M), suite
+        assert f"tests/unit/{suite}.py" in must_run, suite
 
 
 def test_the_store_imports_the_one_check() -> None:

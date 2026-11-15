@@ -40,6 +40,8 @@ from gateway.routes.workflows.engine.graph import (
 from gateway.routes.workflows.engine.handlers import NodeServices
 from gateway.routes.workflows.engine.runner import execute_workflow
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "workflows"
 
@@ -293,8 +295,7 @@ def test_the_task_id_never_comes_from_a_payload() -> None:
 
 
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_workflows_human_step_r8\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_workflows_human_step_r8.py" in r8_lists.must_run()
 
 
 def test_the_migration_widens_the_reason_and_takes_the_next_number() -> None:

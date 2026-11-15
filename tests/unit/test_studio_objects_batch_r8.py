@@ -192,7 +192,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -202,6 +201,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -356,11 +357,8 @@ def test_the_migration_is_expand_only_and_idempotent() -> None:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """Its own removal from CI must fail here. The list names the pytest
     ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_objects_batch_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_objects_batch_r8.py" in must_run
 
 
 def test_isolation_is_read_committed(world) -> None:

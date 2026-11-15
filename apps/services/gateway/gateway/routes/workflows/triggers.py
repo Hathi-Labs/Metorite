@@ -41,9 +41,29 @@ from gateway.routes.workflows.service import (
 )
 from sqlalchemy import text
 
-#: The payload keys that a Studio record trigger may filter on (STU-E3). The
-#: payload of ``studio.record.*`` holds ids and names, never a field value.
-RECORD_FILTER_KEYS = ("package_id", "object", "op")
+#: The keys of the ``filter`` of a Studio trigger (STU-E3). The payload of
+#: ``studio.record.*`` holds ids and names, never a field value. ``timer``
+#: names the rule of a timer trigger (STU-E9a), with ``op`` = :data:`BREACH_OP`.
+RECORD_FILTER_KEYS = ("package_id", "object", "op", "timer")
+
+#: The op of a timer trigger (STU-E9a). No record write emits it, and
+#: :func:`event_trigger_matches` never matches it. Only
+#: ``scheduler.scan_due_timers`` reads such a trigger.
+BREACH_OP = "breach"
+#: The event type of the run that a breach starts (STU-E9a).
+BREACH_EVENT_TYPE = "studio.record.breached"
+#: The server half of a timer trigger's config (STU-E9a): the print of the
+#: timer (``objects_store.timer_print``) at the arm time. Only the scan writes
+#: it. ``crud.update_workflow`` carries it across a save, as it carries
+#: ``last_fired_at``, and drops a value that the body sends.
+TIMER_ARM_KEY = "timer_arm"
+
+
+def is_breach_trigger(config: dict[str, Any]) -> bool:
+    """True for the config of a timer trigger (STU-E9a): its filter names the op
+    ``breach`` or a ``timer``. Pure."""
+    flt = config.get("filter")
+    return isinstance(flt, dict) and (flt.get("op") == BREACH_OP or "timer" in flt)
 
 
 def event_trigger_matches(
@@ -57,7 +77,12 @@ def event_trigger_matches(
     An optional ``filter`` (STU-E3) narrows a trigger to one package, one
     object or one op. It fails closed: a key that the payload does not hold,
     or holds with another value, is no match.
+
+    A timer trigger (STU-E9a) never matches, whatever the payload holds. A
+    record write never starts it. Only the timer scan does.
     """
+    if is_breach_trigger(config):
+        return False
     if str(config.get("source") or "").strip() != source:
         return False
     wanted = str(config.get("event_type") or "").strip()

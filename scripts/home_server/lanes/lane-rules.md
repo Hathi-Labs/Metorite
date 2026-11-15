@@ -115,6 +115,11 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
       comments the failing test on the task and releases it. Find it with
       `my_work` or `search_tasks`, fix it, push, and hand it over again. Read
       `~/lanes/merge-bot.log` for `BACK` lines after each hand-over.
+    - A `RESOLVED <pull request> <rules>` line means that the merge bot merged
+      `main` into your branch, resolved a conflict, and pushed the merge
+      commit (CIV-34a). Do not hand it over again. Before your next commit on
+      that branch, run `git pull --ff-only` in its worktree. A push without it
+      is refused, because your branch is behind the bot's commit.
 15. **Save GitHub runs.** A red run costs a full set of jobs.
     - Before each push, run the tests that your diff can affect on this box:
       `timeout 2400 uv run python scripts/affected_tests.py --run`. For
@@ -123,3 +128,8 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Push only on a pass. Push once for each round of fixes, not once for
       each commit.
     - Do not push to "see what CI says". Run the test here.
+16. **A conflict in `ai_studio.md` section 14 (CIV-33, task 3337).** Section 14
+    holds one index line for each slice. The row text is in
+    `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
+    put your row text in its row file and your index line back. Run
+    `python scripts/ai_studio_rows.py check` before you push.

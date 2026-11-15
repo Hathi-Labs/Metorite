@@ -313,6 +313,12 @@ const SEAM: {
     what: "the subtask tree",
     home: "lib/taskTree.ts",
     declaration: /(?:^|\n)\s*(?:export\s+)?function\s+treeRows\b/,
+    except: {
+      "lib/studio/treeModel.ts":
+        "the Studio record tree: a different input shape (records with a " +
+        "parent ref, not tasks), lazy expand over up to 2,000 records. " +
+        "Not the task tree",
+    },
   },
 ];
 

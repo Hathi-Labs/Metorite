@@ -45,6 +45,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_manifest
@@ -368,8 +370,7 @@ def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     """The `--must-run` list of pr-check.yml is kept by hand. Without the
     entry, the R8 twin skips in CI with no database and the job stays green.
     This suite has no database gate, so it always reads the list."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_studio_packages_r8.py" in workflow
+    assert "tests/unit/test_studio_packages_r8.py" in r8_lists.must_run()
 
 
 def test_an_empty_workspace_path_is_never_the_working_directory() -> None:
@@ -730,8 +731,7 @@ def test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed() -
 
 
 def test_the_a4_r8_suite_is_named_in_the_ci_skip_guard() -> None:
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_studio_packages_versions_r8.py" in workflow
+    assert "tests/unit/test_studio_packages_versions_r8.py" in r8_lists.must_run()
 
 
 def test_publish_and_rollback_run_check_manifest_on_the_stored_manifest(

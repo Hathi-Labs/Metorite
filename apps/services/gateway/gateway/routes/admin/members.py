@@ -846,6 +846,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # J2 decides if a shared one stays.
     _PersonRows("studio_skills", "studio_skills",
                 f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-STU AF-10a: the member's private saved views of THIS organization.
+    # Only the owner reads a private view, so a purged member leaves none
+    # behind. The clause names the bound org beside RLS, as `studio_skills`
+    # does. A shared view stays with the address: see `studio_shared_views`
+    # below.
+    _PersonRows("studio_private_views", "studio_saved_views",
+                "NOT shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the member's private
     # installs of THIS organization that nobody else sees. `scope_subject` is
     # the owner's address on a private install, and the CHECK
@@ -971,6 +979,14 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
                 "scope_kind = 'private' AND lower(scope_subject) = :email"
                 f" AND organization_id = {_BOUND_ORG}"
                 f" AND {_OTHERS_SEE_THE_APP}"),
+    # WS-STU AF-10a (D63): the shared saved views that the member made. Every
+    # member who reads the app reads them, so they stay with the address, as
+    # a shared room does. The clause is the delete side's
+    # `studio_private_views` with `shared` for `NOT shared`, so the two split
+    # the member's views with no overlap and no gap.
+    _PersonRows("studio_shared_views", "studio_saved_views",
+                "shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
 )
 
 

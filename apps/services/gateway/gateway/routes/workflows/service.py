@@ -76,8 +76,9 @@ from typing import Any
 #
 # ⚠️ A task write has no member check (`_member_blind_write_nodes`). So
 # `run_published_workflow`, the schedule scan (`scheduler._scan_org`), the
-# hook door, the event door, the manual door and `resume_run` refuse a
-# `pm_task` or `pm_lifecycle` node. Each stays refused until a run checks a
+# timer scan (`scheduler.scan_due_timers`, STU-E9a), the hook door, the event
+# door, the manual door and `resume_run` refuse a `pm_task` or `pm_lifecycle`
+# node. Each stays refused until a run checks a
 # verified member.
 # Fence: `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 #
@@ -856,16 +857,18 @@ async def start_run(
     *organization_id* binds the run's writes (:func:`_run_session`). Each door
     passes it, and ``tests/unit/test_workflows_start_run_org_fence.py`` names
     each caller. The agent door (:func:`run_published_workflow`) passes the org
-    of the agent run's binding. The schedule scan (``scheduler._scan_org``) and
-    the hook door (``hooks.workflow_hook``) pass the org of the workflow row,
-    for a listed org only. The event door (``triggers.dispatch_event``) passes
+    of the agent run's binding. The schedule scan (``scheduler._scan_org``), the
+    timer scan (``scheduler.scan_due_timers``, STU-E9a) and the hook door
+    (``hooks.workflow_hook``) pass the org of the workflow row, for a listed
+    org only. The event door (``triggers.dispatch_event``) passes
     the bound tenant of the emitter, for a listed org only. The manual door
     (``runs.run_workflow``) passes the org of the row that the member read.
     Each caller refuses a node of :func:`_member_blind_write_nodes` first.
 
-    *delivery_key* is the delivery id of a webhook (H-328 part (c)). A second
-    start with the same key for the same workflow writes no row and starts no
-    task. It raises :class:`DuplicateDelivery` with the id of the first run.
+    *delivery_key* is the delivery id of a webhook (H-328 part (c)), or the
+    breach of a timer (STU-E9a). A second start with the same key for the same
+    workflow writes no row and starts no task. It raises
+    :class:`DuplicateDelivery` with the id of the first run.
     ``None`` means no key, so the run is never a duplicate.
     """
     global _ACTIVE_TOTAL

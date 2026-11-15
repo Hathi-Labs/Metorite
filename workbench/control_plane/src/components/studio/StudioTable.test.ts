@@ -10,6 +10,8 @@
  * turns red.
  * Mutation 2: link a row by `openBase + id` when `openBase` is empty (`DataGrid`).
  * "a row with a UUID id" turns red: the live preview showed a bad relative link.
+ * Mutation 3 (STU-D23a-2): add `CELL_EDIT_FLOOR` to the edit button always. "keeps the classes
+ * of the button byte for byte without the floor view" turns red.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -21,8 +23,10 @@ vi.mock("next/navigation", () => ({
 }));
 
 import GenerativeUINode, { BoundStatus } from "@/components/GenerativeUINode";
+import { CELL_EDIT_FLOOR } from "@/components/genUITemplates";
 import StudioTable, { updateOf } from "@/components/studio/StudioTable";
 import { clearAll, put } from "@/lib/dataCache";
+import { FloorContext } from "@/lib/floorContext";
 import { tableBlock } from "@/lib/studio/blocks";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type StudioDataDoor, sourceKey } from "@/lib/studio/dataDoor";
@@ -139,5 +143,28 @@ describe("fix round 1: the plain grid, the read error, the edit mark, the refusa
   it("keeps room for the refusal line, so the grid does not jump", () => {
     const html = draw({ title: "Visits", fields: FIELDS, filterable: true, editable: true });
     expect(html).toContain('data-refusal-slot');
+  });
+});
+
+describe("the edit button in the floor view (STU-D23a-2)", () => {
+  const data = { title: "Visits", fields: FIELDS, filterable: true, editable: true, computed: ["total"] };
+  // The class that `className` adds to the button before STU-D23a-2. `Button` puts it last.
+  const USUAL = 'min-h-5 w-full min-w-8 cursor-text text-left"';
+  const inFloor = (floor: boolean) => renderToStaticMarkup(createElement(FloorContext.Provider, { value: floor },
+    createElement(StudioTable, { data, rows: ROWS, door, source: SOURCE })));
+
+  it("takes the touch height on each edit button in the floor view", () => {
+    expect(CELL_EDIT_FLOOR).toBe(" pointer-coarse:min-h-10");
+    const html = inFloor(true);
+    const buttons = html.match(/data-cell-edit/g)?.length ?? 0;
+    expect(buttons).toBeGreaterThan(0);
+    expect(html.split(`${USUAL.slice(0, -1)}${CELL_EDIT_FLOOR}"`).length - 1).toBe(buttons);
+  });
+
+  it("keeps the classes of the button byte for byte without the floor view", () => {
+    const usual = draw(data);
+    expect(usual).not.toContain(CELL_EDIT_FLOOR.trim());
+    expect(usual.split(USUAL).length - 1).toBe(usual.match(/data-cell-edit/g)?.length);
+    expect(inFloor(false)).toBe(usual);
   });
 });

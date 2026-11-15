@@ -95,10 +95,15 @@ export function detailFields(fields: readonly FieldSpec[]): FieldSpec[] {
  * that carries options and that no `formula` or `rollup` rule fills. The store refuses a
  * write to a computed key, so a drop on such a field would always fail.
  */
-export function boardGroupKey(fields: readonly FieldSpec[], computed: ReadonlySet<string>): string | null {
-  const f = fields.find((x) => x.type === "select" && x.many !== true && !computed.has(x.key)
-    && (x.options?.length ?? 0) > 0);
-  return f?.key ?? null;
+export function boardGroupKeys(fields: readonly FieldSpec[], computed: ReadonlySet<string>): string[] {
+  return fields.filter((x) => x.type === "select" && x.many !== true && !computed.has(x.key)
+    && (x.options?.length ?? 0) > 0).map((x) => x.key);
+}
+
+/** The lane field: `prefer` when it can make lanes (STU-AF4, the group of the list bar), else the first one. */
+export function boardGroupKey(fields: readonly FieldSpec[], computed: ReadonlySet<string>, prefer?: string | null): string | null {
+  const keys = boardGroupKeys(fields, computed);
+  return (prefer && keys.includes(prefer) ? prefer : keys[0]) ?? null;
 }
 
 /** Why an object has no Board: one short sentence. */
@@ -119,8 +124,12 @@ export function objectBoardBlock(
   source: { action: string; args?: Record<string, unknown> },
   /** Does the manifest declare `object:<name>.update`? Without it the cards do not drag. */
   canUpdate = true,
+  /** The lane field that the member picked in the list bar (AF-4). */
+  groupKey: string | null = null,
+  /** The start of the record link of a card (STU-AF5). */
+  openBase?: string,
 ): ReturnType<typeof boardBlock> | null {
-  const groupBy = boardGroupKey(fields, computed);
+  const groupBy = boardGroupKey(fields, computed, groupKey);
   if (!groupBy) return null;
   const titleKey = titleKeyOf(fields.filter((f) => f.key !== groupBy));
   const cardFields = fields
@@ -129,6 +138,7 @@ export function objectBoardBlock(
   return boardBlock({
     fields, groupBy, ...(titleKey ? { titleField: titleKey } : {}), cardFields,
     ...(canUpdate ? { update: `object:${object.name}.update` } : {}), title: object.label ?? object.name,
+    ...(openBase ? { openBase } : {}),
   }, source);
 }
 

@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -50,6 +49,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -535,10 +536,6 @@ def test_set_version_checks_the_overlap_of_new_keys_only() -> None:
 # ── 7. The R8 twin runs in CI ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
-    assert block, f"{workflow}: the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_package_install_r8\.py(?: \\)?$",
-                     block.group(1), re.M), workflow
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_package_install_r8.py" in must_run

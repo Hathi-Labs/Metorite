@@ -53,6 +53,7 @@
 import Icon from "@/components/Icon";
 import { NestedRowMark, ParentCrumb, TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
+import { TimelineColumns, TimelineHeader } from "@/components/timeline/TimelineChrome";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { StatusRow, TagRow,
@@ -111,7 +112,7 @@ import {
   edgeVelocity,
   frameStep,
   type ScrollBox,
-} from "../lib/edgeScroll";
+} from "@/components/timeline/edgeScroll";
 
 const LEFT_COL = 340;
 
@@ -1172,113 +1173,25 @@ export function TimelineView({
 
           {/* Chart */}
           <div className="relative flex-1" style={{ minWidth: range.widthPx }}>
-            {/* Two tiers: months, then days or weeks depending on the zoom.
-                One tier could not say both "which month" and "which day", and a
-                Gantt you cannot date by eye is a picture of some bars. */}
-            <div
-              className="sticky top-0 z-20 border-b border-border bg-muted"
-              style={{ height: HEAD_H }}
-            >
-              <div className="relative" style={{ height: HEAD_H / 2 }}>
-                {months.map((cell) => (
-                  <div
-                    key={cell.key}
-                    className="absolute top-0 flex h-full items-center border-r border-border/60 px-2 text-xs font-medium text-foreground"
-                    style={{ left: cell.px, width: cell.widthPx }}
-                  >
-                    {/* ⚠️ STICKY, or the label leaves with its own month.
-                        The cell is absolutely placed and the label sat at its
-                        left edge, so scrolling a few days into September left
-                        "026" on screen — the tail of "Sep 2026" (seen
-                        2026-09-16). A month header you cannot read while you
-                        are inside that month is a header for somebody scrolled
-                        to its first day.
-
-                        It sticks past LEFT_COL because the task column is
-                        sticky at 0 and would otherwise cover it. Sticky only
-                        engages when the natural position is further left, so a
-                        month starting mid-chart still draws its label at its
-                        own edge. */}
-                    <span
-                      className="sticky whitespace-nowrap"
-                      style={{ left: LEFT_COL + 8 }}
-                    >
-                      {cell.widthPx > 56 ? cell.label : ""}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div
-                className="relative border-t border-border/40"
-                style={{ height: HEAD_H / 2 }}
-              >
-                {ZOOMS[zoom].tier === "day"
-                  ? days.map((cell) => (
-                      <div
-                        key={cell.day}
-                        className={`absolute top-0 flex h-full flex-col items-center justify-center border-r border-border/40 text-[10px] leading-none ${
-                          cell.today
-                            ? "font-semibold text-primary"
-                            : cell.weekend
-                              ? "text-muted-foreground/60"
-                              : "text-muted-foreground"
-                        }`}
-                        style={{ left: cell.px, width: cell.widthPx }}
-                      >
-                        <span>{cell.label}</span>
-                        <span className="mt-0.5">{cell.date}</span>
-                      </div>
-                    ))
-                  : weeks.map((cell) => (
-                      <div
-                        key={cell.key}
-                        className={`absolute top-0 flex h-full items-center justify-center border-r border-border/40 text-[10px] ${
-                          cell.today ? "font-semibold text-primary" : "text-muted-foreground"
-                        }`}
-                        style={{ left: cell.px, width: cell.widthPx }}
-                      >
-                        {cell.widthPx > 18 ? cell.label : ""}
-                      </div>
-                    ))}
-              </div>
-            </div>
+            {/* The two header tiers live in the timeline block. */}
+            <TimelineHeader
+              zoom={zoom}
+              months={months}
+              days={days}
+              weeks={weeks}
+              heightPx={HEAD_H}
+              labelInsetPx={LEFT_COL + 8}
+            />
 
             <div className="relative" style={{ height }}>
-              {/* Column shading, under everything. Weekends only where a
-                  column is wide enough to read as a column rather than a
-                  stripe — at quarter zoom a 7px band is visual noise. */}
-              {range.pxPerDay >= 12
-                ? days
-                    .filter((cell) => cell.weekend)
-                    .map((cell) => (
-                      <div
-                        key={cell.day}
-                        className="absolute top-0 bg-muted/40"
-                        style={{ left: cell.px, width: cell.widthPx, height }}
-                      />
-                    ))
-                : null}
-              {/* Week rules give the eye something to measure against when the
-                  day columns are too narrow to draw. */}
-              {range.pxPerDay < 12
-                ? days
-                    .filter((cell) => cell.weekStart)
-                    .map((cell) => (
-                      <div
-                        key={cell.day}
-                        className="absolute top-0 w-px bg-border/40"
-                        style={{ left: cell.px, height }}
-                      />
-                    ))
-                : null}
-
-              {todayPx !== null ? (
-                <div
-                  className="absolute top-0 z-0 bg-primary/50"
-                  style={{ left: todayPx, width: Math.max(2, range.pxPerDay), height }}
-                  title="Today"
-                />
-              ) : null}
+              {/* Column shading, week rules and the today line, under
+                  everything. They live in the timeline block. */}
+              <TimelineColumns
+                range={range}
+                days={days}
+                todayPx={todayPx}
+                heightPx={height}
+              />
 
               {/* Arrows, under the bars so a bar is never un-clickable. */}
               <svg

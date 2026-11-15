@@ -35,6 +35,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common.db import TenantUnbound
@@ -526,12 +528,5 @@ def test_neither_module_writes_apps_or_app_versions() -> None:
 
 @pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
 def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    lines = (_ROOT / ".github" / "workflows" / workflow).read_text(
-        encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
+    listed = r8_lists.must_run()
     assert "tests/unit/test_package_promotion_r8.py" in listed

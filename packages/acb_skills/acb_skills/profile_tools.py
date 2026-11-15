@@ -143,6 +143,7 @@ from acb_common.assistant_profile import (
     FACT_KINDS,
     FACT_MAX,
     INTERVIEW_STATES,
+    LANGUAGE_NAMES,
     NO_ANSWER,
     NO_ANSWER_TEXT,
     NOT_YOUR_WORDS,
@@ -283,6 +284,13 @@ def clean(value: Any, cap: int = NAME_CAP) -> str:
 #: speaks to the model, so the model offers the alias in its own words.
 ALIAS_HINT = "After the member picks one, offer to save it as a name with profile_alias."
 
+#: The first line of a near answer (HRD-18a, ``chat_failure_modes.md`` F1).
+#: No name equals the input, and ``acb_common.name_match`` calls these near.
+#: The model asks, even for one name, because a near spelling is no match.
+NEAR = ("Nobody is named «{asked}». Near spellings, not matches. Ask the member "
+        "whether one of them is the person they mean, and never act on one "
+        "without a yes:")
+
 #: The route read only the first rows of a large directory (PZ-5 verify, P2),
 #: so a person may be missing. One match is then not proof of one person.
 TRUNCATED = ("The directory is large, and only part of it was searched. "
@@ -304,6 +312,16 @@ def format_answer(body: Any, asked: str) -> str:
             lines.append(NO_DIRECTORY)
         if body.get("truncated") is True:
             lines.append(TRUNCATED)
+        return "\n".join(lines)
+    if body.get("near") is True:
+        # HRD-18a: one near name asks too. It is never a "Match:".
+        lines.append(NEAR.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}>" for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        lines.append(ALIAS_HINT)
         return "\n".join(lines)
     if total == 1 and len(people) == 1:
         source = SOURCES.get(str(body.get("source") or ""), "people")
@@ -330,7 +348,8 @@ async def resolve_person(name: str) -> str:
     Call it when the member names a person ("send it to Raj") and you need
     the address. It looks in the member's saved aliases first. Then it looks
     in the People directory and the members together. One match: act on it. Several: ask the
-    member which one, and never guess. None: ask for the full name or the
+    member which one, and never guess. Near spellings only: ask the member to
+    confirm one, even when there is one. None: ask for the full name or the
     address.
 
     Args:
@@ -1192,6 +1211,41 @@ def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[A
     return [n for n in notes if isinstance(n, str) and n not in held]
 
 
+#: The member's own name of each language, for the order about the answer
+#: language (task 3131). The English name and the tag come from
+#: ``LANGUAGE_NAMES``.
+_NATIVE_NAMES: dict[str, tuple[str, ...]] = {
+    "hi": ("हिंदी", "हिन्दी"), "kn": ("ಕನ್ನಡ",), "ta": ("தமிழ்",), "te": ("తెలుగు",),
+    "mr": ("मराठी",), "bn": ("বাংলা",), "gu": ("ગુજરાતી",), "ml": ("മലയാളം",),
+}
+#: Words that make a sentence an order about answers or replies.
+_ORDER_WORDS = ("answer", "reply", "replies", "respond", "response", "जवाब", "उत्तर",
+                "ಉತ್ತರ", "பதில்", "సమాధానం", "উত্তর", "જવાબ", "ഉത്തരം")
+#: The refusal of a language mark that the member's words do not hold.
+LANGUAGE_FIXED_REFUSED = (
+    "The language mark is not saved. The member must say in this message which "
+    "language the answers use. Nothing is saved for the mark.")
+
+
+def _language_order_typed(language: str) -> bool:
+    """True when the member's typed words of this turn name *language* and
+    hold an order word about answers or replies. The words come from
+    :func:`_member_words`, the one typed-words source."""
+    words = unicodedata.normalize("NFC", _member_words()).casefold()
+    if not words.strip():
+        return False
+    tag = language.strip()
+    base = tag.lower().split("-")[0]
+    names: set[str] = set()  # never a bare tag: "hi", "as" and "or" are words
+    english = LANGUAGE_NAMES.get(base)
+    if english:
+        names.add(english.casefold())
+    names.update(n.casefold() for n in _NATIVE_NAMES.get(base, ()))
+    tokens = set(re.findall(r"[\w-]+", words))
+    named = any(n in tokens or (not n.isascii() and n in words) for n in names)
+    return named and any(w.casefold() in words for w in _ORDER_WORDS)
+
+
 @_write_tool
 async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
@@ -1201,7 +1255,8 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     to call them, how formal to be, how to greet (key ``address``: name,
     formality casual|neutral|formal, greeting none|brief|warm), or how long
     and in which language to answer (key ``style``: length
-    short|default|detailed, language as a BCP 47 tag, notes as up to 5
+    short|default|detailed, language as a BCP 47 tag, language_fixed true
+    when the member orders the answer language, notes as up to 5
     lines). Give only the fields that change. A field set to null clears it.
     A name or a note must be in the member's own words of this message. A
     name that is not may ask the member to approve it on a card. A note
@@ -1227,6 +1282,12 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     headers = await _write_gate()
     profile = await _profile(headers)
     prior = profile.get(key) if isinstance(profile.get(key), dict) else {}
+    if key == "style" and value.get("language_fixed") is True and not _confirming():
+        # Task 3131: the mark is an order of the member, so their own typed
+        # words of this turn must hold it. A mail or a page cannot set it.
+        language = value.get("language") or prior.get("language") or ""
+        if not language or not _language_order_typed(str(language)):
+            raise _Refused(LANGUAGE_FIXED_REFUSED, "not_your_words")
     free = _free_text(key, value, prior)
     # A style note goes into every later block, so only the typed words
     # ground it, never a card (PZ-32 repair, P2-6b). A name may ask a card.

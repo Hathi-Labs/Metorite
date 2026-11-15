@@ -218,6 +218,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-LAD | **The gratification ladder**: the default way to plan, in the playbook, the Projects planning AI, `get_plan` and `my_work` (D211) | 🟢 active · M1 | `specs/orchestration_playbook.md` §6d | Metorite: epic 2887 (Projects/Tasks App), LAD-1 = task 2888 (MCP), LAD-2 to LAD-4 = tasks 2889 to 2891 · replan task 2885 |
 | WS-CON | **Company content**: Metorite files, reads and reuses what a member drops in the chat, in decks and reports in the company's own style (D216) | 🟢 active · M2 | `specs/company_context.md` §16 | Metorite: epic 3039 (Knowledge), CON-0 to CON-5 = tasks 3040 to 3045, AM-7 = task 206, demos 3046 to 3048 · flag `COMPANY_CONTENT_ORGS`, default empty |
 | WS-OTW | **One-time workflows**: ask someone, wait for the one answer, run once to propose the record updates, then retire (D214) | 🟢 active · M2 | `specs/workflows_app.md` §14 | Metorite: epic 3010 (AI Studio), OTW-0 to OTW-10 = tasks 3011 to 3021, demos 3022 to 3024 · flag `ONE_TIME_WORKFLOWS_ORGS`, default empty |
+| WS-FIND | **Find anything**: one search engine with near names, related records, past chats and an honest zero, as the chat's find tools (owner ask, 2026-11-14) | 🟢 active · M1 | `specs/find_engine.md` · `specs/knowledge_base.md` §20 | Metorite: epic 3232 (AI Chat Interface), FIND-0 = task 3233, rung 1 demo = task 3234 · in flight: KR-ZERO (2974), HRD-18a (2997) · next FIND-1, HRD-4 (2983), FIND-2, then HRD-18b (3226) and FIND-3 · D-FIND-1 to D-FIND-8 wait for the owner |
 | WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
@@ -278,7 +279,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-48 | Data narrowing pipeline | 🟢 open | `specs/data_narrowing_pipeline.md` | now in WS-CHAT |
 | WS-49 | Box hardening | 🟢 open | `specs/box_hardening.md` | now in WS-TO |
 | WS-50 | Operator Console: money and the UI rebuild | 🟢 open | `specs/operator_console_money.md` | now in WS-CM |
-| WS-51 | Chat run continuity | 🟢 open | `specs/chat_run_continuity.md` | now in WS-CHAT |
+| WS-51 | Chat run continuity | 🟢 open | `specs/chat_run_continuity.md` | now in WS-CHAT · §4.12 RESUME (task 3255): a chat picks up exactly where it left off, SPEC 2026-11-14, RESUME-0a to RESUME-8 on rungs 0 to 3 |
 | WS-52 | How Metorite writes: one voice | 🟢 open | `specs/agent_writing_voice.md` | now in WS-CHAT |
 | WS-53 | CRM: two modes and the Zoho mirror | 🟢 open | `specs/crm_platform.md` | now in WS-CRM |
 | WS-54 | Integrations: one registry and a console | 🟢 open | `specs/integrations_console.md` | now in WS-BRIEF (connectors, epic 481) |
@@ -4562,6 +4563,8 @@ Owner decision, 2026-10-25, in chat: take the recommendations. Board: **WS-67**.
 
 ### D117 — One chat for the whole app: tool packs in the one assistant, and dynamic sub-agents for parallel work (2026-10-26)
 
+> **Proposed amendment (2026-11-14):** D223 would remove "a workflow" from item 7. It binds only after the owner confirms it.
+
 Owner decision, 2026-10-26, in chat. This is the OA-6 gate of D116. Board:
 **WS-67**. Owning spec: **`specs/one_assistant_context.md`**. It amends
 **D99** item 2 for conversational work.
@@ -4594,6 +4597,7 @@ even though we wanto to do majority of the work in a main agent
    agent.
 2. **Tool packs, loaded per turn.** Each app's tools and a short rules block
    form a pack, in the WS-23 registry. A pack loads when a turn needs it.
+   *(Amended by D222, 2026-11-14: a single tool of a pack can also load by search.)*
 3. **The loader is fast first.** It chooses packs with no model call where
    it can: from the app surface, the packs that the chat already loaded, and
    the working set. A tool lets the model load a missed pack during the
@@ -6215,6 +6219,98 @@ The owner asked in chat on 2026-11-12 to "push code as fast as we develop it". T
 7. **The weekly review measures the quality.** A revert share over 5% for 7 days brings the strict gate back for that area (CIV-38).
 
 Each point binds when its slice merges. Until then the old rule holds. Fence: each slice in `ci_velocity.md` §8.5 names its test in its task. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D218 entries merge. Re-check this number at merge.
+
+### D219 — Studio apps get the app frame: a left sidebar of pages and views, tabs, record pages and dialogs (2026-11-14)
+
+The owner asked in chat on 2026-11-14. A Studio app needs "a left-hand sidebar similar to the other standard apps of Metorite", tabs and the other standard parts, so that a company can build rich screens. Planning task 3146, epic 3147. Owner text: `ai_studio.md` §5.5.
+
+1. **One frame, from the parts that exist.** A Studio app opens with `AppTopBar`, a rail of `RailRow`s, `StudioPage`, `Tabs`, `Modal` and `ConfirmDialog`. It adds no second rail, tab bar, dialog or filter bar.
+2. **The rail belongs to the app.** The shell sidebar keeps one entry for the installed app (H1, PKG-8). The rail of pages and views sits inside the app, as the CRM rail does.
+3. **The manifest declares the frame.** `nav`, `record`, `header`, `sections` and the view parts join the A2 model. Each part has a default, so an app that was built before D219 gets the frame with no edit.
+4. **It looks like the CRM.** Each frame slice passes a visual review beside the CRM, at four widths, in light mode, at compact density and under a changed accent.
+5. **The order.** Rung 4 of the AI Studio ladder holds AF-1 to AF-6, AF-8 and AF-9 (demo task 3148). The old rungs 4 to 9 move up by one. AF-7 and AF-10 join rung 6, and AF-11 joins rung 8.
+6. **Ship dark.** AF-1 puts the frame behind `NEXT_PUBLIC_STUDIO_APP_FRAME`, default off. The flag goes on for the rung 4 demo.
+
+Fence: each slice in `ai_studio.md` §14 Group AF names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D219 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D218 at most.
+
+### D220 — AI Studio builds on connections: a connect in place, a stated account, a visible break, and an offer that follows the result (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for Studio apps, workflows and skills that build on the company's integrations, a guided connect when an app needs one, and an offer to build after a connect. Planning task 3164. Owner text: `ai_studio.md` §8.1 and `integrations_console.md` §3.7.
+
+1. **One registry, and one connect flow for each provider.** D96 holds. Studio adds no connection store and no connect flow. It opens the flow of the owning app in place, through the `setup_href` of the registry row, with a path back (I8).
+2. **A connection need names whose account it uses: `org` or `member`.** Mail and calendar default to `member`. An `org` need is approved by an admin at install, and the install screen names the account (I9). The orchestrator chose this default, and the owner may overrule it.
+3. **A broken connection is visible where it hurts.** Each install that needs it goes to `needs_setup`, its triggers pause with a reason, and the owners get a Needs-you item (I10). A disconnect names what stops first (IN-10).
+4. **The offer after a connect follows the result.** The card says what works now first. It offers a build only for a provider whose data no built-in app shows, never as a modal, and never as an automatic build (IN-9).
+5. **Registry connections only, until IN-3.** The integration actions that read the process environment stay out of packages until IN-3 lands (task 3176, `work_plan.md` §6 gate (f)).
+6. **The order.** Rung 7 of the AI Studio ladder, demo task 3167. Mail merge (I3) moves to rung 9.
+
+Fence: each slice in `ai_studio.md` §14 Group I and `integrations_console.md` §7.2 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D220 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D219 at most.
+
+### D221 — The focus coach: grounded help at the start and at the check-in, steps as subtasks, and help from people that the member can already see (2026-11-14)
+
+The owner asked in chat on 2026-11-14 for a Focus mode that breaks a task into steps, shows how to do it, motivates, uses the context of every app, and names whom to ask when the member is stuck. Planning task 3177. Owner text: `my_day_command_centre.md` §4a.
+
+1. **Two moments only.** The coach speaks when a session starts and at the check-in when it ends. During the session it shows the steps and the facts, so it does not break the focus.
+2. **Grounded, or silent.** Each sentence cites the task or a source from the knowledge graph (D128), opened again as the viewer. The coach gives no general how-to advice from the model alone.
+3. **Steps are subtasks** in the one task store, accepted once, with one Undo.
+4. **Help from people, inside what the member can see.** No workload, hours or absence reason, which stay admin-only. The member sends each ask. The coach never assigns (D-PC-13) and never tells a manager by itself. "Blocked" comes only from the member's own answer.
+5. **Motivation is facts:** why the work matters, and how far it got. "Facts only" is the default tone. The orchestrator chose this default, and the owner may overrule it.
+6. **The order.** Rung 4 of the My Day ladder, demo task 3178. The later rungs move up by one.
+
+Fence: each slice of `my_day_command_centre.md` §9 (CC-12 to CC-16) names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D221 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D220 at most (PR 2241, merged).
+
+### D222 — The chat loads a single tool by search, and the pack stays the unit of the guards and the state. It amends D117 item 2 (DECIDED, 2026-11-14)
+
+**Status: DECIDED, 2026-11-14, task 3190.** The owner adopted D222 as written, and it amends D117 item 2. Board: **WS-67**, task 3190 (TS-0). Owning spec: **`specs/one_assistant_context.md`** §4.2.9.
+
+The owner asked in chat on 2026-11-13, on task 3118. Can the chat hold many more tools, load each one when it needs it, and keep a small context? The `studio` pack is full at 23 tools, and new Studio tools have no room under the cap of 110 tools. In OA-8e run 1 the model loaded a pack that it lacked in 3 of 70 app turns.
+
+1. **D117 item 2 becomes "Tool packs, loaded per turn or per tool".** A pack still loads whole when a turn needs it. A single tool of a pack can also load by search.
+2. **The pack stays the unit of the guards, the rules and the state.** A found tool comes from the guarded build of its pack (`_pack_tools`). So it keeps the held set, the scope of the owner, the permission gate, the cards and D169. A partial load never counts as a whole pack for a hand-off or a reach. Its load adds no hand-off refusal, and a write by it does, through OA-8i.
+   - **The rules go with the tool.** D117 item 2 makes a pack of its tools and a rules block. So the answer of `find_tools` carries the rules block of each owning pack, once in a run. A tool of layer (a′) gets the block in the persona of its turn, on a path that only adds the block. The hand-off swap reads the layer (a) packs only. In a held chat that block ends with the hold note. It is the one text of `_rules_block`, and the token budget counts it.
+   - **The checks of a load.** `find_tools` runs the MCP rule (`_beside_mcp`) and the size check of a pack before each add, as `_admit_pack` does.
+3. **Our own search, on the seam of `load_skill_tools`.** `find_tools` is a sibling of `LoadSkillTools`, and it uses `context.add_tools`. It adds no second registry (D205 point 1). This decision parks the native tool search of the Claude API (TS-8). It rejects a door tool in the pattern of D136.2 for the chat.
+4. **A first pass with no model call.** Layer (a′) ranks the member's own words before the first request. `find_tools` is the fallback in the middle of a turn. D117 item 3 holds.
+5. **The cache and the cost hold the limits.** The cap of 110 tools stays, and `find_tools` and each found tool count against it. The owner chose "Always, in the base set" (decision 13). So the run offers `find_tools` on every turn where the flag is on for the org, as it offers the pack loader. It counts against the base tools. At the cap of 110 tools, that count can push out the last pack, and the owner accepted that trade. A budget of about 30 thousand schema tokens for each request joins it. Past the cap, unused found tools leave before a spare pack. A found tool that ran has its own record and stays (TS-4). Found tools come after the pack tools, in a fixed order (D117 item 4).
+6. **Studio gets room.** The `studio` family splits into a core of 10 tools and a follow pack, `studio-more` (TS-1b, task 3207). So a Studio turn has room, and the search has tools to find. TS-1b is live, not dark, and the owner answers its open decision before it merges. The owner approved decision 11 on 2026-11-14. In TS-1b, `studio-more` takes a place of `MAX_PACKS`. TS-1c (task 3213) follows to remove that side effect, after its own spec audit.
+7. **Dark, then measured.** Each slice from TS-2 on ships dark. `TOOL_SEARCH_ORGS` is empty by default, and its flip is owner-only. The `search` arm of the OA-8e measure must be not worse than the `pack` arm before a switch.
+
+**Decided by the owner, 2026-11-14, task 3190 (recorded at 10:18 UTC).** The owner wrote that D222 is adopted as written, and it loads by tool and amends D117 item 2. Earlier on 2026-11-14 (04:24 UTC) the owner accepted four points.
+- **Decision 2, sticky tools.** A found tool is sticky for the chat, and it drops after a few unused turns.
+- **Decision 6, the index.** First-party tools only until TS-9.
+- **Decision 7, the budget.** About 30 thousand schema tokens for each request.
+- **Decision 9, the eval spend.** A pilot, then a full run: about USD 0.37 and about USD 4.2 by the harness count, with `--budget-usd 6`. The real bill may be 2.75 times that.
+
+- **Decision 11, the Studio split. APPROVED.** `studio` keeps a core of 10 tools. A new follow pack, `studio-more`, takes the other 13. It is LIVE where Studio is on. TS-1c follows to remove the side effect: `studio-more` can lose its place of `MAX_PACKS` in a turn that also needs two other packs.
+- **Decision 13, the place of `find_tools`. "Always, in the base set".** The run offers `find_tools` on every turn where the flag is on for the org. It counts against the base tools, as the pack loader does. This replaces the earlier recommendation to offer it only when a place stays free. At the cap of 110 tools, the base count can push out the last pack. The owner accepted that trade.
+
+The audit of TS-2 on 2026-11-14 found it NO-GO as written. TS-2a (task 3222) is a narrowed spike for the packs of `PACK_ONLY_OWNERS`, the Studio packs today. It adds `find_tools` to the base the way `_apply_tool_packs` adds the pack loader, and it needs no new count check. TS-1b (task 3207) is approved and is dispatchable after its own spec audit.
+
+- **2026-11-14, status note.** The TS-2a candidates are every pack of `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load, follow packs included. The orchestrator decided this after TS-1b split the `studio` pack. It is not an owner decision. The owner confirms it at the PR 3 preview.
+
+**Still open.** `one_assistant_context.md` §4.2.9 lists thirteen points. Points 3, 5, 8, 10 and 12 stay open, because D222 does not settle them. The spec names the slice audit that settles each one.
+
+**Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
+
+Fence: each slice of `one_assistant_context.md` §4.2.9 (TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, TS-1b, task 3207, and the optional TS-1c, task 3213) names its test. Until a slice lands, its rule is advisory (R7). A count test (TS-2a) asserts that the base count rises by 1 with the flag on, and does not change with the flag off. `tests/unit/test_decision_ids.py` fails when two D222 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D221 at most, and no open PR or local worktree held D222 or higher.
+
+### D223 — A workflow offers one AI step, Ask Mira, and no specialist agent. It amends D117 item 7 for workflows (PROPOSED, 2026-11-14)
+
+**Status: PROPOSED.** It binds only after the owner confirms it on task 3256. Until then D117 item 7 stands as written. Board: task 3256 (WF-CLEAN). Owning spec: **`specs/ai_studio.md`** §14, rows WFC-0 to WFC-6.
+
+The owner asked in chat on 2026-11-14 whether the workflow elements match the modules that Metorite has today. The owner also said that the old agents should be gone from the workflows: "I see them still there... I thought we'd deleted all of them." An audit of the code found that the palette, the catalog, the search, the node inspector and the Copilot offer the static agent list of `routes/agent.py`. Production holds 2 workflows in 2 orgs. Neither is published, and neither names an agent. So no data migration is needed.
+
+1. **One AI step.** The palette, the catalog, the search and the Copilot offer one step, "Ask Mira". No specialist agent is offered.
+2. **Old graphs keep working until the owner says otherwise.** `known_agent_names()` and the `agent` node type do not change (R6 expand). A graph that names a specialist still validates, publishes and runs. The inspector shows such a node read only, with an upgrade note.
+3. **A new node type, `ask_mira`,** takes a message and a list of packs. It is read only by default, it has a credit ceiling for each node, and it runs with no egress when nobody watches. It ships dark behind `WORKFLOW_ASK_MIRA_ORGS`.
+4. **The retirement of a legacy step at run time** is a separate step, and it needs the owner's OK (WFC-5).
+5. **Amends.** D117 item 7 ("A specialist agent stays for a scheduled job, a workflow and an external agent") loses the words "a workflow". `one_assistant_context.md` OA-10 item 4 and the catalog line of `ai_studio.md` follow when the owner confirms.
+
+**Open for the owner on task 3256.** Q1 is this decision. Q2 asks for a read only default. Q3 asks which packs a node may use. Q4 asks for the credit ceiling. Q7 asks to hide the integrations that have no action.
+
+**Revisit.** Only the owner confirms or reopens this. D117 names the owner as the one who reopens it.
+
+Fence: each WFC row of `ai_studio.md` §14 names its test. Until a slice lands, its rule is advisory (R7). `tests/unit/test_decision_ids.py` fails when two D223 entries merge. **Re-check this number at merge.** On 2026-11-14, main held D222 at most, and no open PR or remote branch held D223.
 
 ## 4. Single-owner registry (who owns duplicated work)
 

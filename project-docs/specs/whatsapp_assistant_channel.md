@@ -498,8 +498,20 @@ before the first part of its reply goes out, and nothing runs it again.
 - **The sweep.** Every minute, a sweep binds each org of
   `WHATSAPP_ASSISTANT_ORGS` in turn, so it needs no new SECURITY DEFINER
   function. It runs a row again when the row stayed `received` or `running` for
-  more than 5 minutes, for at most 3 tries. A row older than 24 hours becomes
+  more than 5 minutes (`STALE_S`), for at most 3 tries. A row older than 24 hours becomes
   `expired` and gets no reply, because the reply window has closed.
+- **The run's cap.** One run has 4 minutes at most (`RUN_TIMEOUT_S`). A
+  long-read org gets 7 minutes (`LONG_RUN_TIMEOUT_S`), and its rows get a
+  stale time of 8 minutes (`LONG_STALE_S`). That holds one long read of up to
+  180 s and its model calls (HRD-6, 2026-11-13).
+- **A long-read org.** `CHAT_PROGRESS_NOTICE_ORGS` or `CRM_LONG_READ_ORGS`
+  names it, or holds `*` (`bot_run.long_reads_on`). With both lists empty,
+  each cap is as it was before HRD-6.
+- **The order of the caps.** For each org, the run's cap stays shorter than
+  the stale time (`run_timeout_for`, `stale_for`). So the sweep never takes a
+  run that still works. Each sweep pass binds one org, and FORCE RLS keeps
+  each row of the pass in it, so the stale time of the org is the stale time
+  of each row.
 
 **Link redemption, as WAC-2 builds it** *(set 2026-10-09 from the WAC-2 audit)*:
 
@@ -1709,7 +1721,7 @@ Metorite is back.
 
 | Event | What the member got |
 |---|---|
-| A gateway restart (about 40 a day, one for each merge) | `gateway-drain.sh` holds the stop for up to 60 s while runs end. A run that is still going is cancelled. The sweep runs its message again about 5 minutes later. The member gets the answer late, and no word in between |
+| A gateway restart (about 40 a day, one for each merge) | `gateway-drain.sh` holds the stop for up to 60 s while runs end. A run that is still going is cancelled. The sweep runs its message again about 5 minutes later, or about 8 minutes later in a long-read org (§5.4, HRD-6, since 2026-11-13). The member gets the answer late, and no word in between |
 | The AI Router was slow, then unavailable (05:36 to 06:04) | Some model calls took 37 s to 89 s, and three reached the 120 s limit (`v1.router_unavailable` at 05:58, 06:02 and 06:04). Three runs from one phone hit their 4-minute limit (`code=timeout`). Each time the member got `REPLY_FAILED`: "Metorite could not answer just now. Try again in a few minutes." |
 
 The second row is the error that the owner saw. The Router was not
@@ -1721,7 +1733,7 @@ member, a restart and an outage look the same.
 1. **Which failures.** Some codes mean that Metorite's AI path did not
    answer. One is `connection`: a 502 or 503 from the Router, or a refused
    connection. The other is `timeout` from a call: a 504, or a read timeout. The run's
-   OWN 4-minute limit counts too, but only when the Router failed during that
+   OWN limit (4 minutes, 7 in a long-read org) counts too, but only when the Router failed during that
    run: `v1_compat` stamps each `ConsoleRouterUnavailable`. A long job that
    meets the limit with the Router up keeps the general text.
 2. **Hold.** The message goes back to wait (`received`), with the code
@@ -1730,7 +1742,8 @@ member, a restart and an outage look the same.
    ends after 3 tries with the general text, once. The member hears
    `REPLY_UPDATING` once, on the first hold of that message.
 3. **Back.** The sweep runs a held message again only when the AI path is
-   back. Both of these must be true:
+   back, and no sooner than its stale time after the hold: 5 minutes, or 8
+   minutes in a long-read org (§5.4). Both of these must be true:
    - The Router's `/health` answers. The sweep reads it once.
    - Either a model run succeeded after the last failure, or 5 minutes passed
      with no new failure on any phone.

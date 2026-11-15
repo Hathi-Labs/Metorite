@@ -420,7 +420,18 @@ describe("the Table and the Detail read a value the same way", () => {
   const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   // A rich text is plain words in the Table and rendered markdown in the Detail.
-  for (const f of SAMPLE_FIELDS.filter((x) => x.type !== "richText")) {
+  // STU-AF5: a file is its id in the Table (older behaviour) and "File attached" in the Detail.
+  it("file: the Table keeps the id, the Detail says a file is attached", () => {
+    const f = SAMPLE_FIELDS.find((x) => x.type === "file")!;
+    const row = { id: "r1", [f.key]: SAMPLE_ROWS[0][f.key] };
+    const id = displayValue(f, row[f.key]);
+    expect(drawTable(f, row)).toContain(esc(id));
+    const detail = drawDetail(f, row);
+    expect(detail).toContain("File attached");
+    expect(detail).not.toContain(esc(id));
+  });
+
+  for (const f of SAMPLE_FIELDS.filter((x) => x.type !== "richText" && x.type !== "file")) {
     it(f.type + ": one text in both blocks", () => {
       const row = { id: "r1", [f.key]: SAMPLE_ROWS[0][f.key] };
       const want = esc(displayValue(f, row[f.key]));

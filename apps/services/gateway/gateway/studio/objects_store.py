@@ -179,6 +179,16 @@ cycle, a parent that is no record of this object, and a tree of more than
 :data:`~acb_common.studio_rules.MAX_TREE_DEPTH` levels. :func:`read_tree` reads
 a tree or the whole forest, to that depth, in one recursive statement.
 ``tests/unit/test_studio_hierarchy_r8.py`` runs both on a real Postgres.
+D18-2a: :func:`read_tree` takes a REQUIRED ``viewer``, and the row rule of
+the viewer binds each step of the walk. So the subtree below a record that the
+viewer cannot read is cut. ``tests/unit/test_studio_tree_door_r8.py`` holds it.
+
+**The timer (E9a).** A rule of kind ``timer`` refuses no write, and a write
+writes nothing for it: :func:`_check_records` skips it. Its due field and its
+pause field stay hot (``Rule.hot_keys``). :func:`timer_of` and
+:func:`due_timer_records` are the two reads of the workflow scan
+(``routes/workflows/scheduler.scan_due_timers``), its one caller.
+``tests/unit/test_workflows_timer_r8.py`` runs them on a real Postgres.
 
 **The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
 package to the ``objects`` of a published manifest, and the publish route is
@@ -255,8 +265,9 @@ above 0. A running balance table is a later slice.
 object (``acb_common/studio_access.py`` holds the grammar), and the sync of a
 publish writes it, so a rule binds the published manifest and never the
 draft. Each of :func:`get_record`, :func:`query_records`,
-:func:`apply_writes`, :func:`create_record`, :func:`update_record` and
-:func:`delete_record` takes a REQUIRED keyword ``viewer``. The store reads the
+:func:`apply_writes`, :func:`create_record`, :func:`update_record`,
+:func:`delete_record` and :func:`read_tree` (D18-2a) takes a REQUIRED keyword
+``viewer``. The store reads the
 owner of the package from its ``apps`` row: the owner passes every rule, and
 so does each viewer of an object with no ``access``. Else the scope of the
 viewer's roles binds. A row rule joins the one statement as one ``EXISTS`` on
@@ -268,9 +279,9 @@ formula target that reads a hidden key is hidden too, and so is a roll-up
 target over a source that the viewer cannot read whole. The text of a rule
 that reads a hidden key, or of a key rule over records that the viewer cannot
 read, names no field (:func:`_masked`). The parent of a line must be a record
-that the viewer can read. ``test_studio_row_rules.py`` fails each call of the
-six that passes no viewer. ⚠️ :func:`aggregate_records` and :func:`read_tree` (C18)
-take no viewer yet, and no route calls them. A door of either must add one first.
+that the viewer can read. ``test_studio_row_rules.py`` fails each call of
+these seven that passes no viewer. ⚠️ :func:`aggregate_records` takes no viewer
+yet. Its one caller is the door, for the owner only (D4b).
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -352,6 +363,7 @@ from acb_common.studio_rules import (
     ROLLUP,
     ROLLUP_OF_ROLLUP,
     STATE_MACHINE,
+    TIMER,
     UNIQUE,
     ConstraintError,
     ConstraintViolation,
@@ -809,6 +821,11 @@ class AccessDenied(ObjectStoreError):
     object and never a record."""
 
     code = "access_denied"
+
+
+class NoTree(ObjectStoreError):
+    """D18-2a. The object holds no hierarchy rule, or its parent field is not
+    hot, so it has no tree to read. The door answers 422 for it."""
 
 
 class BatchError(Exception):
@@ -1414,7 +1431,8 @@ ACCESS_REFUSED = "access_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
 _FIELD_ATTRS = (
-    "type", "many", "options", "to", "required", "label", "lines", "min", "max", "units", "format")
+    "type", "many", "options", "to", "required", "label", "lines", "min", "max", "units", "format",
+    "normal", "critical", "conversions")
 
 
 @dataclass(frozen=True)
@@ -2112,6 +2130,26 @@ async def _view(db: Any, oid: str, pid: str, viewer: Viewer) -> _View | None:
     rules = stored_rules(_json(row[0]))
     scope = scope_for(stored_access(_json(row[1])), viewer, owner=owner, rules=rules)
     return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner))
+
+
+async def query_hidden_keys(db: Any, *, package_id: str, object_id: str,
+                            viewer: Viewer) -> frozenset[str] | None:
+    """C8a, for a saved view (AF-10a). The keys of the object *object_id*
+    that *viewer* may not name in a filter, a sort or a column: the keys that
+    a filter of the store refuses (``_View.maybe_hidden``). A viewer whose
+    roles read no record of the object gets each key of the object. Answers
+    None when the package holds no such object. The owner gets an empty set.
+
+    It reads no record. Its caller is ``routes/studio/views.py``, which drops
+    each part of a saved view that names one of these keys."""
+    who = _check_viewer(viewer)
+    oid, pid = _uuid(object_id, "object_id"), _uuid(package_id, "package_id")
+    view = await _view(db, oid, pid, who)
+    if view is None:
+        return None
+    if not view.scope.reads:
+        return frozenset(f.key for f in await _fields(db, oid))
+    return view.maybe_hidden()
 
 
 def _scoped(sql: str, scoped_sql: str, scope: Scope, binds: dict[str, Any]) -> str:
@@ -2856,7 +2894,8 @@ def _empty_page(start: int, size: int) -> RecordPage:
 
 async def query_records(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
                         filter: Any = None, sort: Any = None, limit: Any = None,
-                        offset: Any = None) -> RecordPage | None:
+                        offset: Any = None,
+                        budget_s: float | None = None) -> RecordPage | None:
     """One page of the records of the object *object_id* of the package
     *package_id*, with a filter and a sort (C2a). Answers None when the bound
     org holds no such object in that package.
@@ -2875,9 +2914,17 @@ async def query_records(db: Any, *, package_id: str, object_id: str, viewer: Vie
     C8a: the row rule of *viewer* joins that one statement, so the page and
     its total hold only the records that the viewer reads. A filter or a sort
     on a hidden key is refused, and each hidden key leaves each record.
+
+    C5a: *budget_s* is a lower deadline in seconds, for a caller with its own
+    clock (company search). It never raises the deadline above the one of
+    :data:`~acb_common.studio_query.TIMEOUT_MS`. A budget of 0 or less refuses
+    with ``query_timeout`` before any statement.
     """
     who = _check_viewer(viewer)
-    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    span = studio_query.TIMEOUT_MS / 1000
+    if budget_s is not None:
+        span = min(span, max(0.0, float(budget_s)))
+    deadline = _clock() + span
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
@@ -4014,6 +4061,10 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
         batch.index = mark.index
         held = batch.objects[mark.object_id]
         for rule in held.rules:
+            if rule.kind == TIMER:
+                # E9a. A timer refuses no write. The workflow scan reads its
+                # hot rows, and `set_field_hot` keeps its fields hot.
+                continue
             check_kind_known(rule, held.name)
             check_rule_is_hot(rule, held.name, held.fields)
             if rule.name in held.taint and mark.before is not None:
@@ -4575,20 +4626,28 @@ _TREE_ONE_ROOT = (
 )
 
 
-def _tree_read_sql(roots: str) -> str:
+def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     """The one statement of a tree read, from the SQL of its *roots* (one of
     the two constants above). Each node comes once, with its level and the id
     of its parent in the read. The order is by level, then by parent, then by
     the time of the create. The statement reads one node past the limit, so
-    the store knows that the read is cut."""
+    the store knows that the read is cut.
+
+    D18-2a: a *scoped* statement holds the row rule of the viewer
+    (:func:`_q_access`) on each root and on each step down. So the walk stops
+    at a record that the viewer cannot read, and the subtree below it is cut.
+    The limit, the levels and the parent ids count only the records that the
+    viewer reads."""
+    root_rule = " AND " + _q_access("r.id") if scoped else ""
+    step_rule = " AND " + _q_access("h.record_id") if scoped else ""
     return (
-        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + "), "
+        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
         "tree(id, parent, depth, path) AS ("
         "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
         "UNION ALL "
         "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
         + _TREE_CHILDREN +
-        "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)) "
+        "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)" + step_rule + ") "
         "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
         "JOIN studio_records r ON r." + _OF_ORG + " AND r." + _OF_OBJECT + " AND r.id = t.id "
         "ORDER BY t.depth, t.parent NULLS FIRST, r.created_at, r.id "
@@ -4598,6 +4657,9 @@ def _tree_read_sql(roots: str) -> str:
 
 _TREE_ALL_SQL = _tree_read_sql(_TREE_ALL_ROOTS)
 _TREE_ROOT_SQL = _tree_read_sql(_TREE_ONE_ROOT)
+#: D18-2a. The two statements with the row rule of the viewer.
+_TREE_ALL_SCOPED_SQL = _tree_read_sql(_TREE_ALL_ROOTS, scoped=True)
+_TREE_ROOT_SCOPED_SQL = _tree_read_sql(_TREE_ONE_ROOT, scoped=True)
 
 
 @dataclass(frozen=True)
@@ -4663,8 +4725,9 @@ def _tree_bound(value: Any, what: str, most: int) -> int:
     return value
 
 
-async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | None = None,
-                    depth: Any = MAX_TREE_DEPTH, limit: Any = MAX_TREE_NODES) -> TreePage | None:
+async def read_tree(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
+                    root_id: str | None = None, depth: Any = MAX_TREE_DEPTH,
+                    limit: Any = MAX_TREE_NODES) -> TreePage | None:
     """The tree of the object *object_id* of the package *package_id* (C18), in
     ONE statement. Answers None when the bound org holds no such object in that
     package.
@@ -4675,9 +4738,19 @@ async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | 
     :data:`~acb_common.studio_rules.MAX_TREE_DEPTH`, and *limit* is the most
     nodes, from 1 to :data:`MAX_TREE_NODES`. A root id that names no record of
     the object gives no nodes. An object with no hierarchy, or with a parent
-    field that is not hot, raises :class:`ObjectStoreError`. The whole call has
+    field that is not hot, raises :class:`NoTree`. The whole call has
     the deadline of :data:`~acb_common.studio_query.TIMEOUT_MS`.
+
+    D18-2a: *viewer* is REQUIRED, as for :func:`query_records`. The row rule
+    of the viewer binds each root and each step down, so a record that the
+    viewer cannot read is not in the read, and its subtree is cut. A root id
+    that the viewer cannot read gives no nodes, as a root id that names
+    nothing does. Each hidden key leaves each record. A parent field that a
+    grant can hide from the viewer refuses the read with
+    :class:`~acb_common.studio_query.QueryError`, because each parent id would
+    show its value.
     """
+    who = _check_viewer(viewer)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
@@ -4688,19 +4761,29 @@ async def read_tree(db: Any, *, package_id: str, object_id: str, root_id: str | 
         found = (await timed.execute(text(_TREE_OBJECT_SQL), {"oid": oid, "pid": pid})).first()
         if found is None:
             return None
+        view = await _view(timed, oid, pid, who)
+        if view is None:
+            return None
         rule = _tree_rule(stored_rules(_json(found[1])))
         if rule is None:
-            raise ObjectStoreError(f"Object `{found[0]}` holds no hierarchy rule.")
+            raise NoTree(f"Object `{found[0]}` holds no hierarchy rule.")
+        key = str(rule.field)
         hot = {f.key for f in await _fields(timed, oid) if f.hot}
-        if str(rule.field) not in hot:
-            raise ObjectStoreError(f"Field `{rule.field}` is not hot, so the tree cannot be read.")
-        binds: dict[str, Any] = {"oid": oid, "pid": pid, "fk": str(rule.field),
-                                 "depth": levels, "limit": size}
+        if key not in hot:
+            raise NoTree(f"Field `{key}` is not hot, so the tree cannot be read.")
+        if key in view.maybe_hidden():
+            raise QueryError(studio_query.OP_NOT_ALLOWED,
+                             f"Field `{key}` is hidden from you, so the tree cannot be read.", key)
+        if not view.scope.reads:
+            return TreePage(nodes=(), truncated=False)
+        binds: dict[str, Any] = {"oid": oid, "pid": pid, "fk": key, "depth": levels,
+                                 "limit": size}
         if root is not None:
             binds["root"] = root
-        rows = (await timed.execute(
-            text(_TREE_ALL_SQL if root is None else _TREE_ROOT_SQL), binds)).all()
-    nodes = tuple(TreeNode(record=_record(row[2:]), level=int(row[0]),
+        plain = _TREE_ALL_SQL if root is None else _TREE_ROOT_SQL
+        scoped = _TREE_ALL_SCOPED_SQL if root is None else _TREE_ROOT_SCOPED_SQL
+        rows = (await timed.execute(text(_scoped(plain, scoped, view.scope, binds)), binds)).all()
+    nodes = tuple(TreeNode(record=view.shown(_record(row[2:])), level=int(row[0]),
                            parent_id=None if row[1] is None else str(row[1]))
                   for row in rows[:size])
     return TreePage(nodes=nodes, truncated=len(rows) > size)
@@ -4743,3 +4826,136 @@ async def fill_num_f8_batch(db: Any, after: tuple[str, str], n: int) -> list[tup
 async def count_num_f8_left(db: Any) -> int:
     """The rows of the bound tenant that have a ``v_num`` and no float8 copy."""
     return int((await db.execute(text(_NUM_F8_LEFT))).scalar_one())
+
+
+# ── The timers (E9a) ───────────────────────────────────────────────────────
+#
+# The workflow scan (`routes/workflows/scheduler.scan_due_timers`) is the one
+# caller. It reads, and it never writes a record, a hot row or a rule. The SQL
+# of the hot table stays in this module (`test_one_writer_of_the_four_tables`).
+
+#: The most records that one read of :func:`due_timer_records` answers.
+MAX_TIMER_READ = 100
+#: A breach whose due time is older than this many days starts no run. It
+#: bounds the walk of each read: the records that fired, and the paused ones,
+#: are the oldest, so a LIMIT alone does not stop the walk over them.
+TIMER_LOOKBACK_DAYS = 7
+#: The deadline of one read of :func:`due_timer_records`, in milliseconds. It
+#: becomes the LOCAL ``statement_timeout`` (``_time_limit``), as in C2.
+TIMER_READ_TIMEOUT_MS = 2_000
+_TIMER_TIMEOUT_MESSAGE = "The breaches of this timer took too long to read."
+
+#: The breaches of one timer, oldest due first. A record breaches when its due
+#: value is after the arm time *armed*, inside the lookback window and at or
+#: before the DB clock, while its pause field holds no pause value. A breach whose run exists for the workflow
+#: (the delivery key of migration 420) is left out, so a fired record never
+#: holds the head of the list. The due time is the hot ``v_ts``, in UTC, with
+#: microseconds. Each table names the bound org.
+_TIMER_DUE_SQL = (
+    "SELECT h.record_id::text, d.due_at FROM studio_record_hot h "
+    "CROSS JOIN LATERAL (SELECT to_char(h.v_ts AT TIME ZONE 'UTC', "
+    "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS due_at) d "
+    f"WHERE h.{_OF_ORG} AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = :field AND h.v_ts > CAST(:armed AS timestamptz) "
+    "AND h.v_ts > now() - make_interval(days => CAST(:lookback AS integer)) "
+    "AND h.v_ts <= now() "
+    "AND (CAST(:pfield AS text) IS NULL OR NOT EXISTS ("
+    "SELECT 1 FROM studio_record_hot p "
+    f"WHERE p.{_OF_ORG} AND p.record_id = h.record_id "
+    "AND p.field_key = CAST(:pfield AS text) "
+    "AND p.v_text = ANY(CAST(:pvalues AS text[])))) "
+    "AND NOT EXISTS (SELECT 1 FROM workflow_runs r "
+    f"WHERE r.{_OF_ORG} AND r.workflow_id = CAST(:wid AS uuid) "
+    "AND r.delivery_key = CAST(:prefix AS text) || h.record_id::text || ':' || d.due_at) "
+    "ORDER BY h.v_ts, h.record_id LIMIT :n"
+)
+
+
+@dataclass(frozen=True)
+class Timer:
+    """One timer of an object (E9a): the object, its package and the rule."""
+
+    object_id: str
+    package_id: str
+    object_name: str
+    rule: Rule
+
+
+@dataclass(frozen=True)
+class TimerDue:
+    """One breach: the record, and its due time as ``YYYY-MM-DDTHH:MM:SS.ffffffZ``."""
+
+    record_id: str
+    due_at: str
+
+
+async def timer_of(db: Any, *, package_id: Any, object_name: Any,
+                   rule_name: Any) -> Timer | None:
+    """The timer *rule_name* of the object *object_name* of the package
+    *package_id*, in the bound org, or None.
+
+    It reads the stored rules, which the sync of a publish writes, so a timer
+    binds the published manifest. It fails closed: a package id that is not a
+    UUID, an object or a rule that is not there, a rule of another kind, and a
+    timer whose fields no longer fit (not hot, another type) answer None."""
+    if not isinstance(object_name, str) or not isinstance(rule_name, str):
+        return None
+    try:
+        pid = _uuid(package_id, "package_id")
+    except ObjectStoreError:
+        return None
+    row = (await db.execute(text(_OBJECT_BY_NAME_SQL), {"pid": pid, "name": object_name})).first()
+    if row is None:
+        return None
+    obj = _object(row, await _fields(db, str(row[0])))
+    rule = next((r for r in obj.constraints if r.name == rule_name and r.kind == TIMER), None)
+    if rule is None:
+        return None
+    try:
+        check_rules_fit([rule], obj.fields, object_name=obj.name)
+    except ConstraintError:
+        return None
+    return Timer(object_id=obj.id, package_id=pid, object_name=obj.name, rule=rule)
+
+
+async def due_timer_records(db: Any, timer: Timer, *, armed_at: datetime, workflow_id: str,
+                            key_prefix: str, limit: int) -> list[TimerDue]:
+    """The breaches of *timer* that no run of *workflow_id* holds, oldest due
+    first, at most *limit* (1 to :data:`MAX_TIMER_READ`).
+
+    *armed_at* is the arm time of the trigger: a record due at or before it
+    never breaches. The DB clock decides "due", never the app clock. The run of
+    a breach holds the delivery key ``<key_prefix><record id>:<due_at>``, so a
+    record that fired is left out until its due value changes. The read holds
+    no lock and writes nothing.
+
+    ⚠️ The walk is bounded twice. A record due more than
+    :data:`TIMER_LOOKBACK_DAYS` days ago never breaches, so the fired and the
+    paused records of the past do not grow the walk without end. The read runs
+    under :func:`_time_limit` with :data:`TIMER_READ_TIMEOUT_MS`, the LOCAL
+    ``statement_timeout`` of C2. A timeout raises ``QueryError``
+    (``query_timeout``), and the caller's transaction stays usable."""
+    if type(limit) is not int or not 1 <= limit <= MAX_TIMER_READ:
+        raise ObjectStoreError(f"limit is 1 to {MAX_TIMER_READ}")
+    pause = timer.rule.pause
+    binds = {
+        "oid": _uuid(timer.object_id, "object_id"), "field": str(timer.rule.field),
+        "armed": armed_at, "lookback": TIMER_LOOKBACK_DAYS,
+        "pfield": None if pause is None else pause.field,
+        "pvalues": [] if pause is None else list(pause.value),
+        "wid": _uuid(workflow_id, "workflow_id"), "prefix": key_prefix, "n": limit,
+    }
+    deadline = _clock() + TIMER_READ_TIMEOUT_MS / 1000
+    async with _time_limit(db, deadline, _TIMER_TIMEOUT_MESSAGE) as timed:
+        rows = (await timed.execute(text(_TIMER_DUE_SQL), binds)).all()
+    return [TimerDue(record_id=str(r[0]), due_at=str(r[1])) for r in rows]
+
+
+def timer_print(rule: Rule) -> dict[str, Any]:
+    """What makes a breach a new one (E9a): the due field of the timer, and
+    nothing else. The workflow scan keeps it beside the arm time, and a new
+    print arms the trigger again, so a changed field never starts runs for the
+    records that were already overdue. The pause is not in it on purpose. A
+    new pause value only stops breaches, and an arm at that time would drop
+    the breach of a record that was overdue in a pause and then leaves it."""
+    return {"field": str(rule.field)}

@@ -10,6 +10,7 @@ review, so this file parses ``routes/workflows/`` and names every caller.
 org keyword (``organization_id`` and its spellings) or a ``**`` expansion to
 ``start_run`` or ``resume_run``. A stale entry fails too, so the list cannot
 rot. Part (c) added the three doors: the hook, the event and the manual Run.
+STU-E9a added the timer scan.
 
 Mutation (R7): add ``start_run(..., organization_id=x)`` to any other function
 under ``routes/workflows/`` and this test goes red.
@@ -52,6 +53,15 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "that org's own session. Only the org loop of `scan_due_waits` calls it, "
         "after the allowlist check. It resumes only when the task of the pause "
         "row is done, read in that org, and it names the pause.",
+    ("scheduler.py", "scan_due_timers", "start_run"):
+        "The timer scan (STU-E9a). The org is the org of the WORKFLOW ROW, read "
+        "in that org's own session, and a row of another org is skipped. Only "
+        "the org loop of `scan_due_waits` calls it, after the allowlist check "
+        "and `STUDIO_ORGS`. It binds no tenant and never calls `dispatch_event`. "
+        "The author of the workflow must OWN the package, and a trigger is armed "
+        "only after each check passed. The delivery key holds one run for each "
+        "breach. The payload holds ids and names, and no field value: each member "
+        "who reads the runs reads it, past the row rules.",
     ("broker_handlers.py", "_resume_run_handler", "resume_run"):
         "The approval door. The org is the approver's bound tenant, which RLS "
         "makes equal to the org of the run row. A person approved the run.",

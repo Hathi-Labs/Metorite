@@ -8,6 +8,10 @@ open only for an org on ``PACKAGE_HOST_ORGS``. This module asks the same two
 questions for a member who is not a caller of a request: the author of a
 workflow that a record event may start. It adds no grant and no vocabulary.
 
+:func:`member_owns_package` asks a narrower question for the timer scan of
+STU-E9a: does the member OWN the package. The scan reads past the row rules,
+and only the owner passes them.
+
 **Fail closed.** A package id that is not a UUID, an unknown package, a package
 of another org, a member that is not an address and any error answer False.
 The session is the caller's tenant session, so the org is the bound org.
@@ -24,19 +28,30 @@ from acb_common import get_logger
 _log = get_logger("gateway.studio.access")
 
 
-async def _holds_studio(member: str, org: str) -> bool:
-    """True when *member* is an active member of *org* with ``feature:studio``.
-    Same rule as ``routes/studio/invoke.py`` ``_holds_studio``. Fails closed."""
+async def _studio_state(member: str, org: str, *, strict: bool) -> bool | None:
+    """True or False when *member* is or is not an active member of *org* with
+    ``feature:studio``. Same rule as ``routes/studio/invoke.py``
+    ``_holds_studio``. A fault answers None. With *strict*, the resolver
+    raises on a read error too, so a read error is a fault and never a no."""
     from acb_auth.access import resolve_access_in_org
 
     if not org:
         return False
     try:
-        access = await resolve_access_in_org(member, org)
+        if strict:
+            access = await resolve_access_in_org(member, org, strict=True)
+        else:
+            access = await resolve_access_in_org(member, org)
     except Exception as exc:
         _log.warning("studio.access.feature_check_failed", error=type(exc).__name__)
-        return False
+        return None
     return bool(access.is_active and access.can_use_feature("studio"))
+
+
+async def _holds_studio(member: str, org: str) -> bool:
+    """True when *member* is an active member of *org* with ``feature:studio``.
+    Fails closed: a fault answers False."""
+    return await _studio_state(member, org, strict=False) is True
 
 
 async def members_holding_studio(members: Iterable[object], org: str) -> dict[str, bool]:
@@ -54,6 +69,58 @@ async def members_holding_studio(members: Iterable[object], org: str) -> dict[st
         if who not in held:
             held[who] = "@" in who and await _holds_studio(who, str(org or ""))
     return held
+
+
+async def members_studio_state(members: Iterable[object], org: str) -> dict[str, bool | None]:
+    """The answer of :func:`members_holding_studio`, with a fault kept apart
+    (STU-E9a). True or False is an answer, and None is a fault. The resolver
+    runs in strict mode, so a read error is a fault and never a no. The timer
+    scan disarms a trigger on a no, and keeps the arm on a fault. Asked
+    outside any session, once for each distinct address. Never raises.
+    """
+    state: dict[str, bool | None] = {}
+    for member in members:
+        who = str(member or "").strip().lower()
+        if who not in state:
+            state[who] = (await _studio_state(who, str(org or ""), strict=True)
+                          if "@" in who else False)
+    return state
+
+
+async def member_owns_package(
+    db: Any, *, member: str, package_id: object, studio_held: bool | None,
+) -> bool | None:
+    """True when *member* OWNS the package *package_id* in the org bound to
+    *db*, and holds ``feature:studio`` (*studio_held*, from
+    :func:`members_studio_state`). False is a true no. None is a fault: the
+    feature answer was a fault, or the package read failed. Never raises, and
+    opens no session.
+
+    The timer scan (STU-E9a) reads the record ids and the due values of each
+    record of an object, past the row rules of C8a. Only the owner passes each
+    rule, so only the owner's workflow may hear a breach. A viewer through an
+    install reads the package and still starts no breach run. The scan
+    disarms a trigger on False, and keeps its arm on None."""
+    from gateway.studio import packages_store
+
+    who = str(member or "").strip().lower()
+    try:
+        pid = str(uuid.UUID(str(package_id)))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    if "@" not in who:
+        return False
+    if studio_held is None:
+        return None
+    if not studio_held:
+        return False
+    try:
+        # A savepoint: a failed read must not poison the caller's transaction.
+        async with db.begin_nested():
+            return await packages_store.get_package(db, who, pid) is not None
+    except Exception as exc:  # a fault, never a no
+        _log.warning("studio.access.owner_check_failed", error=type(exc).__name__)
+        return None
 
 
 async def member_reads_package(

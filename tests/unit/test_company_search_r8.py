@@ -31,6 +31,7 @@ from acb_auth.roles import UserContext, UserRole
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
+from tests.unit.test_crm_find_and_page_r8 import ns  # noqa: F401 - a fixture
 from tests.unit.test_email_keep_separate import _assert_non_priv
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -275,3 +276,67 @@ async def test_after_drops_the_older_task(
                             {"q": HERON, "apps": "tasks", "after": since})
     _clean(answer, caplog)
     assert _task_ids(answer) == [two_ages["new"]]
+
+
+# ── WS-61 KR-ZERO: each word alone, on the real searches (knowledge_base.md §20.4) ──
+
+async def test_a_zero_answer_asks_each_word_alone_inside_the_tenant(
+    two_orgs, two_ages, app_engine, roomy, caplog, monkeypatch,  # noqa: F811
+) -> None:
+    """No record of org A holds both words, so the first pass finds nothing.
+
+    Each word alone finds its own records, and RLS still binds the second
+    pass: org B's task holds the first word too, and it never shows.
+    """
+    from acb_common import get_settings
+    from gateway.retrieval import company
+
+    _assert_non_priv(app_engine)
+    p, a = two_orgs["ns"], two_orgs["a"]
+    # A cold scratch database is slower than the second pass's budget.
+    monkeypatch.setattr(company, "BROADEN_BUDGET_S", 60.0)
+    monkeypatch.setattr(company, "ANSWER_CAP_S", 120.0)
+    monkeypatch.setattr(get_settings(), "context_recency", True, raising=False)
+    with caplog.at_level(logging.INFO, logger="gateway.retrieval.company"):
+        answer = await _ask(p, _member(A_MEMBER, p.org_a), {"q": f"{WORD} {HERON}"})
+    _clean(answer, caplog)
+    assert answer["broadened"] == [
+        {"word": WORD, "hits": 2, "skipped": []},
+        {"word": HERON, "hits": 2, "skipped": []},
+    ]
+    assert _ids(answer, "tasks") == {a["task"], two_ages["old"], two_ages["new"]}
+    assert _ids(answer, "people") == {a["person"]}
+    assert "Beta" not in str(answer) and two_orgs["b"]["task"] not in str(answer)
+    assert answer["meaning"] == "off"
+
+
+# ── HRD-18a: a long company search still asks the CRM ─────────────────────
+
+async def test_a_250_character_search_still_asks_the_crm(
+    ns, app_engine, roomy, caplog,  # noqa: F811
+) -> None:
+    """HRD-18a: a CRM list route answers 422 for a ``?q=`` over 200
+    characters. The company search takes 300, so ``search_records`` cuts the
+    query at a word bound (``core.clip_query``). The CRM is still asked, it
+    is not in ``skipped``, and it finds the deal."""
+    from urllib.parse import quote
+
+    from gateway.routes.crm import core
+
+    from tests.unit.test_crm_find_and_page_r8 import _admin, _call, _make, _native
+
+    _assert_non_priv(app_engine)
+    a = ns.org_a
+    await _native(ns, a)
+    tag = uuid.uuid4().hex[:6]
+    step = " ".join(f"step{tag}{i:03d}" for i in range(30))
+    deal = await _make(ns, a, "/crm/deals", {"name": f"Long {tag}", "next_step": step})
+    q = step[:251].rsplit(" ", 1)[0]
+    assert core.MAX_Q_CHARS < len(q) <= 250
+    with caplog.at_level(logging.INFO, logger="gateway.retrieval.company"):
+        answer = await _ask(ns, _admin(a), {"q": q})
+    _clean(answer, caplog)
+    assert deal in _ids(answer, "crm")
+    # The list route keeps its 422 for the same query.
+    res = await _call(ns, _admin(a), "GET", f"/crm/deals?q={quote(q)}")
+    assert res.status_code == 422, res.text

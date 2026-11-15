@@ -103,6 +103,35 @@
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
+        "conversions": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversions"
+        },
+        "critical": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Critical"
+        },
         "format": {
           "anyOf": [
             {
@@ -177,6 +206,19 @@
           ],
           "default": null,
           "title": "Min"
+        },
+        "normal": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normal"
         },
         "options": {
           "anyOf": [
@@ -259,6 +301,128 @@
         "type"
       ],
       "title": "FieldDef",
+      "type": "object"
+    },
+    "NavRow": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "enum": [
+                "Home",
+                "LayoutDashboard",
+                "LayoutGrid",
+                "List",
+                "ListChecks",
+                "Table",
+                "Kanban",
+                "Calendar",
+                "CalendarDays",
+                "Clock",
+                "Users",
+                "User",
+                "Briefcase",
+                "Handshake",
+                "Inbox",
+                "Mail",
+                "Phone",
+                "MessageCircle",
+                "FileText",
+                "Files",
+                "FolderOpen",
+                "Tag",
+                "Star",
+                "Flag",
+                "Bell",
+                "Bookmark",
+                "Wallet",
+                "Receipt",
+                "Package",
+                "Truck",
+                "MapPin",
+                "Wrench",
+                "Settings",
+                "ClipboardList",
+                "CheckSquare",
+                "Target",
+                "Trophy",
+                "Lightbulb",
+                "BookOpen",
+                "Layers",
+                "Activity",
+                "Sparkles"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "page": {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "title": "Page",
+          "type": "string"
+        }
+      },
+      "required": [
+        "page"
+      ],
+      "title": "NavRow",
+      "type": "object"
+    },
+    "NavSection": {
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/NavRow"
+          },
+          "maxItems": 12,
+          "title": "Rows",
+          "type": "array"
+        },
+        "title": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "rows"
+      ],
+      "title": "NavSection",
       "type": "object"
     },
     "ObjectDef": {
@@ -980,6 +1144,14 @@
       ],
       "default": null,
       "title": "Name"
+    },
+    "nav": {
+      "items": {
+        "$ref": "#/$defs/NavSection"
+      },
+      "maxItems": 4,
+      "title": "Nav",
+      "type": "array"
     },
     "needs": {
       "items": {

@@ -669,6 +669,19 @@ STEER_TURN_KEY = "metorite_steer_turn"
 STEER_TURNS_KEY = "metorite_steer_turns"
 
 
+def steers_frame(count: int) -> str:
+    """The frame of a run that took *count* steers, two or more (task 3130).
+
+    Production, 2026-11-13: a run took two steers, and its answer met only
+    the last one. The other message got no answer. So the newest steer turn
+    of such a run ends with this line, and a replay of two or more steers
+    ends with it too (:func:`format_replayed`). One steer gets no frame, so
+    its turn is byte for byte as before. The words hold in a shared room,
+    where the messages can come from more than one member."""
+    return (f"[{count} new messages came in during this reply. Answer each one. "
+            "If you leave one out, name it and say why.]")
+
+
 def take_steer_turns(thread_id: str | None) -> list[str]:
     """Take every waiting note of *thread_id* for the next model call.
 
@@ -742,6 +755,12 @@ class SteerTurns(ChatMiddleware):
             held.add(id(turn))
         notes = take_steer_turns(self._thread_id or _run_thread_id())
         if notes:
+            # Task 3130: two or more steers in one run. The newest turn asks
+            # for an answer to each of them, and it keeps that text in each
+            # later request, because it is the same message object.
+            count = len(self._placed) + len(notes)
+            if count >= 2:
+                notes[-1] = f"{notes[-1]}\n{steers_frame(count)}"
             anchor = messages[-1] if messages else None
             for note in notes:
                 turn = Message(
@@ -856,6 +875,9 @@ def format_replayed(signals: list[dict[str, Any]]) -> str:
         for s in signals
         if (s.get("text") or "").strip()
     ]
+    if len(lines) >= 2:
+        # Task 3130: each replayed steer gets an answer, as in a live run.
+        lines.append(steers_frame(len(lines)))
     return "\n".join(lines)
 
 

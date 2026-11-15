@@ -9,7 +9,11 @@
  * Fence: `blocks.test.ts`.
  */
 import { formatCardDate } from "@/lib/cardFields";
-import { type FieldSpec, checkValue, minorDigits, ratingRange } from "./fieldCheck";
+import type { AccentHue } from "@/lib/statusAccent";
+import {
+  type FieldSpec, type QuantityConversion, type QuantityFlag, type QuantityRange,
+  checkValue, minorDigits, quantityFlag, ratingRange,
+} from "./fieldCheck";
 import type { FieldType } from "./manifest";
 
 /** What a control holds: text, a tick, a list of picks, or the parts of a compound field. */
@@ -52,9 +56,49 @@ export function parseFields(raw: unknown): FieldSpec[] {
   return out;
 }
 
+/** STU-C24a. The word of each flag. `normal` and `none` have none. Never the word "Safe". */
+export const FLAG_WORDS: Record<QuantityFlag, string> = {
+  none: "", normal: "", low: "Low", high: "High",
+  critical_low: "Critical low", critical_high: "Critical high", unchecked: "Not checked",
+};
+
+/**
+ * STU-C24a. One quantity value as words: `text` is the value and its unit, `flag` is the
+ * computed flag, and `word` is its word, empty for `normal` and `none`. The one place that
+ * joins them: the Table cell and the Detail sheet both read it.
+ */
+export function quantityReading(
+  f: FieldSpec, v: unknown,
+): { text: string; flag: QuantityFlag; word: string } | null {
+  if (!isObject(v) || typeof v.value !== "string" || typeof v.unit !== "string") return null;
+  const flag = quantityFlag(f, v);
+  return { text: `${v.value} ${v.unit}`, flag, word: FLAG_WORDS[flag] };
+}
+
+/** STU-C24a. The hue of a flag in `statusAccent.ts`, the one status vocabulary. Colour never stands alone: the word is always drawn. */
+export const FLAG_HUE: Partial<Record<QuantityFlag, AccentHue>> = {
+  low: "amber", high: "amber", critical_low: "red", critical_high: "red", unchecked: "gray",
+};
+
+const rangeOf = (x: unknown): QuantityRange | undefined =>
+  isObject(x)
+    ? {
+        low: typeof x.low === "string" ? x.low : null,
+        high: typeof x.high === "string" ? x.high : null,
+      }
+    : undefined;
+
 /** The C14 parts of a field: the bounds of a rating, the units of a quantity, the format of a barcode. */
-export function extrasOf(r: Record<string, unknown>): Pick<FieldSpec, "min" | "max" | "units" | "format"> {
+export function extrasOf(
+  r: Record<string, unknown>,
+): Pick<FieldSpec, "min" | "max" | "units" | "format" | "normal" | "critical" | "conversions"> {
   return {
+    normal: rangeOf(r.normal),
+    critical: rangeOf(r.critical),
+    conversions: Array.isArray(r.conversions)
+      ? r.conversions.filter((c): c is QuantityConversion =>
+          isObject(c) && typeof c.from === "string" && typeof c.to === "string" && typeof c.factor === "string")
+      : undefined,
     min: typeof r.min === "number" ? r.min : undefined,
     max: typeof r.max === "number" ? r.max : undefined,
     units: Array.isArray(r.units) ? r.units.filter((u): u is string => typeof u === "string") : undefined,
@@ -178,8 +222,10 @@ function scalarText(f: FieldSpec, v: unknown): string {
       return typeof v === "number" ? `${v} / ${ratingRange(f)[1]}` : "";
     case "duration":
       return typeof v === "number" ? formatDuration(v) : "";
-    case "quantity":
-      return isObject(v) && typeof v.value === "string" && typeof v.unit === "string" ? `${v.value} ${v.unit}` : "";
+    case "quantity": {
+      const q = quantityReading(f, v);
+      return q ? (q.word ? `${q.text} (${q.word})` : q.text) : "";
+    }
     case "percent":
       return typeof v === "number" ? `${formatPercent(v)}%` : "";
     default:
@@ -226,7 +272,7 @@ export function tableBlock(
    * `editable` turns on the inline edit of a cell (STU-D2b). `computed` names
    * the fields that a formula or a roll-up fills, and these never edit.
    */
-  opts?: { editable?: boolean; computed?: readonly string[] },
+  opts?: { editable?: boolean; computed?: readonly string[]; openBase?: string },
 ): { type: "template"; props: Record<string, unknown> } {
   return {
     type: "template",
@@ -235,6 +281,8 @@ export function tableBlock(
       source,
       data: {
         title, fields, filterable: true,
+        // The record link of a row (STU-AF5): the grid appends the id of the record.
+        ...(opts?.openBase ? { openBase: opts.openBase } : {}),
         ...(opts?.editable ? { editable: true, computed: [...(opts.computed ?? [])] } : {}),
       },
     },

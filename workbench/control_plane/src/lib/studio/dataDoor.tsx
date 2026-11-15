@@ -35,6 +35,11 @@ export function withMeta(rows: Row[], meta: RowsMeta): Row[] {
   return rows;
 }
 
+/** The paging facts of an answer, or null when it has none. The count of the rail reads them. */
+export function rowsMeta(rows: readonly unknown[] | null | undefined): RowsMeta | null {
+  return (rows as unknown as Record<symbol, RowsMeta | undefined> | null | undefined)?.[META] ?? null;
+}
+
 /** The one line that says some records are not loaded, or null when the rows are all of them. */
 export function moreLine(rows: readonly unknown[] | null | undefined): string | null {
   const meta = (rows as unknown as Record<symbol, RowsMeta | undefined> | null | undefined)?.[META];
@@ -62,11 +67,21 @@ export interface ActionResult {
   data?: unknown;
 }
 
+/**
+ * The address of the image of one stored file, or null (STU-D19a). The Gallery reads it.
+ * ⚠️ Only the sample door (`sampleDoor.ts`) has one, and it gives images that ship in this
+ * repo. No Studio route serves the bytes of a file yet (D24), so the real door has none, and a
+ * live card draws its placeholder. `realDoor.test.ts` fails when the real door gets one.
+ */
+export type FileAddress = (fileId: string) => string | null;
+
 /** The page's side of the seam. */
 export interface StudioDataDoor {
   /** The app id plus "draft" or "live". It scopes the cache keys of this door. */
   scope: string;
   read(source: StudioSource): Promise<Row[]>;
+  /** The image address of a file, for the Gallery. Optional: a door with none draws no image. */
+  fileAddress?: FileAddress;
   /**
    * Run a typed action. ⚠️ `action` and `args` are written by a model.
    * The server side of the door (B2) must refuse an id that the package did
@@ -105,12 +120,17 @@ export function parseSource(raw: unknown): StudioSource | null {
   return { action, args: isObject(raw.args) ? raw.args : undefined };
 }
 
-/** The kinds that bind: a `table`, and the `dataGrid`, `board`, `chart` and `sparkTrend` templates (D1, D3, D4). */
+/**
+ * The kinds that bind: a `table`, and the `dataGrid`, `board`, `chart`, `sparkTrend` and
+ * `gallery` templates (D1, D3, D4, D19a). The gallery binds on a page only. The chat catalog
+ * has no `gallery` template.
+ */
 export function bindsSource(type: string, props: Record<string, unknown>): boolean {
   if (parseSource(props.source) === null) return false;
   if (type === "table") return true;
   return type === "template"
-    && (props.name === "dataGrid" || props.name === "board" || props.name === "chart" || props.name === "sparkTrend");
+    && (props.name === "dataGrid" || props.name === "board" || props.name === "chart" || props.name === "sparkTrend"
+      || props.name === "gallery");
 }
 
 /** A button's action: the old sentence, or a typed action. */

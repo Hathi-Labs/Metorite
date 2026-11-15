@@ -346,6 +346,17 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # CIV-31: the auto-revert pass of the home box (scripts/home_server). It
+    # reads its mode, its files and the merge bot log. A tenant must never save these.
+    "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",
+    "AUTO_REVERT_STATE", "MERGE_LOG",
+    # CIV-31b: the pass reads the merge bot queue for a hand-over that waits.
+    "MERGE_QUEUE",
+    # CIV-31c: the pass reads the lock of the merge bot, and it starts one
+    # headless session that opens the culprit's task again.
+    "MERGE_BOT_STATE", "AUTO_REVERT_CLAUDE_CMD", "AUTO_REVERT_REOPEN_TIMEOUT_S",
+    # CIV-34a: the conflict rules of the merge bot. It names the ruff command.
+    "CONFLICT_RULES_RUFF",
     # Deploy, backup and watchdog scripts (variables they read).
     "APP_DIR", "ENV_FILE", "ACTIONS", "CURRENT", "DEST", "DRY_RUN", "EUID",
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
@@ -479,6 +490,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
+    # tenant that set it could open them for every org on the box.
+    "CORE_",
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",

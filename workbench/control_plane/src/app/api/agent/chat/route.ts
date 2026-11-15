@@ -479,7 +479,9 @@ async function translateAndPersistStream(
           // The count of segments now, 0 before the first text, so the
           // saved card keeps its place in the turn (`genUiFlow`,
           // lib/chatPlacement.ts). The live hook stamps it the same way.
-          if (cev.name !== "frontend_tool") {
+          // HRD-6: the line of a slow tool (`progress`) shows only while the
+          // tool runs. The saved message never holds it (`chat_fold.py`).
+          if (cev.name !== "frontend_tool" && cev.name !== "progress") {
             customEvents.push({ ...cev, segmentCutoff: segments.length });
           }
           out = { type: "custom", name: cev.name, value: cev.value };
