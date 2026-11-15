@@ -89,7 +89,7 @@ def test_frame_caps_and_icons_come_from_the_model() -> None:
     assert f["icons"] == list(sm.NAV_ICONS)
     text = " ".join(f["rules"])
     assert "A nav needs pages" in text and "page id that the manifest declares" in text
-    assert "record" not in json.dumps(f)  # no slice owns the key yet
+    assert '"record"' not in json.dumps(f)  # the manifest key `record` is not taught: it is no key or value of the part
     assert "for each list" in text and "`count: true`" in text
     assert "cells_per_page" not in json.dumps(f)
 
@@ -398,7 +398,8 @@ def test_the_rubric_of_the_tool_equals_the_rubric_of_the_spec() -> None:
 
     spec = (Path(__file__).resolve().parents[2] / "project-docs/specs/studio_layouts.md").read_text(encoding="utf-8")
     block = spec.split("**The look rubric.**", 1)[1].split("**G6.**", 1)[0]
-    lines = [m.group(1).strip() for m in re.finditer(r"^\d+\. (.+)$", block, re.M)]
+    # The spec may point to a section at the end of a check. The tool text carries no such pointer.
+    lines = [re.sub(r"\s*\(§[^)]*\)\.?$", ".", m.group(1).strip()).replace("..", ".") for m in re.finditer(r"^\d+\. (.+)$", block, re.M)]
     assert lines == list(st.DESIGN_RUBRIC)
 
 
