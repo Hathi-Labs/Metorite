@@ -270,3 +270,22 @@ export function windowOfDays(days: WeekDay[]): { from: string; to: string } | nu
   if (!valid(from) || !valid(to)) return null;
   return { from: from.toISOString(), to: to.toISOString() };
 }
+
+/**
+ * Where the grid scrolls to when it opens, in px from the top of the window. It is one hour before
+ * the earliest timed block of the visible days. With no block it is one hour before the now line,
+ * when `nowTop` is not null. Else it is `defaultHour` (7 AM). It is never below 0.
+ */
+export function initialScrollTop(
+  blocks: readonly { topPx: number }[],
+  nowTop: number | null,
+  hourPx: number,
+  windowStart: number,
+  defaultHour: number = DAY_START_HOUR,
+): number {
+  let target: number;
+  if (blocks.length > 0) target = Math.min(...blocks.map((b) => b.topPx)) - hourPx;
+  else if (nowTop !== null) target = nowTop - hourPx;
+  else target = (defaultHour - windowStart) * hourPx;
+  return Math.max(0, Number.isFinite(target) ? Math.round(target) : 0);
+}

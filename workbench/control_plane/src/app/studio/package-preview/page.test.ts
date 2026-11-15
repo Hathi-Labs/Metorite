@@ -212,3 +212,12 @@ describe("J2a: a viewer gets the reads only", () => {
     expect(VIEWER_NO_OBJECT).toMatch(/owner/);
   });
 });
+
+describe("STU-D5-W2: the frame draws a calendar view", () => {
+  const frame = readFileSync(new URL("./AppFrame.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  it("draws StudioCalendar for the calendar model and opens a record in the panel", () => {
+    expect(frame).toContain('case "calendar":');
+    expect(frame).toContain("<StudioCalendar model={model} door={door}");
+    expect(frame).toContain("openRecord(s, model.object, rid)");
+  });
+});
