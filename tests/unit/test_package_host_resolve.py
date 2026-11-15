@@ -552,7 +552,8 @@ class _CountingDb:
         if sql == resolve.BOUND_ORG_SQL:
             return _Answer(self.bound)
         assert sql == connections._MET_SQL, sql[:80]
-        return _Answer([p if isinstance(p, tuple) else (p, "org") for p in self.providers])
+        return _Answer([(p + ([],) if len(p) == 2 else p) if isinstance(p, tuple) else (p, "org", [])
+                        for p in self.providers])
 
 
 def _resolve_for(monkeypatch, db: _CountingDb, installs: list[InstallRow],
@@ -653,7 +654,7 @@ def test_the_met_read_names_no_blob_and_no_other_member() -> None:
     from gateway.connections import store as connections
 
     sql = connections._MET_SQL
-    assert sql.startswith("SELECT DISTINCT provider, scope_kind FROM integration_connections")
+    assert sql.startswith("SELECT DISTINCT provider, scope_kind, scopes FROM integration_connections")
     assert "credentials" not in sql
     assert "status = 'connected'" in sql
     assert "member_email = :member" in sql and "organization_id = CAST(:org AS uuid)" in sql
@@ -788,10 +789,104 @@ def test_an_empty_member_matches_no_member_row() -> None:
 
     class Db:
         async def execute(self, stmt: Any, params: Any = None) -> Any:
-            return _Answer([("zoho", "member"), ("github", "org")])
+            return _Answer([("zoho", "member", ["a"]), ("github", "org", [])])
 
     for who in ("", "   ", None):
         got = asyncio.run(connections.met_providers(Db(), ORG, who))  # type: ignore[arg-type]
-        assert got == (frozenset({"github"}), frozenset())
+        assert got == ({"github": (frozenset(),)}, {})
     got = asyncio.run(connections.met_providers(Db(), ORG, "Ana@Pkg.Test"))
-    assert got == (frozenset({"github"}), frozenset({"zoho"}))
+    assert got == ({"github": (frozenset(),)}, {"zoho": (frozenset({"a"}),)})
+
+
+# ---- WS-STU I9b-1: the scope rule and the reasons -----------------------------------------------
+# R7 mutations (each turns a NAMED test red; the report lists the result):
+# * S1. `need_reason`: `len(row) >= len(scopes)` for the subset test.
+# * S2. `need_reason`: fold the case of the scopes.
+# * S3. `need_reason`: drop `not org_approved` for an org need.
+# * S4. `need_reason`: return `missing` for a fewer-scopes row.
+# * S5. `need_reason`: drop the empty-scopes rule (an empty row meets a need with scopes).
+
+
+def _need(whose: str, scopes: list[str] | None) -> dict[str, Any]:
+    item: dict[str, Any] = {"name": "zoho", "as": whose}
+    if scopes is not None:
+        item["scopes"] = scopes
+    return {"connections": [item]}
+
+
+def _rows(whose: str, *rows: frozenset[str]) -> resolve.Met:
+    group = {"zoho": tuple(rows)} if rows else {}
+    return resolve.Met(member=group) if whose == "member" else resolve.Met(org=group)
+
+
+_SCOPES = [
+    # (need scopes, row scopes, reason of a MEMBER need)
+    (None, frozenset(), None),
+    ([], frozenset(), None),
+    (["a", "b"], frozenset({"a", "b"}), None),  # equal
+    (["a"], frozenset({"a", "b"}), None),  # more
+    (["a", "b"], frozenset({"a"}), "reconnect"),  # fewer
+    (["a", "b"], frozenset({"c", "d"}), "reconnect"),  # same size, other scopes
+    (["Mail.Read"], frozenset({"mail.read"}), "reconnect"),  # case differs
+    (["a"], frozenset(), "reconnect"),  # the row holds no scope
+    (None, frozenset({"a"}), None),
+]
+
+
+@pytest.mark.parametrize(("need", "row", "reason"), _SCOPES)
+def test_i9b1_member_scope_subset_rule(need: Any, row: Any, reason: Any) -> None:
+    got = resolve.first_unmet_need(_need("member", need), _rows("member", row))
+    assert (got is None) == (reason is None)
+    if reason is not None:
+        assert got == ("zoho", "member", reason)
+
+
+@pytest.mark.parametrize(("need", "row", "reason"), _SCOPES)
+@pytest.mark.parametrize("approved", [True, False])
+def test_i9b1_org_scope_rule_and_approval(need: Any, row: Any, reason: Any, approved: bool) -> None:
+    got = resolve.first_unmet_need(_need("org", need), _rows("org", row), approved)
+    want = reason or (None if approved else "org_approval")
+    assert (got[2] if got else None) == want
+
+
+def test_i9b1_missing_row_is_missing_for_each_account_and_approval() -> None:
+    for whose in ("member", "org"):
+        for approved in (True, False):
+            got = resolve.first_unmet_need(_need(whose, ["a"]), _rows(whose), approved)
+            assert got == ("zoho", whose, "missing")
+    # An org row never meets a member need, and a member row never an org need.
+    assert resolve.first_unmet_need(_need("member", None), _rows("org", frozenset())) == (
+        "zoho", "member", "missing")
+    assert resolve.first_unmet_need(_need("org", None), _rows("member", frozenset()), True) == (
+        "zoho", "org", "missing")
+
+
+def test_i9b1_no_union_of_two_rows() -> None:
+    """Two rows with {a} and {b} do not meet a need of {a, b}: no single account holds both."""
+    met = _rows("member", frozenset({"a"}), frozenset({"b"}))
+    assert resolve.first_unmet_need(_need("member", ["a", "b"]), met) == (
+        "zoho", "member", "reconnect")
+    met = _rows("member", frozenset({"a"}), frozenset({"a", "b"}))
+    assert resolve.first_unmet_need(_need("member", ["a", "b"]), met) is None
+
+
+def test_i9b1_a_wrong_scopes_shape_is_never_met() -> None:
+    for bad in ("a", [1], {"a": 1}):
+        manifest = {"connections": [{"name": "zoho", "as": "member", "scopes": bad}]}
+        assert resolve.first_unmet_need(manifest, _rows("member", frozenset({"a"}))) == (
+            "zoho", "member", "reconnect")
+
+
+def test_i9b1_the_old_tuple_and_set_shapes_still_work() -> None:
+    manifest = _need("org", None)
+    assert resolve.first_unmet_connection(manifest, resolve.Met(), True) == ("zoho", "org")
+    assert resolve.first_unmet_connection(
+        manifest, resolve.Met(org=frozenset({"zoho"})), True) is None
+    assert resolve.first_unmet_need({"connections": [{"as": "org"}]}, resolve.Met()) == (
+        None, None, "missing")
+
+
+def test_i9b1_the_sidebar_needs_setup_follows_the_rule() -> None:
+    manifest = _need("member", ["a", "b"])
+    assert resolve.needs_met(manifest, _all, set(), _rows("member", frozenset({"a"}))) is False
+    assert resolve.needs_met(manifest, _all, set(), _rows("member", frozenset({"a", "b"}))) is True
