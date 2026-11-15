@@ -5,8 +5,8 @@
 3233. This spec builds nothing. It maps five slices that are in flight or
 planned (§9.2). **FIND-1 is built (branch `mt-45237431-find-misses-eval`, task
 3238):** the misses set is in `evals/search_company/fixtures/misses.json`, and
-`--fixture` prints its score. The owner decides D-FIND-1 to D-FIND-8 (§10). The defaults
-hold until the owner answers.
+`--fixture` prints its score. The owner accepted D-FIND-1 to D-FIND-8 as
+recommended on 2026-11-14 (task 3233, answer `30dfa0d6`, §10).
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -548,6 +548,9 @@ A test file marked "new" does not exist yet. The slice that names it writes
 it, red first.
 
 ## 10. Decisions for the owner
+
+**ACCEPTED, 2026-11-14.** The owner chose "Approve all 8 recommendations" on
+task 3233 (answer `30dfa0d6`). Each recommendation below is now the rule.
 
 | # | Question | Recommendation | Why |
 |---|---|---|---|

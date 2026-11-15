@@ -42,6 +42,8 @@ import EntityPill from "@/components/ui/EntityPill";
 import { agentName } from "@/lib/agentName";
 import { fieldSpec } from "@/lib/cardFields";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
+import { FIRST_STEP } from "@/lib/runStatus";
+import { WRITING_STEP } from "@/lib/runStep";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
 import { memberLineOf } from "@/lib/cardOutcomes";
@@ -69,6 +71,10 @@ interface ThinkingContainerProps {
    *  segmentCutoff. Empty for id-less runtimes (which use the reasoning fold). */
   narrationSegments?: string[];
   isActive: boolean;
+  /** CS-1: the turn was just sent and nothing has come back. The header then says `FIRST_STEP`. */
+  firstLine?: boolean;
+  /** CS-1: answer text has started, so the header never says that Mira still reads the message. */
+  answerStarted?: boolean;
   /**
    * The receipt of a read, drawn inside its step when the step is open
    * (§24 rule 2). Null for a step with none. `MessageBubble` supplies it
@@ -652,6 +658,8 @@ export default function ThinkingContainer({
   reasoningBlocks,
   narrationSegments,
   isActive,
+  firstLine,
+  answerStarted,
   evidenceFor,
   notice,
 }: ThinkingContainerProps) {
@@ -770,7 +778,7 @@ export default function ThinkingContainer({
     ? (hasRunningTool && lastLabel ? lastLabel : null)
       ?? liveReasoningTail
       ?? lastLabel
-      ?? "Thinking…"
+      ?? (answerStarted ? WRITING_STEP : firstLine ? FIRST_STEP : "Thinking…")
     : summaryTitle;
 
   const totalMs = useMemo(() => {

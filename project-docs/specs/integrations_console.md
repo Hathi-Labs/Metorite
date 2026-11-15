@@ -303,6 +303,10 @@ the console with the name. The map holds Calendar and Knowledge too, so the
 row of a calendar or a Drive connection links to its own app. This change is
 live with no flag.
 
+**An ask clears on a connect (`ai_studio.md` §8.2, I8b-1a).** When a store
+writer leaves an org row `connected`, it deletes the open asks of members for
+that provider.
+
 ### 3.3 The credential rule
 
 1. **A customer credential lives in one encrypted row.** It is Fernet through
@@ -740,7 +744,7 @@ The owner asked on 2026-11-14 (task 3164) that AI Studio builds on connections. 
 | `team` | `admin` |
 | `blurb` | "Every tool your company has connected" |
 | `jobs` | `integrations.add_mcp`, `integrations.review` (a link to the list), and `connect-agent` of WS-55. The first two need `feature:integrations` |
-| `needs` | `integrations`. A connection in `needs_reconnect` or `error`, for admins |
+| `needs` | `integrations`. A connection in `needs_reconnect` or `error`, for admins. After I8b-1b, the ask of a member for a connection, for admins (`ai_studio.md` §8.2) |
 | `agent` | none |
 
 ---
@@ -788,7 +792,7 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-8c** 🔨 BUILT 2026-10-15 | The console Connect button, the BFF route for `POST /integrations/mcp/{name}/oauth/start`, the dialog text, the acts-as label and the card line (§3.6.9), dark | 🟢 AGENT-SAFE | O10. Visual review passes |
 | **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot (§3.6.2) | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) | The owner's consent with each provider stores an org connection in Fracktal |
 | **GH-0 to GH-8** 📝 SPECIFIED 2026-10-18 | **GitHub through a Metorite-owned GitHub App.** `github_integration.md` owns the slices, the acceptance and the gates. The customer-made OAuth App client id path and its device flow retire (GH-7), and a pasted token stays as "Advanced". The GitHub OAuth app of IN-8d is a separate registration, for the GitHub MCP server | 🔴 OWNER-GATE: GH-0 (register the Apps) and the install in GH-8. The rest is 🟢 AGENT-SAFE | See `github_integration.md` §16 |
-| **IN-9** (task 3172) | **The result card after a connect** (§3.7 rule 1). What works now, then the templates, then "Build an app on <provider>" where it fits. In chat, Mira says the same after a connect | 🟢 AGENT-SAFE. After IN-11 | A mailbox connect shows no build offer. An MCP server that no app uses shows it. The card reads the connector list. Visual review in four contexts |
+| **IN-9** (task 3172) | **The result card after a connect** (§3.7 rule 1). 🔨 **MODEL BUILT (2026-11-14, IN-9a): `acb_common/connector_result_card.py` makes the card and the chat line from the connector list. Left: the screen (IN-9b, UI gate) and the caller that passes the apps (IN-10) and the templates.** What works now, then the templates, then "Build an app on <provider>" where it fits. In chat, Mira says the same after a connect | 🟢 AGENT-SAFE. After IN-11 | A mailbox connect shows no build offer. An MCP server that no app uses shows it. The card reads the connector list. Visual review in four contexts |
 | **IN-10** (task 3173) | **Used by, and the disconnect preview** (§3.7 rule 2). The sheet lists the apps, workflows and skills that use a connection. A disconnect names them and asks once. The chat answers "what uses this connection?" The names of an app come from `package_host/resolve.connection_names` (`ai_studio.md` I1a) | 🟢 AGENT-SAFE. After `ai_studio.md` I1 | The sheet lists two apps and one workflow of a test connection. The disconnect dialog names them. A connection that nothing uses asks with no list |
 | **IN-11** (task 3174) | **The connector list** (§3.7 rule 3). One curated file of the providers that a member can connect. Studio checks each name of `connections` against it, and `ai_studio.md` I1a checks the grammar only | 🟢 AGENT-SAFE. 🔨 **BUILT (2026-11-14). Studio I8a (task 3168) is the first caller.** Fence: `tests/unit/test_connector_list.py`. Readers: §3.7 rule 3. The manifest validator still checks the grammar only | A test holds a row for each provider with a connect flow, and an owning app or the console for each row. The console, Studio and the result card read the one file |
 | **IN-12** (task 3175) | **A connection outlives its person** (§3.7 rule 4). The member removal names each org connection that acts as the leaver, with its apps | 🟢 AGENT-SAFE. HIGH tier | A removal of a member who owns one org connection lists it and its apps. After a reconnect, the row names the new person. R8: the list holds only the rows of the org |

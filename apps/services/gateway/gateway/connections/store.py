@@ -22,6 +22,13 @@ the column.
 * **No secret out.** The blob, the access token and the refresh token never
   appear in a return value (except :func:`load_credential`, which exists to
   return them to server code), a log line or an error message.
+* **A connect clears the asks (WS-STU I8b-1a).** Each of the six writers that
+  can leave a row ``connected`` calls :func:`_clear_asks` with the row that its
+  statement returned: :func:`save_credential`, :func:`save_no_secret`,
+  :func:`save_headers`, :func:`attach_oauth_credential`,
+  :func:`update_oauth_public` and :func:`set_status`. The hook reads the status
+  and the scope from that row, never from the call. Fence:
+  ``tests/unit/test_studio_connection_ask.py``.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from datetime import datetime
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.studio_flags import connection_gate_on
 from acb_llm.key_store import InvalidToken, get_key_store
 from sqlalchemy import text
 
@@ -442,6 +450,32 @@ def _connection(row: Any) -> Connection:
     )
 
 
+async def _clear_asks(db: Any, conn: Connection | None) -> None:
+    """Delete the asks of members for the provider of *conn* (WS-STU I8b-1a,
+    ``ai_studio.md`` §8.2).
+
+    It acts only when the row that the writer's statement returned is
+    ``connected`` at org scope. A member row never clears an org ask, and a
+    row that stays ``disconnected`` or ``needs_reconnect`` clears nothing.
+    While ``STUDIO_CONNECTION_GATE_ORGS`` does not hold the org, it sends no
+    SQL. The delete runs in a savepoint: a caught error aborts the
+    transaction of the writer (H-249), so the savepoint keeps the connect, and
+    the log names the class only. ``attention`` is imported here, as
+    :func:`_outside_registry` imports the connector list, so the store has no
+    import cycle."""
+    if conn is None or conn.status != STATUS_CONNECTED or conn.scope_kind != SCOPE_ORG:
+        return
+    if not connection_gate_on(conn.organization_id):
+        return
+    from gateway.connections import attention
+
+    try:
+        async with db.begin_nested():
+            await attention.clear_on_connect(db, conn.organization_id, conn.provider)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("connections.ask_clear_failed", error=type(exc).__name__)
+
+
 def _key(
     org: str, provider: str, owning_app: str, scope_kind: str, member_email: str | None,
 ) -> dict[str, Any]:
@@ -727,7 +761,9 @@ async def save_credential(
         # other app has a source profile, so no other app touches one (KC-1a).
         profiles_sql = _STALE_PROFILES_SQL if keep_profile else _DROP_PROFILES_SQL
         await db.execute(text(profiles_sql), {"id": str(row.id), "org": str(row.organization_id)})
-    return _connection(row)
+    conn = _connection(row)
+    await _clear_asks(db, conn)
+    return conn
 
 
 async def save_no_secret(
@@ -755,7 +791,9 @@ async def save_no_secret(
         connected_by=(connected_by or "").strip().lower() or None,
     )
     row = (await db.execute(text(_UPSERT_NO_SECRET_SQL), params)).first()
-    return _connection(row)
+    conn = _connection(row)
+    await _clear_asks(db, conn)
+    return conn
 
 
 #: The values that :func:`set_status` may write. ``needs_reset`` stays with
@@ -777,7 +815,9 @@ async def set_status(
         "id": str(connection_id), "org": str(org), "status": status,
         "code": safe_error_code(code) if code else None,
     })).first()
-    return _connection(row) if row is not None else None
+    conn = _connection(row) if row is not None else None
+    await _clear_asks(db, conn)
+    return conn
 
 
 async def update_tokens(
@@ -1003,7 +1043,9 @@ async def save_headers(
         conflict="NOTHING" if only_if_absent else _HEADERS_REPLACE,
     )
     row = (await db.execute(text(sql), params)).first()
-    return _connection(row) if row is not None else None
+    conn = _connection(row) if row is not None else None
+    await _clear_asks(db, conn)
+    return conn
 
 
 @dataclass(frozen=True)
@@ -1060,7 +1102,9 @@ async def attach_oauth_credential(
         "scopes": list(scopes),
         "connected_by": (connected_by or "").strip().lower() or None,
     })).first()
-    return OAuthAttach(before=before, after=_connection(after_row), previous=previous)
+    after = _connection(after_row)
+    await _clear_asks(db, after)
+    return OAuthAttach(before=before, after=after, previous=previous)
 
 
 async def lock_row(
@@ -1100,7 +1144,9 @@ async def update_oauth_public(
         "id": conn.id, "org": conn.organization_id,
         "extra": json.dumps(kept), "enabled": bool(enabled),
     })).first()
-    return _connection(row)
+    updated = _connection(row)
+    await _clear_asks(db, updated)
+    return updated
 
 
 # ── A short-lived sealed value (WS-54 IN-8a) ────────────────────────────────

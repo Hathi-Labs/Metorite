@@ -144,6 +144,9 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
     # I8a, the connections of a draft (Connect in place).
     ("GET", "/studio/packages/{package_id}/connections"),
+    # I8b-1a, the ask of an admin and its withdraw.
+    ("POST", "/studio/packages/{package_id}/connections/ask"),
+    ("DELETE", "/studio/packages/{package_id}/connections/ask"),
     # AF-10a, the saved views of an app.
     ("GET", "/studio/packages/{package_id}/views"),
     ("POST", "/studio/packages/{package_id}/views"),
