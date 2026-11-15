@@ -133,3 +133,10 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
     put your row text in its row file and your index line back. Run
     `python scripts/ai_studio_rows.py check` before you push.
+17. **A new per-org flag, or a flag conflict (CIV-33 slice 3, task 3284).** A
+    `*_orgs` or `*_modes` field goes in
+    `packages/acb_common/acb_common/flag_registry.py`, at its sorted place, with its
+    comment block. It does not go in `settings.py`. On a conflict in `settings.py`,
+    keep main's side and move your field there. Add one line to the `_READERS` table
+    of `tests/unit/test_flag_reload.py` when the reader is `reader(org) -> bool`.
+    Run `tests/unit/test_flag_registry.py` before you push.
