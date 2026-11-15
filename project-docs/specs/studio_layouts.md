@@ -167,7 +167,7 @@ Second wave: L5, L1, L10, L12, L11, L13, L14. Each waits for its missing block. 
 
 ## 6. The manifest model (LY-0)
 
-A page gains two optional keys, `layout` and `regions`. The word `slots` is not used, because the top-level manifest key `slots` belongs to `package_host.md` (PKG-14 to PKG-16). The page keys `header` (AF-7) and `side` (D11a) already exist. A layout adds no second `header` and no second `side`.
+A page gains two optional keys, `layout` and `regions`. The word `slots` is not used, because the top-level manifest key `slots` belongs to `package_host.md` (PKG-14 to PKG-16). The page key `side` (D11a) exists. The page key `header` is AF-7 and is **not built yet** (§11.3 pulls it forward). A layout adds no second `header` and no second `side`.
 
 ```
 page: { id, title,
@@ -177,7 +177,7 @@ page: { id, title,
   regions: { list?, main?, detail?, kpis?, charts?, worklist?, outline?, body? } }
 ```
 
-**Two patterns are not page layouts.** Record 360 (L6) is the quality bar of the AF-5 record page and the `record` key (task 3254). A page in `pages` has no record context. Form wizard (L9) is a step mode of the Form block that the AF-6 dialog opens. LY-3 and LY-5 build them there. So the enum holds 12 values.
+**Two patterns are not page layouts.** Record 360 (L6) is the quality bar of the AF-5 record page and the `record` key (task 3254). A page in `pages` has no record context. Form wizard (L9) is a step mode of the Form block that the AF-6 dialog opens. LY-3 and LY-5 build them there. So the enum holds 12 values. LOOK-1 adds a 13th, `app_home` (§11.3), and then its row joins the table below.
 
 **Rules.**
 1. A region holds view ids. The table below gives the block type and the cap of each region. A bar (filter, bulk, decision, progress, save) is a frame part or a block mode, not a region.
@@ -269,83 +269,88 @@ The note read Android canonical layouts, NN/g on data tables, empty states and d
 
 ## 11. Presentation: how an app looks, and how Mira makes it look good (STU-LOOK, task 3358)
 
-**Owner ask, 2026-11-15.** Studio apps look like business back-office, with tables and boards first. The owner wants rich, modern screens inside the one Metorite look. When a member builds with Mira, she must work on the look as well as the function. A table as the first screen can intimidate. The right first screen depends on the kind of app.
+**Owner ask, 2026-11-15.** Studio apps look like business back-office, with tables and boards first. The owner wants rich, modern screens inside the one Metorite look. When a member builds with Mira, she must work on the look and on the function. A table as the first screen can intimidate. The right first screen depends on the kind of app.
 
 ### 11.1 The gap, checked on main (2026-11-15)
 
 | Fact | Where |
 |---|---|
-| An app with no `pages` gets one page for each object (a table), and a dashboard page only when it holds a chart or a stat view. | `ai_studio.md` §5.5 rule 3, `defaultPages` in `pageModel.ts` |
-| Mira's skeleton writes no `pages` (an AF-8a decision), so every new app opens on tables. | `ai_studio.md` row AF-8a |
-| Mira picks a layout by keywords. Most words lead to a table (L2) or a board (L3). No layout is an overview. | §7 of this spec |
+| An app with no `pages` gets one page for each object, and a dashboard page only when it holds a chart or a stat view. A page shows the views of its object, so it is usually a table. | `ai_studio.md` §5.5 rule 3, `defaultPages` in `pageModel.ts` |
+| Mira's skeleton writes no `pages` (an AF-8a decision). So an app that she builds opens on a page for each object. | `ai_studio.md` row AF-8a |
+| A template app declares its own pages. The field-visit template opens on a Dashboard with one stat and one chart. | `studio_templates/field_visits.json` |
+| Mira picks a layout by keywords. Most words lead to a table (L2) or a board (L3). L4 is the only overview, and it shows numbers, not what needs me. | §7 of this spec |
 | G13 (Mira checks her own screens) covers custom code screens only, in wave 3. | `ai_studio_rows/G13.md` |
 | G6 (the build eval) scores function for each shape and has no look rubric. | `ai_studio_rows/G6.md` |
 | In production the frame flag is off and the layouts are dark, so members see the old grid. | `NEXT_PUBLIC_STUDIO_APP_FRAME` |
+| The page `header` key (AF-7) is **not built**. It is open in rung 6. | `ai_studio.md` Group AF |
+| No renderer draws a preset page on main. A layout page says "This page has no views" until LY-2 (PR 2363) merges. The "All clear" state is in LY-6 (PR 2370). | this spec, §8 |
 
 ### 11.2 What was read, and what was not
 
-A narrow pass read the first screens of six products. WebFetch gives a model summary of a page, not raw text. No screenshot was seen. So this section takes **no** claim about how a product feels.
+A narrow pass read **one docs page for each of five products**. WebFetch gives a model summary of a page, not the raw text. The pass saw no screenshot. So this section makes **no** claim about how a product feels.
 
-| Product | Page read (full) | What it gave |
+| Product | Page read (a summary of it) | What it gave |
 |---|---|---|
-| Glide | A template page and the docs landing page | Nothing on a first screen. Both are marketing pages. **Not used.** |
+| Glide | A template page and the docs landing page | Nothing on a first screen. Both pages are marketing pages. **Not used.** |
 | Softr | The list of building blocks | Block names only: Hero, Quick Links, Summary Cards, List, Grid, Table, Charts. It gives no order for a home page. |
-| Notion | The guide to set up a team workspace | A teamspace is a "homepage" with nested pages and shared databases. It gives no layout. |
+| Notion | The guide to set up a team workspace | A teamspace acts as the homepage of a team, with nested pages and shared databases. It gives no layout. |
 | Linear | The My Issues page | A task list first, grouped by urgency (urgent, blockers, cycle, other). Four tabs. |
-| Airtable | The Overview layout page | Optional cover image and logo, a title, a description, then bookmarks to pages. Each bookmark has a description. |
+| Airtable | The Overview layout page | An optional cover image and logo, a title, a description, then bookmarks to pages. Each bookmark has a description. |
 | Attio | The page on navigating the workspace | The Home page holds upcoming meetings and your tasks, with a chat. |
 
 **Patterns that two sources agree on.**
-1. **"Needs me" comes first.** Linear groups by urgency. Attio lists tasks due or overdue.
+1. **"Needs me" comes first.** Linear groups by urgency. Attio lists the tasks that are due or overdue.
 2. **A hand-made overview with a title and a sentence.** Airtable (Overview) and Notion (a teamspace homepage).
 3. **Link tiles to the rest of the app.** Airtable bookmarks and Softr Quick Links.
 
-**One source only (do not build on it alone).** A cover image (Airtable). Summary cards (Softr). Grouping by urgency with no table (Linear).
+**One source only. Do not build on it alone.** A cover image (Airtable). Summary cards (Softr). Grouping by urgency with no table (Linear).
 
-**What this pass cannot say.** It saw no real first screen for Glide, Softr or Notion. It saw no field-visit, CRM or inventory app in use. It tested no look. The next step is a pass over demo apps and screenshots, which a person must look at. The owner's wish for a friendly, modern look is a design goal here, not a finding of this research.
+**What this pass cannot say.** It saw no real first screen for Glide, Softr or Notion. It saw no field-visit, CRM or inventory app in use. It tested no look. The next step is a pass over demo apps and screenshots, which a person must look at. The wish for a friendly, modern look is a design goal in this section, not a finding of the research.
 
 ### 11.3 L0: the App Home preset
 
 - **Purpose:** know what needs me and what is new, then go where I need. It is the first page of an app for people who do not live in a table.
 - **Apps:** field visits, a clinic day, a small shop, a team tracker.
 - **Parts, in reading order:**
-  1. **Header:** a greeting with the member's name and one sentence about the app (the `header` of AF-7, drawn by `PageHeader`).
-  2. **Numbers:** 3 to 4 stat tiles (D4), each with an icon from the icon list and a trend when the stat has a date group.
-  3. **Needs me:** one short list of the records that wait for the member (a table view, at most 5 rows, with "See all").
-  4. **Quick actions:** the "New <Object>" buttons that the page already draws (AF-6). No new control.
-  5. **Recent:** the last records as cards (§11.4), with "All <objects>" as the link to the table.
-- **Regions (the manifest, the closed enum of §6):** `numbers` (stat, at most 4, **required**), `attention` (table, one), `recent` (table, one). The greeting, the sentence and the quick actions are not regions: they come from the member, the page `header` and the declared create actions. `app_home` is the **seventh** value of the enum. This section is the spec change that adds it (§9, owner decision 2). The value joins in the slice LOOK-1.
-- **Widths:** desktop: numbers in one row, then needs me and recent side by side. Tablet: two columns. Phone: one column in the reading order above, with the quick actions pinned as a row of icon buttons under the header.
-- **States:** a tile with no data says "No data yet" and keeps its height. An empty "needs me" is a success: "All clear" (the L7 state). A Home with no stat yet draws the header, the quick actions and the recent records, and asks the member to add a number.
-- **Quality bar:** (1) the first thing a member reads is a sentence for them, not a column header. (2) At most 4 numbers. (3) One primary action. (4) Each number links to its list. (5) No table above the fold. (6) The same page at 390 px with no horizontal scroll. (7) Light and dark, from tokens only.
+  1. **Header:** a greeting with the member's name and one sentence about the app, drawn by `PageHeader`.
+  2. **Numbers:** up to 4 stat tiles (D4), each with an icon from the icon list. A tile shows a trend when its stat has a date group.
+  3. **Needs me:** a short list of the records that wait for the member. It has at most 5 rows and a "See all" link.
+  4. **Quick actions:** the "New <Object>" buttons that a page already draws (AF-6). No new control.
+  5. **Recent:** the last records as cards (§11.4), with an "All <objects>" link to the table.
+- **Regions** (the closed enum of §6): `kpis` (stat, at most 4), `worklist` (table, one: needs me) and `recent` (table, one: the cards). The names are those of the dashboard (§6), so one role has one name. **No region is required.** A Home with none draws the header and the quick actions, and asks the member to add a number. The greeting, the sentence and the quick actions are not regions. They come from the member, the page `header` and the declared create actions. `app_home` is the **13th** value of the enum. This section is the spec change that adds it (§9, decision 2). The value joins in the slice LOOK-1.
+- **Which view goes where.** The author names each view, as for every preset. Mira's rule (§11.5): `kpis` takes the stat views of the app, in order. `worklist` takes the table view of the main object that has a filter on the member (the `me` token) or on an open status. `recent` takes the table view of the main object with the newest records first. When no view fits a region, the region stays empty and Home leaves its part out.
+- **The page `header` (AF-7) is a foundation of this rung.** AF-7 is not built. Rule 5 of §6d says that a foundation rides with the first rung that needs it. So LOOK-1 builds the `header` key with its sentence and its count, and the hero variant of §11.4 comes after it. LOOK-1 also depends on LY-2 (the first renderer of a preset page, PR 2363) and on the "All clear" state of LY-6 (PR 2370). Both are in review now. Task 3315 (LY-2) blocks the demo task 3360.
+- **Widths:** desktop: numbers in one row, then needs me and recent side by side. Tablet: two columns. Phone: one column in the reading order above, with the quick actions as a row of icon buttons under the header.
+- **States:** a tile with no data says "No data yet" and keeps its height. An empty "needs me" is a success: "All clear". An empty "recent" says what the app holds and offers the "New <Object>" button.
+- **Quality bar:** (1) the first thing a member reads is a sentence for them, not a column header. (2) At most 4 numbers. (3) One main action. (4) Each number links to its list. (5) No table above the fold. (6) The same page at 390 px, with no horizontal scroll. (7) Light and dark, from tokens only.
 
-**Home as the default first page (owner question 2, recommended YES).** The rule 3 of §5.5 changes, behind a flag that is off by default: a new app with no `pages` and at least one stat view gets Home first, and each object page after it, with "All <objects>" in the rail. An app with no stat view keeps today's pages. Mira's design step (§11.5) adds the stat views, so a Home is real for the apps she builds. The flag is a public client flag. The slice follows the flag-list rule of the repo (`docs/flag_reload.md` and the flag tests).
+**Home as the default first page (owner question 2, recommended YES).** Rule 3 of §5.5 changes, behind a flag that is off by default. A new app with no `pages` and one stat view or more gets Home first. A page for each object follows, with "All <objects>" in the rail. An app with no stat view keeps today's pages. Mira's design step (§11.5) adds the stat views, so a Home is real for the apps that she builds. A template app that declares `pages` keeps them, so LOOK-1 edits `field_visits.json` to declare an `app_home` page in place of its Dashboard grid. The new flag is a public client flag, like `NEXT_PUBLIC_STUDIO_APP_FRAME`. A public flag is global: the build fixes it for every org. So the demo (§11.7) names both flips. The slice follows the flag-list rule of the repo (`docs/flag_reload.md` and the flag tests).
 
 ### 11.4 Presentation variants, inside D12
 
-D12 forbids a colour key and a size key. It does not forbid a choice of presentation. Each variant below is a **semantic key** on an existing block. The validator checks it, and the renderer draws it from the one look (`DESIGN_SYSTEM.md`) with tokens only. None is a second renderer.
+D12 forbids a colour key and a size key. It does not forbid a choice of presentation. Each variant below is a **semantic key** on an existing block. The validator checks it. The renderer draws it from the one look (`DESIGN_SYSTEM.md`) with tokens only. None is a second renderer.
 
 | Variant | Key (proposed) | Draws | Uses |
 |---|---|---|---|
-| Card list | `emphasis: "card"` on a table view | Each row as a card: a title, two fields, an optional cover, avatar or icon | The board card parts, `ValueElement` for a person, `Badge` |
-| Cover | `cover: <file field key>` with `emphasis: "card"` | An image at the top of a card. A failed image shows a plain plate with the icon | An `attachments` image (never a raw id) |
+| Card list | `emphasis: "card"` on a table view | Each row as a card: a title, two fields, and an optional cover, avatar or icon | The board card parts, `ValueElement` for a person, `Badge` |
+| Cover | `cover: <file field key>` with `emphasis: "card"` | An image at the top of a card. A failed image shows a plain plate with the icon | An `attachments` image, never a raw id |
 | Icon | `icon: <name of NAV_ICONS>` on a stat or card view | A small icon before the title | `Icon`, the 42 names of the icon list |
-| Stat with trend | exists (D4) | The number, the change against the last period | `StudioStat` |
+| Stat with trend | exists (D4) | The number and the change against the last period | `StudioStat` |
 | Progress | `target: <number>` on a stat view | A bar for the share of the target | `ProgressBar` |
-| Hero header | `hero: true` on the page `header` (AF-7) | A larger title, the sentence, and an optional cover | `PageHeader` |
+| Hero header | `hero: true` on the page `header` (after AF-7) | A larger title, the sentence, and an optional cover | `PageHeader` |
 | Empty state with an icon | derived from the object icon | A large icon plate, one sentence and one action | The shared state of LY-1 |
 
-**Not in this list.** A free colour, a per-app theme, a custom logo sized in pixels and a custom illustration for each app. These break D12 or need imagery that the product does not own. An **app accent colour** is the only choice that D12 itself blocks. It is owner question 1 (recommended NO: the member accent, icons and images carry the look).
+**Not in this list.** A free colour, a per-app theme, a custom logo sized in pixels and a custom illustration for each app. These break D12 or need imagery that the product does not own. **An app accent colour** is the one D12 change worth asking about. It is owner question 1 (recommended NO: the member accent, icons and images carry the look).
 
-Each key is an optional addition to the model of §6, so a stored manifest stays valid (R6). Each is a manifest validator change, so the part of a slice that adds a key is HIGH (an independent verifier and an Opus review). The fence for each is a case in `test_studio_manifest.py` and its twin, plus the D12 scan that already walks the whole document.
+Each key is an optional addition to the model of §6, so a stored manifest stays valid (R6). Each key changes the manifest validator. So the part of a slice that adds a key is HIGH tier, with an independent verifier and an Opus review. The fence for each key is a case in `test_studio_manifest.py` and its twin. The D12 scan already walks the whole document.
 
 ### 11.5 Mira's design step
 
 Today Mira plans the objects, the actions and the views. She does not plan the look. The design step adds three questions to her plan card (G2), before she writes `pages`:
 
-1. **Who uses the app, and where?** Field staff on a phone, an office clerk on a desktop, a manager who wants numbers. The answer decides the first screen.
-2. **What is the first screen?** From the table below. A table is never the first screen by default, and it stays one tap away behind "All <objects>".
-3. **What does the sample data look like?** It looks real: names, dates, amounts and statuses of a small business. Never "Test 1" and "Lorem".
+1. **Who uses the app, and where?** Field staff on a phone, an office clerk on a desktop, or a manager who wants numbers. The answer decides the first screen.
+2. **What is the first screen?** She takes it from the table below. A table is not the first screen by default. It stays one tap away behind "All <objects>".
+3. **What does the sample data look like?** It looks real: names, dates, amounts and statuses of a small business. Never "Test 1" and never "Lorem".
 
 | Audience and shape | First screen |
 |---|---|
@@ -360,29 +365,31 @@ Today Mira plans the objects, the actions and the views. She does not plan the l
 
 ### 11.6 G13 for block pages, and the look rubric
 
-**G13 (moved earlier for block pages).** Today G13 reads captures of custom code screens in wave 3. This slice gives Mira the same loop for the block pages of the app frame. After a change, the member's browser or the preview route captures the first page of the app at desktop and 390 px, in light and dark. Mira reads the four captures against the rubric below and fixes what fails, in **one** fix round. The capture runs in the browser and never on the production box (D127.2). The credit cap of the build (J3) binds.
+**G13, moved earlier for block pages.** Today G13 reads captures of custom code screens in wave 3. This slice gives Mira the same loop for the block pages of the app frame. After a change, the member's browser or the preview route captures the first page of the app at desktop and 390 px, in light and dark. Mira reads the four captures against the rubric below and fixes what fails, in **one** fix round. The capture runs in the browser and never on the production box (D127.2). The credit cap of the build (J3) binds.
 
-**The look rubric** (the same list serves G13 and G6). Each check is pass or fail, and the capture or the sample data is the evidence.
+**The look rubric.** The same list serves G13 and G6. Each check is pass or fail, and the capture or the sample data is the evidence.
 1. The first screen is not a bare table, unless the audience is a table audience (§11.5).
 2. The first thing to read is a sentence or a number for the member.
-3. At most 4 numbers, and each has a label and, where it can, an icon.
-4. One primary action, in the same place on each page.
-5. No text runs out of its box at 390 px, and nothing scrolls sideways except a table in its strip.
+3. At most 4 numbers. Each has a label and, where it can, an icon.
+4. One main action, in the same place on each page.
+5. No text runs out of its box at 390 px. Nothing scrolls sideways except a table in its strip.
 6. Each empty state has one sentence and one next action.
-7. Icons come from the icon list, and a record with an image shows it.
+7. Icons come from the icon list. A record with an image shows it.
 8. The sample data looks real.
 
-**G6.** The rubric becomes a column of the build eval: the pass rate of the eight checks for each shape. The replay half runs in the unit suite at no cost. A live run needs a fresh owner OK on the spend (§11.7).
+**G6.** The rubric becomes a column of the build eval: the pass rate of the eight checks for each shape. The replay half runs in the unit suite at no cost. A live run needs a fresh owner OK on the spend (§11.8).
 
 ### 11.7 Slices and the rung plan (D211)
 
 | Rung | Demo (task) | Slices |
 |---|---|---|
-| **4b** | 3360: a new field-visit app opens on a Home overview, not a table, in light, dark and at 390 px | LOOK-0 spec (task 3358), LOOK-1 App Home and the default first page (3361), LOOK-2 presentation variants, first the icon on a stat and the card list for `recent` (3362) |
-| **4c** | 3363: Mira builds an app that looks good, names who uses it, and checks her screens | LOOK-3 the design step (3364), LOOK-4 G13 for block pages (3365) |
-| Later | none | LOOK-5 the look rubric in the G6 eval, live run (3366, an owner spend gate) |
+| **4b** | 3360: the field-visit app opens on a Home overview in place of its Dashboard grid. An app with no `pages` opens on Home too, from a Mira prompt or a fixture. Light, dark and 390 px. | LOOK-0 spec (task 3358). LOOK-1 App Home, the `header` key of AF-7, the template edit and the default first page (3361). LOOK-2 presentation variants, first the icon on a stat and the card list for `recent` (3362). Blocked first by LY-2 (task 3315). |
+| **4c** | 3363: Mira builds an app that looks good, names who uses it, and checks her screens. | LOOK-3 the design step (3364). LOOK-4 G13 for block pages (3365). |
+| Later | none | LOOK-5 the look rubric in the G6 eval, live run (3366, an owner spend gate). |
 
-Rung 4b is the smallest path that works end to end: the Home preset, one icon on a stat and cards for recent records, seeded by the field-visit template (K1). It needs no change to Mira. Rung 4c then teaches Mira to choose it. Each UI slice carries the UI gate: four captures from lane-ui (task 2855) beside a built-in app.
+**What rung 4b really holds.** It is the smallest path that works end to end, with three foundations that ride with it (rule 5 of §6d): the `header` key (AF-7), the first renderer of a preset page (LY-2) and the "All clear" state (LY-6). It does not need a change to Mira. Rung 4c then teaches Mira to choose it. Each UI slice carries the UI gate: four captures from lane-ui (task 2855) beside a built-in app.
+
+**The flips of the demo.** `NEXT_PUBLIC_STUDIO_APP_FRAME` and the new Home flag are public client flags. They are global, so a pilot organization cannot hold them alone. The demo runs on the local staging gate first (D145). Production gets the demo when the owner flips both flags, with a dated grant. Flags stay off until then.
 
 ### 11.8 Owner decisions (asked on task 3358, 2026-11-15)
 
@@ -391,4 +398,3 @@ Rung 4b is the smallest path that works end to end: the Home preset, one icon on
 3. **The spend cap for the look eval.** Recommended **USD 2.00** for one live run, after the replay half passes.
 
 Nobody builds against an answer until the owner gives it on task 3358. LOOK-1 needs answer 2 for the default page, and not for the preset.
-
