@@ -99,7 +99,7 @@ def test_a_test_that_fails_only_when_merged_blocks(repo):
     _both_sides_change_shared(repo)
     res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD="true")
     assert res.returncode == 1
-    assert "tests/t.py::test_a" in res.stderr and "pass on the branch alone" in res.stderr
+    assert "tests/t.py::test_a" in res.stderr and "pass on" in res.stderr and "alone" in res.stderr
     assert not (repo / ".git" / "MERGE_HEAD").exists()
 
 
@@ -382,6 +382,17 @@ def test_tsc_off_switch(repo):
     res = _run(repo, PREMERGE_TSC="0", PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
     assert res.returncode == 0, res.stderr
     assert not marker.exists()
+
+
+def test_a_test_that_is_red_on_the_branch_alone_and_not_on_main_blocks(repo):
+    """2026-11-15: PR 2248 re-indented one line of tests/fences.json. pr-check never
+    selected test_merge_conflict_rules, which reads the file, so it was red on the branch
+    alone. A red on the branch alone is not an excuse. Only a red on main alone is."""
+    _both_sides_change_shared(repo)
+    rerun = "f() { git symbolic-ref -q HEAD >/dev/null && { echo 'FAILED tests/t.py::test_a - boom'; return 1; }; return 0; }; f"
+    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD=rerun)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "tests/t.py::test_a" in res.stderr
 
 
 def test_an_unknown_flag_is_refused(repo):

@@ -24,7 +24,7 @@
 #      diff since the merge base), on the merge result (CIV-MT, task 3277).
 #      The two sides need not share a file: PR A makes an argument required,
 #      PR B calls the function without it, and no file overlaps.
-#      A test that fails here and passes on the branch alone blocks. The run
+#      A test that fails here and passes on main alone blocks. The run
 #      sits under PREMERGE_TEST_TIMEOUT seconds (default 420; merge_bot allows 900 in all). A timeout is
 #      not a red: the script says UNPROVEN and still exits 0. It prints the
 #      minutes it took;
@@ -230,11 +230,9 @@ if [ "$merge_test" = 1 ] && [ "${PREMERGE_TSC:-1}" != 0 ] \
 fi
 
 # ── 4. Both sides changed the same files ───────────────────────────────────
-# A test that fails on the merge result is a merge failure only when it PASSES
-# on the branch alone (green alone, red together). A test that fails both ways
-# is this machine or an older red: six tests fail on the Windows PC and pass
-# in CI (LD-3b, 2026-10-30). So a failure is re-run on the branch before it
-# can block. Both commands can be replaced, for tests and for other stacks.
+# A test that fails on the merge result blocks unless it also fails on $BASE alone
+# (this machine, or main already red: six tests fail on the Windows PC and pass in CI,
+# LD-3b, 2026-10-30). So a failure is re-run on $BASE before it can block. Both commands can be replaced, for tests and for other stacks.
 # Budget: the callers allow 900 s in all (merge_bot.sh, lane-merge.md). About 100 s
 # go to the fences and the picker. The run gets 420 s, and each of the two
 # re-runs (branch alone, main alone) gets 120 s.
@@ -334,20 +332,21 @@ else
       tail -20 "$logs/affected.log" >&2
       fail "the affected tests did not run cleanly on the merge result, and no test is named (log above)."
     fi
-    # A red on the merge result is the merge's fault only when the test passes on
-    # the branch alone AND on main alone. Red on main is not this PR's doing.
-    back
-    alone_fail="$(rerun_fail "$logs/rerun.log")"
+    # A red on the merge result is the merge's or the branch's to answer for, unless the same
+    # test is red on $BASE alone (this machine, or main already red). A red on the branch alone
+    # is NOT an excuse: a test that pr-check never selected can be red on the branch itself
+    # (2026-11-15: PR 2248 broke test_merge_conflict_rules with one re-indented line of
+    # tests/fences.json, and no import linked the two).
     git checkout -q --detach "$BASE"
     main_fail="$(rerun_fail "$logs/rerun_main.log")"
     back
-    caused="$(comm -23 <(printf '%s\n' "$merged_fail") <(printf '%s\n%s\n' "$alone_fail" "$main_fail" | sort -u))"
+    caused="$(comm -23 <(printf '%s\n' "$merged_fail") <(printf '%s\n' "$main_fail"))"
     if [ -n "$caused" ]; then
       printf '  %s\n' $caused >&2
       say "the merge test took $(( (SECONDS - started + 59) / 60 )) minute(s)"
-      fail "these tests pass on the branch alone (or are not there) and pass on $BASE alone, and fail once the two are merged. Merge $BASE into the branch, fix, push, and wait for pr-check."
+      fail "these tests pass on $BASE alone (or are not there) and fail on the merge of the branch and $BASE. Fix the branch (or merge $BASE into it), push, and wait for pr-check."
     fi
-    say "these tests fail on the branch alone or on $BASE alone, so the merge did not cause them (this machine, or already red):"
+    say "these tests fail on $BASE alone, so the merge did not cause them (this machine, or main already red):"
     printf '  %s\n' $merged_fail
   fi
   [ "$rc" = 124 ] && [ -n "$merged_fail" ] && say "UNPROVEN in part. The run hit ${TEST_TIMEOUT}s after the failures above, so the tests behind them did not finish."
