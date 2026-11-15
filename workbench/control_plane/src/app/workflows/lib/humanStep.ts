@@ -111,11 +111,13 @@ export function personPickerView(
   return { kind: "ready", options, capped: people.length >= DIRECTORY_PEOPLE_CAP };
 }
 
-/** The read-only note of a node type that has no form in the editor. */
+/**
+ * The read-only note of a node type that has no form in the editor. A Studio
+ * write has a form since WFC-4a-2a (`studioWrite.ts`), so it has no note here.
+ */
 export function readOnlyNote(type: string): string | null {
   if (type === "pm_task" || type === "pm_lifecycle") {
     return "This step cannot run in a workflow yet.";
   }
-  if (type === "studio_write") return "The form for this step is not built yet.";
   return null;
 }

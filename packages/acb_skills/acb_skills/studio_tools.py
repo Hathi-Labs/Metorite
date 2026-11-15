@@ -1180,11 +1180,34 @@ def _describe_computed() -> dict[str, Any]:
     }
 
 
+#: The ops that the tools add to a manifest, and the ops that an app must
+#: declare by itself (STU-D18-3). A tree view needs ``object:<name>.tree`` and a
+#: chart or total needs ``object:<name>.aggregate``. With no such action the
+#: view shows "This app does not declare that action yet" (realDoor.ts).
+_OWN_DECLARED_OPS = ("aggregate", "tree")
+_OBJECT_ACTION_EXAMPLE = {"id": "site_tree", "uses": "object:site.tree"}
+
+
+def _describe_object_actions() -> dict[str, Any]:
+    return {
+        "added_for_you": list(RECORD_OPS),
+        "declare_yourself": list(_OWN_DECLARED_OPS),
+        "rule": (
+            "Each action is {id, uses}, with uses as object:<name>.<op>. The tools add the "
+            "list, get, create, update and delete actions of each object. A tree view needs "
+            "object:<name>.tree, and a chart or total needs object:<name>.aggregate: add "
+            "that action to actions yourself, or the view cannot run."
+        ),
+        "example": dict(_OBJECT_ACTION_EXAMPLE),
+    }
+
+
 def _describe_blocks() -> dict[str, Any]:
     return {
         "tokens": list(BLOCKS),
         "reserved": list(RESERVED_BLOCKS),
         "object_ops": list(OBJECT_OPS),
+        "object_actions": _describe_object_actions(),
     }
 
 
