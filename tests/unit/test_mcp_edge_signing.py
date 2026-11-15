@@ -828,12 +828,15 @@ async def test_any_other_failed_read_stays_a_refusal(world, monkeypatch):
 
 
 async def test_the_success_path_reads_exactly_the_allowed_scope_keys(world, monkeypatch):
-    """The tripwire's scope allowlist is EXACTLY what branch 0 reads."""
+    """The tripwire's scope allowlist is EXACTLY what branch 0 reads. CIV-14b:
+    a GET reads no body, so it never reads the kept body of a signed form
+    (``acb.agent_signed_body``). The upload of ``test_mcp_upload_image_tenant_r8.py``
+    reads it through the real wrapper."""
     armed = world.armed or tripwire.arm(monkeypatch, deps)
     assert (await _get(TASK, "q=x")).status_code == 200
     scope_keys = armed.scope_reads
     header_names = armed.header_reads
-    assert scope_keys == tripwire.ALLOWED_SCOPE_KEYS
+    assert scope_keys == tripwire.ALLOWED_SCOPE_KEYS - {"acb.agent_signed_body"}
     assert header_names <= tripwire.ALLOWED_HEADERS
     assert {"x-agent-connection", "x-agent-timestamp", "x-agent-signature",
             "x-actor-via"} <= header_names
