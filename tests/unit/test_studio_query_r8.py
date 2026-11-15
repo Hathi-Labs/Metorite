@@ -1497,7 +1497,7 @@ D = Decimal
 
 async def _agg(org: str, obj: store.StudioObject, **kw: Any) -> store.AggregateResult | None:
     async with tenant_session(org) as db:
-        return await store.aggregate_records(db, package_id=obj.package_id, object_id=obj.id, **kw)
+        return await store.aggregate_records(db, package_id=obj.package_id, object_id=obj.id, **kw, viewer=_VIEWER)
 
 
 def _groups(result: store.AggregateResult | None) -> list[tuple[Any, int, tuple[Any, ...]]]:
@@ -1593,7 +1593,7 @@ def test_r8_a_date_groups_by_day_or_month_in_utc(world, key: str, bucket: str | 
         async with tenant_session(world.a) as db:
             await db.execute(text("SELECT set_config('TimeZone', 'Asia/Kolkata', true)"))
             return await store.aggregate_records(db, package_id=world.pkg_a,
-                                                 object_id=world.visit.id, group_by=group)
+                                                 object_id=world.visit.id, group_by=group, viewer=_VIEWER)
 
     assert [(k, n) for k, n, _ in _groups(_run(world.p.app_url, go))] == want
 
@@ -1608,10 +1608,10 @@ def test_r8_a_money_sum_of_two_currencies_is_refused(world) -> None:
         async with tenant_session(world.a) as db:
             with pytest.raises(QueryError) as whole:
                 await store.aggregate_records(db, package_id=world.pkg_a,
-                                              object_id=world.visit.id, measures=fee)
+                                              object_id=world.visit.id, measures=fee, viewer=_VIEWER)
             with pytest.raises(QueryError) as grouped:
                 await store.aggregate_records(db, package_id=world.pkg_a, object_id=world.visit.id,
-                                              group_by={"field": "status"}, measures=fee)
+                                              group_by={"field": "status"}, measures=fee, viewer=_VIEWER)
             rec = await store.get_record(db, world.visit.id, world.ids["r1"], package_id=world.pkg_a, viewer=_VIEWER)
         return whole.value, grouped.value, rec
 
@@ -1671,16 +1671,16 @@ def test_r8_an_aggregate_reads_its_own_package_object_and_org(world) -> None:
     `trip` is in the same package and holds hours too."""
     async def go() -> list[Any]:
         async with tenant_session(world.a) as db:
-            out = [await store.aggregate_records(db, package_id=world.pkg_a2, object_id=world.visit.id),
+            out = [await store.aggregate_records(db, package_id=world.pkg_a2, object_id=world.visit.id, viewer=_VIEWER),
                    await store.aggregate_records(db, package_id=world.pkg_a,
-                                                 object_id=world.other_pkg.id),
+                                                 object_id=world.other_pkg.id, viewer=_VIEWER),
                    await store.aggregate_records(db, package_id=world.pkg_a,
-                                                 object_id=world.visit.id, measures=_HOURS)]
+                                                 object_id=world.visit.id, measures=_HOURS, viewer=_VIEWER)]
         async with tenant_session(world.b) as db:
             out.append(await store.aggregate_records(db, package_id=world.pkg_a,
-                                                     object_id=world.visit.id))
+                                                     object_id=world.visit.id, viewer=_VIEWER))
             out.append(await store.aggregate_records(db, package_id=world.pkg_b,
-                                                     object_id=world.visit_b.id, measures=_HOURS))
+                                                     object_id=world.visit_b.id, measures=_HOURS, viewer=_VIEWER))
         return out
 
     wrong_pkg, wrong_obj, mine, theirs, org_b = _run(world.p.app_url, go)
@@ -1812,7 +1812,7 @@ def test_r8_an_aggregate_past_the_timeout_stops_with_query_timeout(world, monkey
             await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
             with pytest.raises(QueryError) as stopped:
                 await store.aggregate_records(db, package_id=world.pkg_b, object_id=world.big.id,
-                                              group_by={"field": "t"})
+                                              group_by={"field": "t"}, viewer=_VIEWER)
             rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
                                          package_id=world.pkg_b, viewer=_VIEWER)
             return stopped.value.code, rec, await _timeout(db)
@@ -1840,7 +1840,7 @@ def test_r8_a_group_field_that_turns_cold_during_an_aggregate_is_refused(world) 
             spy = _Spy(db, unhot, marker="FROM studio_object_fields")
             with pytest.raises(QueryError) as stopped:
                 await store.aggregate_records(spy, package_id=obj.package_id, object_id=obj.id,
-                                              group_by={"field": "rank"})
+                                              group_by={"field": "rank"}, viewer=_VIEWER)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, obj.id)
         return spy.fired, stopped.value

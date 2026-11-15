@@ -592,7 +592,7 @@ def _agg_refused(code: str, filter: Any = None, group_by: Any = None,
 def test_the_aggregate_caps_and_tables() -> None:
     assert (sq.MAX_GROUPS, sq.MAX_MEASURES) == (50, 4)
     assert sq.MEASURE_OPS == ("count", "sum", "average") and sq.BUCKETS == ("day", "month")
-    # C8a: a person is no group key while the aggregate takes no viewer.
+    # C8a: a person is no group key, since a count for each member would show a row rule.
     assert set(sq.OPS_BY_TYPE) - {"money", "person"} == sq.GROUP_TYPES
     assert dict(sq.MEASURE_TYPES) == {"sum": {"number", "money"}, "average": {"number"}}
 
