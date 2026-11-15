@@ -199,6 +199,10 @@ VALUES.update({
         {"system": "X-SYS", "code": "X-0001 "}, {"system": "X-SYS", "code": "X-0001\u00a0"},
         {"system": "X-SYS", "code": 1},
         {"system": 1, "code": "X-0001"}, "X-0001", None,
+        # The limit counts code points, not UTF-16 units: 64 astral characters pass, 65
+        # fail, in Python and in the TypeScript twin (verifier P2 of C23a).
+        {"system": "X-SYS", "code": Rep("\U0001F600", 64)},
+        {"system": "X-SYS", "code": Rep("\U0001F600", 65)},
     ]),
 })
 # A barcode of the other two formats, and a rating with its own bounds.

@@ -3017,6 +3017,42 @@
    "ok": false
   },
   {
+   "id": "coded-20",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": {
+     "$repeat": "\ud83d\ude00",
+     "count": 64
+    }
+   },
+   "ok": true,
+   "out": {
+    "system": "X-SYS",
+    "code": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+   }
+  },
+  {
+   "id": "coded-21",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": {
+     "$repeat": "\ud83d\ude00",
+     "count": 65
+    }
+   },
+   "ok": false
+  },
+  {
    "id": "barcode-extra-0-0",
    "field": {
     "key": "f",
