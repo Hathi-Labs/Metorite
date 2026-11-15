@@ -39,7 +39,7 @@ export default function StudioBlockState(props: StudioBlockStateProps) {
 
   if (kind === "loading") {
     const label = blockLoadingLabel(props.noun);
-    if (shape === "board") return <SkeletonBoard columns={3} />;
+    if (shape === "board") return <SkeletonBoard columns={3} label={label} />;
     if (shape === "stats") {
       return (
         <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-4" role="status" aria-busy="true" aria-label={label}>
@@ -47,7 +47,7 @@ export default function StudioBlockState(props: StudioBlockStateProps) {
         </div>
       );
     }
-    return <SkeletonRows count={6} className="p-3" />;
+    return <SkeletonRows count={6} className="p-3" label={label} />;
   }
 
   const copy = blockStateCopy(kind, props);
