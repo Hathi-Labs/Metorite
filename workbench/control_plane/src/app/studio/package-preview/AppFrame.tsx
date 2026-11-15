@@ -47,6 +47,7 @@ import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { pluralOf } from "@/lib/studio/blockState";
+import { phoneSwitch } from "@/lib/studio/laneSwitch";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -205,9 +206,11 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     if (!model) return null;
     switch (model.kind) {
       case "node": {
-        const node = <GenerativeUINode spec={model.node} />;
-        const src = model.node.props.source as { action: string; args?: Record<string, unknown> } | undefined;
         const preset = built.page.layout;
+        // A board of the `board` preset shows one lane at a time on a phone (STU-LY-4b).
+        const spec = preset === "board" ? phoneSwitch(model.node) : model.node;
+        const node = <GenerativeUINode spec={spec} />;
+        const src = spec.props.source as { action: string; args?: Record<string, unknown> } | undefined;
         if ((preset === "table_workspace" || preset === "board") && src && id === built.page.regions.main?.[0]) {
           const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
           return (
