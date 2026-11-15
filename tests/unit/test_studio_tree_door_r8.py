@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
@@ -412,16 +413,70 @@ def test_r8_the_switch_off_is_404_and_reads_nothing(world, monkeypatch) -> None:
     assert _audits(world, world.pkg) == []
 
 
-def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
+async def _plan_report(org: str, pkg: str, oid: str) -> tuple[str, int]:
+    """The plan of the tree read, its buffer count and the facts that decide it (task 3308).
+
+    The buffer count is the fence: it is the same on a fast box and on a slow CI runner,
+    and a lookup that scans a table row by row shows in it at once. The wrong plan read
+    1,363,375 buffers for 2,000 nodes on the runner; the key lookups read about 20,000
+    (measured on the box: 20,046 stale, 20,043 never analyzed)."""
+    binds = {"oid": oid, "pid": pkg, "fk": "parent", "depth": 20, "limit": 2000}
+    try:
+        async with tenant_session(org) as db:
+            await db.execute(text("SET LOCAL statement_timeout = 60000"))
+            facts = [str(r) for r in (await db.execute(text(
+                "SELECT current_setting('server_version'), current_setting('jit'), "
+                "current_setting('work_mem'), current_setting('shared_buffers'), "
+                "current_setting('random_page_cost'), current_setting('effective_cache_size')"
+            ))).all()]
+            facts += [str(r) for r in (await db.execute(text(
+                "SELECT relname, reltuples, relpages FROM pg_class WHERE relname IN "
+                "('studio_records','studio_record_hot')"))).all()]
+            plan = [r[0] for r in (await db.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS) " + store._TREE_ALL_SQL), binds)).all()]
+        top = next((x for x in plan if "Buffers:" in x), "")
+        m = re.search(r"Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?", top)
+        buffers = int(m.group(1) or 0) + int(m.group(2) or 0) if m else -1
+        return "\n".join(facts) + "\n" + "\n".join(plan), buffers
+    except Exception as exc:
+        return f"plan report failed: {type(exc).__name__}: {str(exc)[:200]}", -1
+
+
+#: The most buffers that the read of 2,000 nodes may touch. The key lookups read about
+#: 20,000; the plan that failed on CI read 1,363,375.
+MAX_TREE_READ_BUFFERS = 100_000
+
+
+@pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
+def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> None:
     """One root and 1,999 children: 2,000 nodes are not cut, and one more is."""
 
-    def analyze() -> None:
-        # Autovacuum analyzes a table that grew, and this suite does not wait
-        # for it. With the stats of an empty table, the planner scans the hot
-        # rows once for each node, and a walk passes the 5 s deadline.
+    def prepare_stats() -> None:
+        # STU-C18 finding (task 3308): a table that is filled in bulk keeps the planner
+        # statistics of the time before the fill until autovacuum runs. The statements of
+        # the tree read must not depend on them, and the C18 write check must not for a
+        # write of a leaf or a small subtree (a write that moves a node with a LARGE subtree
+        # is the residual named at `_TREE_KIDS`). Two states:
+        # "stale" analyzes both tables while they hold only the fixture rows, and
+        # "never_analyzed" wipes every statistic (pg_statistic and reltuples). In both,
+        # autovacuum is off and the test fills 2,000 nodes through the real writes.
         with world.p.admin_engine.begin() as c:
-            c.execute(text("ANALYZE studio_records"))
-            c.execute(text("ANALYZE studio_record_hot"))
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
+                if stats == "never_analyzed":
+                    c.execute(text("DELETE FROM pg_statistic WHERE starelid = CAST(:t AS regclass)"),
+                              {"t": t})
+                    c.execute(text("UPDATE pg_class SET reltuples = -1, relpages = 0 "
+                                   "WHERE oid = CAST(:t AS regclass)"), {"t": t})
+        if stats == "stale":
+            with world.p.admin_engine.begin() as c:
+                c.execute(text("ANALYZE studio_records"))
+                c.execute(text("ANALYZE studio_record_hot"))
+
+    def stats_back() -> None:
+        with world.p.admin_engine.begin() as c:
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} RESET (autovacuum_enabled)"))
 
     async def build() -> str:
         [root] = await _put(world.a, world.lot, Write("create", world.lot.id,
@@ -430,8 +485,6 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
             await _put(world.a, world.lot, *[
                 Write("create", world.lot.id, data={"name": f"n{i}", "parent": {"id": root.id}})
                 for i in range(start, min(start + 50, 1999))])
-            if start in (0, 200, 1000):
-                analyze()
         return root.id
 
     async def read() -> tuple[tuple[int, Any], int]:
@@ -448,16 +501,24 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
             event.remove(eng, "before_cursor_execute", _on)
         return got, len([s for s in seen if "WITH RECURSIVE" in s])
 
-    root = _run(world, build)
-    analyze()
-    (status, got), walks = _run(world, read)
-    assert status == 200 and walks == 1, got
-    assert len(got["nodes"]) == 2000 and got["truncated"] is False
-    _run(world, lambda: _put(world.a, world.lot, Write(
-        "create", world.lot.id, data={"name": "one more", "parent": {"id": root}})))
-    (status, got), walks = _run(world, read)
-    assert status == 200 and walks == 1, got
-    assert len(got["nodes"]) == 2000 and got["truncated"] is True
+    prepare_stats()
+    try:
+        root = _run(world, build)
+        (status, got), walks = _run(world, read)
+        report, buffers = _run(world, lambda: _plan_report(world.a, world.pkg, world.lot.id))
+        if status != 200 or not 0 <= buffers < MAX_TREE_READ_BUFFERS:
+            raise AssertionError(f"status {status}, read touched {buffers} buffers "
+                                 f"(limit {MAX_TREE_READ_BUFFERS})\n{report}")
+        print(f"tree read buffers ({stats}): {buffers}")
+        assert walks == 1, got
+        assert len(got["nodes"]) == 2000 and got["truncated"] is False
+        _run(world, lambda: _put(world.a, world.lot, Write(
+            "create", world.lot.id, data={"name": "one more", "parent": {"id": root}})))
+        (status, got), walks = _run(world, read)
+        assert status == 200 and walks == 1, got
+        assert len(got["nodes"]) == 2000 and got["truncated"] is True
+    finally:
+        stats_back()
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:

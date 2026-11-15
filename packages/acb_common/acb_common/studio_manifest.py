@@ -41,6 +41,7 @@ from pydantic_core import PydanticCustomError
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
+from acb_common.connector_list import connector as _connector
 from acb_common.secret_shapes import SECRET_SHAPES, is_secret_field_key, is_secret_key
 from acb_common.studio_access import AccessError, check_access_fit, parse_access, parse_roles
 from acb_common.studio_fields import (
@@ -160,25 +161,39 @@ _DATA_KEYS = frozenset({"set", "where", "when", "args"})
 _NAME = NAME_PATTERN
 _DASHED = r"[a-z][a-z0-9_-]{0,47}"
 _OPS = "|".join(OBJECT_OPS)
+
+#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
+#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
+#: so ``test_package_host_resolve.py`` holds the two equal.
+MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
+#: STU-B1b-1. The name of one MCP tool in ``mcp:<server>.<tool>``. MCP lets a
+#: tool name hold letters of both cases, digits, ``_`` and ``-``. This grammar
+#: refuses a dot (the dot ends the server key), a colon, a slash, a space and
+#: each character outside ASCII. A name is at most 64 characters, the cap of a
+#: model tool name. A tool whose name this refuses gives no catalog row.
+MCP_TOOL_NAME = r"[A-Za-z0-9_][A-Za-z0-9_-]{0,63}"
+
 # `fullmatch` everywhere: Python `$` also matches before a final newline.
 _USES_RE = re.compile(
     rf"(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
     rf"|logic:(?P<logic>{_NAME})"
+    rf"|mcp:(?P<mcp_server>{MCP_SERVER_NAME})\.(?P<mcp_tool>{MCP_TOOL_NAME})"
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
 )
 
 #: STU-I1a. The most connections that one package names.
 MAX_CONNECTIONS = 32
-#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
-#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
-#: so ``test_package_host_resolve.py`` holds the two equal.
-MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
 #: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
 #: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
 #: the grammar only. IN-11 adds the check that the connector list holds it.
 CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: STU-I9a. The two whose-account values of a connection need.
+CONNECTION_AS = ("org", "member")
+#: STU-I9a. The most scopes, and the longest scope, of one connection need.
+MAX_CONNECTION_SCOPES = 16
+MAX_CONNECTION_SCOPE_CHARS = 200
 #: STU-I1a. The refusal of a field whose key names a secret
 #: (``secret_shapes.is_secret_field_key``: a whole secret name, so
 #: ``token_number`` passes). A test reads this text, so keep it stable.
@@ -213,19 +228,23 @@ class UsesRef:
     """The parts of one ``uses`` value of the A2 grammar (STU-B2a).
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
-    ``integration``, ``workflow`` or ``logic`` (STU-B4a), the source names of
-    the B1 catalog. ``logic`` is a first-party logic module: ``logic`` holds
-    its name.
+    ``integration``, ``workflow``, ``logic`` (STU-B4a) or ``mcp``
+    (STU-B1b-1), the source names of the B1 catalog. ``logic`` is a
+    first-party logic module: ``logic`` holds its name. ``mcp`` is one tool of
+    an MCP server of the org: ``server`` holds the registry key of the server,
+    and ``tool`` holds the tool name.
     ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
     ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
     name of that app. An integration and a workflow set none of them.
     """
 
-    source: Literal["object", "manifest", "integration", "workflow", "logic"]
+    source: Literal["object", "manifest", "integration", "workflow", "logic", "mcp"]
     object: str | None = None
     op: str | None = None
     app: str | None = None
     logic: str | None = None
+    server: str | None = None
+    tool: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -243,6 +262,8 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="workflow")
     if m.group("logic"):
         return UsesRef(source="logic", logic=m.group("logic"))
+    if m.group("mcp_server"):
+        return UsesRef(source="mcp", server=m.group("mcp_server"), tool=m.group("mcp_tool"))
     return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
@@ -251,6 +272,20 @@ def parse_uses(uses: object) -> UsesRef | None:
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ConnectionNeed(_Strict):
+    """STU-I9a. One connection that the app needs, with the account it uses.
+
+    ``as_`` (written ``as`` in the manifest) is ``org`` or ``member``. With
+    none, :func:`connection_as` gives the default of the connector list.
+    ``scopes`` are the scopes that the app asks for. They are a declaration
+    only: no credential is read from them."""
+
+    name: str
+    as_: Literal["org", "member"] | None = Field(default=None, alias="as")
+    scopes: list[str] | None = None
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
 
 
 class FieldDef(_Strict):
@@ -279,6 +314,11 @@ class FieldDef(_Strict):
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
+    #: C15a. The parts of an `autonumber`: the text before the number, the pad
+    #: width and `never` or `day`. `studio_fields._check_extras` holds the rules.
+    prefix: str | None = None
+    pad: int | None = None
+    reset: str | None = None
 
 
 class ObjectDef(_Strict):
@@ -358,6 +398,29 @@ class TabDef(_Strict):
     cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
 
 
+#: The page presets (STU-LY-0, ``specs/studio_layouts.md`` section 6). The enum is closed: a later
+#: preset joins it in the slice of its block. ``PRESET_REGIONS`` gives the regions of each:
+#: region -> (block type, most views, required). ``manifest.ts`` holds the same table.
+LAYOUTS: tuple[str, ...] = (
+    "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+)  # fmt: skip
+_LIST_DETAIL = {"list": ("table", 1, True), "detail": ("detail", 1, True)}
+PRESET_REGIONS: dict[str, dict[str, tuple[str, int, bool]]] = {
+    "table_workspace": {"main": ("table", 1, True)},
+    "list_detail": _LIST_DETAIL,
+    "board": {"main": ("board", 1, True)},
+    "dashboard": {
+        "kpis": ("stat", 6, True),
+        "charts": ("chart", 4, False),
+        "worklist": ("table", 1, False),
+    },
+    "work_queue": _LIST_DETAIL,
+    "approval_queue": _LIST_DETAIL,
+}
+REGION_NAMES: tuple[str, ...] = ("list", "main", "detail", "kpis", "charts", "worklist")
+MAX_REGION_VIEWS = 6
+
+
 class PageDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     title: str | None = None
@@ -365,6 +428,12 @@ class PageDef(_Strict):
     tabs: list[TabDef] = Field(default_factory=list, max_length=MAX_TABS_PER_PAGE)
     cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
     side: SideDef | None = None
+    #: A preset replaces the grid (owner, 2026-11-14). A page with a `layout` has `regions`
+    #: and no tabs, cells or side. `_check_pages` holds the rest.
+    layout: Literal[
+        "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue"
+    ] | None = None
+    regions: dict[str, list[str]] = Field(default_factory=dict, max_length=len(REGION_NAMES))
 
 #: The caps of the rail (STU-AF2a, D219). `lib/studio/manifest.ts` holds the same numbers, and
 #: `navCaps.test.ts` checks them against the `maxItems` of the schema file.
@@ -505,7 +574,9 @@ class Manifest(_Strict):
     team: str | None = None
     #: STU-I1a. The registry connections that the app needs. `_check_connections`
     #: holds the grammar, and an unmet name makes the install `needs_setup`.
-    connections: list[str] = Field(default_factory=list)
+    #: STU-I9a: an item is a name, or ``{name, as, scopes}``. A plain name is
+    #: as before, and :func:`connection_as` gives its default account.
+    connections: list[str | ConnectionNeed] = Field(default_factory=list)
     #: C8a. The roles of the app. An install maps each one to members (C8b).
     #: `studio_access.parse_roles` is the one check.
     roles: list[str] = Field(default_factory=list)
@@ -688,10 +759,28 @@ def _scan(
             )
 
 
+def _connection_union_error(loc: list[Any], typ: str, out: list[ManifestError]) -> bool:
+    """STU-I9a. True when the error is the noise of the ``connections`` union:
+    the text branch (dropped), or a whole item of the wrong type (one sentence)."""
+    if loc[:1] != ["connections"]:
+        return False
+    if len(loc) == 3 and loc[2] == "str":
+        return True
+    if len(loc) == 2 and typ == "model_type":
+        out.append(_err(_path(loc), "A connection is a name, or an object with `name`, "
+                                    "`as` and `scopes`."))
+        return True
+    return False
+
+
 def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestError]:
     out: list[ManifestError] = []
     for e in exc.errors():
-        loc = list(e["loc"])
+        # STU-I9a: an item of `connections` is a union. The tag of a branch is
+        # not part of the path, and the text branch adds no second error.
+        loc = [x for x in e["loc"] if x != "ConnectionNeed"]
+        if _connection_union_error(loc, e["type"], out):
+            continue
         path = _path(loc)
         last = loc[-1] if loc else ""
         typ = e["type"]
@@ -769,7 +858,8 @@ def _check_uses(
         return _err(
             path,
             "Not an action id. Use object:<name>.<op>, <app>.<op>, "
-            f"integration:<action>, workflow:<uuid> or logic:<name>.{_got(a.uses)}",
+            "integration:<action>, workflow:<uuid>, logic:<name> "
+            f"or mcp:<server>.<tool>.{_got(a.uses)}",
         )
     if m.group("obj"):
         if m.group("obj") not in objects:
@@ -887,8 +977,12 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
             if c.span is not None and c.span > cols:
                 out.append(_err(f"{base}[{ci}].span", f"A cell spans at most {cols} columns."))
 
+    blocks = {v.id: v.block for v in m.views}
     for pi, pg in enumerate(m.pages):
         p = f"$.pages[{pi}]"
+        if pg.layout or pg.regions:
+            _check_layout_page(pg, p, view_ids, blocks, out)
+            continue
         if pg.tabs and pg.cells:
             out.append(_err(p, "A page has tabs or cells, not both. Remove one."))
         elif not pg.tabs and not pg.cells:
@@ -899,6 +993,34 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
         cell_errors(pg.cells, f"{p}.cells", pg.cols)
         if pg.side and pg.side.view not in view_ids:
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
+
+
+def _check_layout_page(
+    pg: PageDef, p: str, view_ids: set[str], blocks: dict[str, str], out: list[ManifestError]
+) -> None:
+    """A page with a preset: regions of declared views, and no grid (STU-LY-0)."""
+    if not pg.layout:
+        out.append(_err(f"{p}.regions", "`regions` needs a `layout`. Add one, or remove `regions`."))
+        return
+    if pg.tabs or pg.cells or pg.side:
+        out.append(_err(p, "A page with a `layout` has no tabs, cells or side. Remove them."))
+    table = PRESET_REGIONS[pg.layout]
+    for name, ids in pg.regions.items():
+        rp = f"{p}.regions.{name}"
+        if name not in table:
+            out.append(_err(rp, f"Layout `{pg.layout}` has no region `{name}`. Use {', '.join(table)}."))
+            continue
+        block, cap, _ = table[name]
+        if len(ids) > cap:
+            out.append(_err(rp, f"Region `{name}` holds at most {cap} view{'s' if cap > 1 else ''}."))
+        for i, vid in enumerate(ids):
+            if vid not in view_ids:
+                _undeclared(f"{rp}[{i}]", "View", vid, "`views`", out)
+            elif blocks.get(vid) != block:
+                out.append(_err(f"{rp}[{i}]", f"Region `{name}` takes a {block} view."))
+    for name, (_block, _cap, required) in table.items():
+        if required and not pg.regions.get(name):
+            out.append(_err(f"{p}.regions.{name}", f"Layout `{pg.layout}` needs region `{name}`."))
 
 
 #: The views that read the rows of an object. Only these can give a count.
@@ -917,6 +1039,7 @@ def _check_nav(m: Manifest, out: list[ManifestError]) -> None:
         pg = pages[page_id]
         cells = [*pg.cells, *(c for t in pg.tabs for c in t.cells)]
         ids = [c.view for c in cells] + ([pg.side.view] if pg.side else [])
+        ids += [v for region in pg.regions.values() for v in region]
         return any(blocks.get(i) in _COUNT_BLOCKS for i in ids)
 
     counted = 0
@@ -1165,19 +1288,64 @@ def _check_links(
                 _undeclared(f"$.shell.search[{i}]", "Object", name, "this manifest", out)
 
 
+def connection_as(name: str, declared: Any = None) -> str:
+    """STU-I9a. The account that a connection need uses: ``org`` or ``member``.
+
+    A declared ``org`` or ``member`` wins. Else a known connector gives the
+    ``scope`` of its row in the connector list (IN-11, the one seam), and an
+    unknown name is ``org``. Pure."""
+    if declared in CONNECTION_AS:
+        return str(declared)
+    row = _connector(name) if isinstance(name, str) else None
+    return "member" if row is not None and row.get("scope") == "member" else "org"
+
+
+def connection_item(raw: Any) -> tuple[str, str] | None:
+    """STU-I9a. ``(name, as)`` of one item of ``connections``, as written in a
+    stored manifest (a text, or an object), or None when it has no name or its `as` is invalid. Pure."""
+    if isinstance(raw, str):
+        return raw, connection_as(raw)
+    if isinstance(raw, Mapping) and isinstance(raw.get("name"), str):
+        declared = raw.get("as")
+        if declared is not None and declared not in CONNECTION_AS:
+            return None  # a stored `as` that the schema refuses fails closed
+        return raw["name"], connection_as(raw["name"], declared)
+    return None
+
+
+def _check_connection_scopes(path: str, scopes: list[str], out: list[ManifestError]) -> None:
+    if len(scopes) > MAX_CONNECTION_SCOPES:
+        out.append(_err(path, f"A connection names at most {MAX_CONNECTION_SCOPES} scopes. "
+                              "Remove the extra ones."))
+        return
+    for j, scope in enumerate(scopes):
+        if not scope or len(scope) > MAX_CONNECTION_SCOPE_CHARS or scope != "".join(scope.split()):
+            out.append(_err(f"{path}[{j}]", "A scope is text with no space, and at most "
+                                            f"{MAX_CONNECTION_SCOPE_CHARS} characters." + _got(scope)))
+    _dupes(scopes, path, "scope", out)
+
+
 def _check_connections(m: Manifest, out: list[ManifestError]) -> None:
     """STU-I1a. Each name of ``connections`` is ``mcp:<server>`` or a provider
     id (:data:`CONNECTION_NAME_RE`), once each, and at most
     :data:`MAX_CONNECTIONS` of them. The grammar only: IN-11 adds the check
-    that the connector list holds the provider."""
+    that the connector list holds the provider.
+
+    STU-I9a: an item can be ``{name, as, scopes}``. ``as`` is checked by the
+    schema. ``scopes`` are at most :data:`MAX_CONNECTION_SCOPES` words with no
+    space, once each."""
     if len(m.connections) > MAX_CONNECTIONS:
         out.append(_err("$.connections", f"A package names at most {MAX_CONNECTIONS} "
                                          "connections. Remove the extra ones."))
-    for i, name in enumerate(m.connections):
+    names = [c if isinstance(c, str) else c.name for c in m.connections]
+    for i, name in enumerate(names):
         if not CONNECTION_NAME_RE.fullmatch(name):
             out.append(_err(f"$.connections[{i}]", "A connection is mcp:<server> or a "
                                                     "provider id, such as zoho." + _got(name)))
-    _dupes(m.connections, "$.connections", "connection", out)
+        item = m.connections[i]
+        if not isinstance(item, str) and item.scopes is not None:
+            _check_connection_scopes(f"$.connections[{i}].scopes", item.scopes, out)
+    _dupes(names, "$.connections", "connection", out)
 
 
 def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[ManifestError]:

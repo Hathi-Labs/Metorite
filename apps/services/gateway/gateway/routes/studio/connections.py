@@ -57,6 +57,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_common.connector_list import connector
 from acb_common.studio_flags import connection_gate_on
+from acb_common.studio_manifest import connection_as, connection_item
 from fastapi import Depends, HTTPException
 from gateway.connections import mcp as mcp_registry
 from gateway.connections import store as connections_store
@@ -113,17 +114,40 @@ def checkable(name: str) -> bool:
             and name not in connections_store.OUTSIDE_REGISTRY)
 
 
-def connection_rows(names: tuple[str, ...], met: frozenset[str],
+def connection_needs(manifest: Any) -> tuple[tuple[str, str], ...]:
+    """``(name, as)`` of each item of ``connections``, in order (WS-STU I9a).
+
+    ``as`` is ``org`` or ``member``, from :func:`connection_item`, the one
+    reading that the door and the sidebar use. A manifest with no valid
+    ``connections`` gives an empty tuple. Pure."""
+    if not host_resolve.connection_names(manifest):
+        return ()
+    items = [connection_item(raw) for raw in manifest.get("connections", [])]
+    return tuple(i for i in items if i is not None) if None not in items else ()
+
+
+def connection_rows(needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
                     user: UserContext) -> list[dict[str, Any]]:
-    """One row for each name, in order. Pure: it reads no database."""
+    """One row for each ``(name, as)``, in order. Pure: it reads no database.
+
+    A row is ``met`` by the SAME set that the door reads for that need
+    (:func:`~gateway.package_host.resolve.first_unmet_connection`): a
+    ``member`` need by a row of the caller, an ``org`` need by an org row. The
+    approval of an org need is the rule of the door and not of this line, so a
+    draft with an ``org`` need reads connected here and the door still refuses
+    it until I9b (the known limit of ``ai_studio.md`` I9)."""
     return [{
         "name": name,
         "label": _label(name),
-        "met": name in met,
+        "met": name in (met.member if whose == "member" else met.org),
         "checkable": checkable(name),
         "setup_href": console.setup_href_for(name),
-        "can_connect": checkable(name) and console.may_connect(user, name),
-    } for name in names]
+        # A Connect writes a row of the SCOPE of the connector (member or org). When the
+        # declared `as` differs from that scope, no writer can make a row that meets the
+        # need, so a Connect would be a dead end (I9a review P2).
+        "can_connect": (checkable(name) and connection_as(name) == whose
+                        and console.may_connect(user, name)),
+    } for name, whose in needs]
 
 
 @router.get("/packages/{package_id}/connections")
@@ -142,6 +166,6 @@ async def package_connections(
         package = await store.get_package(db, user.email, pid)
         if package is None:
             raise _not_found()
-        names = host_resolve.connection_names(package.manifest) or ()
-        met = await host_resolve.met_connections(db, viewer=user.email) if names else frozenset()
-    return {"connections": connection_rows(names, met, user)}
+        needs = connection_needs(package.manifest)
+        met = await host_resolve.met_connections(db, viewer=user.email) if needs else None
+    return {"connections": connection_rows(needs, met or host_resolve.Met(), user)}

@@ -1552,6 +1552,13 @@ CREATE POLICY studio_saved_views_tenant_isolation ON studio_saved_views
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE studio_object_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_object_counters FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_object_counters_tenant_isolation ON studio_object_counters;
+CREATE POLICY studio_object_counters_tenant_isolation ON studio_object_counters
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE studio_record_files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE studio_record_files FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS studio_record_files_tenant_isolation ON studio_record_files;

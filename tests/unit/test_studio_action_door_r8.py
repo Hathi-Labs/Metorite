@@ -2808,8 +2808,7 @@ def _needs_tally(world: Any, pid: str) -> None:
     with world.p.admin_engine.begin() as c:
         c.execute(text(
             "UPDATE apps SET manifest = manifest || CAST(:m AS jsonb) "
-            "WHERE id = CAST(:p AS uuid)"), {"m": json.dumps({"connections": [TALLY]}),
-                                            "p": pid})
+            "WHERE id = CAST(:p AS uuid)"), {"m": json.dumps({"connections": [{"name": TALLY, "as": "member"}]}), "p": pid})
 
 
 def _connect(world: Any, org: str, *, member: str | None = None,
@@ -2834,7 +2833,7 @@ def tally(world, monkeypatch):
                   {"p": TALLY})
 
 
-def test_r8_a_missing_connection_refuses_each_action_until_an_org_row_connects(tally) -> None:
+def test_r8_a_missing_connection_refuses_each_action_until_a_member_row_connects(tally) -> None:
     world = tally
     before = _record_row(world, world.rec)
     count = _record_count(world, world.obj)
@@ -2845,7 +2844,8 @@ def test_r8_a_missing_connection_refuses_each_action_until_an_org_row_connects(t
 
     for (status, detail), action in zip(_run(world, every), _EVERY_ACTION, strict=True):
         assert (status, detail) == (409, {"code": invoke.NEEDS_CONNECTION,
-                                          "message": invoke.CONNECTION_TEXT}), action
+                                          "message": invoke.CONNECTION_TEXT,
+                                          "provider": TALLY, "as": "member"}), action
     assert (_record_row(world, world.rec), _record_count(world, world.obj)) == (before, count)
     rows = _audits(world, world.pkg)
     assert [r[3]["reason"] for r in rows] == [invoke.NEEDS_CONNECTION] * len(_EVERY_ACTION)
@@ -2857,7 +2857,11 @@ def test_r8_a_missing_connection_refuses_each_action_until_an_org_row_connects(t
         {"id": world.rec}, query={"preview": "1"})))
     assert status == 200 and got["record"]["id"] == world.rec, got
 
-    _connect(world, world.a)
+    _connect(world, world.a)                     # an org row never meets a member need
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek",
+                                               {"id": world.rec}))
+    assert (status, detail["code"]) == (409, invoke.NEEDS_CONNECTION)
+    _connect(world, world.a, member=ANA)
     status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", {"id": world.rec}))
     assert status == 200 and got["record"]["data"] == _DATA, got
     status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))
@@ -2904,3 +2908,113 @@ def test_r8_the_gate_off_changes_nothing_off(tally, monkeypatch) -> None:
         assert (none_s, none["code"]) == (403, "not_declared"), listed
     reasons = [r[3].get("reason") for r in _audits(world, world.pkg)]
     assert invoke.NEEDS_CONNECTION not in reasons
+
+
+# ── c2d. The aggregate of a viewer of an install (STU-C2d-a, J2a) ───────────
+#
+# A viewer of an install aggregates through the door. The door runs the one
+# grammar on the installed fields first, and the store reads what the list
+# reads for the viewer (C8a). Ana views the package of Ben.
+#
+# * The viewer counts and groups the records of the installed object.
+# * A field of a newer version is 422 ``query_field_unknown``.
+# * An object with a grant that names no role of the viewer gives a total of 0.
+#   The owner still reads all.
+# * A member with no install, and org B with the same email, get 404.
+#
+# **The mutations of C2d-a (R7).** Each was run on 2026-11-14.
+#
+# * G6. ``_run_object_aggregate``: leave out the ``parse_aggregate`` of the
+#   installed fields. ``test_r8_c2d_a_field_of_a_newer_version_is_422_for_a_viewer`` goes red.
+# * G7. ``_run_object_aggregate``: put the refusal ``SOURCE_NOT_OPEN`` back.
+#   ``test_r8_c2d_a_viewer_of_an_install_counts_and_groups_the_installed_object`` goes red.
+
+_CAROL = f"carol.{TAG}@stub2a.test"
+
+
+def _installed_by_ben(world: Any, monkeypatch, fields: list[dict[str, Any]] | None = None) -> None:
+    """Ana is a viewer of the install of the package of Ben. The installed
+    version declares *fields* of ``visit``, and no ``hours`` by default."""
+    kept = fields if fields is not None else [f for f in _FIELDS if f["key"] != "hours"]
+    manifest = _manifest(f"door-{TAG}-viewer", world.wf_a, world.wf_b)
+    manifest["objects"] = [{"name": "visit", "fields": kept}]
+
+    async def _installed(db: Any, *, viewer: str, app_id: str) -> Any:
+        from gateway.package_host import viewer as host_viewer
+        if viewer != ANA or app_id != world.pkg_ben:
+            return None
+        # The install shows only to a session that RLS lets read the package.
+        seen = await db.execute(text("SELECT 1 FROM apps WHERE id = CAST(:i AS uuid)"),
+                                {"i": app_id})
+        if seen.first() is None:
+            return None
+        return host_viewer.InstalledApp(id=app_id, version=1, manifest=manifest)
+
+    monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
+    monkeypatch.setattr(invoke._viewer, "installed_app", _installed)
+
+
+def test_r8_c2d_a_viewer_of_an_install_counts_and_groups_the_installed_object(
+        world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        await _add_tallied(world.a, world.obj_ben, world.pkg_ben, [
+            ("done", 100, "INR", 4), ("done", 7, "INR", 3), ("planned", 5, "INR", 1)])
+        body = {"group_by": {"field": "status"},
+                "measures": [{"op": "count"}, {"op": "sum", "field": "fee"}]}
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", body),
+                await _call(world.a, BEN, world.pkg_ben, "tally", body)]
+
+    (vs, viewer_got), (os_, owner_got) = _run(world, go)
+    assert (vs, os_) == (200, 200), (viewer_got, owner_got)
+    assert viewer_got["total"]["count"] == 4 and viewer_got["total"] == owner_got["total"]
+    assert [(g["key"], g["count"]) for g in viewer_got["groups"]] == [("planned", 2), ("done", 2)]
+
+
+def test_r8_c2d_a_field_of_a_newer_version_is_422_for_a_viewer(world, monkeypatch) -> None:
+    """``hours`` is a field of the object, and the installed version lacks it.
+    The owner sums it, and the viewer gets ``query_field_unknown``."""
+    _installed_by_ben(world, monkeypatch)
+    sums = {"measures": [{"op": "sum", "field": "hours"}]}
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", sums),
+                await _call(world.a, ANA, world.pkg_ben, "tally",
+                            {"group_by": {"field": "status"}, "filter": [
+                                {"field": "hours", "op": "gt", "value": 1}]}),
+                await _call(world.a, BEN, world.pkg_ben, "tally", sums)]
+
+    (s1, d1), (s2, d2), (s3, _) = _run(world, go)
+    assert (s1, d1["code"]) == (422, "query_field_unknown")
+    assert (s2, d2["code"]) == (422, "query_field_unknown")
+    assert s3 == 200
+
+
+def test_r8_c2d_a_grant_that_names_no_role_of_the_viewer_gives_a_total_of_0(
+        world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        async with tenant_session(world.a) as db:
+            done = await objects_store.set_access(
+                db, world.obj_ben, [{"role": "boss", "read": "all"}], package_id=world.pkg_ben)
+            assert done is not None
+        body = {"group_by": {"field": "status"}, "measures": [{"op": "count"}]}
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", body),
+                await _call(world.a, BEN, world.pkg_ben, "tally", body)]
+
+    (vs, viewer_got), (os_, owner_got) = _run(world, go)
+    assert (vs, os_) == (200, 200)
+    assert viewer_got["total"]["count"] == 0 and viewer_got["groups"] == []
+    assert owner_got["total"]["count"] == 1
+
+
+def test_r8_c2d_a_member_with_no_install_and_org_b_get_404(world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, _CAROL, world.pkg_ben, "tally", {}),
+                await _call(world.b, ANA, world.pkg_ben, "tally", {})]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 2

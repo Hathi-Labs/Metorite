@@ -1,6 +1,6 @@
 """``GET /studio/actions`` — the action catalog (STU-B1, ``ai_studio.md`` §3.2).
 
-A read. No action runs here. Four sources feed it:
+A read. No action runs here. These sources feed it:
 
 1. ``manifest``: each door op of each app in ``app_manifests.every_app()``.
    A row with no ``op`` never appears, so class X rows stay off.
@@ -19,6 +19,11 @@ A read. No action runs here. Four sources feed it:
    ``gateway.studio.logic.MODULES``, as ``logic:<name>``, class B. A row shows
    only for an org on ``STUDIO_LOGIC_ORGS``. The registry ships empty, so the
    source gives no row until a module registers.
+
+6. ``mcp`` (STU-B1b-1): each tool of an MCP server of the org, as
+   ``mcp:<server>.<tool>``, class A or B (``gateway.studio.mcp_actions``).
+   B1b-1 has no ``tools/list`` read, so the catalog passes an empty tools
+   map and the source gives no row. The catalog never calls a server.
 
 Source 2 is empty until a tool registers with an integration. Today the
 registry holds only tools with ``integration=None``.
@@ -74,7 +79,7 @@ from gateway.routes.studio import flags
 from gateway.routes.workflows.engine.tool_args import parse_args_schema
 from gateway.routes.workflows.tools import list_tools
 from gateway.studio import logic as _logic
-from gateway.studio import packages_store
+from gateway.studio import mcp_actions, packages_store
 from sqlalchemy import text
 
 router = APIRouter(
@@ -185,14 +190,23 @@ def _logic_rows() -> list[dict[str, Any]]:
     } for name, module in sorted(_logic.MODULES.items())]
 
 
+def _mcp_rows() -> list[dict[str, Any]]:
+    """The MCP tools of the bound org (B1b-1). No ``tools/list`` read exists
+    yet (B1b-2), so the server list and the tools map are empty, and the
+    source gives no row. It reads no server and opens no session."""
+    return mcp_actions.mcp_rows((), {})
+
+
 async def catalog_rows() -> list[dict[str, Any]]:
     """Every row of the catalog: the door ops, the integration tools, the
-    published workflows of the bound org, and the logic modules (B4a). The one source of the catalog.
+    published workflows of the bound org, the logic modules (B4a) and the MCP
+    tools (B1b-1). The one source of the catalog.
     ``routes/studio/skills.py`` checks a skill's actions against it.
 
     ⚠️ It opens its own ``_tenant_session()`` for the workflows. A caller runs
     it BEFORE it opens a session of its own, so no request holds two."""
-    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows(), *_logic_rows()]
+    return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows(), *_logic_rows(),
+            *_mcp_rows()]
 
 
 #: A stored object name that A2 would refuse gives no row. Only a write past the

@@ -12,7 +12,7 @@ R8 half is ``test_studio_row_rules_r8.py``.
 * Each call of the six store functions in ``apps/`` and ``packages/`` passes
   ``viewer`` (``test_each_call_of_the_six_passes_a_viewer``), and the six take
   it as a required keyword. The test lists each reader path.
-* ``aggregate_records`` takes no viewer, so only the owner's door calls it.
+* ``aggregate_records`` takes a REQUIRED ``viewer`` since C2d-a, so it is one of the eight.
 * ``read_tree`` takes a REQUIRED ``viewer`` since D18-2a, so it is one of the
   readers of the first fence, and a call with no viewer fails it.
 * The door builds the viewer from the session's member only.
@@ -59,10 +59,10 @@ from gateway.studio import objects_store as store
 _ROOT = Path(__file__).resolve().parents[2]
 _STORE = _ROOT / "apps/services/gateway/gateway/studio/objects_store.py"
 _DRAFT_EDIT = _ROOT / "workbench/control_plane/src/lib/studio/draftEdit.ts"
-#: The store calls that take a REQUIRED ``viewer``: the six of C8a, and
-#: ``read_tree`` since its door (D18-2a). The name stays ``_SIX`` for the fences.
+#: The store calls that take a REQUIRED ``viewer``: the six of C8a, ``read_tree`` since
+#: its door (D18-2a), and ``aggregate_records`` since C2d-a. The name stays ``_SIX``.
 _SIX = ("get_record", "query_records", "apply_writes", "create_record", "update_record",
-        "delete_record", "read_tree")
+        "delete_record", "read_tree", "aggregate_records")
 
 ME = "ana@x.test"
 SLIP_FIELDS = [
@@ -632,29 +632,6 @@ def test_the_six_take_viewer_as_a_required_keyword() -> None:
         assert param.default is inspect.Parameter.empty, name
 
 
-@pytest.mark.parametrize("name", ["aggregate_records"])
-def test_no_code_calls_a_reader_that_takes_no_viewer(name: str) -> None:
-    """``aggregate_records`` (C2b) reads every record of the object. Its first
-    viewer door adds a viewer first, and then joins the six. ``read_tree`` (C18)
-    joined them with its door (D18-2a)."""
-    assert "viewer" not in inspect.signature(getattr(store, name)).parameters
-    found = []
-    for path in _source_files():
-        if path == _STORE:
-            continue
-        text = path.read_text(encoding="utf-8")
-        if re.search(rf"\b{name}\s*\(", text):
-            found.append(path.relative_to(_ROOT).as_posix())
-    if name == "aggregate_records":
-        # D4b: the one caller is the door, and only for the owner. A viewer of an
-        # install is refused before the store (a sum would ignore the installed
-        # fields and the row rules). The first viewer aggregate adds a viewer here.
-        assert found == ["apps/services/gateway/gateway/routes/studio/invoke.py"]
-        guard = inspect.getsource(invoke._run_object_aggregate)
-        assert "InstalledApp" in guard and "SOURCE_NOT_OPEN" in guard
-        assert guard.index("SOURCE_NOT_OPEN") < guard.index("aggregate_records")
-    else:
-        assert found == []
 
 
 def test_the_door_builds_the_viewer_from_the_session_member_only() -> None:
@@ -712,6 +689,34 @@ def test_a_page_with_a_row_rule_holds_it_in_each_part() -> None:
         plain, plain_params = store.build_query(query, object_id=oid, package_id=pid, limit=10,
                                                 offset=0)
         assert "ac.v_text" not in plain and "me" not in plain_params
+
+
+def test_an_aggregate_with_a_row_rule_holds_it_in_each_part() -> None:
+    """C2d-a. The guard ``g``, the candidates ``m`` and the ids of an aggregate
+    read the same records, so each part that names the package names the row
+    rule too. With no rule, the statement holds no trace of it."""
+    fields = [sf.parse_field_spec({"key": "employee", "type": "person", "hot": True}),
+              sf.parse_field_spec({"key": "note", "type": "text"}),
+              sf.parse_field_spec({"key": "day", "type": "date", "hot": True}),
+              sf.parse_field_spec({"key": "amount", "type": "number", "hot": True})]
+    oid, pid = "00000000-0000-0000-0000-00000000000a", "00000000-0000-0000-0000-00000000000b"
+    sums = [{"op": "sum", "field": "amount"}]
+    shapes = [
+        sq.parse_aggregate(fields, None, None, None),
+        sq.parse_aggregate(fields, None, {"field": "day"}, sums),
+        sq.parse_aggregate(fields, [{"field": "employee", "op": "eq", "value": ME}], None, sums),
+        sq.parse_aggregate(fields, [{"field": "note", "op": "contains", "value": "x"}],
+                           {"field": "day"}, sums),
+    ]
+    for agg in shapes:
+        sql, params = store.build_aggregate(agg, object_id=oid, package_id=pid,
+                                            access=(("employee",), ME))
+        assert params["akeys"] == ["employee"] and params["me"] == ME
+        assert sql.count(store._IN_PACKAGE) == sql.count("ac.v_text = CAST(:me AS text)") > 0
+        plain, plain_params = store.build_aggregate(agg, object_id=oid, package_id=pid)
+        assert "ac.v_text" not in plain and "me" not in plain_params and "akeys" not in plain_params
+        same, _ = store.build_aggregate(agg, object_id=oid, package_id=pid, access=None)
+        assert same == plain
 
 
 def test_a_check_of_a_rule_reads_every_record() -> None:
