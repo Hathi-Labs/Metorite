@@ -86,9 +86,11 @@ export default function WorkflowEdge({
                   ? "Pick a block in the palette to insert here"
                   : "Insert a block here"
               }
-              // E7e: under a finger an invisible ring makes the hit area 32 px.
-              // The dot stays 16 px. With a mouse no new rule applies.
-              className={`grid place-items-center w-4 h-4 rounded-full border bg-background tech-transition pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:-inset-2 ${
+              // E7e: under a finger an invisible ring makes the hit area 34 px
+              // wide (14 px inside the border and 10 px on each side). The dot
+              // stays 16 px. With a mouse no new rule applies. The handles of
+              // the two steps stay on top, so they keep their own taps.
+              className={`grid place-items-center w-4 h-4 rounded-full border bg-background tech-transition pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:-inset-2.5 ${
                 d.insertArmed
                   ? "border-primary text-primary ring-2 ring-primary/30"
                   : "border-border text-muted-foreground opacity-50 hover:opacity-100 hover:border-primary hover:text-primary"

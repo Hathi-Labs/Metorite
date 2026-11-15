@@ -226,8 +226,8 @@ describe("the + on a wire (E7e)", () => {
     expect(cls.split(/\s+/)).toEqual(expect.arrayContaining(["w-4", "h-4", "rounded-full"]));
   });
 
-  it("gets a 32 px ring under a finger: 16 px and 8 px on each side", () => {
-    expect(cls).toContain("pointer-coarse:before:-inset-2");
+  it("gets a ring of 32 px or more under a finger: 14 px inside the border and 10 px on each side", () => {
+    expect(cls).toContain("pointer-coarse:before:-inset-2.5");
     expect(cls).toContain("pointer-coarse:before:absolute");
     expect(cls).toContain("pointer-coarse:relative");
   });
