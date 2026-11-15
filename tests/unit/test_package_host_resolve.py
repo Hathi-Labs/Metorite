@@ -845,20 +845,47 @@ def test_i9b1_member_scope_subset_rule(need: Any, row: Any, reason: Any) -> None
 @pytest.mark.parametrize("approved", [True, False])
 def test_i9b1_org_scope_rule_and_approval(need: Any, row: Any, reason: Any, approved: bool) -> None:
     got = resolve.first_unmet_need(_need("org", need), _rows("org", row), approved)
-    want = reason or (None if approved else "org_approval")
+    # An unapproved org need always says org_approval, whatever the row holds.
+    want = reason if approved else "org_approval"
     assert (got[2] if got else None) == want
+
+
+_ROW_CASES = [
+    ((), ["a", "b"]),  # no row
+    ((frozenset({"a"}),), ["a", "b"]),  # fewer
+    ((frozenset({"a", "b"}),), ["a", "b"]),  # equal
+    ((frozenset({"a", "b", "c"}),), ["a", "b"]),  # more
+    ((frozenset(),), ["a"]),  # a row with no scope
+    ((frozenset({"a"}),), None),  # a wrong shape of scopes
+    ((), []),
+]
+
+
+@pytest.mark.parametrize(("rows", "need"), _ROW_CASES)
+def test_i9b1_unapproved_org_need_never_says_reconnect_or_missing(rows: Any, need: Any) -> None:
+    """The org account stays hidden from a non-admin: for an org need of an install
+    that no admin approved, the reason is org_approval for each state of the org rows."""
+    manifest = {"connections": [{"name": "zoho", "as": "org", "scopes": need}]}
+    got = resolve.first_unmet_need(manifest, _rows("org", *rows), False)
+    assert got == ("zoho", "org", "org_approval")
+    assert resolve.need_reason("zoho", "org", None if need is None else tuple(need),
+                               _rows("org", *rows), False) == "org_approval"
 
 
 def test_i9b1_missing_row_is_missing_for_each_account_and_approval() -> None:
     for whose in ("member", "org"):
         for approved in (True, False):
             got = resolve.first_unmet_need(_need(whose, ["a"]), _rows(whose), approved)
-            assert got == ("zoho", whose, "missing")
+            # An unapproved org need hides the org account: org_approval, not missing.
+            want = "org_approval" if whose == "org" and not approved else "missing"
+            assert got == ("zoho", whose, want)
     # An org row never meets a member need, and a member row never an org need.
     assert resolve.first_unmet_need(_need("member", None), _rows("org", frozenset())) == (
         "zoho", "member", "missing")
     assert resolve.first_unmet_need(_need("org", None), _rows("member", frozenset()), True) == (
         "zoho", "org", "missing")
+    assert resolve.first_unmet_need(_need("org", None), _rows("member", frozenset()), False) == (
+        "zoho", "org", "org_approval")
 
 
 def test_i9b1_no_union_of_two_rows() -> None:

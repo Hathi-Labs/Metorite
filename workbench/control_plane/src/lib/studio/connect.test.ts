@@ -215,6 +215,25 @@ describe("the words of the sheet", () => {
 });
 
 describe("the reasons of an unmet row (I9b-1)", () => {
+  it("a reconnect row of an org need says ask an admin and offers no Connect", () => {
+    const [ask] = connectLines([row({ reason: "reconnect", as: "org", canConnect: true })], PKG);
+    expect(ask).toMatchObject({
+      kind: "ask",
+      text: "Ask an admin to reconnect Zoho CRM with the scopes this app needs.",
+    });
+    expect(ask).not.toHaveProperty("href");
+    const [mem] = connectLines([row({ reason: "reconnect", as: "member" })], PKG);
+    expect(mem).toMatchObject({
+      kind: "connect",
+      text: "Reconnect Zoho CRM: your connection does not grant what this app needs.",
+    });
+  });
+
+  it("parseConnections reads the account of a row", () => {
+    const rows = parseConnections({ connections: [{ name: "a", as: "org" }, { name: "b" }] });
+    expect(rows.map((r) => r.as)).toEqual(["org", "member"]);
+  });
+
   it("a reconnect row says Reconnect, and an org_approval row says an admin must approve", () => {
     const [re] = connectLines([row({ reason: "reconnect" })], PKG);
     expect(re).toMatchObject({

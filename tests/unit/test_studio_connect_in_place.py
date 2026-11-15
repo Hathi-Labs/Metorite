@@ -300,7 +300,18 @@ def test_i9b1_the_step_says_the_reason_of_each_need(world: _World) -> None:
     assert [(x["name"], x["met"], x["reason"]) for x in rows] == [
         ("google_drive", True, "ok"), ("google_calendar", False, "reconnect"),
         ("github", False, "reconnect"), ("zoho", False, "org_approval"),
-        ("mcp:tally", False, "reconnect"), ("outlook_calendar", True, "ok")]
+        ("mcp:tally", False, "org_approval"), ("outlook_calendar", True, "ok")]
+    # Each row names its account, so the IDE can word the reconnect of an org need.
+    assert [x["as"] for x in rows] == ["member", "member", "member", "org", "org", "member"]
+
+
+def test_connection_rows_need_a_scopes_item_and_fail_closed() -> None:
+    """I9b-1 review. A need of two items has no default of "no scopes": it raises."""
+    with pytest.raises(IndexError):
+        connections.connection_rows([("zoho", "member")], Met(member=frozenset({"zoho"})), _user())
+    rows = connections.connection_rows([("zoho", "member", ())],
+                                       Met(member=frozenset({"zoho"})), _user())
+    assert rows[0]["met"] is True
 
 
 def test_a_plain_name_takes_its_as_from_the_connector_list(world: _World) -> None:

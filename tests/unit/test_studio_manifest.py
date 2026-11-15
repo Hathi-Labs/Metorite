@@ -1620,3 +1620,17 @@ def test_every_first_party_template_still_validates():
     assert files
     for f in files:
         assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
+
+
+def test_a_null_scopes_saves_but_reads_as_a_wrong_shape():
+    """I9b-1 review. The draft save accepts ``scopes: null`` (an optional field), so
+    the reader of a stored manifest must not read it as "no scope asked" (met by any
+    row): it reads None, the wrong shape, which is never met. An absent key is ``()``."""
+    from acb_common.studio_manifest import connection_scopes
+
+    item = {"name": "zoho", "as": "org", "scopes": None}
+    assert validate_manifest(_with_connections([item])) == []
+    assert connection_scopes(item) is None
+    assert connection_scopes({"name": "zoho", "as": "org"}) == ()
+    assert connection_scopes("zoho") == ()
+    assert connection_scopes({"name": "zoho", "scopes": []}) == ()

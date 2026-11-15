@@ -2874,9 +2874,17 @@ class TestTheConnections:
         cases = [
             (scoped, "approved", invoke._resolve.Met(), "missing", invoke.CONNECTION_TEXT),
             (scoped, "approved", invoke._resolve.Met(member={"mcp:tally": (frozenset({"Mail.Read"}),)}),
-             "reconnect", "Reconnect mcp:tally: your connection does not grant what this app needs."),
+             "reconnect", "Reconnect tally: your connection does not grant what this app needs."),
             (org_scoped, "pending", invoke._resolve.Met(org={"mcp:tally": (frozenset({"Mail.Read"}),)}),
              "org_approval", "An admin must approve this app before it can use the org account."),
+            # An unapproved org need hides the org rows: org_approval, even with a row that lacks scopes.
+            (org_scoped, "pending", invoke._resolve.Met(org={"mcp:tally": (frozenset({"x"}),)}),
+             "org_approval", "An admin must approve this app before it can use the org account."),
+            (org_scoped, "pending", invoke._resolve.Met(),
+             "org_approval", "An admin must approve this app before it can use the org account."),
+            # An approved install whose org row lacks scopes: the viewer asks an admin.
+            (org_scoped, "approved", invoke._resolve.Met(org={"mcp:tally": (frozenset({"x"}),)}),
+             "reconnect", "Ask an admin to reconnect tally with the scopes this app needs."),
         ]
         for manifest, review, met, reason, text in cases:
             state.update(manifest=manifest, review=review)
@@ -2891,6 +2899,16 @@ class TestTheConnections:
         state.update(manifest=scoped, review="approved")
         cw.met = invoke._resolve.Met(member={"mcp:tally": (frozenset({"Mail.Read", "Mail.Send", "x"}),)})
         assert _call(_client(cw), pid, "find", {}).status_code != 409
+
+    def test_the_reconnect_text_of_each_account_uses_the_label(self):
+        """I9b-1 review. A member reconnects its own row. An org row is an admin's."""
+        assert invoke.connection_text("reconnect", "google_drive", "member") == (
+            "Reconnect Google Drive: your connection does not grant what this app needs.")
+        assert invoke.connection_text("reconnect", "google_drive", "org") == (
+            "Ask an admin to reconnect Google Drive with the scopes this app needs.")
+        assert "your connection" not in invoke.connection_text("reconnect", "zoho", "org")
+        assert invoke.connection_text("reconnect", "unknown_id", "member").startswith(
+            "Reconnect unknown_id:")
 
     def test_the_gate_off_answers_the_same_with_or_without_connections(self, monkeypatch, cw):
         """I9a: with the org off the list, `connections` (any form, any `as`)
