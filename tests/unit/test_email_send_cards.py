@@ -257,9 +257,10 @@ async def test_an_unknown_target_kind_sends_nothing(gw: Gateway) -> None:
 
 
 @pytest.mark.parametrize(("answer", "channel", "lead"), [
-    (False, True, "Cancelled"),
-    # EM-G11c1: no card channel answers the one Chat-app text.
-    (False, False, "Nothing changed. This needs your approval on a card"),
+    # HRD-7: the leads of the one table of card outcomes.
+    (False, True, "Declined: "),
+    # EM-G11c1: no card channel answers the one text of no card.
+    (False, False, "Not shown: "),
 ])
 async def test_a_refusal_or_a_headless_call_unsubscribes_nothing(
     gw: Gateway, answer: bool, channel: bool, lead: str,
@@ -394,9 +395,10 @@ async def test_the_card_shows_no_hidden_text_in_an_address(gw: Gateway) -> None:
 
 
 @pytest.mark.parametrize(("answer", "channel", "lead"), [
-    (False, True, "Send cancelled"),
-    # EM-G11c1: no card channel answers the one Chat-app text.
-    (False, False, "Nothing changed. This needs your approval on a card"),
+    # HRD-7: the leads of the one table of card outcomes.
+    (False, True, "Declined: "),
+    # EM-G11c1: no card channel answers the one text of no card.
+    (False, False, "Not shown: "),
 ])
 async def test_a_refused_or_headless_draft_card_sends_nothing(
     gw: Gateway, answer: bool, channel: bool, lead: str,
@@ -1096,7 +1098,8 @@ async def test_one_bad_target_of_several_asks_nothing(two: Gateway) -> None:
 async def test_a_no_on_the_card_of_several_senders_sends_nothing(two: Gateway) -> None:
     two.answer = False
     out = await agents.unsubscribe_sender(BOX, emails=[SENDER, SENDER_2])
-    assert out.startswith("Cancelled") and two.posts == []
+    assert out.startswith("Declined:") and two.posts == []
+    assert "still subscribed to all 2 senders" in out
 
 
 async def test_email_and_emails_together_are_refused(two: Gateway) -> None:

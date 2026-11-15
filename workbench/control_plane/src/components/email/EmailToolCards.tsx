@@ -64,6 +64,7 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
 import { DRAFT_TOOLS, DraftPinContext } from "@/lib/pinnedDraft";
+import { cardOutcomeOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -2302,8 +2303,16 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
   // button whose body is the refusal.
   if (/^Refused:/.test(t)) return "refused";
   if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  // HRD-7: a card outcome from the one table (`lib/cardOutcomes.ts`). Each
+  // keeps the chip that its text of before drew (D200).
+  const outcome = cardOutcomeOf(t);
   // §18.11: a chat message closed the card, and the model writes the new
   // draft. Nothing was sent, so the card never says "Email sent".
+  if (outcome === "closed by your message") return "revised";
+  // No card could show. Its text of before started "Nothing changed.".
+  if (outcome === "no card") return "unchanged";
+  if (outcome !== null && NOT_DONE_AT_CARD.has(outcome)) return "cancelled";
+  // The texts of before HRD-7, which a stored chat still holds.
   if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";
   if (/^Not sent\./.test(t)) return "not-sent";
   if (/^Nothing changed\./.test(t)) return "unchanged";

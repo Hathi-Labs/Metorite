@@ -7,6 +7,10 @@ HRD-18a (names as people say them), 2026-11-14. HRD-22 (a late approve acts
 once, task 3231) is BUILT dark, 2026-11-14. Its flag is
 `CHAT_LATE_APPROVE_ORGS`.**
 
+**HRD-7 (one vocabulary of card outcomes, task 2986) is BUILT, 2026-11-15,
+with no flag. Projects, CRM and email take each card outcome text from
+`ask_tools.CARD_OUTCOMES`.**
+
 Owner ask of 2026-11-12, in chat. Epic task 2978 (project AI Chat Interface).
 It is part of WS-CHAT.
 
@@ -102,7 +106,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 
 | Id | The class | State today | The rule | Slice |
 |---|---|---|---|---|
-| C1 | The model misreports a card's outcome | Projects gives one text for a reject, a timeout and a cancel. Email has its own texts. Task 3130: when a chat message closes a write card, the server ends the answer with a "Not done" line (`chat_run_continuity.md` §4.9) | One outcome vocabulary: approved, declined, closed by your message, timed out, parked, changed since. HRD-7 starts from `ask_tools.CLOSED_BY_YOUR_MESSAGE` | HRD-7 |
+| C1 | The model misreports a card's outcome | Projects gives one text for a reject, a timeout and a cancel. Email has its own texts. Task 3130: when a chat message closes a write card, the server ends the answer with a "Not done" line (`chat_run_continuity.md` §4.9) | One outcome vocabulary: approved, declined, timed out, closed by your message, no card, another member answered, parked, changed since. "No card" and "another member answered" were on `main` already (a WhatsApp, batch or no-person run, and PZ-32). HRD-7 starts from `ask_tools.CLOSED_BY_YOUR_MESSAGE` | HRD-7 |
 | C2 | A redraft changes the act or the recipients | Email §18.11 links a redraft by To overlap only | A card carries its act. A changed act or changed recipients show on the new card | HRD-8 |
 | C3 | The object changed after the card was drawn | Only the email reply card and the epic contract check it | A card holds its object's version, and the write checks it | HRD-10 |
 | C4 | Two cards wait, and the member types | One card waits at a time (PAC §29.6). A steer closes the open card | No change. §29.6 stays the rule. HRD-16 covers cards parked after a restart | HRD-16 |
@@ -170,7 +174,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |
 | **HRD-5** | 2984 | A per-turn budget for each tool | `tests/unit/test_tool_turn_budget.py` | STANDARD |
 | **HRD-6** | 2985 | A slow read tells the member to wait (owner, 2026-11-13). Part 1, BUILT dark behind `CHAT_PROGRESS_NOTICE_ORGS`: one line for each tool call past 6 s, on the web chat and as WhatsApp's early message (`chat_run_continuity.md` §4.11). Part 2: the long mode of the CRM total | `tests/unit/test_progress_notice.py` (part 1), `tests/unit/test_crm_aggregate_timeout.py` (part 2) | STANDARD |
-| **HRD-7** | 2986 | One vocabulary of card outcomes | `tests/unit/test_card_outcome_vocabulary.py` | STANDARD |
+| **HRD-7** | 2986 | One vocabulary of card outcomes. **BUILT 2026-11-15**, with no flag. `ask_tools.CARD_OUTCOMES` holds eight outcomes. Each has one lead, what happened and a next step. `request_confirmation` keeps its answer, and `last_card_outcome` tells why a card did nothing. Projects (`writes._not_confirmed`), CRM (`_not_written`) and email (`_not_done`, `_closed_card_line`, the heads of the redraft texts) take their words from the table. The chat cards draw by the lead (`src/lib/cardOutcomes.ts`), and each keeps its chip of before. Not built here: a caller of "parked" (RESUME-4) and of "changed since" (HRD-10). The steps of the email redraft texts stay with HRD-8a. Lane cal-tasks owns six persona and pack lines that still call each card that did nothing a decline or a cancel: `agent-crm/instructions.md` lines 94 to 95, `agent-email-assistant/instructions.md` line 291, and `tool_packs.py` lines 224, 322, 419 and 3214 | `tests/unit/test_card_outcome_vocabulary.py`, `src/lib/cardOutcomes.test.ts` | STANDARD |
 | **HRD-8** | 2987 | A redraft keeps the act | `tests/unit/test_redraft_keeps_act.py` | STANDARD |
 | **HRD-9** | 2988 | Blast radius for tags, fields and types | `tests/unit/test_shared_vocab_guard.py` | STANDARD |
 | **HRD-10** | 2989 | Changed since the card | `tests/unit/test_card_precondition.py` | HIGH |

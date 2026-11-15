@@ -6,9 +6,10 @@
  *
  * - a task row is `- #<n> «title» · <facts>` and the NEXT line is
  *   `  full_id: <uuid>`;
- * - a write that HAPPENED carries a `full_id:` line, a declined card starts
- *   with the `CANCELLED` sentinel, and anything else is a refusal the tool
- *   reported in prose. The S2 verifier found refusals painted green.
+ * - a write that HAPPENED carries a `full_id:` line, a card that did nothing
+ *   starts with a lead of the one table of card outcomes (HRD-7,
+ *   `lib/cardOutcomes.ts`), and anything else is a refusal the tool reported
+ *   in prose. The S2 verifier found refusals painted green.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -18,7 +19,7 @@ import { unfenced } from "@/lib/fencedText";
 
 import {
   VIEW_TOOLS,
-  CANCELLED,
+  LEGACY_CANCELLED,
   GUARDED_TOOLS,
   toneFor,
   FRESH_RECEIPT_MS,
@@ -163,8 +164,20 @@ describe("classifyActionResult", () => {
     expect(classifyActionResult(fine, "done", "propose_plan")).toBe("done");
   });
 
-  it("is cancelled when the member declined the card", () => {
-    expect(classifyActionResult(CANCELLED, "done")).toBe("cancelled");
+  it("is cancelled for each card outcome that did nothing (HRD-7)", () => {
+    // The chip of before stays for each one (D200). Mutation: drop the
+    // `NOT_DONE_AT_CARD` rule of `cancelledAtCard` → red.
+    for (const lead of ["Declined", "Timed out", "Not shown", "Answered by another member", "Parked", "Changed since the card"]) {
+      expect(classifyActionResult(`${lead}: nothing was done. Tell the member.`, "done"), lead).toBe("cancelled");
+    }
+    // A stored chat of before HRD-7 still draws its cancel.
+    expect(classifyActionResult(LEGACY_CANCELLED, "done")).toBe("cancelled");
+  });
+
+  it("keeps a card that the member's message closed as Not done, never Cancelled", () => {
+    // It is no decline (task 2494), so it keeps the receipt it drew before.
+    const closed = "Closed by your message: the member wrote in the chat while the card was open, and nothing was done.";
+    expect(classifyActionResult(closed, "done")).toBe("refused");
   });
 
   it("is refused for a prose refusal, never done", () => {
@@ -186,15 +199,18 @@ describe("classifyActionResult", () => {
     );
   });
 
-  it("uses the same cancel sentinel the skill prints", () => {
-    // Two copies of one wire token, held equal by reading the Python source.
-    // Editing either side alone would paint a declined write as a success.
+  it("reads the words of a card that did nothing from the one table", () => {
+    // HRD-7: the skill writes no cancel text of its own. It answers
+    // `_not_confirmed()`, which reads `ask_tools.card_not_done_text`, so a
+    // declined write never paints as a success. `lib/cardOutcomes.test.ts`
+    // holds the leads equal to the Python table.
     const source = fs.readFileSync(
       path.join(__dirname, "../../../../../apps/skills/skill-projects/skill_projects/writes.py"),
       "utf8",
     );
-    const m = source.match(/^CANCELLED = "(.+)"$/m);
-    expect(m?.[1]).toBe(CANCELLED);
+    expect(source).not.toMatch(/^CANCELLED = /m);
+    expect(source).not.toContain(LEGACY_CANCELLED);
+    expect(source).toContain("card_not_done_text");
   });
 });
 

@@ -47,6 +47,7 @@ import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
 import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
+import { cardOutcomeOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -298,11 +299,24 @@ export function announceChange(eventId: string): void {
 }
 
 /**
- * The first line of a cancelled write, verbatim from `writes.py::CANCELLED`.
- * `ProjectToolCards.test.ts` reads that file and holds the two equal, so an
- * edit on either side fails a test instead of painting a decline green.
+ * The one text of a write that did nothing, from before HRD-7. A stored chat
+ * still holds it, so a replay draws it as "Cancelled" too. A new result
+ * starts with a lead of the one table of card outcomes
+ * (`lib/cardOutcomes.ts`), and no Python module writes this text now
+ * (`tests/unit/test_card_outcome_vocabulary.py`).
  */
-export const CANCELLED = "Cancelled — nothing was changed.";
+export const LEGACY_CANCELLED = "Cancelled — nothing was changed.";
+
+/**
+ * True when *text* is the answer of a card that did nothing: a lead of
+ * `NOT_DONE_AT_CARD`, or the text of before HRD-7. A card that the member's
+ * own chat message closed is not one: it keeps its "Not done" receipt,
+ * because it is no decline.
+ */
+export function cancelledAtCard(text: string): boolean {
+  const outcome = cardOutcomeOf(text);
+  return text.startsWith(LEGACY_CANCELLED) || (outcome !== null && NOT_DONE_AT_CARD.has(outcome));
+}
 
 /**
  * The class C tools: the guarded acts (archive, merge, bulk edit, delete a
@@ -790,7 +804,7 @@ export function classifyActionResult(
   // its status is "error". It is still a refusal, not a fault: it keeps the
   // muted "Not done" receipt it drew before the stream marked it.
   if (status === "error") return /^Refused:/.test(text) ? "refused" : "failed";
-  if (text.startsWith(CANCELLED)) return "cancelled";
+  if (cancelledAtCard(text)) return "cancelled";
   // A batch that stopped part way (WS-27bm S7d, §13.6 rule 9): something
   // exists, and the receipt says what did not happen. It is not a success.
   if ((receiptIdOf(text) || UNKNOWN_LINE.test(text)) && STOPPED_LINE.test(text)) return "partial";

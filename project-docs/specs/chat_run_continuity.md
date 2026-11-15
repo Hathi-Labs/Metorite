@@ -1081,8 +1081,8 @@ the gate wrapper of `_tool_injection`):
   a `RUN_ERROR`, or by the dead-run finish of `run_liveness`. The member
   then sees the card close, and no answer follows it.
 - The outcome word is "closed by your message"
-  (`ask_tools.CLOSED_BY_YOUR_MESSAGE`). HRD-7 grows its one vocabulary of
-  card outcomes from this word.
+  (`ask_tools.CLOSED_BY_YOUR_MESSAGE`). HRD-7 keeps it in the one table of
+  card outcomes, `ask_tools.CARD_OUTCOMES` (`chat_failure_modes.md` C1).
 - A run that takes two or more steers asks for an answer to each. The
   newest steer turn ends with `steer.steers_frame`, and a replay of two or
   more steers ends with it too. One steer gets no frame.

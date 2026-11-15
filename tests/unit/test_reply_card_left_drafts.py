@@ -627,13 +627,13 @@ async def test_compose_reply_lets_any_other_refusal_escape(monkeypatch) -> None:
 
 async def test_compose_reply_never_says_discarded_for_a_draft_that_left(monkeypatch) -> None:
     """The card closed with no answer, and its draft is no longer in Drafts.
-    The member can have sent it from the Email app. Mutation: answer
-    ``_REPLY_DISCARDED`` there → red."""
+    The member can have sent it from the Email app. Mutation: answer the
+    decline of the one table of card outcomes there → red."""
     gw = _Gateway(state={"draft_id": DRAFT, "in_drafts": False})
     _install(monkeypatch, gw, None)
     out = await agents.compose_reply(MAIL, BOX)
     assert out == agents._REPLY_CLOSED_DRAFT_GONE
-    assert "discarded and cancelled" not in out and "Nothing was sent" not in out
+    assert "Declined:" not in out and "Nothing was sent" not in out
     assert gw.gets == [("/email/reply-card/draft-state", {"draft_id": DRAFT})]
     assert gw.posts == ["/email/reply-card"]
 
@@ -642,7 +642,9 @@ async def test_compose_reply_keeps_the_discard_line_while_the_draft_stays(monkey
     gw = _Gateway(state={"in_drafts": True})
     _install(monkeypatch, gw, None)
     out = await agents.compose_reply(MAIL, BOX)
-    assert out == agents._REPLY_DISCARDED
+    # HRD-7: the words of the one table of card outcomes, for the card's answer.
+    assert out == agents._not_done(agents._REPLY_NOT_SENT)
+    assert out.startswith("Declined:")
 
 
 @pytest.mark.parametrize("state", [RuntimeError("gateway down"), None, {"odd": 1}])
