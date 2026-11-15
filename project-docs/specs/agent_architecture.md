@@ -923,6 +923,8 @@ which contradicts AGENTS.md Global Constraint #6.
 of GO-NARROWED. `work_plan.md` D7 put this gap into WS-8. D92 moves every agent to MAF, so
 without this ticket a registry MCP server reaches no agent.
 
+**What the chat knows about a server (WS-CSY, 2026-11-15).** `chat_connected_systems.md` plans the server brief, a per-turn block, the `mcp.call` line and the server's own instructions on this seam. It adds no second MCP path. Epic 3390.
+
 **The gap.** The builder checked these anchors at `origin/main` `c1850b5d9`. `_inject_mcp_servers`
 (`_tool_injection.py:2075`) runs for every agent and calls `merge_mcp_servers` (`:2042`).
 Since H-181, that function writes `_default_options["mcp_servers"]`. Only the Copilot agent
