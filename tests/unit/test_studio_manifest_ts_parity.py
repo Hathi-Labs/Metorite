@@ -117,6 +117,18 @@ def test_typed_union_fields_name_their_union_in_ts():
     assert top["studio"] == "StudioVersion"
 
 
+def test_connection_need():
+    """STU-I9a. The TS `ConnectionNeed` has the keys and the `as` values of the schema."""
+    from acb_common.studio_manifest import CONNECTION_AS
+
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    need = schema["$defs"]["ConnectionNeed"]
+    assert _interface_keys("ConnectionNeed") == set(need["properties"])
+    assert need["properties"]["as"]["anyOf"][0]["enum"] == list(CONNECTION_AS)
+    assert 'as?: "org" | "member" | null;' in _ts()
+    assert "connections?: Array<string | ConnectionNeed>;" in _ts()
+
+
 def test_nav_icons_equal_the_ts_twin():
     from acb_common.studio_manifest import NAV_ICONS
 
@@ -141,3 +153,31 @@ def test_nav_count_cap_equals_the_ts_twin():
     assert m and int(m.group(1)) == MAX_NAV_COUNTS
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     assert schema["$defs"]["NavRow"]["properties"]["count"]["anyOf"][0] == {"type": "boolean"}
+
+
+def _ts_presets(ts: str) -> dict[str, dict[str, tuple[str, int, bool]]]:
+    """Read `PRESET_REGIONS` of the twin, one preset at a time, with `LIST_DETAIL` resolved."""
+    region = re.compile(r'(\w+): \{ block: "(\w+)", cap: (\d+), required: (true|false) \}')
+
+    def regions(text: str) -> dict[str, tuple[str, int, bool]]:
+        return {m[1]: (m[2], int(m[3]), m[4] == "true") for m in region.finditer(text)}
+
+    shared = ts[ts.index("const LIST_DETAIL") : ts.index("export const PRESET_REGIONS")]
+    out: dict[str, dict[str, tuple[str, int, bool]]] = {}
+    body = ts[ts.index("export const PRESET_REGIONS") : ts.index("export const REGION_NAMES")]
+    body = body.split("= {", 1)[1]
+    for name in re.findall(r"^  (\w+): ", body, re.M):
+        start = body.index(f"\n  {name}: ") + 1
+        nxt = re.search(r"\n  \w+: ", body[start + 3 :])
+        chunk = body[start : start + 3 + nxt.start()] if nxt else body[start:]
+        out[name] = regions(shared) if "LIST_DETAIL" in chunk else regions(chunk)
+    return out
+
+
+def test_the_page_presets_equal_the_typescript_twin():
+    from acb_common.studio_manifest import LAYOUTS, PRESET_REGIONS
+
+    ts = TS.read_text(encoding="utf-8")
+    m = re.search(r"export const LAYOUTS = \[(.*?)\] as const", ts, re.S)
+    assert m and re.findall(r'"([a-z_]+)"', m.group(1)) == list(LAYOUTS)
+    assert _ts_presets(ts) == PRESET_REGIONS
