@@ -37,6 +37,8 @@ function tabbed(page: PageDef): boolean {
 
 /** A page that has tabs and cells both is not valid. No edit works on it. */
 function broken(page: PageDef): boolean {
+  // A page with a preset (STU-LY-0) has regions and no cells. No cell edit works on it.
+  if (page.layout) return true;
   return tabbed(page) && Array.isArray(page.cells) && page.cells.length > 0;
 }
 
