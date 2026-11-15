@@ -5,7 +5,7 @@
 3233. This spec builds nothing. It maps five slices that are in flight or
 planned (§9.2). **FIND-1 is built (branch `mt-45237431-find-misses-eval`, task
 3238):** the misses set is in `evals/search_company/fixtures/misses.json`, and
-`--fixture` prints its score. The owner accepted D-FIND-1 to D-FIND-8 as
+`--fixture` prints its score. **HRD-4 is built (task 2983, 2026-11-16):** the sources run at once, 4 at most, and `find_tasks` ranks by the words held on a miss. The owner accepted D-FIND-1 to D-FIND-8 as
 recommended on 2026-11-14 (task 3233, answer `30dfa0d6`, §10).
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
@@ -68,7 +68,7 @@ the CRM held no such order. It also pointed at the wrong deal, «Twin Dragon
 | The call | The answer | Why it missed |
 |---|---|---|
 | `search_crm("Sharath")` | One lead and one contact at BMS School of Architecture | The CRM matches the whole query with `ILIKE` on each column. «Sharat» does not hold "Sharath". The converted lead is hidden |
-| `search_company("Sharath 3D printer")` | No records. "Skipped: email" | Each app needs every word in one record. The sources run one after another in one 4 s budget, and Email ran out of time |
+| `search_company("Sharath 3D printer")` | No records. "Skipped: email" | Each app needs every word in one record. The sources ran one after another in one 4 s budget, and Email ran out of time (HRD-4 now runs them at once) |
 | `search_crm("3D printer")` | "Deals (16, showing 10)" | The deal was one of the 6 that the list did not show. The list sorts by the last activity, not by the words |
 | `query_inbox("Sharath")` | 2 old mails from BMS | Email full text has no near spelling |
 | `search_company("Neuropeak Sharath")` | No records | The deal holds «Neuropeak», and its lead holds «Sharat». No one record holds both words |
@@ -99,8 +99,8 @@ Measured on production on 2026-11-14, over the last 3 days (task 3232):
 |---|---|---|---|
 | CRM | `routes/crm/core.py` `search_where`, `records.search_records` | One `ILIKE '%query%'` for each column. A deal also matches its company name (`search_sql`). A converted lead is hidden (`OPEN_LEAD_SQL`) | HRD-18a: word by word, a deal matches its contacts and source lead, and `?near=true` |
 | Email | `routes/email/transport/search.py` | `websearch_to_tsquery('english', q)` over the subject, the body and the sender. Every word must be in one mail | HRD-18b |
-| Tasks | `routes/projects/search.py` `search_tasks` | Every word | HRD-4 |
-| Company | `retrieval/company.py` | The sources one after another, 1.5 s each and 4 s for all | KR-ZERO, HRD-4 |
+| Tasks | `routes/projects/search.py` `search_tasks` | Every word. When no task has all of them, the tasks that hold most of the words (HRD-4, built) | HRD-4 |
+| Company | `retrieval/company.py` | The sources at once, 4 at most, 1.5 s each from its start and 4 s for all (HRD-4, built) | KR-ZERO, HRD-4 |
 | Colleagues | `routes/admin/assistant_profile_people.py` | An exact fold of the name, or of its first word | HRD-18a |
 | Contact typeahead | `routes/email/transport/contacts.py` | A `pg_trgm` fallback at 0.3, over members and People | HRD-18a |
 | Knowledge | `routes/knowledge/search.py`, `kb_index/query.py` | Any of the words (CX-1b), and a vector half within 0.8 s | KR-ZERO |
