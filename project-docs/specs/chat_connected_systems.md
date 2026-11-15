@@ -115,7 +115,7 @@ the gateway journal. No row changed.
   pack wins, and in layer (b) the MCP tool wins
   (`one_assistant_context.md` §4.2, "Mail beside an MCP server").
 - **The mark of a chat that read mail.** A call of an email pack tool marks
-  the chat session (`_tool_injection.py:3791`), and so does an answer of the
+  the chat session (`_tool_injection.py:3790`), and so does an answer of the
   email assistant (`egress.mark_untrusted_session`). The mark lives in Redis
   for 400 days and slides on each read (`egress.MARK_TTL_S`). Step 3a of
   `permission_policy.decide` gives each MCP call of a marked chat the code
