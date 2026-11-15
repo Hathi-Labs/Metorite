@@ -203,8 +203,40 @@ describe("the layout rules", () => {
   });
   it("hangs the Move list from the right edge, and returns focus to the row when it closes", () => {
     expect(src).toContain('align="end"');
-    expect(src).toMatch(/slots\.current\.get\(id\)\?\.querySelector\("button"\)\?\.focus\(\)/);
+    expect(src).toMatch(/slots\.current\.get\(moving\)\?\.querySelector\("button"\)\?\.focus\(\)/);
+    expect(src).toMatch(/slots\.current\.get\(refocus\.current\)\?\.querySelector\("button"\)/);
     expect(src).toMatch(/\[moving\]\);/);
+  });
+  it("lets the swapped control take its own full-width line below sm, and the label keep the first line", () => {
+    expect(src).toContain('const MOVING_ROW = "flex-wrap sm:flex-nowrap"');
+    expect(src).toContain('const MOVING_SLOT = "shrink-0 basis-full sm:basis-auto"');
+    expect(src).toMatch(/moving === row\.id \? MOVING_ROW : ""/);
+    expect(src).toMatch(/className=\{moving === row\.id \? MOVING_SLOT : "shrink-0"\}/);
+    expect(html(small)).toMatch(/<span class="min-w-0 flex-1 truncate text-sm text-foreground">Part a<\/span>/);
+    // A row that is not swapped keeps the plain slot and no wrap.
+    expect(html(small)).not.toContain("basis-full");
+    expect(html(small)).not.toContain("flex-wrap");
+  });
+});
+
+describe("the pick path: the menu does not reopen at the new place", () => {
+  const src = readFileSync(new URL("./StudioTree.tsx", import.meta.url), "utf8");
+  it("clears the moving row in the pick handler, before the move is sent", () => {
+    expect(src).toMatch(/onChange=\{\(v\) => \{ setMoving\(null\); send\(row\.id, v === TOP_OVER \? null : v\); \}\}/);
+    expect(src).toContain("onClose={() => setMoving(null)}");
+  });
+  it("returns focus to the Move button of the row where it is now, also after it remounts", () => {
+    expect(src).toContain("const refocus = useRef<string | null>(null)");
+    expect(src).toMatch(/\[moving, list, st\.pending\]\);/);
+    expect(src).toMatch(/if \(btn\) \{ btn\.focus\(\); refocus\.current = null; \}/);
+  });
+  it("a pick moves the row, and the view with no row in the swapped state draws the Move button again", async () => {
+    const mover = createTreeMover(door, "u", "parent");
+    const nodes: TreeNodeIn[] = [{ id: "a", parentId: null }, { id: "e", parentId: null }];
+    await mover.move(nodes, "e", "a", (id) => id);
+    const out = html(small, model(), { mover });
+    expect(out).toContain('aria-label="Move Part e under"');
+    expect(out).not.toContain("Move Part e under</");
   });
 });
 

@@ -46,6 +46,10 @@ const ROW_STEP_REM = 1.25;
 const OPTION_DEPTH_CAP = 5;
 /** The width of the swapped Move control. It is small, so the row label keeps its room. */
 const MOVE_WIDTH = "w-28";
+/** The row of the open Move control wraps below `sm`, so the label keeps the whole first line. */
+const MOVING_ROW = "flex-wrap sm:flex-nowrap";
+/** The open Move control takes its own full-width line below `sm`, and shares the line from `sm` up. */
+const MOVING_SLOT = "shrink-0 basis-full sm:basis-auto";
 /** The line above the tree keeps this height whether it speaks or not, so the tree never jumps. */
 const NOTICE_SLOT = "min-h-6";
 /** The spacer of a leaf row. It has the size of the chevron button (`icon-xs`), so the grips line up. */
@@ -100,14 +104,20 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
   const movable = mover !== null;
   // The Move button of each row, so focus can return to it when the Move list closes.
   const slots = useRef(new Map<string, HTMLElement>());
-  const lastMoving = useRef<string | null>(null);
+  // The row whose Move button takes focus back. A pick re-parents the row, so its button may remount at the new place.
+  const refocus = useRef<string | null>(null);
   useEffect(() => {
-    const id = moving ?? lastMoving.current;
-    lastMoving.current = moving;
-    if (id === null) return;
-    // Open: focus the select trigger. Closed: focus the Move button that came back.
-    slots.current.get(id)?.querySelector("button")?.focus();
+    if (moving === null) return;
+    refocus.current = moving;
+    // Open: focus the select trigger.
+    slots.current.get(moving)?.querySelector("button")?.focus();
   }, [moving]);
+  useEffect(() => {
+    // Closed: focus the Move button of the row, where it is now. It may come back a render later (a call in flight hides it).
+    if (moving !== null || refocus.current === null) return;
+    const btn = slots.current.get(refocus.current)?.querySelector("button");
+    if (btn) { btn.focus(); refocus.current = null; }
+  }, [moving, list, st.pending]);
   // The ring shows only where the drop is allowed.
   const ringOn = (target: string | null) => {
     if (st.dragId === null || st.over !== (target === null ? TOP_OVER : target)) return false;
@@ -186,7 +196,7 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
               } : undefined}
               className={`list-none rounded-md ${drop ? "ring-2 ring-primary/40" : ""} ${pending ? "opacity-60" : ""}`}
             >
-              <div className="flex items-center gap-1 py-0.5" style={{ paddingLeft: `${row.depth * ROW_STEP_REM}rem` }}>
+              <div className={`flex items-center gap-1 py-0.5 ${moving === row.id ? MOVING_ROW : ""}`} style={{ paddingLeft: `${row.depth * ROW_STEP_REM}rem` }}>
                 {row.hasChildren ? (
                   <Button
                     variant="ghost" size="icon-xs" icon={row.expanded ? "ChevronDown" : "ChevronRight"}
@@ -207,7 +217,7 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
                 })}
                 {movable && !pending ? (
                   <span
-                    className="shrink-0"
+                    className={moving === row.id ? MOVING_SLOT : "shrink-0"}
                     ref={(el) => { if (el) slots.current.set(row.id, el); else slots.current.delete(row.id); }}
                   >
                     {moving === row.id ? (
@@ -215,7 +225,7 @@ export function StudioTreeView({ model, rows, door, mover: given }: StudioTreeVi
                         label={`Move ${row.label} under`} prompt="Move to…" value="" autoOpen filterAbove={8}
                         widthClass={MOVE_WIDTH} align="end"
                         options={parentOptions(shown, row.id)}
-                        onChange={(v) => send(row.id, v === TOP_OVER ? null : v)}
+                        onChange={(v) => { setMoving(null); send(row.id, v === TOP_OVER ? null : v); }}
                         onClose={() => setMoving(null)}
                       />
                     ) : (
