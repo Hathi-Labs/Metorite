@@ -73,13 +73,25 @@ NODE_TYPE_META = [
         ),
     },
     {
+        # STU-E4 built the node, and WFC-4a-1 offers it. The words are plain,
+        # because the palette search and the Copilot shortlist show them.
+        "type": "human_step",
+        "category": "logic",
+        "label": "Human step",
+        "description": (
+            "Give one member a task, and pause the run until the task is done. "
+            "The person, the title and the description are fixed words: the "
+            "step cannot read data from earlier steps."
+        ),
+    },
+    {
         "type": "pm_task",
         "category": "action",
         "label": "Update task (Projects)",
         "description": (
-            "Set fields on a task in the Projects app — title, description, "
-            "importance, dates, or its status by lane name. An internal write: "
-            "no approval node required."
+            "Set fields on a task in the Projects app: title, description, "
+            "importance, dates, or its status by lane name. This step cannot "
+            "run yet: a run does not check which tasks a member can see."
         ),
     },
     {
@@ -90,8 +102,8 @@ NODE_TYPE_META = [
             "Archive long-closed tasks and close stale ones, per each root "
             "project's lifecycle policy (archive/close months and timezone "
             "live on the project — projects with no policy are untouched). "
-            "Config-free; pair it with a schedule trigger. An internal "
-            "write: no approval node required."
+            "This step cannot run yet: a run does not check which tasks a "
+            "member can see."
         ),
     },
     {
@@ -101,6 +113,15 @@ NODE_TYPE_META = [
         "description": "Yield the run's result.",
     },
 ]
+
+#: The node types that the palette search and the Copilot shortlist do NOT
+#: offer (WFC-4a-1, ``ai_studio.md`` §14). The data stays: each type stays in
+#: ``NODE_TYPE_META`` and in ``graph.NODE_TYPES``, so a stored graph still draws,
+#: validates and publishes as before. ``pm_task`` and ``pm_lifecycle`` cannot
+#: run (``service._MEMBER_BLIND_WRITE_TYPES``: every run door refuses them).
+#: ``studio_write`` has no form yet (WFC-4a-2). The Copilot prompt forbids the
+#: two task types by name. Fence: ``tests/unit/test_workflows_node_offer.py``.
+UNOFFERED_NODE_TYPES = frozenset({"pm_task", "pm_lifecycle", "studio_write"})
 
 #: The topics a workflow can bind an event trigger to: the `pm.*` events
 #: (WS-27f) and the core app events (STU-E12a, `people.person.updated`).

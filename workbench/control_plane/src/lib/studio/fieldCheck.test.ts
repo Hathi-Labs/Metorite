@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { FIELD_TYPE_LIST } from "./blocks";
 
 import {
-  type FieldSpec, checkValue, isBlank, validateRecord,
+  type FieldSpec, checkValue, isBlank, quantityFlag, validateRecord,
 } from "./fieldCheck";
 
 const ROOT = resolve(__dirname, "../../../../..");
@@ -26,6 +26,12 @@ interface ValueCase {
   ok: boolean;
   out?: unknown;
   out_same?: boolean;
+}
+interface FlagCase {
+  id: string;
+  field: FieldSpec;
+  value: unknown;
+  flag: string;
 }
 interface RecordCase {
   id: string;
@@ -52,6 +58,7 @@ function expand(x: unknown): unknown {
 
 const golden = JSON.parse(readFileSync(GOLDEN, "utf-8")) as {
   values: ValueCase[];
+  flags: FlagCase[];
   records: RecordCase[];
 };
 
@@ -67,6 +74,21 @@ describe("the golden file", () => {
       expect(mine.some((c) => !c.ok), `${t} invalid`).toBe(true);
     }
   });
+});
+
+describe("quantityFlag equals quantity_flag (STU-C24a)", () => {
+  it("holds at least 14 flag cases and every flag but none twice or more", () => {
+    expect(golden.flags.length).toBeGreaterThanOrEqual(14);
+    const words = new Set(golden.flags.map((c) => c.flag));
+    for (const w of ["none", "unchecked", "normal", "low", "high", "critical_low", "critical_high"]) {
+      expect(words.has(w), w).toBe(true);
+    }
+  });
+  for (const c of golden.flags) {
+    it(c.id, () => {
+      expect(quantityFlag(c.field, c.value)).toBe(c.flag);
+    });
+  }
 });
 
 describe("checkValue equals check_value", () => {

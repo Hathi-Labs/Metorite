@@ -211,13 +211,24 @@ def card_text(title: str, detail: str, context: str,
                       sort_keys=True, default=str)
 
 
+#: HRD-22: the facts of the next card of this frame, for the late-approve
+#: grant of the web card gate (``acb_skills.late_approve``). Only
+#: :func:`take_card_facts` reads it, and it clears it. ⚠️ The default is None,
+#: never a mutable object.
+_NEXT_FACTS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "whatsapp_next_card_facts", default=None)
+
+
 def card_facts(**facts: Any) -> None:
     """Bind ids that the NEXT card of this call does not show (WAC-4).
 
     A tool calls it just before its card. At the ask it goes on the running
     call, and at Confirm on the "yes", so both card texts hold the same ids.
-    Anywhere else it does nothing, so a web run is unchanged.
+    HRD-22: it also holds them for the next card of this frame
+    (:func:`take_card_facts`), so the late-approve text of a web card holds
+    the same ids. That changes no card and no answer.
     """
+    _NEXT_FACTS.set(dict(facts))
     state = _CONFIRMING.get()
     if state is not None:
         state.facts = dict(facts)
@@ -225,6 +236,16 @@ def card_facts(**facts: Any) -> None:
     call = _CALL.get()
     if call is not None:
         call.facts = dict(facts)
+
+
+def take_card_facts() -> dict[str, Any] | None:
+    """The facts that :func:`card_facts` bound for the next card of this
+    frame, or None. It clears them, so they never reach a later card.
+    ``ask_tools.request_confirmation`` calls it once for each card."""
+    facts = _NEXT_FACTS.get()
+    if facts is not None:
+        _NEXT_FACTS.set(None)
+    return facts
 
 
 def _stored_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:

@@ -1242,7 +1242,7 @@ def test_the_rules_say_that_a_cut_text_never_goes_back() -> None:
     line = "When a read says truncated, do not send that text back."
     root = Path(__file__).resolve().parents[2]
     agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
-    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+    for text in (" ".join(tp.rules_for("studio-more").split()), " ".join(agent.split())):
         assert line in text and "Change long instructions in Studio." in text
 
 
@@ -1415,7 +1415,7 @@ def test_the_rules_say_to_send_based_on_from_a_read() -> None:
             "read of the skill.")
     root = Path(__file__).resolve().parents[2]
     agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
-    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+    for text in (" ".join(tp.rules_for("studio-more").split()), " ".join(agent.split())):
         assert line in text
 
 

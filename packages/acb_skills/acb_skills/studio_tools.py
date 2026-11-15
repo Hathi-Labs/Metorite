@@ -100,6 +100,7 @@ from acb_common.studio_manifest import (
     BLOCKS,
     MAX_CELLS_PER_PAGE,
     MAX_COLS,
+    MAX_NAV_COUNTS,
     MAX_NAV_ROWS,
     MAX_NAV_SECTIONS,
     MAX_PAGES,
@@ -445,7 +446,10 @@ def _frame_lines(manifest: dict[str, Any], fence: bool) -> list[str]:
     if isinstance(nav, list) and nav:
         rows = sum(len(x["rows"]) for x in nav
                    if isinstance(x, dict) and isinstance(x.get("rows"), list))
-        lines.append(f"Nav: {len(nav)} sections, {rows} rows")
+        counted = sum(1 for x in nav if isinstance(x, dict) and isinstance(x.get("rows"), list)
+                      for r in x["rows"] if isinstance(r, dict) and r.get("count") is True)
+        lines.append(f"Nav: {len(nav)} sections, {rows} rows"
+                     + (f", {counted} with a count" if counted else ""))
     return lines
 
 
@@ -1214,10 +1218,47 @@ FRAME_EXAMPLE: dict[str, Any] = {
     ],
     "nav": [
         {"title": "Work", "rows": [{"page": "home", "icon": "Home"},
-                                   {"page": "tasks", "icon": "ListChecks", "label": "My tasks"}]},
+                                   {"page": "tasks", "icon": "ListChecks", "label": "My tasks",
+                                    "count": True}]},
         {"title": "More", "rows": [{"page": "help", "icon": "BookOpen"}]},
     ],
 }
+
+
+_C0 = {"view": "all-tasks", "span": 2}
+_C1 = {"view": "by-status"}
+
+#: The tab and cell acts for the `frame` part (AF-8e). `studio_patch` has no `move`, so each act
+#: is more than one op. A cell or a tab is copied BY VALUE. Each `ops` list is an example that
+#: runs on `FRAME_EXAMPLE`, and the test applies it and validates the result.
+FRAME_STEPS: list[dict[str, Any]] = [
+    {"act": "Use tabs on a flat page (here page 0).",
+     "how": "Remove its `cells`. Add `tabs` with the cells copied into a tab.",
+     "ops": [{"op": "remove", "path": "/pages/0/cells"},
+             {"op": "add", "path": "/pages/0/tabs",
+              "value": [{"id": "main", "title": "Main", "cells": [_C0, _C1]}]}]},
+    {"act": "Return to a flat page (here page 1).",
+     "how": "Remove its `tabs`. Add `cells` with the cells of the tabs copied into it. The flat list holds at most 12 cells, so keep at most 12 in all.",
+     "ops": [{"op": "remove", "path": "/pages/1/tabs"},
+             {"op": "add", "path": "/pages/1/cells", "value": [{"view": "all-tasks"}, _C1]}]},
+    {"act": "Move a tab to a new index.",
+     "how": "Remove the tab, then add its copy at the index. `-` is only for `add`.",
+     "ops": [{"op": "remove", "path": "/pages/1/tabs/1"},
+             {"op": "add", "path": "/pages/1/tabs/0",
+              "value": {"id": "stats", "title": "Stats", "cells": [_C1]}}]},
+    {"act": "Move a cell to a new index in its list.",
+     "how": "Remove the cell, then add its copy at the index.",
+     "ops": [{"op": "remove", "path": "/pages/0/cells/1"},
+             {"op": "add", "path": "/pages/0/cells/0", "value": _C1}]},
+    {"act": "Move a cell to another tab.",
+     "how": "Add its copy to the end of the new tab, then remove it from the old tab.",
+     "ops": [{"op": "add", "path": "/pages/1/tabs/1/cells/-", "value": {"view": "all-tasks"}},
+             {"op": "remove", "path": "/pages/1/tabs/0/cells/0"}]},
+    {"act": "Add a tab.",
+     "how": "Add a tab at `/pages/<i>/tabs/-`, with a new id, a title and its `cells`.",
+     "ops": [{"op": "add", "path": "/pages/1/tabs/-",
+              "value": {"id": "extra", "title": "Extra", "cells": [_C1]}}]},
+]
 
 
 def _describe_frame() -> dict[str, Any]:
@@ -1229,10 +1270,11 @@ def _describe_frame() -> dict[str, Any]:
         "caps": {
             "pages": MAX_PAGES,
             "tabs_per_page": MAX_TABS_PER_PAGE,
-            "cells_per_page": MAX_CELLS_PER_PAGE,
+            "cells_per_list": MAX_CELLS_PER_PAGE,
             "columns": MAX_COLS,
             "nav_sections": MAX_NAV_SECTIONS,
             "nav_rows_per_section": MAX_NAV_ROWS,
+            "nav_counts": MAX_NAV_COUNTS,
         },
         "rules": [
             "A page has tabs or cells, not both.",
@@ -1240,7 +1282,12 @@ def _describe_frame() -> dict[str, Any]:
             "A span is at most the columns of the page.",
             "A nav needs pages, so write `pages` before `nav`.",
             "Each rail row names a page id that the manifest declares.",
+            "The cell cap is for each list: the flat `cells` of a page, or the `cells` of each tab.",
+            "A tab id is unique in its page. A tab has a title and a `cells` list.",
+            "A page that loses its last cell or its last tab needs the other list, so it is never empty.",
             "Two nav sections do not share a title.",
+            "A rail row may have `count: true`. Its page needs a table or board view in a cell, a tab or the side.",
+            "The whole `nav` has at most `nav_counts` rows with a count. The filter and the sort stay on the view.",
             "A rename of a page id needs a second op that fixes each nav row that named it.",
             "Use no colour and no pixel size. Use only the icon names of the list.",
         ],
@@ -1250,6 +1297,7 @@ def _describe_frame() -> dict[str, Any]:
             "pages": "One page for each object that has a view, and a dashboard page when a chart or a stat view exists.",
             "nav": "One rail row for each page. The app frame draws the rail.",
         },
+        "steps": FRAME_STEPS,
         "icons": list(NAV_ICONS),
         "example": FRAME_EXAMPLE,
     }
@@ -4444,8 +4492,8 @@ async def studio_app_read(
 # ONE read tool over the routes of the Workflows app, as the member of the
 # run: :func:`studio_workflow_read` with no id reads ``GET /workflows`` (one
 # page of the list), and with an id reads ``GET /workflows/{id}``. It is one
-# tool and not two because the studio pack is at its room limit (see
-# :data:`STUDIO_WORKFLOW_TOOLS`). The gates of the route bind
+# tool and not two because the studio pack was at its room limit when it
+# shipped (see :data:`STUDIO_WORKFLOW_TOOLS`). The gates of the route bind
 # (``feature:workflows``, and the tenant under RLS), and the tool sends no org
 # and no member. A refusal of the route comes back with its own text. The tool
 # writes nothing, and no write joins the ``workflows`` family: the F13 tools of
@@ -4719,7 +4767,7 @@ async def _workflow_get(wid: str) -> dict[str, Any]:
 # :func:`studio_workflow_read` with a ``run_id`` lists the human steps of one
 # workflow run, as the member, through ``GET /workflows/runs/{run_id}/steps``.
 # It is a mode of the one workflow read and not a tool of its own, because the
-# studio pack is at its room limit (see :data:`STUDIO_WORKFLOW_TOOLS`). The
+# studio pack was at its room limit (see :data:`STUDIO_WORKFLOW_TOOLS`). The
 # route gives a task id only to the person of the step. A title, a node id and
 # a person are text that other members wrote, so the whole list comes in ONE
 # untrusted frame, as the records of ``studio_record_list`` do.
@@ -4830,10 +4878,11 @@ async def studio_workflow_read(
 
 
 #: The one workflow read (STB-6a), after the record tools. ⚠️ With it, the
-#: studio pack holds 23 tools and is at its room limit: a Studio turn that
-#: also loads the email pack sends 56 + 1 (the load tool) + 31 + 23 - 1 (the
-#: email specialist) = 110 tools, which is ``MAX_REQUEST_TOOLS``. One more
-#: tool makes the cap drop the studio pack. So the two writes of STB-6b
+#: Studio tools are 23, at their room limit: a Studio turn that also loads the
+#: email pack sends 56 + 1 (the load tool) + 31 + 23 - 1 (the email
+#: specialist) = 110 tools, which is ``MAX_REQUEST_TOOLS``. WS-67 TS-1b split
+#: the 23 into the ``studio`` core (10) and ``studio-more`` (13), and this tool
+#: is in ``studio-more``. One more Studio tool makes the cap drop ``studio-more``. So the two writes of STB-6b
 #: (publish and live) sit in their own small pack, ``studio-workflows``
 #: (:data:`STUDIO_WORKFLOW_WRITE_TOOLS`), which ships dark. Fence:
 #: ``test_studio_workflow_tools.py::test_a_studio_turn_that_loads_the_email_pack_keeps_the_studio_pack``.
@@ -4847,7 +4896,7 @@ STUDIO_WORKFLOW_TOOLS = (studio_workflow_read,)
 # Two write tools over the four routes of ``routes/workflows/publish.py``, as
 # the member of the run: :func:`studio_workflow_publish` (publish, or roll back
 # to a version) and :func:`studio_workflow_live` (enable, or disable). The
-# ``studio`` pack is at its room limit, so they form their own small pack,
+# ``studio`` pack was at its room limit (before TS-1b), so they form their own small pack,
 # ``studio-workflows`` (``tool_packs.PACKS``), of the same owner. That pack is
 # NOT in ``tool_packs.FOLLOWS``: it is on only where the tool-pack flag names it,
 # and only the owner adds that line. The four routes need ``workflows:publish``.
