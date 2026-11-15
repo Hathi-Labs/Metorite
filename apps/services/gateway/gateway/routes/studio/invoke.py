@@ -309,8 +309,8 @@ from acb_auth import UserContext, get_current_user
 from acb_auth import app_requests as store
 from acb_auth import direct_proof as _direct_proof
 from acb_common import app_manifests, get_logger, studio_query
-from acb_common.connector_list import connector
 from acb_common.app_manifests.base import OP_PATTERN, DoorOp
+from acb_common.connector_list import connector
 from acb_common.db import current_tenant
 from acb_common.no_person import no_person_present, no_person_scope
 from acb_common.studio_access import Viewer
