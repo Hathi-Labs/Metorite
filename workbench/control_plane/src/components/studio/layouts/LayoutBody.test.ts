@@ -45,6 +45,13 @@ describe("LayoutBody", () => {
     expect(html).toContain('data-view="pipeline"');
     expect(html).not.toContain("data-layout-pending");
   });
+  it("wraps a board in the sideways-scroll cue, which draws nothing until a lane hides", () => {
+    const html = draw("board", { main: ["pipeline"] });
+    expect(html).toContain('data-scroll-cue="none"');
+    expect(html).not.toContain("More columns");
+    expect(html.indexOf("data-scroll-cue")).toBeLessThan(html.indexOf('data-view="pipeline"'));
+    expect(draw("table_workspace", { main: ["t"] })).not.toContain("data-scroll-cue");
+  });
   it("names a board, not a table, when the board region is empty", () => {
     expect(draw("board", { main: [] })).toContain("no board to show");
   });
