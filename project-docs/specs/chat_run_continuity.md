@@ -26,7 +26,7 @@ release keeps the work.
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | §4.11 — the line of a slow tool (HRD-6 part 1, task 2985) | **BUILT** 2026-11-13, branch `mt-83488e2c-long-reads`, dark behind `CHAT_PROGRESS_NOTICE_ORGS` |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
-| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. D-RES-1 to D-RES-8 wait for the owner. Only RESUME-1a is built (the row below) |
+| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). Only RESUME-1a is built (the row below) |
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. No route reads it yet. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -1984,7 +1984,9 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 
 #### 4.12.8 Proposals for the owner
 
-These are proposals. None takes a D number in `work_plan.md` §3.
+**ACCEPTED, 2026-11-14.** The owner chose "Approve all 8 recommendations" on
+task 3255 (answer `6d371aad`). Each recommendation below is now the rule.
+None takes a D number in `work_plan.md` §3.
 
 | # | Question | Recommendation |
 |---|---|---|
