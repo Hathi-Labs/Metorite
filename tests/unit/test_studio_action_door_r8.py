@@ -3023,6 +3023,14 @@ def test_r8_c2d_a_member_with_no_install_and_org_b_get_404(world, monkeypatch) -
 # ── REL-R1. The names of a relation to an object of the same app ─────────────
 
 
+_REL_OBJECTS: dict[str, list[dict[str, Any]]] = {
+    "team": [{"key": "name", "type": "text"}],
+    "task": [{"key": "title", "type": "text"},
+             {"key": "team", "type": "relation", "to": "team"},
+             {"key": "company", "type": "relation", "to": "crm.company"}],
+}
+
+
 def test_r8_rel_a_get_and_a_list_carry_names_for_a_bare_target_and_none_for_a_core_target(
         world) -> None:
     """``names`` holds the title of each record that a relation to an object of
@@ -3031,13 +3039,9 @@ def test_r8_rel_a_get_and_a_list_carry_names_for_a_bare_target_and_none_for_a_co
     async def go() -> Any:
         async with tenant_session(world.a) as db:
             team = await objects_store.define_object(
-                db, ANA, package_id=world.pkg, name="team",
-                fields=[{"key": "name", "type": "text"}])
+                db, ANA, package_id=world.pkg, name="team", fields=_REL_OBJECTS["team"])
             task = await objects_store.define_object(
-                db, ANA, package_id=world.pkg, name="task", fields=[
-                    {"key": "title", "type": "text"},
-                    {"key": "team", "type": "relation", "to": "team"},
-                    {"key": "company", "type": "relation", "to": "crm.company"}])
+                db, ANA, package_id=world.pkg, name="task", fields=_REL_OBJECTS["task"])
             assert team is not None and task is not None
             t1 = await objects_store.create_record(
                 db, ANA, team.id, {"name": "Plant 4"}, package_id=world.pkg, viewer=_VIEWER)
@@ -3050,8 +3054,16 @@ def test_r8_rel_a_get_and_a_list_carry_names_for_a_bare_target_and_none_for_a_co
                 db, ANA, task.id, {"title": "B", "team": {"id": gone}},
                 package_id=world.pkg, viewer=_VIEWER)
             assert r1 is not None and r2 is not None
-        await _set_action(world, "peek", "object:task.get")
-        await _set_action(world, "find", "object:task.list")
+        # The manifest declares the two objects, and `peek` and `find` read the task.
+        async with tenant_session(world.a) as db:
+            package = await packages_store.get_package(db, ANA, world.pkg)
+            assert package is not None
+            manifest = dict(package.manifest)
+            manifest["objects"] = [*manifest["objects"], *[
+                {"name": o.name, "fields": _REL_OBJECTS[o.name]} for o in (team, task)]]
+            manifest["actions"] = [a for a in manifest["actions"] if a["id"] not in ("peek", "find")] + [
+                {"id": "peek", "uses": "object:task.get"}, {"id": "find", "uses": "object:task.list"}]
+            assert await packages_store.update_manifest(db, ANA, world.pkg, manifest) is not None
         got = await _call(world.a, ANA, world.pkg, "peek", {"id": r1.id})
         listed = await _call(world.a, ANA, world.pkg, "find", {})
         plain = await _call(world.a, ANA, world.pkg2, "peek", {"id": world.rec2})

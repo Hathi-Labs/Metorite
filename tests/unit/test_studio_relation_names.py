@@ -68,7 +68,8 @@ def test_a_bad_viewer_is_refused_before_any_statement() -> None:
 
 
 def test_the_titles_statement_names_the_org_the_package_and_the_row_rule() -> None:
-    assert f"organization_id = {store._BOUND_ORG}" in store._GET_RECORDS_SQL
+    # The bind of the records themselves, and not only the one of the `_IN_PACKAGE` subquery.
+    assert f"FROM studio_records WHERE organization_id = {store._BOUND_ORG} AND" in store._GET_RECORDS_SQL
     assert "o.package_id = CAST(:pid AS uuid)" in store._GET_RECORDS_SQL
     assert f"{store._GET_RECORDS_SQL} AND {store._ACCESS_ROW_SQL}" == store._GET_RECORDS_SCOPED_SQL
     assert "ANY(CAST(:rids AS uuid[]))" in store._GET_RECORDS_SQL

@@ -8,6 +8,6 @@
     {"name": "a blank title is no title", "fields": [{"key": "name", "type": "text"}], "data": {"name": "   "}, "key": "name", "title": null},
     {"name": "a missing title is no title", "fields": [{"key": "name", "type": "text"}], "data": {}, "key": "name", "title": null},
     {"name": "no fields", "fields": [], "data": {"a": "b"}, "key": null, "title": null},
-    {"name": "a first field that is a select", "fields": [{"key": "status", "type": "select"}, {"key": "note", "type": "longText"}], "data": {"status": "open"}, "key": "status", "title": "open"}
+    {"name": "a first field that is a select", "fields": [{"key": "status", "type": "select", "options": ["open", "done"]}, {"key": "note", "type": "longText"}], "data": {"status": "open"}, "key": "status", "title": "open"}
   ]
 }

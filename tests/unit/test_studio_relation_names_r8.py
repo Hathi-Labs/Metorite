@@ -208,8 +208,13 @@ def test_r8_the_owner_reads_a_page_of_three_names_in_one_read_and_a_constant_cou
 
 
 def test_r8_a_row_rule_on_the_target_hides_a_record_and_shows_the_other(world) -> None:
-    got, _ = _go(world, lambda: _titles(world, AS_L1, [world.t1, world.t2]))
+    got, seen = _go(world, lambda: _titles(world, AS_L1, [world.t1, world.t2]))
     assert got == {world.t1: "Plant 4", world.t2: None}
+    # Two layers hide it: the row rule joins the statement, and the view hides each key of a
+    # record that no grant reads. The statement of the owner holds no row rule.
+    assert any("ac.v_text" in s for s in _read_statements(seen))
+    _, owner_seen = _go(world, lambda: _titles(world, AS_OWNER, [world.t1, world.t2]))
+    assert not any("ac.v_text" in s for s in _read_statements(owner_seen))
     # A viewer whose roles read no record gets None for each id.
     none, _ = _go(world, lambda: _titles(world, AS_NOBODY, [world.t1, world.t2]))
     assert none == {world.t1: None, world.t2: None}
