@@ -16,7 +16,13 @@ This file proves:
 
 - one refresh makes one client call, and a catalog GET makes none, also on
   a cold cache and after a TTL ends;
-- the cache keeps a list for 300 seconds, and the TTL ends it;
+- the cache keeps the last good list for 7 days. Past 300 seconds it is
+  stale, and its rows are still served (review fix P2-2);
+- each answer and the whole read have a byte cap, ONE deadline covers every
+  page, and the read stops at the item cap (review fix P2-1);
+- a late failure never drops the list of a newer refresh (P3-1);
+- a refusal in a group or a cause chain is ``refused``, and a server key
+  with a trailing new line is 404 (P3-2);
 - a hostile description (a lone surrogate, a hidden character) never
   reaches the cache or a row, and the GET still answers 200;
 - a client that raises or times out gives a 502, no row of that server, and
@@ -30,26 +36,36 @@ This file proves:
 - no answer holds a url, a header or an exception text;
 - the real SDK path sends the stored headers through the pinned client only.
 
-**The mutations (R7).** Each ran on 2026-11-14, then was restored.
+**The mutations (R7).** Each ran on 2026-11-15, then was restored.
 
-* M1 (a). ``mcp_tools._scope``: bind one shared org (``"shared"``) in place
-  of *org*. 8 tests go red, among them
-  ``test_the_cache_of_one_org_never_serves_another`` and
-  ``test_the_slot_of_one_org_does_not_hold_another``. The R8 file goes red
-  too (see there).
+* M1 (a). ``mcp_tools._scope``: bind one shared org (``"shared"``). 9 tests
+  go red, among them ``test_the_cache_of_one_org_never_serves_another``.
+  The R8 file goes red too (see there).
 * M2 (b). ``mcp_tools.catalog_tools``: on an empty index, refresh each
-  server of ``enabled_meta``. 3 tests go red:
-  ``test_a_get_never_calls_a_server[False]``,
-  ``test_a_cold_cache_gives_no_row_and_stale`` and
-  ``test_the_cache_lives_300_seconds``.
-* M3 (c). ``mcp_tools._description``: return *raw* cut, with no
-  ``strip_hidden``. 3 tests go red: both cases of
-  ``test_a_hostile_description_never_reaches_the_cache_or_a_row`` and
-  ``test_a_cut_never_leaves_a_hidden_joiner``.
-* M4 (d). ``mcp_actions.unique_tools``: keep the first item of a name. 3
-  tests go red: ``test_a_duplicate_name_takes_the_stricter_class[read_first]``,
-  ``test_duplicates_count_once_toward_the_cap`` and
-  ``test_studio_mcp_catalog.py::test_the_stricter_tool_of_a_name_wins[False]``.
+  server. 3 tests go red, among them ``test_a_get_never_calls_a_server[False]``.
+* M3 (c). ``mcp_tools._description``: no ``strip_hidden``. 3 tests go red:
+  both hostile cases and ``test_a_cut_never_leaves_a_hidden_joiner``.
+* M4 (d). ``mcp_actions.unique_tools``: keep the first item. 3 tests go red,
+  among them ``test_a_duplicate_name_takes_the_stricter_class[read_first]``.
+* M5 (P2-1). ``_sdk_list``: call ``mcp_client`` with no budget. 5 tests go
+  red: both cases of ``test_a_huge_or_endless_answer_ends_with_too_large``,
+  ``test_the_total_cap_holds_over_many_small_answers`` and both cases of
+  ``test_the_sdk_path_sends_the_headers_through_the_pinned_client``.
+* M6 (P2-1). ``list_tools``: a deadline of 5 times ``READ_TIMEOUT_S``, one
+  for each page. ``test_one_deadline_covers_every_page`` goes red.
+* M7 (P2-1). ``_pages``: no stop at ``MAX_LISTED``.
+  ``test_the_read_stops_at_the_item_cap`` goes red.
+* M8 (P2-2). ``LIST_TTL_S = 300``. 3 tests go red:
+  ``test_the_last_good_list_is_served_and_its_age_sets_stale``,
+  ``test_one_old_list_makes_the_catalog_stale`` and
+  ``test_catalog_rows_keep_the_rows_after_300_seconds``.
+* M9 (P3-1). ``_forget``: no compare of the slot token.
+  ``test_a_late_failure_never_drops_the_list_of_a_newer_refresh`` goes red.
+* M10 (P3-2). ``_reason``: read the top exception only. 4 tests go red:
+  two wrapped cases of ``test_a_failed_server_shows_no_row_and_leaves_the_others``
+  and both cases of ``test_a_refusal_in_the_cause_chain_is_found``.
+* M11 (P3-2). ``_server_key``: ``match`` in place of ``fullmatch``. The two
+  ``%0A`` cases of ``test_a_server_key_that_the_registry_refuses_is_404`` go red.
 """
 
 from __future__ import annotations
@@ -197,6 +213,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         registry_reads=[],
     )
     monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
+    monkeypatch.setattr(mcp_tools, "_now", lambda: raw.now)
 
     async def _servers_for_org(org: str, *, oauth_wanted: Any = None) -> list[Any]:
         w.registry_reads.append(("servers_for_org", org))
@@ -314,17 +331,50 @@ def test_the_get_is_not_stale_when_each_server_is_cached(world) -> None:
     assert _mcp(body) == [("mcp:github.a", "A"), ("mcp:linear.b", "A")]
 
 
-def test_the_cache_lives_300_seconds(world) -> None:
+def test_the_last_good_list_is_served_and_its_age_sets_stale(world) -> None:
+    """Review fix P2-2. The list lives 7 days. Past 300 s it is stale, and the
+    rows are still served, so ``catalog_rows`` does not change every 5 min."""
     _give(world, ORG_A, "github", [_tool("a", READ)])
+    _give(world, ORG_A, "linear", [_tool("b", READ)])
     _refresh(world, "github")
+    _refresh(world, "linear")
     key = world.raw.tools_key(ORG_A, "github")
-    assert world.raw.expiry[key] - world.raw.now == mcp_tools.CACHE_TTL_S == 300
+    assert world.raw.expiry[key] - world.raw.now == mcp_tools.LIST_TTL_S == 7 * 24 * 3600
+    assert mcp_tools.FRESH_S == 300
     world.raw.now += 299
-    assert _mcp(_get(world).json()) == [("mcp:github.a", "A")]
+    body = _get(world).json()
+    assert body["stale"] is False
+    assert _mcp(body) == [("mcp:github.a", "A"), ("mcp:linear.b", "A")]
     world.raw.now += 2
     body = _get(world).json()
+    assert body["stale"] is True
+    assert _mcp(body) == [("mcp:github.a", "A"), ("mcp:linear.b", "A")]
+    world.raw.now += mcp_tools.LIST_TTL_S
+    body = _get(world).json()
     assert _mcp(body) == [] and body["stale"] is True
-    assert len(world.calls) == 1
+    assert len(world.calls) == 2
+
+
+def test_one_old_list_makes_the_catalog_stale(world) -> None:
+    _give(world, ORG_A, "github", [_tool("a", READ)])
+    _give(world, ORG_A, "linear", [_tool("b", READ)])
+    _refresh(world, "github")
+    world.raw.now += 400
+    _refresh(world, "linear")
+    body = _get(world).json()
+    assert body["stale"] is True and len(_mcp(body)) == 2
+    _refresh(world, "github")
+    assert _get(world).json()["stale"] is False
+
+
+async def test_catalog_rows_keep_the_rows_after_300_seconds(world) -> None:
+    """The callers of ``catalog_rows`` (the skill check, the package publish,
+    ``_named_row``) see the same id between two refreshes."""
+    _give(world, ORG_A, "github", [_tool("a", READ)])
+    _refresh(world, "github")
+    world.raw.now += 3600
+    rows = await actions.catalog_rows()
+    assert "mcp:github.a" in {r["id"] for r in rows} and rows.stale is True
 
 
 def test_an_always_confirm_server_makes_each_cached_tool_b(world) -> None:
@@ -385,7 +435,7 @@ def test_a_dark_org_gets_404_and_no_call(world, monkeypatch) -> None:
     assert world.calls == [] and world.registry_reads == []
 
 
-@pytest.mark.parametrize("name", ["Bad.Name", "x" * 60, "a_b"])
+@pytest.mark.parametrize("name", ["Bad.Name", "x" * 60, "a_b", "github%0A", "github%0a"])
 def test_a_server_key_that_the_registry_refuses_is_404(world, name: str) -> None:
     assert _refresh(world, name).status_code == 404
     assert world.calls == []
@@ -398,6 +448,11 @@ def test_a_server_key_that_the_registry_refuses_is_404(world, name: str) -> None
     (RuntimeError(f"boom {SECRET} https://{HOST}/x"), "mcp_unreachable"),
     (outbound_guard.OutboundRefused(HOST, "not public"), "mcp_refused"),
     (ExceptionGroup("tg", [ConnectionError(SECRET)]), "mcp_unreachable"),
+    (ExceptionGroup("tg", [ExceptionGroup("in", [outbound_guard.OutboundRefused(HOST, "x")])]),
+     "mcp_refused"),
+    (outbound_guard.AnswerTooLarge(HOST, "too large"), "mcp_too_large"),
+    (ExceptionGroup("tg", [outbound_guard.AnswerTooLarge(HOST, "too large")]),
+     "mcp_too_large"),
 ])
 def test_a_failed_server_shows_no_row_and_leaves_the_others(world, fault, code) -> None:
     _give(world, ORG_A, "github", [_tool("a", READ)])
@@ -411,6 +466,69 @@ def test_a_failed_server_shows_no_row_and_leaves_the_others(world, fault, code) 
     assert r.json()["detail"]["code"] == code
     assert SECRET not in r.text and HOST not in r.text and "boom" not in r.text
     assert _mcp(_get(world).json()) == [("mcp:linear.b", "A")]
+
+
+def _caused(cause: BaseException, *, explicit: bool) -> BaseException:
+    try:
+        try:
+            raise cause
+        except BaseException as inner:
+            if explicit:
+                raise RuntimeError("wrapped") from inner
+            raise RuntimeError("wrapped")  # noqa: B904 - the implicit context is the case
+    except RuntimeError as outer:
+        return outer
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_a_refusal_in_the_cause_chain_is_found(explicit: bool) -> None:
+    """Review fix P3-2: a refusal in ``__cause__`` or ``__context__``."""
+    exc = _caused(outbound_guard.OutboundRefused(HOST, "not public"), explicit=explicit)
+    assert mcp_tools._reason(exc) == "refused"
+    group = ExceptionGroup("tg", [RuntimeError("x"), exc])
+    assert mcp_tools._reason(group) == "refused"
+    assert mcp_tools._reason(RuntimeError("plain")) == "unreachable"
+
+
+def test_a_late_failure_never_drops_the_list_of_a_newer_refresh(world) -> None:
+    """Review fix P3-1. Refresh 1 holds the slot and waits. The slot ends,
+    refresh 2 takes a new slot and stores its list, and refresh 1 then fails.
+    The list of refresh 2 stays."""
+    gate = asyncio.Event()
+
+    async def _slow_then_fail(_server: Any) -> list[Any]:
+        await gate.wait()
+        raise RuntimeError("late")
+
+    async def _good(_server: Any) -> list[Any]:
+        return [_tool("fresh", READ)]
+
+    async def _run() -> Any:
+        first = asyncio.ensure_future(mcp_tools.refresh(ORG_A, "github", lister=_slow_then_fail))
+        slot = f"{tenant_redis.KEY_ROOT}:{ORG_A}:{mcp_tools.NAMESPACE}:refresh:github"
+        for _ in range(1000):  # bounded, so a broken key fails and never hangs
+            if world.raw.data.get(slot):
+                break
+            await asyncio.sleep(0)
+        assert world.raw.data.get(slot), "refresh 1 took no slot"
+        world.raw.now += mcp_tools.REFRESH_INTERVAL_S + 1
+        second = await mcp_tools.refresh(ORG_A, "github", lister=_good)
+        gate.set()
+        return second, await first
+
+    second, first = asyncio.run(_run())
+    assert second.ok is True and first.ok is False
+    assert _mcp(_get(world).json()) == [("mcp:github.fresh", "A")]
+
+
+def test_a_failure_of_the_slot_holder_drops_its_list(world) -> None:
+    """Not vacuous: with no newer refresh, a failure still drops the list."""
+    _give(world, ORG_A, "github", [_tool("a", READ)])
+    _refresh(world, "github")
+    world.raw.now += mcp_tools.REFRESH_INTERVAL_S + 1
+    world.fail["github"] = RuntimeError("down")
+    assert _refresh(world, "github").status_code == 502
+    assert _mcp(_get(world).json()) == []
 
 
 def test_a_server_that_times_out_shows_no_row(world, monkeypatch) -> None:
@@ -603,9 +721,10 @@ async def test_the_sdk_path_sends_the_headers_through_the_pinned_client(
     built: list[str] = []
     real_client = real_guard.mcp_client
 
-    async def _counted(url: str) -> Any:
+    async def _counted(url: str, **kw: Any) -> Any:
         built.append(url)
-        return await real_client(url)
+        assert isinstance(kw.get("budget"), outbound_guard.AnswerBudget)
+        return await real_client(url, **kw)
 
     monkeypatch.setattr(real_guard, "mcp_client", _counted)
     server = _server("github", ORG_A)
@@ -617,6 +736,158 @@ async def test_the_sdk_path_sends_the_headers_through_the_pinned_client(
     assert posts and all(r.headers["authorization"] == SECRET for r in posts)
     assert all(r.url.host == "93.184.216.34" and r.headers["host"] == "mcp.example.com"
                for r in posts)
+
+
+def _guard_on(monkeypatch, handler: Any) -> None:
+    monkeypatch.setattr(outbound_guard, "_resolve", lambda _h, _p: ["93.184.216.34"])
+    monkeypatch.setattr(outbound_guard, "_is_local_address", lambda _a: False)
+    monkeypatch.setattr(outbound_guard, "_mcp_inner_transport",
+                        lambda: httpx.MockTransport(handler))
+
+
+def _rpc(msg: dict[str, Any], result: dict[str, Any]) -> httpx.Response:
+    return httpx.Response(200, json={"jsonrpc": "2.0", "id": msg["id"], "result": result})
+
+
+def _init(msg: dict[str, Any]) -> httpx.Response:
+    return _rpc(msg, {"protocolVersion": msg["params"]["protocolVersion"],
+                      "capabilities": {"tools": {}},
+                      "serverInfo": {"name": "fake", "version": "1"}})
+
+
+async def _list_of(monkeypatch, handler: Any) -> Any:
+    """``list_tools`` of one server, with the real ``_sdk_list`` on *handler*."""
+    _guard_on(monkeypatch, handler)
+    server = _server("github", ORG_A)
+    server.url = "https://mcp.example.com/mcp"
+
+    async def _servers(_org: str, **_k: Any) -> list[Any]:
+        return [server]
+
+    monkeypatch.setattr(mcp_registry, "servers_for_org", _servers)
+    return await mcp_tools.list_tools(ORG_A, "github")
+
+
+CHUNK = 64 * 1024
+
+
+@pytest.mark.parametrize("kind", ["json_50_mib", "endless_sse"])
+async def test_a_huge_or_endless_answer_ends_with_too_large(monkeypatch, kind: str) -> None:
+    """Review fix P2-1. A 50 MiB body and an endless SSE stream each end with
+    ``too_large``, fast, and the read pulls only about the cap of bytes."""
+    monkeypatch.setattr(mcp_tools, "READ_TIMEOUT_S", 5.0)
+    pulled = {"bytes": 0}
+
+    async def _body(limit: int | None) -> Any:
+        sent = 0
+        while limit is None or sent < limit:
+            pulled["bytes"] += CHUNK
+            sent += CHUNK
+            yield (b"data: " + b"x" * (CHUNK - 8) + b"\n\n") if limit is None else b" " * CHUNK
+            await asyncio.sleep(0)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(405)
+        msg = json.loads(request.content)
+        if "id" not in msg:
+            return httpx.Response(202)
+        if msg["method"] == "initialize":
+            return _init(msg)
+        if kind == "json_50_mib":
+            return httpx.Response(200, headers={"content-type": "application/json"},
+                                  content=_body(50 * 1024 * 1024))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              content=_body(None))
+
+    started = time.monotonic()
+    with pytest.raises(mcp_tools.ListFailed) as failed:
+        await _list_of(monkeypatch, handle)
+    assert failed.value.reason == "too_large"
+    assert time.monotonic() - started < 4
+    assert pulled["bytes"] <= mcp_tools.MAX_ANSWER_BYTES + 2 * CHUNK
+
+
+async def test_the_total_cap_holds_over_many_small_answers(monkeypatch) -> None:
+    """Each page is under the cap of one answer, and the pages together pass
+    the cap of the read."""
+    monkeypatch.setattr(mcp_tools, "MAX_READ_BYTES", 300 * 1024)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(405)
+        msg = json.loads(request.content)
+        if "id" not in msg:
+            return httpx.Response(202)
+        if msg["method"] == "initialize":
+            return _init(msg)
+        cursor = int((msg.get("params") or {}).get("cursor") or 0)
+        return _rpc(msg, {"tools": [{"name": f"t{cursor}", "inputSchema": {"type": "object"},
+                                     "description": "d" * 200_000}],
+                          "nextCursor": str(cursor + 1)})
+
+    with pytest.raises(mcp_tools.ListFailed) as failed:
+        await _list_of(monkeypatch, handle)
+    assert failed.value.reason == "too_large"
+
+
+async def test_one_deadline_covers_every_page(monkeypatch) -> None:
+    """Each page answers in 0.3 s, under the deadline. Five pages together
+    pass the deadline of 1 s, so the read ends with ``timeout``."""
+    monkeypatch.setattr(mcp_tools, "READ_TIMEOUT_S", 1.0)
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(405)
+        msg = json.loads(request.content)
+        if "id" not in msg:
+            return httpx.Response(202)
+        if msg["method"] == "initialize":
+            return _init(msg)
+        await asyncio.sleep(0.3)
+        cursor = int((msg.get("params") or {}).get("cursor") or 0)
+        return _rpc(msg, {"tools": [{"name": f"t{cursor}", "inputSchema": {"type": "object"}}],
+                          "nextCursor": str(cursor + 1)})
+
+    started = time.monotonic()
+    with pytest.raises(mcp_tools.ListFailed) as failed:
+        await _list_of(monkeypatch, handle)
+    assert failed.value.reason == "timeout"
+    assert time.monotonic() - started < 2.5
+
+
+async def test_the_read_stops_at_the_item_cap(monkeypatch) -> None:
+    """Pages of 600 tools: the read keeps MAX_LISTED + 1 items and stops."""
+    pages: list[int] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(405)
+        msg = json.loads(request.content)
+        if "id" not in msg:
+            return httpx.Response(202)
+        if msg["method"] == "initialize":
+            return _init(msg)
+        cursor = int((msg.get("params") or {}).get("cursor") or 0)
+        pages.append(cursor)
+        return _rpc(msg, {"tools": [{"name": f"p{cursor}_{i}", "inputSchema": {"type": "object"}}
+                                    for i in range(600)], "nextCursor": str(cursor + 1)})
+
+    listed = await _list_of(monkeypatch, handle)
+    assert pages == [0, 1]
+    assert len(listed.tools) == mcp_tools.MAX_TOOLS and listed.truncated is True
+
+
+def test_clean_tools_reads_at_most_the_item_cap() -> None:
+    def _endless() -> Any:
+        i = 0
+        while True:
+            i += 1
+            if i > 10 * mcp_tools.MAX_LISTED:
+                raise AssertionError("clean_tools read past the cap")
+            yield _tool(f"t{i}", READ)
+
+    assert mcp_tools.clean_tools(_endless()).truncated is True
 
 
 async def test_the_sdk_path_refuses_a_url_that_is_not_https(monkeypatch) -> None:

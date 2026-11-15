@@ -32,6 +32,7 @@ non-local socket connect. A call that reaches one fails with the text in
 
 from __future__ import annotations
 
+import json
 import socket
 import uuid
 from typing import Any, get_args, get_type_hints
@@ -257,8 +258,8 @@ async def test_the_mcp_source_of_the_real_catalog_reads_only_the_cache(no_outbou
     index = f"cc:org-a:{mcp_tools.NAMESPACE}:index"
     raw.data[index] = {"github": "1"}
     raw.data[f"cc:org-a:{mcp_tools.NAMESPACE}:tools:github"] = (
-        '{"v": 1, "tools": [{"name": "get_issue", "description": "", '
-        '"annotations": {"readOnlyHint": true}}]}')
+        json.dumps({"v": 2, "fetched_at": mcp_tools._now(), "tools": [
+            {"name": "get_issue", "description": "", "annotations": {"readOnlyHint": True}}]}))
 
     async def _meta(_org):
         from types import SimpleNamespace
