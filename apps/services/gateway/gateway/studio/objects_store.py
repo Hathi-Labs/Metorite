@@ -4562,6 +4562,12 @@ MAX_TREE_NODES = 2_000
 #: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
 #: the object in the index prefix, or it scans the whole org.
 _HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+#: The same for the lookup of a PARENT RECORD by id in ``studio_records``. CI plan of run
+#: 43682459066 (task 3308): with ``p.object_id = ...`` the planner took
+#: ``studio_records_object_id_key`` (organization, object) as the index condition and filtered
+#: ``id`` row by row: 1,999 lookups of 675 rows, 3.7 s. The primary key is the path with a full
+#: equality on ``id``.
+_REC_OF_OBJECT = "p.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
 
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
@@ -4572,7 +4578,7 @@ _TREE_PARENT = (
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
     "JOIN LATERAL (SELECT p.id FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
+    "AND " + _REC_OF_OBJECT + " "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
     "OFFSET 0) p ON true "
 )
@@ -4630,7 +4636,7 @@ _TREE_ALL_ROOTS = (
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
     "JOIN LATERAL (SELECT 1 FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
+    "AND " + _REC_OF_OBJECT + " "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
     "OFFSET 0) p ON true)"
 )
