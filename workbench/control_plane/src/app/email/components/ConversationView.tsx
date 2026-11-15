@@ -262,7 +262,7 @@ export function ConversationView({
                       Bcc of a mail the member sent, in one line until the
                       member asks (owner, 2026-11-01). The Cc stays in the
                       line by name: one cut line hid it (2026-10-24). */}
-                  <RecipientSummary to={m.to} cc={m.cc} bcc={m.bcc} accountId={m.accountId} className="min-w-0 space-y-0.5 text-[11px]" />
+                  <RecipientSummary to={m.to} cc={m.cc} bcc={m.bcc} accountId={m.accountId} className="min-w-0 select-text space-y-0.5 text-[11px]" />
                   {/* A direct child: the row measures this line for its width. */}
                   {renderActions?.(view)}
                 </div>
