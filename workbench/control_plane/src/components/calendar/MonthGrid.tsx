@@ -8,7 +8,7 @@ import type { GridEvent, GridTone } from "./types";
 // The date helpers are the ones the Calendar already uses. A second copy
 // would drift.
 
-const TONE: Record<Exclude<GridTone, "custom">, string> = {
+export const TONE: Record<Exclude<GridTone, "custom">, string> = {
   primary: "bg-primary/10 text-primary",
   destructive: "bg-destructive/10 text-destructive",
   muted: "text-muted-foreground",
