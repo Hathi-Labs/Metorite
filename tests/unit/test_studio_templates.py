@@ -155,10 +155,24 @@ def test_a_framed_template_declares_a_rail_over_its_pages(tid: str) -> None:
     assert validate_manifest(doc) == []
 
 
-def test_the_unframed_templates_stay_unframed() -> None:
-    # A template with no `nav` gets the default rail from the client (§5.5 rule 3).
-    for tid in set(IDS) - set(FRAMED):
-        assert "nav" not in _doc(tid)
+#: Templates that declare their own rail (K7 and K8, PR 2305, on purpose). AF-9 does not touch them.
+OWN_RAIL = ("shipment-tracker", "site-survey")
+#: The templates that still have no `nav`: the client draws the default rail for them (§5.5 rule 3).
+NO_RAIL = ("expense-claims", "hiring", "spares")
+
+
+def test_a_template_has_a_rail_from_af9_or_k7_k8_or_none_on_purpose() -> None:
+    """Each template is in exactly one list: framed by AF-9, a rail of its own (K7 and K8), or
+    no rail. A new template must pick one, so a rail never appears by accident. The test says
+    which of the lists a template with a `nav` belongs to, and it holds the three that stay
+    unframed free of a `nav`."""
+    assert set(FRAMED) | set(OWN_RAIL) | set(NO_RAIL) == set(IDS), set(IDS) ^ (
+        set(FRAMED) | set(OWN_RAIL) | set(NO_RAIL))
+    assert not (set(FRAMED) & set(OWN_RAIL)) and not (set(NO_RAIL) & (set(FRAMED) | set(OWN_RAIL)))
+    for tid in NO_RAIL:
+        assert "nav" not in _doc(tid), tid
+    for tid in (*FRAMED, *OWN_RAIL):
+        assert _doc(tid)["nav"], tid
 
 
 # --- STU-AF9b: Dashboard, My and Open, with counts on My and Open (D219) ---------
