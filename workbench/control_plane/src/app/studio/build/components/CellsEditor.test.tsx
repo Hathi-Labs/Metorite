@@ -39,7 +39,7 @@ const counted = base(
 
 function draw(m: unknown, over: { locked?: boolean; open?: boolean } = {}): string {
   return renderToStaticMarkup(createElement(CellsEditor, {
-    page: { ...layoutView(m, "home"), id: "home", title: "" }, views: viewChoices(m),
+    page: { ...layoutView(m, "home"), id: "home", title: "" }, views: viewChoices(m), manifest: m,
     act: () => undefined, onRemoveTab: () => undefined, onToggle: () => undefined,
     locked: over.locked ?? false, open: over.open ?? true,
   }));
@@ -209,5 +209,53 @@ describe("the acts of the editor", () => {
   it("refuses a counted removal with nothing sent", () => {
     expect(run(counted, (x) => removeCellGuarded(x, "home", { tabId: null, index: 0 }))).toBeNull();
     expect(run(counted, (x) => removeCellGuarded(x, "home", { tabId: null, index: 1 }))).not.toBeNull();
+  });
+});
+
+describe("CellsEditor drag layer (AF-11b-2)", () => {
+  it("draws a handle for each cell row, named by the cell and its list", () => {
+    const html = draw(tabbed);
+    for (const label of ["Drag cell 1 in Alpha", "Drag cell 2 in Alpha", "Drag cell 1 in Beta"]) {
+      const tag = tagOf(html, label);
+      expect(tag).toContain('draggable="true"');
+      expect(tag).not.toMatch(/\sdisabled=""/);
+    }
+    expect(html.match(/aria-label="Drag cell /g)).toHaveLength(3);
+  });
+
+  it("draws a strip with one draggable chip for each view of the draft", () => {
+    const html = draw(flat);
+    const from = html.indexOf("Drag a view onto a list, or use Add cell.");
+    expect(from).toBeGreaterThan(-1);
+    const strip = html.slice(from, html.indexOf('role="status"'));
+    expect(strip.match(/draggable="true"/g)).toHaveLength(3);
+    for (const label of ["Order list", "form", "board"]) expect(strip).toContain(label);
+  });
+
+  it("turns every handle and chip off when the editor is locked", () => {
+    const html = draw(tabbed, { locked: true });
+    const tags = html.match(/<button[^>]*draggable="true"[^>]*>/g) ?? [];
+    expect(tags.length).toBeGreaterThanOrEqual(6);
+    for (const tag of tags) expect(tag).toMatch(/\sdisabled=""/);
+  });
+
+  it("hides the handles, the strip and the line slot on a touch screen, where nothing drags", () => {
+    const html = draw(tabbed);
+    for (const label of ["Drag cell 1 in Alpha"]) expect(tagOf(html, label)).toContain("pointer-coarse:hidden");
+    expect(html).toMatch(/<div class="flex flex-col gap-1 pointer-coarse:hidden"><p[^>]*>Drag a view onto a list/);
+    expect(html).toMatch(/<div class="min-h-5 pointer-coarse:hidden"><p role="status"/);
+  });
+
+  it("keeps a status region at rest, and no alert and no empty-list zone", () => {
+    const html = draw(tabbed);
+    expect(html).toMatch(/<p role="status"[^>]*><\/p>/);
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain("Drop here to start this list.");
+  });
+
+  it("draws no handle and no strip for a closed page", () => {
+    const html = draw(flat, { open: false });
+    expect(html).not.toContain("Drag cell");
+    expect(html).not.toContain("Drag a view");
   });
 });

@@ -147,3 +147,49 @@ describe("CellsEditor", () => {
     expect(cells).not.toMatch(/where\([^)]*index\s*[+-]\s*\d/);
   });
 });
+
+// ── AF-11b-2: the drag layer ────────────────────────────────────────────────
+// Mutation 10: send a drop with a second `act(` in `land`. "a drop is one act" turns red.
+// Mutation 11: drop `disabled={locked` from a draggable control. "locks every drag source" turns red.
+// Mutation 12: add `onTouchStart` or a second `moveCell(`. "keeps the buttons as the one path for keyboard and touch" turns red.
+// Mutation 13: drop the `ring-2 ring-primary/40` highlight. "uses the highlight of a board column" turns red.
+describe("CellsEditor drag layer", () => {
+  it("a drop is one act, and the pure drop decides it", () => {
+    const land = cells.slice(cells.indexOf("const land = "), cells.indexOf("const clearLine"));
+    expect(land.match(/\bact\(/g)).toHaveLength(1);
+    expect(land).toMatch(/act\(\(m\) => \{\s*const d = drop\(ds, m, pid, loc,/);
+    expect(cells).not.toMatch(/\b(?:applyDrop|dropVerdict|canDrop)\(/);
+    expect(cells).toContain('from "@/lib/studio/cellDrag"');
+  });
+
+  it("locks every drag source", () => {
+    const sources = cells.match(/<Button\b(?:(?!\/>|<\/Button>)[\s\S])*\bdraggable\b(?:(?!\/>|<\/Button>)[\s\S])*(?:\/>|<\/Button>)/g) ?? [];
+    expect(sources).toHaveLength(2);
+    for (const s of sources) expect(s).toMatch(/disabled=\{locked/);
+    expect(cells).toContain("if (locked)");
+  });
+
+  it("keeps the buttons as the one path for keyboard and touch", () => {
+    expect(cells).toContain("Move to tab");
+    expect(cells).not.toMatch(/onTouch|onPointer|setPointerCapture|touchstart/);
+    expect(cells.match(/pointer-coarse:hidden/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(cells.match(/\bmoveCell\(/g)).toHaveLength(1);
+  });
+
+  it("names each handle, and says each move through a status or alert line", () => {
+    expect(cells).toContain("`Drag cell ${c.index + 1} in ${l.title}`");
+    expect(cells).toContain('role="status"');
+    expect(cells).toContain('role="alert"');
+  });
+
+  it("uses the highlight of a board column, with tokens only", () => {
+    expect(cells).toContain("ring-2 ring-primary/40");
+    expect(cells).toContain("border-t-primary");
+    expect(cells).toContain("border-b-primary");
+  });
+
+  it("is passed the draft by PagesTab, and sends nothing with it", () => {
+    expect(tab).toContain("manifest={manifest} act={act}");
+    expect(cells).not.toMatch(/onChange\(|applyFrame/);
+  });
+});
