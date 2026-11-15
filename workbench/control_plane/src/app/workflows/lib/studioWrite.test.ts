@@ -486,9 +486,9 @@ describe("a stored step that the form cannot edit", () => {
 });
 
 describe("the card of the step on the canvas", () => {
-  it("says adds, changes, or no action, from the config alone", () => {
+  it("says writes, changes, or no action, from the config alone", () => {
     expect(studioWriteSummary({ action: "" }).summary).toBe("No action picked yet.");
-    expect(studioWriteSummary({ action: "add_ticket", data: {} }).summary).toBe("Adds a record after the owner approves it.");
+    expect(studioWriteSummary({ action: "add_ticket", data: {} }).summary).toBe("Writes a record after the owner approves it.");
     expect(studioWriteSummary({ action: "edit_ticket", record_id: RID, data: {} }).summary).toBe(
       "Changes a record after the owner approves it.",
     );

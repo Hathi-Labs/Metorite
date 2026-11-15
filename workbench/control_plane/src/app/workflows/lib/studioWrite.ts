@@ -562,7 +562,7 @@ export function studioWriteSummary(config: Record<string, unknown>): {
       ? "No action picked yet."
       : changes
         ? "Changes a record after the owner approves it."
-        : "Adds a record after the owner approves it.",
+        : "Writes a record after the owner approves it.",
     detail: action,
     badges: ["needs approval"],
   };
