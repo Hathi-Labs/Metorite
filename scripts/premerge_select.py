@@ -24,6 +24,7 @@ Fence: tests/unit/test_premerge_select.py.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -53,6 +54,43 @@ def _by_size(files: set[str], root: Path) -> list[str]:
 
 
 _CACHE: dict = {}
+
+# A data file that tests read as TEXT is not reached by an import, so the selector cannot
+# see the link (2026-11-15: PR 2248 re-indented one line of tests/fences.json, and
+# test_merge_conflict_rules, which reads the file, went red on main). The picker finds
+# those tests by NAME: every test file that names the data file.
+DATA_SUFFIXES = (".json", ".md", ".yml", ".yaml", ".toml", ".txt", ".csv", ".sql")
+# Names that almost every test mentions. They would select the whole tree.
+GENERIC_NAMES = frozenset({
+    "README.md", "AGENTS.md", "CLAUDE.md", "INDEX.md", "package.json", "package-lock.json",
+    "tsconfig.json", "pyproject.toml", "uv.lock", "HANDOFF.md", "work_plan.md",
+})
+MAX_TESTS_PER_DATA_FILE = 40
+
+
+def named_tests(files: list[str], root: Path = at.ROOT, limit: int = MAX_TESTS_PER_DATA_FILE) -> tuple[set[str], bool]:
+    """(the test files that name a changed data file, whether a list was cut at `limit`)."""
+    found: set[str] = set()
+    cut = False
+    for f in files:
+        name = Path(f).name
+        if not f.endswith(DATA_SUFFIXES) or f.startswith(("workbench/", "tests/unit/golden/")) or name in GENERIC_NAMES:
+            continue
+        try:
+            out = subprocess.run(["git", "grep", "-l", "-F", "-e", name, "--", "tests/"], cwd=root,
+                                 capture_output=True, text=True, encoding="utf-8", timeout=60).stdout
+        except (OSError, subprocess.SubprocessError):
+            cut = True  # cannot tell: say so
+            continue
+        hits = sorted(
+            h.strip().replace("\\", "/") for h in out.splitlines()
+            if Path(h.strip()).name.startswith("test_") and h.strip().endswith(".py") and h.strip() != f
+        )
+        if len(hits) > limit:
+            cut = True
+            hits = hits[:limit]
+        found.update(hits)
+    return found, cut
 
 
 def _reach(files: list[str], root: Path, *, src_only: bool = False) -> tuple[set[str], bool]:
@@ -87,7 +125,10 @@ def _reach_uncached(files: list[str], root: Path, *, src_only: bool = False) -> 
 
 def full_sides(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str]:
     """The sides that the selector calls FULL (a file such as pyproject.toml changed)."""
-    return [name for name, files in (("pr", pr), ("main", main)) if _reach(files, root)[1]]
+    sides = [name for name, files in (("pr", pr), ("main", main)) if _reach(files, root)[1]]
+    if named_tests([*pr, *main], root)[1]:
+        sides.append("data-files-cut")
+    return sides
 
 
 def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[list[str], int] | None:
@@ -100,6 +141,8 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     pr_sel, pr_full = _reach(pr, root)
     main_sel, main_full = _reach(main, root)
     changed = _tests(pr, root) | _tests(main, root)
+    named, _cut = named_tests([*pr, *main], root)
+    changed |= {t for t in named if (root / t).is_file()}
     if "tests/fences.json" in (*pr, *main):
         # A changed fence list: the guards that read tests/fences.json run (tier 2 at least).
         changed |= {t for t in getattr(at, "FENCE_GUARD_TESTS", ()) if (root / t).is_file()}
@@ -114,7 +157,7 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     # Scanner tests are left out here: any .py change picks all of them.
     pr_src, _ = _reach(pr, root, src_only=True)
     main_src, _ = _reach(main, root, src_only=True)
-    tier1 = ((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src))
+    tier1 = ((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src)) | (named & changed)
     tier2 = changed - tier1
     tier3 = both - changed
     return _by_size(tier1, root) + _by_size(tier2, root) + _by_size(tier3, root), len(tier1)

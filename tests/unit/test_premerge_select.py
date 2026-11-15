@@ -118,6 +118,40 @@ def test_a_changed_fence_list_adds_the_tests_that_read_it(monkeypatch):
     """gate() cannot read tests/fences.json without the diff text, so the picker adds
     the guards by name (finding F2 of the review of 2026-11-15)."""
     _patch_reach(monkeypatch, {})
+    monkeypatch.setattr(ps, "named_tests", lambda *_a, **_k: (set(), False))
     monkeypatch.setattr(ps.at, "FENCE_GUARD_TESTS", ("tests/unit/test_fence_lists.py",), raising=False)
     got = ps.pick(["tests/fences.json"], ["tests/fences.json"])
     assert got == ["tests/unit/test_fence_lists.py"]
+
+
+def test_a_data_file_that_tests_read_as_text_selects_the_tests_that_name_it():
+    """2026-11-15: PR 2248 re-indented a line of tests/fences.json and
+    test_merge_conflict_rules (which reads the file) went red on main. No import links
+    them, so the picker finds the tests by the name of the data file."""
+    named, cut = ps.named_tests(["tests/fences.json"])
+    assert "tests/unit/test_merge_conflict_rules.py" in named
+    assert "tests/unit/test_fence_lists.py" in named
+    assert not cut
+
+
+def test_the_row_files_and_the_flag_doc_select_the_tests_that_name_them():
+    named, _ = ps.named_tests(["project-docs/specs/ai_studio_rows/B6a.md", "docs/flag_reload.md"])
+    assert "tests/unit/test_studio_run_as.py" in named
+    assert "tests/unit/test_agent_questions_r8.py" in named
+
+
+def test_code_and_generic_names_select_nothing():
+    named, cut = ps.named_tests(["scripts/premerge.sh", "tests/unit/test_premerge.py", "README.md", "package.json",
+                                 "workbench/control_plane/src/x.json"])
+    assert named == set() and not cut
+
+
+def test_a_name_that_too_many_tests_mention_is_cut_and_said(monkeypatch):
+    named, cut = ps.named_tests(["tests/fences.json"], limit=2)
+    assert len(named) == 2 and cut
+
+
+def test_the_named_tests_run_in_the_first_tier(monkeypatch):
+    _patch_reach(monkeypatch, {})
+    got, first = ps.pick_tiers(["tests/fences.json"], ["scripts/x.py"])
+    assert first >= 1 and "tests/unit/test_merge_conflict_rules.py" in got[:first]

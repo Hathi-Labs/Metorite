@@ -323,7 +323,7 @@ else
     say "UNPROVEN in part. Both sides changed a file that makes every test affected. Only the test files that a side changed ran."
   fi
   [ -s "$logs/note.txt" ] && [ "$both_full" = 0 ] && grep -q . "$logs/note.txt" \
-    && say "UNPROVEN in part. The selector says every test is affected by: $(cat "$logs/note.txt"). The other side's tests ran alone."
+    && say "UNPROVEN in part. The selector could not pick every test (reasons: $(cat "$logs/note.txt"); pr or main = every test is affected, data-files-cut = a data file is named by more tests than the cap). What it picked ran."
   rc=0
   timeout "$TEST_TIMEOUT" bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1 || rc=$?
   merged_fail="$(failed_ids "$logs/affected.log")"
