@@ -21,6 +21,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "home_server" / "merge_bot.sh"
+#: CIV-31d (H1): the one reader of the auto-revert mode.
+MODE_READER = ROOT / "scripts" / "home_server" / "auto_revert_mode.sh"
 PREMERGE = ROOT / "scripts" / "premerge.sh"
 BASH = shutil.which("bash")
 pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash")
@@ -332,6 +334,8 @@ class Env:
         CIV-31c: revert_tested reads the tip of main with `git -C "$ROOT"
         ls-remote origin`. The bot's own checkout is $ROOT, so a test of it runs
         this copy. The real checkout would ask GitHub.
+        CIV-31d: the copy holds the one reader of the mode too, as the bot's
+        real checkout does.
         """
         src = self.tmp / "botsrc"
         if not src.exists():
@@ -341,6 +345,7 @@ class Env:
             copy = src / "scripts" / "home_server" / "merge_bot.sh"
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(SCRIPT, copy)
+            shutil.copy(MODE_READER, copy.parent / MODE_READER.name)
         return src / "scripts" / "home_server" / "merge_bot.sh"
 
     def run(self, home=None, script=None, **extra):
@@ -1002,6 +1007,27 @@ def test_civ31c_the_bot_holds_an_auto_revert_pr_while_the_mode_is_not_on(env, mo
     (env.fix / "auto_revert_mode").write_text("on\n", encoding="utf-8")
     env.run(script=bot, AUTO_REVERT_STATE=state.as_posix())
     assert env.log.splitlines()[2:] == ["DONE 5 abc123"]
+
+
+def test_civ31d_the_bot_reads_the_mode_with_the_one_reader(env):
+    """CIV-31d (H1): the bot, the auto-revert pass and lane-merge step g run the
+    one reader auto_revert_mode.sh. The bot has no systemctl call of its own, so
+    it cannot read the mode another way than the pass. An AUTO_REVERT_MODE in
+    the bot's env counts for nothing: the unit says dry, so the bot holds."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any("systemctl" in ln for ln in code)
+    assert 'bash "$ROOT/scripts/home_server/auto_revert_mode.sh" 9>&-' in text
+    state = env.tmp / "auto-revert"
+    (state / "open").mkdir(parents=True)
+    tip = git(env.seed, "rev-parse", "main")
+    env.pr(5, path="revert_5.txt")
+    env.view(5, headRefName="auto-revert/" + "a" * 12)
+    wjson(state / "open" / "5.json", {"culprit": "a" * 40, "ids": ["t"], "tip": tip})
+    (env.fix / "auto_revert_mode").write_text("dry\n", encoding="utf-8")
+    env.run(script=env.bot_src(), AUTO_REVERT_STATE=state.as_posix(), AUTO_REVERT_MODE="on")
+    assert env.log.startswith("HOLD 5 the auto-revert mode is 'dry', not on")
+    assert env.merges == []
 
 
 def test_civ31b_an_auto_revert_pr_gets_no_retry_when_main_moves(env):

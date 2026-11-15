@@ -46,6 +46,32 @@ describe("rowsToEvents", () => {
     expect(e.title).toBe("Untitled");
     expect(e.data).toBe(row);
   });
+  describe("endField", () => {
+    const withEnd = { ...src, endField: "until" };
+    const row = (values: Record<string, unknown>) => [{ id: "a", values: { name: "x", ...values } }];
+    it("uses an end after the start", () => {
+      const [e] = rowsToEvents(row({ due: "2026-11-12T10:00:00Z", until: "2026-11-12T12:30:00Z" }), withEnd);
+      expect(e.end.getTime() - e.start.getTime()).toBe(150 * 60000);
+    });
+    it("falls back to the length when the end is before the start", () => {
+      const [e] = rowsToEvents(row({ due: "2026-11-12T10:00:00Z", until: "2026-11-12T09:00:00Z" }), withEnd);
+      expect(e.end.getTime() - e.start.getTime()).toBe(60 * 60000);
+    });
+    it("falls back to the length when the end is missing or not a date", () => {
+      for (const until of [undefined, null, "", "soon"]) {
+        const [e] = rowsToEvents(row({ due: "2026-11-12T10:00:00Z", until }), { ...withEnd, durationMins: 45 });
+        expect(e.end.getTime() - e.start.getTime()).toBe(45 * 60000);
+      }
+    });
+    it("keeps a date-only start all day", () => {
+      const [e] = rowsToEvents(row({ due: "2026-11-12", until: "2026-11-12T12:30:00Z" }), withEnd);
+      expect(e.allDay).toBe(true);
+      expect(e.end).toEqual(new Date(2026, 10, 13));
+    });
+    it("leaves out a row with no date, even with an end", () => {
+      expect(rowsToEvents(row({ until: "2026-11-12T12:30:00Z" }), withEnd)).toEqual([]);
+    });
+  });
 });
 
 describe("layoutSpans", () => {

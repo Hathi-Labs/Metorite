@@ -25,7 +25,7 @@ import { MAX_NAV_ROWS, MAX_NAV_SECTIONS, NAV_ICONS } from "./manifest";
 import { defaultPages, PAGE_CAPS } from "./pageModel";
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
+export const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 const list = (v: unknown): Obj[] => (Array.isArray(v) ? v.filter(isObj) : []);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const isIndex = (n: unknown, len: number): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0 && n < len;
@@ -36,10 +36,10 @@ const DASHED = /^[a-z][a-z0-9_-]{0,47}$/;
 export const DEFAULT_SECTION_TITLE = "Pages";
 
 /** The same array with item `i` replaced. */
-const put = <T,>(xs: readonly T[], i: number, v: T): T[] => xs.map((x, j) => (j === i ? v : x));
+export const put = <T,>(xs: readonly T[], i: number, v: T): T[] => xs.map((x, j) => (j === i ? v : x));
 
 /** The array with item `i` moved by `delta`, clamped to the ends. `null` when nothing moves. */
-function shifted<T>(xs: readonly T[], i: number, delta: unknown): T[] | null {
+export function shifted<T>(xs: readonly T[], i: number, delta: unknown): T[] | null {
   if (typeof delta !== "number" || !Number.isInteger(delta) || delta === 0 || !isIndex(i, xs.length)) return null;
   const to = Math.min(xs.length - 1, Math.max(0, i + delta));
   if (to === i) return null;

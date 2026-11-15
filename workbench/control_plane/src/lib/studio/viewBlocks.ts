@@ -20,6 +20,7 @@ import {
   detailFields, fieldSpecs, formFields, noBoardReason, objectBoardBlock, tableFields,
 } from "./packagePreview";
 import { viewObjectName } from "./pageModel";
+import { resolveMe } from "./meToken";
 import {
   NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, verbMap, type DeclaredAction, type ObjectRow,
 } from "./realDoor";
@@ -35,6 +36,8 @@ export interface ViewMapContext {
   owner: boolean;
   /** The list bar's choices for one view. Absent when the bar is off. */
   lens?: ViewLens | null;
+  /** The email of the signed-in member. It replaces the `me` token of a view filter (STU-AF3b). */
+  email?: string | null;
   /** The start of the record link for rows of an object (STU-AF5), or null. Absent when the frame has no record page. */
   recordBase?: ((object: string) => string | null) | null;
 }
@@ -71,13 +74,61 @@ export interface ViewDetail {
   source: { action: string; args: Record<string, unknown> };
 }
 
+/** The page waits for the session email, so it does not read yet. It shows a loading state, not an error. */
+export interface ViewLoading {
+  kind: "loading";
+}
+
 export interface ViewProblem {
   kind: "problem";
   /** One plain sentence for the member. */
   reason: string;
 }
 
-export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem;
+export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem | ViewLoading;
+
+type ListFields = readonly { key: string; type: string }[];
+
+/**
+ * The filter and the sort that a table or board view declares in `source.args` (STU-AF3b). The
+ * `me` token of a person field becomes the email. No other key passes, because the list takes only
+ * filter, sort, limit and offset. The count of the rail reads the same filter.
+ */
+export function ownListArgs(
+  view: Pick<ViewDef, "source">, fields: ListFields | undefined, email: string | null | undefined,
+): { filter?: unknown[]; sort?: { field: string; dir: "asc" | "desc" } } {
+  const raw = view.source?.args;
+  const out: { filter?: unknown[]; sort?: { field: string; dir: "asc" | "desc" } } = {};
+  if (!raw) return out;
+  if (Array.isArray(raw.filter) && raw.filter.length > 0) {
+    const isPerson = (k: string) => fields?.find((f) => f.key === k)?.type === "person";
+    const source = { action: "", args: { filter: raw.filter } };
+    // With no email the token stays, and it matches no record.
+    const resolved = resolveMe(source, email, isPerson) ?? source;
+    out.filter = resolved.args?.filter as unknown[];
+  }
+  const sort = raw.sort as { field?: unknown; dir?: unknown } | undefined;
+  if (sort && typeof sort.field === "string" && (sort.dir === "asc" || sort.dir === "desc")) {
+    out.sort = { field: sort.field, dir: sort.dir };
+  }
+  return out;
+}
+
+/**
+ * True when the view filter holds `me` on a person field and the email is not known yet. The door
+ * refuses a literal `me`, so the page does not read until the email arrives.
+ */
+export function waitsForEmail(
+  view: Pick<ViewDef, "source">, fields: ListFields | undefined, email: string | null | undefined,
+): boolean {
+  const filter = view.source?.args?.filter;
+  if (!Array.isArray(filter) || filter.length === 0) return false;
+  const isPerson = (k: string) => fields?.find((f) => f.key === k)?.type === "person";
+  return resolveMe({ action: "", args: { filter } }, email, isPerson) === null;
+}
+
+/** The most conditions that the door takes in one filter (`MAX_FILTERS` of `studio_query.py`). */
+export const MAX_FILTERS = 8;
 
 const problem = (reason: string): ViewProblem => ({ kind: "problem", reason });
 const WRITE_CREATE = /^object:[a-z][a-z0-9_]{0,47}\.create$/;
@@ -115,7 +166,18 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   const named = view.fields?.length ? view.fields.map((k) => specs.find((f) => f.key === k)).filter((f): f is FieldSpec => !!f) : specs;
   const shown = named.length ? named : specs;
   const verbs = verbMap(ctx.actions);
-  const list = { action: `object:${name}.list`, args: { limit: VIEW_LIMIT, ...(lens?.args ?? {}) } };
+  // The view's own filter and sort come first. The list bar adds its filter to it, and its sort wins.
+  const listed = view.block === "table" || view.block === "board";
+  if (listed && waitsForEmail(view, object.fields, ctx.email)) return { kind: "loading" };
+  const own = listed ? ownListArgs(view, object.fields, ctx.email) : {};
+  // The join holds at most MAX_FILTERS conditions. The view's own conditions come first and win,
+  // because they are the intent of the app author. The bar conditions that do not fit are dropped.
+  const filter = [...(own.filter ?? []), ...(lens?.args?.filter ?? [])].slice(0, MAX_FILTERS);
+  const sort = lens?.args?.sort ?? own.sort;
+  const list = {
+    action: `object:${name}.list`,
+    args: { limit: VIEW_LIMIT, ...(filter.length ? { filter } : {}), ...(sort ? { sort } : {}) },
+  };
   if (verbs[list.action] === undefined && view.block !== "form") {
     return problem(NOT_DECLARED_SENTENCE);
   }
