@@ -413,6 +413,29 @@ def test_r8_the_switch_off_is_404_and_reads_nothing(world, monkeypatch) -> None:
     assert _audits(world, world.pkg) == []
 
 
+async def _plan_report(org: str, pkg: str, oid: str) -> str:
+    """The plan of the tree read and the facts that decide it, for a failure message
+    (task 3308: the failure shows on a CI runner and not on a fast box, so the run must
+    tell its own plan)."""
+    binds = {"oid": oid, "pid": pkg, "fk": "parent", "depth": 20, "limit": 2000}
+    try:
+        async with tenant_session(org) as db:
+            await db.execute(text("SET LOCAL statement_timeout = 60000"))
+            facts = [str(r) for r in (await db.execute(text(
+                "SELECT current_setting('server_version'), current_setting('jit'), "
+                "current_setting('work_mem'), current_setting('shared_buffers'), "
+                "current_setting('random_page_cost'), current_setting('effective_cache_size')"
+            ))).all()]
+            facts += [str(r) for r in (await db.execute(text(
+                "SELECT relname, reltuples, relpages FROM pg_class WHERE relname IN "
+                "('studio_records','studio_record_hot')"))).all()]
+            plan = (await db.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS) " + store._TREE_ALL_SQL), binds)).all()
+        return "\n".join(facts) + "\n" + "\n".join(r[0] for r in plan)
+    except Exception as exc:
+        return f"plan report failed: {type(exc).__name__}: {str(exc)[:200]}"
+
+
 @pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
 def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> None:
     """One root and 1,999 children: 2,000 nodes are not cut, and one more is."""
@@ -473,6 +496,9 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> Non
         began = time.monotonic()
         (status, got), walks = _run(world, read)
         took = time.monotonic() - began
+        if status != 200 or took >= 1.0:
+            report = _run(world, lambda: _plan_report(world.a, world.pkg, world.lot.id))
+            raise AssertionError(f"status {status}, read took {took:.2f}s\n{report}")
         assert status == 200 and walks == 1, got
         # The deadline is 5 s. With the old statements this read took about 0.9 s on a
         # fast box and past 5 s on a CI runner, so the margin is part of the fence.
