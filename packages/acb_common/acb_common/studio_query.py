@@ -433,8 +433,7 @@ MEASURE_OPS: tuple[str, ...] = ("count", "sum", "average")
 BUCKETS: tuple[str, ...] = ("day", "month")
 #: The types that a group takes: each type of the op table except money. A
 #: money value has a currency, so it is not a key. A person (C8a) is not a key
-#: either: the aggregate takes no viewer yet, and a count for each member would
-#: show the records of a row rule.
+#: either: a count for each member would show the records of a row rule.
 GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money", "person"}
 #: The types of the field of each measure that reads one.
 MEASURE_TYPES: Mapping[str, frozenset[str]] = {
