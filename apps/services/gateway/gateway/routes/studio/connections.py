@@ -52,6 +52,7 @@ Fences: ``tests/unit/test_studio_connect_in_place.py`` and
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -132,7 +133,7 @@ def connection_needs(manifest: Any) -> tuple[tuple[str, str, tuple[str, ...] | N
                  for i, raw in zip(items, raws, strict=True) if i is not None)
 
 
-def connection_rows(needs: tuple[tuple[str, ...], ...], met: host_resolve.Met,
+def connection_rows(needs: Sequence[tuple[Any, ...]], met: host_resolve.Met,
                     user: UserContext) -> list[dict[str, Any]]:
     """One row for each ``(name, as, scopes)``, in order. Pure: it reads no
     database. A need of two items, ``(name, as)``, has no scopes.
@@ -148,7 +149,7 @@ def connection_rows(needs: tuple[tuple[str, ...], ...], met: host_resolve.Met,
     for need in needs:
         name, whose = need[0], need[1]
         scopes = need[2] if len(need) > 2 else ()
-        reason = host_resolve.need_reason(name, whose, scopes, met, False)  # type: ignore[arg-type]
+        reason = host_resolve.need_reason(name, whose, scopes, met, False)
         out.append({
             "name": name,
             "label": _label(name),
