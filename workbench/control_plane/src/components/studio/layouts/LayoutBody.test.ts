@@ -93,6 +93,10 @@ describe("the frame", () => {
     expect(frame).toContain("<LayoutList");
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
   });
+  it("passes retryable to the shared state and draws no list bar over a dashboard", () => {
+    expect(frame).toContain("retryable={retryableRead(rows.error)}");
+    expect(frame).toContain('if (built.page.layout === "dashboard") return null;');
+  });
   it("gives each stat and chart tile of a dashboard its own state", () => {
     expect(frame).toContain('preset === "dashboard"');
     expect(frame).toContain('view?.block === "stat" || view?.block === "chart"');

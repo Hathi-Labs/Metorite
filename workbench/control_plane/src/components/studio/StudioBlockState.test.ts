@@ -43,6 +43,12 @@ describe("StudioBlockState", () => {
     expect(html).toMatch(/<button[^>]*>[^<]*Retry/);
     expect(html).not.toContain("boom");
   });
+  it("draws an alert with no Retry for an error that a second try cannot change", () => {
+    const html = draw({ error: "x", retryable: false, onRetry: () => {} });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("cannot be shown");
+    expect(html).not.toContain("<button");
+  });
   it("draws no-permission with no button", () => {
     const html = draw({ forbidden: true, askWho: "an admin" });
     expect(html).toContain("You cannot open the visits.");
