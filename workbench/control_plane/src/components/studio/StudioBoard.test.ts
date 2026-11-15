@@ -7,6 +7,7 @@
  * `keyStep` into the same store, as the view does.
  */
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -431,5 +432,18 @@ describe("the source", () => {
     for (const f of ["boardModel.ts", "boardMove.ts"]) {
       expect(read("../../lib/studio/" + f), f).not.toMatch(/from "react/);
     }
+  });
+});
+
+describe("the lane switcher on a phone (STU-LY-4b)", () => {
+  const src = readFileSync(join(__dirname, "StudioBoard.tsx"), "utf-8");
+  it("shows the lane tabs only on a phone, and hides the lanes that are not shown only on a phone", () => {
+    expect(src).toMatch(/data-lane-switcher[\s\S]{0,40}/);
+    expect(src).toContain('className="sm:hidden" data-lane-switcher=""');
+    expect(src).toContain("max-sm:[&>[data-lane-off]]:hidden");
+    expect(src).toContain('data-lane-off={switcher && shownLane !== lane.id ? "" : undefined}');
+  });
+  it("draws neither the tabs nor the off marks for a board with no phone switch", () => {
+    expect(src).toContain('const switcher = config.phone === "switch";');
   });
 });

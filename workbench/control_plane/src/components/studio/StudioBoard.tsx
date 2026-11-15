@@ -21,12 +21,14 @@ import { ValueElement } from "@/components/CardFieldValue";
 import { Board } from "@/components/board/Board";
 import { BoardColumn } from "@/components/board/BoardColumn";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Tabs from "@/components/Tabs";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import Button from "@/components/ui/Button";
 import { statusAccent } from "@/lib/statusAccent";
 import { displayValue, labelOf } from "@/lib/studio/blocks";
 import { buildLanes, keyStep, optionOf, parseBoard, recordsOf, rowId, type BoardConfig, type Lane } from "@/lib/studio/boardModel";
 import { createMover, type MoverState } from "@/lib/studio/boardMove";
+import { activeLane, laneTabs } from "@/lib/studio/laneSwitch";
 import { moreLine, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
@@ -72,6 +74,10 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
 
   const lanes = buildLanes(config, rows, { placed: st.placed, expanded });
   const laneIds = lanes.map((l) => l.id);
+  // On a phone a board of the `board` preset shows one lane at a time (STU-LY-4b). From a tablet up, every lane shows.
+  const switcher = config.phone === "switch";
+  const [wantedLane, setWantedLane] = useState<string | null>(null);
+  const shownLane = activeLane(laneIds, wantedLane);
   const laneById = (id: string): Lane | undefined => lanes.find((l) => l.id === id);
   const movable = mover !== null;
 
@@ -121,14 +127,20 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
       ) : null}
       {more ? <p role="status" className="text-xs text-muted-foreground">{`${more} The lane counts cover these records only.`}</p> : null}
       <p className="sr-only" aria-live="polite">{st.live}</p>
+      {switcher && shownLane !== null ? (
+        <div className="sm:hidden" data-lane-switcher="">
+          <Tabs variant="underline" activeTab={shownLane} onTabChange={setWantedLane} tabs={laneTabs(lanes)} />
+        </div>
+      ) : null}
       <Board
         aria-label="Board"
         onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) mover?.blur(); }}
-        className="max-sm:flex-col max-sm:[&>*]:w-full">
+        className={`max-sm:flex-col max-sm:[&>*]:w-full${switcher ? " max-sm:[&>[data-lane-off]]:hidden" : ""}`}>
         {lanes.map((lane, i) => (
           <BoardColumn
             key={lane.id}
             as="ul"
+            data-lane-off={switcher && shownLane !== lane.id ? "" : undefined}
             header={{
               accent: statusAccent({ name: lane.value ?? undefined, index: lane.value === null ? 0 : i, total: lanes.length }),
               title: lane.title,
