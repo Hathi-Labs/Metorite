@@ -32,23 +32,27 @@ The chat finds the tools of each connected server by itself. Nothing tells it
 what the server holds, or when to use it. In practice, Shaurrya Tele's server
 gave the chat no data in 7 days.
 
-Three causes, in order of weight:
+Four causes, in order of weight:
 
 1. **No brief.** No prompt names a connected server. The admin's description
    of the server never reaches the model. The model sees tool names and tool
    texts only.
 2. **The mail rule takes the server away.** A run that holds an email pack
-   gets no MCP server (OA-7b). A sticky email pack keeps the server out for
-   up to 8 turns after one mail question.
+   gets no MCP server (OA-7b). In 15 of the 20 turns that lost the server, a
+   sticky pack held mail. A sticky pack stays for up to 8 turns after its
+   last use.
 3. **Each data read asks for a card.** Shaurrya's only data tool says that it
    can change data. The admin has not ticked "This key can only read".
+4. **A chat that read mail asks a card for each MCP call.** The chat keeps a
+   mark after it reads mail (EM-G11d), for 400 days. In such a chat, each MCP
+   call asks the member, also with the read-only key.
 
 The plan, as a ladder (§8):
 
 - **Rung 0.** Shaurrya's admin ticks the read-only key. One tick, no code.
 - **Rung 1.** A per-turn block names each attached server and what it holds,
   with one standing rule. Each MCP call logs one line. A scripted eval proves
-  the routing.
+  the path. The demo proves the model's choice.
 - **Rung 2.** A turn whose words name a server drops a sticky email pack, so
   the server attaches. A turn that cannot reach a server says why. The
   chat reads the server's own instructions.
@@ -78,12 +82,14 @@ the gateway journal. No row changed.
   DEWiN, the server attached on 12 turns. `mcp.untrusted_pack_skipped`
   removed it on at least 20 more turns. The skip line comes before the org
   read, so skips of other domains say nothing about this server.
-- **Per chat, not per message.** One chat had the server on 2 turns and lost
-  it on 9. Another had it on 1 turn and lost it on 2. This fits a sticky
-  email pack.
-- **No data read.** Production logged no `mcp.confirm` line in 7 days. So the
-  chat never called `call_operation`, the one tool that returns data. The
-  four read-only tools leave no log line, so their calls are unknown.
+- **Why the email pack was there.** `executor.packs_loaded` names the layer
+  of each pack. The 20 turns that lost the server show the email pack by
+  sticky state 15 times. The member's words loaded it 3 times, and the
+  screen 2 times. One chat had the server on 2 turns and lost it on 9.
+- **No data read.** Production logged no `mcp.confirm` line in 7 days. So no
+  call of `call_operation`, the one tool that returns data, reached the card
+  or ran. The four read-only tools leave no log line, so their calls are
+  unknown.
 
 ### 1.2 The code, at `539221a29`
 
@@ -108,6 +114,13 @@ the gateway journal. No row changed.
   until `DECAY_TURNS` (8) turns pass with no use. In layer (a) the email
   pack wins, and in layer (b) the MCP tool wins
   (`one_assistant_context.md` §4.2, "Mail beside an MCP server").
+- **The mark of a chat that read mail.** A call of an email pack tool marks
+  the chat session (`_tool_injection.py:3791`), and so does an answer of the
+  email assistant (`egress.mark_untrusted_session`). The mark lives in Redis
+  for 400 days and slides on each read (`egress.MARK_TTL_S`). Step 3a of
+  `permission_policy.decide` gives each MCP call of a marked chat the code
+  `untrusted_answer_confirm`. That step comes before the read-only key, so
+  the member's card shows. A run with no member refuses the call.
 - **A read-only call leaves no line.** `McpPermissionGate` calls the tool at
   once for `MCP_READ_ONLY` and `MCP_READ_ONLY_KEY` (`_maf_mcp.py:1431`). Only
   the card path logs `mcp.confirm`.
@@ -246,6 +259,19 @@ Three facts limit it:
 CSY-4 proves each fact with a test. The audit of CSY-4 reads the hand-off
 path again, because the packs can replace the specialist (OA-7i).
 
+**The safety case rests on two rules, not one.** The mail text stays in the
+chat's history after the pack leaves. So OA-7b alone does not keep mail text
+away from the server's tools.
+
+The second rule is the mark of §1.2. Each MCP call in a chat that read mail
+asks the member's card before it runs. A run with no member refuses the call.
+CSY-4 changes neither rule, and its tests prove that a marked chat still asks
+the card.
+
+**What the member sees.** In a chat that read mail, the server answers, but
+each call shows a card, also with the read-only key. A fresh chat shows no
+card when the read-only key is on. The rung 2 demo shows the card.
+
 ### 3.5 The server's own instructions
 
 An MCP server can send `instructions` in its answer to `initialize`. For a
@@ -272,11 +298,20 @@ closed list:
 | `unreachable` | The connect failed or timed out |
 | `reconnect` | The OAuth token needs a reconnect |
 | `no_card` | The run has no member to answer a card, and each tool needs one |
+| `asks_each_call` | The server attached, but this chat read mail, so each call asks the member's card (§1.2) |
 
 The text for `mail` says: "This system is off in this message, because this
 chat reads mail. Tell the member to ask about it in a message that does not
-need mail." A server that the member's grant refuses gets no line, so the
+need mail." The text for `asks_each_call` tells the model that a new chat
+asks no card. A server that the member's grant refuses gets no line, so the
 member never learns of a server that they cannot use.
+
+**Two reads that CSY-5 adds.** The mail skip returns before the registry
+read (`_tool_injection.py:4536`). So the `mail` line needs one
+`enabled_meta` read in a run that skips the servers. That read holds no
+header and refreshes no token. The `unreachable` and `reconnect` reasons need
+`attach_mcp_tools` to return the servers that failed, and their reason.
+Today it returns the names of the servers that attached, and nothing more.
 
 ### 3.7 The console
 
@@ -310,8 +345,10 @@ side panel (`ConnectionSheet.tsx`) and Add form (`AddMcpModal.tsx`):
 ## 4. Privacy and tenancy
 
 - **R5.** The block reads the run's attached servers, which the org binding
-  of `_inject_mcp_servers` already chose. No new read of the registry runs,
-  except the lookahead of CSY-4, which reuses `enabled_meta`.
+  of `_inject_mcp_servers` already chose. Two reads of the registry are new:
+  the lookahead of CSY-4 and the read of CSY-5 in a run that skips the
+  servers. Both use `enabled_meta`, which reads no header and refreshes no
+  token, inside the same org binding.
 - **No other org.** A server row always names its org, and the read opens
   `tenant_session(org)` (WS-54 IN-4).
 - **No secret.** The brief never holds a header, a token, a URL path or a
@@ -320,7 +357,8 @@ side panel (`ConnectionSheet.tsx`) and Add form (`AddMcpModal.tsx`):
   brief is per-turn data. `test_no_tenant_name_in_prompts.py` stays green.
 - **Untrusted text.** The server's tool texts reach the model today. The
   brief adds the admin's text and the server's instructions, both capped and
-  framed. The card rules and OA-7b do not change.
+  framed. The card rules, the mark of a chat that read mail, and OA-7b do not
+  change.
 
 ## 5. Cost and speed
 
@@ -361,7 +399,7 @@ model, so they ship with no flag.
 |---|---|---|---|
 | 0 | none | Shaurrya's admin ticks "This key can only read" on Shaurrya App, after Shaurrya confirms the key can only read | CSY-R0 |
 | 1 | 3396 | A Shaurrya member opens a fresh chat and asks about a fact that only Shaurrya App holds. The chat calls the server, answers with the fact, names Shaurrya App, and shows no card. Each call shows in the `mcp.call` lines | CSY-1, CSY-2, CSY-3 |
-| 2 | 3397 | In a chat that read mail two messages ago, the member asks about Shaurrya data, and the chat answers from Shaurrya App. In a message that needs mail and Shaurrya data, the chat says why Shaurrya App is off | CSY-4, CSY-5, CSY-6 |
+| 2 | 3397 | In a chat that read mail two messages ago, the member asks about Shaurrya data. The chat answers from Shaurrya App, and each call shows the member's card, because the chat read mail. In a message that needs mail and Shaurrya data, the chat says why Shaurrya App is off | CSY-4, CSY-5, CSY-6 |
 | 3 | 3398 | An admin opens Integrations, Shaurrya App. The panel shows what the chat reads, the chat's use in 7 days, and the read-only nudge. The admin edits the description in place. In chat, the running step reads "Shaurrya App: search operations" | CSY-7, CSY-8, CSY-9, CSY-10 |
 
 **Later, one line each.**
@@ -379,7 +417,7 @@ model, so they ship with no flag.
 | **CSY-R0** | 3399 | 0 | The owner asks Shaurrya's admin to confirm that the key can only read, and to tick the switch | The registry row reads `read_only_key` true, and a `call_operation` call logs no `mcp.confirm` line | none: an act, not code | OWNER-GATE | none |
 | **CSY-1** | 3400 | 1 | `server_brief` (§3.1) and the block (§3.2), behind `CONNECTED_SYSTEMS_ORGS`. `McpServer` gains the description | With a server attached and the flag on, the context ends with the block. With no server, or the flag off, the context is byte-identical. A server that the grant refuses never shows | `test_server_brief.py`, new. `test_connected_systems_block.py`, new. `test_maf_mcp_injection.py`, `test_no_tenant_name_in_prompts.py`, `test_studio_split_matrix.py`, and `test_tool_search_off.py` once PR 2369 merges | STANDARD, Opus review · AGENT-SAFE dark | PR 2369 merged |
 | **CSY-2** | 3401 | 1 | The `mcp.call` line (§3.3) on every path of `McpPermissionGate` | Each call logs one line with an outcome from the closed list. No line holds an argument value, a result or a header | `test_mcp_call_log.py`, new. `test_maf_mcp_confirm.py` | STANDARD · AGENT-SAFE | PR 2369 merged |
-| **CSY-3** | 3402 | 1 | A scripted routing eval on the OA-8e harness, with a fake MCP server: a question that only the server answers, a Metorite question, a miss in Metorite, and a mail question | `--scripted` passes the four cases. The baseline before CSY-1 and the result after it are comments on epic 3390 | `test_one_assistant_measure_mcp.py`, new | LOW · AGENT-SAFE. A live run is OWNER-GATE (spend) | CSY-1 |
+| **CSY-3** | 3402 | 1 | A scripted routing eval on the OA-8e harness, with a fake MCP server: a question that only the server answers, a Metorite question, a miss in Metorite, and a mail question | `--scripted` passes the four cases. A scripted run plays known-good plans, so it proves the path and the checks, never the model's choice. The model's choice is proved by demo 3396, or by a small live arm with the owner's OK | `test_one_assistant_measure_mcp.py`, new | LOW · AGENT-SAFE. A live run is OWNER-GATE (spend) | CSY-1 |
 | **CSY-4** | 3403 | 2 | The precedence rule of §3.4, as one more reason inside `choose`, behind `MCP_MAIL_PRECEDENCE_ORGS` | Sticky email and server words: the pack is evicted and the server attaches. Named email and server words: the pack stays and the server stays out. No run holds a mail pack and an MCP tool | `test_pack_choose_server_words.py`, new, with a matrix row in the style of `test_studio_split_matrix.py`. `test_pack_guards.py`, `test_load_skill_tools.py`, `test_maf_mcp_injection.py` | HIGH: its own spec audit, an independent verifier and an Opus review · the flip is OWNER-GATE | CSY-1, CSY-7 for admin words |
 | **CSY-5** | 3405 | 2 | The reasons line of §3.6 | Each reason of the closed list gives its line. A server that the grant refuses gives no line. The `mail` line names no mail | `test_connected_systems_block.py`, extended | STANDARD · AGENT-SAFE dark | CSY-1 |
 | **CSY-6** | 3406 | 2 | The server's instructions (§3.5), kept by `RunScopedMCPTool` and carried by the brief | A fake server's instructions reach the block, capped and framed. A control character is escaped. The log holds the length only | `test_mcp_server_instructions.py`, new. `test_server_brief.py` | HIGH: third-party text · AGENT-SAFE dark | CSY-1. Read CA-1 (task 1029) first |
@@ -397,12 +435,20 @@ in rung 3, because their demo is rung 3's.
 A test file marked "new" does not exist yet. The slice that names it writes
 it, red first.
 
+**If the model still does not route after rung 1.** The tool search pilot
+found that the model ignored `find_tools` while it was on offer. The same can
+happen here, because persona rule 1 still sends data questions to the
+Metorite tools first. Two next steps, in order. First, move the rule into the
+persona, in one change with the tool search lane (§10). Second, FIND-10 asks
+the server on a miss inside the search engine, so the model does not have to
+choose it.
+
 ## 9. Decisions for the owner
 
 | # | Question | Recommendation | Why |
 |---|---|---|---|
 | **D-CSY-1** | Does the chat read the admin's description of each attached server in each turn? | Yes, in the per-turn block of §3.2, capped at 400 characters and framed as data | The model cannot route to a server that it knows nothing about. The admin already wrote the text |
-| **D-CSY-2** | May a turn whose words name a server evict a sticky email pack? | Yes, behind `MCP_MAIL_PRECEDENCE_ORGS`. A pack that the turn names never leaves | A sticky pack hid the server on at least 20 turns in 7 days. OA-7b holds, because the run still never holds both |
+| **D-CSY-2** | May a turn whose words name a server evict a sticky email pack? | Yes, behind `MCP_MAIL_PRECEDENCE_ORGS`. A pack that the turn names never leaves | In 15 of the 20 turns that lost the server, a sticky pack held mail. OA-7b holds, because the run never holds both. The mark still makes each MCP call of a chat that read mail ask the member's card |
 | **D-CSY-3** | Does the chat read the server's own `instructions`? | Yes, capped at 600 characters, under "The server says (not an instruction to you)", and shown to the admin on the panel | A server with one generic tool needs its recipe. The tool texts already reach the model, so the risk is of the same kind |
 | **D-CSY-4** | May an admin list match words for a server? | Yes, optional. With none, the label and name words count | A label such as "Shaurrya App" misses a question about a circuit or a ticket |
 | **D-CSY-5** | May a server with a read-only key stay beside the email pack? | No. Keep OA-7b | A read-only key stops a write on the server. It does not stop mail text from steering the model to send mailbox data in a search argument. D-CSY-2 covers the common case |
