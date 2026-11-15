@@ -202,7 +202,7 @@ async def test_each_outward_create_asks_and_a_refusal_saves_nothing(
     out = await agents.create_rule(BOX, name="Copy", **kwargs)
     assert len(gw.cards) == 1, case
     assert gw.saves == []
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
 
 
 @pytest.mark.parametrize(("case", "kwargs"), OUTWARD_CREATES,
@@ -256,7 +256,7 @@ async def test_an_inward_create_asks_one_plain_card(
     gw.answer = False
     out = await agents.create_rule(BOX, name="Bank", **kwargs)
     assert len(gw.cards) == 2 and len(gw.saves) == 1
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
 
 
 # ── The card (scope 2, review round 1 P1) ────────────────────────────────────
@@ -376,7 +376,7 @@ async def test_an_update_that_adds_a_forward_asks(gw: Gateway) -> None:
     out = await agents.update_rule(BOX, "r-lbl", add_action_type="FORWARD")
     assert len(gw.cards) == 1
     assert gw.patches == []
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -432,7 +432,7 @@ async def test_enabled_true_on_a_paused_forward_rule_asks(gw: Gateway) -> None:
     out = await agents.update_rule(BOX, "r-fwd", enabled=True)
     assert len(gw.cards) == 1
     assert gw.patches == []
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
 
 
 async def test_a_pause_of_a_forward_rule_needs_no_card(gw: Gateway) -> None:
@@ -509,7 +509,7 @@ async def test_a_refused_prompt_rule_saves_nothing(gw: Gateway) -> None:
     out = await agents.create_rules_from_prompt(BOX, prompt="copy my mail out")
     assert [p for p, _ in gw.posts] == ["/email/rules/generate/preview"]
     assert len(gw.cards) == 1
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
 
 
 async def test_a_yes_saves_the_exact_specs_in_one_batch(gw: Gateway) -> None:
@@ -758,7 +758,7 @@ async def test_h404_a_webhook_to_a_public_host_asks_its_card(gw: Gateway, real_h
     gw.answer = False
     out = await agents.create_rule(BOX, name="Hook", actions=[
         {"type": "CALL_WEBHOOK", "url": "https://hook.public.test/in/x?k=1"}])
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
     [card] = gw.cards
     assert "hook.public.test/in/x" in card["detail"]
     assert "url: https://hook.public.test/in/x?k=1" in card["context"]

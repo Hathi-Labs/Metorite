@@ -242,12 +242,19 @@ async def _confirm(
     member did not approve. With no rows, the call is exactly as before.
 
     Task 2494: a chat message of the member closes the card
-    (``close_on_steer``). Then this raises :class:`CardClosedByChat` with
-    :data:`CARD_REVISED`, so no line after the card runs and nothing is
-    written. ``refusals.refusals_as_text`` gives that text to the model, which
-    reads the member's message as a user turn and can show a new card.
+    (``close_on_steer``). Then this raises :class:`CardClosedByChat` with the
+    text of ``ask_tools.CLOSED_BY_YOUR_MESSAGE`` (HRD-7), so no line after the
+    card runs and nothing is written. ``refusals.refusals_as_text`` gives that
+    text to the model, which reads the member's message as a user turn and can
+    show a new card. A card that did nothing else answers
+    :func:`_not_confirmed`.
     """
-    from acb_skills.ask_tools import is_revised, request_confirmation
+    from acb_skills.ask_tools import (
+        CLOSED_BY_YOUR_MESSAGE,
+        card_outcome_text,
+        is_revised,
+        request_confirmation,
+    )
 
     await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
@@ -262,37 +269,30 @@ async def _confirm(
             close_on_steer=True,
         )
     if is_revised(answer):
-        raise CardClosedByChat(CARD_REVISED)
+        raise CardClosedByChat(card_outcome_text(CLOSED_BY_YOUR_MESSAGE))
     return answer
 
 
-CANCELLED = "Cancelled — nothing was changed."
-
-#: The answer of a card that a chat message of the member closed (task 2494).
-#: It is not a decline: the member did not answer the card, and their words
-#: come next as their own turn. So it must never read like :data:`CANCELLED`.
-CARD_REVISED = (
-    "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was changed. The member's words come next, as their own "
-    "chat message. If they change this act, change it, keep every part they "
-    "did not ask to change, and call the tool again, so a new card shows. If "
-    "they ask about something else, answer that first, then ask whether to "
-    "show the card again."
-)
-
-
 def _not_confirmed() -> str:
-    """:data:`CANCELLED`, or the WhatsApp line for an act that waits (WS-47 WAC-4).
+    """The answer of a tool whose card did nothing (HRD-7).
+
+    The words come from the one table of card outcomes
+    (``ask_tools.card_not_done_text``): declined, timed out, no card, or
+    another member answered. Each says what happened and the next step, so a
+    timeout never reads as the member's no.
 
     On WhatsApp, ``create_task``'s card is parked for the member's Confirm
-    (``acb_skills.whatsapp_acts``). Nothing was written, as with a decline,
-    but the model must not tell the member that it was cancelled.
+    (``acb_skills.whatsapp_acts``, WS-47 WAC-4). Nothing was written, as with a
+    decline, but the model must not tell the member that it was declined, so
+    the WhatsApp line comes first.
     """
+    from acb_skills.ask_tools import card_not_done_text
+
     try:
         from acb_skills.whatsapp_acts import parked_line
     except Exception:  # pragma: no cover — platform package absent in isolation
-        return CANCELLED
-    return parked_line() or CANCELLED
+        return card_not_done_text()
+    return parked_line() or card_not_done_text()
 
 
 def _bind_card_facts(**facts: Any) -> None:
@@ -1775,7 +1775,7 @@ async def update_task(
         detail=plan.detail,
         context=_fields_block(plan.card, before=plan.before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
     updated["assignees"] = task.get("assignees") or []
     lane = plan.lane
@@ -1968,7 +1968,7 @@ async def assign(task_id: str, assignees: str) -> str:
         detail=f"{_ref(task)} → {', '.join(who) or 'nobody'}",
         context=context,
     ):
-        return CANCELLED
+        return _not_confirmed()
     await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
     task["assignees"] = who
     return "\n".join(["Assigned:", *_task_line(task)])
@@ -2004,7 +2004,7 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
         detail=f"on {_ref(task)}",
         context=_fields_block({**payload, **await _comment_tells(tid, text_body)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/comments", payload)
     return f"Commented on {_ref(task)} (comment id {row.get('id')}).\n  full_id: {tid}"
 
@@ -2029,7 +2029,7 @@ async def add_subtasks(task_id: str, titles: str) -> str:
         detail=f"under {_ref(parent)}",
         context=_fields_block({f"{i + 1}": t for i, t in enumerate(parts)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     # No status is sent: the gateway puts each step in the parent's lane
     # when that lane is open (`core.parent_lane_status`, D-PM-38).
     rows = [
@@ -2084,7 +2084,7 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
         detail=f"{_ref(task)} {kind.replace('_', ' ')} {_ref(other)}",
         context=_fields_block({"link_type": kind, "from": _ref(task), "to": _ref(other)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(
         f"/projects/tasks/{tid}/links",
         {"target_task_id": oid, "link_type": kind},
@@ -2115,7 +2115,7 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
         detail=f"{_ref(task)}: {label}",
         context=_fields_block({"link_id": lid, "link": label}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/tasks/{tid}/links/{lid}")
     return f"Removed the link: {label}.\n  full_id: {tid}"
 
@@ -2509,7 +2509,7 @@ async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
         detail=f"{_ref(task)}: {data(link)}",
         context=_fields_block(shown),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/refs", payload, {"refresh": False})
     return (
         f"Linked {_ref_line(row)} to {_ref(task)} (ref id {row.get('id')})."
@@ -2547,7 +2547,7 @@ async def remove_task_ref(task_id: str, url: str) -> str:
         detail=f"{_ref(task)}: {_ref_line(row)}",
         context=_fields_block({"task": _ref(task), "link": f"{_ref_line(row)} {data(row.get('url'))}"}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/tasks/{tid}/refs/{rid}")
     return f"Removed the link {_ref_line(row)} from {_ref(task)}.\n  full_id: {tid}"
 
@@ -2591,7 +2591,7 @@ async def move_task(
     if isinstance(move, str):
         return move
     if not await _confirm(title=move.title, detail=move.detail, context=move.context):
-        return CANCELLED
+        return _not_confirmed()
     return await move.apply()
 
 
@@ -3045,7 +3045,7 @@ async def _ask_batch(
     # refuses an id it did not offer. This checks again, so a door that
     # answers anything else writes nothing.
     if not isinstance(ticked, frozenset) or not ticked:
-        return CANCELLED
+        return _not_confirmed()
     if not ticked <= {r.row_id for r in ready}:
         return FORGED_BATCH_ROWS
     return [r for r in ready if r.row_id in ticked], [r for r in ready if r.row_id not in ticked]
@@ -4011,7 +4011,7 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     if not await _confirm(
         title=f"{verb} this {which}?", detail=label, context=_fields_block({which: label})
     ):
-        return CANCELLED
+        return _not_confirmed()
     if stop:
         await delete(path)
         return f"You no longer watch {label}.\n  full_id: {row.get('id')}"
@@ -4040,7 +4040,7 @@ async def complete(task_id: str, include_subtasks: str = "") -> str:
         detail=_ref(task),
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     params = {"include_subtasks": True} if wanted else None
     row = await post(f"/projects/tasks/{tid}/complete", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
@@ -4086,7 +4086,7 @@ async def defer(task_id: str, until: str) -> str:
             "task": _ref(task), "until": when, "scope": _defer_scope(task),
         }),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await post(f"/projects/tasks/{tid}/defer", {"until": when})
     return f"Deferred {_ref(task)} until {when} in your inbox.\n  full_id: {tid}"
 
@@ -4105,7 +4105,7 @@ async def unarchive_task(task_id: str) -> str:
             {"task": _ref(task), "archived": (task.get("archived_at") or "")[:10]}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/unarchive")
     merged = {**task, **(row if isinstance(row, dict) else {}), "archived_at": None}
     return "\n".join(["Restored:", *_task_line(merged)])
@@ -4152,7 +4152,7 @@ async def create_project(
         detail=f"{data(label)} under {parent_label}",
         context=_fields_block({**payload, "under": parent_label}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post("/projects/nodes", payload)
     return (
         f"Created {which} {data(row.get('name'))} under {parent_label}.\n  full_id: {row.get('id')}"
@@ -4351,7 +4351,7 @@ async def update_project(
         detail=data(node.get("name")),
         context=_fields_block(payload, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await patch(f"/projects/nodes/{pid}", payload)
     shown = [
         f"{key} {'off' if row.get(key) is None else data(row.get(key))}"
@@ -4414,7 +4414,7 @@ async def _report_change(
         detail=data(existing.get("name")),
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await patch(f"/projects/reports/{rid}", payload)
     return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
 
@@ -4463,7 +4463,7 @@ async def report_save(
         detail=f"{data(label)} · {scope}",
         context=_fields_block({**payload, "scope": scope}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post("/projects/reports", payload)
     return f"Saved report {data(row.get('name'))} for {scope}.\n  full_id: {row.get('id')}"
 
@@ -4863,7 +4863,7 @@ async def create_status(
             {**wire, **shown, "project": data(node.get("name")), "status set": set_of}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/statuses", payload)
     where = (
         f"to the statuses of {data(owner.get('owner_name'))}, used by {data(node.get('name'))}"
@@ -4957,7 +4957,7 @@ async def update_status(
         ),
         context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/statuses/{sid}", send)
     return (
         f"Updated status {data(updated.get('name') or row.get('name'))} "
@@ -5015,7 +5015,7 @@ async def create_type(
         detail=f"{data(label)} in {where}",
         context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/types", payload)
     return f"Added type {data(row.get('name') or label)} to {where}.\n  type_id: {row.get('id')}"
 
@@ -5082,7 +5082,7 @@ async def update_type(
         detail=f"{data(row.get('name'))} in {scope}",
         context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/types/{tid}", payload)
     return f"Updated type {data(updated.get('name') or row.get('name'))}.\n  type_id: {tid}"
 
@@ -5170,7 +5170,7 @@ async def create_field(
         detail=f"{data(label)} ({kind}) in {where}" + (" · required" if required else ""),
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/fields", payload)
     fid = uuid_of(str(row.get("id")), "field_id")
     if required:
@@ -5230,7 +5230,7 @@ async def update_field(
         detail=f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {scope}",
         context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/fields/{fid}", payload)
     return (
         f"Updated field {data(updated.get('name') or row.get('name'))} "
@@ -5272,7 +5272,7 @@ async def create_tag(
         detail=f"{data(label)} in {where}",
         context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/tags", payload)
     return f"Added tag {data(row.get('name') or label)} to {where}.\n  tag_id: {row.get('id')}"
 
@@ -5324,7 +5324,7 @@ async def update_tag(
         detail=f"{data(row.get('name'))} in {scope}{size}",
         context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/tags/{gid}", payload)
     retagged = updated.get("retagged")
     tail = f" on {retagged} task{'s' if retagged != 1 else ''}" if "name" in payload else ""
@@ -5368,7 +5368,7 @@ async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
             before={"body": old.get("body")},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await patch(f"/projects/comments/{aid}", {"body": text_body})
     return f"Edited your comment on {_ref(task)} (comment id {aid}).\n  full_id: {tid}"
 
@@ -5763,7 +5763,7 @@ async def set_recurrence(
                 {"task": _ref(task), "rule": _rule_text(current), "after": "does not repeat"}
             ),
         ):
-            return CANCELLED
+            return _not_confirmed()
         await delete(f"/projects/tasks/{tid}/recurrence")
         return f"{_ref(task)} no longer repeats. Existing occurrences stay.\n  full_id: {tid}"
     clock = await _member_clock()
@@ -5784,7 +5784,7 @@ async def set_recurrence(
         detail=f"{_ref(task)} · {_rule_text(rule)}",
         context=_fields_block(card, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     saved = (await put(f"/projects/tasks/{tid}/recurrence", rule)) or {}
     return f"{_ref(task)} now repeats {_rule_text(saved.get('rule') or rule)}.\n  full_id: {tid}"
 
