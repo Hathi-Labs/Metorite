@@ -15,7 +15,7 @@
  * With `?floor=1` the frame draws the floor view (STU-D23a). `lib/studio/floorView.ts` decides
  * which part stays, and each part below reads its flag there.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 
@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/EmptyState";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioBlockState from "@/components/studio/StudioBlockState";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioNewButton from "@/components/studio/StudioNewButton";
@@ -36,6 +37,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
+import { homeGreeting } from "@/lib/studio/homeGreeting";
 import { floorPages, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
@@ -45,6 +47,8 @@ import {
 import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
+import { pluralOf } from "@/lib/studio/blockState";
+import { retryableRead } from "@/lib/studio/readError";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -107,6 +111,36 @@ function FilteredList({ source, door, active, onClear, children }: {
   );
 }
 
+/**
+ * The table or the board of a page with a preset (STU-LY-2, STU-LY-4), or one tile of a dashboard (STU-LY-7). It draws the shared states of `StudioBlockState`
+ * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
+ * It reads the same cached key as the block's own read, so this adds no second read.
+ */
+function LayoutList({ source, door, active, noun, shape = "rows", tile = false, onClear, children }: {
+  source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
+  active: number; noun: string; shape?: "rows" | "board" | "tile"; tile?: boolean; onClear: () => void; children: React.ReactNode;
+}) {
+  const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
+  const n = rows.data?.length ?? 0;
+  const failed = Boolean(rows.error) && rows.data === undefined;
+  const state = (
+    <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
+      forbidden={false} retryable={retryableRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
+      onClearFilters={onClear} onRetry={rows.refresh} />
+  );
+  if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
+  // A tile of a dashboard has no count line: the tile says its own number.
+  if (tile) return <>{children}</>;
+  return (
+    <div className="space-y-2">
+      <p role="status" className="text-xs text-muted-foreground">
+        {`${n} ${noun}${active > 0 ? " match the filters" : ""}`}
+      </p>
+      {children}
+    </div>
+  );
+}
+
 export default function AppFrame({ pkg, detail, door, controls, onDeleted, above: setupCard }: AppFrameProps) {
   const params = useSearchParams();
   const pageParam = params.get("page");
@@ -129,6 +163,10 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     [cells, detail.views, controls.actions]);
   const bar = useMemo(() => {
     const object = target ? detail.objects.find((o) => o.name === target.object) : undefined;
+    // A dashboard has no list bar: its worklist is one short table, and the bar over the KPIs would push them
+    // down (capture finding, task 3320).
+    // App Home has none either: the greeting is the first thing to read (LOOK-1, review finding).
+    if (built.page.layout === "dashboard" || built.page.layout === "app_home") return null;
     if (!target || !object) return null;
     const fields = object.fields as unknown as BarField[];
     const lanes = boardGroupKeys(fieldSpecs(object), computedKeys(object.rules))
@@ -142,7 +180,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       args: toListArgs(fields, value),
     };
     return { fields, lanes, layouts, layout, value, lens };
-  }, [target, detail.objects, state]);
+  }, [target, detail.objects, state, built.page.layout]);
   // The record page (STU-AF5). A row or a card links to its record only when the app declares the get.
   const getters = useMemo(() => new Set(detail.objects
     .filter((o) => controls.actions.some((a) => a.uses === `object:${o.name}.get`)).map((o) => o.name)),
@@ -151,6 +189,9 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
   // The signed-in member, for the `me` token of a view filter (STU-AF3b). The page and the rail counts both use it.
   const { data: session } = useSession();
   const email = session?.user?.email?.trim().toLowerCase() || null;
+  // The hour of the greeting of App Home (LOOK-1). It is set after the first paint, so the server and the client agree.
+  const [hour, setHour] = useState<number | null>(null);
+  useEffect(() => setHour(new Date().getHours()), []);
   const ctx: ViewMapContext = useMemo(
     () => ({ actions: controls.actions, objects: detail.objects, owner: controls.owner, lens: bar?.lens ?? null, recordBase, email }),
     [controls.actions, controls.owner, detail.objects, bar?.lens, recordBase, email]);
@@ -177,6 +218,22 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       case "node": {
         const node = <GenerativeUINode spec={model.node} />;
         const src = model.node.props.source as { action: string; args?: Record<string, unknown> } | undefined;
+        const preset = built.page.layout;
+        if ((preset === "table_workspace" || preset === "board") && src && id === built.page.regions.main?.[0]) {
+          const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
+          return (
+            <LayoutList source={src} door={door} active={bar ? activeCount(bar.fields, bar.value) : 0}
+              noun={pluralOf(object?.label || object?.name || "")} shape={preset === "board" ? "board" : "rows"}
+              onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
+        // A tile of a dashboard (STU-LY-7): its own loading, error and empty state, so one tile never blanks the page.
+        if (preset === "dashboard" && src && (view?.block === "stat" || view?.block === "chart")) {
+          return (
+            <LayoutList source={src} door={door} active={0} tile shape="tile"
+              noun={(view.title || view.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
         if (!bar || id !== bar.lens.view || !src) return node;
         return (
           <FilteredList source={src} door={door} active={activeCount(bar.fields, bar.value)}
@@ -264,6 +321,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       <div className="min-h-0 flex-1">
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
+        homeGreeting={hour === null ? undefined : homeGreeting(session?.user?.name, hour)}
         onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbarShown ? toolbar : undefined}
         record={opened && recordObject ? {
           title: titled && titled.id === opened.id ? titled.text : recordObject.label || recordObject.name,

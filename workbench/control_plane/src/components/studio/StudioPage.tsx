@@ -24,6 +24,7 @@ import { AppTopBar, type AppTopBarBack } from "@/components/AppTopBar";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
+import LayoutBody from "@/components/studio/layouts/LayoutBody";
 import type { ViewDef } from "@/lib/studio/manifest";
 import { buildPage, type PageManifest } from "@/lib/studio/pageModel";
 import type { PageState } from "@/lib/studio/pageState";
@@ -85,6 +86,8 @@ export interface StudioPageProps {
   onCloseSide: () => void;
   /** Draw one view, or return `null` when its block is not built. */
   renderView: (viewId: string) => ReactNode;
+  /** The first line of an App Home page (LOOK-1). */
+  homeGreeting?: ReactNode;
   /** Controls above the grid, such as a filter. */
   toolbar?: ReactNode;
   /** The list bar (STU-AF4) in its own row under the toolbar, over the table or board. */
@@ -139,7 +142,7 @@ function NotBuilt({ view, label }: { view: string; label: string }) {
 }
 
 export default function StudioPage({
-  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, toolbar, filterBar, record, bare = false,
+  title, subtitle, back, manifest, pageId, state, onTab, onCloseSide, renderView, homeGreeting, toolbar, filterBar, record, bare = false,
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
@@ -209,7 +212,10 @@ export default function StudioPage({
           className="@container min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-6 sm:py-4">
           {toolbar && <div className="mb-3 flex flex-wrap items-center gap-2 sm:mb-4">{toolbar}</div>}
           {filterBar && <div className="mb-3 sm:mb-4">{filterBar}</div>}
-          {cells.length === 0 ? (
+          {page.layout ? (
+            <LayoutBody layout={page.layout} regions={page.regions} renderView={renderView}
+              titleOf={(id) => titleOf(manifest.views, id)} greeting={homeGreeting} />
+          ) : cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
           ) : (
             <div className={`grid gap-3 sm:gap-4 ${GRID[page.cols] ?? GRID[1]}`} data-page-grid>

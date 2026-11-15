@@ -89,7 +89,7 @@ def test_frame_caps_and_icons_come_from_the_model() -> None:
     assert f["icons"] == list(sm.NAV_ICONS)
     text = " ".join(f["rules"])
     assert "A nav needs pages" in text and "page id that the manifest declares" in text
-    assert "record" not in json.dumps(f)  # no slice owns the key yet
+    assert '"record"' not in json.dumps(f)  # the manifest key `record` is not taught: it is no key or value of the part
     assert "for each list" in text and "`count: true`" in text
     assert "cells_per_page" not in json.dumps(f)
 
@@ -312,3 +312,99 @@ def test_patch_refuses_the_record_key() -> None:
     ops = [{"op": "add", "path": "/record", "value": {"tabs": []}}]
     msg = _refused(_patch(doc, ops))
     assert msg == "`record` is not a v1 manifest key. Remove it."
+
+
+# ── Page presets (STU-LY-8, `studio_layouts.md` section 7) ─────────────────────────────────
+
+
+def test_the_frame_part_names_the_presets_from_the_model() -> None:
+    body = run(st.studio_describe("frame"))["frame"]["layouts"]
+    assert list(body["presets"]) == list(sm.LAYOUTS)
+    for name, regions in sm.PRESET_REGIONS.items():
+        got = body["presets"][name]
+        assert set(got) == set(regions)
+        for region, (block, cap, required) in regions.items():
+            assert got[region] == {"block": block, "most_views": cap, "required": required}
+    assert "one sentence" in body["note"]
+
+
+def test_the_layout_example_validates() -> None:
+    ex = run(st.studio_describe("frame"))["frame"]["layouts"]["example"]
+    d = {**_base(), "views": [{"id": "all_visits", "title": "All", "block": "table"}], "pages": [ex]}
+    assert sm.validate_manifest(d) == [], sm.validate_manifest(d)
+
+
+def test_the_words_only_point_to_a_built_preset() -> None:
+    names = [n for n, _ in st.LAYOUT_WORDS]
+    assert set(names) <= set(sm.LAYOUTS)
+    assert set(sm.LAYOUTS) <= set(names)
+
+
+@pytest.mark.parametrize(
+    "prompt, want",
+    [
+        ("A pipeline of candidates by stages for hiring", "board"),
+        ("Kanban for my support status columns", "board"),
+        ("An overview with KPIs of how we are doing", "dashboard"),
+        ("Track inventory in a spreadsheet and edit in bulk", "table_workspace"),
+        ("Manage purchase requests", "table_workspace"),
+        ("An inbox to triage tickets", "work_queue"),
+        ("Requests to handle for the support desk", "work_queue"),
+        ("Managers approve leave, needs approval", "approval_queue"),
+        ("Sign off expense claims", "approval_queue"),
+        ("A directory of contacts with details beside", "list_detail"),
+        ("Photos and a catalog of products", None),
+        ("Visits on a map of sites", None),
+        ("An inspection checklist, SOP steps", None),
+        ("Plan installations over time as a Gantt", None),
+        ("An app for field staff to track site visits", "app_home"),
+        ("Field staff manage their jobs for the day", "app_home"),
+    ],
+)
+def test_the_hint_picks_the_preset_for_fourteen_prompts(prompt: str, want) -> None:
+    assert st.layout_hint(prompt) == want
+
+
+def test_the_frame_part_still_fits_the_describe_cap_with_the_presets() -> None:
+    size = len(json.dumps(run(st.studio_describe("frame")), ensure_ascii=False, separators=(",", ":")))
+    assert size <= st.MAX_MANIFEST_CHARS // 2, size
+
+
+# ── The design step of Mira (STU-LOOK-3, `studio_layouts.md` section 11.5) ───────────────────
+
+
+def test_the_frame_part_teaches_the_design_step() -> None:
+    d = run(st.studio_describe("frame"))["frame"]["design"]
+    assert len(d["questions"]) == 3
+    assert "one sentence" in d["note"]
+    assert d["sample_data"] and d["rubric"]
+    for row in d["first_screens"]:
+        assert set(row) == {"audience", "layout", "note"}
+
+
+def test_each_first_screen_is_a_layout_that_the_validator_knows() -> None:
+    for audience, layout, _note in st.DESIGN_SCREENS:
+        assert layout in sm.LAYOUTS, (audience, layout)
+    assert len({a for a, _l, _n in st.DESIGN_SCREENS}) == len(st.DESIGN_SCREENS)
+
+
+def test_a_table_is_the_first_screen_only_for_a_table_audience() -> None:
+    tables = [a for a, lay, _n in st.DESIGN_SCREENS if lay == "table_workspace"]
+    assert len(tables) == 1 and "enters and edits many rows" in tables[0]
+
+
+def test_the_rubric_of_the_tool_equals_the_rubric_of_the_spec() -> None:
+    """R7 fence: the eight checks of section 11.6 and the eight lines of the tool cannot drift apart."""
+    import re
+    from pathlib import Path
+
+    spec = (Path(__file__).resolve().parents[2] / "project-docs/specs/studio_layouts.md").read_text(encoding="utf-8")
+    block = spec.split("**The look rubric.**", 1)[1].split("**G6.**", 1)[0]
+    # The spec may point to a section at the end of a check. The tool text carries no such pointer.
+    lines = [re.sub(r"\s*\(§[^)]*\)\.?$", ".", m.group(1).strip()).replace("..", ".") for m in re.finditer(r"^\d+\. (.+)$", block, re.M)]
+    assert lines == list(st.DESIGN_RUBRIC)
+
+
+def test_the_design_step_keeps_the_frame_part_inside_the_describe_cap() -> None:
+    size = len(json.dumps(run(st.studio_describe("frame")), ensure_ascii=False, separators=(",", ":")))
+    assert size <= st.MAX_MANIFEST_CHARS // 2, size

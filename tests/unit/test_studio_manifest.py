@@ -1663,6 +1663,16 @@ def test_each_first_preset_validates_with_its_regions():
     assert validate_manifest(_ly(full)) == []
 
 
+def test_app_home_needs_no_region_and_takes_its_three():
+    assert validate_manifest(_ly(_lp("app_home"))) == []
+    full = _lp("app_home", kpis=["n_open"], worklist=["all_visits"], recent=["all_visits"])
+    assert validate_manifest(_ly(full)) == []
+    one(_ly(_lp("app_home", kpis=["all_visits"])), "$.pages[0].regions.kpis[0]", contains="stat")
+    one(_ly(_lp("app_home", main=["all_visits"])), "$.pages[0].regions.main", contains="no region")
+    five = _lp("app_home", kpis=["n_open"] * 5)
+    one(_ly(five), "$.pages[0].regions.kpis", contains="at most 4")
+
+
 def test_the_enum_is_closed_to_a_preset_whose_block_is_not_built():
     errs = validate_manifest(_ly(_lp("calendar", main=["week"])))
     assert errs and errs[0].path.startswith("$.pages[0]")

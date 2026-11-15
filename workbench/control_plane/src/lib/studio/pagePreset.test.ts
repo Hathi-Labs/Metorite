@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { removeView } from "./draftEdit";
 import { LAYOUTS, PRESET_REGIONS, type PageDef, type StudioManifest } from "./manifest";
 import { moveCell, setCellSpan } from "./pageLayout";
-import { buildPage, readPage } from "./pageModel";
+import { buildPage, readPage, regionViews } from "./pageModel";
 
 const board: PageDef = { id: "main", layout: "board", regions: { main: ["b"] } };
 const dash: PageDef = { id: "dash", layout: "dashboard", regions: { kpis: ["s1", "s2"], charts: ["c1"] } };
@@ -45,19 +45,24 @@ describe("readPage with a preset", () => {
     expect(readPage({ ...board, cells: [{ view: "b" }] })).toBeNull();
     expect(readPage({ ...board, side: { view: "b" } })).toBeNull();
   });
-  it("builds a page whose cells are empty", () => {
+  it("builds a page whose cells are its region views in the order of the preset", () => {
     const built = buildPage({ views: [{ id: "b", block: "board" }], pages: [board] });
     expect(built.page.layout).toBe("board");
-    expect(built.cells).toEqual([]);
+    expect(built.page.cells).toEqual([]);
+    expect(built.cells).toEqual([{ view: "b", span: 1 }]);
+    const d = buildPage({ views: ["s1", "s2", "c1"].map((id) => ({ id, block: "stat" })), pages: [dash] });
+    expect(d.cells.map((c) => c.view)).toEqual(["s1", "s2", "c1"]);
+    expect(regionViews(readPage({ id: "p", cells: [{ view: "a" }] })!)).toEqual([]);
   });
 });
 
 describe("the preset table", () => {
-  it("names a region of the closed list for each preset, with one required", () => {
+  it("names a region of the closed list for each preset, with one required, but App Home", () => {
     for (const name of LAYOUTS) {
       const rules = PRESET_REGIONS[name];
       expect(Object.keys(rules).length).toBeGreaterThan(0);
-      expect(Object.values(rules).some((r) => r.required)).toBe(true);
+      // App Home is the one preset with no required region (LOOK-1): a greeting alone is a valid home.
+      expect(Object.values(rules).some((r) => r.required) || name === "app_home").toBe(true);
     }
   });
 });

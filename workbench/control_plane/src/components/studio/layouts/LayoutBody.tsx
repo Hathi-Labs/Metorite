@@ -1,0 +1,126 @@
+"use client";
+
+/**
+ * The body of a page with a preset (STU-LY-2, `project-docs/specs/studio_layouts.md` §4 and §6).
+ *
+ * `StudioPage` draws this in place of the cell grid when the page has a `layout`. The preset
+ * decides the region, the size and the phone order, and the manifest names the views of each
+ * region. This file draws no colour, no pixel size and no state: the loading, empty, error and
+ * no-permission states come from `StudioBlockState` through the caller of `renderView`, and the
+ * fence of `StudioBlockState.test.ts` refuses a local copy in this folder.
+ *
+ * Built: `table_workspace` (LY-2) and `board` (LY-4), which draw the one view of their `main` region, and
+ * `dashboard` (LY-7): the `kpis` in a grid (2 columns on a phone, 4 from a tablet), the `charts` in a grid
+ * (one column on a phone, 2 on a wide screen) and the `worklist` table. The other presets name a block or a
+ * bar that a later slice builds, and each one says so in a plain sentence until then.
+ */
+
+import type { ReactNode } from "react";
+
+import ScrollCue from "@/components/studio/layouts/ScrollCue";
+import type { LayoutName } from "@/lib/studio/manifest";
+
+export interface LayoutBodyProps {
+  layout: LayoutName;
+  regions: Record<string, string[]>;
+  renderView: (id: string) => ReactNode;
+  /** The title of a view, for the label of its region. */
+  titleOf: (id: string) => string;
+  /** The first line of App Home (LOOK-1). The other presets ignore it. */
+  greeting?: ReactNode;
+}
+
+/** The presets that this file draws. A later slice adds one. */
+export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board", "dashboard", "app_home"];
+
+export default function LayoutBody({ layout, regions, renderView, titleOf, greeting }: LayoutBodyProps) {
+  if (!DRAWN_LAYOUTS.includes(layout)) {
+    return <p data-layout-pending={layout} className="text-sm text-muted-foreground">This layout is not drawn yet.</p>;
+  }
+  if (layout === "app_home") return <AppHome regions={regions} renderView={renderView} titleOf={titleOf} greeting={greeting} />;
+  if (layout === "dashboard") return <Dashboard regions={regions} renderView={renderView} titleOf={titleOf} />;
+  const main = regions.main?.[0];
+  const node = main ? renderView(main) : null;
+  return (
+    <div data-layout={layout} className="flex min-w-0 flex-col gap-3">
+      {main && node ? (
+        <section aria-label={titleOf(main)} className="min-w-0">
+          {layout === "table_workspace" ? (
+            // With the record panel open the page is narrow. The table keeps a readable width and scrolls
+            // inside its own strip, so no column shrinks to one character (capture finding, task 3315).
+            <div data-table-strip className="overflow-x-auto"><div className="min-w-[40rem]">{node}</div></div>
+          ) : layout === "board" ? <ScrollCue>{node}</ScrollCue> : node}
+        </section>
+      ) : (
+        <p className="text-sm text-muted-foreground">{`This page has no ${layout === "board" ? "board" : "table"} to show.`}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The dashboard (L4). The most important tile is first in `kpis`, so it sits top-left. Each tile is its own
+ * labelled region, and the caller of `renderView` gives each one its own loading and error state, so one
+ * failed tile never blanks the page.
+ */
+function Dashboard({ regions, renderView, titleOf }: Pick<LayoutBodyProps, "regions" | "renderView" | "titleOf">) {
+  const tile = (id: string) => {
+    const node = renderView(id);
+    return node ? <section key={id} aria-label={titleOf(id)} className="min-w-0">{node}</section> : null;
+  };
+  const kpis = (regions.kpis ?? []).map(tile);
+  const charts = (regions.charts ?? []).map(tile);
+  const work = (regions.worklist ?? []).map(tile);
+  if (kpis.every((x) => x === null)) {
+    return <p className="text-sm text-muted-foreground">This page has no stat to show.</p>;
+  }
+  return (
+    <div data-layout="dashboard" className="flex min-w-0 flex-col gap-3 sm:gap-4">
+      <div data-dashboard-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
+      {charts.length > 0 ? <div data-dashboard-charts className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2">{charts}</div> : null}
+      {work.length > 0 ? <div data-dashboard-worklist>{work}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * App Home (LOOK-1, `studio_layouts.md` section 11). A greeting, up to 4 numbers, the work that needs the member,
+ * and what changed lately. No region is required: a Home with a greeting alone is valid. Each part is its own
+ * labelled region, so one failed view never blanks the page.
+ */
+function AppHome({ regions, renderView, titleOf, greeting }: Pick<LayoutBodyProps, "regions" | "renderView" | "titleOf" | "greeting">) {
+  const part = (id: string) => {
+    const node = renderView(id);
+    return node ? <section key={id} aria-label={titleOf(id)} className="min-w-0">{node}</section> : null;
+  };
+  const kpis = (regions.kpis ?? []).map(part);
+  const work = (regions.worklist ?? []).map((id) => [id, part(id)] as const).filter(([, n]) => n !== null);
+  const recent = (regions.recent ?? []).map((id) => [id, part(id)] as const).filter(([, n]) => n !== null);
+  // A Home with no part asks the member for the next step, so the page is never blank (spec section 11.3).
+  const empty = kpis.every((x) => x === null) && work.length === 0 && recent.length === 0;
+  return (
+    <div data-layout="app_home" className="flex min-w-0 flex-col gap-4 sm:gap-5">
+      {greeting ? <p data-home-greeting className="text-lg font-semibold text-foreground sm:text-xl">{greeting}</p> : null}
+      {empty ? (
+        <p data-home-empty className="text-sm text-muted-foreground">
+          This home page has nothing to show yet. Add a number or a list to it.
+        </p>
+      ) : null}
+      {kpis.some((x) => x !== null) ? (
+        <div data-home-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
+      ) : null}
+      {work.map(([id, node]) => (
+        <div key={id} data-home-worklist className="flex min-w-0 flex-col gap-2">
+          <h2 className="text-sm font-semibold text-foreground">Needs you</h2>
+          {node}
+        </div>
+      ))}
+      {recent.map(([id, node]) => (
+        <div key={id} data-home-recent className="flex min-w-0 flex-col gap-2">
+          <h2 className="text-sm font-semibold text-foreground">Recent</h2>
+          {node}
+        </div>
+      ))}
+    </div>
+  );
+}

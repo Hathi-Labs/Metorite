@@ -237,6 +237,7 @@ export interface TabDef {
 // `LAYOUTS` and `PRESET_REGIONS`. A page with a `layout` has `regions` and no tabs, cells or side.
 export const LAYOUTS = [
   "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+  "app_home",
 ] as const;
 export type LayoutName = (typeof LAYOUTS)[number];
 
@@ -264,9 +265,15 @@ export const PRESET_REGIONS: Record<LayoutName, Record<string, RegionRule>> = {
   },
   work_queue: LIST_DETAIL,
   approval_queue: LIST_DETAIL,
+  // LOOK-1: the first screen of an app. No region is required.
+  app_home: {
+    kpis: { block: "stat", cap: 4, required: false },
+    worklist: { block: "table", cap: 1, required: false },
+    recent: { block: "table", cap: 1, required: false },
+  },
 };
 
-export const REGION_NAMES = ["list", "main", "detail", "kpis", "charts", "worklist"] as const;
+export const REGION_NAMES = ["list", "main", "detail", "kpis", "charts", "worklist", "recent"] as const;
 
 export interface PageDef {
   id: string;
