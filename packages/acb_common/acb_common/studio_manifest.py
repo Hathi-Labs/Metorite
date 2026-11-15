@@ -393,6 +393,29 @@ class TabDef(_Strict):
     cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
 
 
+#: The page presets (STU-LY-0, ``specs/studio_layouts.md`` section 6). The enum is closed: a later
+#: preset joins it in the slice of its block. ``PRESET_REGIONS`` gives the regions of each:
+#: region -> (block type, most views, required). ``manifest.ts`` holds the same table.
+LAYOUTS: tuple[str, ...] = (
+    "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+)  # fmt: skip
+_LIST_DETAIL = {"list": ("table", 1, True), "detail": ("detail", 1, True)}
+PRESET_REGIONS: dict[str, dict[str, tuple[str, int, bool]]] = {
+    "table_workspace": {"main": ("table", 1, True)},
+    "list_detail": _LIST_DETAIL,
+    "board": {"main": ("board", 1, True)},
+    "dashboard": {
+        "kpis": ("stat", 6, True),
+        "charts": ("chart", 4, False),
+        "worklist": ("table", 1, False),
+    },
+    "work_queue": _LIST_DETAIL,
+    "approval_queue": _LIST_DETAIL,
+}
+REGION_NAMES: tuple[str, ...] = ("list", "main", "detail", "kpis", "charts", "worklist")
+MAX_REGION_VIEWS = 6
+
+
 class PageDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     title: str | None = None
@@ -400,6 +423,12 @@ class PageDef(_Strict):
     tabs: list[TabDef] = Field(default_factory=list, max_length=MAX_TABS_PER_PAGE)
     cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
     side: SideDef | None = None
+    #: A preset replaces the grid (owner, 2026-11-14). A page with a `layout` has `regions`
+    #: and no tabs, cells or side. `_check_pages` holds the rest.
+    layout: Literal[
+        "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue"
+    ] | None = None
+    regions: dict[str, list[str]] = Field(default_factory=dict, max_length=len(REGION_NAMES))
 
 #: The caps of the rail (STU-AF2a, D219). `lib/studio/manifest.ts` holds the same numbers, and
 #: `navCaps.test.ts` checks them against the `maxItems` of the schema file.
@@ -943,8 +972,12 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
             if c.span is not None and c.span > cols:
                 out.append(_err(f"{base}[{ci}].span", f"A cell spans at most {cols} columns."))
 
+    blocks = {v.id: v.block for v in m.views}
     for pi, pg in enumerate(m.pages):
         p = f"$.pages[{pi}]"
+        if pg.layout or pg.regions:
+            _check_layout_page(pg, p, view_ids, blocks, out)
+            continue
         if pg.tabs and pg.cells:
             out.append(_err(p, "A page has tabs or cells, not both. Remove one."))
         elif not pg.tabs and not pg.cells:
@@ -955,6 +988,34 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
         cell_errors(pg.cells, f"{p}.cells", pg.cols)
         if pg.side and pg.side.view not in view_ids:
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
+
+
+def _check_layout_page(
+    pg: PageDef, p: str, view_ids: set[str], blocks: dict[str, str], out: list[ManifestError]
+) -> None:
+    """A page with a preset: regions of declared views, and no grid (STU-LY-0)."""
+    if not pg.layout:
+        out.append(_err(f"{p}.regions", "`regions` needs a `layout`. Add one, or remove `regions`."))
+        return
+    if pg.tabs or pg.cells or pg.side:
+        out.append(_err(p, "A page with a `layout` has no tabs, cells or side. Remove them."))
+    table = PRESET_REGIONS[pg.layout]
+    for name, ids in pg.regions.items():
+        rp = f"{p}.regions.{name}"
+        if name not in table:
+            out.append(_err(rp, f"Layout `{pg.layout}` has no region `{name}`. Use {', '.join(table)}."))
+            continue
+        block, cap, _ = table[name]
+        if len(ids) > cap:
+            out.append(_err(rp, f"Region `{name}` holds at most {cap} view{'s' if cap > 1 else ''}."))
+        for i, vid in enumerate(ids):
+            if vid not in view_ids:
+                _undeclared(f"{rp}[{i}]", "View", vid, "`views`", out)
+            elif blocks.get(vid) != block:
+                out.append(_err(f"{rp}[{i}]", f"Region `{name}` takes a {block} view."))
+    for name, (_block, _cap, required) in table.items():
+        if required and not pg.regions.get(name):
+            out.append(_err(f"{p}.regions.{name}", f"Layout `{pg.layout}` needs region `{name}`."))
 
 
 #: The views that read the rows of an object. Only these can give a count.
@@ -973,6 +1034,7 @@ def _check_nav(m: Manifest, out: list[ManifestError]) -> None:
         pg = pages[page_id]
         cells = [*pg.cells, *(c for t in pg.tabs for c in t.cells)]
         ids = [c.view for c in cells] + ([pg.side.view] if pg.side else [])
+        ids += [v for region in pg.regions.values() for v in region]
         return any(blocks.get(i) in _COUNT_BLOCKS for i in ids)
 
     counted = 0

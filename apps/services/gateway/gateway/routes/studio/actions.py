@@ -83,7 +83,7 @@ from gateway.routes.studio import flags
 from gateway.routes.workflows.engine.tool_args import parse_args_schema
 from gateway.routes.workflows.tools import list_tools
 from gateway.studio import logic as _logic
-from gateway.studio import packages_store
+from gateway.studio import mcp_actions, packages_store
 from sqlalchemy import text
 
 router = APIRouter(

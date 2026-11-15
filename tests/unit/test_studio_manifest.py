@@ -17,6 +17,9 @@ import pytest
 from acb_common.studio_manifest import (
     BLOCKS,
     FIELD_TYPES,
+    LAYOUTS,
+    PRESET_REGIONS,
+    REGION_NAMES,
     SOURCE_NOT_A_READ,
     Manifest,
     ManifestError,
@@ -1621,3 +1624,104 @@ def test_every_first_party_template_still_validates():
     assert files
     for f in files:
         assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
+
+
+# ── Page presets (STU-LY-0, specs/studio_layouts.md section 6) ──────────────────────────────
+
+_LY_VIEWS = [
+    {"id": "all_visits", "block": "table", "source": {"object": "visit"}, "columns": ["status"]},
+    {"id": "one_visit", "block": "detail", "object": "visit"},
+    {"id": "n_open", "block": "stat", "source": {"object": "visit"}},
+    {"id": "by_status", "block": "chart", "source": {"object": "visit"}},
+]
+
+
+def _ly(*pages: dict, extra_views=True) -> dict:
+    d = doc(pages=list(pages))
+    if extra_views:
+        d["views"] = [*d["views"], *_LY_VIEWS]
+    return d
+
+
+def _lp(layout: str, **regions) -> dict:
+    return {"id": "main", "layout": layout, "regions": regions}
+
+
+def test_a_page_with_no_layout_is_unchanged():
+    d = _with_pages(_page())
+    assert validate_manifest(d) == []
+    pg = Manifest.model_validate(d).pages[0]
+    assert pg.layout is None and pg.regions == {}
+
+
+def test_each_first_preset_validates_with_its_regions():
+    assert validate_manifest(_ly(_lp("table_workspace", main=["all_visits"]))) == []
+    assert validate_manifest(_ly(_lp("board", main=["board"]))) == []
+    for name in ("list_detail", "work_queue", "approval_queue"):
+        assert validate_manifest(_ly(_lp(name, list=["all_visits"], detail=["one_visit"]))) == []
+    full = _lp("dashboard", kpis=["n_open"], charts=["by_status"], worklist=["all_visits"])
+    assert validate_manifest(_ly(full)) == []
+
+
+def test_the_enum_is_closed_to_a_preset_whose_block_is_not_built():
+    errs = validate_manifest(_ly(_lp("calendar", main=["week"])))
+    assert errs and errs[0].path.startswith("$.pages[0]")
+
+
+def test_a_region_outside_the_preset_is_refused():
+    d = _ly(_lp("board", main=["board"], kpis=["n_open"]))
+    one(d, "$.pages[0].regions.kpis", contains="no region")
+
+
+def test_a_missing_required_region_is_refused():
+    one(_ly(_lp("list_detail", list=["all_visits"])), "$.pages[0].regions.detail", contains="needs region")
+    one(_ly(_lp("board")), "$.pages[0].regions.main", contains="needs region")
+
+
+def test_a_view_of_the_wrong_block_is_refused():
+    one(_ly(_lp("table_workspace", main=["board"])), "$.pages[0].regions.main[0]", contains="table view")
+
+
+def test_an_undeclared_view_in_a_region_is_refused():
+    one(_ly(_lp("table_workspace", main=["ghost"])), "$.pages[0].regions.main[0]", contains="ghost")
+
+
+def test_a_region_cap_is_refused():
+    d = _ly(_lp("table_workspace", main=["all_visits", "all_visits"]))
+    one(d, "$.pages[0].regions.main", contains="at most 1 view")
+    seven = _lp("dashboard", kpis=["n_open"] * 7)
+    one(_ly(seven), "$.pages[0].regions.kpis", contains="at most 6")
+
+
+def test_a_layout_page_has_no_grid():
+    d = _ly({**_lp("board", main=["board"]), "cells": [{"view": "board"}]})
+    one(d, "$.pages[0]", contains="no tabs, cells or side")
+    d = _ly({**_lp("board", main=["board"]), "side": {"view": "board"}})
+    one(d, "$.pages[0]", contains="no tabs, cells or side")
+
+
+def test_regions_need_a_layout():
+    d = _with_pages({"id": "main", "cells": [{"view": "board"}], "regions": {"main": ["board"]}})
+    one(d, "$.pages[0].regions", contains="needs a `layout`")
+
+
+def test_a_colour_or_size_key_in_a_region_is_refused():
+    d = _ly(_lp("board", main=["board"]))
+    d["pages"][0]["regions"]["color"] = ["board"]
+    assert validate_manifest(d)
+    d = _ly(_lp("board", main=["board"]))
+    d["pages"][0]["width"] = 300
+    assert validate_manifest(d)
+
+
+def test_a_rail_count_reads_the_views_of_a_layout_page():
+    d = _ly(_lp("table_workspace", main=["all_visits"]))
+    d["nav"] = [{"title": "Work", "rows": [{"page": "main", "count": True}]}]
+    assert validate_manifest(d) == []
+
+
+def test_the_region_table_matches_the_validator_and_the_names():
+    assert set(PRESET_REGIONS) == set(LAYOUTS)
+    assert {r for t in PRESET_REGIONS.values() for r in t} <= set(REGION_NAMES)
+    schema = Manifest.model_json_schema()
+    assert schema["$defs"]["PageDef"]["properties"]["layout"]["anyOf"][0]["enum"] == list(LAYOUTS)
