@@ -43,14 +43,34 @@ def _tests(files: list[str], root: Path) -> set[str]:
     }
 
 
+def _durations(root: Path) -> dict[str, float]:
+    """Seconds for each test file, from the pytest-split file `.test_durations` (per test id)."""
+    import json
+
+    try:
+        raw = json.loads((root / ".test_durations").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, float] = {}
+    for key, secs in raw.items():
+        f = key.split("::", 1)[0]
+        out[f] = out.get(f, 0.0) + float(secs)
+    return out
+
+
 def _by_size(files: set[str], root: Path) -> list[str]:
-    """Small files first: more tests a minute, so a red shows sooner."""
-    def size(f: str) -> int:
+    """The fast files first (more tests a minute, so a red shows sooner). The cost is the
+    recorded run time of the file. A file with no record costs a guess from its size."""
+    known = _durations(root)
+
+    def cost(f: str) -> float:
+        if f in known:
+            return known[f]
         try:
-            return (root / f).stat().st_size
+            return (root / f).stat().st_size / 50_000  # about 1 s for 50 KB
         except OSError:
-            return 0
-    return sorted(files, key=lambda f: (size(f), f))
+            return 0.0
+    return sorted(files, key=lambda f: (cost(f), f))
 
 
 _CACHE: dict = {}
@@ -141,7 +161,9 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     pr_sel, pr_full = _reach(pr, root)
     main_sel, main_full = _reach(main, root)
     changed = _tests(pr, root) | _tests(main, root)
-    named, _cut = named_tests([*pr, *main], root)
+    named_pr, _cut = named_tests(pr, root)
+    named_main, _cut = named_tests(main, root)
+    named = named_pr | named_main
     changed |= {t for t in named if (root / t).is_file()}
     if "tests/fences.json" in (*pr, *main):
         # A changed fence list: the guards that read tests/fences.json run (tier 2 at least).
@@ -157,10 +179,13 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     # Scanner tests are left out here: any .py change picks all of them.
     pr_src, _ = _reach(pr, root, src_only=True)
     main_src, _ = _reach(main, root, src_only=True)
-    tier1 = ((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src)) | (named & changed)
-    tier2 = changed - tier1
+    # Tier 0: the tests that name a data file of the PR itself. A red there is the PR's own
+    # (PR 2248, 2026-11-15) and the list is short, so it runs before everything else.
+    tier0 = {t for t in named_pr if (root / t).is_file()}
+    tier1 = (((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src)) | (named & changed)) - tier0
+    tier2 = changed - tier1 - tier0
     tier3 = both - changed
-    return _by_size(tier1, root) + _by_size(tier2, root) + _by_size(tier3, root), len(tier1)
+    return _by_size(tier0, root) + _by_size(tier1, root) + _by_size(tier2, root) + _by_size(tier3, root), len(tier0) + len(tier1)
 
 
 def pick(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str] | None:

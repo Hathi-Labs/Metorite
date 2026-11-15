@@ -155,3 +155,23 @@ def test_the_named_tests_run_in_the_first_tier(monkeypatch):
     _patch_reach(monkeypatch, {})
     got, first = ps.pick_tiers(["tests/fences.json"], ["scripts/x.py"])
     assert first >= 1 and "tests/unit/test_merge_conflict_rules.py" in got[:first]
+
+
+def test_the_tests_of_the_prs_own_data_files_run_first_and_the_fast_ones_before_the_slow(monkeypatch, tmp_path):
+    """The replay of PR 2248 (2026-11-15): the test that reads tests/fences.json sat at
+    position 67 of 488 and the 240 s cap hit before it. Tier 0 is the tests that name a data
+    file of the PR, and each tier runs the files with the smallest recorded run time first."""
+    (tmp_path / "tests/unit").mkdir(parents=True)
+    for n in ("test_slow.py", "test_fast.py", "test_other.py"):
+        (tmp_path / "tests/unit" / n).write_text("x\n", encoding="utf-8")
+    (tmp_path / ".test_durations").write_text(
+        '{"tests/unit/test_slow.py::t": 90.0, "tests/unit/test_fast.py::t": 0.5, "tests/unit/test_other.py::t": 0.1}',
+        encoding="utf-8")
+    assert ps._by_size({"tests/unit/test_slow.py", "tests/unit/test_fast.py", "tests/unit/test_other.py"}, tmp_path) == [
+        "tests/unit/test_other.py", "tests/unit/test_fast.py", "tests/unit/test_slow.py"]
+    _patch_reach(monkeypatch, {})
+    monkeypatch.setattr(ps, "named_tests", lambda files, root=None, **_k: (
+        ({"tests/unit/test_fence_lists.py"} if "tests/fences.json" in files else {"tests/unit/test_studio_run_as.py"}), False))
+    got, first = ps.pick_tiers(["tests/fences.json"], ["docs/x.md"])
+    assert got[0] == "tests/unit/test_fence_lists.py", "the PR's own data file tests come first"
+    assert first == 2 and "tests/unit/test_studio_run_as.py" in got[:first]
