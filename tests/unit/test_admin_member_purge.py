@@ -541,6 +541,8 @@ async def test_the_response_says_what_happened_table_by_table(
         # and her seat on the event of a colleague.
         "calendar_entries": 2,
         "calendar_attendances": 1,
+        # WS-STU I8b-1a: the fake holds no ask of the member.
+        "connection_asks": 0,
         "member_record": 1,
     }
     assert out.kept == {
@@ -944,6 +946,25 @@ def test_the_goals_of_this_org_go_and_no_other() -> None:
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("goal_records") < keys.index("member_record")
     assert cascade_closure("goal_records") == set()
+
+
+def test_the_connection_asks_of_this_org_go_and_no_other() -> None:
+    """WS-STU I8b-1a (``ai_studio.md`` §8.2): the purge deletes the member's
+    asks of an admin for a connection. The clause names the kind, the member
+    and the bound org, so a ``broken`` row and the asks of the same address in
+    another org stay. No table hangs off ``integration_attention``."""
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "integration_attention"]
+    assert rows.key == "connection_asks"
+    assert rows.where == (
+        f"kind = 'ask' AND lower(member_email) = :email AND organization_id = {_BOUND_ORG}")
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("connection_asks") < keys.index("member_record")
+    assert cascade_closure("integration_attention") == set()
 
 
 def test_the_member_s_private_change_history_goes() -> None:
