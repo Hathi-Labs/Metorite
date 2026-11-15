@@ -74,7 +74,7 @@ HISTORY_DECISION: Mapping[str, str] = {
     "url": HISTORY_VALUES, "email": HISTORY_VALUES, "phone": HISTORY_VALUES,
     "geo": HISTORY_VALUES, "richText": HISTORY_VALUES, "rating": HISTORY_VALUES,
     "duration": HISTORY_VALUES, "quantity": HISTORY_VALUES, "percent": HISTORY_VALUES,
-    "barcode": HISTORY_VALUES,
+    "barcode": HISTORY_VALUES, "autonumber": HISTORY_VALUES,
 }  # fmt: skip
 
 #: The types that a hot field may have. Each maps to one value column of
