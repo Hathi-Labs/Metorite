@@ -294,6 +294,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                              "read the studio workflow that chases invoices",
                              # STU-E4b: the run id mode, the steps of a run.
                              "list the steps of the playbook run in my studio app"),
+    # -- studio-approvals, the follow pack of studio (STU-J2b-3a) --
+    "studio_request_approval": ("ask for the org approval of my studio app",),
+    "studio_list_approvals": ("list the pending approvals of studio apps",),
+    "studio_approve": ("approve version 2 of the studio app for the org",),
+    "studio_reject": ("reject version 2 of the studio app",),
     # -- studio-workflows: the workflow writes (STB-6b) --
     "studio_workflow_publish": ("publish the workflow that chases invoices",
                                 "roll back the workflow to version 2"),

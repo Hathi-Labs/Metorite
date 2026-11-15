@@ -833,11 +833,11 @@ def test_the_pack_holds_the_two_writes_of_the_studio_owner() -> None:
     fam = sf.SKILL_FAMILIES[PACK]
     assert fam["owner"] == STUDIO and sf.is_pack(PACK) and fam["core"] is False
     assert tuple(fam["tools"]) == ("studio_workflow_publish", "studio_workflow_live")
-    # WS-67 TS-1b: studio-more sits between the core and this pack. This pack
+    # WS-67 TS-1b: studio-more and studio-approvals sit between the core and this pack. This pack
     # does not join studio-more, and it stays out of FOLLOWS.
-    assert sf.pack_slugs()[-3:] == ("studio", "studio-more", PACK), (
+    assert sf.pack_slugs()[-4:] == ("studio", "studio-more", "studio-approvals", PACK), (
         "after studio, so the cap drops it first")
-    assert tp.owner_packs(STUDIO) == ("studio", "studio-more", PACK)
+    assert tp.owner_packs(STUDIO) == ("studio", "studio-more", "studio-approvals", PACK)
     assert not set(fam["tools"]) & set(sf.SKILL_FAMILIES["studio-more"]["tools"])
     found = tp.PACKS[PACK]
     assert found.owner == STUDIO and found.delegation_refusal and not found.surface_slugs
