@@ -199,7 +199,7 @@ The standing rule, about 60 words:
 ```text
 These connected systems belong to this organization. When the member asks
 about something that a system below covers, use its tools in this turn. Use
-the Metorite tools first for Metorite's own records. Before you say that
+the Metorite tools that you hold first for Metorite's own records. Before you say that
 something does not exist, or that you cannot find it, try each system whose
 description covers the topic. Name the system that gave each fact.
 ```
@@ -467,10 +467,17 @@ choose it.
   else" line of FIND-4 may name an attached server. WS-FIND decides it.
 - **The lanes (metorite-7d).** This session writes the plan. A lane builds a
   slice that the board marks ready, and claims it first.
-- **Locks.** PR 2369 holds `_tool_injection.py`, `_maf_mcp.py`, `settings.py`,
-  `env_guard.py`, `.env.example`, `docs/flag_reload.md`, work_plan §6 D4 and
-  `one_assistant_context.md` §4.2.9. No CSY code slice starts before it
-  merges.
+- **Locks.** PR 2369 merged as `4b622257f` on 2026-11-15. It held
+  `_tool_injection.py`, `_maf_mcp.py`, `settings.py`, `env_guard.py`,
+  `.env.example`, `docs/flag_reload.md`, work_plan §6 D4 and
+  `one_assistant_context.md` §4.2.9. CSY-1 and CSY-2 may start once this spec
+  merges. A new flag goes in at its sorted place (PR 2345).
+- **The words of the rule (cal-tasks).** The rule keys on the data source,
+  not on what a tool cannot do. A rule of that kind repeated the fault of the
+  tool search pilot. Member text says "connected system", never
+  "server". The tool search change edits the persona and the tool texts in
+  `tool_packs.py`, and CSY-1 edits `_context_preamble_parts`. The two share
+  no file, so they land as two PRs, CSY-1 first.
 
 ## 11. The fences that must stay green
 
