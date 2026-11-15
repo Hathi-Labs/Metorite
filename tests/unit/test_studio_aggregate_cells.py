@@ -143,3 +143,15 @@ def test_the_cell_rows_become_cells_in_order_and_past_the_cap_they_raise() -> No
     with pytest.raises(QueryError):
         store._cell_rows(agg, [(1, None, 2, 21, None, None, None)], 0, {})
     assert store._cell_rows(agg, [(1, None, 20, 20, None, None, None)], 0, {}) == ()
+
+
+def test_a_cell_with_no_amount_has_no_currency_and_passes_the_check() -> None:
+    agg = _agg([{"field": "status"}, {"field": "team"}],
+               measures=[{"op": "count"}, {"op": "sum", "field": "fee"}])
+    head = (1, None, 2, 2)
+    rows = [(*head, "open", "a", 1, 100, 1, "INR", "INR"), (*head, "done", "b", 1, None, 0, None, None)]
+    got = store._cell_rows(agg, rows, 2, {"fee": "INR"})
+    assert [(c.key, c.key2, c.values) for c in got] == [("open", "a", (1, 100)), ("done", "b", (1, 0))]
+    with pytest.raises(QueryError) as changed:
+        store._cell_rows(agg, rows[:1], 1, {"fee": "USD"})
+    assert changed.value.code == "query_timeout"

@@ -28,6 +28,7 @@ and the named test goes red. Each result was run on 2026-11-14.
 * H3. ``build_aggregate_cells``: count the axes over all rows, with no row rule. ``test_r8_cells_the_cap_counts_only_the_rows_the_viewer_reads`` goes red.
 * H4. ``_cell_rows``: leave out the cap check. The too_big tests go red.
 * H6. `_cell_rows`: drop the per-cell currency check. The race test of a second currency goes red.
+* H10. `_cell_rows`: compare a cell currency with strict equality, a None too. `test_r8_cells_a_cell_with_no_amount_is_not_a_race` goes red.
 * H7. `_cell_rows`: drop the check that the cell counts equal the total. The retryable-error test goes red.
 * H8. `_read_aggregate`: drop `_check_hot_or_small` on the cells. The cold-guard test goes red.
 * H9. `build_aggregate_cells`: count the axis with count(DISTINCT x.k). The cap test of a missing value goes red.
@@ -351,6 +352,14 @@ def test_r8_cells_a_money_measure_with_two_keys_gives_the_sums_of_each_cell(worl
     assert _cells(got) == {("n", "a"): (2, (2, 150)), ("n", "b"): (1, (1, 7)),
                            ("m", "a"): (1, (1, 3))}
     assert got.total.values == (4, 160)
+
+
+def test_r8_cells_a_cell_with_no_amount_is_not_a_race(world) -> None:
+    obj = _make(world, "cash_noamt", [{"kind": "n", "region": "a", "amt": _money(100)},
+                                      {"kind": "m", "region": "b"}])
+    got = _agg(world, AS_OWNER, obj, group_by=_KR, measures=_AMT)
+    assert got is not None and got.currencies == (None, "INR")
+    assert _cells(got) == {("n", "a"): (1, (1, 100)), ("m", "b"): (1, (1, 0))}
 
 
 def test_r8_cells_a_second_currency_between_the_statements_is_never_one_cell(

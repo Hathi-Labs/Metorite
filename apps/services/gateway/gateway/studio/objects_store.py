@@ -3346,7 +3346,9 @@ def _cell_rows(agg: studio_query.Aggregate, rows: Sequence[Any], n_records: int,
             sums[f.key] = (row[at], int(row[at + 1] or 0))
             at += 2
             if f.type == "money":
-                if _one_currency(f, row[at], row[at + 1]) != currency.get(f.key):
+                # A cell with no amount has no currency, and its sum is 0.
+                cur = _one_currency(f, row[at], row[at + 1])
+                if cur is not None and cur != currency.get(f.key):
                     raise QueryError(studio_query.TIMEOUT, _RACE_MESSAGE)
                 at += 2
         cells.append(AggregateCell(_group_key(agg.group, row[4]), _group_key(agg.group2, row[5]),
