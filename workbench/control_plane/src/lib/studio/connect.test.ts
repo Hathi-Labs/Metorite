@@ -273,8 +273,8 @@ describe("the read", () => {
       ],
     });
     expect(rows).toEqual([
-      { name: "zoho", label: "Zoho CRM", met: true, checkable: true, setupHref: "/crm", canConnect: false, reason: "ok" },
-      { name: "mcp:tally", label: "mcp:tally", met: false, checkable: true, setupHref: null, canConnect: false, reason: "missing" },
+      { name: "zoho", label: "Zoho CRM", met: true, checkable: true, setupHref: "/crm", canConnect: false, as: "member", reason: "ok" },
+      { name: "mcp:tally", label: "mcp:tally", met: false, checkable: true, setupHref: null, canConnect: false, as: "member", reason: "missing" },
     ]);
     expect(parseConnections({ connections: [{ name: "mailbox", checkable: false }] })[0].checkable).toBe(false);
     expect(parseConnections(null)).toEqual([]);
