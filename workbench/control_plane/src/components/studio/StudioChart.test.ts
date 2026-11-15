@@ -53,6 +53,22 @@ describe("StudioChart", () => {
   });
 });
 
+describe("StudioStat icon (STU-LOOK-2)", () => {
+  const draw = (data: unknown) => renderToStaticMarkup(createElement(StudioStat, { data, rows: [AGG] }));
+  it("draws an icon of the list before the heading", () => {
+    const html = draw({ label: "Deals", icon: "Truck" });
+    expect(html).toContain("<svg");
+    expect(html.indexOf("<svg")).toBeLessThan(html.indexOf("Deals"));
+    expect(html).toContain('data-stat-heading=""');
+  });
+  it("draws no icon for a name outside the list, a non-string or no icon", () => {
+    for (const icon of ["Skull", 5, null, undefined, ""]) {
+      const html = draw({ label: "Deals", icon });
+      expect(html.slice(0, html.indexOf("Deals"))).not.toContain("<svg");
+    }
+  });
+});
+
 describe("StudioStat", () => {
   it("shows the value and the trend", () => {
     const html = renderToStaticMarkup(createElement(StudioStat, { data: { label: "Deals" }, rows: [AGG] }));
