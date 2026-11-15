@@ -30,7 +30,7 @@ The first draft of this row said newest first. The door pages by `id > after`, s
 
 **The Detail block.** It has no history section. The Details tab of the record page IS the Detail block, and Activity is its own tab beside it. So one component lives in one place, and a copy in the Detail block would be a second implementation.
 
-**The chat twin.** It is a MODE of `studio_record_list`: send `history_of` (a record id) and, for the next page, `next`. The mode posts the same door op to the declared action, as the member. It returns the same list, oldest first, in an untrusted frame, with `next`. The door applies the redaction. So the mode adds none, and it never fills a key.
+**The chat twin.** It is a MODE of `studio_record_list`: send `history_of` (a record id) and, for the next page, `next`. The mode posts the same door op to the declared action, as the member. It returns the same kind of list, oldest first, in an untrusted frame, with `next`. It sits under the key `history`, and not `records`. The door applies the redaction. So the mode adds none, and it never fills a key.
 
 **Why a mode.** A Studio turn with email words holds exactly 110 tools, the cap of `MAX_REQUEST_TOOLS`. One more tool in `studio-more` takes that turn to 111, and the loader then drops the email pack in four cases of the golden matrix. E4b made the same choice for the workflow read. So `studio-more` keeps its 13 tools, `studio_record_list` keeps its parity row, and the studio debt ceiling stays 3.
 
