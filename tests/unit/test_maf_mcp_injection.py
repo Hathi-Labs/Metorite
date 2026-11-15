@@ -381,6 +381,50 @@ async def test_a_server_whose_names_collide_is_left_out(monkeypatch, offline):
     assert clash and clash[0]["name"] == "web" and clash[0]["tools"] == ["web_search"]
 
 
+@pytest.mark.parametrize("finder", [True, False])
+async def test_a_server_tool_named_find_tools_leaves_only_beside_the_finder(
+    monkeypatch, offline, finder: bool,
+):
+    """WS-67 TS-2a. A server ``find`` with a tool ``tools`` exposes
+    ``find_tools``. ``FindToolsProvider`` adds a tool of that name in
+    ``before_run``, so the agent's own list never shows it. With the finder
+    on the run, the server is left out and logged. With no finder (the flag
+    off), the server stays, as before TS-2a. Mutation: ``_names_held`` drops
+    ``_finder_names`` -> the finder case keeps the server -> red."""
+    from acb_skills import tool_packs as tp
+    from agent_framework import FunctionTool, MCPStreamableHTTPTool
+    from orchestrator._native_run_context import agent_with_providers
+
+    async def _connect(self: Any, *, reset: bool = False) -> None:
+        self._functions.append(FunctionTool(
+            name=f"{self.tool_name_prefix}_tools", func=lambda: "x",
+            additional_properties={"_mcp_is_tool": True},
+        ))
+
+    monkeypatch.setattr(MCPStreamableHTTPTool, "connect", _connect)
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("find", org=ORG_A), row("crm", org=ORG_A)]).install(monkeypatch)
+    agent = native_agent()
+    if finder:
+        turn = tp.PackTurn(ORG_A, "chat-mcp-find", "m", 1, (), "", True)
+        record = tp.PackRun.of(turn, tp.choose(turn, allowed=frozenset(), base_tools=0), [])
+
+        async def _build(slug: str, ctx: Any, holds: frozenset[str]) -> Any:
+            return None
+
+        made = tp.FindTools(candidates=tp.FindCandidates(), run_key="k", record=record,
+                            build=_build, measure=_maf_mcp.schema_tokens)
+        agent = agent_with_providers(agent, [tp.FindToolsProvider(made)])
+    with structlog.testing.capture_logs() as logs:
+        await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A, opened=[])
+    clash = [e for e in logs if e["event"] == "mcp.name_collision"]
+    if finder:
+        assert _names(agent) == ["crm"]
+        assert clash and clash[0]["name"] == "find" and clash[0]["tools"] == ["find_tools"]
+    else:
+        assert _names(agent) == ["crm", "find"] and not clash
+
+
 async def test_a_connected_tool_is_not_connected_again_by_the_agent(monkeypatch, offline):
     """``Agent.__aenter__`` (the native tier) enters each MCP tool again. A
     connected tool must not reconnect and list its tools a second time."""

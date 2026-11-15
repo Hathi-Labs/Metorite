@@ -161,6 +161,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
     # covers both too.
     "TOOL_PACKS", "TOOL_PACKS_ORGS",
+    # WS-67 TS-2a (D222): the orgs whose chat holds `find_tools`. A found tool
+    # moves what the chat can do and spends model tokens, so only the owner
+    # writes it (work_plan.md §6 D4). The `TOOL_` prefix covers it too.
+    "TOOL_SEARCH_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
