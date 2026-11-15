@@ -450,7 +450,7 @@ adds acts to its list, and no column:
 |---|---|---|
 | `my_day` | `card_acted`, `card_later`, `card_snooze`, `card_dismiss`, `card_not_useful`, `kind_mute` | The card-state write of MD-2a (`routes/shell/state.py`) and the prefs write |
 | `reach` | `alert_useful`, `alert_not_useful` | `outbox.rate_alert`, when RE-6 gives it a route |
-| `chat` | `card_approve`, `card_reject`, `card_revise` (in §19.4 already) | The card answer in `ask_tools` |
+| `chat` | `card_approve`, `card_reject`, `card_revise` (in §19.4 already) | The card answer in `ask_tools`. The outcome words come from `ask_tools.CARD_OUTCOMES` (HRD-7), the one vocabulary of card outcomes |
 | `email` | `draft_sent`, with an edit distance in `features` | The send route. The distance is one number, and the row holds no text |
 
 The time of each act is `at`. The learner reads the hour of use from it. The
