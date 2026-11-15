@@ -5316,7 +5316,9 @@ STUDIO_WORKFLOW_WRITE_TOOLS = (studio_workflow_publish, studio_workflow_live)
 #   text that every member of the app reads. ``update`` and ``delete`` read the
 #   views of the object first, to know if the view is shared.
 # * Only ``approved`` sends a write. A second read must match the first.
-# * The card parts of a spec are counts. The filter values never show on a card.
+# * The card of a write that touches a SHARED view shows each filter value inside
+#   « » (:func:`_view_spec_rows`), because every member reads it. A private write
+#   shows counts only.
 #
 # The four COVERED rows of ``chat_parity.py`` land with AF-10b-2, the first UI call.
 # Fence: ``tests/unit/test_studio_view_tool.py`` and ``test_studio_view_tool_r8.py``.
@@ -5420,6 +5422,18 @@ def _view_name_arg(raw: Any) -> str | None:
     return clean if 1 <= len(clean) <= MAX_VIEW_NAME_CHARS else None
 
 
+def _view_clean(value: Any) -> Any:
+    """*value* with each hidden character left out of each text, as the name
+    goes (``strip_hidden``). The keys of a dict go through it too."""
+    if isinstance(value, str):
+        return strip_hidden(value)
+    if isinstance(value, dict):
+        return {_view_clean(k): _view_clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_view_clean(v) for v in value]
+    return value
+
+
 def _view_row(view: dict[str, Any]) -> dict[str, Any]:
     """One view of the answer: the route text, each text cut and a hidden
     character left out of the name."""
@@ -5429,7 +5443,7 @@ def _view_row(view: dict[str, Any]) -> dict[str, Any]:
         "name": _member_text(view.get("name"), MAX_VIEW_NAME_CHARS),
         "shared": view.get("shared") is True,
         "mine": view.get("mine") is True,
-        "spec": spec,
+        "spec": _view_clean(spec),
         "position": view.get("position") if _whole(view.get("position")) else 0,
         "dropped": view.get("dropped") if _whole(view.get("dropped")) else 0,
         "updated_at": _tag(view.get("updated_at"), 40),
@@ -5497,7 +5511,9 @@ async def _view_list(pid: str, obj: str, offset: Any, limit: Any) -> dict[str, A
 
 
 def _view_spec_line(spec: Any) -> str:
-    """The spec in plain words, as counts. A filter value never shows."""
+    """The spec in plain words, as counts. A private write shows this, and no
+    filter value shows: only the owner reads it. A shared write shows
+    :func:`_view_spec_rows` instead."""
     if not isinstance(spec, dict) or not spec:
         return "Spec: no filter, no sort, the default layout and columns."
     parts = []
@@ -5512,18 +5528,93 @@ def _view_spec_line(spec: Any) -> str:
     return "Spec: " + (", ".join(parts) if parts else "empty") + "."
 
 
+#: The most characters of one filter value on a card, inside « ». A longer value
+#: gives no card, in any chat: a short row is never cut (``card_body``).
+MAX_VIEW_CARD_VALUE = 300
+_VIEW_VALUE_TOO_LONG = ("A filter value of this view is too long to show on one card, so nothing "
+                        "changed. Shorten the value, or use the app in Studio.")
+_VIEW_SHARED_SPEC = ("Every member who opens this app reads the filter values, the sort, the "
+                     "layout and the columns that their roles let them read.")
+
+
+def _spec_leaves(value: Any) -> list[str]:
+    """Each text inside *value*, at any depth: a key of a dict, and a leaf."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [t for k, v in value.items() for t in (*_spec_leaves(k), *_spec_leaves(v))]
+    if isinstance(value, (list, tuple)):
+        return [t for v in value for t in _spec_leaves(v)]
+    return [] if value is None or isinstance(value, bool | int | float) else [repr(value)]
+
+
+def _view_spec_texts(spec: Any) -> list[tuple[str, Any]]:
+    """The free text of a spec, one text for each key, for ``_smuggle_refusal``."""
+    if not isinstance(spec, dict):
+        return []
+    return [(f"spec {key}", "\n".join(_spec_leaves(val))) for key, val in spec.items()]
+
+
+def _view_value_text(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), default=repr)
+
+
+def _view_spec_rows(spec: Any) -> list[tuple[str, str]]:
+    """The rows of a spec that EVERY member of the app reads (a shared view):
+    each condition as ``«field» op «value»``, the sort, the layout and the
+    columns, and one line that says who reads them. The value shows whole
+    (:func:`_shown_count`) and hidden characters are counted. Raise
+    :class:`_Refused` for a value over :data:`MAX_VIEW_CARD_VALUE`."""
+    if not isinstance(spec, dict) or not spec:
+        return [("spec", "Spec: no filter, no sort, the default layout and columns."),
+                ("spec", _VIEW_SHARED_SPEC)]
+    rows: list[tuple[str, str]] = [("spec", _VIEW_SHARED_SPEC)]
+    counts = {"filter value": 0, "filter field": 0}
+    conds = spec.get("filter") if isinstance(spec.get("filter"), list) else []
+    for i, cond in enumerate(c for c in conds if isinstance(c, dict)):
+        field, in_field = _shown_count(cond.get("field"))
+        line = f"Filter {i + 1}: {field} {_clip(_visible(cond.get('op')), 12)}"
+        if "value" in cond:
+            value, in_value = _shown_count(_view_value_text(cond["value"]))
+            if len(value) > MAX_VIEW_CARD_VALUE + 2:
+                raise _Refused(_VIEW_VALUE_TOO_LONG)
+            line += f" {value}"
+            counts["filter value"] += in_value
+        counts["filter field"] += in_field
+        rows.append(("filter", line))
+    sort = spec.get("sort")
+    if isinstance(sort, dict):
+        field, in_sort = _shown_count(sort.get("field"))
+        counts["sort"] = in_sort
+        rows.append(("sort", f"Sort: {field} {_clip(_visible(sort.get('dir', 'asc')), 4)}"))
+    if spec.get("layout") in VIEW_LAYOUTS:
+        rows.append(("layout", f"Layout: {spec['layout']}"))
+    if isinstance(spec.get("columns"), list) and spec["columns"]:
+        shown = [_shown_count(c) for c in spec["columns"]]
+        counts["columns"] = sum(n for _, n in shown)
+        rows.append(("columns", "Columns: " + " ".join(t for t, _ in shown)))
+    return [*rows, *_hidden_rows(list(counts.items()))]
+
+
 def _view_card_rows(
     act: str, obj: str, name: Any, shared_after: bool, current: dict[str, Any] | None,
-    body: dict[str, Any],
+    body: dict[str, Any], shared_touch: bool = False,
 ) -> list[tuple[str, str]]:
     """The rows of the card: the view, the object, who reads it, and what
-    changes. The name shows inside « » and a hidden character is counted."""
+    changes. The name shows inside « » and a hidden character is counted.
+    A write that touches a shared view (*shared_touch*: it was shared, or it is
+    after) shows the spec whole through :func:`_view_spec_rows`, because every
+    member reads it. That is the spec of the body, else the CURRENT spec."""
     shown, hidden = _shown_count(name)
     rows: list[tuple[str, str]] = [("view", f"View: {shown}"), ("object", f"Object: {obj}"),
                                    *_hidden_rows([("name", hidden)])]
     was = current.get("shared") is True if current else False
+    now_spec = body["spec"] if "spec" in body else (current or {}).get("spec")
     if act == "delete":
         rows.append(("who", _VIEW_WHO[was]))
+        if shared_touch:
+            rows += _view_spec_rows(now_spec)
         return rows
     if act == "save":
         rows.append(("who", _VIEW_WHO[shared_after]))
@@ -5536,7 +5627,9 @@ def _view_card_rows(
     if "name" in body and act == "update":
         new, new_hidden = _shown_count(body["name"])
         rows += [("rename", f"New name: {new}"), *_hidden_rows([("new name", new_hidden)])]
-    if "spec" in body:
+    if shared_touch:
+        rows += _view_spec_rows(now_spec)
+    elif "spec" in body:
         rows.append(("spec", _view_spec_line(body["spec"])))
     if "position" in body:
         rows.append(("position", f"Position: {body['position']}"))
@@ -5632,12 +5725,15 @@ async def _view_write(
     name = body.get("name") if act == "save" else (current or {}).get("name")
     asked: dict[str, Any] = {}
     # The card decision: a share, an unshare, a shared view -> ALWAYS a card.
-    if await _view_needs_card(was or after):
-        held = await _smuggle_refusal([("name", name), ("new name", body.get("name"))])
+    touch = bool(was or after)
+    if await _view_needs_card(touch):
+        shown_spec = body["spec"] if "spec" in body else (current or {}).get("spec")
+        held = await _smuggle_refusal([("name", name), ("new name", body.get("name")),
+                                       *(_view_spec_texts(shown_spec) if touch else [])])
         if held is not None:
             return held
-        rows = _view_card_rows(act, obj, name, after, current, body)
         try:
+            rows = _view_card_rows(act, obj, name, after, current, body, touch)
             context = await _card(
                 _VIEW_SHARE_NOTE if (after and not was) else _VIEW_NOTE[act], rows, _VIEW_WONT_FIT)
         except _Refused as exc:
