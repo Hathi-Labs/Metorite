@@ -3298,3 +3298,88 @@ class TestSamplingPerStep:
         assert [k["model"] for k in seen] == [self.CLAUDE, self.GEMINI]
         assert "temperature" not in seen[0]
         assert seen[1]["temperature"] == 0.2
+
+
+class TestPromptCachePerStep:
+    """Task 2875. An Anthropic step carries the cache marks and a DeepSeek step behind it does not.
+
+    The gateway cannot name the model of a routed call, so the Router marks each step itself
+    (`customer_console.prompt_cache`, behind CUSTOMER_CONSOLE_PROMPT_CACHE). With the flag off the
+    request goes out as it came."""
+
+    CLAUDE = "anthropic/claude-haiku-5-5"
+    DEEPSEEK = "deepseek/deepseek-chat"
+    BREAK = "<!-- CACHE BREAK -->"
+    TOOL = {"type": "function", "function": {"name": "find_priority", "parameters": {"type": "object"}}}
+
+    @pytest.fixture
+    def creds(self, db):
+        made: list[str] = []
+        with db.begin() as c:
+            for vendor in ("anthropic", "deepseek"):
+                row = c.execute(
+                    text("INSERT INTO provider_credential (provider, secret_enc, "
+                         "label) VALUES (:p, :s, 'platform') "
+                         "ON CONFLICT DO NOTHING RETURNING id"),
+                    {"p": vendor, "s": router_mod.encrypt_secret("sk-x")},
+                ).scalar()
+                if row is not None:
+                    made.append(str(row))
+        yield
+        with db.begin() as c:
+            for cid in made:
+                c.execute(text("DELETE FROM provider_credential WHERE id = :i"),
+                          {"i": cid})
+
+    def _walk(self, client, key, tier, creds_unused=None):
+        seen: list[dict] = []
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        async def _provider(**kwargs):
+            seen.append(kwargs)
+            if kwargs["model"] == self.CLAUDE:
+                raise _Overloaded("busy")
+            return dict(PROVIDER_RESPONSE)
+
+        router_mod.set_provider_call(_provider)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "tools": [self.TOOL],
+            "messages": [
+                {"role": "system", "content": f"STABLE persona\n\n{self.BREAK}\n\nMEMORY of the member"},
+                {"role": "user", "content": "x"},
+            ]})
+        assert r.status_code == 200, r.text
+        assert [k["model"] for k in seen] == [self.CLAUDE, self.DEEPSEEK]
+        return seen
+
+    def test_each_step_is_marked_for_its_own_vendor(
+            self, client, org_key, bound_tier, creds, monkeypatch):
+        monkeypatch.setenv("CUSTOMER_CONSOLE_PROMPT_CACHE", "1")
+        _, key = org_key
+        tier = bound_tier([self.CLAUDE, self.DEEPSEEK], reads_images=None)
+        claude, deepseek = self._walk(client, key, tier)
+        system = claude["messages"][0]["content"]
+        assert system[0] == {"type": "text", "text": "STABLE persona",
+                             "cache_control": {"type": "ephemeral"}}
+        assert system[1] == {"type": "text", "text": "MEMORY of the member"}
+        assert claude["tools"][-1]["function"]["cache_control"] == {"type": "ephemeral"}
+        assert self.BREAK not in str(claude)
+        # The step behind it is a plain string with no sentinel and no mark.
+        text_of_deepseek = deepseek["messages"][0]["content"]
+        assert isinstance(text_of_deepseek, str)
+        assert self.BREAK not in text_of_deepseek and "MEMORY of the member" in text_of_deepseek
+        assert "cache_control" not in str(deepseek)
+
+    def test_with_the_flag_off_the_request_goes_out_as_it_came(
+            self, client, org_key, bound_tier, creds, monkeypatch):
+        monkeypatch.delenv("CUSTOMER_CONSOLE_PROMPT_CACHE", raising=False)
+        _, key = org_key
+        tier = bound_tier([self.CLAUDE, self.DEEPSEEK], reads_images=None)
+        claude, deepseek = self._walk(client, key, tier)
+        for sent in (claude, deepseek):
+            assert isinstance(sent["messages"][0]["content"], str)
+            assert self.BREAK in sent["messages"][0]["content"]
+            assert "cache_control" not in str(sent)
+
