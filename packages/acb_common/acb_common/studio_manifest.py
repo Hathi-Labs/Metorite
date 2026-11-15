@@ -163,21 +163,30 @@ _DATA_KEYS = frozenset({"set", "where", "when", "args"})
 _NAME = NAME_PATTERN
 _DASHED = r"[a-z][a-z0-9_-]{0,47}"
 _OPS = "|".join(OBJECT_OPS)
+
+#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
+#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
+#: so ``test_package_host_resolve.py`` holds the two equal.
+MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
+#: STU-B1b-1. The name of one MCP tool in ``mcp:<server>.<tool>``. MCP lets a
+#: tool name hold letters of both cases, digits, ``_`` and ``-``. This grammar
+#: refuses a dot (the dot ends the server key), a colon, a slash, a space and
+#: each character outside ASCII. A name is at most 64 characters, the cap of a
+#: model tool name. A tool whose name this refuses gives no catalog row.
+MCP_TOOL_NAME = r"[A-Za-z0-9_][A-Za-z0-9_-]{0,63}"
+
 # `fullmatch` everywhere: Python `$` also matches before a final newline.
 _USES_RE = re.compile(
     rf"(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
     rf"|logic:(?P<logic>{_NAME})"
+    rf"|mcp:(?P<mcp_server>{MCP_SERVER_NAME})\.(?P<mcp_tool>{MCP_TOOL_NAME})"
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
 )
 
 #: STU-I1a. The most connections that one package names.
 MAX_CONNECTIONS = 32
-#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
-#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
-#: so ``test_package_host_resolve.py`` holds the two equal.
-MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
 #: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
 #: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
 #: the grammar only. IN-11 adds the check that the connector list holds it.
@@ -221,19 +230,23 @@ class UsesRef:
     """The parts of one ``uses`` value of the A2 grammar (STU-B2a).
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
-    ``integration``, ``workflow`` or ``logic`` (STU-B4a), the source names of
-    the B1 catalog. ``logic`` is a first-party logic module: ``logic`` holds
-    its name.
+    ``integration``, ``workflow``, ``logic`` (STU-B4a) or ``mcp``
+    (STU-B1b-1), the source names of the B1 catalog. ``logic`` is a
+    first-party logic module: ``logic`` holds its name. ``mcp`` is one tool of
+    an MCP server of the org: ``server`` holds the registry key of the server,
+    and ``tool`` holds the tool name.
     ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
     ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
     name of that app. An integration and a workflow set none of them.
     """
 
-    source: Literal["object", "manifest", "integration", "workflow", "logic"]
+    source: Literal["object", "manifest", "integration", "workflow", "logic", "mcp"]
     object: str | None = None
     op: str | None = None
     app: str | None = None
     logic: str | None = None
+    server: str | None = None
+    tool: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -251,6 +264,8 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="workflow")
     if m.group("logic"):
         return UsesRef(source="logic", logic=m.group("logic"))
+    if m.group("mcp_server"):
+        return UsesRef(source="mcp", server=m.group("mcp_server"), tool=m.group("mcp_tool"))
     return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
@@ -380,6 +395,29 @@ class TabDef(_Strict):
     cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
 
 
+#: The page presets (STU-LY-0, ``specs/studio_layouts.md`` section 6). The enum is closed: a later
+#: preset joins it in the slice of its block. ``PRESET_REGIONS`` gives the regions of each:
+#: region -> (block type, most views, required). ``manifest.ts`` holds the same table.
+LAYOUTS: tuple[str, ...] = (
+    "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+)  # fmt: skip
+_LIST_DETAIL = {"list": ("table", 1, True), "detail": ("detail", 1, True)}
+PRESET_REGIONS: dict[str, dict[str, tuple[str, int, bool]]] = {
+    "table_workspace": {"main": ("table", 1, True)},
+    "list_detail": _LIST_DETAIL,
+    "board": {"main": ("board", 1, True)},
+    "dashboard": {
+        "kpis": ("stat", 6, True),
+        "charts": ("chart", 4, False),
+        "worklist": ("table", 1, False),
+    },
+    "work_queue": _LIST_DETAIL,
+    "approval_queue": _LIST_DETAIL,
+}
+REGION_NAMES: tuple[str, ...] = ("list", "main", "detail", "kpis", "charts", "worklist")
+MAX_REGION_VIEWS = 6
+
+
 class PageDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     title: str | None = None
@@ -387,6 +425,12 @@ class PageDef(_Strict):
     tabs: list[TabDef] = Field(default_factory=list, max_length=MAX_TABS_PER_PAGE)
     cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
     side: SideDef | None = None
+    #: A preset replaces the grid (owner, 2026-11-14). A page with a `layout` has `regions`
+    #: and no tabs, cells or side. `_check_pages` holds the rest.
+    layout: Literal[
+        "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue"
+    ] | None = None
+    regions: dict[str, list[str]] = Field(default_factory=dict, max_length=len(REGION_NAMES))
 
 #: The caps of the rail (STU-AF2a, D219). `lib/studio/manifest.ts` holds the same numbers, and
 #: `navCaps.test.ts` checks them against the `maxItems` of the schema file.
@@ -811,7 +855,8 @@ def _check_uses(
         return _err(
             path,
             "Not an action id. Use object:<name>.<op>, <app>.<op>, "
-            f"integration:<action>, workflow:<uuid> or logic:<name>.{_got(a.uses)}",
+            "integration:<action>, workflow:<uuid>, logic:<name> "
+            f"or mcp:<server>.<tool>.{_got(a.uses)}",
         )
     if m.group("obj"):
         if m.group("obj") not in objects:
@@ -929,8 +974,12 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
             if c.span is not None and c.span > cols:
                 out.append(_err(f"{base}[{ci}].span", f"A cell spans at most {cols} columns."))
 
+    blocks = {v.id: v.block for v in m.views}
     for pi, pg in enumerate(m.pages):
         p = f"$.pages[{pi}]"
+        if pg.layout or pg.regions:
+            _check_layout_page(pg, p, view_ids, blocks, out)
+            continue
         if pg.tabs and pg.cells:
             out.append(_err(p, "A page has tabs or cells, not both. Remove one."))
         elif not pg.tabs and not pg.cells:
@@ -941,6 +990,34 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
         cell_errors(pg.cells, f"{p}.cells", pg.cols)
         if pg.side and pg.side.view not in view_ids:
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
+
+
+def _check_layout_page(
+    pg: PageDef, p: str, view_ids: set[str], blocks: dict[str, str], out: list[ManifestError]
+) -> None:
+    """A page with a preset: regions of declared views, and no grid (STU-LY-0)."""
+    if not pg.layout:
+        out.append(_err(f"{p}.regions", "`regions` needs a `layout`. Add one, or remove `regions`."))
+        return
+    if pg.tabs or pg.cells or pg.side:
+        out.append(_err(p, "A page with a `layout` has no tabs, cells or side. Remove them."))
+    table = PRESET_REGIONS[pg.layout]
+    for name, ids in pg.regions.items():
+        rp = f"{p}.regions.{name}"
+        if name not in table:
+            out.append(_err(rp, f"Layout `{pg.layout}` has no region `{name}`. Use {', '.join(table)}."))
+            continue
+        block, cap, _ = table[name]
+        if len(ids) > cap:
+            out.append(_err(rp, f"Region `{name}` holds at most {cap} view{'s' if cap > 1 else ''}."))
+        for i, vid in enumerate(ids):
+            if vid not in view_ids:
+                _undeclared(f"{rp}[{i}]", "View", vid, "`views`", out)
+            elif blocks.get(vid) != block:
+                out.append(_err(f"{rp}[{i}]", f"Region `{name}` takes a {block} view."))
+    for name, (_block, _cap, required) in table.items():
+        if required and not pg.regions.get(name):
+            out.append(_err(f"{p}.regions.{name}", f"Layout `{pg.layout}` needs region `{name}`."))
 
 
 #: The views that read the rows of an object. Only these can give a count.
@@ -959,6 +1036,7 @@ def _check_nav(m: Manifest, out: list[ManifestError]) -> None:
         pg = pages[page_id]
         cells = [*pg.cells, *(c for t in pg.tabs for c in t.cells)]
         ids = [c.view for c in cells] + ([pg.side.view] if pg.side else [])
+        ids += [v for region in pg.regions.values() for v in region]
         return any(blocks.get(i) in _COUNT_BLOCKS for i in ids)
 
     counted = 0
