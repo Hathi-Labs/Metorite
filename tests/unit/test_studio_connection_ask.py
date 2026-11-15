@@ -16,7 +16,9 @@ The checks here:
    package is 404. Then the four refusals of §8.2, in order: 422
    ``not_in_draft``, 409 ``not_checkable``, 409 ``already_met`` and 409
    ``can_connect``. A good ask answers ``{"asked": true, "new": ...}``, writes
-   one audit row and moves the cache only when the ask is new.
+   one audit row and moves the cache only when the ask is new. WS-STU I9a:
+   ``already_met`` reads the set of the account of the need, the rule of the
+   line of the read. A member row of the caller never meets an ``org`` ask.
 2. The org and the member come from the session, never from the body.
 3. The read of I8a reads the asks once, for the names that are not met.
 4. The clear hook. With the gate off, it sends no statement. It acts only for
@@ -56,6 +58,7 @@ from fastapi.testclient import TestClient
 from gateway.connections import attention
 from gateway.connections import store as conn_store
 from gateway.jobs import worker
+from gateway.package_host.resolve import Met
 from gateway.routes.studio import actions, connections
 from gateway.studio import packages_store as store
 
@@ -91,7 +94,9 @@ class _World:
         self.sessions = 0
         self.owner = OWEN
         self.names: Any = ["zoho", "mcp:tally", "google_calendar", "mailbox", "mcp", "slack"]
-        self.met: frozenset[str] = frozenset({"zoho"})
+        #: I9a: the org rows and the rows of the caller stay apart.
+        self.met_org: frozenset[str] = frozenset({"zoho"})
+        self.met_member: frozenset[str] = frozenset()
         self.calls: list[tuple[Any, ...]] = []
         self.live: set[tuple[str, str]] = set()
         self.audits: list[dict[str, Any]] = []
@@ -124,9 +129,10 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
             manifest["connections"] = w.names
         return _package(manifest)
 
-    async def met_connections(db: Any, *, viewer: str) -> frozenset[str]:
+    async def met_connections(db: Any, *, viewer: str) -> Met:
         w.calls.append(("met", viewer))
-        return w.met
+        # I9a: the real answer is a Met pair. A set here would hide the split.
+        return Met(org=frozenset(w.met_org), member=frozenset(w.met_member))
 
     async def ask(db: Any, org: str, member: str, provider: str, package_id: str) -> bool:
         w.calls.append(("ask", org, member, provider, package_id))
@@ -291,6 +297,57 @@ def test_the_refusals_come_in_the_order_of_the_spec(
     # The met set is read only past the two checks of the name.
     read_met = any(c[0] == "met" for c in world.calls)
     assert read_met is (code in (connections.ALREADY_MET, connections.CAN_CONNECT))
+
+
+def test_a_member_row_of_the_caller_never_makes_an_org_ask_met(world: _World) -> None:
+    """I9a. An ``org`` need is met only by an org row. So a member row of the
+    caller leaves the ask open, for a plain org name and for a declared ``org``."""
+    world.names = ["zoho", {"name": "mcp:tally", "as": "org"}]
+    world.met_org = frozenset()
+    world.met_member = frozenset({"zoho", "mcp:tally"})
+    for name in ("zoho", "mcp:tally"):
+        r = _post(_user(), {"name": name})
+        assert (r.status_code, r.json()) == (200, {"asked": True, "new": True}), (name, r.text)
+    assert [c[3] for c in world.calls if c[0] == "ask"] == ["zoho", "mcp:tally"]
+
+
+def test_an_org_row_makes_an_org_ask_met(world: _World) -> None:
+    world.names = [{"name": "mcp:tally", "as": "org"}]
+    world.met_org = frozenset({"mcp:tally"})
+    r = _post(_user(), {"name": "mcp:tally"})
+    assert (r.status_code, r.json()["detail"]["code"]) == (409, connections.ALREADY_MET)
+    assert _store_calls(world) == []
+
+
+def test_a_member_need_reads_the_rows_of_the_caller_only(world: _World) -> None:
+    """I9a. A ``member`` need is met only by a row of the caller, never by an org
+    row. With no row of the caller, the refusal is ``can_connect``: a member
+    connects their own member connection."""
+    world.names = [{"name": "google_drive", "as": "member"}]
+    world.met_org = frozenset({"google_drive"})
+    world.met_member = frozenset()
+    r = _post(_user(), {"name": "google_drive"})
+    assert (r.status_code, r.json()["detail"]["code"]) == (409, connections.CAN_CONNECT)
+    world.met_member = frozenset({"google_drive"})
+    r = _post(_user(), {"name": "google_drive"})
+    assert (r.status_code, r.json()["detail"]["code"]) == (409, connections.ALREADY_MET)
+    assert _store_calls(world) == []
+
+
+def test_the_ask_and_the_read_use_one_rule_of_met() -> None:
+    """The ``already_met`` refusal and ``met`` on the line read ``_need_met``,
+    and no other line of the module reads ``met.org`` or ``met.member``."""
+    tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
+    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+             and isinstance(n.value, ast.Name) and n.value.id == "met"
+             and n.attr in ("org", "member")]
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_need_met")
+    assert reads and all(fn.lineno <= r.lineno <= (fn.end_lineno or 0) for r in reads)
+    for name in ("_check_member", "connection_rows"):
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == name)
+        assert "_need_met" in ast.unparse(fn), name
 
 
 def test_the_can_connect_refusal_says_so(world: _World) -> None:

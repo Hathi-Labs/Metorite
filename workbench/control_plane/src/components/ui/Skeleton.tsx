@@ -42,9 +42,12 @@ export function Skeleton({ className = "" }: { className?: string }) {
 export function SkeletonRows({
   count = 6,
   className = "",
+  label = "Loading",
 }: {
   count?: number;
   className?: string;
+  /** What a screen reader hears: "Loading visits". The default is the plain "Loading". */
+  label?: string;
 }) {
   const widths = ["w-full", "w-11/12", "w-4/5", "w-full", "w-3/4", "w-10/12"];
   return (
@@ -52,7 +55,7 @@ export function SkeletonRows({
       className={`space-y-2 ${className}`}
       role="status"
       aria-busy="true"
-      aria-label="Loading"
+      aria-label={label}
     >
       {Array.from({ length: count }, (_, i) => (
         <Skeleton key={i} className={`h-9 ${widths[i % widths.length]}`} />
@@ -71,9 +74,12 @@ export function SkeletonRows({
 export function SkeletonBoard({
   columns = 4,
   className = "",
+  label = "Loading",
 }: {
   columns?: number;
   className?: string;
+  /** What a screen reader hears: "Loading visits". The default is the plain "Loading". */
+  label?: string;
 }) {
   const cards = [3, 2, 4, 2, 3, 2];
   return (
@@ -81,7 +87,7 @@ export function SkeletonBoard({
       className={`flex gap-3 overflow-hidden p-3 ${className}`}
       role="status"
       aria-busy="true"
-      aria-label="Loading"
+      aria-label={label}
     >
       {Array.from({ length: columns }, (_, col) => (
         <div key={col} className="w-64 shrink-0 space-y-2">

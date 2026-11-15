@@ -17,7 +17,9 @@ line for each name, with Connect on an unmet one.
 * ``met`` comes from ``package_host/resolve.met_connections``, the one read of
   a connection need (I1a). It reads the bound org of the session, and the org
   rows and the member rows of the caller only. The route adds no second query
-  of the registry, and :func:`_met` is its one call.
+  of the registry, and :func:`_met` is its one call. WS-STU I9a: each line
+  reads the set of the account of its need (:func:`_need_met`). A ``member``
+  need reads the rows of the caller, and an ``org`` need reads the org rows.
 * ``label`` comes from the connector list (IN-11) for a provider id. It is the
   server name for ``mcp:<server>``, and the id itself for an id that the list
   does not hold.
@@ -42,7 +44,9 @@ line for each name, with Connect on an unmet one.
 ask refuses a name that the draft does not hold (422 ``not_in_draft``), a name
 that the registry cannot hold (409 ``not_checkable``), a name that the member
 has now (409 ``already_met``), and a name that the member may connect (409
-``can_connect``). It answers ``{"asked": true, "new": <bool>}``: ``new`` is
+``can_connect``). ``already_met`` uses the rule of the line of the read
+(:func:`_need_met`, I9a). So for an ``org`` need it reads the org rows only,
+and a member row of the caller never makes an org ask ``already_met``. It answers ``{"asked": true, "new": <bool>}``: ``new`` is
 False when a live ask of the member exists, and that ask keeps its time. The
 withdraw deletes the ask of the caller only, and answers
 ``{"asked": false, "withdrawn": <bool>}``. ``connections/attention.py`` runs
@@ -77,6 +81,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_common.connector_list import connector
 from acb_common.studio_flags import connection_gate_on
+from acb_common.studio_manifest import connection_as, connection_item
 from fastapi import Depends, HTTPException, Request
 from gateway.connections import attention
 from gateway.connections import mcp as mcp_registry
@@ -171,32 +176,72 @@ def checkable(name: str) -> bool:
             and name not in connections_store.OUTSIDE_REGISTRY)
 
 
-def connection_rows(names: tuple[str, ...], met: frozenset[str], user: UserContext,
+def connection_needs(manifest: Any) -> tuple[tuple[str, str], ...]:
+    """``(name, as)`` of each item of ``connections``, in order (WS-STU I9a).
+
+    ``as`` is ``org`` or ``member``, from :func:`connection_item`, the one
+    reading that the door and the sidebar use. A manifest with no valid
+    ``connections`` gives an empty tuple. Pure."""
+    if not host_resolve.connection_names(manifest):
+        return ()
+    items = [connection_item(raw) for raw in manifest.get("connections", [])]
+    return tuple(i for i in items if i is not None) if None not in items else ()
+
+
+def _need_met(name: str, whose: str, met: host_resolve.Met) -> bool:
+    """True when the set of the account of a need holds *name* (WS-STU I9a).
+
+    A ``member`` need reads the rows of the caller, and an ``org`` need reads
+    the org rows, as :func:`~gateway.package_host.resolve.first_unmet_connection`
+    does. The ``met`` of a line and the ``already_met`` refusal of an ask both
+    read this one rule. Pure."""
+    return name in (met.member if whose == "member" else met.org)
+
+
+def connection_rows(needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
+                    user: UserContext,
                     asked: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
-    """One row for each name, in order. Pure: it reads no database."""
-    return [{
-        "name": name,
-        "label": _label(name),
-        "met": name in met,
-        "checkable": checkable(name),
-        "setup_href": console.setup_href_for(name),
-        "can_connect": checkable(name) and console.may_connect(user, name),
-        "asked": name in asked and name not in met,
-    } for name in names]
+    """One row for each ``(name, as)``, in order. Pure: it reads no database.
+
+    A row is ``met`` by the SAME set that the door reads for that need
+    (:func:`~gateway.package_host.resolve.first_unmet_connection`): a
+    ``member`` need by a row of the caller, an ``org`` need by an org row. The
+    approval of an org need is the rule of the door and not of this line, so a
+    draft with an ``org`` need reads connected here and the door still refuses
+    it until I9b (the known limit of ``ai_studio.md`` I9). ``asked`` (I8b-1a)
+    is True only on a line that is not met."""
+    rows: list[dict[str, Any]] = []
+    for name, whose in needs:
+        met_now = _need_met(name, whose, met)
+        rows.append({
+            "name": name,
+            "label": _label(name),
+            "met": met_now,
+            "checkable": checkable(name),
+            "setup_href": console.setup_href_for(name),
+            # A Connect writes a row of the SCOPE of the connector (member or org). When the
+            # declared `as` differs from that scope, no writer can make a row that meets the
+            # need, so a Connect would be a dead end (I9a review P2).
+            "can_connect": (checkable(name) and connection_as(name) == whose
+                            and console.may_connect(user, name)),
+            "asked": name in asked and not met_now,
+        })
+    return rows
 
 
-async def _owned_names(db: Any, user: UserContext, pid: str) -> tuple[str, ...]:
-    """The names of the draft of the caller's package *pid*, or 404 for a
-    package that the caller does not own."""
+async def _owned_needs(db: Any, user: UserContext, pid: str) -> tuple[tuple[str, str], ...]:
+    """The ``(name, as)`` needs of the draft of the caller's package *pid*
+    (:func:`connection_needs`), or 404 for a package that the caller does not
+    own."""
     package = await store.get_package(db, user.email, pid)
     if package is None:
         raise _not_found()
-    return host_resolve.connection_names(package.manifest) or ()
+    return connection_needs(package.manifest)
 
 
-async def _met(db: Any, user: UserContext) -> frozenset[str]:
-    """The one read of the met set of the caller (I1a). No other line of this
-    module calls ``met_connections``."""
+async def _met(db: Any, user: UserContext) -> host_resolve.Met:
+    """The one read of the met sets of the caller (I1a, split by I9a). No
+    other line of this module calls ``met_connections``."""
     return await host_resolve.met_connections(db, viewer=user.email)
 
 
@@ -213,12 +258,12 @@ async def package_connections(
     if not connection_gate_on(user.organization_id):
         raise _not_found()
     async with _tenant_session() as db:
-        names = await _owned_names(db, user, pid)
-        met = await _met(db, user) if names else frozenset()
-        unmet = [n for n in names if n not in met]
+        needs = await _owned_needs(db, user, pid)
+        met = await _met(db, user) if needs else host_resolve.Met()
+        unmet = [n for n, whose in needs if not _need_met(n, whose, met)]
         asked = (await attention.asked_by(db, str(user.organization_id), user.email, unmet)
                  if unmet else frozenset())
-    return {"connections": connection_rows(names, met, user, asked)}
+    return {"connections": connection_rows(needs, met, user, asked)}
 
 
 async def _ask_name(request: Request) -> str:
@@ -246,19 +291,26 @@ def _withdraw_name(request: Request) -> str:
     return given[0]
 
 
-def _check_name(name: str, names: tuple[str, ...]) -> None:
+def _check_name(name: str, needs: tuple[tuple[str, str], ...]) -> None:
     """Refuse a name that is not in the draft, or that the registry cannot
     hold. The first two checks of §8.2, before any read of the met set."""
-    if name not in names:
+    if name not in {n for n, _whose in needs}:
         raise _refused(422, NOT_IN_DRAFT, NOT_IN_DRAFT_TEXT)
     if not checkable(name):
         raise _refused(409, NOT_CHECKABLE, NOT_CHECKABLE_TEXT)
 
 
-def _check_member(name: str, met: frozenset[str], user: UserContext) -> None:
+def _check_member(name: str, needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
+                  user: UserContext) -> None:
     """Refuse a name that the caller has now, or may connect. The last two
-    checks of §8.2."""
-    if name in met:
+    checks of §8.2.
+
+    WS-STU I9a: "has now" is the rule of the line of the read
+    (:func:`_need_met`). An ``org`` need reads the org rows only, so a member
+    row of the caller never makes an org ask ``already_met``. A ``member`` need
+    reads the rows of the caller only. :func:`_check_name` found the name, so
+    the ``all`` reads at least one need."""
+    if all(_need_met(n, whose, met) for n, whose in needs if n == name):
         raise _refused(409, ALREADY_MET, ALREADY_MET_TEXT)
     if console.may_connect(user, name):
         raise _refused(409, CAN_CONNECT, CAN_CONNECT_TEXT)
@@ -288,8 +340,9 @@ async def ask_admin(
         raise _not_found()
     name = await _ask_name(request)
     async with _tenant_session() as db:
-        _check_name(name, await _owned_names(db, user, pid))
-        _check_member(name, await _met(db, user), user)
+        needs = await _owned_needs(db, user, pid)
+        _check_name(name, needs)
+        _check_member(name, needs, await _met(db, user), user)
         try:
             new = await attention.ask(db, str(user.organization_id), user.email, name, pid)
         except attention.TooManyAsks:
@@ -318,7 +371,7 @@ async def withdraw_ask(
         raise _not_found()
     name = _withdraw_name(request)
     async with _tenant_session() as db:
-        await _owned_names(db, user, pid)
+        await _owned_needs(db, user, pid)
         gone = await attention.withdraw(db, str(user.organization_id), user.email, name)
         if gone:
             await record_app_audit_in(db, app_id=pid, user_email=user.email, kind="action",

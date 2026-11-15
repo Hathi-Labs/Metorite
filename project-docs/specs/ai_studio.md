@@ -734,7 +734,7 @@ The ask refuses a name in this order:
 
 1. A name that the draft does not hold gets 422 `not_in_draft`.
 2. A name that the registry cannot hold gets 409 `not_checkable` (`connections.checkable`).
-3. A name that the member has now gets 409 `already_met`.
+3. A name that the member has now gets 409 `already_met`. "Has now" is the rule of I9a: the set of the account of the need. A member row of the asker never meets an `org` need.
 4. A member who may connect the name gets 409 `can_connect`, with "You can connect it yourself."
 
 The answer is `{"asked": true, "new": <bool>}`, and `new` is false on a second press. A member who holds 10 live asks gets 429 `too_many_asks` for a new one. The read of I8a adds `asked` to each row, with one more read only when a name is not met.
@@ -946,7 +946,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **B1** | 🔨 BUILT, dark (2026-10-31) | STD | AGENT-SAFE | [row](ai_studio_rows/B1.md) |
 | **B1c** | 🔨 BUILT, dark (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/B1c.md) |
-| **B1b-1** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
+| **B1b-1** | 🔨 BUILT (2026-11-14, task 3278) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
 | **B1b-2** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-2.md) |
 | **B1b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-3.md) |
 | **B2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2a.md) |
@@ -989,6 +989,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2a.md) |
 | **C2b** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2b.md) |
 | **C2c** | 🔨 BUILT, dark (2026-11-13, task 1349) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2c.md) |
+| **C2d-a** | 🔨 BUILT, dark (2026-11-14, task 3311) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C2d-a.md) |
 | **C3** | 🔨 BUILT, dark (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/C3.md) |
 | **C4** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4.md) |
 | **C4a-1** | 🔨 BUILT, dark (2026-11-13, task 3084) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4a-1.md) |
@@ -1067,6 +1068,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D21** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D21.md) |
 | **D22** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D22.md) |
 | **D23a** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D23a.md) |
+| **D23a-2** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D23a-2.md) |
 | **D23b** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/D23b.md) |
 | **D24** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/D24.md) |
 | **D25** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D25.md) |
@@ -1100,7 +1102,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **AF-10a** | 🔨 BUILT, dark (2026-11-13, task 3158) | HIGH | AGENT-SAFE | [row](ai_studio_rows/AF-10a.md) |
 | **AF-10b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-10b.md) |
 | **AF-11a** | open | STD | see row | [row](ai_studio_rows/AF-11a.md) |
-| **AF-11b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
+| **AF-11b** | 🔨 BUILT, part (2026-11-14, AF-11b-1, task 3326) | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
 
 ### Group E — Workflows in Studio
 
@@ -1243,7 +1245,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I8d** | 🔨 BUILT, dark (2026-11-14), task 3217 | STD | AGENT-SAFE | [row](ai_studio_rows/I8d.md) |
 | **I8e** | open | HIGH | see row | [row](ai_studio_rows/I8e.md) |
 | **I8f** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8f.md) |
-| **I9** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
+| **I9** | 🔨 I9a BUILT, dark (2026-11-14, task 3169) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
 | **I10** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I10.md) |
 | **I10a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I10a.md) |
 | **I10b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I10b.md) |
@@ -1265,7 +1267,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **J2b-2** | 🔨 BUILT, dark (2026-11-13, task 3089) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-2.md) |
 | **J2b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-3.md) |
 | **J2b-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4.md) |
-| **J2b-5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
+| **J2b-5** | 🔨 BUILT, dark (2026-11-13, task 3103) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
 | **J3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3.md) |
 | **J3a** | 🔨 BUILT, dark (2026-11-11, task 1201) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3a.md) |
 | **J3b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3b.md) |
@@ -1547,7 +1549,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A skill loads only in the state `published`, and only when the member owns it or the org shares it. Org B's skill never loads for org A | New with F3: `tests/unit/test_skill_packs_r8.py` (R8) |
 | A skill pack takes a place of the 3 packs, loads in a fixed order, and fails to load with an unresolved variable, an action with no chat tool or a tool that the run does not hold | New with F3: `tests/unit/test_skill_packs.py` |
 | A record and its lines are one batch of at most 50 writes, and a line names a parent of its own package and org only | New with C13: `tests/unit/test_studio_lines.py` and `tests/unit/test_studio_lines_r8.py` (R8) |
-| Each call of the six record functions and of `read_tree` (D18-2a) passes a `viewer`. Each takes it as a required keyword, and the test lists each reader path. Only the owner's door calls `aggregate_records`, which takes no viewer | New with C8a: `test_each_call_of_the_six_passes_a_viewer`, `test_the_six_take_viewer_as_a_required_keyword` and `test_no_code_calls_a_reader_that_takes_no_viewer` in `tests/unit/test_studio_row_rules.py` |
+| Each call of the six record functions, of `read_tree` (D18-2a) and of `aggregate_records` (C2d-a) passes a `viewer`. Each takes it as a required keyword. The test lists each reader path | New with C8a: `test_each_call_of_the_six_passes_a_viewer` and `test_the_six_take_viewer_as_a_required_keyword` in `tests/unit/test_studio_row_rules.py` |
 | A viewer reads only the rows of its grants, and a hidden key leaves each answer. A change or a delete of a record that the viewer cannot read answers not found | New with C8a: `tests/unit/test_studio_row_rules_r8.py` (R8) |
 | Each part of a page statement holds the row rule, and a check of a rule reads every record | New with C8a: `test_a_page_with_a_row_rule_holds_it_in_each_part` and `test_a_check_of_a_rule_reads_every_record` in `tests/unit/test_studio_row_rules.py` |
 | The door builds the viewer from the session's member only | New with C8a: `test_the_door_builds_the_viewer_from_the_session_member_only` in `tests/unit/test_studio_row_rules.py`, and `test_the_door_passes_the_owner_of_the_session_as_the_viewer` in `tests/unit/test_studio_action_door.py` |

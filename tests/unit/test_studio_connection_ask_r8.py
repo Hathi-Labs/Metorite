@@ -36,6 +36,8 @@ f. A withdraw deletes the row of the asker only.
 g. The route refuses a name off the draft (422), a met name (409), a name
    outside the registry (409), the bare ``mcp`` (409) and a caller who may
    connect (409). Another member of the org gets 404, and so does org B.
+   WS-STU I9a: a connected member row of the asker does not meet an ``org``
+   ask, so the ask goes through and the read shows it asked.
 h. A delete of the package deletes its asks, and the key refuses a package of
    another org.
 i. The purge clause deletes the asks of the member in this org only, and its
@@ -462,6 +464,21 @@ def test_r8_g_the_route_refuses_each_name_that_no_admin_can_answer(world) -> Non
     assert _asks(world) == []
     assert _run(world, lambda: _ask(world.a, OWEN, pid, TALLY)) == (
         200, {"asked": True, "new": True})
+
+
+def test_r8_g_a_member_row_of_the_asker_never_makes_an_org_ask_met(world) -> None:
+    """I9a. ``met_providers`` keeps the org rows and the rows of the member apart.
+    A plain ``mcp:<server>`` is an ``org`` need, so Owen's own connected member
+    row does not meet it: the ask is new, and the line reads unmet and asked."""
+    _registry_row(world, TALLY, world.a, member=OWEN)
+    pid = _run(world, lambda: _new(world.a, OWEN, [TALLY]))
+    assert _run(world, lambda: _ask(world.a, OWEN, pid, TALLY)) == (
+        200, {"asked": True, "new": True})
+    status, got = _run(world, lambda: _read(world.a, OWEN, pid))
+    assert status == 200, got
+    assert [(r["name"], r["met"], r["asked"]) for r in got["connections"]] == [
+        (TALLY, False, True)]
+    assert _asks(world) == [(world.a, TALLY, OWEN.lower(), pid)]
 
 
 # ── h. The package key ────────────────────────────────────────────────────
