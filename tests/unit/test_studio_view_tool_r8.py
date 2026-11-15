@@ -78,8 +78,8 @@ class _Dispatch:
     comes from the ``X-User-Email`` header, as the gateway reads it, and the
     org from the table of the world."""
 
-    def __init__(self, world: Any, orgs: dict[str, str]) -> None:
-        self.world, self.orgs, self.calls = world, orgs, []
+    def __init__(self, scope: Any, orgs: dict[str, str]) -> None:
+        self.scope, self.orgs, self.calls = scope, orgs, []
 
     async def __aenter__(self) -> _Dispatch:
         return self
@@ -156,8 +156,8 @@ def _view_rows(out: dict[str, Any]) -> list[dict[str, Any]]:
     return json.loads("\n".join(inner))
 
 
-def _call(world: Any, **kw: Any):
-    return st.studio_view_manage(package_id=world.pid, object="visit", **kw)
+def _call(w: Any, **kw: Any):
+    return st.studio_view_manage(package_id=w.pid, object="visit", **kw)
 
 
 def test_r8_the_tool_lists_the_views_the_member_reads_and_no_private_view_of_another(tool) -> None:
@@ -262,9 +262,9 @@ def test_r8_the_cap_and_the_name_clash_come_back_with_the_route_text(tool) -> No
     w = tool.world
 
     async def go() -> dict[str, Any]:
+        from acb_common.db import tenant_session
         from gateway.studio import views_store as store
 
-        from acb_common.db import tenant_session
         async with tenant_session(w.a) as db:
             for i in range(store.MAX_PRIVATE):
                 await store.create_view(db, ANA, package_id=w.pid, object_name="visit",
