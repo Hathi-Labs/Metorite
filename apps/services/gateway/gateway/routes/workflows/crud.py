@@ -12,6 +12,9 @@ keeps the router gate only.
 A Save of a PUBLISHED workflow that arms a schedule, webhook or event trigger
 also needs ``workflows:publish`` (STB-6c, owner decision of 2026-11-13):
 ``publish.refuse_live_arming``. A Save that arms nothing is unchanged.
+
+A Save by a member who is not the owner may not add or change a
+``studio_write`` step (WFC-4a-2s): ``_refuse_foreign_studio_write``.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from gateway.routes.workflows.core import (
     parse_jsonb,
     router,
 )
-from gateway.routes.workflows.engine.graph import validate_graph
+from gateway.routes.workflows.engine.graph import studio_write_prints, validate_graph
 from gateway.routes.workflows.triggers import TIMER_ARM_KEY
 
 # `__init__` imports publish before crud, so this import keeps the order in
@@ -293,6 +296,9 @@ async def update_workflow(
                 [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_triggers],
                 [(t.kind, t.config, t.enabled) for t in body.triggers],
             )
+        # WFC-4a-2s. It runs after the trigger lock, so a Save takes the
+        # trigger rows and then the workflow row, as before.
+        await _refuse_foreign_studio_write(db, workflow_id, row, user, body.graph)
         sets, params = [], {"id": workflow_id}
         if body.name is not None:
             sets.append("name = :name")
@@ -456,6 +462,50 @@ async def _refuse_foreign_studio_trigger(
             status_code=403,
             detail="Only the author of this workflow can add or change a Studio record trigger.",
         )
+
+
+#: The 403 of a Save in which a member who is not the owner adds or changes a
+#: Studio write step (WFC-4a-2s). ``{owner}`` is the address of the owner.
+STUDIO_WRITE_REFUSAL = (
+    "Only the owner of this workflow may add or change a step that writes a record. "
+    "Ask {owner}."
+)
+
+
+async def _refuse_foreign_studio_write(
+    db: Any, workflow_id: str, row: Any, user: Any, new: dict[str, Any] | None
+) -> None:
+    """403 when a member who is not the workflow owner ADDS or CHANGES a
+    ``studio_write`` node (WFC-4a-2s, task 3309). A Save with no graph, and
+    each Save of the owner (``_is_author``), pass with no read.
+
+    The write runs as ``owner_email`` after the owner approves a card. The
+    card hides a value whose key looks like a secret, and it clips a long
+    value (``park.py``). So another member must not write a step that the
+    owner approves without seeing each value. A node whose print
+    (``graph.studio_write_prints``: the id, the exact type and the config) is
+    not in the stored draft is new or changed. Keeping a write as it is, or
+    removing it, is unchanged.
+
+    It reads the stored draft again with ``FOR UPDATE``, in the tenant session
+    of the Save. So a Save of the owner cannot change the draft between this
+    check and the write.
+    """
+    if new is None or _is_author(row, user):
+        return
+    wanted = studio_write_prints(new)
+    if not wanted:
+        return
+    stored = (
+        await db.execute(
+            text("SELECT graph FROM workflows WHERE id = :id FOR UPDATE"),
+            {"id": workflow_id},
+        )
+    ).fetchone()
+    old = studio_write_prints(parse_jsonb(getattr(stored, "graph", None), {}))
+    if wanted - old:
+        owner = str(row.owner_email or "").strip() or "the owner"
+        raise HTTPException(status_code=403, detail=STUDIO_WRITE_REFUSAL.format(owner=owner))
 
 
 def _trigger_identity(kind: str, config: dict[str, Any]) -> tuple[str, str]:
