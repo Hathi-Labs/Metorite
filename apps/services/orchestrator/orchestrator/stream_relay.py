@@ -1281,6 +1281,43 @@ async def run_detached(
     """Run *gen* (an SSE-line async generator) in a DETACHED background task
     and yield its events from the Redis stream.
 
+    :func:`start_detached` starts the task, and this generator then reads the
+    stream, as a reconnecting client does. The arguments are the arguments of
+    :func:`start_detached`.
+
+    Yields:
+        Parsed event dicts with ``_stream_id`` (Redis entry ID) attached.
+    """
+    await start_detached(
+        thread_id, gen, tee=tee, on_complete=on_complete, actor=actor,
+        source=source, floor=floor, organization_id=organization_id,
+        record=record,
+    )
+    # Serve events from Redis — the SAME path a reconnecting client uses.
+    async for evt in subscribe_events(thread_id, since_id="0"):
+        yield evt
+
+
+async def start_detached(  # noqa: C901 — the body of run_detached before RESUME-2a
+    thread_id: str,
+    gen: AsyncIterator[str],
+    *,
+    tee: bool = False,
+    on_complete: Any = None,
+    actor: str | None = None,
+    source: str | None = None,
+    floor: list[str] | None = None,
+    organization_id: str | None = None,
+    record: dict[str, Any] | None = None,
+) -> asyncio.Task[None]:
+    """Start *gen* (an SSE-line async generator) in a DETACHED background
+    task, and return the task. It needs no HTTP reader.
+
+    The ONE starter of a detached run. :func:`run_detached` calls it for a
+    request that reads the stream. RESUME-2a calls it through the gateway's
+    run route for a continuation run, which no request reads
+    (``chat_run_continuity.md`` §4.12.4 item 2).
+
     This decouples agent execution from the HTTP response: if the client
     disconnects, uvicorn cancels THIS generator (the subscriber) but the
     background task keeps draining the agent and pushing events to Redis.
@@ -1323,9 +1360,6 @@ async def run_detached(
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
             thread.  Starting would delete a transcript this caller does not
             own, so it does not start.
-
-    Yields:
-        Parsed event dicts with ``_stream_id`` (Redis entry ID) attached.
     """
     # ── §5.2, the inner layer: the destructive reset is UNREACHABLE by anyone
     # but a legitimate superseder. ────────────────────────────────────────────
@@ -1583,10 +1617,7 @@ async def run_detached(
 
     register_control_command(thread_id, "steer", _steer_apply)
     _start_control_listener(thread_id)
-
-    # Serve events from Redis — the SAME path a reconnecting client uses.
-    async for evt in subscribe_events(thread_id, since_id="0"):
-        yield evt
+    return task
 
 
 async def cancel_run(thread_id: str) -> bool:

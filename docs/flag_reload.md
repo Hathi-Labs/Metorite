@@ -54,12 +54,14 @@ that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 `CHAT_RESUME_ORGS` turns on the stored call of a card
 (`chat_run_continuity.md` §4.12.4 item 1, RESUME-1a). For each listed org, the
 row of a plain confirmation card of a listed write keeps the call that the
-card guards. No route reads it yet. `*` lists every org, and the default is
-empty. A flip stays OWNER-GATE (`enforcement-flip`).
+card guards. RESUME-2a: a late Approve of such a card then runs that call
+once, in a new reply, with no member turn. `*` lists every org, and the
+default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
-it at each card, and the injection asks it at the start of each run. So a
-reload applies to the next card, and the call id applies from the next run.
+it at each card, and the injection asks it at the start of each run. The late
+answer route asks it at each late Approve. So a reload applies to the next
+card and the next Approve, and the call id applies from the next run.
 
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one

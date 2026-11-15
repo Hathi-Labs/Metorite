@@ -571,6 +571,30 @@ async def take_grant(card: Any) -> bool:
     return True
 
 
+async def act_spent(card: Any) -> bool:
+    """True when the act of *card* already ran in this thread: its offer key
+    holds the SPENT mark (RESUME-2a). The stored-call yes reads it, so the
+    stored call of a twin card never writes the act a second time. Off, it
+    is False, because no SPENT mark exists. A fault reads True, so the card
+    shows. Never raises."""
+    try:
+        scope = _run_scope()
+        if scope is None:
+            return False
+        org, member, thread = scope
+        act = act_of(card, _run_agent())
+        if act is None:
+            return True
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            seen = await _call(_redis().get(key(OFFER_NAMESPACE, member, thread, act.digest)))
+        return _is_spent(seen)
+    except Exception as exc:
+        _log.warning("late_approve.spent_read_failed", error_type=type(exc).__name__)
+        return True
+
+
 async def note_approved(card: Any) -> None:
     """The member approved *card* live: its act runs now. Mark the act SPENT
     and remove its grant, so no stale twin card of it, parked earlier, acts on
@@ -600,6 +624,7 @@ __all__ = [
     "OFFER_NAMESPACE",
     "Act",
     "act_of",
+    "act_spent",
     "card_text_of",
     "digest_of",
     "drop_offer",

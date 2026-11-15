@@ -56,9 +56,10 @@ path A :func:`note_event` runs in the executor's drain and cannot read the
 tool's context. :func:`note_event` takes the entry, and :func:`insert_ask`
 writes it in the column ``stored_call`` (migration 448). ``_COLUMNS`` leaves
 the column out, so no browser read returns it. :func:`read_stored_call` is the
-one reader, and no route calls it yet. A move to ``answered`` or ``closed``
-sets it to NULL, and a park keeps it. Dark behind ``CHAT_RESUME_ORGS``
-(``acb_skills.stored_call``): off, nothing binds, and each row is as before.
+one reader, and :func:`claim_stored_call` the one claim (RESUME-2a). A move to
+``answered`` or ``closed`` sets it to NULL, and a park keeps it. Dark behind
+``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
+each row is as before.
 
 Fences (R7): ``tests/unit/test_pending_ask_store.py`` (R8: the SQL and the
 row level security, as the NOBYPASSRLS app role) and
@@ -401,8 +402,9 @@ def waiting_asks(
 def read_stored_call(organization_id: str, request_id: str) -> dict[str, Any] | None:
     """The stored call of one row that still waits, or None (RESUME-1a).
 
-    THE one reader of ``stored_call``. No route calls it in RESUME-1a, and no
-    browser read may: RESUME-2 runs the call on a late Approve. It reads a row
+    THE one reader of ``stored_call``. No browser read may call it. RESUME-2a:
+    only ``gateway.routes.agent._resume_from_row`` calls it, on a late
+    Approve, before :func:`claim_stored_call`. It reads a row
     of the caller's tenant only, under RLS and with the org predicate beside
     it, as :func:`waiting_asks` does (R5). An answered, closed or expired row
     gives None, and so does a row with no stored call.
@@ -420,6 +422,100 @@ def read_stored_call(organization_id: str, request_id: str) -> dict[str, Any] | 
             ),
             {"org": organization_id, "rid": request_id, "waiting": list(WAITING)},
         ).first()
+    value = r[0] if r is not None else None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+#: RESUME-2a: the claim of a stored call, in ONE statement. The CTE locks the
+#: row and keeps its stored call. The UPDATE moves the row to ``answered``,
+#: sets the column to NULL, and gives back the value of the CTE. Postgres 16
+#: has no ``RETURNING OLD``, and ``move_ask`` leaves the column out of its
+#: RETURNING, so the CTE is the one way to read the old value in the move.
+#: The org predicate stands beside RLS (R5). A row of another member, another
+#: thread, a row that expired, and a row with no stored call never move.
+_CLAIM_SQL = (
+    "WITH old AS ("
+    "  SELECT organization_id, request_id, stored_call FROM chat_pending_ask "
+    "  WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
+    "    AND state = ANY(:waiting) AND expires_at > now() "
+    "    AND actor_email = :member AND thread_id = :tid "
+    "    AND stored_call IS NOT NULL "
+    "  FOR UPDATE"
+    ") "
+    "UPDATE chat_pending_ask AS p SET state = 'answered', answered_at = now(), "
+    "  answer = :answer, stored_call = NULL "
+    "FROM old "
+    "WHERE p.organization_id = old.organization_id "
+    "  AND p.request_id = old.request_id "
+    "RETURNING old.stored_call"
+)
+
+#: The SQLSTATE codes that mean "no claim": a deadlock, and a lock that did
+#: not come in time (``lock_timeout``).
+_NO_CLAIM_CODES = frozenset({"40P01", "55P03"})
+
+#: How long the claim waits for the lock of the row.
+_CLAIM_LOCK_TIMEOUT = "5s"
+
+
+def _sqlstate(exc: BaseException) -> str:
+    """The SQLSTATE of a driver error, for psycopg 3 and psycopg2."""
+    orig = getattr(exc, "orig", None) or exc
+    return str(getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None) or "")
+
+
+def claim_stored_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+    answer: str,
+) -> dict[str, Any] | None:
+    """Claim the stored call of one waiting row, ONCE (RESUME-2a).
+
+    ``gateway.routes.agent._resume_from_row`` is the one caller. One
+    statement (:data:`_CLAIM_SQL`) moves the row from ``parked`` or ``open``
+    to ``answered`` and gives back the stored call that it held. So two
+    Approves that race claim the row once, and the second gets None.
+
+    *member* and *thread_id* come from the session and the request's own
+    thread, which the route checked against the row. They must equal the
+    row's ``actor_email`` and ``thread_id``. The org is the session's, under
+    RLS and with the org predicate beside it (R5). A deadlock and a lock
+    timeout give None: no claim. It adds no state: ``answered`` is one of the
+    four states of ``chat_pending_ask_state_known``.
+    """
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    who = (member or "").strip().lower()
+    if not who or not thread_id or not isinstance(request_id, str) \
+            or not _REQUEST_ID.match(request_id):
+        return None
+    try:
+        with tenant_session(organization_id) as s:
+            s.execute(text(f"SET LOCAL lock_timeout = '{_CLAIM_LOCK_TIMEOUT}'"))
+            r = s.execute(
+                text(_CLAIM_SQL),
+                {
+                    "org": organization_id, "rid": request_id,
+                    "waiting": list(WAITING), "member": who, "tid": thread_id,
+                    "answer": (answer or "")[:_ANSWER_CHARS],
+                },
+            ).first()
+    except DBAPIError as exc:
+        if _sqlstate(exc) in _NO_CLAIM_CODES:
+            _log.info("pending_ask.claim_not_taken", request_id=request_id[:12],
+                      code=_sqlstate(exc))
+            return None
+        raise
     value = r[0] if r is not None else None
     if isinstance(value, str):
         try:

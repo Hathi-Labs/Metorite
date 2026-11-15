@@ -6764,6 +6764,177 @@ from orchestrator.event_translator import (
 )
 
 
+# ── RESUME-2a: the prologue of a continuation run ───────────────────────────
+# Spec: chat_run_continuity.md §4.12.4 item 2, case B. A late Approve of a
+# parked plain card claims its row once (``pending_ask.claim_stored_call``),
+# and the gateway starts a continuation run with the stored call. The run
+# calls that ONE tool once, inside the stored-call yes, before the model.
+
+#: The longest wait for the one call of a stored call while no card shows.
+#: A card that shows then waits as each card waits (the park ends the run).
+_RESUME_CALL_CAP_S = 60.0
+
+
+def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
+    """The tool *name* of this run's OWN tool list, after the injection and
+    the gate (``_gate_own_maf_tools``), or None. Never a tool that a module
+    import gives: the CRM agent loads for one run as ``_agent_<run>_agents``,
+    so only the run's own list holds the wrapped tool."""
+    from acb_skills.tool_guard import tool_name as _guard_tool_name
+
+    if not name:
+        return None
+    for ag in agents or []:
+        pools: list[list[Any]] = []
+        opts = getattr(ag, "default_options", None)
+        if isinstance(opts, dict) and isinstance(opts.get("tools"), list):
+            pools.append(opts["tools"])
+        own = getattr(ag, "tools", None)
+        if isinstance(own, list):
+            pools.append(own)
+        for pool in pools:
+            for tool in pool:
+                if _guard_tool_name(tool) == name:
+                    return tool
+    return None
+
+
+def _resume_refusal(tool: Any, agent_name: str, stored: Any) -> str | None:
+    """Why this run must not call *tool* for *stored*, or None.
+
+    Each test fails closed: a stored call of another shape, no tool of that
+    name in the run, a stored agent that is not this run's agent (a card of a
+    delegated child run, C8), a tool that fails the three tests of
+    ``egress.is_card_write_tool`` (so an MCP tool with a borrowed name never
+    runs), and a module that is not the stored module."""
+    try:
+        if not isinstance(stored, dict) or stored.get("v") != 1 \
+                or stored.get("kind") != "confirmation":
+            return "shape"
+        if not isinstance(stored.get("arguments"), dict):
+            return "arguments"
+        if tool is None:
+            return "tool_missing"
+        label = _run_agent_label(agent_name)
+        if str(stored.get("agent") or "") != label:
+            return "agent"
+        from acb_skills.egress import is_card_write_tool
+        from acb_skills.stored_call import _module_of
+
+        if not is_card_write_tool(tool):
+            return "not_card_write"
+        if _module_of(tool, label) != str(stored.get("module") or ""):
+            return "module"
+    except Exception:  # fail closed: nothing runs
+        return "check_failed"
+    return None
+
+
+async def _call_stored_tool(tool: Any, arguments: dict[str, Any]) -> Any:
+    """Call the WRAPPED function of *tool* once, with *arguments*. The
+    wrapper (``_tool_injection._agated``) opens ``card_call``, so the B6 gate,
+    the egress hold and the rules of a held chat apply, and the card of the
+    call can take the stored-call yes."""
+    import inspect as _inspect
+
+    fn = getattr(tool, "func", tool)
+    out = fn(**arguments)
+    if _inspect.isawaitable(out):
+        out = await out
+    return out
+
+
+async def _resume_prologue(
+    agents: list[Any], agent_name: str, resume_call: dict[str, Any],
+    event_payload: dict[str, Any],
+) -> AsyncIterator[str]:
+    """Run the stored call of a continuation run, and set the run's input.
+
+    *resume_call* is the SERVER's kwarg of :func:`run_agent_stream`, never a
+    key of *event_payload* (R11): ``{"stored", "request_id", "title"}``. In
+    order, it closes the old card for each tab (``confirmation_resolved``),
+    finds the tool in the run's own list, refuses unless each test of
+    :func:`_resume_refusal` passes, and calls the tool ONCE inside
+    ``stored_call.resuming``. The step shows under the stored call id. Then
+    the run's message is the note of ``chat_recovery.compose_resumed_call_note``,
+    with the title and the result as fenced data. A refused call runs nothing,
+    and the note tells the model to call the tool again, so the card asks
+    again. It never raises a fault of the tool."""
+    from acb_skills.stored_call import resuming
+    from gateway.chat_recovery import (
+        RESUMED_APPROVED,
+        RESUMED_CHANGED,
+        RESUMED_NOT_RUN,
+        RESUMED_SPENT,
+        compose_resumed_call_note,
+    )
+
+    stored = resume_call.get("stored")
+    request_id = str(resume_call.get("request_id") or "")
+    title = str(resume_call.get("title") or "")
+    if request_id:
+        from acb_skills.ask_tools import CONFIRMATION_RESOLVED
+
+        yield _sse({
+            "type": "CUSTOM", "name": CONFIRMATION_RESOLVED,
+            "value": {"request_id": request_id, "answer": "APPROVE"},
+        })
+    name = str(stored.get("tool") or "") if isinstance(stored, dict) else ""
+    tool = _resume_tool_of(agents, name)
+    why = _resume_refusal(tool, agent_name, stored)
+    if why is not None:
+        _log.info("executor.resume_refused", agent=agent_name, tool=name[:60], reason=why)
+        note = compose_resumed_call_note(title, None, RESUMED_NOT_RUN)
+    else:
+        assert isinstance(stored, dict)
+        arguments = dict(stored["arguments"])
+        call_id = str(stored.get("call_id") or "") or f"call_resume_{uuid.uuid4().hex}"
+        yield _sse({"type": "TOOL_CALL_START", "toolCallId": call_id, "toolCallName": name})
+        try:
+            _args_text = json.dumps(arguments, ensure_ascii=False)
+        except (TypeError, ValueError):
+            _args_text = ""
+        if _args_text:
+            yield _sse({"type": "TOOL_CALL_ARGS", "toolCallId": call_id,
+                        "delta": _args_text})
+        ok = True
+        with resuming(stored) as state:
+            task = asyncio.ensure_future(_call_stored_tool(tool, arguments))
+            try:
+                done, _ = await asyncio.wait({task}, timeout=_RESUME_CALL_CAP_S)
+                if not done and state.card_shown:
+                    # A new card waits on the member. Its own wait holds the
+                    # run, and the park ends it.
+                    await task
+                elif not done:
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
+                    raise TimeoutError
+                result: Any = task.result()
+            except asyncio.CancelledError:
+                task.cancel()
+                raise
+            except TimeoutError:
+                ok = False
+                result = ("The tool did not finish within "
+                          f"{int(_RESUME_CALL_CAP_S)} seconds. Check the record "
+                          "before you act again.")
+            except Exception as exc:  # the tool's fault is its answer
+                ok = False
+                result = f"The tool failed ({type(exc).__name__})."
+        text = "" if result is None else str(result)
+        yield _sse({"type": "TOOL_CALL_RESULT", "toolCallId": call_id,
+                    "content": text[:2000], "success": ok})
+        outcome = {"changed": RESUMED_CHANGED, "spent": RESUMED_SPENT}.get(
+            state.outcome, RESUMED_APPROVED)
+        _log.info("executor.resume_ran", agent=agent_name, tool=name[:60],
+                  outcome=state.outcome or "no_card", ok=ok)
+        note = compose_resumed_call_note(title, text, outcome)
+    existing = str(event_payload.get("message") or "").strip()
+    event_payload["message"] = f"{note}\n\n{existing}" if existing else note
+
+
 async def run_agent_stream(
     agent_name: str,
     event_payload: dict[str, Any],
@@ -6785,6 +6956,11 @@ async def run_agent_stream(
     #: the gateway route from its own mint. The greeting decision leaves them
     #: out of the gap. Empty means no decision.
     turn_row_ids: tuple[str, ...] = (),
+    #: RESUME-2a: the stored call of a card that the member approved late,
+    #: ``{"stored", "request_id", "title"}``. SERVER-ONLY: only the gateway's
+    #: ``_resume_from_row`` sets it, from the claimed row. A key of
+    #: *event_payload* never sets it (R11). See :func:`_resume_prologue`.
+    resume_call: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -7729,6 +7905,18 @@ async def run_agent_stream(
                     )
                     _copilot_session_id = None  # force new session
 
+            # RESUME-2a (chat_run_continuity.md §4.12.4 item 2): a
+            # continuation run calls the stored call of the card that the
+            # member approved, once, with the run's own wrapped tool, and its
+            # input becomes the server's note. After the bind of the org, the
+            # member and the relay thread, after the tool injection and the
+            # gate, and before the compose. Only the kwarg sets it (R11).
+            if resume_call is not None:
+                async for _resume_line in _resume_prologue(
+                    agents, agent_name, resume_call, event_payload,
+                ):
+                    yield _resume_line
+
             # ── Tier 1: native MAF agent live streaming ─────────────────────
             # The intended ``agent_framework.ag_ui.stream_agent_response`` is not
             # exported by the installed ``agent_framework_ag_ui``, and the Tier
@@ -7751,6 +7939,7 @@ async def run_agent_stream(
                     agent, agent_name, event_payload, integrations,
                     run_id=run_id, caller_thread_id=_caller_thread_id,
                     delegated=_delegated_run, instance=_agent_instance,
+                    resumed=resume_call is not None,
                 )
                 _laps.lap("session_load")
                 # WS-43t1: flag OFF returns today's string and no provider.
@@ -10383,6 +10572,7 @@ def _native_session_skip(
     run_id: str,
     caller_thread_id: str | None,
     delegated: bool,
+    resumed: bool = False,
 ) -> str | None:
     """Why this native run neither loads nor saves a session, or ``None``.
 
@@ -10390,6 +10580,10 @@ def _native_session_skip(
     ``<agent>:<run>`` default), a delegated run, and an event with no current
     turn. An agent that brings its own history provider keeps it, and gets
     no second one.
+
+    RESUME-2a: a continuation run (*resumed*) gives ``resume_note``. Its
+    input is the server's note, not a member turn, so the session must
+    neither load nor save it. RESUME-4 owns the exact path.
 
     WS-43h: a provider with the store's own source id
     (``native_session_store.HISTORY_SOURCE_ID``) is the store's provider. A
@@ -10403,6 +10597,8 @@ def _native_session_skip(
         return "no_thread"
     if delegated:
         return "delegated"
+    if resumed:
+        return "resume_note"
     current = event_payload.get("message") or event_payload.get("user_query") or ""
     if not str(current).strip():
         return "no_current_turn"
@@ -10429,6 +10625,7 @@ async def _begin_native_session(
     caller_thread_id: str | None,
     delegated: bool,
     instance: str,
+    resumed: bool = False,
 ) -> Any:
     """Load the stored session of a native run (WS-43t2), or ``None``.
 
@@ -10444,6 +10641,7 @@ async def _begin_native_session(
     reason = _native_session_skip(
         agent, agent_name, event_payload,
         run_id=run_id, caller_thread_id=caller_thread_id, delegated=delegated,
+        resumed=resumed,
     )
     org = _current_run_org() if reason is None else None
     if reason is None and not org:

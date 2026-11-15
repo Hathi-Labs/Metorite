@@ -923,7 +923,8 @@ def test_each_record_has_one_writer_and_one_reader():
     """``grant_from_offer`` has one caller (the late answer route),
     ``record_offer`` one (the park), ``take_grant`` and ``note_approved`` one
     each (the card gate), and ``drop_offer`` the park and the decline. No
-    other code names a namespace of the grant."""
+    other code names a namespace of the grant. RESUME-2a: the stored-call yes
+    (``stored_call.resume_answer``) marks its act SPENT too."""
     names = ("grant_from_offer(", "record_offer(", "take_grant(", "note_approved(",
              "drop_offer(", "chat-late-approve", "chat-late-offer", "chat-late-ask",
              "GRANT_NAMESPACE")
@@ -940,10 +941,11 @@ def test_each_record_has_one_writer_and_one_reader():
     agent = "apps/services/gateway/gateway/routes/agent.py"
     park = "apps/services/orchestrator/orchestrator/pending_ask.py"
     gate = "packages/acb_skills/acb_skills/ask_tools.py"
+    stored = "packages/acb_skills/acb_skills/stored_call.py"
     assert callers["grant_from_offer("] == {own, agent}
     assert callers["record_offer("] == {own, park}
     assert callers["take_grant("] == {own, gate}
-    assert callers["note_approved("] == {own, gate}
+    assert callers["note_approved("] == {own, gate, stored}
     assert callers["drop_offer("] == {own, park, agent}
     for name in names[5:]:
         assert callers[name] == {own}, (name, callers[name])
