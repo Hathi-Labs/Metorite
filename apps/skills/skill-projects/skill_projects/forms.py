@@ -56,7 +56,6 @@ from skill_projects.reads import WEEKDAYS, _number, _task_line
 from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
     _WRITE_FAILED,
-    CANCELLED,
     CASCADE_DEFAULTS,
     MAX_BATCH,
     AgentAssigneeRefused,
@@ -70,6 +69,7 @@ from skill_projects.writes import (
     _matches_by_name,
     _NewTask,
     _node,
+    _not_confirmed,
     _post_new_task,
     _prepare_new_task,
     _project_id,
@@ -1132,7 +1132,7 @@ async def propose_plan(
         detail=f"under {parent_label} · one batch, {len(final)} tasks{n_links}{n_nobody}",
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     return await _write_plan(label, parent_id, parent_label, about, final, owners, links, titles)
 
 
@@ -1781,7 +1781,7 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     # already refuses an id it did not offer. This checks again, so a door
     # that answers anything else writes nothing.
     if not isinstance(ticked, frozenset) or not ticked:
-        return CANCELLED
+        return _not_confirmed()
     offered = {_row_id(p) for p in rows}
     if not ticked <= offered:
         return FORGED_ROWS
@@ -2246,7 +2246,7 @@ async def _vocab_write(plan: _VocabPlan, ticked: Any) -> str:
     """
     spec = plan.spec
     if not isinstance(ticked, frozenset) or not ticked:
-        return CANCELLED
+        return _not_confirmed()
     if not ticked <= {_vocab_row_id(p) for p in plan.rows}:
         return FORGED_ROWS
     chosen = [p for p in plan.rows if _vocab_row_id(p) in ticked]

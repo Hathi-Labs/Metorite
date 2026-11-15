@@ -130,7 +130,7 @@ async def test_the_held_path_marks_only_an_auto_run_change(gw, kw, marked) -> No
 async def test_a_no_on_the_card_writes_nothing(gw) -> None:
     gw.approve = False
     out = await agents.update_assistant_settings(account_id=F.BOX, draft_replies=True)
-    assert out.startswith("Cancelled") and gw.puts == []
+    assert out.startswith("Declined:") and gw.puts == []  # HRD-7: the one table
 
 
 @pytest.mark.parametrize("key", ["about", "signature", "personal_instructions",
