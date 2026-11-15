@@ -29,6 +29,7 @@ and the named test goes red. Each result was run on 2026-11-14.
 * H4. ``_cell_rows``: leave out the cap check. The too_big tests go red.
 * H6. `_cell_rows`: drop the per-cell currency check. The race test of a second currency goes red.
 * H10. `_cell_rows`: compare a cell currency with strict equality, a None too. `test_r8_cells_a_cell_with_no_amount_is_not_a_race` goes red.
+* H11. `_cell_rows`: drop the per-cell currency check. The two update-race tests go red too.
 * H7. `_cell_rows`: drop the check that the cell counts equal the total. The retryable-error test goes red.
 * H8. `_read_aggregate`: drop `_check_hot_or_small` on the cells. The cold-guard test goes red.
 * H9. `build_aggregate_cells`: count the axis with count(DISTINCT x.k). The cap test of a missing value goes red.
@@ -339,6 +340,56 @@ def _race(monkeypatch: pytest.MonkeyPatch, w: Any, obj: Any, data: dict[str, Any
         return await orig(self, stmt, params)
     monkeypatch.setattr(store._Timed, "execute", racing)
     return hits
+
+
+def _fill(w: Any, obj: Any, rows: list[dict[str, Any]]) -> list[str]:
+    async def go() -> list[str]:
+        async with tenant_session(w.a) as db:
+            made = [await store.create_record(db, OWNER, obj.id, r, package_id=w.pkg,
+                                              viewer=AS_OWNER) for r in rows]
+            return [m.id for m in made if m]
+    return _run(w.p, go)
+
+
+def _race_update(monkeypatch: pytest.MonkeyPatch, w: Any, obj: Any, rid: str,
+                 changes: dict[str, Any]) -> list[int]:
+    """Commit an UPDATE of one record between the two statements. The count
+    stays equal, so only the currency check can see it."""
+    hits: list[int] = []
+    orig = store._Timed.execute
+
+    async def racing(self: Any, stmt: Any, params: dict[str, Any]) -> Any:
+        if "AS d1" in str(stmt) and not hits:
+            hits.append(1)
+            async with tenant_session(w.a) as db:
+                assert await store.update_record(db, OWNER, obj.id, rid, changes,
+                                                 package_id=w.pkg, viewer=AS_OWNER)
+        return await orig(self, stmt, params)
+    monkeypatch.setattr(store._Timed, "execute", racing)
+    return hits
+
+
+def test_r8_cells_an_update_to_a_second_currency_in_another_cell_is_retryable(
+        world, monkeypatch) -> None:
+    obj = _make(world, "cash_upd_other", [])
+    _, other = _fill(world, obj, [{"kind": "n", "region": "a", "amt": _money(100)},
+                                  {"kind": "m", "region": "b", "amt": _money(200)}])
+    hits = _race_update(monkeypatch, world, obj, other, {"amt": _money(9999, "USD")})
+    with pytest.raises(QueryError) as changed:
+        _agg(world, AS_OWNER, obj, group_by=_KR, measures=_AMT)
+    assert hits and changed.value.code == "query_timeout"
+    assert "changed" in changed.value.message
+
+
+def test_r8_cells_an_update_to_a_second_currency_in_the_same_cell_is_refused(
+        world, monkeypatch) -> None:
+    obj = _make(world, "cash_upd_same", [])
+    first, _ = _fill(world, obj, [{"kind": "n", "region": "a", "amt": _money(100)},
+                                  {"kind": "n", "region": "a", "amt": _money(200)}])
+    hits = _race_update(monkeypatch, world, obj, first, {"amt": _money(9999, "USD")})
+    with pytest.raises(QueryError) as refused:
+        _agg(world, AS_OWNER, obj, group_by=_KR, measures=_AMT)
+    assert hits and refused.value.code == "query_op_not_allowed"
 
 
 def test_r8_cells_a_money_measure_with_two_keys_gives_the_sums_of_each_cell(world) -> None:
