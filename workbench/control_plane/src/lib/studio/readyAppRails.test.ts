@@ -24,7 +24,7 @@ describe.each(Object.entries(FILES))("%s rail counts", (file, person) => {
   const rows = doc.nav.flatMap((s) => s.rows);
   const model = (id: string): PageModel => {
     const p = doc.pages.find((x) => x.id === id)!;
-    return { id: p.id, title: p.title, cols: p.cols, tabs: [], cells: p.cells.map((c) => ({ view: c.view, span: c.span ?? 1 })), side: p.side?.view ?? null };
+    return { id: p.id, title: p.title, cols: p.cols, tabs: [], cells: p.cells.map((c) => ({ view: c.view, span: c.span ?? 1 })), side: p.side?.view ?? null, layout: null, regions: {} };
   };
   const obj = doc.objects[0];
 

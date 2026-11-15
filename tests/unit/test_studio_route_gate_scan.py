@@ -64,9 +64,10 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     must not read the verb either, so the scan covers it too.
 
     WS-STU J2b-2 adds one reader: `share_package`, the share with people
-    (D180.3), with one `user.has_permission(SHARE_RIGHT)`. The test takes
-    out its one entry of each list first, so the lists below stay those of
-    the install.
+    (D180.3), with one `user.has_permission(SHARE_RIGHT)`. WS-STU J2b-5 adds
+    one more: `unshare_package`, the per-person unshare, with one read too.
+    The test takes out the one entry of each of the two from each list
+    first, so the lists below stay those of the install.
 
     The check reads the syntax tree, so the quote style does not matter. The
     string constant `studio:publish` occurs once in `routes/studio`: the
@@ -112,11 +113,13 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
                     node.func.attr in ("has_permission", "has"):
                 calls.append((*where, ast.unparse(node)))
     # WS-STU J2b-2: the share with people reads the verb exactly once.
-    share_name = ("packages.py", "share_package", "Load")
-    share_call = ("packages.py", "share_package", "user.has_permission(SHARE_RIGHT)")
-    assert names.count(share_name) == 1 and calls.count(share_call) == 1, (names, calls)
-    names.remove(share_name)
-    calls.remove(share_call)
+    # WS-STU J2b-5: the per-person unshare reads it exactly once too.
+    for handler in ("share_package", "unshare_package"):
+        share_name = ("packages.py", handler, "Load")
+        share_call = ("packages.py", handler, "user.has_permission(SHARE_RIGHT)")
+        assert names.count(share_name) == 1 and calls.count(share_call) == 1, (names, calls)
+        names.remove(share_name)
+        calls.remove(share_call)
 
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
@@ -210,9 +213,9 @@ def test_a_second_read_of_the_admin_right_fails() -> None:
     sources = _studio_sources()
     share = "    if not user.has_permission(SHARE_RIGHT):\n"
     text = sources["packages.py"].replace("\r\n", "\n")
-    assert text.count(share) == 4, (
-        "non-vacuity: the share checks of the install, the uninstall, the run_as (B6a) "
-        "and the share of J2b-2")
+    assert text.count(share) == 5, (
+        "non-vacuity: the share checks of the install, the uninstall, the run_as (B6a), "
+        "the share of J2b-2 and the unshare of J2b-5 (unshare_package)")
     mutated = {**sources, "packages.py": text.replace(
         share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n", 1)}
     assert admin_right_reads(mutated) == sorted(
