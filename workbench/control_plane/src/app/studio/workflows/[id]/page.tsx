@@ -46,6 +46,7 @@ import NodeInspector from "@/app/workflows/components/NodeInspector";
 import NodePalette, { type PaletteDrop } from "@/app/workflows/components/NodePalette";
 import RunConsole from "@/app/workflows/components/RunConsole";
 import TriggerPanel from "@/app/workflows/components/TriggerPanel";
+import { CANVAS_STYLE } from "@/app/workflows/lib/canvasLook";
 import { cleanTriggers } from "@/app/workflows/lib/eventTriggers";
 import WorkflowEdge from "@/app/workflows/components/WorkflowEdge";
 import WorkflowNode, { type CCNodeData } from "@/app/workflows/components/WorkflowNode";
@@ -1335,6 +1336,7 @@ function EditorInner({ id }: { id: string }) {
               setSelectedId(sel.length === 1 ? sel[0].id : null)
             }
             colorMode={resolvedTheme === "light" ? "light" : "dark"}
+            style={CANVAS_STYLE}
             fitView
             proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: "ccEdge" }}
