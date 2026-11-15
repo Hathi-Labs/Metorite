@@ -1733,7 +1733,7 @@ Only a call that can resume stores one (D-RES-2):
   the member's answer, so no tool runs again.
 
 A call with arguments that JSON cannot hold, or above 64 KB of UTF-8, stores
-none. `CHAT_RESUME_ORGS` must name the org of the run (C5).
+none. A NUL character in an argument value or key stores no call, because jsonb refuses it. The card keeps its row. `CHAT_RESUME_ORGS` must name the org of the run (C5).
 
 **2. The late Approve (RESUME-2).** `POST /agent/respond-input` finds no
 Future and reads the row, as today. When `CHAT_RESUME_ORGS` names the org, a

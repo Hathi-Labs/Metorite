@@ -228,6 +228,10 @@ def _stored_text(stored: Any) -> str | None:
         return None
     if len(text.encode("utf-8")) > _PAYLOAD_BYTES:
         return None
+    if "\\u0000" in text:
+        # json.dumps escapes a NUL (in a value or a key) as \u0000, and
+        # Postgres jsonb refuses it. Store no call: fail closed.
+        return None
     return text
 
 
@@ -532,10 +536,23 @@ async def _record(thread_id: str, ask: CardAsk,
         row["stored_call"] = stored
     try:
         await asyncio.to_thread(insert_ask, org, row)
-    except Exception:
-        _log.warning("pending_ask.insert_failed", request_id=ask.request_id[:12],
-                     thread_id=thread_id[:12], exc_info=True)
-        return None
+    except Exception as exc:
+        if stored is None:
+            _log.warning("pending_ask.insert_failed", request_id=ask.request_id[:12],
+                         thread_id=thread_id[:12], exc_info=True)
+            return None
+        # The stored call must never cost the card its row: log the error
+        # TYPE only (no argument text), then write the row of before.
+        _log.warning("pending_ask.stored_insert_failed",
+                     request_id=ask.request_id[:12],
+                     thread_id=thread_id[:12], error=type(exc).__name__)
+        row.pop("stored_call", None)
+        try:
+            await asyncio.to_thread(insert_ask, org, row)
+        except Exception:
+            _log.warning("pending_ask.insert_failed", request_id=ask.request_id[:12],
+                         thread_id=thread_id[:12], exc_info=True)
+            return None
     _log.info("pending_ask.recorded", request_id=ask.request_id[:12],
               thread_id=thread_id[:12], kind=ask.kind)
     await _bump_my_day(org, actor)

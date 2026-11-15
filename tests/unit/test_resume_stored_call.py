@@ -919,3 +919,84 @@ def test_the_stored_call_takes_the_call_id_of_its_own_tool(
     out = _run(liveness, "t-res-call-id", fn, kwargs, call=_with_id)
     assert _row(durable_on, out["rid"])["stored_call"] == _expected(
         "set_reminder", kwargs, call_id="call_9")
+
+
+@pytest.mark.parametrize("stored", [
+    {"name": "create_task", "args": {"fields": {"note": "a\x00b"}}},
+    {"name": "create_task", "args": {"tags": ["x\x00"]}},
+    {"name": "create_task", "args": {"k\x00ey": "v"}},
+])
+def test_a_nul_in_an_argument_value_or_key_stores_none(stored):
+    """A NUL is escaped as \u0000 and jsonb refuses it. Store no call.
+    Mutation: remove the NUL check in ``_stored_text`` -> red."""
+    assert pending_ask._stored_text(stored) is None
+    assert pending_ask._stored_text({"name": "create_task", "args": {"a": "b"}})
+
+
+def test_a_nul_call_still_inserts_the_row_of_before(monkeypatch):
+    import acb_graph
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    class _S:
+        def execute(self, stmt, params):
+            seen.append((str(stmt), dict(params)))
+
+            class _R:
+                rowcount = 1
+            return _R()
+
+    @contextlib.contextmanager
+    def _session(_org):
+        yield _S()
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _session)
+    rid = uuid.uuid4().hex
+    row = {"request_id": rid, "thread_id": "t", "kind": "confirmation",
+           "payload": {"request_id": rid},
+           "stored_call": {"name": "create_task", "args": {"tags": ["a\x00"]}}}
+    assert pending_ask.insert_ask(_ORG_A, row)
+    (sql, params), = seen
+    assert sql == pending_ask._INSERT_SQL
+    assert "stored" not in params and json.loads(params["payload"])
+
+
+def test_a_failed_stored_insert_retries_the_row_without_the_call(monkeypatch):
+    """The card never loses its row for the new column. The log holds the
+    error type only."""
+    calls: list[dict[str, Any]] = []
+
+    def _insert(org, row):
+        calls.append(dict(row))
+        if "stored_call" in row:
+            raise RuntimeError("SECRET-ARG-TEXT")
+        return True
+
+    async def _facts(_tid):
+        return _ORG_A, "run", "agent", "a@b.c"
+
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    class _L:
+        def warning(self, event, **kw):
+            logged.append((event, kw))
+
+        def info(self, *a, **kw):
+            pass
+
+    async def _bump(*a, **kw):
+        return None
+
+    monkeypatch.setattr(pending_ask, "insert_ask", _insert)
+    monkeypatch.setattr(pending_ask, "_run_facts", _facts)
+    monkeypatch.setattr(pending_ask, "_bump_my_day", _bump)
+    monkeypatch.setattr(pending_ask, "_log", _L())
+    rid = uuid.uuid4().hex
+    ask = pending_ask.CardAsk(request_id=rid, kind="confirmation", question="q",
+                              payload={"request_id": rid})
+    org = asyncio.run(pending_ask._record("t", ask, {"name": "x", "args": {"a": 1}}))
+    assert org == _ORG_A
+    assert len(calls) == 2 and "stored_call" not in calls[1]
+    assert [e for e, _ in logged] == ["pending_ask.stored_insert_failed"]
+    assert logged[0][1]["error"] == "RuntimeError"
+    assert "exc_info" not in logged[0][1]
