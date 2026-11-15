@@ -547,11 +547,23 @@ def _prologue(agents: list[Any], resume: dict[str, Any], *, tid: str = "t-pro",
               payload: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict]:
     payload = {"message": ""} if payload is None else payload
 
+    async def _answer_cards() -> None:
+        # A card that shows is answered REJECT, so a run never hangs on it.
+        while True:
+            for fut in list(executor._pending_user_input.values()):
+                if not fut.done():
+                    fut.set_result({"answer": "REJECT"})
+            await asyncio.sleep(0.002)
+
     async def go() -> list[dict[str, Any]]:
         executor._stream_relay_thread_id.set(tid)
         _bound_run(tid)
-        lines = [line async for line in executor._resume_prologue(
-            agents, "orchestrator", resume, payload)]
+        helper = asyncio.create_task(_answer_cards())
+        try:
+            lines = [line async for line in executor._resume_prologue(
+                agents, "orchestrator", resume, payload)]
+        finally:
+            helper.cancel()
         return [json.loads(line[len("data: "):]) for line in lines]
 
     return asyncio.run(go()), payload
@@ -563,6 +575,7 @@ def _resume(stored: dict[str, Any] | None = None, rid: str = "a" * 32) -> dict[s
 
 def test_the_prologue_writes_once_under_the_stored_call_id(resume_on, ask_db, liveness):
     events, payload = _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume())
+    assert _cards(liveness, "t-pro") == [], "the equal card shows no card"
     assert WRITES == [("deal", "d-neuro", "Payment Complete")]
     kinds = [(e.get("type"), e.get("name")) for e in events]
     assert kinds[0] == ("CUSTOM", "confirmation_resolved")
