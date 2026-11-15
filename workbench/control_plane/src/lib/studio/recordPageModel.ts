@@ -24,15 +24,16 @@
 import type { StudioDataDoor } from "./dataDoor";
 import type { PageState } from "./pageState";
 
-export type RecordTabId = "details" | "lines" | "related" | "files";
+export type RecordTabId = "details" | "lines" | "related" | "files" | "activity";
 
-export const RECORD_TAB_IDS: readonly RecordTabId[] = ["details", "lines", "related", "files"];
+export const RECORD_TAB_IDS: readonly RecordTabId[] = ["details", "lines", "related", "files", "activity"];
 
 export const RECORD_TAB_TITLES: Readonly<Record<RecordTabId, string>> = {
   details: "Details",
   lines: "Lines",
   related: "Related",
   files: "Files",
+  activity: "Activity",
 };
 
 /** The most children that a related table reads. The store gives at most 100. */
@@ -136,8 +137,14 @@ function declared(object: RecordObject): RecordTabId[] | null {
   return out.length ? out : null;
 }
 
-/** The tabs of the record page of `object`. Never empty: Details is always there. */
-export function recordTabs(object: RecordObject, objects: readonly RecordObject[]): RecordTab[] {
+/**
+ * The tabs of the record page of `object`. Never empty: Details is always there.
+ *
+ * `historyDeclared` is true when the app declares `object:<name>.history`. Then Activity is the last
+ * tab, also for an object that names its own tabs and leaves it out. With no such action the tab is
+ * dropped, also when the object names it, because it would only say that it cannot read.
+ */
+export function recordTabs(object: RecordObject, objects: readonly RecordObject[], historyDeclared = false): RecordTab[] {
   const ids = declared(object) ?? [
     "details" as const,
     ...(linesFields(object.name, objects).length ? ["lines" as const] : []),
@@ -145,7 +152,10 @@ export function recordTabs(object: RecordObject, objects: readonly RecordObject[
     ...(fileFields(object).length ? ["files" as const] : []),
   ];
   const hasLines = linesFields(object.name, objects).length > 0;
-  return ids.filter((id) => id !== "lines" || hasLines).map((id) => ({ id, title: RECORD_TAB_TITLES[id] }));
+  const kept = ids.filter((id) => (id !== "lines" || hasLines) && id !== "activity");
+  if (historyDeclared) kept.push("activity");
+  if (kept.length === 0) kept.push("details");
+  return kept.map((id) => ({ id, title: RECORD_TAB_TITLES[id] }));
 }
 
 /** The tab to show: the wanted one when the object has it, else the first. */

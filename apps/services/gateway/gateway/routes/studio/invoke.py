@@ -69,10 +69,10 @@ package declares. The route registers on the router of ``actions.py``, as
    slot of :data:`READERS_PER_ORG` before this session, and a call past the
    cap gets 503 ``store_busy`` with ``Retry-After`` and opens no session. A
    read of the owner takes no slot.
-9. The executor, in that session. The door opens four reads:
+9. The executor, in that session. The door opens five reads:
    ``object:<name>.get`` (B2a), ``object:<name>.list`` (B2b-1),
-   ``object:<name>.aggregate`` (D4b) and ``object:<name>.tree`` (D18-2a).
-   For a direct call it also runs
+   ``object:<name>.aggregate`` (D4b), ``object:<name>.tree`` (D18-2a) and
+   ``object:<name>.history`` (C4a-2). For a direct call it also runs
    the create, the update and the delete of an object (B2c-1). Each one
    parses the body here, and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
@@ -117,6 +117,18 @@ is an ``int`` of minor units with its currency. The grammar refuses an
 average of money with ``query_op_not_allowed`` (C2b). The store sends the
 currency of a money average too, so no average of money can reach the
 client without its unit.
+
+**The history (C4a-2).** It is one more class A read, with each check above
+and the same audit row. The body is ``{id, after?, limit?}`` and no other key
+(:data:`HISTORY_INPUT_KEYS`). ``after`` (a history id) and ``limit`` must each
+be an ``int``, and a bad body is 422 ``query_value_invalid``.
+``objects_store.list_record_changes`` is the one reader. It reads through the
+gate of a get, so a record that the viewer cannot read is 404, as a get is.
+Only the owner reads the history of a deleted record. Each key that the
+viewer may not read leaves ``changes``. A viewer of an install (J2a) reads
+only the keys of the installed version, with no actor and no ``via``. The
+answer is ``{history: [{id, op, actor, via_kind, via_id, changes, at}],
+next}``, oldest first. ``next`` is the ``after`` of the next page, or None.
 
 **The tree (D18-2a).** It is one more class A read, so it takes each check
 above and the same audit row. An empty body means ``{}``, the whole forest.
@@ -356,6 +368,7 @@ __all__ = [
     "DIRECT_EXECUTORS",
     "DOOR_OP",
     "DOOR_TEMPLATE",
+    "HISTORY_INPUT_KEYS",
     "LIST_INPUT_KEYS",
     "MAX_AUDIT_TEXT",
     "MAX_BODY_BYTES",
@@ -395,9 +408,11 @@ DOOR_OP: tuple[str, str | None] = ("manifest", None)
 
 #: The executors that the door opens, as (source, op): the object ``get`` of
 #: B2a, the object ``list`` of B2b-1, the object ``aggregate`` of D4b, the
-#: object ``tree`` of D18-2a, and the door op of B2b-2b.
+#: object ``tree`` of D18-2a, the object ``history`` of C4a-2, and the door op
+#: of B2b-2b.
 OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
     {("object", "get"), ("object", "list"), ("object", "aggregate"), ("object", "tree"),
+     ("object", "history"),
      DOOR_OP})
 
 #: The mode of :func:`_run_executor` for a door op (B2b-2b).
@@ -464,6 +479,9 @@ LIST_INPUT_KEYS: frozenset[str] = frozenset(studio_query.list_input_schema()["pr
 AGGREGATE_INPUT_KEYS: frozenset[str] = frozenset(
     studio_query.aggregate_input_schema()["properties"])
 
+#: The keys of the body of a history (C4a-2): the record id, and the page.
+HISTORY_INPUT_KEYS: frozenset[str] = frozenset({"id", "after", "limit"})
+
 #: The keys of the body of a tree read (D18-2a). Each is optional: ``root_id``
 #: names the top record, ``depth`` the most levels (1 to 20) and ``limit`` the
 #: most nodes (1 to 2,000). A value outside a range is refused, never clamped.
@@ -504,8 +522,8 @@ REFUSALS: dict[str, str] = {
     APPROVAL_REQUIRED: (
         "This action writes data and needs an approval, which this door cannot ask for yet."),
     SOURCE_NOT_OPEN: (
-        "This door runs get, list, aggregate, tree, create, update and delete on an object, "
-        "and a read of another app where Metorite turned that on."),
+        "This door runs get, list, aggregate, tree, history, create, update and delete on an "
+        "object, and a read of another app that Metorite allows."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
     OUTSIDE_AGENT: (
@@ -608,6 +626,8 @@ BAD_LIST_INPUT = (
     "Send a JSON object with only filter, sort, limit and offset, "
     "and whole numbers for limit and offset.")
 BAD_AGGREGATE_INPUT = "Send a JSON object with only filter, group_by and measures."
+BAD_HISTORY_INPUT = (
+    "Send a JSON object with only id, after and limit, and whole numbers for after and limit.")
 BAD_TREE_INPUT = (
     f"Send a JSON object with only root_id, depth and limit. The root_id is a record id, "
     f"depth is a whole number from 1 to {MAX_TREE_DEPTH}, and limit is a whole number "
@@ -678,6 +698,8 @@ class _Outcome:
     page: objects_store.RecordPage | None = None
     #: The result of an aggregate (D4b).
     aggregate: objects_store.AggregateResult | None = None
+    #: One page of the history of a record (C4a-2).
+    history: objects_store.ChangePage | None = None
     #: The nodes of a tree read (D18-2a).
     tree: objects_store.TreePage | None = None
     query_error: studio_query.QueryError | None = None
@@ -1042,6 +1064,61 @@ async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
         out.aggregate = result
 
 
+def _history_input(raw: bytes) -> tuple[str, int | None, int | None] | None:
+    """The record id, ``after`` and ``limit`` of a history body *raw* (C4a-2).
+    Answers None when the body names no record id, as a get does. A key
+    outside :data:`HISTORY_INPUT_KEYS`, or an ``after`` or a ``limit`` that is
+    not an ``int``, raises ``query_value_invalid``. So a bool, a null and a
+    float stop here. The sentence never echoes a key or a value."""
+    payload = _json_object(raw) if raw else None
+    if payload is None:
+        return None
+    if (not HISTORY_INPUT_KEYS.issuperset(payload)
+            or any(type(payload[k]) is not int for k in ("after", "limit") if k in payload)):
+        raise studio_query.QueryError(studio_query.VALUE_INVALID, BAD_HISTORY_INPUT)
+    rid = payload.get("id")
+    if not isinstance(rid, str):
+        return None
+    return rid, payload.get("after"), payload.get("limit")
+
+
+async def _run_object_history(db: Any, package: _App, ref: UsesRef,
+                              raw: bytes, out: _Outcome, viewer: Viewer) -> None:
+    """Read one page of the change history of one record of the object *ref*
+    (C4a-2). The body is checked first. The store reads through the gate of a
+    get, with the row rules of *viewer*. A viewer of an install (J2a) reads
+    only the keys of the installed version, and no writer."""
+    installed = isinstance(package, _viewer.InstalledApp)
+    try:
+        found = _history_input(raw)
+        if found is None:
+            out.invalid = True
+            return
+        rid, after, limit = found
+        obj = await objects_store.get_object_by_name(
+            db, str(ref.object), package_id=package.id)
+        if obj is None or not _installed_object(package, obj.name):
+            out.object_missing = True
+            return
+        page = await objects_store.list_record_changes(
+            db, obj.id, rid, package_id=package.id, viewer=viewer, limit=limit, after=after,
+            only=package.field_keys(obj.name) if installed else None)
+    except studio_query.QueryError as exc:
+        out.query_error = exc
+        return
+    except objects_store.ObjectStoreError:
+        # A bad record id, or an after or a limit out of range. The store
+        # checks each before its first statement, so the session stays usable.
+        out.invalid = True
+        return
+    if page is None:
+        out.missing = True
+    else:
+        # J2a: the store read only the installed keys. A viewer of an install
+        # reads no writer, as ``project_record`` drops it.
+        out.history = page.without_writer() if installed else page
+
+
 def _tree_input(raw: bytes) -> dict[str, Any]:
     """The input of a tree read, from the body *raw* (D18-2a). An empty body
     means ``{}``, the whole forest to the caps.
@@ -1134,7 +1211,8 @@ async def _run_object_tree(db: Any, package: _App, ref: UsesRef,
 
 #: The executor of each open read, by its verb.
 _READS = {"get": _run_object_get, "list": _run_object_list, "aggregate": _run_object_aggregate,
-          "tree": _run_object_tree}
+          "tree": _run_object_tree,
+          "history": _run_object_history}
 
 
 def _object_action(manifest: dict[str, Any], action: str) -> bool:
@@ -2566,14 +2644,18 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
 
 
 def _read_answer(out: _Outcome) -> dict[str, Any]:
-    """The answer of a read that ran: a page, an aggregate, a tree (D18-2a), or
-    the record of a get or a write."""
+    """The answer of a read that ran: a page, an aggregate, a tree (D18-2a), a
+    history (C4a-2) or the record of a get or a write. A history is
+    ``{history, next}``, oldest first."""
     if out.page is not None:
         return dataclasses.asdict(out.page)
     if out.aggregate is not None:
         return _aggregate_answer(out.aggregate)
     if out.tree is not None:
         return _tree_answer(out.tree)
+    if out.history is not None:
+        return {"history": [dataclasses.asdict(c) for c in out.history.changes],
+                "next": out.history.next}
     return _record_answer(out)
 
 

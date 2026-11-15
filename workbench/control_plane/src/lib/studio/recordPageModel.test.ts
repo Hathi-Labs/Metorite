@@ -77,6 +77,26 @@ describe("the tabs of a record", () => {
   });
 });
 
+describe("the Activity tab (STU-C4b)", () => {
+  it("is the last tab when the app declares the history, and absent when it does not", () => {
+    expect(recordTabs(note, [note], true).map((t) => t.id)).toEqual(["details", "activity"]);
+    expect(recordTabs(visit, [visit, part], true).map((t) => t.id)).toEqual(["details", "related", "files", "activity"]);
+    expect(recordTabs(visit, [visit, part], false).map((t) => t.id)).not.toContain("activity");
+    expect(recordTabs(visit, [visit, part]).map((t) => t.id)).not.toContain("activity");
+    expect(recordTabs(note, [note], true)[1].title).toBe("Activity");
+  });
+  it("moves a declared Activity tab to the end, and drops it with no history action", () => {
+    const own: RecordObject = { ...visit, record: { tabs: ["activity", "files", "details"] } };
+    expect(recordTabs(own, [own], true).map((t) => t.id)).toEqual(["files", "details", "activity"]);
+    expect(recordTabs(own, [own], false).map((t) => t.id)).toEqual(["files", "details"]);
+  });
+  it("never gives an empty list", () => {
+    const only: RecordObject = { ...note, record: { tabs: ["activity"] } };
+    expect(recordTabs(only, [only], false).map((t) => t.id)).toEqual(["details"]);
+    expect(recordTabs(only, [only], true).map((t) => t.id)).toEqual(["activity"]);
+  });
+});
+
 describe("the related read", () => {
   it("filters the child list on the link, with the eq op that a relation takes", () => {
     expect(relatedArgs({ field: "visit" }, "r1")).toEqual({

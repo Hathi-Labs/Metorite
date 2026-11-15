@@ -235,10 +235,10 @@ def test_the_quantity_refusal_names_the_units() -> None:
 def test_blocks_part_teaches_the_tree_and_aggregate_actions_with_an_example_that_validates() -> None:
     """STU-D18-3: a tree view needs ``object:<name>.tree`` declared, and nothing adds it."""
     oa = run("blocks")["blocks"]["object_actions"]
-    assert oa["declare_yourself"] == ["aggregate", "tree"]
+    assert oa["declare_yourself"] == ["aggregate", "history", "tree"]
     assert set(oa["declare_yourself"]) <= set(OBJECT_OPS)
     assert not set(oa["declare_yourself"]) & set(oa["added_for_you"])
-    assert "tree" in oa["rule"] and "aggregate" in oa["rule"]
+    assert "tree" in oa["rule"] and "aggregate" in oa["rule"] and "history" in oa["rule"]
     manifest = {
         "studio": 1, "id": "sites", "name": "Sites", "purpose": "Sites in a tree.",
         "connections": [], "views": [], "workflows": [],
