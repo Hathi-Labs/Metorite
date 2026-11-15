@@ -350,8 +350,8 @@ class TestOneRegistry:
         # a needs provider: it registers before `approvals`, which stays last.
         # WS-ALN ALN-2b adds the gated `decisions` at the end of `needs.py`.
         # WS-55 EA-18c adds the gated `agent_questions`, after `chat`.
-        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "reminders",
-                                        "approvals", "decisions", "calendar",
+        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "studio",
+                                        "reminders", "approvals", "decisions", "calendar",
                                         "tasks_followups",
                                         "email_followups", "crm", "people", "chat",
                                         "agent_questions", "knowledge"]
@@ -362,8 +362,8 @@ class TestOneRegistry:
         assert shell.REGISTRY["tasks"] is not again
 
     def test_the_needs_subset_is_todays_five_in_todays_order(self):
-        assert list(shell.PROVIDERS) == ["tasks", "projects", "email", "reminders",
-                                         "approvals"]
+        assert list(shell.PROVIDERS) == ["tasks", "projects", "email", "studio",
+                                         "reminders", "approvals"]
         assert [p.source for p in shell.needs_providers()] == list(shell.PROVIDERS)
         assert [p.source for p in shell.feed_only_providers()] == ["calendar"]
         for source, (feature, run) in shell.PROVIDERS.items():
@@ -397,8 +397,8 @@ class TestOneRegistry:
             "tasks:t-soon", "projects:n-2", "projects:n-1",
             "email:a-mine:th-old", "email:a-mine:th-new",
         ]
-        assert set(today["sources"]) == {"tasks", "projects", "email", "reminders",
-                                         "approvals"}
+        assert set(today["sources"]) == {"tasks", "projects", "email", "studio",
+                                         "reminders", "approvals"}
 
     @pytest.mark.parametrize("limit", [1, 5, 40, 80, 500])
     def test_the_needs_view_is_at_the_needs_default_whatever_the_feed_limit(self, fakes, limit):
@@ -433,8 +433,8 @@ class TestOneRegistry:
         fakes.calls.clear()
         alone = run_needs(user)
         assert {i["kind"] for i in alone["items"]} <= NEEDS_KINDS
-        assert set(alone["sources"]) == {"tasks", "projects", "email", "reminders",
-                                         "approvals"}
+        assert set(alone["sources"]) == {"tasks", "projects", "email", "studio",
+                                         "reminders", "approvals"}
         assert not {name for name, _, _ in fakes.calls} & CALENDAR_CALLS
 
     def test_each_signal_is_a_kind_its_provider_names(self, fakes):
@@ -591,7 +591,7 @@ class TestTheCardShape:
         assert {c["app"] for c in answer["cards"]} == {
             "tasks", "projects", "email", "approvals", "calendar"}
         assert answer["sources"] == {"tasks": "ok", "projects": "ok", "email": "ok",
-                                     "reminders": "absent", "approvals": "ok",
+                                     "reminders": "absent", "studio": "absent", "approvals": "ok",
                                      "calendar": "ok"}
 
     def test_done_and_read_tap_and_every_other_act_opens(self, fakes):
@@ -1121,8 +1121,9 @@ class TestTheBudgets:
         assert answer["sources"]["calendar"] == "failed"
         assert {answer["sources"][k] for k in shell.PROVIDERS} == {"ok", "absent"}
         assert answer["sources"]["reminders"] == "absent"
+        assert answer["sources"]["studio"] == "absent"
         assert answer["needs"]["sources"] == {
-            k: "absent" if k == "reminders" else "ok" for k in shell.PROVIDERS}
+            k: "absent" if k in ("reminders", "studio") else "ok" for k in shell.PROVIDERS}
         assert answer["needs"] == run_needs(user)
 
     def test_the_feed_only_budget_is_its_own(self, fakes, monkeypatch):
@@ -1158,6 +1159,7 @@ class TestTheBudgets:
         answer = run_needs(admin(*FULL, "approvals"))
         # `reminders` is absent while CALENDAR_REMINDERS is off (RM-2b).
         assert answer["sources"].pop("reminders") == "absent"
+        assert answer["sources"].pop("studio") == "absent"
         assert set(answer["sources"].values()) == {"ok"}
 
 
@@ -1572,8 +1574,8 @@ class TestTheFeedOnlyGather:
               _feed_only("early", _recorder(ran, "early")))
         answer = run_feed(member(*FULL))
         assert list(answer["sources"]) == [
-            "tasks", "projects", "email", "reminders", "approvals", "calendar",
-            "late", "early"]
+            "tasks", "projects", "email", "studio", "reminders", "approvals",
+            "calendar", "late", "early"]
 
     def test_the_needs_providers_still_run_one_after_another(self, fakes, monkeypatch):
         live = {"now": 0, "most": 0}
