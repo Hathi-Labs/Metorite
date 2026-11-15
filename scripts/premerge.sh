@@ -252,12 +252,12 @@ both_full=0
 # and ran past 10 minutes on a 62-file union (measured 2026-11-14).
 sel() {
   ${PREMERGE_PY:-env -u VIRTUAL_ENV uv run python} scripts/premerge_select.py --pr "$logs/pr.txt" --main "$logs/main.txt" \
-    --first-out "$logs/first.txt" --note-out "$logs/note.txt" > "$logs/sel.txt" || return 1
+    --first-out "$logs/first.txt" --tier0-out "$logs/tier0.txt" --note-out "$logs/note.txt" > "$logs/sel.txt" || return 1
   # Git Bash keeps a CR that a Windows Python writes, and a CR on a path stops pytest
   # with "file not found" (review of 2026-11-15). Strip it from every list we read.
-  for f in sel first note; do tr -d '\r' < "$logs/$f.txt" > "$logs/$f.lf" && mv "$logs/$f.lf" "$logs/$f.txt"; done
+  for f in sel first tier0 note; do tr -d '\r' < "$logs/$f.txt" > "$logs/$f.lf" && mv "$logs/$f.lf" "$logs/$f.txt"; done
 }
-: > "$logs/sel.txt"; : > "$logs/note.txt"; echo 0 > "$logs/first.txt"
+: > "$logs/sel.txt"; : > "$logs/note.txt"; echo 0 > "$logs/first.txt"; echo 0 > "$logs/tier0.txt"
 no_picker=0
 PYT="${PREMERGE_PYTEST_CMD:-env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider --continue-on-collection-errors -rfE}"
 if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
@@ -276,7 +276,10 @@ if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
   # Phase 1: the test files that either side changed. Phase 2: the rest. Both
   # phases always run, so a red of phase 1 that is only this machine hides nothing.
   # An empty list runs NOTHING: pytest with no path runs the whole tree.
-  AFFECTED_CMD="rc=0; n=\$(cat $logs/first.txt 2>/dev/null || echo 0); total=\$(grep -c . $logs/sel.txt || true); if [ \"\$total\" -eq 0 ]; then echo 'nothing to run'; exit 0; fi; if [ \"\$n\" -gt 0 ]; then $PYT \$(head -\$n $logs/sel.txt) || rc=1; fi; if [ \"\$total\" -gt \"\$n\" ]; then $PYT \$(tail -n +\$((n+1)) $logs/sel.txt) || rc=1; fi; exit \$rc"
+  # Three calls, so the summary of each is printed when the call ends. A timeout then keeps
+  # the red of an earlier call (a killed pytest prints no summary). Call 1: tier 0, the tests
+  # of the PR's own data files. Call 2: the rest of the first tier. Call 3: everything else.
+  AFFECTED_CMD="rc=0; n0=\$(cat $logs/tier0.txt 2>/dev/null || echo 0); n=\$(cat $logs/first.txt 2>/dev/null || echo 0); total=\$(grep -c . $logs/sel.txt || true); if [ \"\$total\" -eq 0 ]; then echo 'nothing to run'; exit 0; fi; if [ \"\$n0\" -gt 0 ]; then $PYT \$(head -\$n0 $logs/sel.txt) || rc=1; fi; if [ \"\$n\" -gt \"\$n0\" ]; then $PYT \$(sed -n \"\$((n0+1)),\${n}p\" $logs/sel.txt) || rc=1; fi; if [ \"\$total\" -gt \"\$n\" ]; then $PYT \$(tail -n +\$((n+1)) $logs/sel.txt) || rc=1; fi; exit \$rc"
 else
   AFFECTED_CMD="$PREMERGE_AFFECTED_CMD"
 fi

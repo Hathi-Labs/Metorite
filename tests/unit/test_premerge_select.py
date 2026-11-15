@@ -175,3 +175,15 @@ def test_the_tests_of_the_prs_own_data_files_run_first_and_the_fast_ones_before_
     got, first = ps.pick_tiers(["tests/fences.json"], ["docs/x.md"])
     assert got[0] == "tests/unit/test_fence_lists.py", "the PR's own data file tests come first"
     assert first == 2 and "tests/unit/test_studio_run_as.py" in got[:first]
+
+
+def test_main_writes_the_tier0_count(monkeypatch, tmp_path):
+    pr, main = tmp_path / "pr.txt", tmp_path / "main.txt"
+    pr.write_text("tests/fences.json\n", encoding="utf-8")
+    main.write_text("scripts/x.py\n", encoding="utf-8")
+    _patch_reach(monkeypatch, {})
+    monkeypatch.setattr(ps, "named_tests", lambda files, root=None, **_k: (
+        {"tests/unit/test_fence_lists.py"} if "tests/fences.json" in files else set(), False))
+    t0 = tmp_path / "t0.txt"
+    assert ps.main(["--pr", str(pr), "--main", str(main), "--tier0-out", str(t0)]) == 0
+    assert t0.read_text(encoding="utf-8").strip() == "1"

@@ -233,6 +233,25 @@ def test_a_cr_in_the_picker_output_never_reaches_pytest(repo):
     assert "\r" not in args and "tests/a.py|" in args and "tests/b.py|" in args
 
 
+def test_the_tiers_run_as_three_pytest_calls(repo):
+    """A killed pytest prints no summary, so the red of tier 0 must come from its own call."""
+    _stub_picker(repo, (
+        "import sys\n"
+        "a = sys.argv\n"
+        "out = lambda flag: a[a.index(flag) + 1]\n"
+        "open(out('--tier0-out'), 'w').write('1\\n')\n"
+        "open(out('--first-out'), 'w').write('2\\n')\n"
+        "open(out('--note-out'), 'w').write('\\n')\n"
+        "sys.stdout.write('tests/a.py\\ntests/b.py\\ntests/c.py\\n')\n"))
+    _advance_main(repo, "other.py")
+    fake = repo.parent / "fake_pytest.sh"
+    fake.write_text('echo "$@" >> "$(dirname "$0")/pytest-calls"\n', encoding="utf-8")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert (repo.parent / "pytest-calls").read_text(encoding="utf-8").split("\n")[:3] == [
+        "tests/a.py", "tests/b.py", "tests/c.py"]
+
+
 def test_an_empty_selection_runs_no_pytest(repo):
     """Review of 2026-11-15, P2: an empty list made pytest run the whole tree."""
     _stub_picker(repo, "import sys\na = sys.argv\nopen(a[a.index('--first-out') + 1], 'w').write('0\\n')\n")

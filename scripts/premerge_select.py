@@ -74,6 +74,7 @@ def _by_size(files: set[str], root: Path) -> list[str]:
 
 
 _CACHE: dict = {}
+LAST_TIER0 = 0  # the length of tier 0 of the last pick_tiers call (main() writes it)
 
 # A data file that tests read as TEXT is not reached by an import, so the selector cannot
 # see the link (2026-11-15: PR 2248 re-indented one line of tests/fences.json, and
@@ -185,6 +186,8 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     tier1 = (((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src)) | (named & changed)) - tier0
     tier2 = changed - tier1 - tier0
     tier3 = both - changed
+    global LAST_TIER0
+    LAST_TIER0 = len(tier0)
     return _by_size(tier0, root) + _by_size(tier1, root) + _by_size(tier2, root) + _by_size(tier3, root), len(tier0) + len(tier1)
 
 
@@ -199,10 +202,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pr", required=True, help="file with the PR's changed files, one a line")
     ap.add_argument("--main", required=True, help="file with main's changed files since the merge base")
     ap.add_argument("--first-out", help="write the count of the leading changed-test part to this file")
+    ap.add_argument("--tier0-out", help="write the count of tier 0 (tests of the PR's own data files) to this file")
     ap.add_argument("--note-out", help="write the sides that are FULL (pr, main) to this file; empty when none")
     args = ap.parse_args(argv)
     got = pick_tiers(_read(args.pr), _read(args.main))
     out, first = got if got else (["FULL"], 0)
+    if args.tier0_out:
+        with open(args.tier0_out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"{0 if got is None or out[:1] == ['FULL'] else LAST_TIER0}\n")
     if args.note_out:
         pr_files, main_files = _read(args.pr), _read(args.main)
         with open(args.note_out, "w", encoding="utf-8", newline="\n") as fh:
