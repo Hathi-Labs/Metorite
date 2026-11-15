@@ -238,6 +238,9 @@ def test_the_dependency_takes_no_host_derived_input_at_all(identity):
 _BRANCH_ZERO = (
     "get_current_user", "_is_agent_request", "_one_header", "_agent_user",
     "_verify_signed_request", "_matched_template", "_effective_template",
+    # CIV-14b: the one body reader. It reads the copy that the gateway keeps
+    # of a signed form, or `await request.body()`.
+    "_signed_body",
 )
 
 #: The attribute chains a scan accepts from `request`, each with the ONE use
@@ -249,8 +252,11 @@ _ALLOWED_CHAINS = frozenset({
     ("body",),
 })
 #: ``route`` and ``app`` find the matched route template. ``path`` and
-#: ``query_string`` are the signed path and query (§10.1).
-_SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
+#: ``query_string`` are the signed path and query (§10.1). CIV-14b:
+#: ``acb.agent_signed_body`` is the copy of the body of a signed form that the
+#: gateway wrapper ``AgentUploadBody`` keeps. The server sets it, a client
+#: cannot, and the HMAC covers its bytes.
+_SCOPE_KEYS = frozenset({"route", "app", "path", "query_string", "acb.agent_signed_body"})
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
 #: GET, the nonce of a write (EA-6a, EA3-28), and the signed MCP session key
 #: (SW-7, spec §12.5).
@@ -261,7 +267,9 @@ _HEADERS = frozenset({
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
 #: for the signature. The runtime tripwire refuses the read on a GET.
-_BODY_READER = "_agent_user"
+#: CIV-14b moves the read from ``_agent_user`` into ``_signed_body``, which
+#: first reads the copy of a signed form (``acb.agent_signed_body``).
+_BODY_READER = "_signed_body"
 #: A header or scope key that names where the request came from.
 _HOST_NAMES = frozenset({
     "host", "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",
@@ -910,6 +918,20 @@ def test_the_body_is_read_once_and_in_one_function():
     assert found == [_BODY_READER]
 
 
+def test_the_kept_body_key_is_the_one_constant():
+    """CIV-14b. The scan accepts only a literal scope key, so ``_signed_body``
+    names the key as text. The gateway wrapper and the tripwire use the same
+    value, through the one constant of ``agent_signing``."""
+    from acb_auth import agent_signing
+
+    from tests.unit import _branch_zero_tripwire as tripwire
+
+    key = agent_signing.SIGNED_BODY_SCOPE_KEY
+    assert key == "acb.agent_signed_body"
+    assert key in _SCOPE_KEYS and key in tripwire.ALLOWED_SCOPE_KEYS
+    assert f'request.scope.get("{key}")' in _sources()["_signed_body"]
+
+
 def test_every_scanned_branch_zero_function_reads_the_request():
     """The scan is not vacuous: each branch-0 name is a real function that
     reads the request."""
@@ -1173,8 +1195,19 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # (door.scope). No step of branch 0 changed. Both digests were computed
     # with this test's own function under 3.12 and 3.13. This pin needs the
     # diff-reviewer review and the independent verification.
-    (3, 12): "f5c27b8ed2dbeeff26b2cb89fcfe822c0204dbe52c116e8601af34a62cdf515c",
-    (3, 13): "bbc929711b1e309708d5b1fb0b5d01e352dbd17456b4da4046b2afa13815e8cb",
+    # CIV-14b (2026-11-12, external_agent_access.md §12.9, task 1727): branch 0
+    # reads the body of a write through the new scanned helper `_signed_body`,
+    # the ONE body reader (`_BODY_READER`). It reads the copy of a signed form
+    # that the gateway wrapper `AgentUploadBody` keeps under the server scope
+    # key `acb.agent_signed_body`, else `await request.body()`. A consumed
+    # stream with no copy is the refusal `body` in `_verify_signed_request`.
+    # The scope key joins `_SCOPE_KEYS` and the tripwire's list. The pins
+    # before it were 3.12 ``f5c27b8e…62cdf515c`` and 3.13 ``bbc92971…13815e8cb``.
+    # The 3.12 pin comes from this test's own function, and the 3.13 pin from
+    # the same texts hashed under CPython 3.13.2. This pin needs the
+    # diff-reviewer review and the independent verification.
+    (3, 12): "0733bb970aaca3c85e85be450f9f7829d180e2be08244e59ba38bdd5354f3a4a",
+    (3, 13): "74734f6e9f513eee43759f5c16ed5136ae440d066bb7fea7305aac2aa3bbda24",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1673,7 +1706,8 @@ def test_a_route_served_at_two_prefixes_runs_under_the_tripwire(monkeypatch, tri
     assert matched, "the two-prefix path did not call matches"
     assert matched <= tripwire_armed.MATCHES_SCOPE_KEYS
     plain = {k for k in armed.scope_reads if not k.startswith("matches:")}
-    assert plain == tripwire_armed.ALLOWED_SCOPE_KEYS
+    # CIV-14b: a GET reads no body, so it never reads the kept body of a form.
+    assert plain == tripwire_armed.ALLOWED_SCOPE_KEYS - {"acb.agent_signed_body"}
 
 
 def _signed_app(monkeypatch, *, row_org: str, member_org: str):

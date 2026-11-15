@@ -9,7 +9,7 @@
  */
 import type { ActionResult, Row, StudioDataDoor } from "./dataDoor";
 import type { FieldSpec } from "./fieldCheck";
-import { validateRecord } from "./fieldCheck";
+import { autonumberText, validateRecord } from "./fieldCheck";
 
 export const SAMPLE_COUNT = 5;
 export const SAMPLE_LABEL = "Sample data. Changes stay in this session only.";
@@ -44,6 +44,7 @@ function one(f: FieldSpec, i: number): unknown {
     case "quantity": return { value: String(n * 5), unit: f.units?.[0] ?? "kg" };
     case "percent": return n * 250;
     case "barcode": return f.format === "ean13" ? "4006381333931" : f.format === "code128" ? `SAMPLE-${n}` : `https://example.com/${n}`;
+    case "autonumber": return autonumberText(f, n);
     default: return null;
   }
 }
