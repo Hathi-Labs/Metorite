@@ -95,7 +95,7 @@ describe("the frame", () => {
   });
   it("passes retryable to the shared state and draws no list bar over a dashboard", () => {
     expect(frame).toContain("retryable={retryableRead(rows.error)}");
-    expect(frame).toContain('if (built.page.layout === "dashboard") return null;');
+    expect(frame).toContain(`built.page.layout === "dashboard" || built.page.layout === "app_home"`);
   });
   it("gives each stat and chart tile of a dashboard its own state", () => {
     expect(frame).toContain('preset === "dashboard"');
