@@ -408,9 +408,11 @@ def test_a_dated_alias_takes_the_card_of_its_model_and_nothing_else_matches() ->
         assert got["model"] == "unknown" and not got["known"], name
 
 
-def _summary_row(turn: int, *, passed: bool | None, usd: float, capped: str | None = None) -> dict:
+def _summary_row(
+    turn: int, *, passed: bool | None, usd: float, capped: str | None = None, arm: str = "pack"
+) -> dict:
     return {
-        "arm": "pack",
+        "arm": arm,
         "scenario": "stu_plain",
         "turn": turn,
         "repeat": 1,
@@ -456,3 +458,49 @@ def test_a_capped_turn_is_not_scored_and_its_spend_counts() -> None:
     text = run.report({"summary": run.summarise(rows), "rows": rows})
     assert "capped: 1 turns, not scored" in text and "pack stu_plain#4 r1" in text
     assert "| Turns that pass every check | 2/3 |" in text
+
+
+CAP = "USD 0.5 counted in this turn"
+
+
+def _all_capped(arm: str) -> list[dict]:
+    return [_summary_row(n, passed=None, usd=0.5, capped=CAP, arm=arm) for n in (1, 2)]
+
+
+def _states(summary: dict) -> dict[int, tuple[str, str]]:
+    return {n: (state, why) for n, state, why in run.stop_results(summary)}
+
+
+def test_a_report_with_both_arms_all_capped_does_not_crash() -> None:
+    """Both arms have only capped turns, so neither has a cost a turn. Mutation:
+    drop the None guard in ``_stop_seven`` -> ``None > None`` raises -> red."""
+    rows = _all_capped("delegation") + _all_capped("pack")
+    summary = run.summarise(rows)
+    assert summary["pack"]["cost_per_turn_usd"] is None and summary["pack"]["by_set"] == {}
+    states = _states(summary)
+    assert states[7][0] == "n/a" and "no scored turns" in states[7][1]
+    # Every other stop result that reads a per-arm number reads n/a or ok, never STOP.
+    assert {n: s for n, (s, _) in states.items() if s not in ("n/a", "ok")} == {}
+    text = run.report({"summary": summary, "rows": rows})
+    assert "capped: 4 turns, not scored" in text
+    for arm in ("delegation", "pack"):
+        assert f"{arm} stu_plain#1 r1" in text and f"{arm} stu_plain#2 r1" in text
+    assert "| 7 | n/a | no scored turns" in text
+    assert summary["pack"]["cost_usd"] == pytest.approx(1.0)
+    assert sum(spend.spend_by_agent(rows).values()) == pytest.approx(2.0)
+
+
+def test_a_report_with_one_arm_all_capped_does_not_crash() -> None:
+    """The pack arm has only capped turns, and delegation has scored turns."""
+    rows = [_summary_row(n, passed=True, usd=0.1, arm="delegation") for n in (1, 2)]
+    rows += _all_capped("pack")
+    summary = run.summarise(rows)
+    states = _states(summary)
+    assert states[7][0] == "n/a" and "no scored turns" in states[7][1]
+    assert states[2][0] == "n/a"
+    text = run.report({"summary": summary, "rows": rows})
+    assert "capped: 2 turns, not scored" in text and "| 7 | n/a |" in text
+    assert sum(spend.spend_by_agent(rows).values()) == pytest.approx(1.2)
+    # The other order: delegation all capped, pack scored.
+    rows = [*_all_capped("delegation"), _summary_row(1, passed=True, usd=0.1)]
+    assert _states(run.summarise(rows))[7][0] == "n/a"

@@ -1289,6 +1289,24 @@ def set_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
 SEARCH_STOP_PCT = 15
 
 
+def _stop_seven(dele: dict[str, Any], packs: dict[str, Any]) -> tuple[int, str, str]:
+    """Stop result 7: the pack arm costs more a turn than delegation.
+
+    TS-7a-cap. A capped turn is not scored, so an arm whose turns were all
+    capped has no cost a turn (None). Two None values do not compare, and the
+    report crashed. Such an arm reads ``n/a``. An arm with scored turns only in
+    the ``email`` or ``fanout`` set keeps the comparison it had before."""
+    a, b = dele.get("cost_per_turn_usd"), packs.get("cost_per_turn_usd")
+    why = f"packs USD {b} vs delegation {a}"
+    if a is None or b is None:
+        return 7, "n/a", f"no scored turns: {why}"
+    cost = [v["by_set"][n]["cost_per_turn_usd"] for v in (dele, packs)
+            for n in v["by_set"] if n not in ("email", "fanout")]
+    if None in cost:
+        return 7, "n/a", why
+    return 7, "STOP" if b > a else "ok", why
+
+
 def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
     """The twelve stop results of §4.3.3 that one results file can show, as
     ``(number, state, why)``. State: ``STOP``, ``ok`` or ``n/a``. Results 3, 4 and
@@ -1310,11 +1328,7 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
             out.append((2, "n/a", "no app turn outside email"))
         else:
             out.append((2, "STOP" if b < a - 2 else "ok", f"packs {b:.1f}% vs delegation {a:.1f}%"))
-        cost = [v["by_set"][n]["cost_per_turn_usd"] for v in (dele, packs)
-                for n in v["by_set"] if n not in ("email", "fanout")]
-        out.append((7, "n/a" if None in cost else (
-            "STOP" if packs["cost_per_turn_usd"] > dele["cost_per_turn_usd"] else "ok"),
-            f"packs USD {packs['cost_per_turn_usd']} vs delegation {dele['cost_per_turn_usd']}"))
+        out.append(_stop_seven(dele, packs))
     if packs:
         share = packs.get("layer_b_share_pct")
         out.append((5, "n/a" if share is None else ("STOP" if share > 15 else "ok"),
