@@ -125,8 +125,8 @@ describe("readOnlyNote", () => {
     expect(readOnlyNote("pm_lifecycle")).toBe("This step cannot run in a workflow yet.");
   });
 
-  it("says that the record write has no form yet", () => {
-    expect(readOnlyNote("studio_write")).toBe("The form for this step is not built yet.");
+  it("gives the record write no note, because it has a form (WFC-4a-2a)", () => {
+    expect(readOnlyNote("studio_write")).toBeNull();
   });
 
   it("gives no note to a step with a form", () => {
