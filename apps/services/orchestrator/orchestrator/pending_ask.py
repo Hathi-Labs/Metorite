@@ -217,16 +217,17 @@ _INSERT_STORED_SQL = (
 
 def _stored_text(stored: Any) -> str | None:
     """*stored* as the JSON text of the column, or None when it is no stored
-    call: not a dict, a value that JSON cannot hold, or more than
+    call: not a dict, a value that JSON cannot hold (a lone surrogate, a NUL), or more than
     :data:`_PAYLOAD_BYTES` bytes of UTF-8 (RESUME-1a)."""
     if not isinstance(stored, dict) or not stored:
         return None
     try:
         text = json.dumps(stored, ensure_ascii=False, allow_nan=False,
                           separators=(",", ":"), sort_keys=True)
+        too_big = len(text.encode("utf-8")) > _PAYLOAD_BYTES
     except (TypeError, ValueError, RecursionError):
         return None
-    if len(text.encode("utf-8")) > _PAYLOAD_BYTES:
+    if too_big:
         return None
     if "\\u0000" in text:
         # json.dumps escapes a NUL (in a value or a key) as \u0000, and
@@ -460,7 +461,7 @@ def bind_call(request_id: str, stored: Any) -> bool:
     out of band, by the request id, because on path A :func:`note_event` runs
     in the executor's drain, where the tool's context is not. Nothing binds
     for a request id of another shape, a value that is not a dict, a value
-    that JSON cannot hold, or more than :data:`_PAYLOAD_BYTES` bytes of
+    that JSON cannot hold (a lone surrogate, a NUL), or more than :data:`_PAYLOAD_BYTES` bytes of
     UTF-8. The map keeps the value as JSON gives it back. Never raises.
     """
     if not isinstance(request_id, str) or not _REQUEST_ID.match(request_id):
@@ -534,6 +535,7 @@ async def _record(thread_id: str, ask: CardAsk,
         # RESUME-1a: only a row with a stored call names the key, so a row
         # with none is the row of before.
         row["stored_call"] = stored
+    failed: str | None = None
     try:
         await asyncio.to_thread(insert_ask, org, row)
     except Exception as exc:
@@ -541,11 +543,15 @@ async def _record(thread_id: str, ask: CardAsk,
             _log.warning("pending_ask.insert_failed", request_id=ask.request_id[:12],
                          thread_id=thread_id[:12], exc_info=True)
             return None
+        failed = type(exc).__name__
+    if failed is not None:
         # The stored call must never cost the card its row: log the error
-        # TYPE only (no argument text), then write the row of before.
+        # TYPE only (no argument text), then write the row of before. The
+        # retry runs OUTSIDE the except block, so its exception has no
+        # __context__ that holds the first one's bound parameters.
         _log.warning("pending_ask.stored_insert_failed",
                      request_id=ask.request_id[:12],
-                     thread_id=thread_id[:12], error=type(exc).__name__)
+                     thread_id=thread_id[:12], error=failed)
         row.pop("stored_call", None)
         try:
             await asyncio.to_thread(insert_ask, org, row)

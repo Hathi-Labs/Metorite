@@ -1000,3 +1000,52 @@ def test_a_failed_stored_insert_retries_the_row_without_the_call(monkeypatch):
     assert [e for e, _ in logged] == ["pending_ask.stored_insert_failed"]
     assert logged[0][1]["error"] == "RuntimeError"
     assert "exc_info" not in logged[0][1]
+
+
+def test_a_failed_retry_logs_no_text_of_the_first_failure(monkeypatch):
+    """The retry runs outside the except block, so the exception of the
+    second failure has no ``__context__`` that holds the bound parameters of
+    the first. Mutation: move the retry back inside the except -> red."""
+    import sys
+    import traceback
+
+    sentinel = "SENTINEL-STORED-ARGS"
+
+    def _insert(org, row):
+        if "stored_call" in row:
+            raise RuntimeError(f"[parameters: {{'stored': '{sentinel}'}}]")
+        raise TimeoutError("pool exhausted")
+
+    async def _facts(_tid):
+        return _ORG_A, "run", "agent", "a@b.c"
+
+    rendered: list[str] = []
+
+    class _L:
+        def warning(self, event, **kw):
+            text = event + repr(kw)
+            if kw.get("exc_info"):
+                text += "".join(traceback.format_exception(*sys.exc_info()))
+            rendered.append(text)
+
+        def info(self, *a, **kw):
+            pass
+
+    monkeypatch.setattr(pending_ask, "insert_ask", _insert)
+    monkeypatch.setattr(pending_ask, "_run_facts", _facts)
+    monkeypatch.setattr(pending_ask, "_log", _L())
+    rid = uuid.uuid4().hex
+    ask = pending_ask.CardAsk(request_id=rid, kind="confirmation", question="q",
+                              payload={"request_id": rid})
+    out = asyncio.run(pending_ask._record("t", ask, {"name": "x", "args": {"a": 1}}))
+    assert out is None
+    assert len(rendered) == 2 and "pending_ask.insert_failed" in rendered[1]
+    joined = "\n".join(rendered)
+    assert sentinel not in joined
+    assert "__context__" not in joined
+    assert "During handling of the above exception" not in joined
+
+
+def test_a_lone_surrogate_value_stores_none_and_does_not_raise():
+    assert pending_ask._stored_text({"name": "x", "args": {"a": "\ud800"}}) is None
+    assert pending_ask.bind_call(uuid.uuid4().hex, {"name": "x", "args": {"a": "\ud800"}}) is False
