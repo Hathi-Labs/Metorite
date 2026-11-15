@@ -1,6 +1,6 @@
 """The per-org rollout flags of `Settings`, sorted by name, one block each.
 
-CIV-33 slice 3 (task 3284, docs/merge_hotspots.md). Every `*_orgs` and `*_modes`
+CIV-HS slice 3 (task 3284, docs/merge_hotspots.md). Every `*_orgs` and `*_modes`
 field of `Settings` lives HERE, and only here. A new flag goes at its sorted place.
 Two flag PRs then edit different hunks, unless their names are neighbours. A flag
 that is not a per-org list (a switch, a limit, a secret) stays in `settings.py`.

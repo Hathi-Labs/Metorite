@@ -128,7 +128,7 @@ def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> Non
     assert not github_app_org_allowed("acme"), "the master off is off for all"
 
 
-# CIV-33 slice 3 (task 3284): one line for each flag whose reader is `reader(org) -> bool`.
+# CIV-HS slice 3 (task 3284): one line for each flag whose reader is `reader(org) -> bool`.
 # Keep the lines SORTED by flag name. A new flag adds one line here, at its sorted place.
 _READERS = {
     "CORE_EVENTS_ORGS": ("gateway.core_events", "core_events_allowed"),

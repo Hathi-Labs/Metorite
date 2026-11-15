@@ -1,4 +1,4 @@
-"""The per-org flags of Settings live in one sorted registry (CIV-33 slice 3, task 3284).
+"""The per-org flags of Settings live in one sorted registry (CIV-HS slice 3, task 3284).
 
 `acb_common/flag_registry.py` holds each `*_orgs` and `*_modes` field, sorted by name.
 Two flag PRs then edit different hunks, unless their names are neighbours.
