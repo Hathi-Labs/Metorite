@@ -113,11 +113,13 @@ describe("gridData", () => {
 });
 
 describe("source parsing", () => {
-  it("binds only table, dataGrid and board", () => {
+  it("binds only table, dataGrid, board and gallery", () => {
     expect(bindsSource("table", { source: SOURCE })).toBe(true);
     expect(bindsSource("template", { name: "dataGrid", source: SOURCE })).toBe(true);
     expect(bindsSource("template", { name: "board", source: SOURCE })).toBe(true);
     expect(bindsSource("template", { name: "board" })).toBe(false);
+    expect(bindsSource("template", { name: "gallery", source: SOURCE })).toBe(true);
+    expect(bindsSource("template", { name: "gallery" })).toBe(false);
     expect(bindsSource("template", { name: "barChart", source: SOURCE })).toBe(false);
     expect(bindsSource("list", { source: SOURCE })).toBe(false);
     expect(bindsSource("table", { source: { action: "" } })).toBe(false);
