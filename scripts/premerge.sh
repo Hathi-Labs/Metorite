@@ -256,6 +256,7 @@ else
     say "these tests fail on the branch alone or on $BASE alone, so the merge did not cause them (this machine, or already red):"
     printf '  %s\n' $merged_fail
   fi
+  [ "$rc" = 124 ] && [ -n "$merged_fail" ] && say "UNPROVEN in part. The run hit ${TEST_TIMEOUT}s after the failures above, so the tests behind them did not finish."
   if grep -q '^workbench/' "$logs/union.txt"; then
     say "a frontend file changed. Run the vitest command that affected_tests printed:"
     { grep -E "vitest" "$logs/affected.log" || true; } | head -3
