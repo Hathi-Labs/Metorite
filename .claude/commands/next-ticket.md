@@ -257,9 +257,11 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
     merges a HIGH slice. Wait for `pr-check` to go green. Then run
     `bash scripts/premerge.sh` in the worktree, in the same command as the merge:
     `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
-    the merge with today's main. It runs the collision fences only: migration
-    numbers, H-ids and D-numbers. It names the files both sides changed. Add
-    `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a migration or
+    the merge with today's main. It runs the collision fences (migration
+    numbers, H-ids and D-numbers). When the branch is behind main, it also runs the tests
+    that both sides can affect on the merge result, under a 420 s cap, and refuses a red
+    that main and the branch each pass alone (CIV-MT, task 3277). A cap hit prints UNPROVEN.
+    `--no-tests` or `PREMERGE_MERGE_TEST=0` turns the tests off. From LD-10 it also refuses a migration or
     build-path slice whose head commit has no `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
     push, and run the gate and `pr-check` again. Then find the batch that holds
     your merge, as the steps below say.

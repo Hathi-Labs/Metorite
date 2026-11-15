@@ -497,8 +497,10 @@ PROJECTS_DOOR = App(
         Route("PATCH", "/projects/reports/{report_id}/schedule", "set_report_schedule", "C",
               off_door=REACHES_PERSON),
         # ── attachments.py ──
+        # CIV-14b: the MCP tool `upload_task_image` sends this pair, so the
+        # typed tool covers it (`agent_oauth.MCP_WRITE_ROUTES`).
         Route("POST", "/projects/tasks/{task_id}/attachments", "attach_to_task", "C",
-              off_door=LATER),
+              off_door=TYPED),
         Route("GET", "/projects/tasks/{task_id}/attachments", "task_detail", "A",
               off_door=TYPED),
         Route("GET", "/projects/attachments/{attachment_id}/{filename}", "", "X",

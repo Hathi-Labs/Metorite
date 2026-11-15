@@ -263,7 +263,8 @@ export default function NodePalette({
         <>
           <div className="flex items-center gap-1.5 px-1 pb-2 text-[10px] text-muted-foreground">
             <AppIcon name="Zap" className="w-3 h-3 text-cat-12" />
-            Drag onto the canvas, or click to append
+            {/* E7e: the phone layout draws no canvas beside the palette, so a tap adds. */}
+            {fill ? "Tap a step to add it" : "Drag onto the canvas, or click to append"}
           </div>
 
           {section(
