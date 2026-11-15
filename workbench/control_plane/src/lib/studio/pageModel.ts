@@ -8,7 +8,7 @@
  * (STU-D11b) draws the page that `buildPage` returns.
  */
 
-import type { PageDef, ViewDef } from "./manifest";
+import { LAYOUTS, PRESET_REGIONS, type LayoutName, type PageDef, type ViewDef } from "./manifest";
 
 /** The caps of A2. `pageModel.test.ts` holds them equal to the `maxItems` of the schema file. */
 export const PAGE_CAPS = { pages: 8, tabsPerPage: 8, cellsPerList: 12, maxCols: 4 } as const;
@@ -39,6 +39,10 @@ export interface PageModel {
   cells: CellModel[];
   /** The view that opens when a record is selected, or `null`. */
   side: string | null;
+  /** The preset of the page (STU-LY-0), or `null` for a page of cells and tabs. */
+  layout: LayoutName | null;
+  /** The view ids of each region of a preset page. Empty when `layout` is `null`. */
+  regions: Record<string, string[]>;
 }
 
 /** The manifest parts that a page reads. `actions` and `objects` serve the default pages. */
@@ -99,6 +103,7 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
   if (!d || !dashed(d.id)) return null;
   const hasTabs = Array.isArray(d.tabs) && d.tabs.length > 0;
   const hasCells = Array.isArray(d.cells) && d.cells.length > 0;
+  if (d.layout !== undefined && d.layout !== null) return readLayoutPage(d, views);
   if (hasTabs === hasCells) return null;
   const cols = readCols(d.cols);
   const tabs: TabModel[] = [];
@@ -121,6 +126,39 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
     tabs,
     cells: hasTabs ? [] : readCells(d.cells, cols, views),
     side: sideView,
+    layout: null,
+    regions: {},
+  };
+}
+
+/**
+ * A page with a preset (STU-LY-0). A page with tabs, cells or a side view is not valid, and A2
+ * refuses it. Each region keeps only the views that it may hold, as `readCells` does for cells.
+ * It drops a region that the preset does not name and a view of another set. It never repairs.
+ */
+function readLayoutPage(d: Record<string, unknown>, views: ReadonlySet<string> | null): PageModel | null {
+  const layout = (LAYOUTS as readonly unknown[]).includes(d.layout) ? (d.layout as LayoutName) : null;
+  if (!layout) return null;
+  const hasGrid = (Array.isArray(d.tabs) && d.tabs.length > 0) || (Array.isArray(d.cells) && d.cells.length > 0);
+  if (hasGrid || obj(d.side)) return null;
+  const rules = PRESET_REGIONS[layout];
+  const raw = obj(d.regions) ?? {};
+  const regions: Record<string, string[]> = {};
+  for (const [name, rule] of Object.entries(rules)) {
+    const ids = Array.isArray(raw[name]) ? (raw[name] as unknown[]) : [];
+    regions[name] = ids
+      .filter((v): v is string => dashed(v) && (!views || views.has(v)))
+      .slice(0, rule.cap);
+  }
+  return {
+    id: d.id as string,
+    title: typeof d.title === "string" ? d.title : null,
+    cols: readCols(d.cols),
+    tabs: [],
+    cells: [],
+    side: null,
+    layout,
+    regions,
   };
 }
 
@@ -135,6 +173,8 @@ export function defaultPage(views: readonly Pick<ViewDef, "id">[] = []): PageMod
       .filter((v) => dashed(v.id))
       .map((v) => ({ view: v.id, span: 1 })),
     side: null,
+    layout: null,
+    regions: {},
   };
 }
 
@@ -190,11 +230,11 @@ export function defaultPages(manifest: {
   const pages: PageModel[] = [];
   for (const [name, ids] of byObject) {
     const label = manifest.objects?.find((o) => o.name === name)?.label;
-    pages.push({ id: name, title: label || name, cols: 1, tabs: [], cells: cells(ids), side: null });
+    pages.push({ id: name, title: label || name, cols: 1, tabs: [], cells: cells(ids), side: null, layout: null, regions: {} });
   }
   if (board.length > 0) {
     // An object that is named "dashboard" keeps its own page, and the dashboard takes the next id.
-    pages.push({ id: byObject.has("dashboard") ? "dashboard-2" : "dashboard", title: "Dashboard", cols: 2, tabs: [], cells: cells(board), side: null });
+    pages.push({ id: byObject.has("dashboard") ? "dashboard-2" : "dashboard", title: "Dashboard", cols: 2, tabs: [], cells: cells(board), side: null, layout: null, regions: {} });
   }
   return pages.slice(0, PAGE_CAPS.pages);
 }
