@@ -84,5 +84,7 @@ describe("the record header (STU-LY-3)", () => {
     expect(src.indexOf("data-record-facts")).toBeLessThan(src.indexOf("<Tabs"));
     expect(src).toMatch(/<StudioBlockState[^>]*missing/);
     expect(src).toContain("fileCount(");
+    // The Details tab already lists every field, so the facts do not repeat it there.
+    expect(src).toMatch(/facts\.length > 0 && active !== "details"/);
   });
 });
