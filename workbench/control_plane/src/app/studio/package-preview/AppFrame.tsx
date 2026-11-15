@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/EmptyState";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioBlockState from "@/components/studio/StudioBlockState";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioNewButton from "@/components/studio/StudioNewButton";
@@ -45,6 +46,9 @@ import {
 import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
+import { pluralOf } from "@/lib/studio/blockState";
+import { queuePosition, queueStep } from "@/lib/studio/queueModel";
+import { retryableRead } from "@/lib/studio/readError";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -69,18 +73,35 @@ export interface AppFrameProps {
 }
 
 /** A detail view: the sheet of the picked record, or of the first one. */
-function DetailCell({ model, door, selected, onPick }: {
+function DetailCell({ model, door, selected, onPick, queue = false }: {
   model: ViewDetail; door: StudioDataDoor; selected: string | null; onPick: (id: string) => void;
+  /** The open item of a work queue (STU-LY-6b): Previous and Next, and the place in the list. */
+  queue?: boolean;
 }) {
   const rows = useCachedResource<Row[]>(sourceKey(door, model.source), () => door.read(model.source));
   const all = rows.data ?? [];
   const record = all.find((r) => String(r.id) === selected) ?? all[0];
+  const ids = all.map((r) => String(r.id));
+  const open = record ? String(record.id) : null;
+  const prev = queue ? queueStep(ids, open, -1) : null;
+  const next = queue ? queueStep(ids, open, 1) : null;
   return (
     <div className={PANEL}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-foreground">Detail</h2>
-        <SelectButton label="Record" value={record ? String(record.id) : ""} widthClass="w-48"
-          options={all.map((r) => ({ value: String(r.id), label: recordTitle(model.fields, r) }))} onChange={onPick} />
+        <div className="flex flex-wrap items-center gap-2">
+          {queue && ids.length > 0 ? (
+            <>
+              <span role="status" className="text-xs text-muted-foreground" data-queue-position="">{queuePosition(ids, open)}</span>
+              <Button variant="ghost" size="icon-sm" icon="ChevronLeft" aria-label="Previous item" disabled={prev === null}
+                onClick={() => prev !== null && onPick(prev)} />
+              <Button variant="secondary" size="sm" icon="ChevronRight" disabled={next === null}
+                onClick={() => next !== null && onPick(next)}>Next</Button>
+            </>
+          ) : null}
+          <SelectButton label="Record" value={open ?? ""} widthClass="w-48"
+            options={all.map((r) => ({ value: String(r.id), label: recordTitle(model.fields, r) }))} onChange={onPick} />
+        </div>
       </div>
       {record ? <StudioDetail fields={model.fields} record={record} />
         : rows.error && rows.data === undefined
@@ -107,6 +128,36 @@ function FilteredList({ source, door, active, onClear, children }: {
   );
 }
 
+/**
+ * The table or the board of a page with a preset (STU-LY-2, STU-LY-4), or one tile of a dashboard (STU-LY-7). It draws the shared states of `StudioBlockState`
+ * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
+ * It reads the same cached key as the block's own read, so this adds no second read.
+ */
+function LayoutList({ source, door, active, noun, shape = "rows", tile = false, allClear = false, onClear, children }: {
+  source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
+  active: number; noun: string; shape?: "rows" | "board" | "tile"; tile?: boolean; allClear?: boolean; onClear: () => void; children: React.ReactNode;
+}) {
+  const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
+  const n = rows.data?.length ?? 0;
+  const failed = Boolean(rows.error) && rows.data === undefined;
+  const state = (
+    <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
+      forbidden={false} retryable={retryableRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
+      allClear={allClear} onClearFilters={onClear} onRetry={rows.refresh} />
+  );
+  if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
+  // A tile of a dashboard has no count line: the tile says its own number.
+  if (tile) return <>{children}</>;
+  return (
+    <div className="space-y-2">
+      <p role="status" className="text-xs text-muted-foreground">
+        {`${n} ${noun}${active > 0 ? " match the filters" : ""}`}
+      </p>
+      {children}
+    </div>
+  );
+}
+
 export default function AppFrame({ pkg, detail, door, controls, onDeleted, above: setupCard }: AppFrameProps) {
   const params = useSearchParams();
   const pageParam = params.get("page");
@@ -129,6 +180,9 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     [cells, detail.views, controls.actions]);
   const bar = useMemo(() => {
     const object = target ? detail.objects.find((o) => o.name === target.object) : undefined;
+    // A dashboard has no list bar: its worklist is one short table, and the bar over the KPIs would push them
+    // down (capture finding, task 3320).
+    if (built.page.layout === "dashboard") return null;
     if (!target || !object) return null;
     const fields = object.fields as unknown as BarField[];
     const lanes = boardGroupKeys(fieldSpecs(object), computedKeys(object.rules))
@@ -142,7 +196,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       args: toListArgs(fields, value),
     };
     return { fields, lanes, layouts, layout, value, lens };
-  }, [target, detail.objects, state]);
+  }, [target, detail.objects, state, built.page.layout]);
   // The record page (STU-AF5). A row or a card links to its record only when the app declares the get.
   const getters = useMemo(() => new Set(detail.objects
     .filter((o) => controls.actions.some((a) => a.uses === `object:${o.name}.get`)).map((o) => o.name)),
@@ -177,6 +231,24 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       case "node": {
         const node = <GenerativeUINode spec={model.node} />;
         const src = model.node.props.source as { action: string; args?: Record<string, unknown> } | undefined;
+        const preset = built.page.layout;
+        const queue = preset === "work_queue" || preset === "approval_queue";
+        if ((preset === "table_workspace" || preset === "board" || queue) && src
+          && id === (queue ? built.page.regions.list?.[0] : built.page.regions.main?.[0])) {
+          const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
+          return (
+            <LayoutList source={src} door={door} active={bar ? activeCount(bar.fields, bar.value) : 0}
+              noun={pluralOf(object?.label || object?.name || "")} shape={preset === "board" ? "board" : "rows"}
+              allClear={queue} onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
+        // A tile of a dashboard (STU-LY-7): its own loading, error and empty state, so one tile never blanks the page.
+        if (preset === "dashboard" && src && (view?.block === "stat" || view?.block === "chart")) {
+          return (
+            <LayoutList source={src} door={door} active={0} tile shape="tile"
+              noun={(view.title || view.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
         if (!bar || id !== bar.lens.view || !src) return node;
         return (
           <FilteredList source={src} door={door} active={activeCount(bar.fields, bar.value)}
@@ -195,7 +267,8 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
           </div>
         );
       case "detail":
-        return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected} />;
+        return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected}
+          queue={(built.page.layout === "work_queue" || built.page.layout === "approval_queue") && id === built.page.regions.detail?.[0]} />;
     }
   };
 

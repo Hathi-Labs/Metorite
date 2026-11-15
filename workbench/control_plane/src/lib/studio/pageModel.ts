@@ -162,6 +162,12 @@ function readLayoutPage(d: Record<string, unknown>, views: ReadonlySet<string> |
   };
 }
 
+/** The view ids of the regions of a preset page, in the order of the preset table. Empty for a page with no preset. */
+export function regionViews(page: Pick<PageModel, "layout" | "regions">): string[] {
+  if (!page.layout) return [];
+  return Object.keys(PRESET_REGIONS[page.layout]).flatMap((name) => page.regions[name] ?? []);
+}
+
 /** The page of a manifest with no `pages`: every view, one column, in order. The cell caps bind declared pages only. */
 export function defaultPage(views: readonly Pick<ViewDef, "id">[] = []): PageModel {
   return {
@@ -264,6 +270,10 @@ export function buildPage(
   const all = pages.length > 0 ? pages : defaultPages({ ...manifest, views });
   const page = all.find((p) => p.id === pageId) ?? all[0];
   const active = resolveTab(page, tab);
-  const cells = active === null ? page.cells : (page.tabs.find((t) => t.id === active)?.cells ?? []);
+  // A page with a preset (STU-LY-2) has no cells. Its `cells` are its region views in screen order, so the
+  // parts that read the cells of a page (the New buttons, the list bar) work on it with no second path.
+  const cells = page.layout
+    ? regionViews(page).map((view) => ({ view, span: 1 }))
+    : active === null ? page.cells : (page.tabs.find((t) => t.id === active)?.cells ?? []);
   return { page, tab: active, cells, pages: all };
 }

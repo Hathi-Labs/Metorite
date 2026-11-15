@@ -58,7 +58,8 @@ export function StudioStat({ data, rows }: { data: unknown; rows: Row[] }) {
               <span className="text-muted-foreground"> vs {t.against}</span>
             </div>
           ) : (
-            <div data-stat-trend="none" className="mt-0.5 text-xs text-muted-foreground">No trend. Group by a date for one.</div>
+            // A member needs no builder hint here. The line keeps its height, so the tiles of a row stay level.
+            <div data-stat-trend="none" aria-hidden className="mt-0.5 text-xs text-muted-foreground">{"\u00a0"}</div>
           )}
         </div>
         {tile.spark.length > 1 && (
