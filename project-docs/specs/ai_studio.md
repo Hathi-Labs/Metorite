@@ -735,7 +735,8 @@ The ask refuses a name in this order:
 1. A name that the draft does not hold gets 422 `not_in_draft`.
 2. A name that the registry cannot hold gets 409 `not_checkable` (`connections.checkable`).
 3. A name that the member has now gets 409 `already_met`. "Has now" is the rule of I9a: the set of the account of the need. A member row of the asker never meets an `org` need.
-4. A member who may connect the name gets 409 `can_connect`, with "You can connect it yourself."
+4. A member who may connect the name gets 409 `can_connect`. That is the rule of `can_connect` on the line of I8a (`connections._can_connect`). The name is checkable, and the `as` of the need is the scope of the connector. Also, `may_connect` lets the member connect it. The text is "You can connect it yourself."
+5. A name that no connect of an admin can meet gets 409 `admin_cannot_connect`. A connect writes a row of the scope of the connector. A member row of the admin never meets the need of another member. So an admin can meet only an `org` need on a connector of `org` scope (`connections._admin_can_meet`). A `{zoho, as: member}` need and a `{google_drive, as: org}` need store no ask. The text is "An admin cannot connect this for you. Change the connection in the draft."
 
 The answer is `{"asked": true, "new": <bool>}`, and `new` is false on a second press. A member who holds 10 live asks gets 429 `too_many_asks` for a new one. The read of I8a adds `asked` to each row, with one more read only when a name is not met.
 

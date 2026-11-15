@@ -37,7 +37,9 @@ g. The route refuses a name off the draft (422), a met name (409), a name
    outside the registry (409), the bare ``mcp`` (409) and a caller who may
    connect (409). Another member of the org gets 404, and so does org B.
    WS-STU I9a: a connected member row of the asker does not meet an ``org``
-   ask, so the ask goes through and the read shows it asked.
+   ask, so the ask goes through and the read shows it asked. A need that no
+   connect of an admin can meet (``{zoho, as: member}``) gets 409
+   ``admin_cannot_connect`` and writes no row. A plain ``zoho`` still asks.
 h. A delete of the package deletes its asks, and the key refuses a package of
    another org.
 i. The purge clause deletes the asks of the member in this org only, and its
@@ -102,7 +104,7 @@ TABLE = "integration_attention"
 APP = "integrations"
 
 
-def _manifest(names: list[str]) -> dict[str, Any]:
+def _manifest(names: list[Any]) -> dict[str, Any]:
     return {
         "studio": 1, "id": f"i8b{TAG}-app{next(_COUNTER)}", "name": "Stock",
         "purpose": "Track the stock of a site.", "connections": names,
@@ -145,7 +147,7 @@ def _run(world: Any, fn: Callable[[], Awaitable[Any]]) -> Any:
     return asyncio.run(go())
 
 
-async def _new(org: str, email: str, names: list[str]) -> str:
+async def _new(org: str, email: str, names: list[Any]) -> str:
     status, got = await _bound(org, lambda: packages.create_package(
         request=_Request(_manifest(names)), user=_user(org, email)))
     assert status == 200, got
@@ -189,7 +191,8 @@ def world(promoted, monkeypatch):  # noqa: F811
                 "VALUES (:e, :e, 'employee', 'active', :org)"), {"e": email, "org": org})
     yield SimpleNamespace(p=p, a=p.org_a, b=p.org_b)
     with p.admin_engine.begin() as c:
-        c.execute(text(f"DELETE FROM {TABLE} WHERE provider LIKE :p"), {"p": f"%{TAG}%"})
+        c.execute(text(f"DELETE FROM {TABLE} WHERE provider LIKE :p OR member_email LIKE :e"),
+                  {"p": f"%{TAG}%", "e": _EMAIL_LIKE})
         ids = [str(r[0]) for r in c.execute(text(
             "SELECT id FROM apps WHERE slug LIKE :t"), {"t": _SLUG_LIKE}).all()]
         for table, col in (("app_audit", "app_id"), ("studio_objects", "package_id"),
@@ -479,6 +482,29 @@ def test_r8_g_a_member_row_of_the_asker_never_makes_an_org_ask_met(world) -> Non
     assert [(r["name"], r["met"], r["asked"]) for r in got["connections"]] == [
         (TALLY, False, True)]
     assert _asks(world) == [(world.a, TALLY, OWEN.lower(), pid)]
+
+
+def _asks_of(world: Any, member: str) -> list[tuple[str, str]]:
+    """Each ask of *member* in org A, as the superuser: (provider, package)."""
+    with world.p.admin_engine.connect() as c:
+        return sorted((str(r[0]), str(r[1])) for r in c.execute(text(
+            f"SELECT provider, package_id FROM {TABLE} WHERE organization_id = CAST(:o AS uuid) "
+            "AND member_email = :m"), {"o": world.a, "m": member.lower()}).all())
+
+
+def test_r8_g_an_ask_that_no_admin_connect_can_meet_writes_no_row(world) -> None:
+    """I8b-1a review P1. Zoho is an org connector, so no writer makes a member
+    row of it, and no connect of an admin meets ``{zoho, as: member}``. The
+    ask answers 409 ``admin_cannot_connect`` and writes no row. A plain
+    ``zoho`` is an ``org`` need, so its ask still goes through."""
+    odd = _run(world, lambda: _new(world.a, OWEN, [{"name": "zoho", "as": "member"}]))
+    status, got = _run(world, lambda: _ask(world.a, OWEN, odd, "zoho"))
+    assert (status, got["code"]) == (409, "admin_cannot_connect"), got
+    assert _asks_of(world, OWEN) == []
+    plain = _run(world, lambda: _new(world.a, OWEN, ["zoho"]))
+    assert _run(world, lambda: _ask(world.a, OWEN, plain, "zoho")) == (
+        200, {"asked": True, "new": True})
+    assert _asks_of(world, OWEN) == [("zoho", plain)]
 
 
 # ── h. The package key ────────────────────────────────────────────────────

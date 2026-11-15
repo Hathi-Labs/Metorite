@@ -13,12 +13,14 @@ The checks here:
 1. The order of the checks of the two routes. ``STUDIO_ORGS`` off, a bad id
    and the gate off each answer 404, open no session and call no store
    function. A bad body is 413 or 422 before a session. Another member's
-   package is 404. Then the four refusals of §8.2, in order: 422
-   ``not_in_draft``, 409 ``not_checkable``, 409 ``already_met`` and 409
-   ``can_connect``. A good ask answers ``{"asked": true, "new": ...}``, writes
-   one audit row and moves the cache only when the ask is new. WS-STU I9a:
-   ``already_met`` reads the set of the account of the need, the rule of the
-   line of the read. A member row of the caller never meets an ``org`` ask.
+   package is 404. Then the five refusals of §8.2, in order: 422
+   ``not_in_draft``, 409 ``not_checkable``, 409 ``already_met``, 409
+   ``can_connect`` and 409 ``admin_cannot_connect``. A good ask answers
+   ``{"asked": true, "new": ...}``, writes one audit row and moves the cache
+   only when the ask is new. WS-STU I9a: ``already_met`` reads the set of the
+   account of the need, the rule of the line of the read. A member row of the
+   caller never meets an ``org`` ask. ``can_connect`` is the rule of the line
+   too, and a need that no connect of an admin can meet stores no ask.
 2. The org and the member come from the session, never from the body.
 3. The read of I8a reads the asks once, for the names that are not met.
 4. The clear hook. With the gate off, it sends no statement. It acts only for
@@ -33,7 +35,10 @@ The checks here:
 **R7.** M1: drop the gate check from ``_clear_asks``. Check 4 goes red. M2:
 drop ``_clear_asks`` from ``save_headers``. Check 5 goes red. M3: move the
 gate check of the ask below the session. Check 1 goes red. M4: let the ask
-take ``member`` from the body. Check 2 goes red.
+take ``member`` from the body. Check 2 goes red. M5: make ``_check_member``
+read ``console.may_connect`` alone again, with no ``admin_cannot_connect``.
+The three cases of ``test_an_ask_that_no_admin_connect_can_meet_is_refused``
+go red.
 """
 
 from __future__ import annotations
@@ -334,9 +339,40 @@ def test_a_member_need_reads_the_rows_of_the_caller_only(world: _World) -> None:
     assert _store_calls(world) == []
 
 
+@pytest.mark.parametrize("item,grants", [
+    # Zoho is an org connector. No writer makes a member row of it.
+    ({"name": "zoho", "as": "member"}, MEMBER),
+    # Drive is a member connector. A connect writes a member row, never an org row.
+    ({"name": "google_drive", "as": "org"}, MEMBER),
+    # An admin cannot make a member row of Zoho either.
+    ({"name": "zoho", "as": "member"}, ADMIN),
+])
+def test_an_ask_that_no_admin_connect_can_meet_is_refused(
+    world: _World, item: dict[str, str], grants: list[str],
+) -> None:
+    """I8b-1a review P1. When the declared ``as`` differs from the scope of the
+    connector, the line shows no Connect. The ask then says neither "connect it
+    yourself" nor stores an ask that no connect clears."""
+    world.names = [item]
+    world.met_org = frozenset()
+    world.met_member = frozenset()
+    user = _user(grants=grants)
+    r = _post(user, {"name": item["name"]})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {
+        "code": "admin_cannot_connect",
+        "message": "An admin cannot connect this for you. Change the connection in the draft."}
+    assert _store_calls(world) == [] and world.audits == [] and world.bumps == []
+    assert [c for c in world.calls if c[0] == "met"] == [("met", OWEN)]
+    # The line of the read shows no Connect for the same need.
+    assert connections._can_connect(item["name"], item["as"], user) is False
+
+
 def test_the_ask_and_the_read_use_one_rule_of_met() -> None:
     """The ``already_met`` refusal and ``met`` on the line read ``_need_met``,
-    and no other line of the module reads ``met.org`` or ``met.member``."""
+    and no other line of the module reads ``met.org`` or ``met.member``. The
+    ``can_connect`` refusal and ``can_connect`` on the line read
+    ``_can_connect``, the one caller of ``console.may_connect``."""
     tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
     reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
              and isinstance(n.value, ast.Name) and n.value.id == "met"
@@ -348,6 +384,12 @@ def test_the_ask_and_the_read_use_one_rule_of_met() -> None:
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == name)
         assert "_need_met" in ast.unparse(fn), name
+        assert "_can_connect(" in ast.unparse(fn), name
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and ast.unparse(n.func) == "console.may_connect"]
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_can_connect")
+    assert len(calls) == 1 and fn.lineno <= calls[0].lineno <= (fn.end_lineno or 0)
 
 
 def test_the_can_connect_refusal_says_so(world: _World) -> None:

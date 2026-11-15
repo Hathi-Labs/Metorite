@@ -26,6 +26,7 @@ line for each name, with Connect on an unmet one.
 * ``setup_href`` and ``can_connect`` come from
   ``routes/integrations_connections.setup_href_for`` and ``may_connect``. So
   Studio keeps no copy of a connect flow and reads no right of its own.
+  ``can_connect`` is :func:`_can_connect`, the one rule that the ask reads too.
 * ``checkable`` is True only for a name that the registry can hold: a real
   ``mcp:<server>``, or a connector-list row that a registry writer writes
   (:func:`checkable`). It is False for a provider whose connection lives
@@ -43,11 +44,15 @@ line for each name, with Connect on an unmet one.
 **The ask (I8b-1a).** A member who may not connect a name asks an admin. The
 ask refuses a name that the draft does not hold (422 ``not_in_draft``), a name
 that the registry cannot hold (409 ``not_checkable``), a name that the member
-has now (409 ``already_met``), and a name that the member may connect (409
-``can_connect``). ``already_met`` uses the rule of the line of the read
-(:func:`_need_met`, I9a). So for an ``org`` need it reads the org rows only,
-and a member row of the caller never makes an org ask ``already_met``. It answers ``{"asked": true, "new": <bool>}``: ``new`` is
-False when a live ask of the member exists, and that ask keeps its time. The
+has now (409 ``already_met``), a name that the member may connect (409
+``can_connect``), and a name that no connect of an admin can meet (409
+``admin_cannot_connect``). ``already_met`` uses the rule of the line of the
+read (:func:`_need_met`, I9a). So for an ``org`` need it reads the org rows
+only, and a member row of the caller never makes an org ask ``already_met``.
+``can_connect`` uses the rule of the line too (:func:`_can_connect`), and
+:func:`_admin_can_meet` holds the last rule. It answers
+``{"asked": true, "new": <bool>}``: ``new`` is False when a live ask of the
+member exists, and that ask keeps its time. The
 withdraw deletes the ask of the caller only, and answers
 ``{"asked": false, "withdrawn": <bool>}``. ``connections/attention.py`` runs
 the SQL, and this module runs none. A change writes one ``app_audit`` row in
@@ -112,6 +117,7 @@ NOT_IN_DRAFT = "not_in_draft"
 NOT_CHECKABLE = "not_checkable"
 ALREADY_MET = "already_met"
 CAN_CONNECT = "can_connect"
+ADMIN_CANNOT_CONNECT = "admin_cannot_connect"
 TOO_MANY_ASKS = "too_many_asks"
 
 BAD_ASK_TEXT = 'Send {"name": "<connection>"} with one name of the draft.'
@@ -120,6 +126,8 @@ NOT_IN_DRAFT_TEXT = "The draft of this app does not name this connection."
 NOT_CHECKABLE_TEXT = "Metorite cannot check this connection, so an admin cannot connect it from Studio."
 ALREADY_MET_TEXT = "This connection works now. You do not need to ask."
 CAN_CONNECT_TEXT = "You can connect it yourself."
+ADMIN_CANNOT_CONNECT_TEXT = (
+    "An admin cannot connect this for you. Change the connection in the draft.")
 TOO_MANY_ASKS_TEXT = (
     "You have 10 open asks. Wait for an admin to answer one, or withdraw one, then ask again.")
 
@@ -198,6 +206,31 @@ def _need_met(name: str, whose: str, met: host_resolve.Met) -> bool:
     return name in (met.member if whose == "member" else met.org)
 
 
+def _can_connect(name: str, whose: str, user: UserContext) -> bool:
+    """True when a Connect of *user* can meet the need ``(name, whose)``.
+
+    A Connect writes a row of the SCOPE of the connector (member or org, the
+    ``connection_as`` of the name with no declared ``as``). When the declared
+    ``as`` differs from that scope, no writer can make a row that meets the
+    need, so a Connect would be a dead end (I9a review P2). The
+    ``can_connect`` of a line and the ``can_connect`` refusal of an ask both
+    read this one rule (I8b-1a review P1). Pure."""
+    return (checkable(name) and connection_as(name) == whose
+            and console.may_connect(user, name))
+
+
+def _admin_can_meet(name: str, whose: str) -> bool:
+    """True when the Connect of an admin can meet the need ``(name, whose)`` of
+    another member (WS-STU I8b-1a). Pure.
+
+    The Connect writes a row of the scope of the connector (``connection_as``
+    of the name). A member row of the admin never meets a need of another
+    member, and a member connector never gets an org row. So only an ``org``
+    need on a connector of ``org`` scope can be met. That is also the one row
+    that clears an ask (``connections/store._clear_asks``)."""
+    return whose == "org" and connection_as(name) == "org"
+
+
 def connection_rows(needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
                     user: UserContext,
                     asked: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
@@ -219,11 +252,7 @@ def connection_rows(needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
             "met": met_now,
             "checkable": checkable(name),
             "setup_href": console.setup_href_for(name),
-            # A Connect writes a row of the SCOPE of the connector (member or org). When the
-            # declared `as` differs from that scope, no writer can make a row that meets the
-            # need, so a Connect would be a dead end (I9a review P2).
-            "can_connect": (checkable(name) and connection_as(name) == whose
-                            and console.may_connect(user, name)),
+            "can_connect": _can_connect(name, whose, user),
             "asked": name in asked and not met_now,
         })
     return rows
@@ -302,18 +331,25 @@ def _check_name(name: str, needs: tuple[tuple[str, str], ...]) -> None:
 
 def _check_member(name: str, needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
                   user: UserContext) -> None:
-    """Refuse a name that the caller has now, or may connect. The last two
-    checks of §8.2.
+    """Refuse a name that the caller has now, may connect, or that no admin
+    can connect. The last three checks of §8.2. Each one reads the needs of
+    the name that are not met.
 
     WS-STU I9a: "has now" is the rule of the line of the read
     (:func:`_need_met`). An ``org`` need reads the org rows only, so a member
     row of the caller never makes an org ask ``already_met``. A ``member`` need
-    reads the rows of the caller only. :func:`_check_name` found the name, so
-    the ``all`` reads at least one need."""
-    if all(_need_met(n, whose, met) for n, whose in needs if n == name):
+    reads the rows of the caller only. "May connect" is the rule of the line
+    too (:func:`_can_connect`). So the ask never says "connect it yourself"
+    where the line shows no Connect. Last, an ask that no admin can answer
+    (:func:`_admin_can_meet`) stores no row: it would take a slot and show
+    the admins an item that no connect clears."""
+    unmet = [whose for n, whose in needs if n == name and not _need_met(n, whose, met)]
+    if not unmet:
         raise _refused(409, ALREADY_MET, ALREADY_MET_TEXT)
-    if console.may_connect(user, name):
+    if any(_can_connect(name, whose, user) for whose in unmet):
         raise _refused(409, CAN_CONNECT, CAN_CONNECT_TEXT)
+    if not any(_admin_can_meet(name, whose) for whose in unmet):
+        raise _refused(409, ADMIN_CANNOT_CONNECT, ADMIN_CANNOT_CONNECT_TEXT)
 
 
 async def _bump(org: Any) -> None:
