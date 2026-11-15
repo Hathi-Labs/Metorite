@@ -101,7 +101,9 @@ function Queue({ layout, regions, renderView, titleOf }: LayoutBodyProps) {
   return (
     <div data-layout={layout} className="grid min-w-0 grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-[minmax(0,35fr)_minmax(0,65fr)]">
       {list}
-      {detail}
+      {/* Below lg the screen is too narrow for two panes. A row opens the record sheet of the frame, which is the
+          overlay on a tablet and the item with Back on a phone (STU-LY-6b). */}
+      {detail ? <div className="hidden min-w-0 lg:block" data-queue-item="">{detail}</div> : null}
     </div>
   );
 }

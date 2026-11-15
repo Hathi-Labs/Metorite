@@ -74,6 +74,12 @@ describe("the queue", () => {
       expect(html).toContain("lg:grid-cols-[minmax(0,35fr)_minmax(0,65fr)]");
     });
   }
+  it("hides the item below lg: the list stands alone on a phone and a tablet", () => {
+    const html = draw("work_queue", { list: ["l"], detail: ["d"] });
+    expect(html).toMatch(/data-queue-item[^>]*>/);
+    expect(html).toMatch(/class="hidden min-w-0 lg:block"/);
+    expect(html.indexOf('data-view="l"')).toBeLessThan(html.indexOf("data-queue-item"));
+  });
   it("draws the list alone when no item region is named, and says so with no list", () => {
     expect(draw("work_queue", { list: ["l"] })).toContain('data-view="l"');
     expect(draw("work_queue", {})).toContain("no list to show");
@@ -108,6 +114,11 @@ describe("the frame", () => {
     expect(frame).toContain('shape={preset === "board" ? "board" : "rows"}');
     expect(frame).toContain("<LayoutList");
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
+  });
+  it("gives the open item of a queue Previous and Next", () => {
+    expect(frame).toContain("queue={(built.page.layout === \"work_queue\" || built.page.layout === \"approval_queue\")");
+    expect(frame).toContain('aria-label="Previous item"');
+    expect(frame).toContain("data-queue-position");
   });
   it("draws a queue list as All clear when it is empty", () => {
     expect(frame).toContain('preset === "work_queue" || preset === "approval_queue"');

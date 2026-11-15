@@ -47,6 +47,7 @@ import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { pluralOf } from "@/lib/studio/blockState";
+import { queuePosition, queueStep } from "@/lib/studio/queueModel";
 import { retryableRead } from "@/lib/studio/readError";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
@@ -72,18 +73,35 @@ export interface AppFrameProps {
 }
 
 /** A detail view: the sheet of the picked record, or of the first one. */
-function DetailCell({ model, door, selected, onPick }: {
+function DetailCell({ model, door, selected, onPick, queue = false }: {
   model: ViewDetail; door: StudioDataDoor; selected: string | null; onPick: (id: string) => void;
+  /** The open item of a work queue (STU-LY-6b): Previous and Next, and the place in the list. */
+  queue?: boolean;
 }) {
   const rows = useCachedResource<Row[]>(sourceKey(door, model.source), () => door.read(model.source));
   const all = rows.data ?? [];
   const record = all.find((r) => String(r.id) === selected) ?? all[0];
+  const ids = all.map((r) => String(r.id));
+  const open = record ? String(record.id) : null;
+  const prev = queue ? queueStep(ids, open, -1) : null;
+  const next = queue ? queueStep(ids, open, 1) : null;
   return (
     <div className={PANEL}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-foreground">Detail</h2>
-        <SelectButton label="Record" value={record ? String(record.id) : ""} widthClass="w-48"
-          options={all.map((r) => ({ value: String(r.id), label: recordTitle(model.fields, r) }))} onChange={onPick} />
+        <div className="flex flex-wrap items-center gap-2">
+          {queue && ids.length > 0 ? (
+            <>
+              <span role="status" className="text-xs text-muted-foreground" data-queue-position="">{queuePosition(ids, open)}</span>
+              <Button variant="ghost" size="icon-sm" icon="ChevronLeft" aria-label="Previous item" disabled={prev === null}
+                onClick={() => prev !== null && onPick(prev)} />
+              <Button variant="secondary" size="sm" icon="ChevronRight" disabled={next === null}
+                onClick={() => next !== null && onPick(next)}>Next</Button>
+            </>
+          ) : null}
+          <SelectButton label="Record" value={open ?? ""} widthClass="w-48"
+            options={all.map((r) => ({ value: String(r.id), label: recordTitle(model.fields, r) }))} onChange={onPick} />
+        </div>
       </div>
       {record ? <StudioDetail fields={model.fields} record={record} />
         : rows.error && rows.data === undefined
@@ -249,7 +267,8 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
           </div>
         );
       case "detail":
-        return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected} />;
+        return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected}
+          queue={(built.page.layout === "work_queue" || built.page.layout === "approval_queue") && id === built.page.regions.detail?.[0]} />;
     }
   };
 
