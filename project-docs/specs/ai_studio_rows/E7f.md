@@ -12,7 +12,7 @@ Gate: AGENT-SAFE. RUNG 0 fix task 3382: the editor first node id
 
 A `{{trigger.*}}` reference stays, because it reads the payload root and never the node. "Available data" leaves out the trigger node by its type, not by its id. No old run names the node `trigger`, because a Test run and a publish compile the graph first. No route, flag or migration changes.
 
-**Known edge (found 2026-11-15, not in this row):** the PUT answer holds no `versions`, and the editor reads `detail.versions.length` after each Save. So on `main` each Save shows "This page did not load".
+**Second fault, fixed in this row (found 2026-11-15):** the PUT answer holds no `versions`, and the editor read `detail.versions.length` after each Save, so on `main` each Save, Validate, Test and Publish showed "This page did not load". The Save now merges the answer into the detail the page holds. Fence: `src/app/workflows/lib/saveKeepsDetail.test.ts`.
 
 ## Done when
 

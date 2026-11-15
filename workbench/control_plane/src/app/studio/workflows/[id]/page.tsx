@@ -400,7 +400,8 @@ function EditorInner({ id }: { id: string }) {
         graph: toGraph(),
         triggers: cleanTriggers(triggers),
       });
-      setDetail(wf);
+      // The save answer holds no versions or hook fields: keep what the page already has.
+      setDetail((d) => (d ? { ...d, ...wf } : wf));
       setDirty(false);
       return true;
     } catch (e) {
