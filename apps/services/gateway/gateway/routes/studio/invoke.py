@@ -228,9 +228,25 @@ refusals are in ``gateway/studio/logic/apply.py``, and each comes before a write
 **An MCP tool (B1b-1, ``ai_studio.md`` §3.2 source 3).** An ``mcp:<server>.<tool>``
 action takes its class from the catalog, as each other source does. One that
 the catalog does not list gets 403 ``not_in_catalog``. One that it lists gets
-403 ``source_not_open`` for each class but X, in a preview too, because no
-executor of the source exists (:func:`refusal_for`). So no preview of it is
-simulated, and the door calls no server. I11a opens a class A read later.
+403 ``source_not_open`` for each class but X (:func:`refusal_for`). No
+preview of it is simulated.
+
+**The live preview read (I11a).** One exception opens: a class A MCP tool in
+a ``preview=1`` call of the owner, while ``STUDIO_LIVE_PREVIEW_ORGS`` holds
+the org (``studio_flags.live_preview_on``). :func:`_run_live` reads the
+body, then runs the second check in a new session. There
+:func:`_held_live_read` needs the same ``uses``, no viewer, the switch, and
+``mcp:<server>`` in the ``connections`` of the manifest. Each miss is
+``source_not_open``. The member must hold each named connection now
+(``resolve.connections_met``), else 409 ``needs_connection``, with the I1a
+gate off too. The session closes, then ``mcp_tools.call_read_tool`` runs:
+the one path of the door that calls a tool. It checks the class again on a
+fresh list and passes the gate, and its refusal is ``source_not_open``. The
+answer is ``{preview, result, truncated, live_from}``. A failed server or an
+error of the tool is 502 ``mcp_<reason>``, and a cache that does not answer
+is 503 ``mcp_cache_unavailable``. The audit row holds ``live``: ``called``,
+``cached`` or the code of the refusal, and no data of the answer. Outside a
+preview, an MCP action stays ``source_not_open``.
 
 **The write of a workflow node (B2c-2d).** :func:`run_workflow_write` is the
 one internal path, and the HTTP route does not reach it. A workflow node of
@@ -292,6 +308,7 @@ import json
 import re
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -305,7 +322,7 @@ from acb_common.db import current_tenant
 from acb_common.no_person import no_person_present, no_person_scope
 from acb_common.studio_access import Viewer
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
-from acb_common.studio_flags import connection_gate_on
+from acb_common.studio_flags import connection_gate_on, live_preview_on
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
 from acb_common.studio_rules import (
     COMPUTED_FIELD,
@@ -316,6 +333,7 @@ from acb_common.studio_rules import (
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from gateway import app_requests
+from gateway.connections import mcp_tools
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import resolve as _resolve
 from gateway.package_host import store as host_store
@@ -701,6 +719,11 @@ class _Outcome:
     door_result: dict[str, Any] | None = None
     #: B2b-2b. A 4xx of the app: that app's own refusal, unchanged.
     door_reply: Response | None = None
+    #: I11a. The answer of a live read of a class A MCP tool in a preview.
+    live_result: dict[str, Any] | None = None
+    #: I11a. What the live read did, for the audit row: ``called``,
+    #: ``cached`` or the code of its refusal. It holds no data of the answer.
+    live_note: str | None = None
 
 
 #: What the door reads an action of: the package of its owner, or the
@@ -741,7 +764,7 @@ def _key(ref: UsesRef) -> tuple[str, str | None]:
 def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
                 delegated: bool = False, viewer: bool = False,
                 preview: bool = False, door_ops: bool = False,
-                logic: bool = False) -> str | None:
+                logic: bool = False, live: bool = False) -> str | None:
     """The refusal code of an action of *ref* and class *cls*, or None when
     an executor runs it. *cls* is None when no source gives the action a
     class. A class B or C object action runs for a *direct* call when
@@ -755,14 +778,18 @@ def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
     runs only with *door_ops*, the switch of B2b-2b. A logic module (B4a) runs
     only with *logic*, the switch of ``STUDIO_LOGIC_ORGS``. It is class B, and
     it needs a *direct* call or a *preview*. It is never delegated.
-    An MCP tool (B1b-1) gets :data:`SOURCE_NOT_OPEN` for each class but X,
-    in a preview too, because no executor of the source exists. A preview
-    of it is never simulated, so it sends nothing. I11a opens class A."""
+    An MCP tool (B1b-1) gets :data:`SOURCE_NOT_OPEN` for each class but X.
+    A preview of it is never simulated, so it sends nothing. One exception
+    (I11a): a class A tool in a *preview* of a member who is no viewer, with
+    *live*, the switch of ``STUDIO_LIVE_PREVIEW_ORGS``. That call goes to
+    the live read, and the read checks the class again on a fresh list."""
     if cls is None:
         return NOT_IN_CATALOG
     if cls == "X":
         return CLASS_X
     if ref.source == "mcp":
+        if live and preview and cls == "A" and not viewer:
+            return None
         return SOURCE_NOT_OPEN
     if ref.source == "logic":
         if not logic:
@@ -2149,6 +2176,116 @@ async def _run_door_op(request: Request, door: DoorOp, raw: bytes, out: _Outcome
         out.door_result = {"result": answer.result, "truncated": answer.truncated}
 
 
+#: I11a. The codes of a live read that failed, with their status and one
+#: sentence. None of them holds a url, a header or the text of an error.
+LIVE_FAILED = "The server of this action did not answer, so try the preview again later."
+LIVE_TOOL_ERROR = "The tool answered with an error, so check the input and preview it again."
+LIVE_CACHE_DOWN = "The live preview is not available now, so try the preview again later."
+#: I11a. The code of the audit row of an MCP action whose manifest does not
+#: name ``mcp:<server>`` in its ``connections``.
+LIVE_NOT_DECLARED = "connection_not_declared"
+
+
+async def _held_live_read(db: Any, member: str, package: _App, ref: UsesRef, out: _Outcome,
+                          uses: str | None, cls: str | None, org: str) -> bool:
+    """True when the second check still opens the live read of *uses* (I11a).
+
+    The session is the session of the second check, so the read of the
+    connections binds the org of the session. The same ``uses`` has the same
+    catalog label *cls*, and the live read checks the class again on a fresh
+    list. These refuse with :data:`SOURCE_NOT_OPEN`: another ``uses``, a
+    viewer, the switch off, and a manifest whose ``connections`` does not
+    name ``mcp:<server>``. A named connection that the member does not hold
+    now refuses with :data:`NEEDS_CONNECTION`, also with the I1a gate off,
+    through the one rule ``resolve.connections_met``."""
+    if (ref.source != "mcp" or out.uses != uses or out.viewer
+            or not isinstance(package, packages_store.Package) or not live_preview_on(org)):
+        out.refusal = SOURCE_NOT_OPEN
+        return False
+    out.cls = cls
+    names = _resolve.connection_names(package.manifest)
+    if not names or f"mcp:{ref.server}" not in names:
+        out.refusal, out.live_note = SOURCE_NOT_OPEN, LIVE_NOT_DECLARED
+        return False
+    met = await _resolve.met_connections(db, viewer=member)
+    if not _resolve.connections_met(package.manifest, met):
+        out.refusal = NEEDS_CONNECTION
+        return False
+    return True
+
+
+def _live_args(raw: bytes) -> dict[str, Any] | None:
+    """The arguments of a live read: a JSON object, or ``{}`` for no body."""
+    return {} if not raw else _json_object(raw)
+
+
+async def _run_live_read(org: str, member: str, ref: UsesRef, raw: bytes, out: _Outcome) -> None:
+    """The live read of the class A MCP tool *ref* in a preview (I11a).
+
+    The caller holds no session. ``mcp_tools.call_read_tool`` decides the
+    rest, and it is the one path of the door that calls a tool. A refusal of
+    it is :data:`SOURCE_NOT_OPEN` (the answer before I11a), and a failed
+    server or an error of the tool is a 502 with a code, never data."""
+    args = _live_args(raw)
+    if args is None:
+        out.fail = _Fail("refused", BAD_ARGS, HTTPException(status_code=422, detail={
+            "code": BAD_ARGS, "message": BAD_ARGS_TEXT, "field": None}))
+        return
+    try:
+        read = await mcp_tools.call_read_tool(org, member, str(ref.server), str(ref.tool), args)
+    except mcp_tools.LiveRefused as refused:
+        out.live_note = refused.reason
+        if refused.reason == mcp_tools.LIVE_BAD_INPUT:
+            out.fail = _Fail("refused", BAD_ARGS, HTTPException(status_code=422, detail={
+                "code": BAD_ARGS, "message": BAD_ARGS_TEXT, "field": None}))
+        else:
+            out.refusal = SOURCE_NOT_OPEN
+        return
+    except mcp_tools.ListFailed as failed:
+        code = f"mcp_{failed.reason}"
+        out.live_note = failed.reason
+        if failed.reason == mcp_tools.REASON_CACHE:
+            error = HTTPException(status_code=503, detail={"code": code, "message": LIVE_CACHE_DOWN})
+        else:
+            text = LIVE_TOOL_ERROR if failed.reason == mcp_tools.REASON_TOOL_ERROR else LIVE_FAILED
+            error = HTTPException(status_code=502, detail={"code": code, "message": text})
+        out.fail = _Fail("failed", code, error)
+        return
+    out.live_note = "cached" if read.cached else "called"
+    out.live_result = {
+        "preview": True,
+        "result": read.result,
+        "truncated": read.truncated,
+        "live_from": {"server": read.server, "fetched_at": datetime.fromtimestamp(
+            read.fetched_at, UTC).isoformat()},
+    }
+
+
+async def _run_live(request: Request, user: UserContext, pid: str, action: str,
+                    out: _Outcome) -> None:
+    """Read the body, check again, then run the live read (I11a). It runs
+    only while ``STUDIO_LIVE_PREVIEW_ORGS`` holds the org. It has the shape
+    of :func:`_run_executor`. No session is open during the body read, and
+    the second check runs in a new session. That session closes before the
+    server is called, so the door holds no pool connection while the server
+    answers. A viewer never comes here (``refusal_for``), so the call takes
+    no reader slot."""
+    member = str(user.email)
+    org = str(user.organization_id or "")
+    first_uses, first_cls = out.uses, out.cls
+    raw = await _read_body(request)
+    if raw is None:
+        out.too_large = True
+        return
+    async with _tenant_session() as db:
+        package, ref = await _check(db, member, pid, action, out, preview=True, org=org)
+        if out.refusal is not None or ref is None:
+            return
+        if not await _held_live_read(db, member, package, ref, out, first_uses, first_cls, org):
+            return
+    await _run_live_read(org, member, ref, raw, out)
+
+
 async def _run_executor(request: Request, user: UserContext, pid: str, action: str,
                         out: _Outcome, direct: bool, delegated: bool, mode: str,
                         request_id: str | None, preview: bool = False,
@@ -2319,6 +2456,9 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
     if out.door_status is not None:
         # B2b-2b: the status of the app's answer, and never its data.
         detail["status"] = out.door_status
+    if out.live_note is not None:
+        # I11a: what the live read did, and never its data.
+        detail["live"] = _cap(out.live_note)
     if out.viewer:
         # J2a: the row of a viewer names the installed version that it read.
         detail["viewer"] = True
@@ -2372,8 +2512,10 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
         raise out.fail.error
     if out.door_reply is not None:
         return out.door_reply
-    if out.door_result is not None:
-        return out.door_result
+    if out.door_result is not None or out.live_result is not None:
+        # B2b-2b: the answer of a door op. I11a: the cut, cleaned answer of a
+        # live read, with live_from.
+        return _ran(out)
     if out.query_error is not None:
         raise _query_refusal(out.query_error)
     if out.invalid:
@@ -2395,6 +2537,11 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
     if out.aggregate is not None:
         return _aggregate_answer(out.aggregate)
     return _record_answer(out)
+
+
+def _ran(out: _Outcome) -> dict[str, Any]:
+    """The answer of a door op, else the answer of a live read."""
+    return out.door_result if out.door_result is not None else dict(out.live_result or {})
 
 
 def _logic_answer(out: _Outcome) -> dict[str, Any]:
@@ -2474,7 +2621,8 @@ async def invoke_action(
                 # in a preview (G4), so a viewer never gets a simulated send.
                 out.refusal = refusal_for(
                     ref, out.cls, viewer=out.viewer, preview=preview,
-                    door_ops=flags.door_ops_allowed(user.organization_id))
+                    door_ops=flags.door_ops_allowed(user.organization_id),
+                    live=live_preview_on(user.organization_id))
                 if out.refusal is None and _key(ref) == DOOR_OP and out.cls == "A":
                     # B2b-2b: a class A door op runs as the caller, a viewer
                     # too. The app's own gates decide. A read in a preview is
@@ -2488,6 +2636,10 @@ async def invoke_action(
                     elif out.refusal is None:
                         await _run_executor(request, user, pid, action, out, direct,
                                             delegated, DOOR_OP_MODE, None, preview, door)
+                elif out.refusal is None and ref.source == "mcp":
+                    # I11a: refusal_for opens only a class A tool in a preview,
+                    # with the switch on. The live read checks the rest.
+                    await _run_live(request, user, pid, action, out)
                 elif out.refusal is None and not preview:
                     # No executor of another source exists. Fail closed.
                     out.refusal = SOURCE_NOT_OPEN

@@ -54,13 +54,32 @@ failed read drops the stored list unless that list is NEWER than the start.
 So a late failure keeps the list of a newer refresh, and it drops an older
 list also when the slot has expired.
 
-**The server identity.** Each cached list holds a hash of the url of the
-server (``_identity``). ``enabled_meta`` gives the url with no secret. The
-catalog serves a list only when its hash equals the hash of the server of
-NOW, so a new server with an old name never gets the tools of the old one.
+**The server identity.** Each cached list holds a hash of the url, the
+``connected_by`` and the ``created_at`` of the server (``_identity``, I11a).
+``enabled_meta`` gives the three with no secret. The catalog serves a list
+only when its hash equals the hash of the server of NOW, so a new server
+with an old name never gets the tools of the old one.
 
-Fences: ``tests/unit/test_studio_mcp_tools.py`` and
-``tests/unit/test_studio_mcp_tools_r8.py`` (R8).
+**The live read of a preview (STU-I11a).** :func:`call_read_tool` is the
+one path of the action door that calls a tool, for a class A ``mcp:`` action
+in a preview only. It never takes the class from the catalog. It reads the
+list through :func:`fresh_tool_list`, the ONE helper that holds both checks:
+younger than :data:`FRESH_S`, and the identity of the server of now. Else it
+reads a live ``tools/list`` first. It computes the class from THAT list,
+calls the gate seam ``mcp_needs_confirmation``, and refuses unless both say
+class A. Then ONE ``tools/call`` (:func:`_sdk_call`) goes through the same
+pinned client and budget as the list. The answer keeps :data:`MAX_ROWS`
+items of each array, each text goes through ``strip_hidden``, and a cut
+sets ``truncated``. An answer with ``isError`` is an error, never data. The
+answer cache is ``tenant_redis``, namespace :data:`LIVE_NAMESPACE`, TTL
+:data:`ANSWER_TTL_S`. Its key holds the org (the scope), a hash of the
+member, the server, the tool and a hash of the input with the server
+identity. Its value holds the cut, cleaned answer only.
+
+Fences: ``tests/unit/test_studio_mcp_tools.py``,
+``tests/unit/test_studio_mcp_tools_r8.py`` (R8),
+``tests/unit/test_studio_live_preview.py`` and
+``tests/unit/test_studio_live_preview_r8.py`` (R8).
 """
 
 from __future__ import annotations
@@ -68,6 +87,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -78,7 +98,7 @@ from typing import Any
 from acb_common import get_logger
 from acb_common.studio_manifest import MCP_TOOL_NAME
 from acb_skills.hidden_text import strip_hidden
-from acb_skills.permission_policy import MCP_HINT_NAMES
+from acb_skills.permission_policy import MCP_HINT_NAMES, mcp_needs_confirmation
 
 from gateway.connections import mcp as mcp_registry
 from gateway.studio import mcp_actions
@@ -169,12 +189,18 @@ class ToolList:
 
 
 def _identity(server: Any) -> str:
-    """The hash of the connection identity of one server: its url.
+    """The hash of the connection identity of one server: its url, its
+    ``connected_by`` and its ``created_at``.
 
-    The url is not a secret, and ``enabled_meta`` gives it with no blob
-    opened. A new server with an old name and another url gets another hash."""
-    url = str(getattr(server, "url", "") or "")
-    return hashlib.sha256(url.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+    None of the three is a secret, and ``enabled_meta`` gives them with no
+    blob opened. A new server with an old name gets another hash: another
+    url, and also the same url that another admin or a new row connected
+    (STU-I11a, the rule of the B1b-2 review)."""
+    created = getattr(server, "created_at", None)
+    parts = [str(getattr(server, "url", "") or ""), str(getattr(server, "connected_by", "") or ""),
+             created.isoformat() if hasattr(created, "isoformat") else str(created or "")]
+    text = json.dumps(parts, ensure_ascii=True)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()[:32]
 
 
 @dataclass(frozen=True)
@@ -274,16 +300,24 @@ async def _pages(client: Any, url: str) -> list[Any]:
 
 
 async def _sdk_list(server: Any) -> Sequence[Any]:
-    """The raw ``tools/list`` items of ONE server, through the pinned client.
+    """The raw ``tools/list`` items of ONE server, through the pinned client
+    (:func:`_pinned`)."""
+    return await _pinned(server, _pages, total=MAX_READ_BYTES)
 
-    The only function here that sends a request. ``outbound_guard`` refuses
-    an address that is not public, another origin and each redirect. The
-    budget caps the bytes while they are read. The SDK can swallow the
-    error of its own reader, so the read also waits on ``budget.tripped``
-    and stops the session at once when a cap fires."""
+
+async def _pinned(server: Any, work_of: Callable[[Any, str], Awaitable[Any]], *,
+                  total: int) -> Any:
+    """Run *work_of* on ONE session of the pinned client of *server*.
+
+    The one place here that builds a client, so :func:`_sdk_list` and
+    :func:`_sdk_call` are the only functions that send a request.
+    ``outbound_guard`` refuses an address that is not public, another origin
+    and each redirect. The budget caps the bytes while they are read. The
+    SDK can swallow the error of its own reader, so the read also waits on
+    ``budget.tripped`` and stops the session at once when a cap fires."""
     from gateway import outbound_guard
 
-    budget = outbound_guard.AnswerBudget(per_answer=MAX_ANSWER_BYTES, total=MAX_READ_BYTES)
+    budget = outbound_guard.AnswerBudget(per_answer=MAX_ANSWER_BYTES, total=total)
     client = await outbound_guard.mcp_client(server.url, budget=budget)
     try:
         # The pinned transport sends to the one origin of the URL only, so
@@ -292,7 +326,7 @@ async def _sdk_list(server: Any) -> Sequence[Any]:
         # Set AFTER the stored headers, so a stored header cannot ask for a
         # coded answer. The transport sets it on each request too.
         client.headers["Accept-Encoding"] = "identity"
-        work = asyncio.ensure_future(_pages(client, server.url))
+        work = asyncio.ensure_future(work_of(client, server.url))
         trip = asyncio.ensure_future(budget.tripped.wait())
         try:
             await asyncio.wait({work, trip}, return_when=asyncio.FIRST_COMPLETED)
@@ -359,10 +393,23 @@ async def list_tools(org: str, server: str, *, lister: Lister | None = None) -> 
         raise ServerNotFound(server)
     # The registry seam caps its own OAuth refresh (``mcp.REFRESH_BUDGET_S``),
     # so the timeout below does not cancel a refresh under its row lock.
+    return await _list_stored(await _stored(org, server), lister)
+
+
+async def _stored(org: str, server: str) -> Any:
+    """The connected server *server* of *org*, with its headers, through the
+    one run reader ``servers_for_org``, or :class:`ServerNotFound`."""
     found = await mcp_registry.servers_for_org(org, oauth_wanted=lambda s: s.name == server)
     stored = next((s for s in found if s.name == server), None)
     if stored is None:
         raise ServerNotFound(server)
+    return stored
+
+
+async def _list_stored(stored: Any, lister: Lister | None) -> ToolList:
+    """One ``tools/list`` read of the server *stored*, cleaned, under the one
+    deadline. A failure raises :class:`ListFailed` with a reason code."""
+    server = str(stored.name)
     try:
         async with asyncio.timeout(READ_TIMEOUT_S):
             raw = await (lister or _sdk_list)(stored)
@@ -517,24 +564,372 @@ async def catalog_tools(org: str) -> tuple[list[dict[str, Any]], bool]:
     return mcp_actions.mcp_rows(servers, tools), stale
 
 
+# ── The live read of one class A tool (STU-I11a) ────────────────────────────
+
+#: The namespace of each key of a live answer: ``cc:<org>:studio-live:...``.
+LIVE_NAMESPACE = "studio-live"
+#: The seconds that one live answer lives in the cache.
+ANSWER_TTL_S = 60
+#: The most bytes of all the answers of one ``tools/call`` session.
+MAX_CALL_BYTES = 2 * MAX_ANSWER_BYTES
+#: The most items that a live answer keeps of each array: its rows.
+MAX_ROWS = 50
+#: The most characters of each text of a live answer.
+TEXT_CHARS = 4000
+#: The most characters of all the texts of one live answer.
+MAX_RESULT_CHARS = 200_000
+#: The most values of one live answer.
+MAX_NODES = 10_000
+#: The deepest nesting that a live answer keeps.
+MAX_DEPTH = 8
+#: The most keys that a live answer keeps of each object.
+MAX_KEYS = 100
+#: The version of the shape of a cached live answer.
+ANSWER_VERSION = 1
+
+#: The reason of a ``tools/call`` answer with ``isError``. It is an error,
+#: never data.
+REASON_TOOL_ERROR = "tool_error"
+#: The reason of a cache that does not answer. The live read fails closed.
+REASON_CACHE = "cache_unavailable"
+
+#: The reasons of :class:`LiveRefused`. Each one sends nothing more.
+LIVE_NO_SERVER = "server_not_found"
+LIVE_NO_TOOL = "tool_unknown"
+LIVE_NOT_A = "not_class_a"
+LIVE_NEEDS_CARD = "needs_card"
+LIVE_CHANGED = "server_changed"
+LIVE_BAD_INPUT = "bad_input"
+
+
+class LiveRefused(Exception):
+    """The live read does not call the tool. ``reason`` is a ``LIVE_*`` code."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class LiveRead:
+    """One live answer of a class A tool. It holds no url and no header."""
+
+    server: str
+    result: dict[str, Any]
+    truncated: bool
+    fetched_at: float
+    cached: bool = False
+
+
+#: The type of the function that sends one ``tools/call``. A test gives a
+#: fake one. The production function is :func:`_sdk_call`.
+Caller = Callable[[Any, str, dict[str, Any]], Awaitable[Any]]
+
+
+async def _call_once(client: Any, url: str, tool: str, args: dict[str, Any]) -> Any:
+    """ONE ``tools/call`` on one session. It uses ``send_request`` and not
+    ``call_tool``, because ``call_tool`` reads ``tools/list`` again to check
+    an output schema. So the session sends ``initialize`` and one call."""
+    from mcp import ClientSession, types
+    from mcp.client.streamable_http import streamable_http_client
+
+    request = types.ClientRequest(types.CallToolRequest(
+        params=types.CallToolRequestParams(name=tool, arguments=args)))
+    async with (streamable_http_client(url, http_client=client) as streams,
+                ClientSession(streams[0], streams[1]) as session):
+        await session.initialize()
+        return await session.send_request(request, types.CallToolResult)
+
+
+async def _sdk_call(server: Any, tool: str, args: dict[str, Any]) -> Any:
+    """The raw ``tools/call`` answer of ONE tool of ONE server, through the
+    pinned client with a budget (:func:`_pinned`)."""
+    async def _work(client: Any, url: str) -> Any:
+        return await _call_once(client, url, tool, args)
+
+    return await _pinned(server, _work, total=MAX_CALL_BYTES)
+
+
+class _Shaper:
+    """The cut and the clean of one live answer. Each text goes through
+    ``strip_hidden``, before and after its cut. Each array keeps
+    :data:`MAX_ROWS` items. Each cut sets ``truncated``."""
+
+    def __init__(self) -> None:
+        self.truncated = False
+        self.chars = 0
+        self.nodes = 0
+
+    def text(self, raw: str, cap: int = TEXT_CHARS) -> str:
+        clean = strip_hidden(raw)
+        room = min(cap, max(0, MAX_RESULT_CHARS - self.chars))
+        if len(clean) > room:
+            self.truncated = True
+            clean = strip_hidden(clean[:room])
+        self.chars += len(clean)
+        return clean
+
+    def value(self, raw: Any, depth: int = 0) -> Any:
+        self.nodes += 1
+        if self.nodes > MAX_NODES or depth > MAX_DEPTH:
+            self.truncated = True
+            return None
+        if raw is None or isinstance(raw, bool):
+            return raw
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            return raw if math.isfinite(raw) else None
+        if isinstance(raw, str):
+            return self.text(raw)
+        if isinstance(raw, list | tuple):
+            if len(raw) > MAX_ROWS:
+                self.truncated = True
+            return [self.value(v, depth + 1) for v in raw[:MAX_ROWS]]
+        if isinstance(raw, Mapping):
+            if len(raw) > MAX_KEYS:
+                self.truncated = True
+            out: dict[str, Any] = {}
+            for k, v in islice(raw.items(), MAX_KEYS):
+                key = strip_hidden(strip_hidden(str(k))[:200])
+                if self.chars + len(key) > MAX_RESULT_CHARS:
+                    # No room is left, so the pair goes, and its key is never cut.
+                    self.truncated = True
+                    break
+                self.chars += len(key)
+                out[key] = self.value(v, depth + 1)
+            return out
+        self.truncated = True
+        return None
+
+    def item(self, raw: Any) -> dict[str, Any]:
+        kind = _field(raw, "type")
+        kind = kind if isinstance(kind, str) else ""
+        if kind != "text":
+            # An image, an audio clip or a resource: its kind only, no data.
+            return {"type": self.text(kind, 32)}
+        text = _field(raw, "text")
+        text = text if isinstance(text, str) else ""
+        if text.lstrip()[:1] in ("[", "{"):
+            try:
+                return {"type": "json", "data": self.value(json.loads(text))}
+            except (ValueError, RecursionError):
+                pass
+        return {"type": "text", "text": self.text(text)}
+
+
+def shape_result(raw: Any) -> tuple[dict[str, Any], bool]:
+    """The capped, cleaned answer of one ``tools/call``, and ``truncated``.
+
+    An answer with ``isError`` raises :class:`ListFailed` with
+    :data:`REASON_TOOL_ERROR`, so an error of the tool never reads as data.
+    The answer holds ``content`` (each item as text, as JSON data, or as its
+    kind only) and ``structured``, and nothing else of the server."""
+    if _field(raw, "isError") is True:
+        raise ListFailed(REASON_TOOL_ERROR)
+    shaper = _Shaper()
+    content = _field(raw, "content")
+    items: list[dict[str, Any]] = []
+    if isinstance(content, list | tuple):
+        if len(content) > MAX_ROWS:
+            shaper.truncated = True
+        items = [shaper.item(c) for c in content[:MAX_ROWS]]
+    structured = _field(raw, "structuredContent")
+    shaped = shaper.value(structured) if isinstance(structured, Mapping) else None
+    return {"content": items, "structured": shaped}, shaper.truncated
+
+
+def _live_key(*parts: str) -> Any:
+    from acb_common import tenant_redis
+
+    return tenant_redis.key(LIVE_NAMESPACE, *parts)
+
+
+def _member_part(member: str) -> str:
+    """The member as a key part: a hash, so no address sits in a key name."""
+    return hashlib.sha256(member.strip().lower().encode("utf-8", "surrogatepass")).hexdigest()[:32]
+
+
+def _input_part(identity: str, args: dict[str, Any]) -> str:
+    """The hash of the input and of the server identity. So a new server with
+    an old name never gets the answer of the old one."""
+    try:
+        text = json.dumps([identity, args], sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=True, allow_nan=False)
+    except (TypeError, ValueError):
+        raise LiveRefused(LIVE_BAD_INPUT) from None
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+async def fresh_tool_list(org: str, meta: Any, load: Callable[[], Awaitable[Any]], *,
+                          lister: Lister | None = None) -> ToolList:
+    """THE one read of a tool list that a live call may trust (I11a).
+
+    It holds both checks of the rule of the B1b-2 review. A cached list
+    serves only when it is younger than :data:`FRESH_S` AND its identity
+    equals ``_identity`` of the server *meta* of now. Else it reads a live
+    ``tools/list`` of the server that *load* gives, and stores it as a
+    refresh does. That server must have the identity of *meta*, else
+    :class:`LiveRefused`. A cache that does not answer raises
+    :class:`ListFailed` with :data:`REASON_CACHE` (fail closed)."""
+    want = _identity(meta)
+    try:
+        client = _redis()
+        with _scope(org):
+            decoded = _decode(await client.get(_key("tools", meta.name)))
+    except Exception as exc:
+        _log.warning("studio.mcp_tools.cache_unavailable", kind=type(exc).__name__)
+        raise ListFailed(REASON_CACHE) from None
+    if decoded is not None:
+        tools, fetched, identity = decoded
+        if identity == want and 0 <= _now() - fetched <= FRESH_S:
+            return ToolList(tools=tools, truncated=False, identity=identity)
+    stored = await load()
+    if _identity(stored) != want:
+        raise LiveRefused(LIVE_CHANGED)
+    listed = await _list_stored(stored, lister)
+    try:
+        await _store(org, meta.name, listed)
+    except Exception as exc:
+        # The list is live, so the call may still trust it.
+        _log.warning("studio.mcp_tools.cache_unavailable", kind=type(exc).__name__)
+    return listed
+
+
+def _class_a_item(listed: ToolList, meta: Any, tool: str) -> None:
+    """Refuse unless *tool* is class A in the list *listed* of the server
+    *meta*, and the permission gate of the run asks no card for it.
+
+    The class is the one class rule (``mcp_actions.mcp_tool_class``) on the
+    list, never the label of the catalog. A duplicate name takes the
+    stricter item (``unique_tools``). Then the gate seam
+    ``mcp_needs_confirmation`` runs on the same hints, at run time."""
+    item = next((t for t in mcp_actions.unique_tools(listed.tools) if t.get("name") == tool), None)
+    if item is None:
+        raise LiveRefused(LIVE_NO_TOOL)
+    hints = mcp_actions.tool_hints(item.get("annotations"))
+    if mcp_actions.mcp_tool_class(hints, always_confirm=meta.always_confirm) != "A":
+        raise LiveRefused(LIVE_NOT_A)
+    if meta.always_confirm is not False or mcp_needs_confirmation(hints):
+        raise LiveRefused(LIVE_NEEDS_CARD)
+
+
+def _decode_answer(raw: Any) -> tuple[dict[str, Any], bool, float] | None:
+    if not isinstance(raw, str | bytes):
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, dict) or value.get("v") != ANSWER_VERSION:
+        return None
+    result, truncated, fetched = value.get("result"), value.get("truncated"), value.get("fetched_at")
+    if (not isinstance(result, dict) or not isinstance(truncated, bool)
+            or isinstance(fetched, bool) or not isinstance(fetched, int | float)):
+        return None
+    return result, truncated, float(fetched)
+
+
+async def call_read_tool(org: str, member: str, server: str, tool: str, args: dict[str, Any], *,
+                         lister: Lister | None = None, caller: Caller | None = None) -> LiveRead:
+    """The live read of ONE class A tool for a preview of the door (I11a).
+
+    *org* and *member* come from the session of the caller, never from
+    request input (R5). The order:
+
+    1. The server is a connected server of *org* (``enabled_meta``).
+    2. :func:`fresh_tool_list` gives a list that is fresh and of the
+       identity of now, or a live one.
+    3. The tool is class A in THAT list, and the gate asks no card.
+    4. A cached answer of this org, member, server, tool and input, younger
+       than :data:`ANSWER_TTL_S`, is the answer. It makes no call.
+    5. Else ONE ``tools/call`` through :func:`_sdk_call`, under
+       :data:`READ_TIMEOUT_S`. The answer is cut and cleaned
+       (:func:`shape_result`), and only that goes to the cache.
+
+    A refusal raises :class:`LiveRefused`, and a failed server or an error
+    of the tool raises :class:`ListFailed`. Neither holds a url, a header or
+    an exception text."""
+    if (not _server_key(server) or not isinstance(tool, str) or not _TOOL_NAME.fullmatch(tool)
+            or not isinstance(member, str) or not member.strip() or not isinstance(args, dict)):
+        raise LiveRefused(LIVE_BAD_INPUT)
+    meta = next((s for s in await mcp_registry.enabled_meta(org)
+                 if s.name == server and s.enabled is True), None)
+    if meta is None:
+        raise LiveRefused(LIVE_NO_SERVER)
+    loaded: list[Any] = []
+
+    async def _load() -> Any:
+        if not loaded:
+            try:
+                loaded.append(await _stored(org, server))
+            except ServerNotFound:
+                raise LiveRefused(LIVE_NO_SERVER) from None
+        return loaded[0]
+
+    listed = await fresh_tool_list(org, meta, _load, lister=lister)
+    _class_a_item(listed, meta, tool)
+    identity = _identity(meta)
+    parts = ("answer", _member_part(member), server, tool, _input_part(identity, args))
+    try:
+        client = _redis()
+        with _scope(org):
+            hit = _decode_answer(await client.get(_live_key(*parts)))
+    except Exception as exc:
+        _log.warning("studio.mcp_tools.cache_unavailable", kind=type(exc).__name__)
+        raise ListFailed(REASON_CACHE) from None
+    if hit is not None:
+        return LiveRead(server=server, result=hit[0], truncated=hit[1], fetched_at=hit[2],
+                        cached=True)
+    stored = await _load()
+    if _identity(stored) != identity:
+        raise LiveRefused(LIVE_CHANGED)
+    try:
+        async with asyncio.timeout(READ_TIMEOUT_S):
+            raw = await (caller or _sdk_call)(stored, tool, args)
+    except Exception as exc:
+        reason = _reason(exc)
+        _log.warning("studio.mcp_tools.call_failed", name=server, reason=reason,
+                     kind=type(exc).__name__)
+        raise ListFailed(reason) from None
+    result, truncated = shape_result(raw)
+    fetched = _now()
+    value = json.dumps({"v": ANSWER_VERSION, "result": result, "truncated": truncated,
+                        "fetched_at": fetched})
+    try:
+        with _scope(org):
+            await client.setex(_live_key(*parts), ANSWER_TTL_S, value)
+    except Exception as exc:
+        _log.warning("studio.mcp_tools.cache_unavailable", kind=type(exc).__name__)
+    return LiveRead(server=server, result=result, truncated=truncated, fetched_at=fetched)
+
+
 __all__ = [
+    "ANSWER_TTL_S",
     "FRESH_S",
     "LIST_TTL_S",
+    "LIVE_NAMESPACE",
     "MAX_ANSWER_BYTES",
     "MAX_LISTED",
     "MAX_PAGES",
     "MAX_READ_BYTES",
+    "MAX_ROWS",
     "MAX_TOOLS",
     "NAMESPACE",
     "READ_TIMEOUT_S",
     "REFRESH_INTERVAL_S",
     "ListFailed",
+    "LiveRead",
+    "LiveRefused",
     "RefreshTooSoon",
     "Refreshed",
     "ServerNotFound",
     "ToolList",
+    "call_read_tool",
     "catalog_tools",
     "clean_tools",
+    "fresh_tool_list",
     "list_tools",
     "refresh",
+    "shape_result",
 ]

@@ -4,12 +4,16 @@ Spec: ``project-docs/specs/ai_studio.md`` §14 rows I11-0, G4 and B1b. Code:
 ``gateway/routes/studio/invoke.py`` (``refusal_for``, the preview branch of
 ``invoke_action``) and ``gateway/outbound_guard.py``.
 
-Today no code can call a provider from a preview. B1b-1 adds the ``mcp:``
-source to the ``uses`` grammar, but the gateway has no connection client and
-the door has no executor for it. So the door answers ``source_not_open`` for
-each class of an ``mcp:`` action, in a preview too, and never simulates one.
-This file fences that fail-closed behaviour, so no later slice opens a source
-into a preview by accident (R7).
+One path of a preview may call a provider, since I11a: the live read of a
+class A ``mcp:`` action (``invoke._run_live_read`` and
+``mcp_tools.call_read_tool``). It runs only with ``STUDIO_LIVE_PREVIEW_ORGS``
+on for the org, a class A label, a fresh list of the server of now that says
+class A, a gate that asks no card, and ``mcp:<server>`` in the
+``connections``. With the switch off, the door answers ``source_not_open``
+for each class of an ``mcp:`` action, in a preview too, and never simulates
+one. This file fences that one path, so no later slice opens a source into a
+preview by accident (R7). ``test_studio_live_preview.py`` holds the rest of
+the I11a cases.
 
 **The tripwire.** The fixture ``no_outbound`` makes each public outbound entry
 point of ``outbound_guard`` raise, and every ``httpx`` client send, and every
@@ -28,6 +32,16 @@ non-local socket connect. A call that reaches one fails with the text in
   ``test_the_real_catalog_rows_each_get_a_preview_decision``, and the
   ``pages``, ``pull`` and ``flow_a`` cases of
   ``test_each_other_answer_is_a_refusal_and_sends_nothing``.
+* M3 (I11a, 2026-11-15). ``refusal_for``: open class B of an MCP tool in a
+  preview with the switch. ``test_refusal_for_with_the_live_switch[B-mcp]``
+  goes red. The door still sends nothing, because the live read refuses B on
+  the fresh list (``test_studio_live_preview.py`` holds that case).
+* M5 (I11a). ``refusal_for``: drop the switch from the MCP arm.
+  ``test_refusal_for_in_a_preview_per_source_and_class[A-mcp]`` goes red. With
+  the switch also dropped from ``_held_live_read``,
+  ``TestTheLivePreview::test_the_switch_off_sends_nothing`` goes red too.
+* M4 (I11a). ``_held_live_read``: drop the ``connections`` rule.
+  ``TestTheLivePreview::test_no_connection_sends_nothing`` goes red.
 """
 
 from __future__ import annotations
@@ -47,6 +61,7 @@ from gateway.routes.studio import actions, invoke
 from tests.unit.test_studio_action_door import (  # noqa: F401
     CATALOG,
     MANIFEST,
+    ORG,
     WORKFLOW,
     _client,
     _code,
@@ -188,8 +203,9 @@ EXPECTED = {
     # answers source_not_open, and class X and an id outside the catalog stay refused.
     ("logic", "A"): "source_not_open", ("logic", "B"): "source_not_open",
     ("logic", "C"): "source_not_open", ("logic", "X"): "class_x",
-    # B1b-1: no executor of an MCP tool exists, so each class but X is
-    # source_not_open, and no preview of it is simulated. I11a opens class A.
+    # B1b-1: with STUDIO_LIVE_PREVIEW_ORGS off (the default here) each class
+    # but X is source_not_open, and no preview of it is simulated. I11a opens
+    # class A with the switch (test_refusal_for_with_the_live_switch).
     ("mcp", "A"): "source_not_open", ("mcp", "B"): "source_not_open",
     ("mcp", "C"): "source_not_open", ("mcp", "X"): "class_x",
 }
@@ -211,6 +227,23 @@ def test_refusal_for_in_a_preview_per_source_and_class(no_outbound, source, cls)
     else:
         assert source == "object" and cls in ("B", "C")
         assert got is None  # the object write runs inside the rollback SAVEPOINT
+    assert no_outbound == []
+
+
+@pytest.mark.parametrize("source", SOURCES)
+@pytest.mark.parametrize("cls", CLASSES)
+def test_refusal_for_with_the_live_switch(no_outbound, source, cls):
+    """I11a. The switch of the live preview changes one answer only: a class A
+    MCP tool in a preview. A viewer and a call outside a preview stay closed."""
+    ref = parse_uses(SAMPLES[source])
+    got = invoke.refusal_for(ref, cls, preview=True, live=True)
+    if (source, cls) == ("mcp", "A"):
+        assert got is None
+        assert invoke.refusal_for(ref, cls, preview=True, live=True, viewer=True) == (
+            "source_not_open")
+        assert invoke.refusal_for(ref, cls, live=True) == "source_not_open"
+    else:
+        assert got == invoke.refusal_for(ref, cls, preview=True)
     assert no_outbound == []
 
 
@@ -375,6 +408,141 @@ class TestThePreviewDoorSendsNothing:
         pid, _ = _pid(pw)
         _post(_client(pw), pid, "sync", {})
         assert pw.hits == []
+
+
+# ── The live preview read (I11a) ───────────────────────────────────────────
+
+#: The one function that a preview may reach the network through, and the
+#: path to it. ``outbound_guard.mcp_client`` is called in ``mcp_tools._pinned``
+#: only, for ``_sdk_list`` or ``_sdk_call``, inside ``call_read_tool``.
+ALLOWED_LIVE_PATH = ("_run_live_read", "call_read_tool", "_pinned")
+
+
+@pytest.fixture
+def lp(pw, monkeypatch):
+    """The preview door with the live switch on, a fake Redis, a fake registry
+    and the member holding ``mcp:github``. The REAL ``_sdk_list`` and
+    ``_sdk_call`` run, so a call meets the tripwire at
+    ``outbound_guard.mcp_client``. Each hit there keeps its call stack."""
+    from acb_common import get_settings
+    from acb_common.tenant_redis import TenantRedis
+    from gateway.connections import mcp as mcp_registry
+    from gateway.connections import mcp_tools
+
+    from tests.unit.test_studio_mcp_tools import RawRedis
+
+    raw = RawRedis()
+    server = SimpleNamespace(name="github", enabled=True, always_confirm=False,
+                             read_only_key=False, url="https://mcp.example.test/github",
+                             headers={"Authorization": "Bearer i11-0"}, oauth=False,
+                             connected_by="admin@example.test", created_at=None)
+    monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
+    monkeypatch.setattr(mcp_tools, "_now", lambda: raw.now)
+
+    async def _servers(_org: str, **_k: Any) -> list[Any]:
+        return [server]
+
+    async def _met(db: Any, *, viewer: str) -> frozenset[str]:
+        return frozenset({"mcp:github"})
+
+    stacks: list[list[str]] = []
+
+    async def _mcp_client(*_a: Any, **_k: Any) -> Any:
+        import inspect
+
+        pw.hits.append("outbound_guard.mcp_client")
+        stacks.append([f.function for f in inspect.stack()])
+        raise AssertionError(TRIPWIRE)
+
+    monkeypatch.setattr(mcp_registry, "enabled_meta", _servers)
+    monkeypatch.setattr(mcp_registry, "servers_for_org", _servers)
+    monkeypatch.setattr(invoke._resolve, "met_connections", _met)
+    monkeypatch.setattr(outbound_guard, "mcp_client", _mcp_client)
+    monkeypatch.setattr(get_settings(), "studio_live_preview_orgs", "*")
+    pw.raw, pw.server, pw.stacks = raw, server, stacks
+
+    def warm() -> None:
+        raw.data[raw.tools_key(ORG, "github")] = json.dumps({
+            "v": mcp_tools.CACHE_VERSION, "fetched_at": raw.now,
+            "identity": mcp_tools._identity(server), "tools": [
+                {"name": "get_issue", "description": "", "annotations": {"readOnlyHint": True}},
+                {"name": "create_issue", "description": "",
+                 "annotations": {"destructiveHint": True}}]})
+
+    pw.warm = warm
+    return pw
+
+
+def _live_pid(lp: Any, connections: bool = True) -> str:
+    manifest = {**MANIFEST, "actions": [*MANIFEST["actions"], *EXTRA_ACTIONS]}
+    if connections:
+        manifest["connections"] = ["mcp:github"]
+    return _package(lp, manifest=manifest)
+
+
+class TestTheLivePreview:
+    def test_the_one_allowed_path_reaches_the_network_once(self, lp):
+        """A class A read with a fresh list reaches ``mcp_client`` ONCE, for the
+        ``tools/call``, through the named path. The tripwire refuses it, so
+        the answer is 502 and nothing is sent."""
+        lp.warm()
+        r = _post(_client(lp), _live_pid(lp), "issue_a", {})
+        assert (r.status_code, _code(r)) == (502, "mcp_unreachable")
+        assert lp.hits == ["outbound_guard.mcp_client"]
+        [stack] = lp.stacks
+        assert all(name in stack for name in ALLOWED_LIVE_PATH), stack
+        assert "_sdk_call" in stack and "_sdk_list" not in stack
+
+    def test_a_cold_list_reaches_the_network_for_the_list_only(self, lp):
+        """A cold list reads ``tools/list`` first. Its failure stops the read,
+        so no ``tools/call`` follows."""
+        r = _post(_client(lp), _live_pid(lp), "issue_a", {})
+        assert (r.status_code, _code(r)) == (502, "mcp_unreachable")
+        assert lp.hits == ["outbound_guard.mcp_client"]
+        assert "_sdk_list" in lp.stacks[0] and "_sdk_call" not in lp.stacks[0]
+
+    @pytest.mark.parametrize("action,code", [
+        ("issue_b", "source_not_open"),
+        ("issue_c", "source_not_open"),
+        ("issue_ghost", "not_in_catalog")])
+    def test_each_other_mcp_action_sends_nothing(self, lp, action, code):
+        lp.warm()
+        r = _post(_client(lp), _live_pid(lp), action, {})
+        assert (r.status_code, _code(r)) == (403, code)
+        assert lp.hits == []
+
+    def test_no_connection_sends_nothing(self, lp):
+        lp.warm()
+        r = _post(_client(lp), _live_pid(lp, connections=False), "issue_a", {})
+        assert (r.status_code, _code(r)) == (403, "source_not_open")
+        assert lp.hits == []
+
+    def test_the_switch_off_sends_nothing(self, lp, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "studio_live_preview_orgs", "")
+        lp.warm()
+        for action in ("issue_a", "issue_b", "issue_c"):
+            r = _post(_client(lp), _live_pid(lp), action, {})
+            assert (r.status_code, _code(r)) == (403, "source_not_open")
+        assert lp.hits == []
+
+    def test_outside_a_preview_sends_nothing(self, lp):
+        lp.warm()
+        r = _client(lp).post(f"/studio/apps/{_live_pid(lp)}/actions/issue_a", json={})
+        assert (r.status_code, _code(r)) == (403, "source_not_open")
+        assert lp.hits == []
+
+    def test_each_other_source_still_sends_nothing(self, lp):
+        """The switch opens no other source: a class A integration and
+        workflow stay refused, and a class B or C one stays simulated."""
+        lp.warm()
+        pid = _live_pid(lp)
+        for action in ("pull", "flow_a"):
+            assert _code(_post(_client(lp), pid, action, {})) == "source_not_open"
+        for action in ("flow", "propose", "sync"):
+            assert _post(_client(lp), pid, action, {}).json()["preview"] is True
+        assert lp.hits == []
 
 
 def test_a_logic_module_runs_in_a_preview_and_sends_nothing(no_outbound):

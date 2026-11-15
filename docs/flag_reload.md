@@ -71,6 +71,16 @@ means the connections change nothing. Its one reader is
 applies a change. A flip stays OWNER-GATE (`enforcement-flip`), after the
 pre-check of the I1a row.
 
+`STUDIO_LIVE_PREVIEW_ORGS` lets a preview of the Studio action door read a
+class A MCP action live (`ai_studio.md` §14 I11a). For each listed org, a
+`preview=1` call of an `mcp:<server>.<tool>` action calls that tool of the
+org's server once, and the cut answer stays in the cache for 60 s. `*` lists
+every org, and the default is empty. Empty means each MCP action of a preview
+stays `source_not_open`. Its one reader is
+`acb_common.studio_flags.live_preview_on`, and each call asks it. The door
+also needs `STUDIO_ORGS`. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_NUM_F8_ORGS` adds the float8 test to a number filter of the Studio
 object query (`ai_studio.md` §14 C2c). For each listed org, the query tests
 `studio_record_hot.v_num_f8` beside the exact `v_num` test, so the app role
