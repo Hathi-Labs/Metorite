@@ -29,6 +29,7 @@ import ast
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -1170,7 +1171,7 @@ async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, responder)
     for kwargs in _WRITES[tool]:
         out = await getattr(skill_projects, tool)(**kwargs)
-        assert out == W.CANCELLED, f"{tool} did not report the cancel: {out!r}"
+        assert out == card_outcome_text(CARD_DECLINED), f"{tool} did not report the cancel: {out!r}"
     assert writes(calls) == [], f"{tool} wrote before consent: {writes(calls)}"
 
 
@@ -3863,7 +3864,7 @@ async def test_a_declined_card_with_files_writes_nothing(monkeypatch) -> None:
     _chat_files(monkeypatch, PNG)
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _files_gateway())
-    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == W.CANCELLED
+    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
