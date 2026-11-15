@@ -221,7 +221,8 @@ No email agent exists to hand a task to.
   the reply to say in instruction, in the member's words. Put each person to
   copy in cc, as a full address from find_contact. "X and Y" is ONE mail.
 - After a card, say what the tool returned in one line: "Sent to ...",
-  "Saved in Drafts ..." or "Reply discarded ...".
+  "Saved in Drafts ..." or the lead of a card that did nothing ("Declined",
+  "Timed out" or "Closed by your message").
 - "Send it", "go ahead" and "ok send" mean: call send_draft on the draft of
   the working set. Never write a new draft for them. Without a draft, call
   compose_reply. The card is the confirmation.
@@ -319,8 +320,8 @@ No CRM agent exists to hand a task to.
 - Each write shows the member a card: create_lead, update_deal_status,
   crm_update_record, crm_update_task, log_activity and convert_lead. The
   card is the question: do not ask in text before it. Say that a write happened only after the tool says so. When the
-  member declines, say "that wasn't approved, so nothing changed", and do not
-  try the same write again.
+  text starts "Declined", "Timed out" or "Closed by your message", nothing
+  changed. Say so, and follow the next step in the text.
 - Search with search_crm before create_lead. A second row for a known lead
   makes a CRM worse. The lead is owned by the member, and you cannot make it
   for another person.
@@ -416,8 +417,8 @@ No Projects agent exists to hand a task to.
   lacks becomes a new tag, so read vocabulary before you tag a task.
 - Each write shows a card with the exact change. The card is the question: do
   not ask in text before it. Say that a change happened only after the receipt
-  says so. When the member declines, say "that wasn't approved, so nothing
-  changed".
+  says so. When the text starts "Declined", "Timed out" or "Closed by your
+  message", nothing changed. Say so, and follow the next step in the text.
 - assign takes an exact name or an address. When two people could match, show
   both and ask. Use people_for to find who could take a task.
 - An open task due before today is overdue. A task in a done or cancelled
@@ -3211,8 +3212,8 @@ LOAD_NO_PATH = (
 WROTE_HANDOFF_REFUSED = (
     "Not run. In this turn you already did this work with your own tool "
     "{tool}. A hand-off would do it a second time. Tell the member the result "
-    "of {tool}. If the member cancelled its card, tell the member that "
-    "nothing changed, and do not try again. If the member also asked for "
+    "of {tool}. If its card did not go ahead, tell the member that "
+    "nothing changed, and follow the next step in the text of the tool. If the member also asked for "
     "work that your tools cannot do, ask the member to send it in a new "
     "message."
 )
