@@ -545,7 +545,10 @@ async def _check_buffers(org: str, pkg: str, oid: str, rid: str) -> tuple[str, i
 def test_r8_a_write_that_moves_a_2000_node_subtree_stays_cheap(world, stats: str) -> None:
     """Task 3346: moving the root of a 2,000-node tree under another record walks the whole
     subtree in the C18 check. The walk must not take a lookup per step (the wrong index under
-    stale statistics): the buffer count of the check is the fence, as for the read."""
+    stale statistics): the buffer count of the check is the fence, as for the read.    The fence counts buffers: it does not see a CPU-quadratic join over the materialised
+    edge set (a nested loop reads no extra buffers). At 2,000 edges that is cheap; the
+    100,000-edge case stays open in task 3346.
+    """
     with world.p.admin_engine.begin() as c:
         for t in ("studio_records", "studio_record_hot"):
             c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
