@@ -73,7 +73,8 @@ describe("StudioStat", () => {
 
   it("says there is no trend without a date group, and No data without a result", () => {
     const flat: Row = { ...AGG, groups: [g("open", 25, 25)] };
-    expect(renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [flat] }))).toContain("No trend");
+    expect(renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [flat] }))).toContain('data-stat-trend="none"');
+    expect(renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [flat] }))).not.toContain("Group by a date");
     expect(renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [{ id: "x" }] }))).toContain("No data");
   });
 
