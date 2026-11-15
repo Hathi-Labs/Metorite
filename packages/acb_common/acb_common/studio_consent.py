@@ -46,12 +46,13 @@ _INTEGRATION_USES = re.compile(r"integration:([a-z][a-z0-9_]{0,47}(?:\.[a-z][a-z
 _WORKFLOW_USES = re.compile(r"workflow:([0-9a-fA-F-]{36})")
 _LOGIC_USES = re.compile(r"logic:([a-z][a-z0-9_]{0,47})")
 _DOOR_USES = re.compile(r"([a-z][a-z0-9_-]{0,47})\.([a-z][a-z0-9_]{0,47})")
-_MAX_LIST = 200
 
 
 def _list(manifest: Mapping[str, Any], key: str) -> list[Any]:
     found = manifest.get(key) if isinstance(manifest, Mapping) else None
-    return list(found)[:_MAX_LIST] if isinstance(found, list) else []
+    # No cut: a cut would hide an action past the cap, and a version could widen
+    # there with no new consent. The manifest size cap (``MAX_DOC_BYTES``) bounds the work.
+    return list(found) if isinstance(found, list) else []
 
 
 def _sorted(items: set[str]) -> list[str]:
@@ -175,7 +176,7 @@ def widens(old: Any, new: Any) -> list[str]:
         )
     for pkg, ver in b["runtime"]["packages"].items():
         if a["runtime"]["packages"].get(pkg) != ver:
-            out.append(f"Adds the package `{pkg}` {ver}.")
+            out.append(f"Changes the package `{pkg}` to {ver}.")
     before_s = {(s["object"], s["field"]) for s in a["sensitive_fields"]}
     for s in b["sensitive_fields"]:
         if (s["object"], s["field"]) not in before_s:

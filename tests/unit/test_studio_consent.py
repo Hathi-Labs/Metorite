@@ -126,7 +126,7 @@ def test_each_widening_is_named() -> None:
         "MCP server `mcp:tally`",
         "role `clerk`",
         "`none` to `packages`",
-        "package `pandas` 2.2.2",
+        "package `pandas` to 2.2.2",
     ):
         assert needle in text, needle
 
@@ -159,3 +159,12 @@ def test_runtime_order_and_the_lines_hold_no_value() -> None:
     body = _SRC.split('"""', 2)[2]
     for banned in ("import os", "httpx", "execute(", "get_db", "open("):
         assert banned not in body, banned
+
+
+def test_an_action_past_any_list_cap_still_counts() -> None:
+    """A version must not widen where a cut hides it (review of PR 2361)."""
+    many = [{"id": f"g{i}", "uses": "object:t.get"} for i in range(300)]
+    old = {"actions": many}
+    new = {"actions": [*many, {"id": "z", "uses": "object:t.delete"}]}
+    assert consent(new)["writes"] == [{"object": "t", "ops": ["delete"]}]
+    assert widens(old, new) == ["Writes `t`: delete."]
