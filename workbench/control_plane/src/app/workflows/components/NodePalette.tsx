@@ -16,6 +16,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
 import { searchCatalog } from "../lib/api";
 import { NEW_HUMAN_STEP_CONFIG } from "../lib/humanStep";
+import { studioWritePair } from "../lib/studioWrite";
 import { FALLBACK_ICON, NODE_ICON } from "../lib/nodeVisuals";
 import { NODE_CATEGORY_STYLE } from "../lib/types";
 import type { Catalog, NodeType, SearchResult } from "../lib/types";
@@ -24,6 +25,11 @@ export type PaletteDrop = {
   nodeType: NodeType;
   label: string;
   config: Record<string, unknown>;
+  /**
+   * Blocks that follow this one, in order (WFC-4a-2a). A drop with a chain adds
+   * each block and joins each to the next with ONE edge.
+   */
+  then?: PaletteDrop[];
 };
 
 type SectionIcon = React.ComponentType<{ className?: string }>;
@@ -64,12 +70,20 @@ export function humanStepDrop(label = "Human step"): PaletteDrop {
   return { nodeType: "human_step", label, config: { ...NEW_HUMAN_STEP_CONFIG } };
 }
 
+/** The pair that adds a record: a Human approval, then the Studio write (WFC-4a-2a). */
+export function studioWriteDrop(): PaletteDrop {
+  return studioWritePair();
+}
+
 export default function NodePalette({
   catalog,
   onAdd,
+  studioWriteOffered = false,
 }: {
   catalog: Catalog | null;
   onAdd: (drop: PaletteDrop) => void;
+  /** True for the owner of the workflow only: the step runs as the owner. */
+  studioWriteOffered?: boolean;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({
     agent: true, tool: true, module: true, logic: true, output: false,
@@ -322,7 +336,7 @@ export default function NodePalette({
           )}
 
           {section(
-            "logic", "Logic", themedIcon("GitBranch"), 5,
+            "logic", "Logic", themedIcon("GitBranch"), studioWriteOffered ? 6 : 5,
             <>
               {item(
                 "logic:condition",
@@ -349,6 +363,12 @@ export default function NodePalette({
                 "logic:human_step", humanStepDrop(),
                 "Human step", "give a member a task, wait until it is done", "logic",
               )}
+              {studioWriteOffered &&
+                item(
+                  "logic:add_record", studioWriteDrop(),
+                  "Add a record", "approval, then a new record in your app", "tool",
+                  false, "studio_write",
+                )}
             </>,
           )}
 

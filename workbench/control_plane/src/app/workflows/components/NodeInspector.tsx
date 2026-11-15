@@ -19,7 +19,18 @@ import type {
   WorkflowGraphNode,
 } from "../lib/types";
 import { readOnlyNote } from "../lib/humanStep";
+import type { ShapeEdge, ShapeNode, WriterRole } from "../lib/studioWrite";
 import HumanStepForm from "./HumanStepForm";
+import StudioWriteForm from "./StudioWriteForm";
+
+/** What the Studio write form needs from the editor (WFC-4a-2a). */
+export type StudioWriteContext = {
+  /** The part of the member: only the owner of the workflow sets the step. */
+  role: WriterRole;
+  ownerEmail: string;
+  nodes: ShapeNode[];
+  edges: ShapeEdge[];
+};
 
 function Field({
   label,
@@ -239,6 +250,7 @@ export default function NodeInspector({
   onConfig,
   onLabel,
   onDelete,
+  studioWrite,
 }: {
   node: WorkflowGraphNode | null;
   catalog: Catalog | null;
@@ -248,6 +260,8 @@ export default function NodeInspector({
   onConfig: (patch: Record<string, unknown>) => void;
   onLabel: (label: string) => void;
   onDelete: () => void;
+  /** Absent: nobody is the owner, so a Studio write step is read-only. */
+  studioWrite?: StudioWriteContext;
 }) {
   const set = useCallback(
     (key: string, value: unknown) => onConfig({ [key]: value }),
@@ -575,13 +589,30 @@ export default function NodeInspector({
         {type === "human_step" && (
           <HumanStepForm nodeId={node.id} config={cfg} onConfig={onConfig} />
         )}
+        {/* WFC-4a-2a: a Studio write takes literal values only, so it shows no
+            {{ref}} hint either. Only the owner of the workflow gets the form. */}
+        {type === "studio_write" && (
+          <StudioWriteForm
+            key={node.id}
+            nodeId={node.id}
+            config={cfg}
+            onConfig={onConfig}
+            role={studioWrite?.role ?? "other"}
+            ownerEmail={studioWrite?.ownerEmail ?? ""}
+            nodes={studioWrite?.nodes ?? []}
+            edges={studioWrite?.edges ?? []}
+          />
+        )}
         {noteOnly && (
           <p role="note" className="text-[10px] text-muted-foreground">
             {noteOnly}
           </p>
         )}
 
-        {type !== "trigger" && type !== "human_step" && !noteOnly && (
+        {type !== "trigger" &&
+          type !== "human_step" &&
+          type !== "studio_write" &&
+          !noteOnly && (
           <div className="pt-1">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide shrink-0">

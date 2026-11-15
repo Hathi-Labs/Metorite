@@ -16,7 +16,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import NodePalette, { dropForResult, humanStepDrop } from "./NodePalette";
+import NodePalette, { dropForResult, humanStepDrop, studioWriteDrop } from "./NodePalette";
 import type { Catalog, SearchResult } from "../lib/types";
 
 const catalog: Catalog = {
@@ -39,7 +39,8 @@ const nodeResult = (key: string, label: string): SearchResult => ({
   score: 4,
 });
 
-const draw = () => renderToStaticMarkup(createElement(NodePalette, { catalog, onAdd: () => {} }));
+const draw = (studioWriteOffered?: boolean) =>
+  renderToStaticMarkup(createElement(NodePalette, { catalog, onAdd: () => {}, studioWriteOffered }));
 
 describe("NodePalette", () => {
   it("offers the human step in the Logic section", () => {
@@ -72,10 +73,39 @@ describe("NodePalette", () => {
   });
 });
 
+describe("the pair that adds a record (WFC-4a-2a)", () => {
+  it("is not in the palette of a member who is not the owner", () => {
+    expect(draw()).not.toContain("Add a record");
+    expect(draw(false)).not.toContain("Add a record");
+  });
+
+  it("is in the palette of the owner", () => {
+    const html = draw(true);
+    expect(html).toContain("Add a record");
+    expect(html).toContain("approval, then a new record in your app");
+  });
+
+  it("drops a Human approval, then the write, as one chain", () => {
+    const drop = studioWriteDrop();
+    expect(drop.nodeType).toBe("approval");
+    expect(drop.then).toHaveLength(1);
+    expect(drop.then?.[0]).toMatchObject({
+      nodeType: "studio_write",
+      config: { package_id: "", action: "", data: {} },
+    });
+  });
+});
+
 describe("the source", () => {
   const src = readFileSync(new URL("./NodePalette.tsx", import.meta.url), "utf8");
-  it.each(UNOFFERED)("names no %s drop", (type) => {
+  it.each(["pm_task", "pm_lifecycle"] as const)("names no %s drop", (type) => {
     expect(src).not.toContain(`nodeType: "${type}"`);
     expect(src).not.toContain(`"logic:${type}"`);
+  });
+
+  it("shows the pair only when the editor says the member is the owner", () => {
+    expect(src).toContain("studioWriteOffered &&");
+    expect(src).not.toContain('nodeType: "studio_write"');
+    expect(src).not.toContain('r.key === "studio_write"');
   });
 });
