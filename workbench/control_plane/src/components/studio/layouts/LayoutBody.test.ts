@@ -30,12 +30,21 @@ describe("LayoutBody", () => {
     expect(draw("table_workspace", { main: [] })).toContain("no table to show");
   });
   it("says that a preset of a later slice is not drawn yet", () => {
-    const html = draw("board", { main: ["b"] });
-    expect(html).toContain('data-layout-pending="board"');
+    const html = draw("dashboard", { kpis: ["b"] });
+    expect(html).toContain('data-layout-pending="dashboard"');
     expect(html).not.toContain("data-view");
   });
+  it("draws the main region of a board in a labelled section", () => {
+    const html = draw("board", { main: ["pipeline"] });
+    expect(html).toContain('data-layout="board"');
+    expect(html).toContain('data-view="pipeline"');
+    expect(html).not.toContain("data-layout-pending");
+  });
+  it("names a board, not a table, when the board region is empty", () => {
+    expect(draw("board", { main: [] })).toContain("no board to show");
+  });
   it("draws only the presets that a slice built", () => {
-    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace"]);
+    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board"]);
   });
   it("adds no colour and no pixel size", () => {
     const src = readFileSync(join(__dirname, "LayoutBody.tsx"), "utf-8");
@@ -46,7 +55,8 @@ describe("LayoutBody", () => {
 describe("the frame", () => {
   const frame = readFileSync(join(__dirname, "../../../app/studio/package-preview/AppFrame.tsx"), "utf-8");
   it("wraps the main table of a table workspace in LayoutList, which draws StudioBlockState", () => {
-    expect(frame).toContain('built.page.layout === "table_workspace"');
+    expect(frame).toContain('preset === "table_workspace" || preset === "board"');
+    expect(frame).toContain('shape={preset === "board" ? "board" : "rows"}');
     expect(frame).toContain("<LayoutList");
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
   });
