@@ -1594,7 +1594,7 @@ async def test_a_revise_that_did_not_run_shows_the_same_card_again(monkeypatch) 
     assert len(asks) == 2 and asks[1]["request_id"] == asks[0]["request_id"] == "f" * 32
     assert asks[1]["reply"]["reopened"] is True and "reopened" not in asks[0]["reply"]
     assert asks[1]["reply"]["recipients"] == asks[0]["reply"]["recipients"]
-    unsent = agents._unapproved_line() or agents._NEW_MAIL_DISCARDED
+    unsent = agents._unapproved_line() or agents._not_done(agents._NEW_MAIL_NOT_SENT)
     assert out == f"{agents._REVISE_UNREAD}\n\n{unsent}"
     assert "did not reach you" in out and "stayed open" in out
     assert "Jev" not in agents._REVISE_UNREAD

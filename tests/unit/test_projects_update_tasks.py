@@ -34,6 +34,7 @@ import uuid
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -219,7 +220,7 @@ async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     answer_rows(monkeypatch, [])
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.update_tasks(_twelve())
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert _patched(calls) == []
 
 

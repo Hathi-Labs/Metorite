@@ -256,10 +256,34 @@ hand-off (`run.arms_for`). They are outside `WORK_SCENARIOS`. The member of
 `stu_no_feature` lacks the feature through the `Scenario` field `without_features`, which
 the run reads. The harness file is not edited.
 
-**The arm.** `--arms` lists `search`. It prints `SKIP: arm search` until the plans of
-TS-5b are in (`run.SEARCH_PLANS`) and the settings hold `tool_search_orgs`
-(`run.search_built`). TS-2a PR 3 added the field first, so TS-5b sets `SEARCH_PLANS`
-to True with its plans. An unknown `--arms` value exits with status 2.
+**The arm.** `--arms` lists `search`. TS-5b is BUILT: `run.SEARCH_PLANS` is True, so the arm
+runs when the settings hold `tool_search_orgs` (`run.search_built`). It prints
+`SKIP: arm search` when either one is missing. An unknown `--arms` value exits with status 2.
+
+**The plans of the `search` arm (TS-5b).** `Plan.find` holds the query of each
+`find_tools` call. The scripted model calls `find_tools` first, then the Studio tool, and
+it never calls `load_skill_tools` for a Studio tool. `Plan.search_calls` replaces the calls
+on this arm when the model heeds an empty find. The real loop runs: the MAF loop, the
+function middleware, the ranker and the guarded build. The harness swaps only the HTTP
+transport.
+
+| Chat | Query | Tool that must rank in the top 5 |
+|---|---|---|
+| `stu_skills` | `list my saved skills` | `studio_skill_list` (rank 1) |
+| `stu_new_app` | `draft a new app` | `studio_draft` (rank 1) |
+| `stu_plain` | none (`not_searched`) | none |
+| `stu_no_feature` | `list my saved skills` | none runs: the answer is `FIND_NONE`, because the pack is no candidate for this member |
+| `stu_held` turn 2 | `list my saved skills` | `studio_skill_list` (rank 1), and the answer carries the hold note |
+
+The query `make a new app` does NOT rank `studio_draft` (the ranker gives `studio_app_read`
+first), so the plan uses `draft a new app`. A test ranks each query with
+`tool_search.rank` and names the registry when a tool leaves the top 5.
+
+**The held chat.** The product holds the Studio pack in a chat that read mail, so `held_note`
+is satisfiable. The hold note comes after the rules text, past the 2000 characters that the
+event stream keeps of a tool result. The tap reads the full answer from the next request
+(`checks.find_answers_in`, `checks.full_find_results`). A found answer that starts `Found` is a
+round, also when its rules text holds a refusal sentence (`checks._find_refused`).
 
 **The flags.** A Studio chat adds `studio` BY NAME to `TOOL_PACKS` and the eval org to
 `STUDIO_ORGS` (`run.flag_for`). It never uses `owner_packs("studio-builder")`, because
@@ -289,12 +313,56 @@ wraps the wire tap and sets three attributes on `ModelCall`. It changes nothing 
 no tool is a false search, and the report counts it on its own. The report adds the
 searches per turn, the tools that ran after a find, and the schema tokens per request.
 
+The report prints the same columns for `pack` and `search`, side by side. They are the pass
+rate, the calls per turn, the input tokens, the tools per request and the schema tokens. The
+live `--out` file holds them in `summary`. A set of Studio chats alone gives 3 of 3 app
+turns that searched, so result 12 reads STOP on it. The rule counts the full app set
+(spec decision 12).
+
 ```bash
 uv run python -m evals.one_assistant_measure.run --scripted --arms pack,search
 uv run python -m evals.one_assistant_measure.run --scripted --scenarios stu_skills,stu_held
 ```
 
 The fence is `tests/unit/test_one_assistant_measure_search.py`.
+
+### TS-5b: the cap chat, the offered field and a fair skill check
+
+**The cap chat `stu_cap`** is the case that the tool-search design exists for. It has four turns
+on the CRM surface.
+
+| Turn | Words | Pack that loads by words | Tool that runs |
+|---|---|---|---|
+| 1 | Show my open deals. | `crm-records` | `get_pipeline` |
+| 2 | Check my inbox for Priya. | `email` | `query_inbox` |
+| 3 | What reminders do I have? | `projects-reminders` | `list_reminders` |
+| 4 | Which of my saved skills are still drafts? | none | see below |
+
+A pack is sticky only after one of its tools ran, so turns 1 to 3 each run one. After turn 3 the
+run holds three packs, the cap (`tool_packs.MAX_PACKS`). Turn 4 matches no pack, so Studio does
+not load by words, and `plan_loader` offers nothing. `load_skill_tools` is not in the request.
+
+* **`search` arm.** `find_tools` is in the request. A found tool takes no place of `MAX_PACKS`.
+  The model finds `studio_skill_list` in `studio-more`. Checks: `found_tool`, `search_round`.
+* **`pack` arm.** The model has no way to a Studio tool. No Studio tool runs, and the answer says
+  that it cannot. Checks: `no_studio_ran`, `no_load_offered`, `says_it_cannot`.
+
+A `Check` has an `arms` field, so one turn holds the checks of each arm. `Plan.search_answer`
+gives the answer of the `search` arm when it differs. A test proves the words of each turn with the
+real `matched_layer`. It also proves the three held packs and the empty offer from the log of the loader.
+
+**`find_tools_offered` and `find_tools_requests`.** Each row (live and scripted) says whether
+`find_tools` was in a request of the turn, and in how many requests. A `pack` row holds False and 0.
+The report prints the requests per turn and a line `offered but not called: N of M` for the
+`search` arm. It tells "offered and ignored" from "not offered". It is a count, not a check.
+
+**`drafts_listed_fairly`** replaces `answer_none` for the live skill in `stu_skills`. The first
+live pilot (2026-11-15) gave a right answer: "Two of your three skills are still drafts: ... Quote
+follow-up is already published." The strict check failed it. Now the answer must name both drafts.
+
+A sentence or line that names the live skill must not say "draft". It may say "draft" when it also
+says published, live, already or not a draft (`checks.calls_live_skill_a_draft`).
+The check also reads headings. A list item under a heading that says "draft" counts as a draft. A blank line, a prose line or a new heading ends the block. The check reads English only.
 
 ## Run it with no model
 

@@ -72,6 +72,7 @@ from typing import Any
 
 import pytest
 from acb_skills import ask_tools
+from acb_skills.ask_tools import CARD_DECLINED, CLOSED_BY_YOUR_MESSAGE, card_outcome_text
 from agent_framework import Agent, AgentSession, Content, Message
 from orchestrator import executor, steer, stream_relay
 
@@ -624,7 +625,7 @@ def test_each_app_card_door_records_the_closed_card(monkeypatch):
         """A Projects write."""
         ok = await writes._confirm(title="Create this task?", detail="«Demo»",
                                    context="title: «Demo»")
-        return "Made." if ok else writes.CANCELLED
+        return "Made." if ok else card_outcome_text(CARD_DECLINED)
 
     async def close_one(start: Any) -> Any:
         queue: asyncio.Queue = asyncio.Queue()
@@ -655,7 +656,7 @@ def test_each_app_card_door_records_the_closed_card(monkeypatch):
             finally:
                 ask_tools.release_closed_cards(token)
             if name == "projects":
-                assert out == writes.CARD_REVISED
+                assert out == card_outcome_text(CLOSED_BY_YOUR_MESSAGE)
 
     asyncio.run(run())
     assert lines == {
@@ -917,7 +918,7 @@ def test_do_it_draws_the_same_card_again(stream: bool):
             title="Create this task?", detail=f"{title} · {', '.join(assignees)}",
             context=f"title: {title}\nassignees: {', '.join(assignees)}")
         if not ok:
-            return writes.CANCELLED
+            return card_outcome_text(CARD_DECLINED)
         written.append(list(assignees))
         return f"Created task {title} for {', '.join(assignees)}."
 
@@ -986,7 +987,7 @@ def test_do_it_draws_the_same_card_again(stream: bool):
         first["title"], first["detail"], first["context"]), "the same act"
     assert written == [["Kiran"]], "the act happened once, as the first card drew it"
     do_it = client.requests[2]
-    assert writes.CARD_REVISED in base._tools(do_it), "the history says the card closed"
+    assert card_outcome_text(CLOSED_BY_YOUR_MESSAGE) in base._tools(do_it), "the history says the card closed"
     answers = [m.text for m in do_it if base._role(m) == "assistant" and m.text]
     assert answers and answers[-1].endswith(f"\n\n{first_line}"), (
         "the next turn reads the line at the end of the last answer")

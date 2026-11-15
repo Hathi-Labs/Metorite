@@ -827,32 +827,29 @@ async def _held_fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) ->
 def _closed_by_chat(unchanged: str) -> str:
     """The answer of a card that a chat message of the member closed (task 2494).
 
-    It is not a decline, so it never reads like the card's "Cancelled" line.
-    The member did not answer the card, and their words come next as their own
-    turn. *unchanged* says what was not written, for example "No lead was
-    created for Veena Rao."
+    The words are ``ask_tools.CLOSED_BY_YOUR_MESSAGE`` of the one table of card
+    outcomes (HRD-7). It is not a decline: the member did not answer the card,
+    and their words come next as their own turn. *unchanged* says what was not
+    written, for example "No lead was created for Veena Rao."
     """
-    return (
-        "The member wrote in the chat while the card was open, so the card is "
-        f"closed. {unchanged} The member's words come next, as their own chat "
-        "message. If they change this write, change it, keep every part they "
-        "did not ask to change, and call the tool again, so a new card shows. "
-        "If they ask about something else, answer that first, then ask whether "
-        "to show the card again."
-    )
+    from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, card_outcome_text
+
+    return card_outcome_text(CLOSED_BY_YOUR_MESSAGE, unchanged)
 
 
-def _not_written(answer: Any, *, declined: str, unchanged: str) -> str:
-    """The answer of a CRM card that wrote nothing (task 2494).
+def _not_written(answer: Any, *, unchanged: str) -> str:
+    """The answer of a CRM card that wrote nothing (task 2494, HRD-7).
 
-    *declined* when the member declined the card. :func:`_closed_by_chat` with
-    *unchanged* when a chat message of the member closed it
-    (``ask_tools.is_revised``). A closed card is no decline, so the model must
-    not read "that wasn't approved" and drop the member's change.
+    :func:`_closed_by_chat` when a chat message of the member closed it
+    (``ask_tools.is_revised``). Else the words of the one table of card
+    outcomes for the last card (``ask_tools.card_not_done_text``): declined,
+    timed out, no card, or another member answered, each with *unchanged*. A
+    closed card is no decline, and a timeout is no "no", so the model must not
+    read "that wasn't approved" and drop the member's change.
     """
-    from acb_skills.ask_tools import is_revised
+    from acb_skills.ask_tools import card_not_done_text, is_revised
 
-    return _closed_by_chat(unchanged) if is_revised(answer) else declined
+    return _closed_by_chat(unchanged) if is_revised(answer) else card_not_done_text(unchanged)
 
 
 def _names(rows: Any, field: str) -> list[str]:
@@ -956,7 +953,6 @@ async def create_lead(
     if not answer:
         return _not_written(
             answer,
-            declined=f"Cancelled — no lead was created for {name}.",
             unchanged=f"No lead was created for {name}.",
         )
     try:
@@ -1203,7 +1199,6 @@ async def crm_create_pipeline(
     if not answer:
         return _not_written(
             answer,
-            declined=f"Cancelled — no pipeline was created. {title} does not exist.",
             unchanged=f"No pipeline was created. {title} does not exist.",
         )
     try:
@@ -1365,7 +1360,6 @@ async def update_deal_status(
     if not answer:
         return _not_written(
             answer,
-            declined=f"Cancelled — {title} was not moved to {lane}.",
             unchanged=f"{title} was not moved to {lane}.",
         )
     try:
@@ -1449,7 +1443,6 @@ async def log_activity(
     if not answer:
         return _not_written(
             answer,
-            declined=f"Cancelled — nothing was logged on {target}: {line}",
             unchanged=f"Nothing was logged on {target}.",
         )
     try:
@@ -1517,7 +1510,6 @@ async def convert_lead(
     if not answer:
         return _not_written(
             answer,
-            declined=f"Cancelled — {title} was not converted.",
             unchanged=f"{title} was not converted.",
         )
     try:
@@ -1710,7 +1702,6 @@ async def crm_update_record(
     if not answer:
         return _not_written(
             answer,
-            declined=f"Cancelled — {target} was not changed.",
             unchanged=f"{target} was not changed.",
         )
     try:
@@ -1802,7 +1793,6 @@ async def crm_update_task(
     if not answer:
         return _not_written(
             answer,
-            declined=f"Cancelled — {subject} was not changed.",
             unchanged=f"{subject} was not changed.",
         )
     try:
