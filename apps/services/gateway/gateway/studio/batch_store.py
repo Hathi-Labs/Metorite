@@ -277,6 +277,11 @@ _GET_BATCH_SQL = (
     "SELECT id, package_id, action, list_digest, total, status, run_id, node_id, created_by "
     f"FROM studio_batches WHERE organization_id = {_BOUND_ORG} AND id = CAST(:bid AS uuid)"
 )
+_FIND_RECENT_SQL = (
+    f"SELECT id FROM studio_batches WHERE organization_id = {_BOUND_ORG} "
+    "AND package_id = CAST(:pid AS uuid) AND action = :action AND list_digest = :digest "
+    "AND created_at > now() - interval '24 hours' ORDER BY created_at DESC LIMIT 1"
+)
 _LIST_ITEMS_SQL = (
     "SELECT item_key, position, op, write_count, status, record_id, error_code, item_digest "
     f"FROM studio_batch_items WHERE organization_id = {_BOUND_ORG} "
@@ -348,6 +353,15 @@ async def get_batch(db: Any, batch_id: str) -> Batch | None:
                  run_id=None if row[6] is None else str(row[6]),
                  node_id=None if row[7] is None else str(row[7]), created_by=str(row[8]),
                  pending=int(counts[0]), done=int(counts[1]), failed=int(counts[2]))
+
+
+async def find_recent_batch(db: Any, *, package_id: str, action: str, digest: str) -> str | None:
+    """The id of the newest batch of this package, action and list digest in
+    the last 24 hours, or None. A caller uses it to stop a second send of one
+    list. It reads only: the statement names the org, and RLS holds it too."""
+    row = (await db.execute(text(_FIND_RECENT_SQL), {
+        "pid": _uuid(package_id, "package_id"), "action": action, "digest": digest})).first()
+    return None if row is None else str(row[0])
 
 
 async def list_items(db: Any, batch_id: str, *, status: str | None = None) -> list[ItemRow]:
