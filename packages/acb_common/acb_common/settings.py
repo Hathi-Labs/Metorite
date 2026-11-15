@@ -2196,6 +2196,19 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fences: tests/unit/test_late_approve_grant.py and
     # tests/unit/test_late_approve_grant_r8.py.
     chat_late_approve_orgs: str = ""
+    # ── A card stores its call (RESUME-1a, chat_run_continuity.md §4.12.4) ──
+    #
+    # CHAT_RESUME_ORGS: a comma list of organization ids, or `*`. Empty is
+    # off, the default. Off, no card stores a call, `stored_call` stays NULL
+    # and each row is as before. On, the row of a plain confirmation card of
+    # a listed write keeps the call that the card guards (`stored_call`). No
+    # route reads it yet: RESUME-2 runs it on a late Approve. It needs
+    # CHAT_DURABLE_ASKS. The one reader is
+    # `acb_skills.stored_call.chat_resume_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fences: tests/unit/test_resume_stored_call.py and
+    # tests/unit/test_resume_stored_call_r8.py.
+    chat_resume_orgs: str = ""
 
     # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ──────────────────
     #

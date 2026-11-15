@@ -2993,6 +2993,9 @@ def _inject_agent_tools(
         _apply_chat_hold(agents, agent_name)
     # Task 2494: a member's steer reaches each native agent as a user turn.
     _apply_steer_turns(agents)
+    # RESUME-1a: the MAF call id of each tool call, for the stored call of a
+    # card. Off for the org, it attaches nothing.
+    _apply_resume_call_id(agents)
     # HRD-6: a slow tool call gets one line for the member. Its middleware
     # wraps each tool call, and the number check's recorder sits inside it.
     _apply_progress_notice(agents)
@@ -3000,6 +3003,35 @@ def _inject_agent_tools(
     # check, as a per-run view, after the H-236 step.
     _apply_answer_check(agents, agent_name)
     return _run_tool_names
+
+
+def _apply_resume_call_id(agents: list[Any]) -> None:
+    """The MAF call id of each tool call on ONE run (RESUME-1a, task 3260).
+
+    It replaces each native MAF ``Agent`` in *agents* with a per-run view that
+    carries ``acb_skills.stored_call.CallIdProvider``, as
+    :func:`_apply_progress_notice` does. Its middleware holds the call id of a
+    call while the call runs, so the stored call of a card names it
+    (``chat_run_continuity.md`` §4.12.4 item 1, C4). With ``CHAT_RESUME_ORGS``
+    off for the run's org it changes nothing, so the run is as before. The org
+    is the run binding's (:func:`_run_org`), never request input. A Copilot SDK
+    agent and a plain object stay as they are, and their stored call has no
+    call id. Fence: ``tests/unit/test_resume_stored_call.py``.
+    """
+    from acb_skills.stored_call import CallIdProvider, chat_resume_on
+
+    if not chat_resume_on(_run_org()):
+        return
+    try:
+        from agent_framework import Agent
+    except ImportError as exc:  # pragma: no cover — ships with the platform
+        _log.warning("executor.resume_call_id_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if isinstance(agent, Agent):
+            agents[i] = agent_with_providers(agent, [CallIdProvider()])
 
 
 def _apply_progress_notice(agents: list[Any]) -> None:
