@@ -122,7 +122,7 @@ def test_the_default_runs_the_affected_tests_and_prints_minutes(repo):
     res = _run(repo, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}", PREMERGE_RERUN_CMD="true")
     assert res.returncode == 0, res.stderr
     assert marker.exists()
-    assert "minute(s)" in res.stdout
+    assert "stage tests:" in res.stdout
 
 
 def test_files_no_side_shares_still_run_the_tests(repo):
@@ -231,6 +231,37 @@ def test_a_cr_in_the_picker_output_never_reaches_pytest(repo):
     assert res.returncode == 0, res.stderr
     args = (repo.parent / "pytest-args").read_text(encoding="utf-8")
     assert "\r" not in args and "tests/a.py|" in args and "tests/b.py|" in args
+
+
+def test_a_picker_that_does_not_finish_is_unproven_not_a_hang(repo):
+    """CIV-MT-3: on the merger PC the default ran past 1000 s. The picker has its own cap."""
+    _stub_picker(repo, "import time\ntime.sleep(60)\n")
+    _advance_main(repo, "other.py")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="1",
+               PREMERGE_PYTEST_CMD="false")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The picker did not finish in 1s" in res.stdout
+
+
+def test_no_tests_start_when_the_budget_is_spent(repo):
+    _stub_picker(repo, _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="100",
+               PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. No test ran: only" in res.stdout
+    assert not (repo.parent / "pytest-args").exists()
+
+
+def test_each_stage_says_how_long_it_took(repo):
+    _stub_picker(repo, _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    for stage in ("collision fences", "picker", "tests"):
+        assert f"stage {stage}:" in res.stdout, stage
 
 
 def test_an_empty_selection_runs_no_pytest(repo):
