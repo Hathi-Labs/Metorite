@@ -69,6 +69,15 @@ it at each card, and the injection asks it at the start of each run. The late
 answer route asks it at each late Approve. So a reload applies to the next
 card and the next Approve, and the call id applies from the next run.
 
+`CHAT_RUN_PHASE_ORGS` turns on the phase of a streamed run
+(`chat_failure_modes.md` §6 row CS-3, CS-3a). For each listed org, a
+streamed run sends the CUSTOM event `run_phase`: `gathering` when its setup
+starts, and `asking` when the model request of a native run opens. No client
+draws it yet, and no saved message keeps it. `*` lists every org, and the
+default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
+executor asks it once, right after `RUN_STARTED`, so a reload applies to the
+next run. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the

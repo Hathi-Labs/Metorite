@@ -42,6 +42,7 @@ from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
 from acb_llm.run_errors import run_error_event
+from acb_skills import run_phase as _run_phase
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
 from acb_skills.ask_tools import clip_words as _clip_words
@@ -2148,6 +2149,45 @@ class _SetupLaps:
                 "executor.setup_steps_ms", agent=agent_name, run_id=run_id,
                 total_ms=sum(self.steps.values()), **self.steps,
             )
+
+
+class _RunPhases:
+    """CS-3a (task 3438): the ``run_phase`` events of ONE streamed run.
+
+    ``acb_skills.run_phase`` holds the vocabulary, the event shape and the
+    flag. This class holds the glue only. :meth:`line` gives the SSE line of
+    a phase once, through :func:`_sse`, and only when the flag named the
+    run's org at the start. The caller yields the line at once. It never puts
+    the event on ``_nq``, so the event is no output: ``_n_emitted`` stays
+    False and nothing seals the tier of the turn. A fault gives no line and
+    never ends the run. Fence: ``tests/unit/test_run_phase_event.py``.
+    """
+
+    __slots__ = ("_on", "_sent")
+
+    def __init__(self, on: bool) -> None:
+        self._on = on
+        self._sent: set[str] = set()
+
+    @classmethod
+    def for_run(cls) -> _RunPhases:
+        """The phases of the run on this frame. The org is the run binding's
+        (:func:`_current_run_org`), never request input (R11)."""
+        try:
+            return cls(_run_phase.run_phase_on(_current_run_org()))
+        except Exception:
+            return cls(False)
+
+    def line(self, phase: str) -> str | None:
+        """The SSE line of *phase*, the first time only. Else None."""
+        if not self._on or phase in self._sent:
+            return None
+        try:
+            event = _run_phase.phase_event(phase)
+        except Exception:
+            return None
+        self._sent.add(phase)
+        return _sse(event)
 
 
 async def _early_crm_facts() -> list[Any]:
@@ -7331,6 +7371,13 @@ async def run_agent_stream(
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
         _laps.lap("start")
+        # CS-3a: the setup starts now, so the first phase goes, before the
+        # load, the tier wait, the session load and the compose. The run's org
+        # is bound above. A direct yield, never _nq: the phase is no output.
+        _phases = _RunPhases.for_run()
+        _phase_line = _phases.line(_run_phase.GATHERING)
+        if _phase_line:
+            yield _phase_line
 
         # §15.4: refused as absent unless a first-party admin runs it. The
         # RUN_ERROR then reads like an agent that cannot load.
@@ -8047,6 +8094,17 @@ async def run_agent_stream(
                             _apply_turn_pack_items(agents, _tier_run)
                             _par_task = None
                         _agen = _open_native_stream()
+                        # CS-3a: the model request opens with the first pull
+                        # below, so the second phase goes. A direct yield,
+                        # never _nq. No output can leave between
+                        # `_n_emitted = False` above and here, so the guard is
+                        # a defense only. The `_sent` set of _RunPhases stops a
+                        # second `asking`: a parallel restart opens its stream
+                        # in the loop and `continue`s, and never comes here.
+                        if not _n_emitted:
+                            _phase_line = _phases.line(_run_phase.ASKING)
+                            if _phase_line:
+                                yield _phase_line
                         # Race the agent's next update against the injected-tool
                         # event queue. A BLOCKING tool (ask_questions HITL) puts
                         # its card on _nq then parks awaiting the user; the old
@@ -11258,9 +11316,12 @@ def _is_answer_event(event: Any) -> bool:
         from acb_skills.progress_notice import EVENT as PROGRESS_EVENT
 
         # HRD-6: the line of a slow tool is live only, and the fold drops it.
+        # CS-3a: the phase of the run is no output, and the fold drops it.
         return not (
             _is_route_event(event) or _is_hold_beat(event)
-            or event.get("name") in ("frontend_tool", PROFILE_USED_EVENT, PROGRESS_EVENT)
+            or event.get("name") in (
+                "frontend_tool", PROFILE_USED_EVENT, PROGRESS_EVENT, _run_phase.EVENT,
+            )
         )
     return False
 
