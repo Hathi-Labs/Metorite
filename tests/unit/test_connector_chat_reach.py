@@ -11,6 +11,7 @@ The reach matrix is on task 3440. ``PATH`` values:
 - ``pack``: a tool pack in ``tool_packs.PACKS`` holds its tools.
 - ``retrieval``: ``search_company`` or ``read_page`` reads its data.
 - ``specialist``: a specialist agent holds its tools.
+- ``tool``: a platform tool is injected for the orchestrator (``_tool_injection.py``).
 - ``gap``: no chat path. The entry names the task that closes it.
 """
 
@@ -21,21 +22,21 @@ import re
 from acb_common import connector_list as cl
 from acb_skills import tool_packs
 
-PATHS = {"mcp", "pack", "retrieval", "specialist", "gap"}
+PATHS = {"mcp", "pack", "retrieval", "specialist", "tool", "gap"}
 
 #: id -> (path, evidence or reason). A ``pack`` entry names packs that must exist.
 REACH: dict[str, tuple[str, str]] = {
     "mailbox": ("pack", "email,email-setup"),
     "whatsapp": ("retrieval", "search_company source whatsapp, and the whatsapp-assistant specialist"),
     "zoho": ("pack", "crm-records"),
-    "github": ("gap", "task 3440: github_tools.py is no pack, reach not traced"),
+    "github": ("tool", "github_search and github_repo_search, injected at _tool_injection.py"),
     "google_calendar": ("pack", "calendar-day"),
     "outlook_calendar": ("pack", "calendar-day"),
     "google_drive": ("retrieval", "search_company source knowledge, read_page"),
     "apollo": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "google_maps": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "instantly": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
-    "serpapi": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
+    "serpapi": ("tool", "web_search uses SerpAPI when the key is set, injected at _tool_injection.py"),
     "apify": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "anymailfinder": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "google_sheets": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
