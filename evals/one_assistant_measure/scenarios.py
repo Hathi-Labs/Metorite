@@ -140,6 +140,9 @@ class Check:
     arg: Any = None
     #: The name in the report. The kind, when empty.
     label: str = ""
+    #: TS-5b. The arms that run this check. Empty: every arm. A turn at the pack cap
+    #: has one outcome on the ``search`` arm and another on the ``pack`` arm.
+    arms: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -160,6 +163,18 @@ class Plan:
     #: Empty: that arm plays :attr:`calls`. A research turn plays one spawn call
     #: on the spawn arm, and the same reads one by one on the others.
     solo: tuple[tuple[str, dict[str, Any]], ...] = ()
+    #: TS-5b. The queries that the model passes to ``find_tools`` on the ``search``
+    #: arm, one call each, BEFORE the tool calls of the turn. Empty: the turn makes no
+    #: search (the plain chat). Each query must rank its tool in the top 5 of the real
+    #: ranker (``tool_search.rank``), and a test holds it.
+    find: tuple[str, ...] = ()
+    #: TS-5b. The calls of the ``search`` arm after the find, when they differ from
+    #: :attr:`calls`. None: the same calls. ``()``: the model heeds an empty find and
+    #: calls no tool (the member without ``feature:studio``).
+    search_calls: tuple[tuple[str, dict[str, Any]], ...] | None = None
+    #: TS-5b. The answer of the ``search`` arm, when it differs from :attr:`answer`
+    #: (the cap chat: the search arm finds the tool, the pack arm cannot). None: the same.
+    search_answer: str | None = None
 
 
 @dataclass(frozen=True)
