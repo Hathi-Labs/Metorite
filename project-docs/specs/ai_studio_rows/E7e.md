@@ -16,7 +16,7 @@ A tap on a block on a desktop now selects the new step. Before, the page passed 
 
 On the phone layout the trigger panel opens below the two toolbar rows (`top-28`), and the palette hint reads "Tap a step to add it". The notice shows on its own line only. The "+" on a wire gets a 32 px hit area under a finger, and its dot stays 16 px. The name box has the label "Workflow name".
 
-**Non-goals.** No server, route, flag or palette content change. No change to the text sizes of `WorkflowNode`. The desktop toolbar keeps its markup, so a long notice can still push Publish out of a box between 900 and 990 px.
+**Non-goals.** No server, route, flag or palette content change. No change to the text sizes of `WorkflowNode`. The desktop toolbar keeps its markup. A long notice makes it 936 px wide for a draft and 993 px for a published workflow (measured). So in a box from 900 to 992 px, that notice still pushes Publish partly out, as before E7e.
 
 ## Done when
 
