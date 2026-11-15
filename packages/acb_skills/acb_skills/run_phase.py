@@ -20,14 +20,19 @@ Rules that bind:
    never puts it on the run queue, so the event never sets ``_n_emitted`` and
    never seals the tier of the turn. A Tier 1 fault before the first output
    still falls back to Tier 2, and a parallel start can still restart.
-3. **Once.** Each phase leaves at most once in a run. ``gathering`` goes when
-   the setup of a native run ends. ``asking`` goes when its model request
-   opens, and only while no output has left the run. The Tier 2 batch path
-   sends no phase.
-4. **Never saved.** ``gateway.chat_fold``, ``executor._is_answer_event``, the
+3. **Once, in order.** Each phase leaves at most once in a run.
+   ``gathering`` goes right after ``RUN_STARTED``, when the setup starts. So
+   it covers the load, the tier wait, the session load and the compose.
+   ``asking`` goes when the model request of a native run opens, before any
+   output. A run on the Tier 2 batch path or on a Copilot SDK agent sends
+   ``gathering`` only.
+4. **One caller.** Only ``orchestrator.executor._RunPhases`` calls
+   :func:`run_phase_on` and :func:`phase_event`, and only
+   ``run_agent_stream`` uses ``_RunPhases``.
+5. **Never saved.** ``gateway.chat_fold``, ``executor._is_answer_event``, the
    BFF route and ``withCustomEvent`` of the client drop the name, so no saved
    message holds it and no profile mark leaves on it.
-5. **Dark.** ``CHAT_RUN_PHASE_ORGS`` (a comma list of organization ids, or
+6. **Dark.** ``CHAT_RUN_PHASE_ORGS`` (a comma list of organization ids, or
    ``*``) opens it for an org. Empty is the default, and then a run sends no
    byte that it did not send before. The org is the bound tenant of the run,
    never request input (R5).
@@ -41,7 +46,8 @@ from typing import Any
 #: The name of the CUSTOM event on the run's stream.
 EVENT = "run_phase"
 
-#: The setup of the run ended: the context of the turn is ready.
+#: The setup of the run started: the run gathers the context of the turn. It
+#: goes right after ``RUN_STARTED``, and it lasts until :data:`ASKING`.
 GATHERING = "gathering"
 
 #: The model request of the run opened.

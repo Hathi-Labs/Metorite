@@ -7168,6 +7168,13 @@ async def run_agent_stream(
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
         _laps.lap("start")
+        # CS-3a: the setup starts now, so the first phase goes, before the
+        # load, the tier wait, the session load and the compose. The run's org
+        # is bound above. A direct yield, never _nq: the phase is no output.
+        _phases = _RunPhases.for_run()
+        _phase_line = _phases.line(_run_phase.GATHERING)
+        if _phase_line:
+            yield _phase_line
 
         # §15.4: refused as absent unless a first-party admin runs it. The
         # RUN_ERROR then reads like an agent that cannot load.
@@ -7810,12 +7817,6 @@ async def run_agent_stream(
                 # Chat speed SPD-1: the steps of a native run's setup, logged
                 # once, just before its stream opens.
                 _laps.log(agent_name, run_id)
-                # CS-3a: the setup ended, so the first phase goes. A direct
-                # yield, never _nq: the phase is no output (_RunPhases).
-                _phases = _RunPhases.for_run()
-                _phase_line = _phases.line(_run_phase.GATHERING)
-                if _phase_line:
-                    yield _phase_line
                 # Context-pressure notice (audit CX6): eviction was silent —
                 # a long conversation just degraded as oldest turns dropped.
                 # Surface one unobtrusive progress line so the user knows.
@@ -7878,8 +7879,12 @@ async def run_agent_stream(
                             _par_task = None
                         _agen = _open_native_stream()
                         # CS-3a: the model request opens with the first pull
-                        # below. A direct yield, never _nq, and only while no
-                        # output left the run. A restart sends no second one.
+                        # below, so the second phase goes. A direct yield,
+                        # never _nq. No output can leave between
+                        # `_n_emitted = False` above and here, so the guard is
+                        # a defense only. The `_sent` set of _RunPhases stops a
+                        # second `asking`: a parallel restart opens its stream
+                        # in the loop and `continue`s, and never comes here.
                         if not _n_emitted:
                             _phase_line = _phases.line(_run_phase.ASKING)
                             if _phase_line:

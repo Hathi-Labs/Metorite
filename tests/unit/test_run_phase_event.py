@@ -4,24 +4,27 @@ Spec: ``project-docs/specs/chat_failure_modes.md`` §6 row CS-3. Module:
 ``acb_skills.run_phase``, glue ``orchestrator.executor._RunPhases``.
 
 CS-1 shows one fixed line from the moment of Send. This slice is the server
-half of a line of real phases: with ``CHAT_RUN_PHASE_ORGS`` on, a native
-streamed run sends the CUSTOM event ``run_phase`` with ``gathering`` when its
-setup ends, and with ``asking`` when its model request opens. No client draws
-it yet. These tests hold each rule:
+half of a line of real phases: with ``CHAT_RUN_PHASE_ORGS`` on, a streamed
+run sends the CUSTOM event ``run_phase`` with ``gathering`` when its setup
+starts, and with ``asking`` when the model request of a native run opens. No
+client draws it yet. These tests hold each rule:
 
 1. The flag is empty by default, its one reader fails closed, and it is named
    in the three places of a flag.
 2. The event holds one phase of the closed set, and no other field.
 3. The glue sends each phase once, only with the flag on for the run's org.
+   Only ``run_agent_stream`` uses the glue, and only the glue builds the event
+   or reads the flag.
 4. The phase is no answer event, so no profile mark leaves on it. The fold
    keeps no phase, and ``agent.run_timing`` does not change.
-5. The real stream sends the phases in order, after ``RUN_STARTED`` and
-   before the first ``TOOL_CALL_START`` or ``TEXT_MESSAGE_CONTENT``. The flag
-   off sends none. A phase is no output: a fault before the first output
-   still falls back to Tier 2, with the same model calls as the flag off.
+5. The real stream sends ``RUN_STARTED``, ``gathering``, the setup (the load,
+   the session load and the compose), ``asking``, and then the first
+   ``TOOL_CALL_START`` or ``TEXT_MESSAGE_CONTENT``. The flag off sends none. A
+   phase is no output: a fault before the first output still falls back to
+   Tier 2, with the same model calls as the flag off.
 6. A parallel start of a covered agent still restarts with the phases on.
    The seals, the model requests (the usage rows), the closed streams and the
-   settle are the same as with the flag off.
+   settle are the same as with the flag off. Both phases go before any seal.
 
 Mutations this file catches (R7), each red before the restore:
 
@@ -34,7 +37,12 @@ Mutations this file catches (R7), each red before the restore:
 * a phase goes through ``_nq`` (it sets ``_n_emitted`` and seals) ->
   ``test_a_phase_is_no_output_so_a_fault_still_falls_back`` and
   ``TestTheTierStillMoves``;
-* the flag off sends a phase -> ``test_flag_off_sends_no_phase``.
+* the flag off sends a phase -> ``test_flag_off_sends_no_phase``;
+* ``gathering`` goes after the setup, not at its start ->
+  ``test_gathering_covers_the_setup_and_asking_follows_it`` and
+  ``test_the_stream_yields_each_phase_directly_and_never_through_the_queue``;
+* a second caller of the glue, the builder or the reader ->
+  ``test_only_the_stream_run_uses_the_phases``.
 
 Hermetic: no SQL runs here, so R8 binds nothing.
 """
@@ -241,19 +249,86 @@ def test_a_broken_reader_gives_no_phase(monkeypatch) -> None:
 
 def test_the_stream_yields_each_phase_directly_and_never_through_the_queue() -> None:
     """The source half of rule 2: two sites, each a direct yield. The first
-    goes after the setup log, the second after the stream opens and before
-    the loop that counts output. The Tier 2 path has none."""
+    goes right after ``RUN_STARTED``, before every step of the setup. The
+    second goes after the stream opens and before the loop that counts
+    output."""
     src = inspect.getsource(ex.run_agent_stream)
     assert src.count("_RunPhases.for_run()") == 1
     assert src.count("_phases.line(") == 2
     gathering = src.index("_phases.line(_run_phase.GATHERING)")
     asking = src.index("_phases.line(_run_phase.ASKING)")
-    assert src.index("_laps.log(agent_name, run_id)") < gathering
-    assert gathering < src.index("_nq: asyncio.Queue")
+    assert src.index('yield _sse({"type": "RUN_STARTED"') < gathering
+    for step in ("await _assert_may_run_agent(agent_name)", '_laps.lap("load")',
+                 '_laps.lap("tier_wait")', '_laps.lap("session_load")',
+                 '_laps.lap("compose")', "_laps.log(agent_name, run_id)"):
+        assert gathering < src.index(step), step
     assert src.index("_agen = _open_native_stream()") < asking
     assert asking < src.index("_next_task = asyncio.ensure_future(")
     assert "_run_phase.phase_event" not in src
     assert "run_phase" not in src.replace("_run_phase.", "")
+
+
+#: Where a call may stand, as ``path::Class.function``.
+_EXECUTOR = "apps/services/orchestrator/orchestrator/executor.py"
+
+
+def _callers() -> dict[str, set[str]]:
+    """Each call of the builder, the reader and the glue in the source of the
+    repo (``apps/`` and ``packages/``, no test), by the function around it."""
+    import ast
+
+    found: dict[str, set[str]] = {
+        "phase_event": set(), "run_phase_on": set(), "_RunPhases.for_run": set(),
+        "_RunPhases()": set(),
+    }
+
+    class _Visit(ast.NodeVisitor):
+        def __init__(self, rel: str) -> None:
+            self.rel = rel
+            self.stack: list[str] = []
+
+        def _scope(self, node: Any) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_ClassDef = visit_FunctionDef = visit_AsyncFunctionDef = _scope
+
+        def visit_Call(self, node: ast.Call) -> None:
+            where = f"{self.rel}::{'.'.join(self.stack) or '<module>'}"
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name in ("phase_event", "run_phase_on"):
+                found[name].add(where)
+            if (isinstance(func, ast.Attribute) and func.attr == "for_run"
+                    and getattr(func.value, "id", None) == "_RunPhases"):
+                found["_RunPhases.for_run"].add(where)
+            if name == "_RunPhases":
+                found["_RunPhases()"].add(where)
+            self.generic_visit(node)
+
+    skip = (".venv", "node_modules", "__pycache__", "tests")
+    for base in ("apps", "packages"):
+        for path in (ROOT / base).rglob("*.py"):
+            rel = path.relative_to(ROOT).as_posix()
+            if any(part in skip for part in rel.split("/")) or path.name.startswith("test_"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if not any(n in text for n in ("phase_event", "run_phase_on", "_RunPhases")):
+                continue
+            _Visit(rel).visit(ast.parse(text))
+    return found
+
+
+def test_only_the_stream_run_uses_the_phases() -> None:
+    """Rule 4 of the module: one builder, one reader, one user. A second
+    caller could send a phase on a path that counts it as output."""
+    assert _callers() == {
+        "phase_event": {f"{_EXECUTOR}::_RunPhases.line"},
+        "run_phase_on": {f"{_EXECUTOR}::_RunPhases.for_run"},
+        "_RunPhases.for_run": {f"{_EXECUTOR}::run_agent_stream"},
+        "_RunPhases()": set(),
+    }
 
 
 # ── 4. No answer, no row, no timing mark ────────────────────────────────────
@@ -335,13 +410,55 @@ def test_flag_on_sends_each_phase_once_in_order_before_the_text(stream, monkeypa
     events = stream(_StubAgent([_text("Hello "), _text("Ana.")]))
     assert _phases(events) == ["gathering", "asking"]
     started = _index(events, lambda e: e.get("type") == "RUN_STARTED")
-    assert started < _phase_at(events, "gathering") < _phase_at(events, "asking")
+    assert _phase_at(events, "gathering") == started + 1, "the setup starts at once"
+    assert _phase_at(events, "gathering") < _phase_at(events, "asking")
     assert _phase_at(events, "asking") < _first_output(events)
     assert events[_first_output(events)]["type"] == "TEXT_MESSAGE_CONTENT"
     # The profile mark still waits for the first answer event, not a phase.
     (mark,) = [i for i, e in enumerate(events) if e.get("name") == MARK["name"]]
     assert mark == _first_output(events) + 1
     assert events[-1]["type"] == "RUN_FINISHED"
+
+
+def test_gathering_covers_the_setup_and_asking_follows_it(stream, monkeypatch) -> None:  # noqa: F811
+    """The order on one timeline: each event as ``_sse`` sends it, and each
+    step of the setup as it starts. ``gathering`` leaves before the load, the
+    session load and the compose. ``asking`` leaves after them, before the
+    first text."""
+    _set_flag(monkeypatch, STUB_ORG)
+    timeline: list[str] = []
+    real_sse, real_compose = ex._sse, ex._compose_maf_run
+    real_load, real_begin = ex._load_agent_off_loop, ex._begin_native_session
+
+    def sse(payload: dict[str, Any]) -> str:
+        if payload.get("name") == rp.EVENT:
+            timeline.append(f"phase:{payload['value']['phase']}")
+        elif payload.get("type") in ("RUN_STARTED", "TOOL_CALL_START", "TEXT_MESSAGE_CONTENT"):
+            timeline.append(str(payload["type"]))
+        return real_sse(payload)
+
+    async def load(*a: Any, **k: Any) -> Any:
+        timeline.append("load")
+        return await real_load(*a, **k)
+
+    async def begin(*a: Any, **k: Any) -> Any:
+        timeline.append("session_load")
+        return await real_begin(*a, **k)
+
+    def compose(*a: Any, **k: Any) -> Any:
+        timeline.append("compose")
+        return real_compose(*a, **k)
+
+    monkeypatch.setattr(ex, "_sse", sse)
+    monkeypatch.setattr(ex, "_load_agent_off_loop", load)
+    monkeypatch.setattr(ex, "_begin_native_session", begin)
+    monkeypatch.setattr(ex, "_compose_maf_run", compose)
+    stream(_StubAgent([_text("Hello "), _text("Ana.")]))
+    assert timeline[:7] == [
+        "RUN_STARTED", "phase:gathering", "load", "session_load", "compose",
+        "phase:asking", "TEXT_MESSAGE_CONTENT",
+    ]
+    assert timeline.count("phase:gathering") == timeline.count("phase:asking") == 1
 
 
 def test_flag_on_sends_the_phases_before_the_first_tool(stream, monkeypatch) -> None:  # noqa: F811
