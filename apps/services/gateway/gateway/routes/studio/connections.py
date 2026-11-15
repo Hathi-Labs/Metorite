@@ -57,7 +57,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_common.connector_list import connector
 from acb_common.studio_flags import connection_gate_on
-from acb_common.studio_manifest import connection_item
+from acb_common.studio_manifest import connection_as, connection_item
 from fastapi import Depends, HTTPException
 from gateway.connections import mcp as mcp_registry
 from gateway.connections import store as connections_store
@@ -142,7 +142,11 @@ def connection_rows(needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
         "met": name in (met.member if whose == "member" else met.org),
         "checkable": checkable(name),
         "setup_href": console.setup_href_for(name),
-        "can_connect": checkable(name) and console.may_connect(user, name),
+        # A Connect writes a row of the SCOPE of the connector (member or org). When the
+        # declared `as` differs from that scope, no writer can make a row that meets the
+        # need, so a Connect would be a dead end (I9a review P2).
+        "can_connect": (checkable(name) and connection_as(name) == whose
+                        and console.may_connect(user, name)),
     } for name, whose in needs]
 
 

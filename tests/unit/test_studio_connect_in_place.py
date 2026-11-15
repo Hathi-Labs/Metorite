@@ -283,6 +283,15 @@ def test_a_plain_name_takes_its_as_from_the_connector_list(world: _World) -> Non
         "zoho": False, "mcp:tally": False, "google_calendar": True}
 
 
+def test_a_declared_as_that_differs_from_the_connector_scope_offers_no_connect(world: _World) -> None:
+    """I9a review P2. A Connect writes a row of the scope of the connector, so when the
+    declared `as` differs, no Connect can meet the need: ``can_connect`` is False."""
+    world.names = [{"name": "google_calendar", "as": "org"}, {"name": "zoho", "as": "member"},
+                   {"name": "google_calendar", "as": "member"}, {"name": "zoho", "as": "org"}]
+    rows = _client(_user(grants=ADMIN)).get(PATH).json()["connections"]
+    assert [x["can_connect"] for x in rows] == [False, False, True, True]
+
+
 def test_an_admin_may_connect_each_row(world: _World) -> None:
     rows = _client(_user(grants=ADMIN)).get(PATH).json()["connections"]
     assert [x["can_connect"] for x in rows] == [True, True, True]
