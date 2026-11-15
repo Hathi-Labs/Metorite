@@ -200,7 +200,11 @@ def test_fields_part_gives_one_value_shape_for_each_new_type() -> None:
     assert list(f["value_shapes"]) == new
     assert "15% is 1500" in f["value_shapes"]["percent"]
     assert "unit" in f["value_shapes"]["quantity"]
-    assert f["spec_parts"] == {"rating": ["min", "max"], "quantity": ["units"], "barcode": ["format"]}
+    assert f["spec_parts"] == {
+        "rating": ["min", "max"], "barcode": ["format"],
+        "quantity": ["units", "normal", "critical", "conversions"],  # C24a
+    }
+    assert "computed" in f["value_shapes"]["quantity"]
 
 
 def test_a_package_read_keeps_the_parts_of_the_new_field_types() -> None:

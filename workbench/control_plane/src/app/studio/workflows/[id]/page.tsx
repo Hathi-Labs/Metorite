@@ -61,6 +61,7 @@ import {
   updateWorkflow,
   validateWorkflow,
 } from "@/app/workflows/lib/api";
+import { readOnlyNote } from "@/app/workflows/lib/humanStep";
 import type {
   Catalog,
   GraphIssue,
@@ -256,6 +257,21 @@ function describeNode(
       badges: [],
     };
   }
+
+  // WFC-4a-1: a human step names its person, and the three types with no form
+  // say why they cannot be set here.
+  if (type === "human_step") {
+    const title = clip(config.title);
+    const who = String(config.assignee ?? "").trim();
+    return {
+      summary: title || "No title yet.",
+      detail: who || "No person picked yet.",
+      badges: ["waits for a person"],
+    };
+  }
+
+  const note = readOnlyNote(type);
+  if (note) return { summary: note, detail: "", badges: [] };
 
   return none;
 }

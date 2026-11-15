@@ -24,6 +24,8 @@
  *    Mutation: post `source.args` whole for an aggregate. "an aggregate body holds
  *    only" turns red. Mutation: drop `aggregate` from `READ_SOURCE`. "an aggregate
  *    reads one row" turns red.
+ * 7. No file address (STU-D19a). The real door has no `fileAddress` until D24 serves a file.
+ *    Mutation: give the door one. "the real door gives no file address" turns red.
  */
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -568,5 +570,21 @@ describe("the tree read (STU-D18-2b)", () => {
     const bare = createRealDoor({ packageId: PKG, actions: [], fetchImpl: none.impl });
     await expect(bare.read({ action: "object:part.tree" })).rejects.toThrow(/does not declare/);
     expect(none.spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("STU-D19a: the real door gives no file address", () => {
+  // No Studio route serves the bytes of a file yet (D24). So a live Gallery card draws its
+  // placeholder. D19b gives the real door an address, after the serve route, and edits this test.
+  // Mutation: give `createRealDoor` a `fileAddress`. Both tests turn red.
+  it("names no file address and no file route in its source", () => {
+    const src = readFileSync(new URL("./realDoor.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/fileAddress|FileAddress/);
+    expect(src).not.toMatch(/\/files?\/|\/attachments\/|data:image/);
+  });
+  it("builds a door with no fileAddress, the read door too", () => {
+    const { impl } = fakeFetch();
+    expect(createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl }).fileAddress).toBeUndefined();
+    expect(createRealDoor({ packageId: PKG, actions: readActions(ACTIONS), fetchImpl: impl }).fileAddress).toBeUndefined();
   });
 });
