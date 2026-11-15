@@ -1037,6 +1037,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D21** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D21.md) |
 | **D22** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D22.md) |
 | **D23a** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D23a.md) |
+| **D23a-2** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D23a-2.md) |
 | **D23b** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/D23b.md) |
 | **D24** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/D24.md) |
 | **D25** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D25.md) |
@@ -1210,7 +1211,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I8d** | 🔨 BUILT, dark (2026-11-14), task 3217 | STD | AGENT-SAFE | [row](ai_studio_rows/I8d.md) |
 | **I8e** | open | HIGH | see row | [row](ai_studio_rows/I8e.md) |
 | **I8f** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8f.md) |
-| **I9** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
+| **I9** | 🔨 I9a BUILT, dark (2026-11-14, task 3169) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I9.md) |
 | **I10** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I10.md) |
 | **I11-0** | 🔨 BUILT, test only (2026-11-14, task 3235) | STD | AGENT-SAFE | [row](ai_studio_rows/I11-0.md) |
 | **I11a** | 🔨 BUILT (2026-11-15, task 3236) | HIGH | AGENT-SAFE | [row](ai_studio_rows/I11a.md) |
