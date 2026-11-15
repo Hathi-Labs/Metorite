@@ -4609,6 +4609,11 @@ MAX_TREE_NODES = 2_000
 #: so the plan does not choose an index for each step (task 3308 and its follow-up 3346). A
 #: lookup per step took the wrong index under stale statistics: 102,010 buffers and 0.8 s on the
 #: box to check a write that moves a node with a subtree of 2,000 nodes.
+#: COST, stated: a write that sets a parent now reads ALL child edges of the field of its object
+#: (a leaf write too), where the lookup per step read O(subtree). Estimated, not measured, at
+#: 1M edges in one object: 0.1 to 0.5 s for each batch that sets a parent; 100k edges: tens of ms.
+#: The join may also be a nested loop over the materialised set under odd statistics: the buffer
+#: fence in the R8 test cannot see that CPU shape (task 3346 keeps the read at 100k edges open).
 _TREE_KIDS = (
     "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
     "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
