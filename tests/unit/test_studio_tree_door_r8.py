@@ -670,6 +670,10 @@ def test_r8_the_scoped_read_of_2000_nodes_stays_cheap(world, stats: str) -> None
         _run(world, build)
         page, buffers, report = _run(world, lambda: _scoped_read(world.a, world.site, AS_E1))
         print(f"scoped tree read buffers ({stats}): {buffers}")
+        # The cut holds at scale: C and G are hidden from the keeper, so F and H below them are
+        # too (the 7-node world tree sits in the same object).
+        seen = {n.record.id for n in page.nodes}
+        assert not seen & {world.ids[k] for k in ("C", "F", "G", "H")}
         if len(page.nodes) < 2000 or not 0 <= buffers < MAX_SCOPED_READ_BUFFERS:
             raise AssertionError(f"read {len(page.nodes)} nodes and touched {buffers} buffers "
                                  f"(limit {MAX_SCOPED_READ_BUFFERS})\n{report}")
