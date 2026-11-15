@@ -14,8 +14,9 @@ of Studio). No new flag.
 
 **Who.** The owner of the package only, as a DIRECT call of a member: the
 proof of the BFF (``invoke._is_direct``) must verify, as the door asks for a
-class B create. An agent, a script or a call with no proof gets 403
-``approval_required`` on the import, so no caller approves its own write. The
+class B create. The BFF signs this path (``studioActionPath`` in ``lib/gateway.ts``).
+An agent, a script or a call with no proof gets 403
+``direct_call_required`` on the import, so no caller approves its own write. The
 preview needs no proof. Any other member gets 404, so the route does not tell
 that the package exists. The manifest must declare ``object:<name>.create``
 (403 ``not_declared``), as the door requires. The member is ``user.email`` and
@@ -96,7 +97,7 @@ IMPORT_INVALID = "import_invalid"
 APPROVAL_REQUIRED = "approval_required"
 ROWS_INVALID = "rows_invalid"
 NOT_DECLARED = "not_declared"
-NOT_DIRECT = "approval_required"
+NOT_DIRECT = "direct_call_required"
 ALREADY_IMPORTED = "already_imported"
 
 _NAME = re.compile(NAME_PATTERN, re.ASCII)
@@ -280,8 +281,9 @@ async def preview_import(
 async def _run_chunk(
     user: UserContext, bid: str, writes: dict[str, Any]
 ) -> batch_store.ChunkResult:
-    """ONE chunk, in its own session and transaction. A busy store or a
-    deadlock tries again, up to :data:`CHUNK_TRIES`."""
+    """ONE chunk, in its own session and transaction. A busy store tries
+    again, up to :data:`CHUNK_TRIES`. A deadlock outside the bounded wait
+    is a fault: the caller answers ``stopped: fault`` with the counts."""
     for attempt in range(CHUNK_TRIES):
         try:
             async with _tenant_session() as db:

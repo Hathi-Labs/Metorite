@@ -299,7 +299,7 @@ def test_a_call_that_is_not_direct_cannot_import_but_can_preview(world: _World) 
     world.direct = False
     body = {"csv": _csv(120), "mapping": MAP}
     r = _client().post(URL, json=body)
-    assert r.status_code == 403 and r.json()["detail"]["code"] == "approval_required"
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "direct_call_required"
     assert world.opened == [] and world.chunks == []
     assert _client().post(URL + "/preview", json=body).status_code == 200
 
