@@ -24,7 +24,7 @@ export const PANEL_NOTE = "These are quick checks in your browser. The full chec
 const ID_RE = /^[a-z][a-z0-9_-]{0,47}$/;
 const BLOCKS = new Set([
   "table", "form", "detail", "board", "chart", "stat", "calendar", "timeline", "mindMap", "processFlow",
-  "checklist", "map", "markdown",
+  "checklist", "map", "markdown", "tree",
 ]);
 /** What a chat can hold. A draft over it must change in Studio. */
 export const CHAT_CAP = 24_000;

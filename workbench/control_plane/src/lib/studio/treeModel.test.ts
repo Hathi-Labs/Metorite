@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  MAX_TREE_DEPTH, MAX_TREE_NODES, applyMove, buildTree, canMove, hierarchyField, initialExpanded, moveRefusal, movePatch,
+  MAX_TREE_DEPTH, MAX_TREE_NODES, applyMove, buildTree, canMove, compareLabels, hierarchyField, initialExpanded, menuReason, moveRefusal, movePatch,
   treeRows, type TreeNodeIn,
 } from "./treeModel";
 
@@ -77,6 +77,16 @@ describe("treeRows on 2,000 nodes", () => {
     const rows = treeRows([n("b"), n("a"), n("c", "a")], new Set(["a"]), { sort: "label" });
     expect(rows.map((r) => r.id)).toEqual(["a", "c", "b"]);
     expect(treeRows([n("b"), n("a")], new Set()).map((r) => r.id)).toEqual(["b", "a"]);
+  });
+  it("sorts numbers as numbers and ignores case", () => {
+    const lab = (id: string, label: string): TreeNodeIn => ({ id, parentId: null, label });
+    const nodes = [lab("1", "Part 10"), lab("2", "part 2"), lab("3", "Module 01.10"), lab("4", "Module 01.03"), lab("5", "Part 1")];
+    const rows = treeRows(nodes, new Set(), { sort: "label" });
+    expect(rows.map((r) => r.label)).toEqual(["Module 01.03", "Module 01.10", "Part 1", "part 2", "Part 10"]);
+    // The input order stays as it is for `input`.
+    expect(treeRows(nodes, new Set()).map((r) => r.id)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(compareLabels("Part 2", "Part 10")).toBeLessThan(0);
+    expect(compareLabels("A", "a")).toBe(0);
   });
 });
 
@@ -288,5 +298,19 @@ describe("the constants equal the Python twins", () => {
     const m = /^MAX_TREE_DEPTH\s*=\s*(\d+)/m.exec(py("packages/acb_common/acb_common/studio_rules.py"));
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBe(MAX_TREE_DEPTH);
+  });
+});
+
+describe("menuReason", () => {
+  const codes = ["self", "descendant", "too_deep", "unknown_node", "unknown_parent", "same_parent"] as const;
+  it("gives each refusal code a short phrase, and no two phrases are the same", () => {
+    const phrases = codes.map((c) => menuReason(c));
+    for (const p of phrases) expect(p.length).toBeLessThanOrEqual(24);
+    expect(new Set(phrases).size).toBe(codes.length);
+    expect(menuReason("self")).toBe("This is the node itself.");
+    expect(menuReason("too_deep")).toBe("Too deep: 20 levels.");
+  });
+  it("is shorter than the full sentence, which stays for the alert", () => {
+    for (const c of codes) expect(menuReason(c).length).toBeLessThan(moveRefusal(c).length + 1);
   });
 });
