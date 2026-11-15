@@ -1282,9 +1282,10 @@ class TestTheTables:
     def test_the_object_verb_table_holds_the_six_verbs_of_the_grammar(self):
         """The class table and the A2 ``uses`` grammar list the same verbs, in
         the same order. A verb in one and not the other fails here. The
-        aggregate (D4b) is the sixth, after the five record verbs."""
+        aggregate (D4b) is the sixth, after the five record verbs, and the
+        tree (D18-2a) is the seventh."""
         assert tuple(OBJECT_OP_CLASSES) == OBJECT_OPS
-        assert (*RECORD_OPS, "aggregate") == OBJECT_OPS
+        assert (*RECORD_OPS, "aggregate", "tree") == OBJECT_OPS
         assert len(RECORD_OPS) == 5
         for verb in OBJECT_OPS:
             ref = parse_uses(f"object:visit.{verb}")
@@ -1296,7 +1297,8 @@ class TestTheTables:
     def test_each_object_class_is_a_d136_class_and_none_is_x(self):
         assert set(OBJECT_OP_CLASSES.values()) <= set(CLASSES) - {"X"}
         assert OBJECT_OP_CLASSES == {"list": "A", "get": "A", "create": "B",
-                                     "update": "B", "delete": "C", "aggregate": "A"}
+                                     "update": "B", "delete": "C", "aggregate": "A",
+                                     "tree": "A"}
 
     def test_parse_uses_names_the_source_of_each_form(self):
         assert parse_uses(f"workflow:{WORKFLOW}").source == "workflow"
@@ -1310,7 +1312,8 @@ class TestTheTables:
         ``STUDIO_DOOR_OPS_ORGS`` holds the org."""
         assert invoke.DOOR_OP == ("manifest", None)
         assert set(invoke.OPEN_EXECUTORS) == {("object", "get"), ("object", "list"),
-                                              ("object", "aggregate"), invoke.DOOR_OP}
+                                              ("object", "aggregate"), ("object", "tree"),
+                                              invoke.DOOR_OP}
         # Each open object read has one executor, and no other verb has one.
         assert set(invoke._READS) == {str(op) for src, op in invoke.OPEN_EXECUTORS
                                       if (src, op) != invoke.DOOR_OP}

@@ -69,9 +69,10 @@ package declares. The route registers on the router of ``actions.py``, as
    slot of :data:`READERS_PER_ORG` before this session, and a call past the
    cap gets 503 ``store_busy`` with ``Retry-After`` and opens no session. A
    read of the owner takes no slot.
-9. The executor, in that session. The door opens three reads:
-   ``object:<name>.get`` (B2a), ``object:<name>.list`` (B2b-1) and
-   ``object:<name>.aggregate`` (D4b). For a direct call it also runs
+9. The executor, in that session. The door opens four reads:
+   ``object:<name>.get`` (B2a), ``object:<name>.list`` (B2b-1),
+   ``object:<name>.aggregate`` (D4b) and ``object:<name>.tree`` (D18-2a).
+   For a direct call it also runs
    the create, the update and the delete of an object (B2c-1). Each one
    parses the body here, and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
@@ -116,6 +117,21 @@ is an ``int`` of minor units with its currency. The grammar refuses an
 average of money with ``query_op_not_allowed`` (C2b). The store sends the
 currency of a money average too, so no average of money can reach the
 client without its unit.
+
+**The tree (D18-2a).** It is one more class A read, so it takes each check
+above and the same audit row. An empty body means ``{}``, the whole forest.
+The door accepts only the keys of :data:`TREE_INPUT_KEYS`. A ``root_id`` must
+be a UUID, ``depth`` an ``int`` from 1 to 20, and ``limit`` an ``int`` from 1
+to 2,000. Each other value is 422 ``query_value_invalid`` before any read, and
+the door never clamps a value. ``objects_store.read_tree`` is the one reader.
+It takes the viewer of the session, so the row rules bind each step of the
+walk, and the subtree below a record that the viewer cannot read is cut. An
+object with no hierarchy is 422 ``query_op_not_allowed``. A ``root_id`` that
+names no record that the viewer reads is 404 ``Not found``, never an empty
+tree. The answer is ``{nodes, truncated}``, and each node is ``{record, level,
+parent_id}``. Unlike the aggregate, a viewer of an install (J2a) reads a tree,
+with the values of the installed fields only, because the reader applies the
+row rules and the hidden keys.
 
 **Tenancy and the member (R5).** The org is the bound session
 (``_tenant_session()``), and the member is ``user.email``. No check reads an
@@ -302,7 +318,9 @@ from acb_common.studio_flags import connection_gate_on
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
 from acb_common.studio_rules import (
     COMPUTED_FIELD,
+    HIERARCHY,
     MAX_LINES_PER_SAVE,
+    MAX_TREE_DEPTH,
     FormulaError,
     RuleViolation,
 )
@@ -348,6 +366,7 @@ __all__ = [
     "RUN_AS_EXECUTORS",
     "RUN_AS_VIA",
     "SPEND_REFUSALS",
+    "TREE_INPUT_KEYS",
     "WORKFLOW_VIA",
     "WRITERS_PER_ORG",
     "WRITERS_TOTAL",
@@ -368,10 +387,11 @@ _log = get_logger("gateway.studio.invoke")
 DOOR_OP: tuple[str, str | None] = ("manifest", None)
 
 #: The executors that the door opens, as (source, op): the object ``get`` of
-#: B2a, the object ``list`` of B2b-1, the object ``aggregate`` of D4b, and the door op of
-#: B2b-2b.
+#: B2a, the object ``list`` of B2b-1, the object ``aggregate`` of D4b, the
+#: object ``tree`` of D18-2a, and the door op of B2b-2b.
 OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
-    {("object", "get"), ("object", "list"), ("object", "aggregate"), DOOR_OP})
+    {("object", "get"), ("object", "list"), ("object", "aggregate"), ("object", "tree"),
+     DOOR_OP})
 
 #: The mode of :func:`_run_executor` for a door op (B2b-2b).
 DOOR_OP_MODE = "door_op"
@@ -437,6 +457,11 @@ LIST_INPUT_KEYS: frozenset[str] = frozenset(studio_query.list_input_schema()["pr
 AGGREGATE_INPUT_KEYS: frozenset[str] = frozenset(
     studio_query.aggregate_input_schema()["properties"])
 
+#: The keys of the body of a tree read (D18-2a). Each is optional: ``root_id``
+#: names the top record, ``depth`` the most levels (1 to 20) and ``limit`` the
+#: most nodes (1 to 2,000). A value outside a range is refused, never clamped.
+TREE_INPUT_KEYS: frozenset[str] = frozenset({"root_id", "depth", "limit"})
+
 #: The A2 action id (``ActionDef.id``). A path ``action`` of another shape
 #: names nothing, so the door reads nothing for it.
 _ACTION_ID = re.compile(OP_PATTERN)
@@ -472,8 +497,8 @@ REFUSALS: dict[str, str] = {
     APPROVAL_REQUIRED: (
         "This action writes data and needs an approval, which this door cannot ask for yet."),
     SOURCE_NOT_OPEN: (
-        "This door runs the get, list, aggregate, create, update and delete of an object, and a read "
-        "of another app where Metorite turned that on."),
+        "This door runs get, list, aggregate, tree, create, update and delete on an object, "
+        "and a read of another app where Metorite turned that on."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
     OUTSIDE_AGENT: (
@@ -576,6 +601,11 @@ BAD_LIST_INPUT = (
     "Send a JSON object with only filter, sort, limit and offset, "
     "and whole numbers for limit and offset.")
 BAD_AGGREGATE_INPUT = "Send a JSON object with only filter, group_by and measures."
+BAD_TREE_INPUT = (
+    f"Send a JSON object with only root_id, depth and limit. The root_id is a record id, "
+    f"depth is a whole number from 1 to {MAX_TREE_DEPTH}, and limit is a whole number "
+    f"from 1 to {objects_store.MAX_TREE_NODES}.")
+NO_TREE = "Object `{name}` holds no hierarchy, so it has no tree to read."
 
 #: The header value of a 503 ``query_timeout``, in seconds.
 RETRY_AFTER = "2"
@@ -639,6 +669,8 @@ class _Outcome:
     page: objects_store.RecordPage | None = None
     #: The result of an aggregate (D4b).
     aggregate: objects_store.AggregateResult | None = None
+    #: The nodes of a tree read (D18-2a).
+    tree: objects_store.TreePage | None = None
     query_error: studio_query.QueryError | None = None
     missing: bool = False
     object_missing: bool = False
@@ -996,8 +1028,99 @@ async def _run_object_aggregate(db: Any, package: _App, ref: UsesRef,
         out.aggregate = result
 
 
+def _tree_input(raw: bytes) -> dict[str, Any]:
+    """The input of a tree read, from the body *raw* (D18-2a). An empty body
+    means ``{}``, the whole forest to the caps.
+
+    It refuses a key outside :data:`TREE_INPUT_KEYS`, a ``root_id`` that is
+    not a UUID, and a ``depth`` or a ``limit`` that is not an ``int`` in its
+    range. So a bool, a float, a text, a negative and a huge value stop here,
+    before any read. A null ``root_id`` reads the whole forest. The sentence
+    never echoes a key or a value."""
+    payload = {} if not raw else _json_object(raw)
+    if payload is None or not TREE_INPUT_KEYS.issuperset(payload):
+        raise studio_query.QueryError(studio_query.VALUE_INVALID, BAD_TREE_INPUT)
+    out: dict[str, Any] = {}
+    root = payload.get("root_id")
+    if root is not None:
+        out["root_id"] = _uuid_or_none(root) if isinstance(root, str) else None
+        if out["root_id"] is None:
+            raise studio_query.QueryError(studio_query.VALUE_INVALID, BAD_TREE_INPUT, "root_id")
+    for key, most in (("depth", MAX_TREE_DEPTH), ("limit", objects_store.MAX_TREE_NODES)):
+        if key not in payload:
+            continue
+        value = payload[key]
+        if type(value) is not int or not 1 <= value <= most:
+            raise studio_query.QueryError(studio_query.VALUE_INVALID, BAD_TREE_INPUT, key)
+        out[key] = value
+    return out
+
+
+def _installed_tree(package: _App, obj: objects_store.StudioObject) -> bool:
+    """True when a viewer of an install (J2a) may read the tree of *obj*: the
+    installed version declares the hierarchy of the stored rule, and its
+    parent field. The owner reads the stored rule only."""
+    if not isinstance(package, _viewer.InstalledApp):
+        return True
+    stored = next((r for r in obj.constraints if r.kind == HIERARCHY), None)
+    mine = next((r for r in package.project(obj).constraints if r.kind == HIERARCHY), None)
+    return (stored is not None and mine is not None and mine.field == stored.field
+            and str(mine.field) in package.field_keys(obj.name))
+
+
+async def _run_object_tree(db: Any, package: _App, ref: UsesRef,
+                           raw: bytes, out: _Outcome, viewer: Viewer) -> None:
+    """Read the tree of the object *ref* of *package* (D18-2a). The body is
+    checked first, so a refused body reads nothing. Then the path of the list:
+    the object by its name in the package, then the one reader of C18.
+
+    The row rules of *viewer* bind (C8a): a node that the viewer cannot read
+    is not in the answer, and its subtree is cut. A ``root_id`` that names no
+    record that the viewer reads is 404 ``Not found``, the same answer for a
+    record of another org, another package, another member and no record. A
+    viewer of an install (J2a) reads only the values of the installed fields."""
+    try:
+        body = _tree_input(raw)
+        obj = await objects_store.get_object_by_name(
+            db, str(ref.object), package_id=package.id)
+        if obj is None or not _installed_object(package, obj.name):
+            out.object_missing = True
+            return
+        if not _installed_tree(package, obj):
+            raise objects_store.NoTree(obj.name)
+        page = await objects_store.read_tree(
+            db, package_id=package.id, object_id=obj.id, viewer=viewer,
+            root_id=body.get("root_id"), depth=body.get("depth", MAX_TREE_DEPTH),
+            limit=body.get("limit", objects_store.MAX_TREE_NODES))
+    except studio_query.QueryError as exc:
+        out.query_error = exc
+        return
+    except objects_store.NoTree:
+        out.query_error = studio_query.QueryError(studio_query.OP_NOT_ALLOWED,
+                                                  NO_TREE.format(name=str(ref.object)))
+        return
+    except objects_store.ObjectStoreError as exc:
+        # As for a list: the body ids passed the check, so a stored value caused it.
+        _log.warning("studio.invoke.stored_value_refused", error=type(exc).__name__)
+        out.object_missing = True
+        return
+    if page is None:
+        out.object_missing = True
+    elif "root_id" in body and not page.nodes:
+        # The root is not a record that this viewer reads. No empty tree, so
+        # the answer proves nothing about a record of another org or member.
+        out.missing = True
+    elif isinstance(package, _viewer.InstalledApp):
+        out.tree = dataclasses.replace(page, nodes=tuple(
+            dataclasses.replace(n, record=package.project_record(obj.name, n.record))
+            for n in page.nodes))
+    else:
+        out.tree = page
+
+
 #: The executor of each open read, by its verb.
-_READS = {"get": _run_object_get, "list": _run_object_list, "aggregate": _run_object_aggregate}
+_READS = {"get": _run_object_get, "list": _run_object_list, "aggregate": _run_object_aggregate,
+          "tree": _run_object_tree}
 
 
 def _object_action(manifest: dict[str, Any], action: str) -> bool:
@@ -2342,6 +2465,16 @@ def _aggregate_answer(result: objects_store.AggregateResult) -> dict[str, Any]:
     }
 
 
+def _tree_answer(page: objects_store.TreePage) -> dict[str, Any]:
+    """The answer of a tree read (D18-2a): each node that the viewer reads,
+    level by level, and ``truncated``. A node holds its record, its level and
+    the id of its parent in the read. No count of children and no path leave,
+    so the answer names no record that the viewer cannot read."""
+    return {"nodes": [{"record": dataclasses.asdict(n.record), "level": n.level,
+                       "parent_id": n.parent_id} for n in page.nodes],
+            "truncated": page.truncated}
+
+
 def _answer(out: _Outcome) -> dict[str, Any] | Response:
     """The answer of the call *out*, or the refusal that it raises. A card
     that a delegated call opened is 202 (B2c-2a). A door op answers
@@ -2381,10 +2514,18 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
         # G4: no executor ran. The answer names what a live call would run.
         return {"preview": True, "simulated": {
             "action": _cap(out.action), "uses": _cap(out.uses), "class": _cap(out.cls)}}
+    return _read_answer(out)
+
+
+def _read_answer(out: _Outcome) -> dict[str, Any]:
+    """The answer of a read that ran: a page, an aggregate, a tree (D18-2a), or
+    the record of a get or a write."""
     if out.page is not None:
         return dataclasses.asdict(out.page)
     if out.aggregate is not None:
         return _aggregate_answer(out.aggregate)
+    if out.tree is not None:
+        return _tree_answer(out.tree)
     return _record_answer(out)
 
 
