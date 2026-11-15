@@ -136,23 +136,24 @@ def connection_needs(manifest: Any) -> tuple[tuple[str, str, tuple[str, ...] | N
 def connection_rows(needs: Sequence[tuple[Any, ...]], met: host_resolve.Met,
                     user: UserContext) -> list[dict[str, Any]]:
     """One row for each ``(name, as, scopes)``, in order. Pure: it reads no
-    database. A need of two items, ``(name, as)``, has no scopes.
+    database. Each need has three items: a shorter one raises, so no need
+    meets by default.
 
     A row is ``met`` by the SAME rule that the door reads for that need
     (:func:`~gateway.package_host.resolve.need_reason`), for the DRAFT of the
-    owner. A draft is never an approved install, so an ``org`` need whose org
-    row exists reads ``org_approval`` and ``met`` False (I9b-1: this closes the
-    known limit of I9a). ``reason`` is ``ok``, ``missing``, ``reconnect`` or
+    owner. A draft is never an approved install, so each ``org`` need reads
+    ``org_approval`` and ``met`` False, whatever the org rows hold (I9b-1). ``reason`` is ``ok``, ``missing``, ``reconnect`` or
     ``org_approval``. ``can_connect`` stays as it was: each owning app asks
     FIXED scopes, so a ``reconnect`` cannot widen a grant yet (a known limit)."""
     out: list[dict[str, Any]] = []
     for need in needs:
         name, whose = need[0], need[1]
-        scopes = need[2] if len(need) > 2 else ()
+        scopes = need[2]
         reason = host_resolve.need_reason(name, whose, scopes, met, False)
         out.append({
             "name": name,
             "label": _label(name),
+            "as": whose,
             "met": reason is None,
             "reason": reason or "ok",
             "checkable": checkable(name),

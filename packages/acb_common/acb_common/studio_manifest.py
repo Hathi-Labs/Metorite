@@ -1233,10 +1233,10 @@ def connection_item(raw: Any) -> tuple[str, str] | None:
 def connection_scopes(raw: Any) -> tuple[str, ...] | None:
     """STU-I9b-1. The scopes that one item of ``connections`` asks, as written
     in a stored manifest, in order. A text or an object with no ``scopes`` gives
-    ``()``. A ``scopes`` that is not a list of text gives None, and a caller
-    treats None as unmet. The strings are kept exactly: no folding of case and
+    ``()``. A ``scopes`` that is not a list of text, or is ``null``, gives None,
+    and a caller treats None as unmet (fail closed). The strings are kept exactly: no folding of case and
     no trimming. Pure."""
-    if not isinstance(raw, Mapping) or raw.get("scopes") is None:
+    if not isinstance(raw, Mapping) or "scopes" not in raw:
         return ()
     found = raw["scopes"]
     if not isinstance(found, list) or not all(isinstance(x, str) for x in found):

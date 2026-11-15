@@ -309,6 +309,7 @@ from acb_auth import UserContext, get_current_user
 from acb_auth import app_requests as store
 from acb_auth import direct_proof as _direct_proof
 from acb_common import app_manifests, get_logger, studio_query
+from acb_common.connector_list import connector
 from acb_common.app_manifests.base import OP_PATTERN, DoorOp
 from acb_common.db import current_tenant
 from acb_common.no_person import no_person_present, no_person_scope
@@ -542,14 +543,30 @@ CONNECTION_TEXT = (
 
 #: WS-STU I9b-1: the sentence of each reason of ``needs_connection``. ``missing``
 #: keeps the sentence of I1a. The sentences name no other member and no scope.
-RECONNECT_TEXT = ("Reconnect {provider}: your connection does not grant what this app needs.")
+RECONNECT_TEXT = "Reconnect {provider}: your connection does not grant what this app needs."
+#: An ``org`` need of an APPROVED install whose org row lacks scopes: the viewer
+#: does not own the org row, so the sentence asks an admin and offers no link.
+RECONNECT_ORG_TEXT = "Ask an admin to reconnect {provider} with the scopes this app needs."
 ORG_APPROVAL_TEXT = "An admin must approve this app before it can use the org account."
 
 
-def connection_text(reason: str | None, provider: str | None = None) -> str:
+def _provider_label(provider: str) -> str:
+    """The name that the IDE shows for *provider* (the same rule as
+    ``connections._label``): the connector list label, or the MCP server name.
+    That helper lives in a route module that imports this one, so the rule is
+    written here too, on the shared ``connector`` list."""
+    if provider.startswith("mcp:"):
+        return provider[len("mcp:"):]
+    row = connector(provider)
+    return str(row["label"]) if row else provider
+
+
+def connection_text(reason: str | None, provider: str | None = None,
+                    whose: str | None = None) -> str:
     """The one sentence for a reason of ``needs_connection`` (I9b-1)."""
     if reason == "reconnect" and provider:
-        return RECONNECT_TEXT.format(provider=provider)
+        text = RECONNECT_ORG_TEXT if whose == "org" else RECONNECT_TEXT
+        return text.format(provider=_provider_label(provider))
     if reason == "org_approval":
         return ORG_APPROVAL_TEXT
     return CONNECTION_TEXT
@@ -1194,7 +1211,7 @@ def _refusal_detail(out: _Outcome, message: str) -> dict[str, Any]:
     if out.refusal == NEEDS_CONNECTION and out.unmet is not None and out.unmet.provider:
         detail["provider"], detail["as"] = out.unmet.provider, out.unmet.whose
         detail["reason"] = out.unmet.reason
-        detail["message"] = connection_text(out.unmet.reason, out.unmet.provider)
+        detail["message"] = connection_text(out.unmet.reason, out.unmet.provider, out.unmet.whose)
     return detail
 
 

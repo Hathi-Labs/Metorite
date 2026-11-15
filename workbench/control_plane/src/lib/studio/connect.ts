@@ -48,6 +48,8 @@ export interface ConnectionRow {
    * app asks, `org_approval` when an `org` need waits for an admin to approve the app. `missing` otherwise.
    */
   reason?: ConnectReason;
+  /** The account of the need (`org` or `member`). An older gateway sends none: it reads as `member`. */
+  as?: "org" | "member";
 }
 
 /** The reasons that a row is not met, as the gateway answers them (`ok` for a met row). */
@@ -128,6 +130,10 @@ export function connectLines(rows: readonly ConnectionRow[], pkg: string, return
       return { kind: "ask", row, text: ORG_APPROVAL_LINE };
     }
     if (row.reason === "reconnect") {
+      // An `org` need: the viewer does not own the org row, so no Connect can widen it. Ask an admin.
+      if (row.as === "org") {
+        return { kind: "ask", row, text: `Ask an admin to reconnect ${what} with the scopes this app needs.` };
+      }
       const text = `Reconnect ${what}: your connection does not grant what this app needs.`;
       return row.canConnect
         ? { kind: "connect", row, text, href: connectHref(row, pkg, returnTo) }
@@ -217,6 +223,7 @@ export function parseConnections(body: unknown): ConnectionRow[] {
       checkable: item.checkable !== false,
       setupHref: safeLocalPath(item.setup_href),
       canConnect: item.can_connect === true,
+      as: item.as === "org" ? "org" : "member",
       // An older gateway sends no key: a met row is ok, any other row is missing.
       reason: item.reason === "reconnect" || item.reason === "org_approval" || item.reason === "ok"
         ? item.reason

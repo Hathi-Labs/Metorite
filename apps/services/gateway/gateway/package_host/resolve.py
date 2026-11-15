@@ -275,20 +275,22 @@ def need_reason(name: str, whose: str, scopes: tuple[str, ...] | None, met: Met,
                 org_approved: bool = False) -> str | None:
     """Why one connection need is unmet, or None when it is met (WS-STU I9b-1).
 
-    ``missing``: no connected row of the right account. ``reconnect``: a row
-    exists, and NO single row holds every scope of the need (a subset test,
-    case-sensitive, exact strings). A need with no scopes is met by any row, a
-    need WITH scopes is never met by a row whose scopes are empty, and a
-    ``scopes`` of a wrong shape (None) is never met. ``org_approval``: an
-    ``org`` need whose org row is fine but the install is no approved ORG
-    install (private, group, draft, preview). Pure."""
+    ``org_approval``: an ``org`` need of an install that is no approved ORG
+    install (private, group, draft, preview). It comes FIRST and for every such
+    need, whatever the rows hold, so a caller who is no admin learns nothing of
+    the org account (not that a row exists, not its scopes). Then ``missing``:
+    no connected row of the right account. ``reconnect``: a row exists, and NO
+    single row holds every scope of the need (a subset test, case-sensitive,
+    exact strings). A need with no scopes is met by any row, a need WITH scopes
+    is never met by a row whose scopes are empty, and a ``scopes`` of a wrong
+    shape (None) is never met. Pure."""
+    if whose != "member" and not org_approved:
+        return REASON_ORG_APPROVAL
     rows = _rows_of(met.member if whose == "member" else met.org, name)
     if not rows:
         return REASON_MISSING
     if scopes is None or (scopes and not any(set(scopes) <= row for row in rows)):
         return REASON_RECONNECT
-    if whose != "member" and not org_approved:
-        return REASON_ORG_APPROVAL
     return None
 
 
