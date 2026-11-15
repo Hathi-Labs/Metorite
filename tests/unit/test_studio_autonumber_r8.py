@@ -522,29 +522,35 @@ def test_r8_a_deleted_object_takes_its_counters(world) -> None:
     assert _admin_rows(world, _COUNTERS, o=oid) == []
 
 
-def test_r8_a_changed_prefix_binds_new_numbers_and_a_changed_reset_is_refused(world) -> None:
+def test_r8_a_changed_prefix_pad_or_reset_is_refused_and_an_unchanged_manifest_is_no_change(
+        world) -> None:
     manifest_fields = [dict(f) for f in _INVOICE]
+    same = {"name": "invoice", "fields": manifest_fields}
 
-    async def go() -> tuple[list[str], Any, Any]:
+    def changed(**part: Any) -> dict[str, Any]:
+        no = {**manifest_fields[0], **part}
+        return {"name": "invoice", "fields": [no, *manifest_fields[1:]]}
+
+    async def refused(manifest: dict[str, Any]) -> list[Any]:
+        with pytest.raises(store.ObjectsOutOfSync) as exc:
+            async with tenant_session(world.a) as db:
+                await store.sync_objects(db, ANA, package_id=world.pkg_a, objects=[manifest])
+        return exc.value.problems
+
+    async def go() -> tuple[Any, list[Any], list[Any], list[Any], str]:
         obj = await _define(world.a, world.pkg_a, "invoice", manifest_fields)
         await _create(world.a, obj)
         async with tenant_session(world.a) as db:
-            res = await store.sync_objects(db, ANA, package_id=world.pkg_a, objects=[
-                {"name": "invoice", "fields": [
-                    {"key": "no", "type": "autonumber", "prefix": "INV/", "pad": 6},
-                    {"key": "title", "type": "text"}]}])
-        second = await _create(world.a, obj)
-        with pytest.raises(store.ObjectsOutOfSync) as exc:
-            async with tenant_session(world.a) as db:
-                await store.sync_objects(db, ANA, package_id=world.pkg_a, objects=[
-                    {"name": "invoice", "fields": [
-                        {"key": "no", "type": "autonumber", "prefix": "INV/", "pad": 6,
-                         "reset": "day"},
-                        {"key": "title", "type": "text"}]}])
-        return [second["no"]], res, exc.value.problems
+            again = await store.sync_objects(db, ANA, package_id=world.pkg_a, objects=[same])
+        by_prefix = await refused(changed(prefix="INV/"))
+        by_pad = await refused(changed(pad=9))
+        by_reset = await refused(changed(reset="day"))
+        return again, by_prefix, by_pad, by_reset, (await _create(world.a, obj))["no"]
 
-    nos, res, problems = _go(world, go)
-    assert nos == ["INV/000002"]
-    assert res.fields_respecced == (("invoice", "no"),)
-    assert [(p.kind, p.field) for p in problems] == [("field_changed", "no")]
-    assert "reset" in problems[0].message
+    again, by_prefix, by_pad, by_reset, nxt = _go(world, go)
+    assert not again.changed
+    for problems, part in ((by_prefix, "prefix"), (by_pad, "pad"), (by_reset, "reset")):
+        assert [(p.kind, p.field) for p in problems] == [("field_changed", "no")]
+        assert part in problems[0].message
+        assert "Make a new field" in problems[0].message
+    assert nxt == "FV-0002"

@@ -228,6 +228,24 @@ def test_the_allocation_runs_before_the_value_check_and_each_write_refuses_the_k
     assert order.count("_refuse_autonumber_keys") == 2  # a create and an update
 
 
+def _held(hidden: frozenset[str]) -> Any:
+    from types import SimpleNamespace
+
+    scope = SimpleNamespace(open=False, maybe_hidden=lambda: hidden)
+    return SimpleNamespace(fields=[_field()], scope=scope)
+
+
+def test_a_hidden_autonumber_key_gets_the_sentence_of_any_hidden_key() -> None:
+    """A viewer who cannot see the field must not learn its type from a refusal."""
+    with pytest.raises(FieldError) as hidden:
+        store._refuse_autonumber_keys(_held(frozenset({"no"})), {"no": None})
+    assert hidden.value.message == "Field `no` is hidden from you, so a write cannot set it."
+    assert "filled by the store" not in hidden.value.message
+    with pytest.raises(FieldError) as shown:
+        store._refuse_autonumber_keys(_held(frozenset()), {"no": None})
+    assert "filled by the store" in shown.value.message
+
+
 # ── g. The TypeScript twin ─────────────────────────────────────────────────
 
 
