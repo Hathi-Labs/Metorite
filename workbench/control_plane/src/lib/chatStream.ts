@@ -226,6 +226,8 @@ export function withCustomEvent(m: ChatMessage, name: string, value: unknown): C
   // HRD-6: the line of a slow step is live only. It is never kept on the
   // message, so no save posts it as a custom event.
   if (name === PROGRESS_EVENT) return m;
+  // CS-3a: the phase of the run is live only too.
+  if (name === RUN_PHASE_EVENT) return m;
   const event = { name, value, segmentCutoff: m.segments?.length ?? 0 };
   return { ...m, customEvents: [...(m.customEvents ?? []), event] };
 }
@@ -236,6 +238,14 @@ export function withCustomEvent(m: ChatMessage, name: string, value: unknown): C
  * the running step. The replay ignores it, and no save keeps it.
  */
 export const PROGRESS_EVENT = "progress";
+
+/**
+ * CS-3a (`chat_failure_modes.md` §6 row CS-3): the CUSTOM event of the
+ * server's phase of a run (`acb_skills.run_phase`). The BFF route forwards
+ * none yet, and no loop keeps one on the message. A later client slice of
+ * CS-3 draws it.
+ */
+export const RUN_PHASE_EVENT = "run_phase";
 
 /** The longest line the chat draws. The server sends one line. */
 const NOTICE_MAX = 300;

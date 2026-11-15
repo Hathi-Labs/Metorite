@@ -1044,6 +1044,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_progress_notice.py.
     chat_progress_notice_orgs: str = ""
 
+    # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
+    #
+    # CHAT_RUN_PHASE_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and each run sends the bytes that it sent before. On,
+    # a native streamed run sends the CUSTOM event `run_phase` twice at most:
+    # `gathering` when its setup ends, and `asking` when its model request
+    # opens. No client draws it yet. The one reader is
+    # `acb_skills.run_phase.run_phase_on`. A SIGHUP reload applies a change
+    # (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_run_phase_event.py.
+    chat_run_phase_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

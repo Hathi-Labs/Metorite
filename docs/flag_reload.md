@@ -51,6 +51,15 @@ asks it at the start of each run, so a reload applies to the next run. A
 reload that takes an org off the list while a long WhatsApp run works gives
 that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_RUN_PHASE_ORGS` turns on the phase of a streamed run
+(`chat_failure_modes.md` §6 row CS-3, CS-3a). For each listed org, a native
+streamed run sends the CUSTOM event `run_phase`: `gathering` when its setup
+ends, and `asking` when its model request opens. No client draws it yet, and
+no saved message keeps it. `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.run_phase.run_phase_on`. The executor asks it once
+at the end of each run setup, so a reload applies to the next run. A flip
+stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_RESUME_ORGS` turns on the stored call of a card
 (`chat_run_continuity.md` §4.12.4 item 1, RESUME-1a). For each listed org, the
 row of a plain confirmation card of a listed write keeps the call that the
