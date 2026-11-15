@@ -157,7 +157,7 @@ export default function CellsEditor({ page, views, manifest, act, locked, onRemo
                   <Button size="icon-sm" variant="ghost" icon="GripVertical" aria-label={`Drag cell ${c.index + 1} in ${l.title}`}
                     disabled={locked} draggable className={`cursor-grab ${pointerOnly}`}
                     onDragStart={(e) => start(e, { kind: "cell", from: where(c.index) }, c.viewLabel)}
-                    onDragEnd={(e) => { e.currentTarget.blur(); setDs(end(ds)); }} />
+                    onDragEnd={(e) => { e.currentTarget.blur(); setDs((cur) => end(cur)); }} />
                   <span className={cellNameClass} title={c.view}>{c.viewLabel}</span>
                 </div>
                 <SelectButton label={`Span of cell ${c.index + 1} in ${l.title}`} value={String(c.span ?? 1)} widthClass="w-20"
@@ -208,7 +208,7 @@ export default function CellsEditor({ page, views, manifest, act, locked, onRemo
             {views.map((v) => (
               <Button key={v.id} size="sm" variant="secondary" icon="GripVertical" disabled={locked} draggable
                 className="cursor-grab" onDragStart={(e) => start(e, { kind: "view", viewId: v.id }, v.label)}
-                onDragEnd={(e) => { e.currentTarget.blur(); setDs(end(ds)); }}>{v.label}</Button>
+                onDragEnd={(e) => { e.currentTarget.blur(); setDs((cur) => end(cur)); }}>{v.label}</Button>
             ))}
           </div>
         </div>
