@@ -330,6 +330,7 @@
       "tests/unit/test_studio_org_caps_r8.py",
       "tests/unit/test_studio_package_approval_r8.py",
       "tests/unit/test_studio_package_approval_routes_r8.py",
+      "tests/unit/test_studio_connections_whose_r8.py",
       "tests/unit/test_studio_package_delete_admin_r8.py",
       "tests/unit/test_studio_package_delete_r8.py",
       "tests/unit/test_studio_package_install_r8.py",

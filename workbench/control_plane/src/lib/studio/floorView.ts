@@ -3,7 +3,8 @@
  *
  * A member opens an app on a tablet as `/studio/package-preview?pkg=<id>&floor=1`. The app frame
  * then keeps the cells of the page and the record page. It drops the rail, the owner verbs, the
- * end-date bar, the setup card and the list bar. A record always opens as the full page. The root
+ * end-date bar, the setup card and the list bar. A page picker above the page takes the place of
+ * the rail (STU-D23a-2, `floorPages`). A record always opens as the full page. The root
  * of the frame takes `data-floor`, so each control inside it takes its touch size at every width
  * (the `pointer-coarse` variant of `globals.css`). The app bar names the member who is signed in.
  *
@@ -50,6 +51,8 @@ export interface FrameParts {
   fullRecord: boolean;
   /** The full page has a way back to the side panel. */
   toPanel: boolean;
+  /** The page picker above the page, which stands in for the rail (STU-D23a-2). */
+  pagePicker: boolean;
 }
 
 /** The parts of the frame for the floor view, or for the usual view. */
@@ -66,7 +69,32 @@ export function floorView(floor: boolean): FrameParts {
     filterBar: usual,
     fullRecord: floor,
     toPanel: usual,
+    pagePicker: floor,
   };
+}
+
+/** One choice of the page picker. `group` is the title of its section of the rail. */
+export interface FloorPageOption {
+  value: string;
+  label: string;
+  group?: string;
+}
+
+/**
+ * The choices of the page picker of the floor view (STU-D23a-2). The floor view has no rail, so a
+ * member changes the page here. The choices are the rows of the rail, in the same order: the rows
+ * that `railFor` and `visibleRail` give. A titled section of the rail gives the group heading.
+ * Null in the usual view, and when one page or none is left to pick, so no picker draws.
+ */
+export function floorPages(
+  parts: FrameParts,
+  sections: readonly { title: string; rows: readonly { page: string; label: string }[] }[],
+): FloorPageOption[] | null {
+  if (!parts.pagePicker) return null;
+  const options = sections.flatMap((s) => s.rows.map((r) => (s.title.trim()
+    ? { value: r.page, label: r.label, group: s.title }
+    : { value: r.page, label: r.label })));
+  return options.length > 1 ? options : null;
 }
 
 /** Whether the open record shows as the full page. */

@@ -1331,6 +1331,106 @@ def test_a_connections_value_that_is_not_a_list_of_text_is_refused(names):
     assert errs and all(e.path.startswith("$.connections") for e in errs), errs
 
 
+# -- STU-I9a: whose account a connection uses, and its scopes ----------------
+#
+# R7 mutations, run on 2026-11-14:
+# * A1. `connection_as`: ignore the connector list. The default cases go red.
+# * A2. `_check_connection_scopes`: drop the duplicate check. The duplicate
+#   case goes red.
+# * A3. `ConnectionNeed.as_`: widen the Literal to `str`. The unknown `as`
+#   case goes red.
+
+#: The hash of a manifest with plain connection names, computed on the code of
+#: origin/main before I9a (`manifest_hash` of `EXAMPLE` with these names).
+_PLAIN_HASH = "9487d0d12b2b48d94f620335c4641358fabfa100b00b39f831cdce3be6d4a004"
+
+
+def test_a_stored_manifest_with_plain_names_validates_and_hashes_as_before():
+    from acb_common.studio_manifest import manifest_hash
+
+    stored = _with_connections(["mcp:tally", "zoho", "google_drive"])
+    assert validate_manifest(stored) == []
+    assert manifest_hash(stored) == _PLAIN_HASH
+
+
+def test_an_object_connection_passes_with_as_and_scopes():
+    names = ["zoho", {"name": "github"}, {"name": "google_drive", "as": "org",
+                                            "scopes": ["drive.file", "drive.readonly"]},
+             {"name": "mcp:tally", "as": "member", "scopes": []}]
+    assert validate_manifest(_with_connections(names)) == []
+
+
+@pytest.mark.parametrize(("name", "whose"), [
+    ("mailbox", "member"), ("whatsapp", "member"), ("google_calendar", "member"),
+    ("outlook_calendar", "member"), ("google_drive", "member"),
+    ("zoho", "org"), ("github", "org"), ("mcp:tally", "org"), ("not-a-connector", "org"),
+])
+def test_the_default_account_comes_from_the_connector_list(name, whose):
+    from acb_common.connector_list import connector
+    from acb_common.studio_manifest import connection_as, connection_item
+
+    row = connector(name)
+    assert row is None or row["scope"] == whose
+    assert connection_as(name) == whose
+    assert connection_item(name) == (name, whose)
+    assert connection_item({"name": name}) == (name, whose)
+
+
+def test_a_declared_account_wins_over_the_default():
+    from acb_common.studio_manifest import connection_item
+
+    assert connection_item({"name": "google_drive", "as": "org"}) == ("google_drive", "org")
+    assert connection_item({"name": "zoho", "as": "member"}) == ("zoho", "member")
+    assert connection_item({"name": "zoho", "as": None}) == ("zoho", "org")
+    assert connection_item({"as": "org"}) is None and connection_item(3) is None
+
+
+@pytest.mark.parametrize(("item", "path"), [
+    ({"name": "zoho", "as": "all"}, "$.connections[1].as"),
+    ({"name": "zoho", "as": "Org"}, "$.connections[1].as"),
+    ({"name": "zoho", "as": 1}, "$.connections[1].as"),
+    ({"name": "zoho", "scopes": "read"}, "$.connections[1].scopes"),
+    ({"name": "zoho", "scopes": {"read": True}}, "$.connections[1].scopes"),
+    ({"name": "zoho", "scopes": [1]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["read", "read"]}, "$.connections[1].scopes[1]"),
+    ({"name": "zoho", "scopes": [""]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["two words"]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["x" * 201]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "token": "x"}, "$.connections[1].token"),
+    ({"as": "org"}, "$.connections[1].name"),
+    ({"name": "Zoho CRM"}, "$.connections[1]"),
+    (5, "$.connections[1]"),
+])
+def test_a_hostile_connection_item_is_refused_with_a_path_and_one_sentence(item, path):
+    errs = validate_manifest(_with_connections(["github", item]))
+    assert [e.path for e in errs] == [path], errs
+    assert words(errs[0].message) <= 25, errs[0].message
+
+
+def test_too_many_scopes_are_refused_once():
+    from acb_common.studio_manifest import MAX_CONNECTION_SCOPES
+
+    ok = [f"s{i}" for i in range(MAX_CONNECTION_SCOPES)]
+    assert validate_manifest(_with_connections([{"name": "zoho", "scopes": ok}])) == []
+    errs = validate_manifest(_with_connections([{"name": "zoho", "scopes": [*ok, "more"]}]))
+    assert [e.path for e in errs] == ["$.connections[0].scopes"]
+    huge = validate_manifest(_with_connections([{"name": "zoho", "scopes": ["a"] * 5000}]))
+    assert [e.path for e in huge] == ["$.connections[0].scopes"]
+
+
+def test_a_name_in_two_forms_is_a_duplicate():
+    errs = validate_manifest(_with_connections(["zoho", {"name": "zoho", "as": "member"}]))
+    assert [e.path for e in errs] == ["$.connections[1]"]
+
+
+def test_the_old_pure_reader_still_returns_the_names():
+    from gateway.package_host import resolve
+
+    names = ["zoho", {"name": "google_drive", "as": "org", "scopes": ["a"]}]
+    assert resolve.connection_names({"connections": names}) == ("zoho", "google_drive")
+    assert resolve.connection_names({"connections": [{"as": "org"}]}) is None
+
+
 def _with_field(key: str) -> dict:
     d = copy.deepcopy(EXAMPLE)
     d["objects"][0]["fields"].append({"key": key, "type": "text"})
