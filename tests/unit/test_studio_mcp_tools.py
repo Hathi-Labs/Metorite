@@ -239,6 +239,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         servers={ORG_A: [_server("github", ORG_A), _server("linear", ORG_A)],
                  ORG_B: [_server("github", ORG_B), _server("secret-b", ORG_B)]},
         registry_reads=[], grants=["feature:studio", "integrations:use:*"], denies=[],
+        approve_all=True, approval_reads=[],
     )
     monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
     monkeypatch.setattr(mcp_tools, "_now", lambda: raw.now)
@@ -253,6 +254,19 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
     monkeypatch.setattr(mcp_registry, "servers_for_org", _servers_for_org)
     monkeypatch.setattr(mcp_registry, "enabled_meta", _enabled_meta)
+
+    async def _approvals(org: str) -> dict[tuple[str, str], str]:
+        # B1b-3: the fake approves the text that each server lists now, so
+        # the class rule of B1b-2 shows. ``test_studio_mcp_approvals.py``
+        # fences the changed tools.
+        w.approval_reads.append(org)
+        if not w.approve_all:
+            return {}
+        return {(s.name, t["name"]): mcp_actions.tool_text_hash(t)
+                for s in w.servers.get(org, [])
+                for t in mcp_tools.clean_tools(w.tools.get(s.url, [])).tools}
+
+    monkeypatch.setattr(mcp_tools, "_approvals", _approvals)
 
     async def _lister(server: Any) -> list[Any]:
         w.calls.append((server.name, server.url))
@@ -536,6 +550,8 @@ def test_a_late_failure_never_drops_the_list_of_a_newer_refresh(world) -> None:
     async def _good(_server: Any) -> list[Any]:
         return [_tool("fresh", READ)]
 
+    _give(world, ORG_A, "github", [_tool("fresh", READ)])  # B1b-3: approved text
+
     async def _run() -> Any:
         first = asyncio.ensure_future(mcp_tools.refresh(ORG_A, "github", may_use=lambda _p: True, lister=_slow_then_fail))
         slot = f"{tenant_redis.KEY_ROOT}:{ORG_A}:{mcp_tools.NAMESPACE}:refresh:github"
@@ -722,7 +738,9 @@ def test_an_sdk_annotation_object_gives_the_class_of_a_mapping() -> None:
     listed = mcp_tools.clean_tools([sdk, plain, junk])
     assert [t["annotations"] for t in listed.tools] == [
         {"readOnlyHint": True}, {"readOnlyHint": True, "destructiveHint": True}, None]
-    rows = mcp_actions.mcp_rows([_server("github", ORG_A)], {"github": listed.tools})
+    approved = {("github", t["name"]): mcp_actions.tool_text_hash(t) for t in listed.tools}
+    rows = mcp_actions.mcp_rows([_server("github", ORG_A)], {"github": listed.tools},
+                                approved=approved)
     assert [(r["mcp_tool"], r["class"]) for r in rows] == [
         ("read", "A"), ("write", "B"), ("junk", "B")]
 
