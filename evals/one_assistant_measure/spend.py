@@ -9,6 +9,12 @@ three causes the rows show, each as a pure function a test can fix:
   (:data:`PEAK_FACTOR`, :func:`is_peak`);
 * a call with no usage frame read as USD 0 (:func:`unseen_usage_usd`);
 * a send that the tap did not see, for example System 1 (:func:`unseen_sends_usd`).
+
+The pilot of 2026-11-15 (TS-7a-cap) found a fourth cause. The card priced
+every buffered call as DeepSeek, but the Router served Claude. The count read
+USD 0.328, and the bill read USD 0.4889. So a call is now priced by the card of
+the model that SERVED it (:func:`card_of`). An unknown model takes the most
+expensive rate of the card (:func:`worst_card`), never the cheapest.
 """
 
 from __future__ import annotations
@@ -37,17 +43,35 @@ ASSUMED_COMPLETION_TOKENS = 4096
 UNSEEN_PROMPT_TOKENS = 20_000
 
 
-def card_for(served: str, sent: str, card: dict[str, Any], mapped: bool) -> dict[str, Any]:
-    """The rate card that prices a call. An unmapped call keeps *card*. A call
-    that ``--tier-map`` rewrote uses the card of the model that SERVED it when
-    the response names one, else of the tier it was sent to. Flash today: a
-    served name with ``flash``, or the tier ``tier-fast``."""
-    if not mapped:
-        return card
-    name = (served or sent).lower()
-    if card.get("flash") and ("flash" in name or (not served and name == "tier-fast")):
-        return {**card, **card["flash"]}
-    return card
+def model_key(served: str) -> str:
+    """The key of *served* in the card: lower case, with no provider prefix.
+    ``anthropic/claude-haiku-5-5`` and ``claude-haiku-5-5`` are one model."""
+    return served.strip().lower().rsplit("/", 1)[-1]
+
+
+def worst_card(card: dict[str, Any]) -> dict[str, Any]:
+    """The price of a model that the card does not know: the highest input
+    rate and the highest output rate of the card. A cache hit counts as a miss,
+    and the DeepSeek peak factor applies. It can only count high."""
+    rates = [m["usd_per_1m"] for m in card["models"].values()]
+    top_in = max(r["input_miss"] for r in rates)
+    top_out = max(r["output"] for r in rates)
+    return {"model": "unknown", "known": False, "peak": True,
+            "usd_per_1m": {"input_miss": top_in, "input_hit": top_in, "output": top_out}}
+
+
+def card_of(served: str, card: dict[str, Any]) -> dict[str, Any]:
+    """The card that prices a call: the card of the model that SERVED it.
+
+    The tier that the call names does not set the price, because the Router
+    binds a tier to a model and can change it (``tier-balanced`` served
+    DeepSeek on 2026-10-25 and Claude on 2026-11-15). No served name, or a
+    name that the card does not hold, gets :func:`worst_card`."""
+    entry = card["models"].get(model_key(served)) if served else None
+    if entry is None:
+        return worst_card(card)
+    return {"model": model_key(served), "known": True, "peak": bool(entry.get("peak")),
+            "usd_per_1m": entry["usd_per_1m"]}
 
 
 def is_peak(moment: datetime) -> bool:
@@ -89,11 +113,22 @@ def unseen_usage_usd(request_chars: int, card: dict[str, Any]) -> float:
 
 
 def unseen_sends_usd(count: int, card: dict[str, Any]) -> float:
-    """The worst-case USD of *count* sends that reached the Router unseen."""
-    rate = card["usd_per_1m"]
+    """The worst-case USD of *count* sends that reached the Router unseen. No
+    response names the model of such a send, so the most expensive rate of
+    *card* prices it (:func:`worst_card`)."""
+    rate = worst_card(card)["usd_per_1m"]
     one = (UNSEEN_PROMPT_TOKENS * rate["input_miss"]
            + ASSUMED_COMPLETION_TOKENS * rate["output"]) / 1_000_000
     return max(0, count) * one
+
+
+def bill_check_line(member: str, started_utc: str, counted: float) -> str:
+    """The line that a live run prints at its end. The harness does not read
+    ``usage_event``: a person compares the bill by hand. When the card priced
+    every call, the counted total is at or above the bill, and at most 2 times it."""
+    return (f"check usage_event for {member} since {started_utc}: expected about USD "
+            f"{counted:.4f}. The real bill is at most that, and at least half of it "
+            "(the count is at most 2 times the bill), if every call was priced.")
 
 
 def spend_by_agent(rows: list[dict[str, Any]]) -> dict[str, float]:
