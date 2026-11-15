@@ -215,6 +215,17 @@ def test_a_request_that_already_carries_a_mark_gets_none_from_the_router():
     assert isinstance(out2["messages"][0]["content"], str) and CACHE_BREAK not in out2["messages"][0]["content"]
 
 
+def test_an_empty_cache_control_field_is_not_a_mark():
+    """Delta verification of PR 2420 (P3): a `None` field must not switch the cache off."""
+    empty_tool = {**TOOL_A, "function": {**TOOL_A["function"], "cache_control": None}}
+    out = prompt_cache_for_step(_body(MESSAGE_SETS["sentinel"], [empty_tool, TOOL_B]), CLAUDE)
+    assert out["tools"][-1]["function"]["cache_control"] == {"type": "ephemeral"}
+    blocks = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": None}]}]
+    out2 = prompt_cache_for_step(_body(blocks, [TOOL_A]), CLAUDE)
+    assert out2["tools"][-1]["function"]["cache_control"] == {"type": "ephemeral"}
+    assert out2["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_openrouter_claude_is_not_an_anthropic_step():
     assert not router_side.is_anthropic_model("openrouter/anthropic/claude-sonnet-4-5")
     assert router_side.is_anthropic_model("anthropic/claude-haiku-5-5")

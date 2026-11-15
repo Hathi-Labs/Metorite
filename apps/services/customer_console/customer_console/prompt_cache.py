@@ -99,16 +99,19 @@ def _mark_system(msg: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _carries_marks(messages: list[Any], tools: Any) -> bool:
-    """True when the caller already put a ``cache_control`` anywhere in the request."""
+    """True when the caller already put a real ``cache_control`` anywhere in the request.
+
+    An empty or ``None`` field is not a mark, so it does not switch the cache off.
+    """
     for m in messages:
         content = m.get("content") if isinstance(m, dict) else None
-        if isinstance(content, list) and any(isinstance(b, dict) and "cache_control" in b for b in content):
+        if isinstance(content, list) and any(isinstance(b, dict) and b.get("cache_control") for b in content):
             return True
     if isinstance(tools, list):
         for tool in tools:
             if isinstance(tool, dict) and (
-                "cache_control" in tool
-                or (isinstance(tool.get("function"), dict) and "cache_control" in tool["function"])
+                tool.get("cache_control")
+                or (isinstance(tool.get("function"), dict) and tool["function"].get("cache_control"))
             ):
                 return True
     return False
