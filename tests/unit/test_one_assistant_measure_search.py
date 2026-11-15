@@ -8,7 +8,7 @@ or spends money.
 * Each new check has a case that passes, a case that fails, and a case that is the
   named MUTATION of it (the line that a mutation of the check would flip).
 * The Studio chats run on the ``pack`` arm through the real orchestrator run. The
-  ``search`` arm prints SKIP, because the settings hold no ``tool_search_orgs``.
+  ``search`` arm prints SKIP, because the plans of TS-5b are not in (``SEARCH_PLANS``).
 * No word of any pack matches a Studio chat, so layer (a) never loads ``studio``.
 * ``studio-workflows`` stays OFF in the flag of every arm.
 
@@ -350,11 +350,14 @@ def test_search_is_a_listed_arm() -> None:
 
 
 def test_the_search_arm_waits_for_the_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``search_built`` reads the settings with ``getattr``, so it needs no import of the
-    field. The settings of today hold none. A stand-in that holds one reads as built."""
+    """``search_built`` needs the plans of TS-5b (``SEARCH_PLANS``) and the field
+    ``tool_search_orgs``. TS-2a PR 3 added the field, and the plans are not in yet.
+    It reads the settings with ``getattr``, so it needs no import of the field."""
     from types import SimpleNamespace
 
-    assert run.search_built() is False  # main holds no tool_search_orgs
+    assert run.SEARCH_PLANS is False and run.search_built() is False  # no TS-5b plans
+    monkeypatch.setattr(run, "SEARCH_PLANS", True)
+    assert run.search_built() is True  # TS-2a PR 3 added tool_search_orgs
     monkeypatch.setattr("acb_common.get_settings", lambda: SimpleNamespace())
     assert run.search_built() is False
     monkeypatch.setattr("acb_common.get_settings", lambda: SimpleNamespace(tool_search_orgs=""))

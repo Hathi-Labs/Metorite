@@ -1973,7 +1973,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - Six pure checks: `found_tool`, `search_round`, `not_searched`, `no_studio_names`, `held_note` and `schema_tokens`.
   - Stop result 12 and the search numbers join the report.
   - The numbers are the searches per turn, the tools that ran after a find, the false searches on their own, and the schema tokens per request.
-  - `search` is listed in `--arms`. It prints SKIP until the settings hold `tool_search_orgs`. An unknown `--arms` value exits with status 2.
+  - `search` is listed in `--arms`. It prints SKIP until the plans of TS-5b are in (`run.SEARCH_PLANS`) and the settings hold `tool_search_orgs`. TS-2a PR 3 added the field first, so TS-5b sets `SEARCH_PLANS` to True. An unknown `--arms` value exits with status 2.
 - **One chat list for each arm.**
 
   | Arm | Chats | Runs when |

@@ -83,13 +83,20 @@ PACK_ARMS = ck.PACK_ARMS
 STUDIO_PACKS = ("studio",)
 
 
+#: TS-5b sets this True when the scripted plans that call ``find_tools`` are in.
+#: TS-2a PR 3 added the field ``tool_search_orgs`` first, so the field alone no
+#: longer tells that the arm can run.
+SEARCH_PLANS = False
+
+
 def search_built() -> bool:
-    """True when the settings hold ``tool_search_orgs``: the flag of TS-2. Until
-    then the ``search`` arm prints SKIP and runs nothing. It reads the settings
-    with ``getattr``, so it needs no import from the branch that adds the field."""
+    """True when the plans of TS-5b are in (:data:`SEARCH_PLANS`) and the
+    settings hold ``tool_search_orgs``, the flag of TS-2a. Until then the
+    ``search`` arm prints SKIP and runs nothing. It reads the settings with
+    ``getattr``, so it needs no import of the field."""
     from acb_common import get_settings
 
-    return getattr(get_settings(), "tool_search_orgs", None) is not None
+    return SEARCH_PLANS and getattr(get_settings(), "tool_search_orgs", None) is not None
 
 
 def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
