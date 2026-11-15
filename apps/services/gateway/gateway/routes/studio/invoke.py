@@ -370,6 +370,7 @@ __all__ = [
     "WORKFLOW_VIA",
     "WRITERS_PER_ORG",
     "WRITERS_TOTAL",
+    "connection_text",
     "may_run_as",
     "plan_workflow_write",
     "router",
@@ -538,6 +539,21 @@ CONNECTION_STATUS = 409
 CONNECTION_TEXT = (
     "This app needs a connection that you do not have, so it runs no action until "
     "someone connects it.")
+
+#: WS-STU I9b-1: the sentence of each reason of ``needs_connection``. ``missing``
+#: keeps the sentence of I1a. The sentences name no other member and no scope.
+RECONNECT_TEXT = ("Reconnect {provider}: your connection does not grant what this app needs.")
+ORG_APPROVAL_TEXT = "An admin must approve this app before it can use the org account."
+
+
+def connection_text(reason: str | None, provider: str | None = None) -> str:
+    """The one sentence for a reason of ``needs_connection`` (I9b-1)."""
+    if reason == "reconnect" and provider:
+        return RECONNECT_TEXT.format(provider=provider)
+    if reason == "org_approval":
+        return ORG_APPROVAL_TEXT
+    return CONNECTION_TEXT
+
 
 #: The two refusals that are not a 403 (J3a and I1a): the status and the one
 #: sentence of each code. Neither code is in :data:`REFUSALS`.
@@ -1137,6 +1153,7 @@ class _Unmet:
 
     provider: str | None
     whose: str | None
+    reason: str = "missing"
 
 
 async def _needs_connection(db: Any, member: str, manifest: dict[str, Any], action: str,
@@ -1148,7 +1165,7 @@ async def _needs_connection(db: Any, member: str, manifest: dict[str, Any], acti
     It answers None with no read while ``STUDIO_CONNECTION_GATE_ORGS`` does
     not hold *org* (``studio_flags.connection_gate_on``), so the door is then
     as before I1a. *org* is the org of the session or the run, never request
-    input. The rule is ``resolve.first_unmet_connection``, the one rule of the
+    input. The rule is ``resolve.first_unmet_need``, the one rule of the
     resolve too. The met set comes from ``resolve.met_connections``: the org
     rows of the bound org and the member rows of *member*, never of another
     member. *org_approved* is ``resolve.org_install_approved`` of the install
@@ -1163,9 +1180,9 @@ async def _needs_connection(db: Any, member: str, manifest: dict[str, Any], acti
     if names == () or (preview and _object_action(manifest, action)):
         return None
     if names is None:
-        return _Unmet(None, None)
+        return _Unmet(None, None, "missing")
     met = await _resolve.met_connections(db, viewer=member)
-    unmet = _resolve.first_unmet_connection(manifest, met, org_approved)
+    unmet = _resolve.first_unmet_need(manifest, met, org_approved)
     return None if unmet is None else _Unmet(*unmet)
 
 
@@ -1176,6 +1193,8 @@ def _refusal_detail(out: _Outcome, message: str) -> dict[str, Any]:
     detail: dict[str, Any] = {"code": out.refusal, "message": message}
     if out.refusal == NEEDS_CONNECTION and out.unmet is not None and out.unmet.provider:
         detail["provider"], detail["as"] = out.unmet.provider, out.unmet.whose
+        detail["reason"] = out.unmet.reason
+        detail["message"] = connection_text(out.unmet.reason, out.unmet.provider)
     return detail
 
 
