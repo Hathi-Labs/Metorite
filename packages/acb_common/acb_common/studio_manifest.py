@@ -270,6 +270,11 @@ class FieldDef(_Strict):
     min: int | None = None
     max: int | None = None
     units: list[str] | None = None
+    #: C24a. The ranges of a `quantity` in its base unit, and the conversions to it.
+    #: `studio_fields._check_ranges` holds the rules. The flag is computed on read.
+    normal: dict[str, Any] | None = None
+    critical: dict[str, Any] | None = None
+    conversions: list[dict[str, Any]] | None = None
     format: str | None = None
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
