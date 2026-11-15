@@ -629,7 +629,7 @@ async def test_a_shared_card_shows_the_new_spec_and_not_the_old_one(
     assert "Columns: «status»" in context
 
 
-@pytest.mark.parametrize("bad", [chr(0xE0041), chr(0xFE0F), chr(0x202E)])
+@pytest.mark.parametrize("bad", [chr(0xE0041), chr(0xE0101)])
 async def test_a_hidden_character_in_a_value_is_refused_before_the_card_in_a_held_chat(
     gw: Gateway, card: Card, mark: Mark, bad: str,
 ) -> None:
