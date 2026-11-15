@@ -157,7 +157,7 @@ def button_tools(manifest: Mapping[str, Any]) -> tuple[
     Pure: no I/O. Returns ``(served, unserved)``. A served item is
     ``(view_id, action_id, tool)``. An unserved item is
     ``(view_id, action_id, reason)``. The reason is one of ``undeclared``,
-    ``set`` (a set-action does not run in chat), ``door_op``, ``integration``
+    ``set`` (a set-action does not run in chat), ``door_op``, ``logic`` (no chat tool yet), ``integration``
     or ``no_tool``. A plain object verb or a workflow is served.
     """
     declared: dict[str, Mapping[str, Any]] = {}
@@ -184,6 +184,8 @@ def button_tools(manifest: Mapping[str, Any]) -> tuple[
                 unserved.append((view_id, name, "set"))
             elif uses.startswith("integration:"):
                 unserved.append((view_id, name, "integration"))
+            elif uses.startswith("logic:"):
+                unserved.append((view_id, name, "logic"))
             elif not (uses.startswith("object:") or uses.startswith("workflow:")):
                 unserved.append((view_id, name, "door_op"))
             elif (tool := action_tool(uses)) is None:

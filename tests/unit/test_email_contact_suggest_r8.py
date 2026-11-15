@@ -257,3 +257,39 @@ async def test_a_name_that_matches_nobody_returns_nothing(
         assert await _suggest_full(w, "Zqxjw") == []
     finally:
         w.purge()
+
+
+class _NearWorld(_World):
+    """Pooja Rao is a member. A rival org has its own Pooja Rao."""
+
+    def seed(self) -> None:
+        super().seed()
+        p = self.p
+        self.pooja = f"pr-{self.tag}@fracktal-{self.tag}.test"
+        self.pooja_rival = f"pr-{self.tag}@rival-{self.tag}.test"
+        self.emails += [self.pooja, self.pooja_rival]
+        with p.admin_engine.begin() as c:
+            for email, org in ((self.pooja, p.org_b), (self.pooja_rival, p.org_a)):
+                c.execute(text(
+                    "INSERT INTO app_user (email, display_name, role, status, "
+                    "organization_id) VALUES (:e, 'Pooja Rao', 'employee', 'active', "
+                    "CAST(:o AS uuid)) ON CONFLICT DO NOTHING"),
+                    {"e": email, "o": org})
+
+
+async def test_the_one_matcher_finds_a_name_the_trigrams_miss(
+    promoted, app_engine,  # noqa: F811
+) -> None:
+    """HRD-18a: "Puja" for «Pooja Rao». The raw trigram score is 0.22, under
+    the floor of 0.3, and ``acb_common.name_match`` folds "oo" to "u". The
+    person comes back ``closest``, and the rival organization's never does."""
+    _assert_non_priv(app_engine)
+    w = _NearWorld(promoted)
+    try:
+        w.seed()
+        got = {s.email: s for s in await _suggest_full(w, "Puja")}
+        assert w.pooja in got, sorted(got)
+        assert got[w.pooja].match == "closest" and got[w.pooja].source == "org"
+        assert w.pooja_rival not in got
+    finally:
+        w.purge()

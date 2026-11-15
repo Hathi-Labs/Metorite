@@ -56,8 +56,17 @@ person, and nothing counts or ranks one.
 The scan runs only for an org on ``WORKFLOW_UNATTENDED_ORGS``, so the node is
 dark until the owner lists an org. :func:`org_ready` is the check of the hold.
 
-Fence: ``tests/unit/test_workflows_human_step.py`` and
-``tests/unit/test_workflows_human_step_r8.py``.
+**The steps of a run (STU-E4b).** ``runs.get_run_steps`` lists the human steps
+of one run with :func:`step_rows`, :func:`step_state` and the task reading of
+:func:`read_task` and :func:`task_outcome`. It keeps no second reading of a
+task. This route gives the task id only to the person of the step.
+``GET /workflows/runs/{id}`` and its stream still show the task id of a done
+step in ``node_results``. That is a known gap.
+
+Fence: ``tests/unit/test_workflows_human_step.py``,
+``tests/unit/test_workflows_human_step_r8.py``,
+``tests/unit/test_workflows_run_steps.py`` and
+``tests/unit/test_workflows_run_steps_r8.py``.
 """
 
 from __future__ import annotations
@@ -68,6 +77,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from gateway.routes.workflows import park, unattended
+from gateway.routes.workflows.core import MAX_WALK_BLOCKS
 from sqlalchemy import text
 
 #: The ``workflow_run_pauses.reason`` of a human step (migration 427).
@@ -154,6 +164,26 @@ def _clip(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def step_person(value: Any) -> str | None:
+    """The member email of a step, in lower case, or None.
+
+    The one rule of a usable person: exactly one ``@``, at most 254
+    characters, no ``{{ref}}``, and no white space or control character. A real
+    member email has none of those, so a sentence that a workflow author wrote
+    as the person never reaches a task or a reader. :func:`open_step` refuses a
+    step with None, and :func:`step_rows` shows None.
+    """
+    who = str(value or "").strip().lower()
+    if (
+        who.count("@") != 1
+        or len(who) > _EMAIL_MAX
+        or "{{" in who
+        or any(ch.isspace() or not ch.isprintable() for ch in who)
+    ):
+        return None
+    return who
+
+
 def task_values(
     *, config: dict[str, Any], workflow_id: str, workflow_name: str, run_id: str,
     node_id: str,
@@ -210,8 +240,8 @@ async def open_step(
 
     org = str(organization_id or "").strip().lower()
     config = step_config(snapshot.get("serialized"), node_id)
-    who = str(config.get("assignee") or "").strip().lower()
-    if not org or "@" not in who or len(who) > _EMAIL_MAX or "{{" in who:
+    who = step_person(config.get("assignee"))
+    if not org or who is None:
         raise StepRefused("no_assignee")
     # An ACTIVE member of THIS org, before any write. A member of another org
     # resolves to that org, and the compare refuses it.
@@ -374,3 +404,166 @@ async def end_step(
     if ran is None:
         raise park.ParkLost(run_id)
     return True
+
+
+# ── The steps of one run (STU-E4b) ──────────────────────────────────────────
+#
+# ``GET /workflows/runs/{run_id}/steps`` (``runs.get_run_steps``) lists the
+# human steps of one run, for the Checklist block of a playbook (STU-D9). The
+# pure parts are here, beside the rules that they read. The route reads the
+# rows in ONE tenant session and calls them.
+
+#: The state words of a step. Nothing else names a state of a step.
+STEP_PENDING = "pending"
+STEP_DONE = "done"
+STEP_CANCELLED = "cancelled"
+STEP_NOT_REACHED = "not_reached"
+
+#: A run in one of these states can still make the task of a step.
+_LIVE_RUN = frozenset({"queued", "running", "paused"})
+
+#: The task pauses of one run, the newest first. The read takes the task id and
+#: the person from the snapshot, and never the pinned graph, so it stays small.
+RUN_PAUSES_SQL = (
+    "SELECT node_id, status, snapshot ->> 'task_id' AS task_id, "
+    "       snapshot ->> 'assignee' AS assignee "
+    "  FROM workflow_run_pauses "
+    " WHERE run_id = CAST(:run_id AS uuid) AND reason = 'task' "
+    " ORDER BY created_at DESC, id DESC"
+)
+
+#: The graph that the run pinned: the newest pause snapshot that holds one.
+#: ``resume_run`` replays this graph, so a test run of a draft reads right too.
+PINNED_GRAPH_SQL = (
+    "SELECT snapshot -> 'serialized' AS serialized FROM workflow_run_pauses "
+    " WHERE run_id = CAST(:run_id AS uuid) "
+    "   AND jsonb_typeof(snapshot -> 'serialized') = 'object' "
+    " ORDER BY created_at DESC, id DESC LIMIT 1"
+)
+
+
+def _list_of(serialized: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    """The dict entries of ``serialized[key]``. Any other shape gives none."""
+    found = serialized.get(key)
+    return [item for item in found if isinstance(item, dict)] if isinstance(found, list) else []
+
+
+def walk_order(serialized: Any) -> list[str]:
+    """The block ids of *serialized* in the order that a run walks them.
+
+    ``acb_common.planning.analyze_plan`` is the one place that orders a graph
+    (D195 Q8), so this function calls it and keeps no order of its own. Each
+    block is one open task, and each connection between two known, different
+    blocks is one link. The waves come in turn, and the block list orders the
+    blocks of one wave. A connection to an unknown block, or from a block to
+    itself, is skipped. A graph with a cycle has no waves, so it gives the
+    block list order. Nothing here raises.
+
+    **A cap.** A graph over :data:`MAX_WALK_BLOCKS` (500) blocks gives the
+    block-list order, and ``analyze_plan`` does not run. The planner costs more
+    than linear time on a large bad snapshot, so a read never stalls on one. A
+    saved graph has no cycle, and a real workflow has tens of blocks.
+    """
+    from acb_common.planning import PlanTask, analyze_plan
+
+    if not isinstance(serialized, dict):
+        return []
+    index: dict[str, int] = {}
+    for block in _list_of(serialized, "blocks"):
+        index.setdefault(str(block.get("id")), len(index))
+    if len(index) > MAX_WALK_BLOCKS:
+        return list(index)
+    links: list[tuple[str, str]] = []
+    for conn in _list_of(serialized, "connections"):
+        src, tgt = str(conn.get("source")), str(conn.get("target"))
+        if src in index and tgt in index and src != tgt:
+            links.append((src, tgt))
+    plan = analyze_plan([PlanTask(id=nid, category="todo") for nid in index], links)
+    if plan.cycle is not None or not plan.waves:
+        return list(index)
+    return [nid for wave in plan.waves for nid in sorted(wave, key=index.__getitem__)]
+
+
+def step_rows(serialized: Any) -> list[dict[str, Any]]:
+    """The human steps of *serialized* in walk order.
+
+    Each row is ``node_id``, ``title`` and ``assignee``, from the literal config
+    of the pinned graph, never from a payload. A step with no usable person
+    gives ``assignee`` None, and a step with no title gives an empty title.
+    Neither raises.
+    """
+    if not isinstance(serialized, dict):
+        return []
+    steps: dict[str, dict[str, Any]] = {}
+    for block in _list_of(serialized, "blocks"):
+        if str(block.get("type") or "") == "human_step":
+            steps.setdefault(str(block.get("id")), block)
+    rows: list[dict[str, Any]] = []
+    for nid in walk_order(serialized):
+        block = steps.get(nid)
+        if block is None:
+            continue
+        config = block.get("config") if isinstance(block.get("config"), dict) else {}
+        rows.append({
+            "node_id": nid,
+            "title": _clip(config.get("title"), _TITLE_MAX),
+            "assignee": step_person(config.get("assignee")),
+        })
+    return rows
+
+
+def step_state(
+    *, result: Any, pause_status: str | None, outcome: str | None, run_status: str,
+) -> str:
+    """The state word of one step. Nothing else decides it.
+
+    *result* is the node result of the run, *pause_status* the status of the
+    newest ``task`` pause of the step (None with no pause), *outcome* the
+    :func:`task_outcome` of its task (None when nothing read the task), and
+    *run_status* the status of the run.
+
+    * A node result ``ok`` is ``done``: the run went past the step.
+    * With a pause, :func:`_pause_state` decides.
+    * With no pause, a step that waits is ``pending`` while the run is live,
+      because the hold has not made the task yet. A refused hold ended the
+      run, so the step is ``cancelled``.
+    * Any other step is ``not_reached``.
+    """
+    status = result.get("status") if isinstance(result, dict) else None
+    live = run_status in _LIVE_RUN
+    if status == "ok":
+        return STEP_DONE
+    if pause_status is not None:
+        return _pause_state(pause_status, outcome, run_status, live)
+    if status == "waiting":
+        return STEP_PENDING if live else STEP_CANCELLED
+    if status == "error":
+        return STEP_CANCELLED
+    return STEP_NOT_REACHED
+
+
+def _pause_state(pause_status: str, outcome: str | None, run_status: str, live: bool) -> str:
+    """The state of a step that has a ``task`` pause.
+
+    * ``resolved`` is ``done``. Only the scan resolves a task pause, and only on
+      a done task.
+    * ``rejected`` comes from one of two writers, and the task is not read.
+      :func:`end_step` ends the run ``failed`` on a cancelled or gone task, so
+      the step is ``cancelled``. ``service.resume_run`` ends the run
+      ``cancelled`` when the task was done but a member-blind write node comes
+      next, so the step is ``done``. After the run ends, a change to the
+      private task changes no answer.
+    * ``pending`` follows the task. A done task is ``done``. A task that waits,
+      or a snapshot with no task, is ``pending`` while the run is live. Each
+      other case is ``cancelled``.
+    """
+    if pause_status == "resolved":
+        return STEP_DONE
+    if pause_status == "rejected":
+        return STEP_DONE if run_status == "cancelled" else STEP_CANCELLED
+    if pause_status == "pending":
+        if outcome == RESUME:
+            return STEP_DONE
+        if outcome in (WAIT, None) and live:
+            return STEP_PENDING
+    return STEP_CANCELLED

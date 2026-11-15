@@ -201,9 +201,11 @@ def test_the_tool_takes_no_org_and_no_member_argument() -> None:
     assert tuple(fn.__name__ for fn in st.STUDIO_WORKFLOW_TOOLS) == ("studio_workflow_read",)
     fn = st.studio_workflow_read
     params = inspect.signature(fn).parameters
-    assert set(params) == {"workflow_id", "offset", "limit"}
+    # STU-E4b: ``run_id`` reads the steps of a run, in the same tool (the room limit).
+    assert set(params) == {"workflow_id", "offset", "limit", "run_id"}
     assert not set(params) & IDENTITY
     assert params["workflow_id"].default == "" and params["offset"].default == 0
+    assert params["run_id"].default == ""
     assert params["limit"].default == st.MAX_WORKFLOW_ROWS == 30
     assert inspect.iscoroutinefunction(fn)
     hints = fn.__tool_risk__
@@ -544,10 +546,12 @@ def test_no_write_joins_the_workflows_family() -> None:
     in the studio pack only."""
     assert sf.SKILL_FAMILIES["workflows"]["tools"] == (
         "get_workflow_run", "list_workflows", "run_workflow")
-    studio = sf.SKILL_FAMILIES["studio"]["tools"]
-    assert studio[-1] == "studio_workflow_read" and len(studio) == 23
+    # WS-67 TS-1b: the read sits in studio-more, the 13 tools beside the core of 10.
+    more = sf.SKILL_FAMILIES["studio-more"]["tools"]
+    assert more[-1] == "studio_workflow_read" and len(more) == 13
+    assert len(sf.SKILL_FAMILIES["studio"]["tools"]) == 10
     for slug, fam in sf.SKILL_FAMILIES.items():
-        if slug != "studio":
+        if slug != "studio-more":
             assert "studio_workflow_read" not in fam["tools"], slug
 
 
@@ -618,10 +622,11 @@ def test_a_studio_turn_that_loads_the_email_pack_keeps_the_studio_pack(
     monkeypatch, held: str, words: str,
 ) -> None:
     """A turn on the Studio surface whose words load the email pack, at the
-    production base (56) with the load tool (+1). Both packs stay: 56 + 1 + 31
-    + 23 - 1 (the email specialist) = 110, which is ``MAX_REQUEST_TOOLS``. At 24
-    studio tools the cap dropped the studio pack. Mutation: add one tool to the
-    studio family -> red."""
+    production base (56) with the load tool (+1). Each pack stays: 56 + 1 + 31
+    + 10 + 13 - 1 (the email specialist) = 110, which is ``MAX_REQUEST_TOOLS``.
+    WS-67 TS-1b: the Studio tools are two packs, the core and studio-more. With
+    one more Studio tool the cap drops studio-more. Mutation: add one tool to a
+    Studio family -> red."""
     from acb_common import get_settings
     from acb_skills import tool_packs as tp
 
@@ -633,11 +638,12 @@ def test_a_studio_turn_that_loads_the_email_pack_keeps_the_studio_pack(
                        surface="studio")
     choice = tp.choose(turn, allowed=frozenset(sf.pack_slugs()), base_tools=PROD_BASE + 1,
                        specialists=SPECIALISTS)
-    assert set(choice.slugs) == {"email", "studio"}, choice
+    assert set(choice.slugs) == {"email", "studio", "studio-more"}, choice
     assert choice.skipped == () and choice.evicted == (), choice
 
     def size(slug: str) -> int:
         return len(sf.SKILL_FAMILIES[slug]["tools"])
 
-    total = PROD_BASE + 1 + size("email") + size("studio") - SPECIALISTS["email-assistant"]
+    total = (PROD_BASE + 1 + size("email") + size("studio") + size("studio-more")
+             - SPECIALISTS["email-assistant"])
     assert total <= tp.MAX_REQUEST_TOOLS == 110, total

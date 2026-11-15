@@ -161,6 +161,11 @@ async def _chain(org: str, obj: store.StudioObject, levels: int,
     return ids
 
 
+async def _read_tree(db: Any, **kw: Any) -> store.TreePage | None:
+    """D18-2a: ``read_tree`` takes a REQUIRED viewer. Each object here is open."""
+    return await store.read_tree(db, viewer=_VIEWER, **kw)
+
+
 def _parent(world: Any, rid: str) -> Any:
     with world.p.admin_engine.connect() as c:
         raw = c.execute(text("SELECT data FROM studio_records WHERE id = CAST(:r AS uuid)"),
@@ -348,7 +353,7 @@ def test_r8_a_tree_of_depth_ten_reads_in_one_query(world) -> None:
 
             event.listen(eng, "before_cursor_execute", _on)
             try:
-                page = await store.read_tree(db, package_id=obj.package_id, object_id=obj.id)
+                page = await _read_tree(db, package_id=obj.package_id, object_id=obj.id)
             finally:
                 event.remove(eng, "before_cursor_execute", _on)
         assert page is not None
@@ -371,14 +376,14 @@ def test_r8_a_read_takes_a_root_a_depth_and_a_limit(world) -> None:
         obj = await _site(world.a, world.pkg_a)
         spine, _side = await _tree_of_depth_ten(world.a, obj)
         async with tenant_session(world.a) as db:
-            sub = await store.read_tree(db, package_id=obj.package_id, object_id=obj.id,
-                                        root_id=spine[7])
-            shallow = await store.read_tree(db, package_id=obj.package_id, object_id=obj.id,
-                                            depth=2)
-            cut = await store.read_tree(db, package_id=obj.package_id, object_id=obj.id,
-                                        limit=5)
-            none = await store.read_tree(db, package_id=obj.package_id, object_id=obj.id,
-                                         root_id=str(uuid.uuid4()))
+            sub = await _read_tree(db, package_id=obj.package_id, object_id=obj.id,
+                                   root_id=spine[7])
+            shallow = await _read_tree(db, package_id=obj.package_id, object_id=obj.id,
+                                       depth=2)
+            cut = await _read_tree(db, package_id=obj.package_id, object_id=obj.id,
+                                   limit=5)
+            none = await _read_tree(db, package_id=obj.package_id, object_id=obj.id,
+                                    root_id=str(uuid.uuid4()))
         return spine, sub, shallow, cut, none
 
     spine, sub, shallow, cut, none = _go(world, go)
@@ -395,9 +400,9 @@ def test_r8_a_read_of_another_org_or_package_finds_nothing(world) -> None:
         obj = await _site(world.a, world.pkg_a)
         await _chain(world.a, obj, 2)
         async with tenant_session(world.b) as db:
-            theirs = await store.read_tree(db, package_id=obj.package_id, object_id=obj.id)
+            theirs = await _read_tree(db, package_id=obj.package_id, object_id=obj.id)
         async with tenant_session(world.a) as db:
-            wrong = await store.read_tree(db, package_id=world.pkg_a2, object_id=obj.id)
+            wrong = await _read_tree(db, package_id=world.pkg_a2, object_id=obj.id)
         return theirs, wrong
 
     assert _go(world, go) == (None, None)
@@ -409,7 +414,7 @@ def test_r8_a_child_of_a_deleted_parent_reads_as_a_root(world) -> None:
         ids = await _chain(world.a, obj, 3)
         await _put(world.a, obj, Write("delete", obj.id, ids[0]))
         async with tenant_session(world.a) as db:
-            return ids, await store.read_tree(db, package_id=obj.package_id, object_id=obj.id)
+            return ids, await _read_tree(db, package_id=obj.package_id, object_id=obj.id)
 
     ids, page = _go(world, go)
     assert [(n.record.id, n.level) for n in page.nodes] == [(ids[1], 1), (ids[2], 2)]
@@ -429,8 +434,8 @@ def test_r8_a_read_stops_at_an_old_cycle(world) -> None:
                 "ON CONFLICT (organization_id, record_id, field_key) DO UPDATE SET v_text = :p"),
                 {"o": world.a, "ob": obj.id, "r": ids[0], "p": ids[2]})
         async with tenant_session(world.a) as db:
-            return ids, await store.read_tree(db, package_id=obj.package_id, object_id=obj.id,
-                                              root_id=ids[0])
+            return ids, await _read_tree(db, package_id=obj.package_id, object_id=obj.id,
+                                         root_id=ids[0])
 
     ids, page = _go(world, go)
     assert [n.record.id for n in page.nodes] == ids
@@ -440,8 +445,9 @@ def test_r8_a_read_of_an_object_with_no_hierarchy_is_refused(world) -> None:
     async def go() -> str:
         obj = await _site(world.a, world.pkg_a, rules=[])
         async with tenant_session(world.a) as db:
-            with pytest.raises(store.ObjectStoreError) as caught:
-                await store.read_tree(db, package_id=obj.package_id, object_id=obj.id)
+            with pytest.raises(store.NoTree) as caught:
+                await _read_tree(db, package_id=obj.package_id,
+                                 object_id=obj.id)
         return str(caught.value)
 
     assert "no hierarchy" in _go(world, go)
