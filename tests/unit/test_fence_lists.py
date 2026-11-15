@@ -347,7 +347,7 @@ def test_the_gate_step_diffs_against_the_first_parent_on_a_merge_ref():
 
 
 def test_the_lists_are_sorted_unique_and_one_entry_a_line():
-    """CIV-33 (task 3284): a PR that adds one name lands it at its sorted place,
+    """CIV-HS (task 3284): a PR that adds one name lands it at its sorted place,
     not at the tail. Two PRs then edit different lines, and merge with no
     conflict unless their names are neighbours. docs/merge_hotspots.md."""
     data = json.loads((_ROOT / "tests/fences.json").read_text(encoding="utf-8"))

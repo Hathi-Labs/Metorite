@@ -1,6 +1,6 @@
 # Merge hotspots: why the BACK lines happen, and the fix
 
-Owner: task 3284 (CIV-33). Evidence: the merge log of 2026-11-14.
+Owner: task 3284 (CIV-HS). Evidence: the merge log of 2026-11-14.
 
 ## The problem
 

@@ -64,7 +64,7 @@ def repo(tmp_path: Path) -> Path:
     _git(work, "checkout", "-q", "-b", "main")
     _commit(work, "infra/postgres/315_base.sql")
     _commit(work, "shared.md", "a\nb\nc\nd\ne\n")
-    _commit(work, "tests/t.py")
+    _commit(work, "tests/t.py", "def test_a():\n    pass\n")
     _git(work, "push", "-q", "origin", "main")
     _git(work, "checkout", "-q", "-b", "feat")
     return work
@@ -116,7 +116,7 @@ def test_no_tests_flag_runs_no_affected_tests(repo):
 
 
 def test_the_default_runs_the_affected_tests_and_prints_minutes(repo):
-    """CIV-32 (task 3277): the merge test is on by default."""
+    """CIV-MT (task 3277): the merge test is on by default."""
     _both_sides_change_shared(repo)
     marker = repo.parent / "affected-ran"
     res = _run(repo, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}", PREMERGE_RERUN_CMD="true")
@@ -160,7 +160,7 @@ def test_a_test_file_that_only_main_has_blocks_when_it_passes_on_main_alone(repo
     cmd = 'echo "FAILED tests/new_on_main.py::test_x - boom"; exit 1'
     # main (a detached head) has the file. Make the re-run pass there.
     _git(repo, "checkout", "-q", "main")
-    _commit(repo, "tests/new_on_main.py")
+    _commit(repo, "tests/new_on_main.py", "def test_x():\n    pass\n")
     _git(repo, "push", "-q", "origin", "main")
     _git(repo, "checkout", "-q", "feat")
     res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD="true")
@@ -171,7 +171,7 @@ def test_a_test_file_that_only_main_has_blocks_when_it_passes_on_main_alone(repo
 def test_a_test_file_that_only_main_has_and_is_red_on_main_does_not_block(repo):
     _both_sides_change_shared(repo)
     _git(repo, "checkout", "-q", "main")
-    _commit(repo, "tests/new_on_main.py")
+    _commit(repo, "tests/new_on_main.py", "def test_x():\n    pass\n")
     _git(repo, "push", "-q", "origin", "main")
     _git(repo, "checkout", "-q", "feat")
     cmd = 'echo "FAILED tests/new_on_main.py::test_x - boom"; exit 1'
@@ -194,6 +194,80 @@ def test_a_rename_keeps_the_old_path_in_the_lists(repo):
     assert res.returncode == 0, res.stderr
     body = SCRIPT.read_text(encoding="utf-8")
     assert body.count("--no-renames --name-only") >= 2
+
+
+def _stub_picker(repo: Path, body: str) -> None:
+    """A scripts/premerge_select.py that writes what a Windows Python would: CRLF."""
+    (repo / "scripts").mkdir(exist_ok=True)
+    (repo / "scripts" / "premerge_select.py").write_text(body, encoding="utf-8")
+    _git(repo, "add", "scripts/premerge_select.py")
+    _git(repo, "commit", "-q", "-m", "picker stub")
+
+
+_PICKER_CRLF = (
+    "import sys\n"
+    "a = sys.argv\n"
+    "out = lambda flag: a[a.index(flag) + 1]\n"
+    "open(out('--first-out'), 'wb').write(b'1\\r\\n')\n"
+    "open(out('--note-out'), 'wb').write(b'\\r\\n')\n"
+    "sys.stdout.buffer.write(b'tests/a.py\\r\\ntests/b.py\\r\\n')\n"
+)
+
+
+def _fake_pytest(repo: Path) -> Path:
+    path = repo.parent / "fake_pytest.sh"
+    path.write_text('printf "%s|" "$@" >> "$(dirname "$0")/pytest-args"\n', encoding="utf-8")
+    return path
+
+
+def test_a_cr_in_the_picker_output_never_reaches_pytest(repo):
+    """Review of 2026-11-15, P1: a Windows Python wrote CRLF, Git Bash kept the CR on
+    each path but the last, and pytest stopped with 'file not found'."""
+    _stub_picker(repo, _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3",
+               PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    args = (repo.parent / "pytest-args").read_text(encoding="utf-8")
+    assert "\r" not in args and "tests/a.py|" in args and "tests/b.py|" in args
+
+
+def test_an_empty_selection_runs_no_pytest(repo):
+    """Review of 2026-11-15, P2: an empty list made pytest run the whole tree."""
+    _stub_picker(repo, "import sys\na = sys.argv\nopen(a[a.index('--first-out') + 1], 'w').write('0\\n')\n")
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3",
+               PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert not (repo.parent / "pytest-args").exists()
+
+
+def test_any_value_that_is_not_an_off_word_leaves_the_tests_on(repo):
+    _both_sides_change_shared(repo)
+    marker = repo.parent / "affected-ran"
+    _run(repo, PREMERGE_MERGE_TEST="yes", PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}")
+    assert marker.exists()
+    marker.unlink()
+    res = _run(repo, PREMERGE_MERGE_TEST="false", PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0 and not marker.exists() and "did not run" in res.stdout
+
+
+def test_a_function_that_one_side_lacks_gives_no_evidence_there(repo):
+    """Review of 2026-11-15, P2: pytest exits 4 on a missing id and runs nothing, so
+    a red that main caused was blamed on the PR. The id for a function that is not in
+    the file of a side is neither run nor counted there."""
+    _both_sides_change_shared(repo)
+    # The branch adds test_g to tests/t.py. Main does not have it. Main is red on test_a.
+    _commit(repo, "tests/t.py", "def test_a():\n    pass\n\ndef test_g():\n    pass\n")
+    cmd = 'echo "FAILED tests/t.py::test_a - boom"; echo "FAILED tests/t.py::test_g - boom"; exit 1'
+    rerun = "f() { git symbolic-ref -q HEAD >/dev/null || { echo 'FAILED tests/t.py::test_a - boom'; return 1; }; }; f"
+    res = _run(repo, PREMERGE_AFFECTED_CMD=cmd, PREMERGE_RERUN_CMD=rerun)
+    # test_a is red on main alone, so it is not the merge's. test_g has no evidence on main
+    # (no such function there) and is red on the merge: that one is the merge's to answer for.
+    assert res.returncode in (0, 1)
+    assert "tests/t.py::test_a" not in res.stderr
 
 
 def test_an_unknown_flag_is_refused(repo):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pick the tests that a merge can break and a single PR cannot (CIV-32, task 3277).
+"""Pick the tests that a merge can break and a single PR cannot (CIV-MT, task 3277).
 
 premerge.sh calls this on the trial merge. It reads two file lists: the files
 the PR changed (``--pr``) and the files main changed since the merge base
@@ -52,12 +52,37 @@ def _by_size(files: set[str], root: Path) -> list[str]:
     return sorted(files, key=lambda f: (size(f), f))
 
 
-def _src_reach(files: list[str], root: Path) -> set[str]:
-    src = [f for f in files if f not in _tests(files, root)]
-    try:
-        return set(at.select(src, scanners=False)[0])
-    except TypeError:  # an older affected_tests.py has no scanners switch
-        return set(at.select(src)[0])
+_CACHE: dict = {}
+
+
+def _reach(files: list[str], root: Path, *, src_only: bool = False) -> tuple[set[str], bool]:
+    key = (tuple(files), str(root), src_only)
+    if key not in _CACHE:
+        _CACHE[key] = _reach_uncached(files, root, src_only=src_only)
+    return _CACHE[key]
+
+
+def _reach_uncached(files: list[str], root: Path, *, src_only: bool = False) -> tuple[set[str], bool]:
+    """(the test files these changes reach, whether the selector says FULL).
+
+    This is pr-check's own selector, `affected_tests.gate`, so a data file, a flag,
+    a registry and a scanner count as they do in pr-check. If the selector fails
+    it answers FULL, and the caller then says UNPROVEN. An older `affected_tests.py`
+    with no `gate` falls back to `select`."""
+    files = [f for f in files if f not in _tests(files, root)] if src_only else files
+    if not files:
+        return set(), False
+    if hasattr(at, "gate"):
+        g = at.gate(files, root)
+        got = {f for f in g.get("files", []) if f.startswith("tests/") and f.endswith(".py")}
+        return got, bool(g.get("full"))
+    picked, full, _ = at.select(files)
+    return set(picked), bool(full)
+
+
+def full_sides(pr: list[str], main: list[str], root: Path = at.ROOT) -> list[str]:
+    """The sides that the selector calls FULL (a file such as pyproject.toml changed)."""
+    return [name for name, files in (("pr", pr), ("main", main)) if _reach(files, root)[1]]
 
 
 def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[list[str], int] | None:
@@ -67,8 +92,8 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     changes reach through an import. This is the shape of both collisions of
     2026-11-13 and 2026-11-14. Tier 2: every other test file that a side changed.
     Tier 3: the tests both sides reach. Each tier runs small files first."""
-    pr_sel, pr_full, _ = at.select(pr)
-    main_sel, main_full, _ = at.select(main)
+    pr_sel, pr_full = _reach(pr, root)
+    main_sel, main_full = _reach(main, root)
     changed = _tests(pr, root) | _tests(main, root)
     if pr_full and main_full:
         return (["FULL", *_by_size(changed, root)], 0) if changed else None
@@ -79,8 +104,8 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     else:
         both = set(pr_sel) & set(main_sel)
     # Scanner tests are left out here: any .py change picks all of them.
-    pr_src = _src_reach(pr, root)
-    main_src = _src_reach(main, root)
+    pr_src, _ = _reach(pr, root, src_only=True)
+    main_src, _ = _reach(main, root, src_only=True)
     tier1 = ((_tests(main, root) & pr_src) | (_tests(pr, root) & main_src))
     tier2 = changed - tier1
     tier3 = both - changed
@@ -98,12 +123,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pr", required=True, help="file with the PR's changed files, one a line")
     ap.add_argument("--main", required=True, help="file with main's changed files since the merge base")
     ap.add_argument("--first-out", help="write the count of the leading changed-test part to this file")
+    ap.add_argument("--note-out", help="write the sides that are FULL (pr, main) to this file; empty when none")
     args = ap.parse_args(argv)
     got = pick_tiers(_read(args.pr), _read(args.main))
     out, first = got if got else (["FULL"], 0)
+    if args.note_out:
+        pr_files, main_files = _read(args.pr), _read(args.main)
+        with open(args.note_out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(" ".join(full_sides(pr_files, main_files)) + "\n")
     if args.first_out:
-        Path(args.first_out).write_text(f"{first}\n", encoding="utf-8")
-    print("\n".join(out))
+        with open(args.first_out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"{first}\n")
+    # Bytes with LF only, on every platform: premerge.sh reads these lines in Git Bash,
+    # and a CR on a path made pytest stop with "file not found" (review of 2026-11-15).
+    sys.stdout.buffer.write(("".join(f"{line}\n" for line in out)).encode("utf-8"))
+    sys.stdout.buffer.flush()
     return 0
 
 

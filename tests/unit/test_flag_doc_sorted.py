@@ -1,6 +1,6 @@
 """The flag paragraphs of docs/flag_reload.md stay sorted by flag name.
 
-CIV-33 (task 3284, docs/merge_hotspots.md). A PR that adds a flag puts its
+CIV-HS (task 3284, docs/merge_hotspots.md). A PR that adds a flag puts its
 paragraph at its sorted place, not at the tail. Two PRs then edit different
 lines and merge with no conflict, unless their flag names are neighbours.
 """
