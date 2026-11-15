@@ -708,7 +708,7 @@ class TestTheStudioApprovalSource:
             assert ada["sources"]["studio"] == "ok"
             rows = [i for i in ada["items"] if i["app"] == "studio"]
             assert [r["id"] for r in rows] == [want]
-            assert rows[0]["kind"] == "approval" and rows[0]["href"] == shell.STUDIO_HREF
+            assert rows[0]["kind"] == "approval" and rows[0]["href"] == f"{shell.STUDIO_HREF}?pkg={pid}&v=1"
             assert "manifest" not in rows[0]
             # The owner holds the right here, and still gets no row of their own.
             owen = await self._read(world.a, OWEN)
