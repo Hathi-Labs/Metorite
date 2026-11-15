@@ -1309,6 +1309,7 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
     floor: list[str] | None = None,
     organization_id: str | None = None,
     record: dict[str, Any] | None = None,
+    exclusive: bool = False,
 ) -> asyncio.Task[None]:
     """Start *gen* (an SSE-line async generator) in a DETACHED background
     task, and return the task. It needs no HTTP reader.
@@ -1355,11 +1356,16 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
         record:    What the restart sweep needs to persist this run if its
                    process dies (``orchestrator.run_liveness``): the message
                    row id, the agent, the run id. Server-side facts only.
+        exclusive: RESUME-2a review, P2. True for a continuation run: it
+                   refuses while ANY run is in flight on this thread, of any
+                   party, and when the check fails. A continuation is no
+                   member turn, so it never supersedes a run.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
             thread.  Starting would delete a transcript this caller does not
-            own, so it does not start.
+            own, so it does not start. With *exclusive*, when any run is in
+            flight. It raises before any state changes.
     """
     # ── §5.2, the inner layer: the destructive reset is UNREACHABLE by anyone
     # but a legitimate superseder. ────────────────────────────────────────────
@@ -1385,6 +1391,15 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
                 owner=_owner[:20], actor=actor[:20],
             )
             raise SupersedeRefused(thread_id, _owner, actor)
+    if exclusive:
+        _prev = _DETACHED_TASKS.get(thread_id)
+        try:
+            _busy = await is_active(thread_id)
+        except Exception:  # fail closed: start nothing
+            _busy = True
+        if _busy or (_prev is not None and not _prev.done()):
+            _log.info("stream_relay.exclusive_refused", thread_id=thread_id[:12])
+            raise SupersedeRefused(thread_id, "a run in flight", actor or "")
 
     # One run per thread: cancel any stale run still attached to this thread.
     prev = _DETACHED_TASKS.get(thread_id)

@@ -1893,6 +1893,7 @@ def _start_pack_turn(
     solo_room: bool | None,
     batch_thread: bool,
     shows_cards: bool,
+    resume_tool: str = "",
 ) -> asyncio.Future[Any] | None:
     """Start the read of layer (a) beside the load, or None (§4.2.2).
 
@@ -1906,6 +1907,13 @@ def _start_pack_turn(
     org it starts nothing, so it reads and writes no pack state. The task
     counts the turn and reads the sticky packs (``tool_packs.begin_turn``),
     and it gives that turn and the allowed slugs.
+
+    RESUME-2a review, P1-B: *resume_tool* is the tool name of the stored call
+    of a continuation run, from the server's ``resume_call`` kwarg only
+    (R11). The pack that holds it (``tool_packs.pack_of_tool``, within the
+    allowed packs) goes into the turn as a pack used now
+    (``tool_packs.with_resume_pack``), so the run holds the stored tool. It
+    lifts no guard above, and an admin toggle still drops the pack.
     """
     if agent_name != _PACK_AGENT or delegated or solo_room is not True:
         return None
@@ -1931,10 +1939,13 @@ def _start_pack_turn(
     # run, and begin_turn cleans it again. It adds the core pack of that app
     # only when the flag allows it, and it changes no guard.
     surface = tool_packs.current_surface()
+    hold = tool_packs.pack_of_tool(resume_tool, allowed) if resume_tool else ""
 
     async def _read() -> tuple[Any, frozenset[str]]:
         turn = await tool_packs.begin_turn(
             organization_id, thread_id, verified, words, surface)
+        if hold:
+            turn = tool_packs.with_resume_pack(turn, hold)
         return turn, allowed
 
     return asyncio.ensure_future(_read())
@@ -6779,7 +6790,11 @@ def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
     """The tool *name* of this run's OWN tool list, after the injection and
     the gate (``_gate_own_maf_tools``), or None. Never a tool that a module
     import gives: the CRM agent loads for one run as ``_agent_<run>_agents``,
-    so only the run's own list holds the wrapped tool."""
+    so only the run's own list holds the wrapped tool. A pack tool is in that
+    list because ``_start_pack_turn`` holds the pack of the stored tool
+    (review, P1-B). A Copilot agent keeps its tools in ``agent._tools``, which
+    this never reads, so its stored call always gives ``tool_missing`` and
+    runs nothing (fail closed)."""
     from acb_skills.tool_guard import tool_name as _guard_tool_name
 
     if not name:
@@ -6797,6 +6812,15 @@ def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
                 if _guard_tool_name(tool) == name:
                     return tool
     return None
+
+
+def _resume_tool_name(resume_call: dict[str, Any] | None) -> str:
+    """The tool name of the stored call in *resume_call*, the server's kwarg
+    of :func:`run_agent_stream`, or "". Never a key of the event payload
+    (R11)."""
+    stored = resume_call.get("stored") if isinstance(resume_call, dict) else None
+    name = stored.get("tool") if isinstance(stored, dict) else None
+    return name if isinstance(name, str) else ""
 
 
 def _resume_refusal(tool: Any, agent_name: str, stored: Any) -> str | None:
@@ -7279,6 +7303,9 @@ async def run_agent_stream(
             agent_name, organization_id, thread_id, member=_corr_user,
             delegated=_delegated_run, solo_room=solo_room,
             batch_thread=_batch_thread, shows_cards=shows_cards,
+            # RESUME-2a review, P1-B: the pack of the stored tool, from the
+            # server's kwarg only (R11).
+            resume_tool=_resume_tool_name(resume_call),
         )
         if _relay_mark_active is not None:
             with contextlib.suppress(Exception):

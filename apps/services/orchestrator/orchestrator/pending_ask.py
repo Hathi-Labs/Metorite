@@ -56,7 +56,8 @@ path A :func:`note_event` runs in the executor's drain and cannot read the
 tool's context. :func:`note_event` takes the entry, and :func:`insert_ask`
 writes it in the column ``stored_call`` (migration 448). ``_COLUMNS`` leaves
 the column out, so no browser read returns it. :func:`read_stored_call` is the
-one reader, and :func:`claim_stored_call` the one claim (RESUME-2a). A move to
+one reader, and :func:`claim_stored_call` the one claim (RESUME-2a).
+:func:`restore_stored_call` gives a claim back when its run never started. A move to
 ``answered`` or ``closed`` sets it to NULL, and a park keeps it. Dark behind
 ``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
 each row is as before.
@@ -523,6 +524,57 @@ def claim_stored_call(
         except ValueError:
             return None
     return value if isinstance(value, dict) else None
+
+
+#: RESUME-2a review, P2: the give-back of a claim whose run never started.
+#: ONE statement moves the row from ``answered`` back to ``parked`` with the
+#: stored call that the claim took. The WHERE is the claim's own: the org
+#: beside RLS, the request id, the member, the thread, a row that has not
+#: expired, and a column that the claim set to NULL. No run waits on the card
+#: (the thread was at rest), so ``parked`` is its true state.
+_RESTORE_SQL = (
+    "UPDATE chat_pending_ask SET state = 'parked', answer = NULL, "
+    "  answered_at = NULL, parked_at = COALESCE(parked_at, now()), "
+    "  stored_call = CAST(:stored AS jsonb) "
+    "WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
+    "  AND state = 'answered' AND stored_call IS NULL AND expires_at > now() "
+    "  AND actor_email = :member AND thread_id = :tid "
+    "RETURNING request_id"
+)
+
+
+def restore_stored_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+    stored: dict[str, Any],
+) -> bool:
+    """Give back the claim of :func:`claim_stored_call` when its run never
+    started (RESUME-2a review, P2). True when the row waits again.
+
+    ``gateway.routes.agent._resume_from_row`` is the one caller, and only
+    when the run route refused BEFORE ``stream_relay.start_detached`` began.
+    So the card can be answered again, and the call runs at most once.
+    *member*, *thread_id* and *stored* are the claim's own. The org is the
+    session's, under RLS with the org predicate beside it (R5). A stored
+    call that :func:`_stored_text` refuses gives back nothing."""
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    who = (member or "").strip().lower()
+    body = _stored_text(stored)
+    if not who or not thread_id or body is None or not isinstance(request_id, str) \
+            or not _REQUEST_ID.match(request_id):
+        return False
+    with tenant_session(organization_id) as s:
+        r = s.execute(
+            text(_RESTORE_SQL),
+            {"org": organization_id, "rid": request_id, "member": who,
+             "tid": thread_id, "stored": body},
+        ).first()
+    return r is not None
 
 
 # ---------------------------------------------------------------------------

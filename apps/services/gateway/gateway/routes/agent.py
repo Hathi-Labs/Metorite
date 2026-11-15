@@ -97,6 +97,12 @@ class ResumeLaunch(BaseModel):
     stored: dict[str, Any]
     request_id: str
     title: str = ""
+    #: Where the start stands (RESUME-2a review, P2). The run route sets it:
+    #: ``new`` (nothing began), ``refused`` (``start_detached`` refused before
+    #: it began), ``starting`` (``start_detached`` runs, so the run may be
+    #: live) and ``started``. :func:`_resume_from_row` gives the claim back
+    #: only for ``new`` and ``refused``.
+    phase: str = "new"
 
     def as_kwarg(self) -> dict[str, Any]:
         """The ``resume_call`` kwarg of ``executor.run_agent_stream``."""
@@ -207,6 +213,33 @@ async def _refuse_if_another_run_is_active(thread_id: str, actor: str) -> None:
             "holder": owner,
         },
     )
+
+
+async def _refuse_if_any_run_is_active(thread_id: str) -> None:
+    """409 ``run_in_progress`` when ANY run is live on *thread_id*.
+
+    RESUME-2a review, P2: the run route asks it for a continuation run only,
+    after :func:`_refuse_if_another_run_is_active`. A continuation is no
+    member turn, so it never supersedes a run, not even a run of its own
+    member in another tab. It fails CLOSED: a check that fails refuses, and
+    the claim of the card goes back (:func:`_resume_from_row`)."""
+    try:
+        from orchestrator.stream_relay import is_active
+
+        busy = await is_active(thread_id)
+    except Exception:  # fail closed: the card can be answered again
+        _log.warning("agent.continuation_active_check_failed", thread_id=thread_id[:12])
+        busy = True
+    if busy:
+        _log.info("agent.continuation_refused_active_run", thread_id=thread_id[:12])
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "run_in_progress",
+                "message": "A run is in progress on this conversation.",
+                "threadId": thread_id,
+            },
+        )
 
 
 async def _route_incoming_turn(
@@ -3398,6 +3431,12 @@ async def run_agent_stream_endpoint(
     _actor = (getattr(user, "email", "") or "").strip()
     try:
         await _refuse_if_another_run_is_active(thread_id, _actor)
+        if _resume_launch is not None:
+            # RESUME-2a review, P2: `_resume_from_row` found the thread at
+            # rest, then claimed the row. A run that any party started since
+            # then keeps the thread, and the claim goes back. This comes
+            # before the mint, so a refusal writes no reply row.
+            await _refuse_if_any_run_is_active(thread_id)
     except HTTPException:
         # The run will not start, so its cap reservation goes too.
         await _release_cap_slot()
@@ -3535,11 +3574,17 @@ async def run_agent_stream_endpoint(
         # for a turn, so the run reads no typed or sent words.
         from orchestrator.stream_relay import start_detached
 
-        with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
+        # A continuation has no app of the dock, so it binds no surface.
+        with member_typed(_typed, sent=_sent_text), surface_scope(None):
             count_member_steers(_actor, _taken_steers)
+            # Review, P2: `exclusive` refuses while ANY run is live on the
+            # thread, so a continuation never cancels a run of this member
+            # in another tab. A refusal raises before anything began.
+            _resume_launch.phase = "starting"
             try:
-                await start_detached(thread_id, agent_gen, **_detached)
+                await start_detached(thread_id, agent_gen, exclusive=True, **_detached)
             except SupersedeRefused:
+                _resume_launch.phase = "refused"
                 await _release_cap_slot()
                 await _give_back_taken()
                 raise HTTPException(
@@ -3550,6 +3595,7 @@ async def run_agent_stream_endpoint(
                         "threadId": thread_id,
                     },
                 ) from None
+            _resume_launch.phase = "started"
         _log.info("agent.continuation_started", agent=agent_name, run_id=run_id,
                   thread_id=thread_id[:12])
         return _ContinuationStarted(run_id=run_id, thread_id=thread_id)  # type: ignore[return-value]
@@ -3739,8 +3785,11 @@ async def _resumable_row(
 ) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
     """``(org, member, row, stored call)`` of a late Approve that may resume
     (RESUME-2a), or None. With ``CHAT_DURABLE_ASKS`` off, or
-    ``CHAT_RESUME_ORGS`` off for the session's org, it reads nothing. The
-    org and the member are the session's (R5, R11)."""
+    ``CHAT_RESUME_ORGS`` or ``CHAT_LATE_APPROVE_ORGS`` off for the session's
+    org, it reads nothing. RESUME needs both flags: only the late-approve
+    scope writes and reads the SPENT mark that keeps the stored call of a
+    twin row from writing twice (review, P1-A). The org and the member are
+    the session's (R5, R11)."""
     import asyncio
 
     from orchestrator import pending_ask
@@ -3750,11 +3799,11 @@ async def _resumable_row(
     org = (getattr(user, "organization_id", None) or "").strip()
     if not org or not req.thread_id:
         return None
+    from acb_skills.late_approve import APPROVE, late_approve_on
     from acb_skills.stored_call import chat_resume_on
 
-    if not chat_resume_on(org):
+    if not chat_resume_on(org) or not late_approve_on(org):
         return None
-    from acb_skills.late_approve import APPROVE
 
     me = (getattr(user, "email", "") or "").strip().lower()
     if req.declined or str(req.answer or "").strip().upper() != APPROVE or not me:
@@ -3824,9 +3873,19 @@ async def _resume_from_row(
     The HRD-22 offer goes. The run route starts the continuation, and the
     answer is ``{"ok": true, "resumed": true, "threadId", "runId"}``.
 
-    **At most once.** The claim comes before the call. A crash between the
-    two leaves an answered row and no write. The sweep then shows the
-    "interrupted" notice with Continue.
+    **A refusal after the claim** (review, P2). The run route refuses when
+    another member's run started since the check above, and when ANY run is
+    live on the thread (``_refuse_if_any_run_is_active``, and
+    ``start_detached(exclusive=True)``). A refusal, or any raise before
+    ``start_detached`` began, gives the claim back
+    (``pending_ask.restore_stored_call``): the row is ``parked`` with its
+    stored call again, and the slot goes. So the card can be answered again.
+
+    **At most once.** The claim comes before the call. A process crash
+    between the claim and the start of the run leaves an answered row with
+    no stored call, no write and no run. No notice shows, because no run
+    record exists yet. A second Approve of that card gets the plain 409, so
+    the member asks again.
     """
     import asyncio
 
@@ -3890,9 +3949,11 @@ async def _resume_from_row(
             user=user, background_tasks=BackgroundTasks(), _continuation=launch,
         )
     except BaseException:
+        await _give_back_claim(org, me, req, claimed, launch)
         await release_member_slot(organization_id=org, thread_id=req.thread_id)
         raise
     if not isinstance(started, _ContinuationStarted):  # pragma: no cover — a defect
+        await _give_back_claim(org, me, req, claimed, launch)
         await release_member_slot(organization_id=org, thread_id=req.thread_id)
         raise _plain_409()
     from gateway.routes.shell import cache as feed_cache
@@ -3905,6 +3966,36 @@ async def _resume_from_row(
     )
     return {"ok": True, "resumed": True, "threadId": started.thread_id,
             "runId": started.run_id}
+
+
+async def _give_back_claim(
+    org: str, me: str, req: UserInputResponseRequest, claimed: dict[str, Any],
+    launch: ResumeLaunch,
+) -> None:
+    """Give back the claim of a continuation that never began (review, P2).
+
+    Only for the phases ``new`` and ``refused`` of *launch*: then nothing
+    ran, so the row goes back to ``parked`` with its stored call
+    (``pending_ask.restore_stored_call``). In ``starting`` or ``started`` the
+    run may be live, so the claim stays and the call runs at most once. It
+    never raises, so the error of the run route stays the answer."""
+    import asyncio
+
+    if launch.phase not in ("new", "refused"):
+        _log.warning("agent.resume_claim_kept", request_id=req.request_id[:12],
+                     phase=launch.phase)
+        return
+    try:
+        from orchestrator import pending_ask
+
+        back = await asyncio.to_thread(
+            pending_ask.restore_stored_call, org, req.request_id,
+            member=me, thread_id=req.thread_id or "", stored=claimed,
+        )
+    except BaseException:  # never mask the refusal of the route
+        _log.warning("agent.resume_claim_restore_failed", exc_info=True)
+        return
+    _log.info("agent.resume_claim_restored", request_id=req.request_id[:12], restored=back)
 
 
 def _stored_call_resumes(stored: Any, row: dict[str, Any]) -> bool:

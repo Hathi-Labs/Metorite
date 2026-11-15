@@ -232,10 +232,11 @@ async def resume_answer(card: Any) -> bool:
     stored ``act_keys``, and the tool has the stored name. So a changed record
     gives another card text, and the card shows (D-RES-3). A raw call of the
     tool function opens no ``card_call``, so its card has no act keys and
-    never takes the yes. On a yes the act is SPENT
-    (``late_approve.note_approved``). An act that is SPENT already (a twin
-    card, with ``CHAT_LATE_APPROVE_ORGS`` on) takes no yes, so it never
-    writes twice. Never raises, and a fault shows the card."""
+    never takes the yes. The yes takes the act with ONE ``SET … GET``
+    (``late_approve.claim_act``): an act that is SPENT already (a twin row,
+    or a twin approved at the same moment) takes no yes, so it never writes
+    twice. A run with no late-approve scope takes no yes either (fail
+    closed). Never raises, and a fault shows the card."""
     state = _RESUMING.get()
     if state is None or state.taken:
         return False
@@ -243,7 +244,7 @@ async def resume_answer(card: Any) -> bool:
     state.card_shown = True
     state.outcome = "changed"
     try:
-        from acb_skills.late_approve import _run_agent, act_of, act_spent
+        from acb_skills.late_approve import _run_agent, act_of, claim_act
 
         if card is None:
             return False
@@ -257,7 +258,8 @@ async def resume_answer(card: Any) -> bool:
                 stored.get("act_keys") or []):
             _log.info("stored_call.card_changed", tool=str(stored.get("tool") or "")[:60])
             return False
-        if await act_spent(card):
+        # The LAST test: it marks the act SPENT, so nothing may refuse after it.
+        if not await claim_act(card):
             state.outcome = "spent"
             _log.info("stored_call.act_spent", tool=str(stored.get("tool") or "")[:60])
             return False
@@ -266,12 +268,6 @@ async def resume_answer(card: Any) -> bool:
         return False
     state.outcome = "approved"
     state.card_shown = False
-    try:
-        from acb_skills.late_approve import note_approved
-
-        await note_approved(card)
-    except Exception:  # the yes stands: the member approved this card
-        pass
     return True
 
 

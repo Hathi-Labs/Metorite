@@ -28,7 +28,7 @@ release keeps the work.
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 | §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). RESUME-1a and RESUME-2a are built (the rows below) |
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
-| §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS`. No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. Do not flip it before RESUME-3. No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1740,8 +1740,9 @@ A call with arguments that JSON cannot hold, or above 64 KB of UTF-8, stores
 none. A NUL character in an argument value or key stores no call, because jsonb refuses it. The card keeps its row. `CHAT_RESUME_ORGS` must name the org of the run (C5).
 
 **2. The late Approve (RESUME-2).** `POST /agent/respond-input` finds no
-Future and reads the row, as today. When `CHAT_RESUME_ORGS` names the org, a
-row with a stored call takes these steps:
+Future and reads the row, as today. When `CHAT_RESUME_ORGS` and
+`CHAT_LATE_APPROVE_ORGS` both name the org, a row with a stored call takes
+these steps:
 
 1. The org comes from the session. The member must be the row's
    `actor_email`, and the thread must be the row's thread (R5e, as today).
@@ -1802,9 +1803,13 @@ the same reply: steps 1 and 5 of the continuation, and D-RES-7. RESUME-2c
 path.
 
 - **The route.** `POST /agent/respond-input` calls `_resume_from_row` before
-  `_late_answer_from_row`. It runs only with `CHAT_DURABLE_ASKS` on and
-  `CHAT_RESUME_ORGS` naming the org of the session. With the flag off it
-  reads nothing, and the answer is the answer of before.
+  `_late_answer_from_row`. It runs only with `CHAT_DURABLE_ASKS` on, and with
+  `CHAT_RESUME_ORGS` and `CHAT_LATE_APPROVE_ORGS` both naming the org of the
+  session. RESUME needs both flags, because only the late-approve scope
+  writes and reads the SPENT mark of a twin card (review, P1-A). With either
+  flag off it reads nothing, and the answer is the answer of before.
+- **The client.** No client reads the answer `resumed` before RESUME-3. So
+  `CHAT_RESUME_ORGS` must not flip for an org before RESUME-3 merges.
 - **The checks before the claim.** The answer is `APPROVE` and not a
   decline. The row of the session's org waits, its `actor_email` is the
   session's member, its thread is the request's thread, and its kind is
@@ -1823,17 +1828,37 @@ path.
   also names `expires_at > now()`, the member, the thread and a stored call
   that is not NULL. A deadlock (40P01) and a lock timeout (55P03) mean no claim. It
   adds no state. No row back releases the slot and answers the plain 409.
+- **The give-back** (review, P2). The run route refuses a continuation
+  after the claim in two cases. Another member's run took the thread
+  (`_refuse_if_another_run_is_active`). Any run is live on the thread
+  (`_refuse_if_any_run_is_active`, before the mint, and
+  `start_detached(exclusive=True)`). So a continuation never cancels a run
+  in another tab of the same member. A refusal, and each raise before
+  `start_detached` began, gives the claim back (`_give_back_claim`).
+  `pending_ask.restore_stored_call` is ONE statement under the predicates
+  of the claim. It moves the row back to `parked` with its stored call, and
+  the slot goes. So the member can answer the card again. A raise after
+  `start_detached` began keeps the claim (`ResumeLaunch.phase`).
 - **The starter.** The run route `run_agent_stream_endpoint` is the ONE
   starter. `_resume_from_row` calls it with `_continuation`, a server-only
   `ResumeLaunch`. Its HTTP value is `_no_continuation`, which reads no
   request input (R11). The run route then shows no member turn and takes
   no second cap slot. It passes `resume_call` to the executor, and it starts
   the run with `stream_relay.start_detached`, which needs no reader. `run_detached`
-  calls the same `start_detached`, then reads the stream.
+  calls the same `start_detached`, then reads the stream. A continuation
+  binds no surface.
 - **The prologue.** `executor._resume_prologue` runs after the run binds its
   org, member and relay thread, after the tool injection and the gate, and
   before the compose. It finds the tool by name in the run's own wrapped
-  list, never by a module import. It refuses unless the tool passes
+  list, never by a module import. A pack tool is in that list (review,
+  P1-B). With `TOOL_PACKS` on, the park ended the run of the card before
+  the pack became sticky, and the continuation has no words. So
+  `_start_pack_turn` takes the tool name from the kwarg only (R11), and it
+  holds the allowed pack that holds the tool (`tool_packs.pack_of_tool`,
+  `tool_packs.with_resume_pack`). An admin toggle still drops the pack. A
+  Copilot agent keeps its tools in `agent._tools`, which the prologue never
+  reads. So its stored call always gives `tool_missing` and runs nothing
+  (fail closed). It refuses unless the tool passes
   `egress.is_card_write_tool`, its module is the stored module, and the
   stored agent is the run's agent. It calls the wrapped function once, with
   a cap of 60 s while no card shows. The step shows under the stored call
@@ -1844,11 +1869,21 @@ path.
 - **The words of the member.** Memory reads and extracts `""`. The typed and
   sent words are `""`. The native session neither loads nor saves the run
   (`resume_note`).
-- **A twin card.** With `CHAT_LATE_APPROVE_ORGS` on, an act that is SPENT
-  takes no yes, so the stored call of a twin card never writes twice.
-- **At most once.** The claim comes before the call. A crash between the
-  two leaves an answered row and no write. The sweep then shows the
-  "interrupted" notice with Continue.
+- **A twin card** (review, P1-A). The last test of the yes is
+  `late_approve.claim_act`. It marks the act SPENT and reads the old value
+  in ONE `SET … GET`. An act that was SPENT already takes no yes. So of two
+  twin rows approved at the same moment, one only writes, and the other
+  shows its card. A run with no late-approve scope takes no yes, and a
+  fault takes none (fail closed). The SPENT mark lives as long as a row
+  (`spent_ttl_s`: 168 h by default), so a twin row that waits a week still
+  finds it. The cost: an identical act in the same thread within that life
+  shows one more card. `take_grant` refuses an act that was SPENT already
+  too.
+- **At most once.** The claim comes before the call. A process crash between
+  the claim and the start of the run leaves an answered row with no stored
+  call, no write and no run. No "interrupted" notice shows, because no run
+  record exists yet. A second Approve of that card gets the plain 409, so
+  the member asks again.
 
 **Corrections of the audit of 2026-11-16.**
 

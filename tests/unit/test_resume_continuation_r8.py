@@ -29,6 +29,15 @@ R7, each with the mutation that turns it red:
   act keys only.
 * ``test_twin_cards_with_both_flags_never_write_twice`` — drop the SPENT read
   of the yes.
+* ``test_twin_rows_approved_at_the_same_moment_write_once`` (review, P1-A
+  (d)) — split the ONE ``SET … GET`` of ``late_approve._spend`` into a GET
+  and a SET, and both continuations write.
+* ``test_the_spent_mark_outlives_the_twin_row`` (review, P1-A (c)) — drop the
+  row life from ``late_approve.spent_ttl_s``.
+* ``test_flag_off_the_answer_is_as_before`` (review, P1-A (a)) — RESUME with
+  ``CHAT_LATE_APPROVE_ORGS`` off resumes, so the twin guard has no mark.
+* ``test_a_refusal_after_the_claim_gives_the_row_back`` (review, P2) — drop
+  ``_give_back_claim``, or a predicate of ``pending_ask._RESTORE_SQL``.
 
 ``HELD_R8_REDIS_URL`` names a PRIVATE Redis, because the suite runs FLUSHDB.
 Never point it at a shared server. With it or the database unset, the suite
@@ -44,6 +53,8 @@ skips, and a skip is not a pass. Run::
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import functools
 import os
 import threading
@@ -88,12 +99,16 @@ pytestmark = [
 ]
 
 _BOB = "bob@pa-a.test"
+#: True inside a continuation run of the stand-in run route.
+IN_CONT: contextvars.ContextVar[bool] = contextvars.ContextVar("r8_in_cont", default=False)
 #: Each PATCH of the stand-in CRM transport, in order.
 PATCHES: list[tuple[str, str]] = []
 DEALS: dict[str, str] = {}
 #: The continuation runs that the stand-in run route started.
 STARTED: list[asyncio.Task[Any]] = []
 NOTES: list[str] = []
+#: Each entry makes the stand-in run route refuse ONE start after the claim.
+REFUSE: list[bool] = []
 
 
 async def update_deal_status(deal_id: str, stage: str, lost_reason: str | None = None) -> str:
@@ -147,18 +162,33 @@ def scene(as_app, liveness, no_persist, monkeypatch):
     from gateway.routes import agent as agent_routes
 
     monkeypatch.setattr(get_settings(), "chat_durable_asks", True)
-    monkeypatch.setattr(get_settings(), "chat_resume_orgs",
-                        f"{as_app.org_a},{as_app.org_b}")
-    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    orgs = f"{as_app.org_a},{as_app.org_b}"
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", orgs)
+    # Review, P1-A (a): RESUME needs the late-approve flag too.
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", orgs)
     monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 0.05)
+
+    def _no_shared_redis() -> Any:
+        raise RuntimeError("this test runs with no Redis: never a shared server")
+
+    # A test that needs Redis calls `_use_redis` with the PRIVATE server.
+    monkeypatch.setattr(late_approve, "_redis", _no_shared_redis)
 
     async def _ok(*_a, **_k):
         return None
 
     async def _endpoint(req, _request, *, user, background_tasks, _continuation):
         launch = _continuation
+        if REFUSE:
+            # Review, P2: the run route refuses after the claim (another
+            # member's run took the thread in the window).
+            from fastapi import HTTPException
+
+            REFUSE.pop()
+            raise HTTPException(status_code=409, detail={"error": "run_in_progress"})
 
         async def _cont() -> None:
+            IN_CONT.set(True)
             _bind_run(req.thread_id, user.organization_id, user.email)
             payload: dict[str, Any] = {"message": ""}
             async for _line in executor._resume_prologue(
@@ -178,6 +208,7 @@ def scene(as_app, liveness, no_persist, monkeypatch):
     PATCHES.clear()
     STARTED.clear()
     NOTES.clear()
+    REFUSE.clear()
     DEALS.clear()
     DEALS.update({"d-neuro": "Neuropeak", "d-orbit": "Orbit"})
     yield as_app, liveness
@@ -430,7 +461,11 @@ def test_an_expired_row_runs_nothing(scene, monkeypatch):
     asyncio.run(go())
 
 
-def test_flag_off_the_answer_is_as_before(scene, monkeypatch):
+@pytest.mark.parametrize("flag", ["chat_resume_orgs", "chat_late_approve_orgs"])
+def test_flag_off_the_answer_is_as_before(flag, scene, monkeypatch):
+    """Either flag off: no stored call is read, nothing resumes and no PATCH
+    goes out. The answer is the 409 ``run_restarted`` of before, so the new
+    run draws its card (review, P1-A (a))."""
     from acb_common import get_settings
 
     w, r = scene
@@ -447,7 +482,7 @@ def test_flag_off_the_answer_is_as_before(scene, monkeypatch):
         _use_redis(monkeypatch, client)
         try:
             rid = await _park(r, tid, w.org_a)
-            monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
+            monkeypatch.setattr(get_settings(), flag, "")
             monkeypatch.setattr(pending_ask, "read_stored_call", _spy)
             res = await _answer(tid, rid, _ALICE, w.org_a)
             assert getattr(res, "status_code", None) == 409
@@ -486,6 +521,161 @@ def test_twin_cards_with_both_flags_never_write_twice(scene, monkeypatch):
             await _settle()
             assert PATCHES == [("d-neuro", "Payment Complete")], "no second write"
             assert "already ran in this chat" in NOTES[-1]
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# Review of RESUME-2a: P1-A (c) and (d), and P2
+# ---------------------------------------------------------------------------
+
+class _Meet:
+    """The real ``TenantRedis``, with ONE meeting point: in a continuation
+    run, the first op of each run on the offer key waits until both runs
+    reached it. So the two stored-call yeses race in the worst order. The
+    real code then still writes once, because its mark and its test are ONE
+    ``SET … GET``."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._seen: set[int] = set()
+        self._here = 0
+        self._both = asyncio.Event()
+
+    async def _meet(self, k: Any) -> None:
+        task = asyncio.current_task()
+        if (not IN_CONT.get() or getattr(k, "namespace", "") != late_approve.OFFER_NAMESPACE
+                or task is None or id(task) in self._seen):
+            return
+        self._seen.add(id(task))
+        self._here += 1
+        if self._here >= 2:
+            self._both.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._both.wait(), timeout=10)
+
+    async def get(self, k: Any) -> Any:
+        await self._meet(k)
+        return await self._inner.get(k)
+
+    async def set(self, k: Any, value: Any, **kwargs: Any) -> Any:
+        await self._meet(k)
+        return await self._inner.set(k, value, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def test_twin_rows_approved_at_the_same_moment_write_once(scene, monkeypatch):
+    """P1-A (d). Two parked twin cards of ONE act, approved at the same
+    moment. Each claim takes its own row, and two continuations run at once.
+    Their yeses meet at the offer key, and exactly one writes. The other
+    shows its card. Mutation: a GET, then a SET in ``late_approve._spend`` ->
+    both read no mark -> two PATCHes -> red."""
+    from acb_common.tenant_redis import TenantRedis
+
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        try:
+            _use_redis(monkeypatch, client)
+            first = await _park(r, tid, w.org_a)
+            twin = await _park(r, tid, w.org_a)
+            meet = _Meet(TenantRedis(client))
+            monkeypatch.setattr(late_approve, "_redis", lambda: meet)
+            a, b = await asyncio.gather(
+                _answer(tid, first, _ALICE, w.org_a), _answer(tid, twin, _ALICE, w.org_a))
+            assert isinstance(a, dict) and a["resumed"] is True, a
+            assert isinstance(b, dict) and b["resumed"] is True, b
+            assert len(STARTED) == 2, "two continuations ran"
+            await _settle()
+            assert meet._here == 2, "non-vacuity: both yeses met at the offer key"
+            assert PATCHES == [("d-neuro", "Payment Complete")], "ONE write"
+            assert len(_cards(r, tid)) == 3, "two parked cards, and one new card"
+            assert sum("already ran in this chat" in n for n in NOTES) == 1
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_the_spent_mark_outlives_the_twin_row(scene, monkeypatch):
+    """P1-A (c). After the first card writes, the SPENT mark on the real
+    Redis lives at least as long as the twin row that still waits, so the
+    twin never finds it gone. Mutation: drop the row life from
+    ``spent_ttl_s`` -> a TTL of 1800 s against a row of 7 days -> red."""
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            first = await _park(r, tid, w.org_a)
+            twin = await _park(r, tid, w.org_a)
+            res = await _answer(tid, first, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["resumed"] is True
+            await _settle()
+            assert PATCHES == [("d-neuro", "Payment Complete")]
+            spent = [k for k in await client.keys(f"cc:{w.org_a}:{late_approve.OFFER_NAMESPACE}:*")
+                     if await client.get(k) == late_approve._SPENT]
+            assert len(spent) == 1, "non-vacuity: one SPENT mark"
+            ttl = await client.ttl(spent[0])
+            with w.admin_engine.connect() as c:
+                left = float(c.execute(text(
+                    "SELECT EXTRACT(EPOCH FROM expires_at - now()) FROM chat_pending_ask "
+                    "WHERE organization_id = CAST(:o AS uuid) AND request_id = :r"),
+                    {"o": w.org_a, "r": twin}).scalar_one())
+            assert ttl >= left - 5, (ttl, left)
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_refusal_after_the_claim_gives_the_row_back(scene, monkeypatch):
+    """P2 on the real rows. The run route refuses once after the claim. The
+    real ``restore_stored_call`` puts the row back to ``parked`` with its
+    stored call, so a second Approve resumes it and writes once. The give-back
+    of another member, another thread and another org moves nothing.
+    Mutation: drop ``_give_back_claim`` -> the second Approve is the plain 409
+    and nothing writes -> red."""
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            rid = await _park(r, tid, w.org_a)
+            REFUSE.append(True)
+            refused = await _answer(tid, rid, _ALICE, w.org_a)
+            assert getattr(refused, "status_code", None) == 409, refused
+            assert _row(w, w.org_a, rid) == ("parked", None, False), "the row waits again"
+            stored = pending_ask.read_stored_call(w.org_a, rid)
+            assert stored is not None and stored["arguments"]["deal_id"] == "d-neuro"
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["resumed"] is True, res
+            await _settle()
+            assert PATCHES == [("d-neuro", "Payment Complete")]
+            assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True)
+            # The give-back keeps each predicate of the claim.
+            for member, thread, org in ((_BOB, tid, w.org_a), (_ALICE, "t-x", w.org_a),
+                                        (_ALICE, tid, w.org_b)):
+                assert pending_ask.restore_stored_call(
+                    org, rid, member=member, thread_id=thread, stored=stored) is False
+            assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True)
+            assert pending_ask.restore_stored_call(
+                w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is True
+            assert pending_ask.restore_stored_call(
+                w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is False, "once"
         finally:
             await client.flushdb()
             await client.aclose()

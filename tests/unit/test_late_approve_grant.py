@@ -174,13 +174,15 @@ class _Store:
             raise self.fail
 
     async def set(self, k: Any, value: str, ex: int | None = None, nx: bool = False,
-                  **_kw: Any) -> bool | None:
+                  get: bool = False, **_kw: Any) -> Any:
         self._check("set", k)
+        old = self.data.get(k.value)
         if nx and k.value in self.data:
-            return None
+            return old if get else None
         self.data[k.value] = value
         self.ttl[k.value] = ex
-        return True
+        # ``SET … GET`` (Redis 6.2): the old value, or None.
+        return old if get else True
 
     async def get(self, k: Any) -> str | None:
         self._check("get", k)
@@ -411,6 +413,47 @@ def test_a_record_lives_no_longer_than_its_row():
     assert late_approve._row_ttl_s({"expires_at": gone}, 604800) < 0
     assert late_approve._row_ttl_s({"expires_at": "not a time"}, 604800) == 0
     assert late_approve._row_ttl_s({}, 3600) == 3600
+
+
+def test_the_spent_mark_outlives_each_waiting_row(monkeypatch):
+    """RESUME-2a review, P1-A (c). The SPENT mark lives as long as a row
+    (``chat_ask_ttl_hours``), so the stored call of a twin row that waits a
+    week still finds it. The cost: an identical act in the same thread within
+    that week shows one more card. Mutation: drop the hours term of
+    ``spent_ttl_s`` -> 1800 s -> red."""
+    from acb_common import get_settings
+
+    assert late_approve.spent_ttl_s() == max(
+        late_approve.GRANT_TTL_S, pending_ask._ttl_hours() * 3600)
+    monkeypatch.setattr(get_settings(), "chat_ask_ttl_hours", 168)
+    monkeypatch.setattr(get_settings(), "chat_ask_park_seconds", 600)
+    assert late_approve.spent_ttl_s() == 168 * 3600
+    monkeypatch.setattr(get_settings(), "chat_ask_ttl_hours", 1)
+    monkeypatch.setattr(get_settings(), "chat_ask_park_seconds", 7200)
+    assert late_approve.spent_ttl_s() == 7500, "the park window still counts"
+
+
+def test_the_spent_mark_is_one_set_get_and_one_writer_wins():
+    """RESUME-2a review, P1-A (d). ``_spend`` writes the mark and reads the
+    old value in ONE ``SET … GET``: the first writer reads no mark, the second
+    reads SPENT. ``take_grant`` and ``claim_act`` refuse on SPENT. Mutation:
+    a GET, then a SET -> the source test below fails."""
+    from acb_common.tenant_redis import organization_scope
+
+    store = _Store()
+
+    async def go() -> tuple[bool, bool]:
+        with organization_scope(_ORG_A):
+            first = await late_approve._spend(store, _ALICE, "t-spend", "d" * 32)
+            second = await late_approve._spend(store, _ALICE, "t-spend", "d" * 32)
+        return first, second
+
+    assert asyncio.run(go()) == (False, True)
+    assert [c.split(" ")[0] for c in store.calls] == ["set", "delete", "set", "delete"]
+    src = inspect.getsource(late_approve._spend)
+    assert "get=True" in src and ".get(" not in src
+    assert "if await _spend(" in inspect.getsource(late_approve.take_grant)
+    assert "spent = await _spend(" in inspect.getsource(late_approve.claim_act)
 
 
 # ---------------------------------------------------------------------------
@@ -924,10 +967,11 @@ def test_each_record_has_one_writer_and_one_reader():
     ``record_offer`` one (the park), ``take_grant`` and ``note_approved`` one
     each (the card gate), and ``drop_offer`` the park and the decline. No
     other code names a namespace of the grant. RESUME-2a: the stored-call yes
-    (``stored_call.resume_answer``) marks its act SPENT too."""
+    (``stored_call.resume_answer``) takes its act with ``claim_act``, the one
+    atomic mark (review, P1-A)."""
     names = ("grant_from_offer(", "record_offer(", "take_grant(", "note_approved(",
-             "drop_offer(", "chat-late-approve", "chat-late-offer", "chat-late-ask",
-             "GRANT_NAMESPACE")
+             "claim_act(", "drop_offer(", "chat-late-approve", "chat-late-offer",
+             "chat-late-ask", "GRANT_NAMESPACE")
     callers: dict[str, set[str]] = {n: set() for n in names}
     for top in ("apps", "packages"):
         for path in (_ROOT / top).rglob("*.py"):
@@ -945,9 +989,10 @@ def test_each_record_has_one_writer_and_one_reader():
     assert callers["grant_from_offer("] == {own, agent}
     assert callers["record_offer("] == {own, park}
     assert callers["take_grant("] == {own, gate}
-    assert callers["note_approved("] == {own, gate, stored}
+    assert callers["note_approved("] == {own, gate}
+    assert callers["claim_act("] == {own, stored}
     assert callers["drop_offer("] == {own, park, agent}
-    for name in names[5:]:
+    for name in names[6:]:
         assert callers[name] == {own}, (name, callers[name])
 
 

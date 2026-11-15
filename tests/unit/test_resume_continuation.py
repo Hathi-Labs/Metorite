@@ -88,6 +88,7 @@ class _ResumeDb(_AskDb):
         super().__init__()
         self.reads: list[str] = []
         self.claims: list[str] = []
+        self.restores: list[str] = []
 
     def insert_ask(self, org: str, row: dict[str, Any]) -> bool:
         ok = super().insert_ask(org, row)
@@ -127,12 +128,21 @@ class _ResumeDb(_AskDb):
         row.update(state="answered", answer=answer, stored_call=None)
         return stored
 
+    def restore_stored_call(self, org, rid, *, member, thread_id, stored):
+        self.restores.append(rid)
+        row = self.rows.get((org, rid))
+        if (row is None or row["state"] != "answered" or row.get("stored_call") is not None
+                or row["actor_email"] != member or row["thread_id"] != thread_id):
+            return False
+        row.update(state="parked", answer=None, stored_call=dict(stored))
+        return True
+
 
 @pytest.fixture
 def ask_db(monkeypatch):
     db = _ResumeDb()
     for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks",
-                 "read_stored_call", "claim_stored_call"):
+                 "read_stored_call", "claim_stored_call", "restore_stored_call"):
         monkeypatch.setattr(pending_ask, name, getattr(db, name))
     pending_ask._reset_for_tests()
     executor._pending_user_input.clear()
@@ -246,12 +256,17 @@ def test_flag_off_never_reads_the_stored_call_and_the_409_is_as_before(
         rid2.encode(), b"RID")
 
 
+@pytest.mark.parametrize("flag", ["chat_resume_orgs", "chat_late_approve_orgs"])
 def test_another_org_off_the_list_takes_todays_path(
-    resume_on, ask_db, liveness, no_persist, launches, monkeypatch,
+    flag, resume_on, ask_db, liveness, no_persist, launches, monkeypatch,
 ):
+    """RESUME needs BOTH flags (review, P1-A (a)): only the late-approve
+    scope writes and reads the SPENT mark of a twin row. Mutation: drop the
+    ``late_approve_on(org)`` test of ``_resumable_row`` -> the
+    ``chat_late_approve_orgs`` case resumes -> red."""
     from acb_common import get_settings
 
-    monkeypatch.setattr(get_settings(), "chat_resume_orgs", _ORG_B)
+    monkeypatch.setattr(get_settings(), flag, _ORG_B)
     rid = _park_row(ask_db)
     res = _approve(monkeypatch, "t-resume", rid)
     assert res.status_code == 409 and res.json()["detail"]["error"] == "run_restarted"
@@ -866,11 +881,15 @@ def test_the_respond_route_calls_the_resume_before_the_late_answer():
     flag = inspect.getsource(agent_routes._resumable_row)
     assert flag.index("chat_resume_on(org)") < flag.index("read_ask")
     assert flag.index("chat_resume_on(org)") < flag.index("read_stored_call")
+    assert flag.index("not late_approve_on(org)") < flag.index("read_ask")
     route = inspect.getsource(agent_routes._resume_from_row)
     claim = route.index("pending_ask.claim_stored_call, org")
     assert route.index("await admit_member_run(") < claim
     assert route.index("await _thread_at_rest(") < claim
     assert claim < route.index("await run_agent_stream_endpoint(")
+    # Review, P2: each raise after the claim may give it back.
+    start = route.index("await run_agent_stream_endpoint(")
+    assert route.index("await _give_back_claim(", start) < route.index("        raise\n", start)
 
 
 def test_the_claim_is_one_statement_with_each_predicate():
@@ -913,3 +932,270 @@ def test_a_lock_timeout_and_a_deadlock_mean_no_claim(monkeypatch):
             _ORG_A, "a" * 32, member=_ALICE, thread_id="t", answer="APPROVE")
     assert pending_ask.claim_stored_call(
         _ORG_A, "not-an-id", member=_ALICE, thread_id="t", answer="APPROVE") is None
+
+
+# ---------------------------------------------------------------------------
+# 8. Review of RESUME-2a: P1-A (the twin guard fails closed)
+# ---------------------------------------------------------------------------
+
+def test_with_no_late_approve_scope_the_yes_is_refused_and_the_card_shows(
+    resume_on, ask_db, liveness, monkeypatch,
+):
+    """P1-A (b): ``claim_act`` fails CLOSED. A run with no late-approve scope
+    (the flag off for the run's org) takes no yes, so the card shows and
+    nothing writes before the member answers it. Mutation: return True from
+    ``claim_act`` when the scope is None -> one write and no card -> red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    out = _yes_run(_stored(), lambda: _keyed(
+        update_deal_status, deal_id="d-neuro", stage="Payment Complete"))
+    assert WRITES == [] and out["cards"], "the card showed, and REJECT wrote nothing"
+    assert out["state"].outcome == "spent"
+    assert resume_on.data == {}, "no scope writes no mark"
+
+
+# ---------------------------------------------------------------------------
+# 9. Review of RESUME-2a: P1-B (the continuation holds the pack of its tool)
+# ---------------------------------------------------------------------------
+
+_READ_ONLY = {"read_only": True, "destructive": False, "idempotent": True, "open_world": False}
+
+
+def _crm_probe(name: str) -> Any:
+    async def probe(deal_id: str = "", stage: str = "", lost_reason: str | None = None) -> str:
+        return f"{name} done"
+
+    probe.__name__ = name
+    probe.__tool_risk__ = dict(_READ_ONLY)  # type: ignore[attr-defined]
+    return probe
+
+
+@pytest.mark.parametrize("held", [True, False], ids=["the stored tool", "no stored tool"])
+def test_a_continuation_with_no_words_holds_the_pack_of_the_stored_tool(held, monkeypatch):
+    """P1-B. The main assistant with ``TOOL_PACKS`` on. The park ended the
+    run of the card before ``note_used`` made the CRM pack sticky, and the
+    continuation has no sent words and no surface. The REAL pack path
+    (``_start_pack_turn`` then ``_apply_pack_turn``, so ``_apply_tool_packs``)
+    must still put ``update_deal_status`` in the run's own list, where the
+    prologue finds it by name. With no stored tool the same turn loads no
+    pack (non-vacuity). Mutation: drop the ``with_resume_pack`` step of
+    ``_start_pack_turn`` -> ``tool_missing`` -> red."""
+    import types
+
+    from acb_common import get_settings
+    from acb_common.assistant_profile import member_typed, sent_words
+    from acb_skills import skill_families as sf
+    from orchestrator import _tool_injection as ti
+
+    from tests.unit import test_loader_replaces_handoff as L
+    from tests.unit._egress_mark_store import install_memory_mark_store
+    from tests.unit.test_tool_packs_choice import CONFIG
+
+    install_memory_mark_store(monkeypatch)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "*", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    monkeypatch.setattr(executor, "_verified_run_member", lambda: L.MEMBER)
+    crm = tuple(sf.SKILL_FAMILIES["crm-records"]["tools"])
+    assert "update_deal_status" in crm, "non-vacuity: the CRM pack holds the tool"
+    stub = types.SimpleNamespace(_agent_tools=lambda: [_crm_probe(n) for n in crm])
+    monkeypatch.setitem(ti._PACK_OWNER_MODULES, "crm-assistant", stub)
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _name: frozenset())
+
+    async def _native() -> str:
+        return "native"
+
+    monkeypatch.setattr("acb_skills.crm_tools.crm_mode", _native)
+    resume = _resume() if held else None
+    name = executor._resume_tool_name(resume)
+    assert name == ("update_deal_status" if held else "")
+
+    async def go() -> tuple[list[Any], Any]:
+        agents = L._fresh()
+        assert executor._resume_tool_of(agents, "update_deal_status") is None, "non-vacuity"
+        with member_typed("", sent=""), L._tenant():
+            assert sent_words() == ""
+            task = executor._start_pack_turn(
+                "orchestrator", L.ORG, L.SESSION, member=L.MEMBER, delegated=False,
+                solo_room=True, batch_thread=False, shows_cards=True, resume_tool=name)
+            assert task is not None
+            applied = await executor._apply_pack_turn(
+                task, agents, L._run_ctx(), agent_name="orchestrator",
+                tool_scope=list(CONFIG["tool_scope"]), agent_config=CONFIG)
+        return agents, applied
+
+    agents, applied = asyncio.run(go())
+    found = executor._resume_tool_of(agents, "update_deal_status")
+    if held:
+        assert found is not None, "the run holds the stored tool"
+        assert applied is not None and applied.record.slugs == ("crm-records",)
+    else:
+        assert found is None
+        assert applied is None or "crm-records" not in applied.record.slugs
+
+
+def test_the_pack_hold_comes_only_from_the_kwarg():
+    """R11: the pack of the stored tool comes from ``resume_call`` only, and
+    an org off the pack still loads no pack. Mutation: read the tool name
+    from the payload -> red."""
+    from acb_skills import tool_packs as tp
+
+    src = inspect.getsource(executor.run_agent_stream)
+    assert "resume_tool=_resume_tool_name(resume_call)" in src
+    assert executor._resume_tool_name({"stored": {"tool": 7}}) == ""
+    assert executor._resume_tool_name(None) == ""
+    assert tp.pack_of_tool("update_deal_status", {"crm-records"}) == "crm-records"
+    assert tp.pack_of_tool("update_deal_status", {"email"}) == "", "the flag decides"
+    assert tp.pack_of_tool("", {"crm-records"}) == ""
+    turn = tp.PackTurn("o", "s", "m", 9, (tp.Sticky("email", (1, 0), 3),), "", True)
+    held = tp.with_resume_pack(turn, "crm-records")
+    assert [e.slug for e in held.sticky] == ["email", "crm-records"]
+    assert held.sticky[-1].used == 9 and held.words == "" and held.turn == 9
+    assert tp.with_resume_pack(turn, "not-a-pack") is turn
+    choice = tp.choose(held, allowed={"email"}, base_tools=40)
+    assert "crm-records" not in choice.slugs, "an org off the pack loads no pack"
+
+
+# ---------------------------------------------------------------------------
+# 10. Review of RESUME-2a: P2 (a refusal after the claim gives it back)
+# ---------------------------------------------------------------------------
+
+def _resume_now(tid: str, rid: str, *, member: str = _ALICE) -> Any:
+    """``_resume_from_row`` itself, as the respond route calls it."""
+    from acb_auth import UserContext, UserRole
+    from fastapi import HTTPException
+    from gateway.routes import agent as agent_routes
+
+    req = agent_routes.UserInputResponseRequest(request_id=rid, answer="APPROVE", thread_id=tid)
+    user = UserContext(email=member, role=UserRole.EMPLOYEE, organization_id=_ORG_A)
+
+    async def go() -> Any:
+        try:
+            return await agent_routes._resume_from_row(req, user)
+        except HTTPException as exc:
+            return exc
+
+    return asyncio.run(go())
+
+
+def test_another_members_run_in_the_window_gives_the_claim_back(
+    resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """P2 (i), a shared room. Bob starts a run after ``_thread_at_rest`` and
+    before the run route's refusal. The route answers 409 after the claim,
+    and the row waits again WITH its stored call, so a second Approve then
+    resumes it. Mutation: drop ``_give_back_claim`` from the ``except`` of
+    ``_resume_from_row`` -> the row stays answered and the second Approve is
+    the plain 409 -> red."""
+    from fastapi import HTTPException
+    from gateway.routes import agent as agent_routes
+
+    seen = _stream_world(monkeypatch, shared=True)
+    refusals = [True]
+
+    async def _bobs_run(thread_id: str, actor: str) -> None:
+        if refusals and refusals.pop():
+            raise HTTPException(status_code=409, detail={"error": "run_in_progress",
+                                                         "holder": _BOB})
+
+    monkeypatch.setattr(agent_routes, "_refuse_if_another_run_is_active", _bobs_run)
+    rid = _park_row(ask_db, tid="t-race")
+    first = _resume_now("t-race", rid)
+    assert getattr(first, "status_code", None) == 409, first
+    assert first.detail["error"] == "run_in_progress"
+    assert ask_db.claims == [rid] and ask_db.restores == [rid]
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "parked" and row["stored_call"] == _stored() and row["answer"] is None
+    assert seen["starts"] == [] and seen["mints"] == [], "nothing began, and no reply row"
+    second = _resume_now("t-race", rid)
+    assert isinstance(second, dict) and second["resumed"] is True, second
+    assert len(seen["starts"]) == 1 and ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+
+
+def test_a_run_of_the_same_member_in_another_tab_is_never_cancelled(
+    resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """P2 (ii). Alice starts a run in another tab in the window. The
+    continuation refuses (``_refuse_if_any_run_is_active``) before the mint
+    and before ``start_detached``, so it never cancels her run, and the card
+    waits again. Mutation: drop the ``_refuse_if_any_run_is_active`` call ->
+    the continuation starts over her run -> red."""
+    from gateway.routes import agent as agent_routes
+
+    seen = _stream_world(monkeypatch)
+
+    async def _was_at_rest(_tid: str) -> bool:
+        return True
+
+    monkeypatch.setattr(agent_routes, "_thread_at_rest", _was_at_rest)
+    liveness.store["cc:active:t-tab"] = "1"  # her run in the other tab
+    liveness.store["cc:runactor:t-tab"] = _ALICE
+    rid = _park_row(ask_db, tid="t-tab")
+    res = _resume_now("t-tab", rid)
+    assert getattr(res, "status_code", None) == 409, res
+    assert seen["starts"] == [] and seen["mints"] == []
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "parked"
+    assert ask_db.rows[(_ORG_A, rid)]["stored_call"] == _stored()
+
+
+def test_an_exclusive_start_refusal_gives_the_claim_back_and_a_late_raise_keeps_it(
+    resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """P2. ``start_detached(exclusive=True)`` refuses before anything began:
+    the claim goes back. Any other raise of ``start_detached`` may come after
+    the run began, so the claim stays (at most once). Mutation: give the claim
+    back in each phase -> the second case restores -> red."""
+    seen = _stream_world(monkeypatch)
+    calls: list[dict[str, Any]] = []
+
+    async def _refused(thread_id, gen, **kw):
+        calls.append(kw)
+        raise stream_relay.SupersedeRefused(thread_id, "a run in flight", _ALICE)
+
+    monkeypatch.setattr(stream_relay, "start_detached", _refused)
+    rid = _park_row(ask_db, tid="t-excl")
+    res = _resume_now("t-excl", rid)
+    assert getattr(res, "status_code", None) == 409
+    assert calls and calls[0]["exclusive"] is True
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "parked" and ask_db.restores == [rid]
+
+    async def _broke(thread_id, gen, **kw):
+        raise RuntimeError("the drain task may run already")
+
+    monkeypatch.setattr(stream_relay, "start_detached", _broke)
+    with pytest.raises(RuntimeError):
+        _resume_now("t-excl", rid)
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered", "the claim stays"
+    assert ask_db.restores == [rid], "no second give-back"
+    assert seen["starts"] == []
+
+
+def test_start_detached_exclusive_refuses_any_live_run(liveness, monkeypatch):
+    """P2: ``exclusive`` refuses a live run of the SAME actor too, before any
+    state changes, and a failed check refuses. Mutation: drop the
+    ``exclusive`` block -> the stream of the live run is reset -> red."""
+    liveness.store["cc:active:t-ex"] = "1"
+    liveness.store["cc:runactor:t-ex"] = _ALICE
+
+    async def _gen():
+        for line in ():
+            yield line
+
+    async def go() -> None:
+        with pytest.raises(stream_relay.SupersedeRefused):
+            await stream_relay.start_detached("t-ex", _gen(), actor=_ALICE, exclusive=True)
+        assert liveness.store.get("cc:active:t-ex") == "1"
+
+    asyncio.run(go())
+
+    async def _down(_tid: str) -> bool:
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(stream_relay, "is_active", _down)
+
+    async def go_down() -> None:
+        with pytest.raises(stream_relay.SupersedeRefused):
+            await stream_relay.start_detached("t-ex2", _gen(), actor=None, exclusive=True)
+
+    asyncio.run(go_down())
