@@ -14,12 +14,15 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import {
   DEFAULT_PHONE_TAB,
   PHONE_TABS,
+  layoutFor,
   leftTabFor,
   phoneTabAfter,
   runConsoleCollapsed,
   visiblePanes,
   type PhoneTab,
 } from "@/app/workflows/lib/editorPhone";
+import { selectionAfterChange } from "@/app/workflows/lib/editorSelection";
+import { useContainerWidth } from "@/app/workflows/lib/useContainerWidth";
 import {
   Suspense,
   use,
@@ -47,6 +50,7 @@ import {
   type EdgeChange,
   type Node,
   type NodeChange,
+  type OnSelectionChangeParams,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useTheme } from "next-themes";
@@ -313,6 +317,12 @@ function EditorInner({ id }: { id: string }) {
   // E7a: below 768 px the editor draws one pane at a time under a tab bar
   // (`lib/editorPhone.ts`). These hooks sit above the early returns.
   const { isMobile } = useViewMode();
+  // E7e: the width of the editor's own box decides too, because the shell
+  // sidebar and the assistant take a part of the window. The loader and the
+  // editor carry the same ref, so the width is known before the editor draws.
+  const [editorBox, setEditorBox] = useState<HTMLDivElement | null>(null);
+  const editorWidth = useContainerWidth(editorBox);
+  const phone = layoutFor(isMobile, editorWidth) === "phone";
   const [phoneTab, setPhoneTab] = useState<PhoneTab>(DEFAULT_PHONE_TAB);
 
   const [detail, setDetail] = useState<WorkflowDetail | null>(null);
@@ -453,6 +463,19 @@ function EditorInner({ id }: { id: string }) {
     if (changes.some((c) => c.type !== "select")) setDirty(true);
   }, []);
 
+  // E7e: ONE handler for the life of the page. React Flow reports the
+  // selection again each time this prop changes, and an inline arrow then
+  // cleared the step that a tap on the palette had just selected. The ref
+  // holds what the canvas had selected before each report
+  // (`lib/editorSelection.ts`).
+  const canvasSelection = useRef<string[]>([]);
+  const onSelectionChange = useCallback(({ nodes: sel }: OnSelectionChangeParams) => {
+    const before = canvasSelection.current;
+    const after = sel.map((n) => n.id);
+    canvasSelection.current = after;
+    setSelectedId((cur) => selectionAfterChange(cur, before, after));
+  }, []);
+
   const onConnect = useCallback((conn: Connection) => {
     setEdges((es) =>
       addEdge(
@@ -498,12 +521,15 @@ function EditorInner({ id }: { id: string }) {
       }
       const first = where;
 
+      // E7e: the last new step is selected on the canvas too, so React Flow
+      // reports it, and the canvas and the inspector show the same step.
       setNodes((ns) => [
-        ...ns,
+        ...ns.map((n) => (n.selected ? { ...n, selected: false } : n)),
         ...chain.map((d, i) => ({
           id: ids[i],
           type: "ccNode",
           position: { x: first.x, y: first.y + i * NODE_PITCH },
+          selected: i === chain.length - 1,
           data: {
             label: d.label,
             nodeType: d.nodeType,
@@ -1019,7 +1045,7 @@ function EditorInner({ id }: { id: string }) {
   }
   if (!detail) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div ref={setEditorBox} className="flex items-center justify-center h-full">
         <Icon name="Loader2" className="w-5 h-5 animate-spin text-muted-foreground" />
       </div>
     );
@@ -1027,7 +1053,8 @@ function EditorInner({ id }: { id: string }) {
 
   const published = detail.status === "published";
   // E7a: a desktop draws the three panes, a phone the one pane of its tab.
-  const panes = visiblePanes(isMobile, phoneTab, leftTab);
+  // E7e: `phone` is the phone layout, so a narrow editor box takes it too.
+  const panes = visiblePanes(phone, phoneTab, leftTab);
   const leftShown = panes.includes(leftTab);
   const canvasShown = panes.includes("canvas");
   const inspectorShown = panes.includes("inspector");
@@ -1038,11 +1065,11 @@ function EditorInner({ id }: { id: string }) {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden relative">
+    <div ref={setEditorBox} className="flex flex-col h-full min-h-0 overflow-hidden relative">
       {/* Topbar. On a phone it wraps: the name on top, the trigger and the actions below (E7a). */}
       <div
         className={
-          isMobile
+          phone
             ? "flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 border-b border-border shrink-0"
             : "flex items-center gap-2 px-3 sm:px-4 py-2 border-b border-border shrink-0"
         }
@@ -1055,11 +1082,12 @@ function EditorInner({ id }: { id: string }) {
         </Link>
         <input
           value={name}
+          aria-label="Workflow name"
           onChange={(e) => {
             setName(e.target.value);
             setDirty(true);
           }}
-          className={`bg-transparent text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-ring rounded-md px-1.5 py-0.5 min-w-0 ${isMobile ? "flex-1" : "w-48 sm:w-64"}`}
+          className={`bg-transparent text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-ring rounded-md px-1.5 py-0.5 min-w-0 ${phone ? "flex-1" : "w-48 sm:w-64"}`}
         />
         <div className="relative shrink-0">
           <button
@@ -1082,7 +1110,7 @@ function EditorInner({ id }: { id: string }) {
             {detail.latest_version ? ` · v${detail.latest_version}` : ""}
           </button>
           {showVersions && (
-            <div className={`absolute ${isMobile ? "right-0" : "left-0"} top-7 z-30 w-80 rounded-xl border border-border bg-popover shadow-lg p-2`}>
+            <div className={`absolute ${phone ? "right-0" : "left-0"} top-7 z-30 w-80 rounded-xl border border-border bg-popover shadow-lg p-2`}>
               <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide px-1.5 pb-1">
                 Versions — rollback republishes a copy
               </div>
@@ -1154,12 +1182,12 @@ function EditorInner({ id }: { id: string }) {
             </div>
           )}
         </div>
-        {isMobile && <div aria-hidden="true" className="basis-full" />}
+        {phone && <div aria-hidden="true" className="basis-full" />}
         {/* What fires this workflow, said in words — the mockup's trigger chip */}
         <button
           onClick={() => setShowTriggers((s) => !s)}
           title="Configure triggers"
-          className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-cat-12/30 bg-cat-12/10 text-cat-12 hover:bg-cat-12/15 tech-transition ${isMobile ? "min-w-0 flex-1 max-w-fit" : "shrink-0 max-w-56"}`}
+          className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-cat-12/30 bg-cat-12/10 text-cat-12 hover:bg-cat-12/15 tech-transition ${phone ? "min-w-0 flex-1 max-w-fit" : "shrink-0 max-w-56"}`}
         >
           <Icon name="Zap" className="w-3 h-3 shrink-0" />
           <span className="truncate">
@@ -1170,7 +1198,8 @@ function EditorInner({ id }: { id: string }) {
         </button>
 
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          {notice && (
+          {/* E7e: the phone layout shows the notice on its own line, also from 768 px. */}
+          {notice && !phone && (
             <span className="hidden md:inline text-[11px] text-muted-foreground max-w-64 truncate">
               {notice}
             </span>
@@ -1179,7 +1208,7 @@ function EditorInner({ id }: { id: string }) {
           <button
             onClick={save}
             disabled={saving || !dirty}
-            aria-label={isMobile ? (dirty ? "Save" : "Saved") : undefined}
+            aria-label={phone ? (dirty ? "Save" : "Saved") : undefined}
             className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary tech-transition flex items-center gap-1 disabled:opacity-50"
           >
             {saving ? (
@@ -1187,12 +1216,12 @@ function EditorInner({ id }: { id: string }) {
             ) : (
               <Icon name="Save" className="w-3.5 h-3.5" />
             )}
-            {isMobile ? null : dirty ? "Save" : "Saved"}
+            {phone ? null : dirty ? "Save" : "Saved"}
           </button>
           <button
             onClick={onValidate}
             disabled={busy !== null}
-            aria-label={isMobile ? "Validate" : undefined}
+            aria-label={phone ? "Validate" : undefined}
             className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary tech-transition flex items-center gap-1 disabled:opacity-50"
           >
             {busy === "validate" ? (
@@ -1200,12 +1229,12 @@ function EditorInner({ id }: { id: string }) {
             ) : (
               <Icon name="ShieldCheck" className="w-3.5 h-3.5" />
             )}
-            {isMobile ? null : "Validate"}
+            {phone ? null : "Validate"}
           </button>
           <div className="flex items-center">
             <button
               onClick={
-                isMobile
+                phone
                   ? () => {
                       setPhoneTab(phoneTabAfter("test"));
                       void onTest();
@@ -1231,11 +1260,11 @@ function EditorInner({ id }: { id: string }) {
             </button>
           </div>
           {/* On a phone, Publish is the icon button of the Studio IDE. */}
-          <Button size={isMobile ? "icon" : "none"} layout={isMobile ? undefined : "flex items-center"} onClick={onPublish} disabled={busy !== null || !canPublish} aria-label={isMobile ? "Publish" : undefined} title={
+          <Button size={phone ? "icon" : "none"} layout={phone ? undefined : "flex items-center"} onClick={onPublish} disabled={busy !== null || !canPublish} aria-label={phone ? "Publish" : undefined} title={
               canPublish
                 ? undefined
                 : "Publishing needs the workflows:publish permission — ask an admin. You can still edit and Test this draft."
-            } className={isMobile ? undefined : "px-2.5 py-1.5 text-xs gap-1"}>
+            } className={phone ? undefined : "px-2.5 py-1.5 text-xs gap-1"}>
             {busy === "publish" ? (
               <Icon name="Loader2" className="w-3.5 h-3.5 animate-spin" />
             ) : published ? (
@@ -1243,13 +1272,13 @@ function EditorInner({ id }: { id: string }) {
             ) : (
               <Icon name="Rocket" className="w-3.5 h-3.5" />
             )}
-            {isMobile ? null : "Publish"}
+            {phone ? null : "Publish"}
           </Button>
         </div>
       </div>
 
       {/* A phone has no room for the notice in the toolbar, so it shows on its own line (E7a). */}
-      {isMobile && notice && (
+      {phone && notice && (
         <p role="status" className="px-3 py-1.5 border-b border-border text-xs text-muted-foreground break-words shrink-0">
           {notice}
         </p>
@@ -1298,11 +1327,12 @@ function EditorInner({ id }: { id: string }) {
             setDirty(true);
           }}
           onClose={() => setShowTriggers(false)}
+          phone={phone}
         />
       )}
 
       {showTestPayload && (
-        <div className={`absolute right-3 ${isMobile ? "top-28" : "top-12"} z-20 w-80 rounded-xl border border-border bg-popover shadow-lg p-3`}>
+        <div className={`absolute right-3 ${phone ? "top-28" : "top-12"} z-20 w-80 rounded-xl border border-border bg-popover shadow-lg p-3`}>
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
             Sample trigger payload (JSON) — {"{{trigger.*}}"}
           </div>
@@ -1317,7 +1347,7 @@ function EditorInner({ id }: { id: string }) {
       )}
 
       {/* Panes. A phone picks one with the tab bar of the Studio IDE on a phone (E7a). */}
-      {isMobile && (
+      {phone && (
         <Tabs tabs={PHONE_TABS} activeTab={phoneTab} onTabChange={openPhoneTab} variant="segmented" chrome="inline" className="p-2" />
       )}
       <div className="flex-1 min-h-0 flex">
@@ -1325,14 +1355,14 @@ function EditorInner({ id }: { id: string }) {
             conversation and its Undo stay while the member looks at the canvas. */}
         <div
           className={
-            !isMobile
+            !phone
               ? "flex flex-col shrink-0 border-r border-border"
               : leftShown
                 ? "flex flex-col flex-1 min-w-0"
                 : "hidden"
           }
         >
-          {!isMobile && (
+          {!phone && (
             <div className="flex border-b border-border">
               <button
                 onClick={() => setLeftTab("palette")}
@@ -1375,10 +1405,10 @@ function EditorInner({ id }: { id: string }) {
                 catalog={catalog}
                 onAdd={(drop) => {
                   addNode(drop);
-                  if (isMobile) setPhoneTab(phoneTabAfter("add"));
+                  if (phone) setPhoneTab(phoneTabAfter("add"));
                 }}
                 studioWriteOffered={studioRole === "owner"}
-                fill={isMobile}
+                fill={phone}
               />
             ) : (
               <CopilotPanel
@@ -1388,7 +1418,7 @@ function EditorInner({ id }: { id: string }) {
                 onUndo={undoCopilot}
                 canUndo={undoGraph !== null}
                 onModulesCreated={refreshCatalog}
-                fill={isMobile}
+                fill={phone}
               />
             )}
           </div>
@@ -1412,9 +1442,7 @@ function EditorInner({ id }: { id: string }) {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            onSelectionChange={({ nodes: sel }) =>
-              setSelectedId(sel.length === 1 ? sel[0].id : null)
-            }
+            onSelectionChange={onSelectionChange}
             colorMode={resolvedTheme === "light" ? "light" : "dark"}
             style={CANVAS_STYLE}
             fitView
@@ -1422,11 +1450,11 @@ function EditorInner({ id }: { id: string }) {
             defaultEdgeOptions={{ type: "ccEdge" }}
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} />
-            <Controls showInteractive={false} position={isMobile ? "top-left" : undefined} />
+            <Controls showInteractive={false} position={phone ? "top-left" : undefined} />
           </ReactFlow>
 
           <div className="absolute right-3 top-3 z-10 pointer-events-none rounded-lg border border-border bg-background/80 backdrop-blur-sm px-2 py-1 text-[10px] text-muted-foreground">
-            {isMobile ? (
+            {phone ? (
               "Pinch to zoom · tap a step"
             ) : (
               <>
@@ -1474,7 +1502,7 @@ function EditorInner({ id }: { id: string }) {
             onLabel={relabelSelected}
             onDelete={deleteSelected}
             studioWrite={studioWrite}
-            fill={isMobile}
+            fill={phone}
           />
         )}
       </div>
@@ -1483,8 +1511,8 @@ function EditorInner({ id }: { id: string }) {
         workflowId={id}
         events={runEvents}
         running={running}
-        collapsed={runConsoleCollapsed(consoleCollapsed, isMobile)}
-        onToggle={() => setConsoleCollapsed((c) => !runConsoleCollapsed(c, isMobile))}
+        collapsed={runConsoleCollapsed(consoleCollapsed, phone)}
+        onToggle={() => setConsoleCollapsed((c) => !runConsoleCollapsed(c, phone))}
         onPaintRun={paintRunResults}
       />
     </div>

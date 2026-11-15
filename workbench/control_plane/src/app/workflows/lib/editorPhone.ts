@@ -7,12 +7,39 @@
  * the toolbar. A phone now draws ONE pane at a time under a segmented tab bar,
  * the shape of the Studio IDE on a phone (`app/studio/build/page.tsx`).
  *
- * `ViewModeProvider` decides the phone: below 768 px. From 768 px up the
- * editor draws the desktop tree, unchanged.
+ * `ViewModeProvider` decides the phone: below 768 px. Row E7e adds the width
+ * of the editor's own box (`layoutFor`). With the shell sidebar open, a
+ * 1024 px window leaves the editor 744 px, and three panes left the canvas
+ * 247 px or less. A box narrower than `WIDE_EDITOR_MIN_PX` draws the phone
+ * layout too. From that width up the editor draws the desktop tree, unchanged.
  *
  * This file holds the rules and no markup, so a test holds them
  * (`editorPhone.test.ts`).
  */
+
+/** The layout of the editor: one pane under a tab bar, or the three panes side by side. */
+export type EditorLayout = "phone" | "wide";
+
+/**
+ * The narrowest editor box, in CSS px, that draws the three panes (row E7e).
+ *
+ * Measured on 2026-11-15: the palette column takes 241 px, and the inspector
+ * 256 px (288 px from a 1280 px window). At 900 px the canvas keeps 371 px or
+ * more. The toolbar needs 681 px with no notice, so the name keeps about 219 px.
+ */
+export const WIDE_EDITOR_MIN_PX = 900;
+
+/**
+ * The layout of the editor. A phone always takes the phone layout. On a
+ * larger screen the width of the editor's own box decides, because the shell
+ * sidebar and the assistant take a part of the window. Until the box is
+ * measured (`null`), a larger screen takes the wide layout, as before E7e.
+ */
+export function layoutFor(isMobile: boolean, containerWidth: number | null): EditorLayout {
+  if (isMobile) return "phone";
+  if (containerWidth === null) return "wide";
+  return containerWidth < WIDE_EDITOR_MIN_PX ? "phone" : "wide";
+}
 
 /** A pane of the editor. The left column of a desktop holds `palette` or `copilot`. */
 export type EditorPane = "palette" | "copilot" | "canvas" | "inspector";

@@ -12,6 +12,15 @@
  * the view mode above the early returns" turns red.
  * Mutation 4: change the class of the desktop canvas. "keeps the desktop
  * markup" turns red.
+ *
+ * E7e (task 3373) adds the width of the editor's own box. With the shell
+ * sidebar open, a 1024 px window left the editor 744 px and the canvas 247 px.
+ * Mutation 5: make `layoutFor` return "phone" for a wide box. "a wide box
+ * draws the three panes" turns red.
+ * Mutation 6: measure below `if (loadError)`. "measures the editor box above
+ * the early returns" turns red.
+ * Mutation 7: drop `pointer-coarse:` from the ring of the "+". "a mouse gets
+ * no new rule" turns red.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -19,6 +28,8 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PHONE_TAB,
   PHONE_TABS,
+  WIDE_EDITOR_MIN_PX,
+  layoutFor,
   runConsoleCollapsed,
   leftTabFor,
   phoneTabAfter,
@@ -48,6 +59,36 @@ describe("the panes that draw", () => {
     expect(visiblePanes(true, "canvas", "palette")).toEqual(["canvas"]);
     expect(visiblePanes(true, "step", "palette")).toEqual(["inspector"]);
     expect(visiblePanes(true, "copilot", "copilot")).toEqual(["copilot"]);
+  });
+});
+
+describe("the layout of the editor (E7e)", () => {
+  it("is the phone layout on a phone, at any width", () => {
+    for (const w of [null, 0, 390, WIDE_EDITOR_MIN_PX, 1440]) {
+      expect(layoutFor(true, w)).toBe("phone");
+    }
+  });
+
+  it("draws the three panes in a wide box", () => {
+    expect(layoutFor(false, WIDE_EDITOR_MIN_PX)).toBe("wide");
+    expect(layoutFor(false, 1160)).toBe("wide");
+    expect(layoutFor(false, 1360)).toBe("wide");
+  });
+
+  it("takes the phone layout in a box narrower than the three panes need", () => {
+    // 768 px and 1024 px windows with the shell sidebar open, measured.
+    expect(layoutFor(false, 488)).toBe("phone");
+    expect(layoutFor(false, 744)).toBe("phone");
+    expect(layoutFor(false, WIDE_EDITOR_MIN_PX - 1)).toBe("phone");
+  });
+
+  it("keeps the wide layout until the box is measured, as before E7e", () => {
+    expect(layoutFor(false, null)).toBe("wide");
+  });
+
+  it("leaves the canvas 300 px or more beside the two side panes", () => {
+    // The palette column 241 px, the inspector 288 px from a 1280 px window.
+    expect(WIDE_EDITOR_MIN_PX - 241 - 288).toBeGreaterThanOrEqual(300);
   });
 });
 
@@ -115,16 +156,37 @@ describe("the editor page", () => {
     expect(src.indexOf("useState<PhoneTab>(DEFAULT_PHONE_TAB)")).toBeGreaterThan(0);
   });
 
+  it("measures the editor box above the early returns (E7e)", () => {
+    const measure = src.indexOf("useContainerWidth(editorBox)");
+    const layout = src.indexOf("layoutFor(isMobile, editorWidth)");
+    expect(measure).toBeGreaterThan(0);
+    expect(layout).toBeGreaterThan(0);
+    expect(measure).toBeLessThan(firstReturn);
+    expect(layout).toBeLessThan(firstReturn);
+    // The loader and the editor carry the ref, so the width is known before the editor draws.
+    expect(src.match(/<div ref=\{setEditorBox\}/g) ?? []).toHaveLength(2);
+    // The layout decides each phone branch. The viewport alone decides none.
+    expect(src.match(/\bisMobile\b/g) ?? []).toHaveLength(2);
+  });
+
   it("asks the model which panes draw, and fills a phone with each pane", () => {
-    expect(src).toContain("visiblePanes(isMobile, phoneTab, leftTab)");
+    expect(src).toContain("visiblePanes(phone, phoneTab, leftTab)");
     expect(src).toContain("{canvasShown && <div");
     expect(src).toContain("{inspectorShown && (");
     // The palette, the Copilot and the inspector.
-    expect(src.match(/fill=\{isMobile\}/g) ?? []).toHaveLength(3);
+    expect(src.match(/fill=\{phone\}/g) ?? []).toHaveLength(3);
   });
 
   it("keeps the run console shut on a phone until Test or the member opens it", () => {
-    expect(src).toContain("collapsed={runConsoleCollapsed(consoleCollapsed, isMobile)}");
+    expect(src).toContain("collapsed={runConsoleCollapsed(consoleCollapsed, phone)}");
+  });
+
+  it("opens the trigger panel below the two toolbar rows of the phone layout (E7e)", () => {
+    expect(src).toContain("phone={phone}");
+  });
+
+  it("names the workflow name box for a screen reader (E7e)", () => {
+    expect(src).toContain('aria-label="Workflow name"');
   });
 
   it("draws the phone tabs with the shared segmented bar", () => {
@@ -153,5 +215,28 @@ describe("the handles of a step", () => {
     const coarse = src.match(/!w-3 !h-3[^"]*pointer-coarse:!w-5 pointer-coarse:!h-5/g) ?? [];
     expect(small).toHaveLength(3);
     expect(coarse).toHaveLength(3);
+  });
+});
+
+describe("the + on a wire (E7e)", () => {
+  const src = readFileSync(new URL("../components/WorkflowEdge.tsx", import.meta.url), "utf8");
+  const cls = /className=\{`(grid place-items-center w-4 h-4[^$`]*)\$\{/.exec(src)?.[1] ?? "";
+
+  it("keeps the 16 px dot", () => {
+    expect(cls.split(/\s+/)).toEqual(expect.arrayContaining(["w-4", "h-4", "rounded-full"]));
+  });
+
+  it("gets a 32 px ring under a finger: 16 px and 8 px on each side", () => {
+    expect(cls).toContain("pointer-coarse:before:-inset-2");
+    expect(cls).toContain("pointer-coarse:before:absolute");
+    expect(cls).toContain("pointer-coarse:relative");
+  });
+
+  it("a mouse gets no new rule", () => {
+    const before = "grid place-items-center w-4 h-4 rounded-full border bg-background tech-transition";
+    const added = cls.trim().split(/\s+/).slice(before.split(" ").length);
+    expect(cls.startsWith(before)).toBe(true);
+    expect(added.length).toBeGreaterThan(0);
+    for (const word of added) expect(word, word).toMatch(/^pointer-coarse:/);
   });
 });

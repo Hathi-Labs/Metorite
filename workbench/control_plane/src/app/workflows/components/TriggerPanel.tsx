@@ -54,6 +54,7 @@ export default function TriggerPanel({
   onChange,
   onClose,
   error,
+  phone = false,
 }: {
   triggers: TriggerSpec[];
   /** Absolute gateway URL from the server; "" when the origin is unset. */
@@ -64,6 +65,11 @@ export default function TriggerPanel({
   onClose: () => void;
   /** The message of a refused save, shown in full. */
   error?: string | null;
+  /**
+   * E7e: the phone layout of the editor. Its toolbar has two rows, so the
+   * panel opens below them. A desktop keeps its class, byte for byte.
+   */
+  phone?: boolean;
 }) {
   const webhook = useMemo(
     () => triggers.find((t) => t.kind === "webhook"),
@@ -98,7 +104,7 @@ export default function TriggerPanel({
     onChange(triggers.filter((t) => t.kind !== kind));
 
   return (
-    <div className="absolute right-3 top-12 z-20 w-80 rounded-xl border border-border bg-popover shadow-lg max-h-[80vh] overflow-y-auto">
+    <div className={`absolute right-3 ${phone ? "top-28" : "top-12"} z-20 w-80 rounded-xl border border-border bg-popover shadow-lg max-h-[80vh] overflow-y-auto`}>
       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
         <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
           <Icon name="Zap" className="w-3.5 h-3.5 text-cat-12" />
