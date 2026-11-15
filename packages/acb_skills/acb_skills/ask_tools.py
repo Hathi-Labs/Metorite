@@ -1554,6 +1554,15 @@ _CARD_TOOL: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
     "acb_card_tool", default=None,
 )
 
+#: RESUME-1a: the bound arguments of the call that a card belongs to
+#: (:func:`card_call`), by parameter name, for the stored call of the card
+#: (``acb_skills.stored_call``). None for a delegation tool and for a call
+#: whose arguments do not bind by name. ⚠️ The default is None, never a
+#: mutable object.
+_CARD_ARGS: _contextvars.ContextVar[dict[str, Any] | None] = _contextvars.ContextVar(
+    "acb_card_args", default=None,
+)
+
 
 @_dataclass(frozen=True)
 class PlainCard:
@@ -1632,6 +1641,44 @@ async def _late_approve_spent(card: PlainCard) -> None:
 
         await note_approved(card)
     except Exception:  # the answer stands
+        return
+
+
+def _bind_stored_call(request_id: str, card: PlainCard | None) -> bool:
+    """Bind the stored call of the plain card *card* to *request_id*, BEFORE
+    the card goes out (RESUME-1a, ``chat_run_continuity.md`` §4.12.4 item 1).
+
+    ``acb_skills.stored_call.stored_call_of`` decides whether the card stores
+    a call, and ``orchestrator.pending_ask.bind_call`` holds it by the request
+    id, out of band. On path A the row is written in the executor's drain,
+    which cannot read this frame's context, so a ContextVar would not reach
+    it. A card with rows, a reply form or a held send id has no *card*. With
+    ``CHAT_RESUME_ORGS`` off it binds nothing. True when bound. A fault binds
+    nothing, and the card shows as before. Never raises."""
+    if card is None:
+        return False
+    try:
+        from acb_skills.stored_call import stored_call_of
+
+        stored = stored_call_of(card, _CARD_ARGS.get())
+        if stored is None:
+            return False
+        from orchestrator.pending_ask import bind_call
+
+        return bool(bind_call(request_id, stored))
+    except Exception:
+        return False
+
+
+def _unbind_stored_call(request_id: str) -> None:
+    """Drop what :func:`_bind_stored_call` left for *request_id* (RESUME-1a).
+    The wait of the card calls it on every way out, so nothing stays with
+    ``CHAT_DURABLE_ASKS`` off. Never raises."""
+    try:
+        from orchestrator.pending_ask import unbind_call
+
+        unbind_call(request_id)
+    except Exception:
         return
 
 
@@ -1727,25 +1774,37 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
     gates, beside ``whatsapp_acts.tool_call``. A nested call opens its own,
     so a card reads the innermost call. *keyless* (a delegation tool) opens
     a scope with no key, so a card of a child run never takes the key of
-    the call that started the child. A fault gives no key. Never raises."""
+    the call that started the child. A fault gives no key. Never raises.
+
+    RESUME-1a: it also holds the bound arguments of the call (``_CARD_ARGS``),
+    for the stored call of a card. A delegation tool holds none."""
     keys: ActKeys | None = None
+    arguments: dict[str, Any] | None = None
     if not keyless:
         try:
             import inspect as _inspect
 
             try:
-                bound = dict(_inspect.signature(fn).bind_partial(*args, **kwargs).arguments)
+                signature = _inspect.signature(fn)
+                bound = dict(signature.bind_partial(*args, **kwargs).arguments)
+                arguments = _by_name(signature, bound)
             except (TypeError, ValueError):
                 bound = {} if args else dict(kwargs)
+                arguments = None if args else dict(kwargs)
             keys = act_keys(str(getattr(fn, "__module__", "") or ""),
                             str(getattr(fn, "__name__", "") or ""), bound)
         except Exception:
             keys = None
     token = _CARD_CALL.set(keys)
     tool_token = _CARD_TOOL.set(None if keyless else fn)
+    args_token = _CARD_ARGS.set(None if keyless else arguments)
     try:
         yield
     finally:
+        try:
+            _CARD_ARGS.reset(args_token)
+        except ValueError:
+            _CARD_ARGS.set(None)
         try:
             _CARD_TOOL.reset(tool_token)
         except ValueError:
@@ -1754,6 +1813,20 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
             _CARD_CALL.reset(token)
         except ValueError:
             _CARD_CALL.set(None)
+
+
+def _by_name(signature: Any, bound: dict[str, Any]) -> dict[str, Any] | None:
+    """*bound* when each value binds a named parameter, or None (RESUME-1a).
+
+    A ``*args`` or ``**kwargs`` value cannot go back to the tool by name, so
+    such a call stores no call."""
+    import inspect as _inspect
+
+    star = (_inspect.Parameter.VAR_POSITIONAL, _inspect.Parameter.VAR_KEYWORD)
+    params = signature.parameters
+    if any(params[name].kind in star for name in bound if name in params):
+        return None
+    return dict(bound)
 
 
 def _card_opened(keys: ActKeys | None) -> None:
@@ -2367,6 +2440,9 @@ async def request_confirmation(
             if _watch is not None:
                 _watch.cancel()
             _pending.pop(_rid, None)
+            # RESUME-1a: the row took its stored call, or none was written.
+            # Either way nothing of it stays in the process.
+            _unbind_stored_call(_rid)
             # Best effort: the run's end clears a blocking card too. A PARKED
             # card (WS-51 S2) is not closed: it stays open for a late answer,
             # which a new run takes (``orchestrator.pending_ask``).
@@ -2410,7 +2486,14 @@ async def request_confirmation(
         _card_thread[_rid] = str(getattr(_pending_user_input, "owner_of", lambda _r: "")(_rid)
                                  or "")
         _base = _steer_baseline()
-        await queue.put(_event(_rid))
+        # RESUME-1a: the stored call binds BEFORE the card goes out, so the
+        # drain's `pending_ask.note_event` finds it when it writes the row.
+        _bind_stored_call(_rid, _card)
+        try:
+            await queue.put(_event(_rid))
+        except BaseException:
+            _unbind_stored_call(_rid)
+            raise
         return await _block_on(_fut, _rid, _pending_user_input, queue.put, _base)
 
     # ── Path C: Redis relay (blocking on BOTH Copilot-SDK and native MAF) ──
@@ -2437,7 +2520,14 @@ async def request_confirmation(
             _card_thread[_rid] = str(_tid)
             _line = f"data: {_json.dumps(_event(_rid))}\n\n"
             _base = _steer_baseline()
-            await _push_sse_to_stream(_tid, _line)
+            # RESUME-1a: the stored call binds BEFORE the push, which writes
+            # the row (`pending_ask.note_event`).
+            _bind_stored_call(_rid, _card)
+            try:
+                await _push_sse_to_stream(_tid, _line)
+            except BaseException:
+                _unbind_stored_call(_rid)
+                raise
 
             async def _publish(ev: dict, _t: str = _tid) -> None:
                 await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")

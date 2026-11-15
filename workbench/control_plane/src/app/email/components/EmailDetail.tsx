@@ -1461,7 +1461,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       >
         {/* Subject + status badges */}
         <div className="flex items-start gap-2 mb-4">
-          <h2 className="flex-1 text-foreground text-lg font-semibold">
+          <h2 className="flex-1 select-text text-foreground text-lg font-semibold">
             {email.subject}
           </h2>
           <div className="flex items-center gap-1 flex-shrink-0 mt-1">
@@ -1535,7 +1535,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
           >
             {initials(email.from.name)}
           </ContactTrigger>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 select-text">
             <div className="flex items-baseline gap-2 flex-wrap">
               <ContactTrigger
                 contact={email.from}
@@ -1591,7 +1591,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             <AppIcon name="Loader2" size={14} className="animate-spin" /> Loading message…
           </div>
         ) : fullBodyText ? (
-          <div className="text-sm text-foreground/85 leading-relaxed whitespace-pre-wrap max-w-2xl">
+          <div className="select-text text-sm text-foreground/85 leading-relaxed whitespace-pre-wrap max-w-2xl">
             {fullBodyText}
           </div>
         ) : !view.bodyHtml && !view.bodyText ? (

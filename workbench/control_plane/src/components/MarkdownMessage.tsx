@@ -101,6 +101,8 @@ interface MarkdownMessageProps {
   progressNotice?: string;
   /** True while the agent run is in progress (drives shimmer/working state). */
   isThinkingActive?: boolean;
+  /** CS-1: the message is the placeholder that Send put in the thread (see `ChatMessage.firstLine`). */
+  firstLine?: boolean;
   /** Sequential reasoning blocks — each its own timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3b, message-id-native). When
@@ -725,6 +727,7 @@ export default function MarkdownMessage({
   progressLines,
   progressNotice,
   isThinkingActive,
+  firstLine,
   reasoningBlocks,
   segments,
   onChoice,
@@ -788,6 +791,8 @@ export default function MarkdownMessage({
             reasoningBlocks={reasoningBlocks}
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
+            firstLine={firstLine}
+            answerStarted={!!content?.trim() || (segments ?? []).some((s) => s.text.trim().length > 0)}
             evidenceFor={evidenceFor}
             notice={progressNotice}
           />
