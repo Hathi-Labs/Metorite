@@ -79,6 +79,7 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
         </span>
       );
     case "barcode":
+    case "coded":
       return <span className="break-all font-mono">{text}</span>;
     default:
       return <span className="break-words">{text}</span>;

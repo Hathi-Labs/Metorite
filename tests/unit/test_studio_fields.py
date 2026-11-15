@@ -56,6 +56,7 @@ _EXTRA: dict[str, dict[str, Any]] = {
     "quantity": {"units": ["kg", "m"]},
     "barcode": {"format": "ean13"},
     "autonumber": {"prefix": "FV-"},
+    "coded": {"system": "X-SYS"},
 }
 
 #: One good value of each type, and the value the store keeps.
@@ -83,6 +84,7 @@ _GOOD: dict[str, tuple[Any, Any]] = {
     "percent": (2550, 2550),
     "barcode": ("4006381333931", "4006381333931"),
     "autonumber": ("FV-0042", "FV-0042"),
+    "coded": ({"system": "X-SYS", "code": "X-0001"}, {"system": "X-SYS", "code": "X-0001"}),
 }
 
 #: Bad values of each type, by a name for the test id.
@@ -189,6 +191,15 @@ _BAD: list[tuple[str, str, Any]] = [
     ("autonumber", "bad-prefix", "F V-0042"),
     ("autonumber", "long-prefix", "ABCDEFGHIJKLM0001"),
     ("autonumber", "digits-first-then-text", "0042x"),
+    ("coded", "text", "X-0001"),
+    ("coded", "wrong-system", {"system": "OTHER", "code": "X-0001"}),
+    ("coded", "empty-code", {"system": "X-SYS", "code": ""}),
+    ("coded", "long-code", {"system": "X-SYS", "code": "c" * (sf.MAX_CODED_CHARS + 1)}),
+    ("coded", "extra-key", {"system": "X-SYS", "code": "X-0001", "display": "A"}),
+    ("coded", "no-system", {"code": "X-0001"}),
+    ("coded", "control", {"system": "X-SYS", "code": "X\t1"}),
+    ("coded", "space-around", {"system": "X-SYS", "code": " X-0001"}),
+    ("coded", "number-code", {"system": "X-SYS", "code": 1}),
 ]
 
 
@@ -258,6 +269,12 @@ def test_a_rating_keeps_its_own_bounds() -> None:
     ({"type": "quantity", "units": [f"u{i}" for i in range(sf.MAX_UNITS + 1)]}, "units"),
     ({"type": "barcode"}, "format"),
     ({"type": "barcode", "format": "upc"}, "format"),
+    ({"type": "coded"}, "system"),
+    ({"type": "coded", "system": ""}, "system"),
+    ({"type": "coded", "system": "x" * (sf.MAX_CODE_SYSTEM_CHARS + 1)}, "system"),
+    ({"type": "coded", "system": "bad system"}, "system"),
+    ({"type": "coded", "system": 5}, "system"),
+    ({"type": "text", "system": "X-SYS"}, "system"),
     ({"type": "text", "min": 1}, "min"),
     ({"type": "text", "units": ["kg"]}, "units"),
     ({"type": "number", "format": "qr"}, "format"),
@@ -268,7 +285,7 @@ def test_the_spec_rules_of_the_new_types(spec: dict[str, Any], word: str) -> Non
 
 
 @pytest.mark.parametrize(
-    "kind", ["richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber"])
+    "kind", ["richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber", "coded"])
 def test_a_new_type_cannot_be_hot(kind: str) -> None:
     assert kind not in sf.HOT_TYPES
     problems = sf.validate_field_spec({"key": "f_key", "type": kind, **_EXTRA.get(kind, {}), "hot": True})
@@ -277,7 +294,7 @@ def test_a_new_type_cannot_be_hot(kind: str) -> None:
 
 def test_the_extras_survive_the_stored_spec() -> None:
     for kind, extra in (("rating", {"min": 0, "max": 10}), ("quantity", {"units": ["kg", "m"]}),
-                        ("barcode", {"format": "code128"})):
+                        ("barcode", {"format": "code128"}), ("coded", {"system": "ICD-10.v2"})):
         field = sf.parse_field_spec({"key": "f_key", "type": kind, **extra})
         back = sf.stored_field("f_key", kind, field.stored_spec(), False)
         assert back == field
@@ -679,4 +696,13 @@ def test_a_tag_like_text_and_a_value_over_the_maximum_get_their_own_message() ->
 
 def test_the_spec_parts_and_the_value_shapes_come_from_the_constants() -> None:
     assert str(sf.MAX_RICH_TEXT_CHARS) in sf.VALUE_SHAPES["richText"]
-    assert set(sf.SPEC_PARTS) == {"rating", "quantity", "barcode", "autonumber"}
+    assert set(sf.SPEC_PARTS) == {"rating", "quantity", "barcode", "autonumber", "coded"}
+
+
+def test_a_coded_value_is_pure_and_keeps_a_many_list() -> None:
+    f = _field("coded", many=True)
+    one = {"system": "X-SYS", "code": "X-0001"}
+    assert sf.check_value(f, [one, {"system": "X-SYS", "code": "X-0002"}])[0] == one
+    assert sf.max_entry_bytes(f) > sf.max_entry_bytes(_field("coded"))
+    packed = sf.record_json({"f_key": {"system": "X-SYS", "code": "c" * sf.MAX_CODED_CHARS}})
+    assert len(packed.encode("utf-8")) <= sf.max_entry_bytes(_field("coded")) + 2

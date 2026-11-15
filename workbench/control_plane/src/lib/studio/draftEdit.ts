@@ -72,6 +72,7 @@ export const TYPE_LABELS: Record<string, string> = {
   richText: "Rich text", rating: "Rating", duration: "Time spent", quantity: "Quantity with unit", percent: "Percent",
   barcode: "Barcode",
   autonumber: "Auto number",
+  coded: "Coded value",
 };
 
 /** The blocks that the Views tab adds. */

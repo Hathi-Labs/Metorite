@@ -2742,6 +2742,281 @@
    "ok": false
   },
   {
+   "id": "coded-0",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "X-0001"
+   },
+   "ok": true,
+   "out": {
+    "system": "X-SYS",
+    "code": "X-0001"
+   }
+  },
+  {
+   "id": "coded-1",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "a"
+   },
+   "ok": true,
+   "out": {
+    "system": "X-SYS",
+    "code": "a"
+   }
+  },
+  {
+   "id": "coded-2",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "Z9.99 b"
+   },
+   "ok": true,
+   "out": {
+    "system": "X-SYS",
+    "code": "Z9.99 b"
+   }
+  },
+  {
+   "id": "coded-3",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": {
+     "$repeat": "c",
+     "count": 64
+    }
+   },
+   "ok": true,
+   "out": {
+    "system": "X-SYS",
+    "code": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+   }
+  },
+  {
+   "id": "coded-4",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": {
+     "$repeat": "c",
+     "count": 65
+    }
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-5",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": ""
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-6",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "OTHER",
+    "code": "X-0001"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-7",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "x-sys",
+    "code": "X-0001"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-8",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "X-0001",
+    "display": "A"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-9",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-10",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "code": "X-0001"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-11",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "X\t1"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-12",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "X\u007f1"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-13",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": " X-0001"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-14",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "X-0001 "
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-15",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": "X-0001\u00a0"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-16",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": "X-SYS",
+    "code": 1
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-17",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": {
+    "system": 1,
+    "code": "X-0001"
+   },
+   "ok": false
+  },
+  {
+   "id": "coded-18",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": "X-0001",
+   "ok": false
+  },
+  {
+   "id": "coded-19",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "system": "X-SYS"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
    "id": "barcode-extra-0-0",
    "field": {
     "key": "f",
@@ -2902,7 +3177,57 @@
    "ok": false
   },
   {
-   "id": "text-many-0",
+   "id": "coded-many-0",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "many": true,
+    "system": "X-SYS"
+   },
+   "value": [
+    {
+     "system": "X-SYS",
+     "code": "X-1"
+    },
+    {
+     "system": "X-SYS",
+     "code": "X-2"
+    }
+   ],
+   "ok": true,
+   "out": [
+    {
+     "system": "X-SYS",
+     "code": "X-1"
+    },
+    {
+     "system": "X-SYS",
+     "code": "X-2"
+    }
+   ]
+  },
+  {
+   "id": "coded-many-1",
+   "field": {
+    "key": "f",
+    "type": "coded",
+    "many": true,
+    "system": "X-SYS"
+   },
+   "value": [
+    {
+     "system": "X-SYS",
+     "code": "X-1"
+    },
+    {
+     "system": "OTHER",
+     "code": "X-2"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "id": "text-many-2",
    "field": {
     "key": "f",
     "type": "text",
@@ -2919,7 +3244,7 @@
    ]
   },
   {
-   "id": "text-many-1",
+   "id": "text-many-3",
    "field": {
     "key": "f",
     "type": "text",
@@ -2930,7 +3255,7 @@
    "out": []
   },
   {
-   "id": "text-many-2",
+   "id": "text-many-4",
    "field": {
     "key": "f",
     "type": "text",
@@ -2940,7 +3265,7 @@
    "ok": false
   },
   {
-   "id": "text-many-3",
+   "id": "text-many-5",
    "field": {
     "key": "f",
     "type": "text",
@@ -2953,7 +3278,7 @@
    "ok": false
   },
   {
-   "id": "text-many-4",
+   "id": "text-many-6",
    "field": {
     "key": "f",
     "type": "text",
@@ -2966,7 +3291,7 @@
    "ok": false
   },
   {
-   "id": "text-many-5",
+   "id": "text-many-7",
    "field": {
     "key": "f",
     "type": "text",
@@ -2981,7 +3306,7 @@
    "ok": false
   },
   {
-   "id": "number-many-6",
+   "id": "number-many-8",
    "field": {
     "key": "f",
     "type": "number",
@@ -2998,7 +3323,7 @@
    ]
   },
   {
-   "id": "email-many-7",
+   "id": "email-many-9",
    "field": {
     "key": "f",
     "type": "email",
@@ -3015,7 +3340,7 @@
    ]
   },
   {
-   "id": "date-many-8",
+   "id": "date-many-10",
    "field": {
     "key": "f",
     "type": "date",
@@ -3028,7 +3353,7 @@
    "ok": false
   },
   {
-   "id": "select-many-9",
+   "id": "select-many-11",
    "field": {
     "key": "f",
     "type": "select",
@@ -3051,7 +3376,7 @@
    ]
   },
   {
-   "id": "text-many-10",
+   "id": "text-many-12",
    "field": {
     "key": "f",
     "type": "text",
@@ -4064,7 +4389,7 @@
    ]
   },
   {
-   "id": "text-many-11",
+   "id": "text-many-13",
    "field": {
     "key": "f",
     "type": "text",

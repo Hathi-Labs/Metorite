@@ -41,6 +41,9 @@ export const MAX_AUTONUMBER_PREFIX = 12;
 export const MAX_AUTONUMBER_PAD = 9;
 export const DEFAULT_AUTONUMBER_PAD = 4;
 export const MAX_AUTONUMBER = 999_999_999_999_999;
+// STU-C23a: a coded field names its code system (1 to 32 characters). A code is 1 to 64.
+export const MAX_CODE_SYSTEM_CHARS = 32;
+export const MAX_CODED_CHARS = 64;
 /** A rating with no `min` and `max` runs from 1 to 5. */
 export const DEFAULT_RATING_MIN = 1;
 export const DEFAULT_RATING_MAX = 5;
@@ -87,6 +90,8 @@ export interface FieldSpec {
   prefix?: string;
   pad?: number;
   reset?: string;
+  /** C23a. The code system of a coded field, as `ICD-10`. */
+  system?: string;
 }
 
 export type CheckResult = { ok: true; value: unknown } | { ok: false; message: string };
@@ -445,6 +450,22 @@ function barcode(f: FieldSpec, v: unknown): CheckResult {
     : fail(`Enter text of 1 to ${MAX_QR_CHARS.toLocaleString("en-US")} characters, with no control character.`);
 }
 
+/** STU-C23a. `{system, code}`: the system of the field, and a code of 1 to 64 characters. The twin of `_coded`. */
+function coded(f: FieldSpec, v: unknown): CheckResult {
+  if (!isObject(v) || !sameKeys(v, ["system", "code"])) {
+    return fail(`Enter a code of the system ${f.system ?? ""}.`);
+  }
+  if (v.system !== f.system) return fail(`Use the code system ${f.system ?? ""}.`);
+  const code = v.code;
+  if (
+    typeof code !== "string" || chars(code) < 1 || chars(code) > MAX_CODED_CHARS || !storable(code) ||
+    /[\x00-\x1f\x7f]/.test(code) || SPACE.test(code[0]) || SPACE.test(code[code.length - 1])
+  ) {
+    return fail(`Enter a code of 1 to ${MAX_CODED_CHARS} characters, with no control character and no space at either end.`);
+  }
+  return pass({ system: v.system, code });
+}
+
 /** The stored form of an autonumber: a prefix, then digits. The store fills it, so no form sends it. */
 function autonumber(_f: FieldSpec, v: unknown): CheckResult {
   return typeof v === "string" && new RegExp(`^[A-Za-z0-9_./-]{0,${MAX_AUTONUMBER_PREFIX}}[0-9]{1,15}$`).test(v)
@@ -481,6 +502,7 @@ const CHECKS: Record<FieldType, (f: FieldSpec, v: unknown) => CheckResult> = {
   percent: (_f, v) => percent(v),
   barcode,
   autonumber,
+  coded,
 };
 
 /** One value of one field, as the store keeps it. The twin of `check_value`. */

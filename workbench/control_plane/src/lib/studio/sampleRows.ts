@@ -45,6 +45,7 @@ function one(f: FieldSpec, i: number): unknown {
     case "percent": return n * 250;
     case "barcode": return f.format === "ean13" ? "4006381333931" : f.format === "code128" ? `SAMPLE-${n}` : `https://example.com/${n}`;
     case "autonumber": return autonumberText(f, n);
+    case "coded": return { system: f.system ?? "SYS", code: `X-${String(n).padStart(4, "0")}` };
     default: return null;
   }
 }
