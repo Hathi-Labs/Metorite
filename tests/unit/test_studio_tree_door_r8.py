@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
@@ -413,10 +413,13 @@ def test_r8_the_switch_off_is_404_and_reads_nothing(world, monkeypatch) -> None:
     assert _audits(world, world.pkg) == []
 
 
-async def _plan_report(org: str, pkg: str, oid: str) -> str:
-    """The plan of the tree read and the facts that decide it, for a failure message
-    (task 3308: the failure shows on a CI runner and not on a fast box, so the run must
-    tell its own plan)."""
+async def _plan_report(org: str, pkg: str, oid: str) -> tuple[str, int]:
+    """The plan of the tree read, its buffer count and the facts that decide it (task 3308).
+
+    The buffer count is the fence: it is the same on a fast box and on a slow CI runner,
+    and a lookup that scans a table row by row shows in it at once. The wrong plan read
+    1,363,375 buffers for 2,000 nodes on the runner; the key lookups read about 20,000
+    (measured on the box: 20,046 stale, 20,043 never analyzed)."""
     binds = {"oid": oid, "pid": pkg, "fk": "parent", "depth": 20, "limit": 2000}
     try:
         async with tenant_session(org) as db:
@@ -429,11 +432,19 @@ async def _plan_report(org: str, pkg: str, oid: str) -> str:
             facts += [str(r) for r in (await db.execute(text(
                 "SELECT relname, reltuples, relpages FROM pg_class WHERE relname IN "
                 "('studio_records','studio_record_hot')"))).all()]
-            plan = (await db.execute(text(
-                "EXPLAIN (ANALYZE, BUFFERS) " + store._TREE_ALL_SQL), binds)).all()
-        return "\n".join(facts) + "\n" + "\n".join(r[0] for r in plan)
+            plan = [r[0] for r in (await db.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS) " + store._TREE_ALL_SQL), binds)).all()]
+        top = next((x for x in plan if "Buffers:" in x), "")
+        m = re.search(r"Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?", top)
+        buffers = int(m.group(1) or 0) + int(m.group(2) or 0) if m else -1
+        return "\n".join(facts) + "\n" + "\n".join(plan), buffers
     except Exception as exc:
-        return f"plan report failed: {type(exc).__name__}: {str(exc)[:200]}"
+        return f"plan report failed: {type(exc).__name__}: {str(exc)[:200]}", -1
+
+
+#: The most buffers that the read of 2,000 nodes may touch. The key lookups read about
+#: 20,000; the plan that failed on CI read 1,363,375.
+MAX_TREE_READ_BUFFERS = 100_000
 
 
 @pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
@@ -493,16 +504,13 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> Non
     prepare_stats()
     try:
         root = _run(world, build)
-        began = time.monotonic()
         (status, got), walks = _run(world, read)
-        took = time.monotonic() - began
-        if status != 200 or took >= 1.0:
-            report = _run(world, lambda: _plan_report(world.a, world.pkg, world.lot.id))
-            raise AssertionError(f"status {status}, read took {took:.2f}s\n{report}")
-        assert status == 200 and walks == 1, got
-        # The deadline is 5 s. With the old statements this read took about 0.9 s on a
-        # fast box and past 5 s on a CI runner, so the margin is part of the fence.
-        assert took < 1.0, took
+        report, buffers = _run(world, lambda: _plan_report(world.a, world.pkg, world.lot.id))
+        if status != 200 or not 0 <= buffers < MAX_TREE_READ_BUFFERS:
+            raise AssertionError(f"status {status}, read touched {buffers} buffers "
+                                 f"(limit {MAX_TREE_READ_BUFFERS})\n{report}")
+        print(f"tree read buffers ({stats}): {buffers}")
+        assert walks == 1, got
         assert len(got["nodes"]) == 2000 and got["truncated"] is False
         _run(world, lambda: _put(world.a, world.lot, Write(
             "create", world.lot.id, data={"name": "one more", "parent": {"id": root}})))
