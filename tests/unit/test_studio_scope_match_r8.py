@@ -73,7 +73,7 @@ def world(_whose_world):  # noqa: F811
     return _whose_world
 
 RECONNECT = {"code": invoke.NEEDS_CONNECTION, "reason": "reconnect",
-             "message": f"Reconnect {TALLY}: your connection does not grant what this app needs."}
+             "message": f"Reconnect {TALLY.removeprefix('mcp:')}: your connection does not grant what this app needs."}
 
 
 def _literal(scopes: list[str]) -> str:
@@ -194,6 +194,27 @@ def test_r8_an_org_row_meets_an_org_need_only_on_an_approved_org_install(world) 
     assert got["draft"] == (409, {**_WAITS, **base})
     assert got["pending"] == (409, {**_WAITS, **base})
     assert got["empty"][0] == 409 and got["empty"][1]["reason"] == "reconnect"
+    # The viewer does not own the org row: the sentence asks an admin.
+    assert got["empty"][1]["message"] == (
+        f"Ask an admin to reconnect {TALLY.removeprefix('mcp:')} with the scopes this app needs.")
+
+
+def test_r8_an_unapproved_org_need_never_leaks_the_org_scopes(world) -> None:
+    """I9b-1 review P2. For an org need that no admin approved, the reason is the same
+    for an org row with fewer scopes, equal scopes and no row: a member learns nothing."""
+    async def go() -> list[tuple[int, Any]]:
+        pid = await _live(world.a, OWEN, _need("org", ["read"]))
+        out = [await _door(world.a, OWEN, pid)]                  # no org row
+        _row(world, world.a, ["other"])
+        out.append(await _door(world.a, OWEN, pid))              # fewer / other scopes
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE integration_connections SET scopes = "
+                           "CAST('{read}' AS text[]) WHERE scope_kind = 'org' AND provider = :p"),
+                      {"p": TALLY})
+        out.append(await _door(world.a, OWEN, pid))              # equal
+        return out
+
+    assert _run(world, go) == [(409, {**_WAITS, "provider": TALLY, "as": "org"})] * 3
 
 
 def test_r8_a_private_install_or_a_draft_with_an_org_need_asks_an_admin(world) -> None:

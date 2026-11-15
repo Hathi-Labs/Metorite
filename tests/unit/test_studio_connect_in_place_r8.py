@@ -88,7 +88,7 @@ ADMIN = ("feature:studio", "integrations:manage")
 TALLY = f"mcp:tally-{TAG}"
 LEDGER = f"ledger_{TAG}"
 DIARY = f"diary_{TAG}"
-ROW_KEYS = {"name", "label", "met", "reason", "checkable", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "as", "met", "reason", "checkable", "setup_href", "can_connect"}
 
 
 def _manifest(names: list[str]) -> dict[str, Any]:
@@ -214,7 +214,7 @@ def test_r8_a_an_org_row_meets_the_need_and_the_rows_keep_the_draft_order(world)
     # I9b-1: a plain name is an ORG need, and a draft is never an approved install.
     assert _met(got) == {LEDGER: False, TALLY: False}
     assert {r["name"]: r["reason"] for r in got["connections"]} == {
-        LEDGER: "missing", TALLY: "org_approval"}
+        LEDGER: "org_approval", TALLY: "org_approval"}
     tally = got["connections"][1]
     assert tally["label"] == f"tally-{TAG}"
     assert tally["setup_href"] == f"/integrations?add=mcp&name=tally-{TAG}"
@@ -231,11 +231,12 @@ def test_r8_b_a_row_of_one_org_never_meets_a_need_of_the_other(world) -> None:
     status, got = _run(world, lambda: _read(world.b, ZED, zed))
     assert status == 200, got
     reasons = {r["name"]: r["reason"] for r in got["connections"]}
-    assert reasons == {TALLY: "missing", LEDGER: "org_approval"}
+    # An unapproved org need hides the org account, so each reads org_approval.
+    assert reasons == {TALLY: "org_approval", LEDGER: "org_approval"}
     status, got = _run(world, lambda: _read(world.a, OWEN, owen))
     assert status == 200, got
     reasons = {r["name"]: r["reason"] for r in got["connections"]}
-    assert reasons == {TALLY: "org_approval", LEDGER: "missing"}
+    assert reasons == {TALLY: "org_approval", LEDGER: "org_approval"}
 
 
 # ── c. The member row of X never counts for Y ─────────────────────────────
