@@ -415,13 +415,23 @@ def test_r8_the_switch_off_is_404_and_reads_nothing(world, monkeypatch) -> None:
 def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
     """One root and 1,999 children: 2,000 nodes are not cut, and one more is."""
 
-    def analyze() -> None:
-        # Autovacuum analyzes a table that grew, and this suite does not wait
-        # for it. With the stats of an empty table, the planner scans the hot
-        # rows once for each node, and a walk passes the 5 s deadline.
+    def no_stats() -> None:
+        # STU-C18 finding (task 3308): a table that was just filled has no planner
+        # statistics until autovacuum runs. The statements of the tree read and of the
+        # C18 write check must not depend on them, so this test wipes the statistics
+        # and turns autovacuum off for both tables, and it never runs ANALYZE.
         with world.p.admin_engine.begin() as c:
-            c.execute(text("ANALYZE studio_records"))
-            c.execute(text("ANALYZE studio_record_hot"))
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
+                c.execute(text("DELETE FROM pg_statistic WHERE starelid = CAST(:t AS regclass)"),
+                          {"t": t})
+                c.execute(text("UPDATE pg_class SET reltuples = -1, relpages = 0 "
+                               "WHERE oid = CAST(:t AS regclass)"), {"t": t})
+
+    def stats_back() -> None:
+        with world.p.admin_engine.begin() as c:
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} RESET (autovacuum_enabled)"))
 
     async def build() -> str:
         [root] = await _put(world.a, world.lot, Write("create", world.lot.id,
@@ -430,8 +440,6 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
             await _put(world.a, world.lot, *[
                 Write("create", world.lot.id, data={"name": f"n{i}", "parent": {"id": root.id}})
                 for i in range(start, min(start + 50, 1999))])
-            if start in (0, 200, 1000):
-                analyze()
         return root.id
 
     async def read() -> tuple[tuple[int, Any], int]:
@@ -448,16 +456,19 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world) -> None:
             event.remove(eng, "before_cursor_execute", _on)
         return got, len([s for s in seen if "WITH RECURSIVE" in s])
 
-    root = _run(world, build)
-    analyze()
-    (status, got), walks = _run(world, read)
-    assert status == 200 and walks == 1, got
-    assert len(got["nodes"]) == 2000 and got["truncated"] is False
-    _run(world, lambda: _put(world.a, world.lot, Write(
-        "create", world.lot.id, data={"name": "one more", "parent": {"id": root}})))
-    (status, got), walks = _run(world, read)
-    assert status == 200 and walks == 1, got
-    assert len(got["nodes"]) == 2000 and got["truncated"] is True
+    no_stats()
+    try:
+        root = _run(world, build)
+        (status, got), walks = _run(world, read)
+        assert status == 200 and walks == 1, got
+        assert len(got["nodes"]) == 2000 and got["truncated"] is False
+        _run(world, lambda: _put(world.a, world.lot, Write(
+            "create", world.lot.id, data={"name": "one more", "parent": {"id": root}})))
+        (status, got), walks = _run(world, read)
+        assert status == 200 and walks == 1, got
+        assert len(got["nodes"]) == 2000 and got["truncated"] is True
+    finally:
+        stats_back()
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:

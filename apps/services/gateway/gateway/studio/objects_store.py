@@ -4556,19 +4556,23 @@ MAX_TREE_NODES = 2_000
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
 _TREE_PARENT = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "JOIN LATERAL (SELECT h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " "
     "AND h.object_id = CAST(:oid AS uuid) AND h.record_id = u.id "
-    "AND h.field_key = CAST(:fk AS text) "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
+    "JOIN LATERAL (SELECT p.id FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
     "AND p.object_id = CAST(:oid AS uuid) "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "OFFSET 0) p ON true "
 )
 
 #: The children of a record, by the text index of the hot rows.
 _TREE_CHILDREN = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
+    "JOIN LATERAL (SELECT h.record_id FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " "
     "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
-    "AND h.v_text = CAST(t.id AS text) "
+    "AND h.v_text = CAST(t.id AS text) OFFSET 0) h ON true "
 )
 
 #: The walk of each record of `:rids` (C18): its level (the walk up, which stops
@@ -4611,12 +4615,14 @@ _TREE_OBJECT_SQL = (
 _TREE_ALL_ROOTS = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
-    "SELECT 1 FROM studio_record_hot h "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
+    "SELECT 1 FROM (SELECT h.v_text FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND h.{_OF_OBJECT} AND h.record_id = r.id "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
+    "JOIN LATERAL (SELECT 1 FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
     "AND p.object_id = CAST(:oid AS uuid) "
     "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
-    f"WHERE h.{_OF_ORG} AND h.{_OF_OBJECT} AND h.record_id = r.id "
-    "AND h.field_key = CAST(:fk AS text))"
+    "OFFSET 0) p ON true)"
 )
 
 #: The root of a read of one tree: the record `:root` of the object.
