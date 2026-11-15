@@ -678,6 +678,8 @@ def test_the_r8_twin_is_in_the_must_run_list() -> None:
 
 
 def test_the_spec_names_the_fence() -> None:
+    # CIV-33 slice 2: the row text lives in its own file, section 14 holds the index line.
+    row = (_ROOT / "project-docs/specs/ai_studio_rows/B6a.md").read_text(encoding="utf-8")
+    assert "🔨 **BUILT, dark" in row
     spec = (_ROOT / "project-docs/specs/ai_studio.md").read_text(encoding="utf-8")
-    assert "| **B6a** | 🔨 **BUILT, dark" in spec
     assert "`tests/unit/test_studio_run_as_r8.py` for the reads (B6a)" in spec
