@@ -37,6 +37,7 @@ entry says ONE or THE, a second copy is a defect.
 ### Shell and shared UI
 - `components/EmptyState.tsx`: THE empty-state box. It has three states: filtered, empty, and no-permission, whose CTA is disabled rather than hidden and gives its reason as text.
 - `components/board/`: THE Kanban lane. Projects, My Tasks and CRM draw lanes with `BoardColumn` and cards with `TaskCardShell`. The hue comes from `statusAccent` only, as a chip, never a stripe. Add a new board to `BOARDS` in `lib/boards.test.ts` in the same PR.
+- `components/studio/StudioGallery.tsx`: the Gallery block of Studio (STU-D19a). `lib/studio/galleryModel.ts` holds its rules. A card gets an image address only after the observer saw it. ⚠️ Only the sample door has `fileAddress`. The real door gets none until D24 serves a file. Fences: `galleryModel.test.ts`, `StudioGallery.test.ts`, `realDoor.test.ts`.
 - `components/LayoutBoundary.tsx`: THE error boundary, mounted per layout around the untrusted part. ⚠️ Retry re-mounts by bumping a key, and `caught()` returns ONLY `error`. Fence: `lib/layoutBoundary.test.ts`. Containment of a throwing child is a review check.
 - `components/ContextMenu.tsx`: THE right-click menu, flat, with no flyout submenus. The copy in `EmailList.tsx` is a recorded exemption, and `lib/sharedTaskUi.test.ts` fences a fourth.
 - `components/AppShell.tsx`: the responsive shell. No ancestor of the shell scrolls. Do not call `scrollIntoView` in the email app, the shell or the chat. Use `revealWithin` or `scrollToEnd` from `lib/scrollWithin.ts`. Fence: `lib/scrollWithin.test.ts`.
@@ -122,6 +123,7 @@ The Knowledge app (spec `knowledge_base.md` §11.1 and §21). Only the first `GE
   - Fences: `lib/emailOtpAdapter.test.ts`, `lib/emailOtp.test.ts`, `app/signin/code/code.test.ts`.
 - `app/signup/` + `app/api/signup/route.ts`: the self-serve form. It redirects to `/signin` while `SELF_SERVE_SIGNUP_ENABLED` is not `"true"`. The hop forwards ONLY `{slug, display_name, registered_state, gstin}`. Fences: `signup.test.ts`, `tests/unit/test_signup_provision_route.py`.
 - `app/workflows/` streams a run through its own SSE relay, because the catch-all buffers bodies. `app/api/agent/chat/route.ts` sends all agents through `/agent/run/stream`.
+  - `app/workflows/lib/humanStep.ts` holds the rules of the human step form (WFC-4a-1), and `HumanStepForm.tsx` only draws them. The form writes `assignee`, `title` and `description` only, and refuses `{{`. Each type of `graph.NODE_TYPES` needs an icon and a label in `lib/nodeVisuals.ts`. Fences: `lib/humanStep.test.ts`, `lib/nodeTypes.test.ts`, `components/NodePalette.test.tsx`, `components/NodeInspector.test.tsx`.
 
 ## Conventions
 - Next.js App Router, SSE streaming for chat, AG-UI translation in route.ts

@@ -15,6 +15,7 @@
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
 import { searchCatalog } from "../lib/api";
+import { NEW_HUMAN_STEP_CONFIG } from "../lib/humanStep";
 import { FALLBACK_ICON, NODE_ICON } from "../lib/nodeVisuals";
 import { NODE_CATEGORY_STYLE } from "../lib/types";
 import type { Catalog, NodeType, SearchResult } from "../lib/types";
@@ -28,7 +29,7 @@ export type PaletteDrop = {
 type SectionIcon = React.ComponentType<{ className?: string }>;
 
 /** Map one search result onto a draggable drop, joined against the catalog. */
-function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | null {
+export function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | null {
   if (r.kind === "agent")
     return { nodeType: "agent", label: r.key, config: { agent: r.key, message: "" } };
   if (r.kind === "tool")
@@ -51,8 +52,16 @@ function dropForResult(r: SearchResult, catalog: Catalog | null): PaletteDrop | 
       return { nodeType: type, label: r.label, config: { seconds: 3600 } };
     if (type === "output")
       return { nodeType: type, label: r.label, config: { value: "" } };
+    if (type === "human_step") return humanStepDrop(r.label);
   }
-  return null; // integrations without actions, trigger, etc. — not droppable
+  // Integrations without actions, the trigger, and a node type that the
+  // palette does not offer (pm_task, pm_lifecycle, studio_write): not droppable.
+  return null;
+}
+
+/** A new human step (WFC-4a-1): the three literal keys, empty. */
+export function humanStepDrop(label = "Human step"): PaletteDrop {
+  return { nodeType: "human_step", label, config: { ...NEW_HUMAN_STEP_CONFIG } };
 }
 
 export default function NodePalette({
@@ -313,7 +322,7 @@ export default function NodePalette({
           )}
 
           {section(
-            "logic", "Logic", themedIcon("GitBranch"), 4,
+            "logic", "Logic", themedIcon("GitBranch"), 5,
             <>
               {item(
                 "logic:condition",
@@ -335,6 +344,10 @@ export default function NodePalette({
                 "logic:wait",
                 { nodeType: "wait", label: "Wait", config: { seconds: 3600 } },
                 "Wait", "pause for a duration, then continue", "logic",
+              )}
+              {item(
+                "logic:human_step", humanStepDrop(),
+                "Human step", "give a member a task, wait until it is done", "logic",
               )}
             </>,
           )}

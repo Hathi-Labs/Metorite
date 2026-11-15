@@ -18,6 +18,8 @@ import type {
   TriggerKind,
   WorkflowGraphNode,
 } from "../lib/types";
+import { readOnlyNote } from "../lib/humanStep";
+import HumanStepForm from "./HumanStepForm";
 
 function Field({
   label,
@@ -288,6 +290,7 @@ export default function NodeInspector({
   const headStyle =
     NODE_CATEGORY_STYLE[categoryForType(type)] ?? NODE_CATEGORY_STYLE.logic;
   const HeadIcon = NODE_ICON[type] ?? FALLBACK_ICON;
+  const noteOnly = readOnlyNote(type);
 
   return (
     <div className="w-64 xl:w-72 shrink-0 border-l border-border overflow-y-auto scrollbar-thin">
@@ -567,7 +570,18 @@ export default function NodeInspector({
           </Field>
         )}
 
-        {type !== "trigger" && (
+        {/* WFC-4a-1: a human step takes fixed words only, so it shows no
+            {{ref}} hint. A node type with no form shows one plain note. */}
+        {type === "human_step" && (
+          <HumanStepForm nodeId={node.id} config={cfg} onConfig={onConfig} />
+        )}
+        {noteOnly && (
+          <p role="note" className="text-[10px] text-muted-foreground">
+            {noteOnly}
+          </p>
+        )}
+
+        {type !== "trigger" && type !== "human_step" && !noteOnly && (
           <div className="pt-1">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide shrink-0">
