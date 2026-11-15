@@ -704,8 +704,10 @@ async def test_values_that_overflow_the_card_give_no_card_and_no_write(
     """Each value is at the cap, yet the rows together pass ``CARD_CLIP`` (the
     ``_VIEW_WONT_FIT`` path). Mutation: drop the ``CardWontFit`` branch -> red."""
     mark.held = held
-    spec = {"filter": [{"field": f"f{i}", "op": "eq", "value": "v" * st.MAX_VIEW_CARD_VALUE}
-                       for i in range(8)]}
+    # Eight conditions are the most a filter holds (``studio_query.MAX_FILTERS``).
+    # A field key is not capped on the card, so a long key tips the sum over 4000.
+    spec = {"filter": [{"field": f"f{i}" + "k" * 200, "op": "eq",
+                        "value": "v" * st.MAX_VIEW_CARD_VALUE} for i in range(8)]}
     out = await _call(op="save", name="N", shared=True, spec=spec)
     assert out["ok"] is False and card.shown == [] and gw.writes() == []
     assert out["errors"][0]["message"] == st._VIEW_WONT_FIT
