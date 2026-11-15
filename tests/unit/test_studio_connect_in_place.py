@@ -62,6 +62,7 @@ from acb_common import get_settings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.connections import store as conn_store
+from gateway.package_host.resolve import Met
 from gateway.routes import integrations_connections as ic
 from gateway.routes.studio import actions, connections
 from gateway.studio import packages_store as store
@@ -196,7 +197,8 @@ class _World:
         self.met_reads: list[str] = []
         self.owner = OWEN
         self.names: Any = ["zoho", "mcp:tally", "google_calendar"]
-        self.met: frozenset[str] = frozenset({"zoho"})
+        self.met_org: frozenset[str] = frozenset({"zoho"})
+        self.met_member: frozenset[str] = frozenset()
 
 
 def _package(manifest: dict[str, Any]) -> store.Package:
@@ -224,9 +226,10 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
             manifest["connections"] = w.names
         return _package(manifest)
 
-    async def met_connections(db: Any, *, viewer: str) -> frozenset[str]:
+    async def met_connections(db: Any, *, viewer: str) -> Met:
         w.met_reads.append(viewer)
-        return w.met
+        # I9a: the real answer is a Met pair. A set here hid a merge bug once.
+        return Met(org=frozenset(w.met_org), member=frozenset(w.met_member))
 
     monkeypatch.setattr(connections, "_tenant_session", session)
     monkeypatch.setattr(connections.store, "get_package", get_package)
@@ -257,6 +260,36 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
                        "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True}
     assert world.sessions == 1
     assert world.met_reads == [OWEN]
+
+
+def test_a_row_is_met_by_the_set_of_its_own_need(world: _World) -> None:
+    """I9a: a ``member`` need is met only by a row of the caller, an ``org`` need
+    only by an org row. The step reads the SAME set as the door, per need."""
+    world.names = [{"name": "zoho", "as": "org"}, {"name": "google_drive", "as": "member"},
+                   {"name": "mcp:tally", "as": "org"}, {"name": "google_calendar", "as": "member"}]
+    world.met_org = frozenset({"zoho", "google_calendar"})   # a member need, an org row only
+    world.met_member = frozenset({"google_drive", "mcp:tally"})  # an org need, a member row only
+    rows = _client(_user()).get(PATH).json()["connections"]
+    assert [(x["name"], x["met"]) for x in rows] == [
+        ("zoho", True), ("google_drive", True), ("mcp:tally", False), ("google_calendar", False)]
+
+
+def test_a_plain_name_takes_its_as_from_the_connector_list(world: _World) -> None:
+    """``zoho`` is an org need and ``google_calendar`` a member need, as the door reads them."""
+    world.met_org = frozenset()
+    world.met_member = frozenset({"zoho", "google_calendar"})
+    rows = _client(_user()).get(PATH).json()["connections"]
+    assert {x["name"]: x["met"] for x in rows} == {
+        "zoho": False, "mcp:tally": False, "google_calendar": True}
+
+
+def test_a_declared_as_that_differs_from_the_connector_scope_offers_no_connect(world: _World) -> None:
+    """I9a review P2. A Connect writes a row of the scope of the connector, so when the
+    declared `as` differs, no Connect can meet the need: ``can_connect`` is False."""
+    world.names = [{"name": "google_calendar", "as": "org"}, {"name": "zoho", "as": "member"},
+                   {"name": "google_calendar", "as": "member"}, {"name": "zoho", "as": "org"}]
+    rows = _client(_user(grants=ADMIN)).get(PATH).json()["connections"]
+    assert [x["can_connect"] for x in rows] == [False, False, True, True]
 
 
 def test_an_admin_may_connect_each_row(world: _World) -> None:

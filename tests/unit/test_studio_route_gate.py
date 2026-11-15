@@ -113,6 +113,9 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/packages"),
     ("GET", "/studio/packages/{package_id}"),
     ("PUT", "/studio/packages/{package_id}/draft"),
+    # C11b, the CSV import of an object.
+    ("POST", "/studio/packages/{package_id}/objects/{object_name}/import"),
+    ("POST", "/studio/packages/{package_id}/objects/{object_name}/import/preview"),
     ("POST", "/studio/packages/{package_id}/versions"),
     ("GET", "/studio/packages/{package_id}/versions"),
     ("GET", "/studio/packages/{package_id}/versions/{version}"),
@@ -127,6 +130,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/studio/packages/{package_id}/install/run-as"),
     # WS-STU J2b-2, the share with people.
     ("POST", "/studio/packages/{package_id}/share"),
+    # WS-STU J2b-5, the per-person unshare.
+    ("DELETE", "/studio/packages/{package_id}/share/{email}"),
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
@@ -154,7 +159,9 @@ _PARAMS = {
     "app_id": str(uuid.uuid4()),
     "version": "1",
     "action": "peek",
+    "email": "ben@example.test",
     "view_id": str(uuid.uuid4()),
+    "object_name": "ledger",
 }
 
 STUDIO = ["feature:studio"]
@@ -163,8 +170,9 @@ GUEST = ["feature:chat", "apps:use:*"]
 
 
 def _router_routes() -> list[tuple[str, str]]:
-    return sorted((m, r.path) for r in actions.router.routes
-                  if isinstance(r, APIRoute) for m in r.methods)
+    return sorted(
+        (m, r.path) for r in actions.router.routes if isinstance(r, APIRoute) for m in r.methods
+    )
 
 
 def _url(path: str) -> str:
@@ -176,8 +184,12 @@ def _client(grants: list[str], overrides: list[tuple[str, str]] | None = None) -
     app.include_router(actions.router)
 
     def _user() -> UserContext:
-        return UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-                           access=build_access(grants, overrides or []))
+        return UserContext(
+            email=ANA,
+            role=UserRole.EMPLOYEE,
+            organization_id=ORG,
+            access=build_access(grants, overrides or []),
+        )
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app, raise_server_exceptions=False)
@@ -198,6 +210,7 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         def _fn(*_a: Any, **_k: Any) -> Any:
             reached.append(name)
             raise RuntimeError(f"{name} ran")
+
         return _fn
 
     from gateway.routes.studio import connections, invoke, packages, skills, views
@@ -220,7 +233,8 @@ def _open(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
 def test_expected_routes_are_the_routes_of_the_router() -> None:
     assert _router_routes() == sorted(EXPECTED_ROUTES), (
         "The Studio router changed. Add the new route to EXPECTED_ROUTES, so "
-        "the 403 tests of J1 cover it.")
+        "the 403 tests of J1 cover it."
+    )
 
 
 # ── d. One gate, and it is `feature:studio` ───────────────────────────────
@@ -260,8 +274,11 @@ def test_the_router_carries_one_feature_gate_and_it_is_studio() -> None:
 
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_no_route_adds_a_second_gate_or_the_share_verb(method: str, path: str) -> None:
-    route = next(r for r in actions.router.routes
-                 if isinstance(r, APIRoute) and r.path == path and method in r.methods)
+    route = next(
+        r
+        for r in actions.router.routes
+        if isinstance(r, APIRoute) and r.path == path and method in r.methods
+    )
     assert _gates_of(route) == ["feature:studio"], (method, path)
 
 
@@ -271,7 +288,11 @@ def test_no_route_adds_a_second_gate_or_the_share_verb(method: str, path: str) -
 @pytest.mark.parametrize("listed", ["", "*"])
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_workflows_member_gets_403_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str, listed: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
+    listed: str,
 ) -> None:
     """B1's interim gate is gone. The 403 comes before the 404 of the switch."""
     _open(monkeypatch, listed)
@@ -281,16 +302,27 @@ def test_a_workflows_member_gets_403_on_each_route(
     assert no_store == []
 
 
-@pytest.mark.parametrize("who,grants,overrides", [
-    ("guest", GUEST, []),
-    ("denied member", ["feature:*"], [("feature:studio", "deny")]),
-    ("workflows yes, studio no", ["feature:*"],
-     [("feature:workflows", "allow"), ("feature:studio", "deny")]),
-])
+@pytest.mark.parametrize(
+    "who,grants,overrides",
+    [
+        ("guest", GUEST, []),
+        ("denied member", ["feature:*"], [("feature:studio", "deny")]),
+        (
+            "workflows yes, studio no",
+            ["feature:*"],
+            [("feature:workflows", "allow"), ("feature:studio", "deny")],
+        ),
+    ],
+)
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_member_without_studio_gets_403_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
-    who: str, grants: list[str], overrides: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
+    who: str,
+    grants: list[str],
+    overrides: list[tuple[str, str]],
 ) -> None:
     _open(monkeypatch, "*")
     r = _call(_client(grants, overrides), method, path)
@@ -304,7 +336,10 @@ def test_a_member_without_studio_gets_403_on_each_route(
 @pytest.mark.parametrize("grants", [STUDIO, ["feature:*"], ["*"]])
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_studio_holder_passes_the_gate_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
     grants: list[str],
 ) -> None:
     """Past the gate, the switch of each handler answers 404 for an org
@@ -319,7 +354,10 @@ def test_a_studio_holder_passes_the_gate_on_each_route(
 
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_workflows_deny_override_no_longer_closes_studio(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
 ) -> None:
     """The edge that the owner accepted on 2026-11-06 (task 1199, D180). Before
     J1-1, a member with a ``feature:workflows`` deny override got 403 here.
@@ -335,7 +373,8 @@ def test_an_anonymous_caller_gets_401() -> None:
     app = FastAPI()
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
-        email=None, role=UserRole.EMPLOYEE, access=build_access(STUDIO))
+        email=None, role=UserRole.EMPLOYEE, access=build_access(STUDIO)
+    )
     assert TestClient(app).get("/studio/actions").status_code == 401
 
 
@@ -356,18 +395,20 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> Any:
     app = FastAPI()
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
-        email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-        access=build_access(box["grants"]))
+        email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG, access=build_access(box["grants"])
+    )
     real = httpx.AsyncClient
-    monkeypatch.setattr(st.httpx, "AsyncClient",
-                        lambda **kw: real(transport=httpx.ASGITransport(app=app), **kw))
+    monkeypatch.setattr(
+        st.httpx, "AsyncClient", lambda **kw: real(transport=httpx.ASGITransport(app=app), **kw)
+    )
     monkeypatch.setattr(st, "_current_user_email", lambda: ANA)
     box["st"] = st
     return box
 
 
 def test_a_chat_tool_of_a_member_without_the_feature_gets_the_refusal(
-    chat: Any, no_store: list[str],
+    chat: Any,
+    no_store: list[str],
 ) -> None:
     import asyncio
 
@@ -382,7 +423,8 @@ def test_a_chat_tool_of_a_member_without_the_feature_gets_the_refusal(
 
 
 def test_a_chat_tool_of_a_holder_reaches_the_handler(
-    chat: Any, monkeypatch: pytest.MonkeyPatch,
+    chat: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import asyncio
 

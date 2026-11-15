@@ -62,6 +62,8 @@ function pageCountable(m: Obj, page: Obj): boolean {
   const blocks = new Map(list(m.views).map((v) => [str(v.id), str(v.block)]));
   const ids = cellsOfPage(page).map((c) => str(c.view));
   if (isObj(page.side)) ids.push(str(page.side.view));
+  // A page with a preset (STU-LY-0) holds its views in `regions`. `_check_nav.countable` reads them too.
+  if (isObj(page.regions)) for (const v of Object.values(page.regions)) if (Array.isArray(v)) ids.push(...v.map(str));
   return ids.some((id) => COUNT_BLOCKS.has(blocks.get(id) ?? ""));
 }
 
