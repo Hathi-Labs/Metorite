@@ -335,6 +335,9 @@ async def list_actions(
 _REFRESH_FAILED = "The server did not give its list of tools. Try again later."
 _REFRESH_SOON = "This server was read a moment ago. Try again in {s} seconds."
 _REFRESH_DOWN = "The tool list cannot be read now. Try again later."
+_REFRESH_REFUSED = (
+    "You cannot refresh this server: it is not a connected server of your organization, "
+    "or you may not use it.")
 
 
 @router.post("/mcp/{server}/refresh")
@@ -346,15 +349,22 @@ async def refresh_mcp_tools(
 
     The one member action that calls a server. It fills the cache that the
     catalog reads. The org is the bound session's, never request input, so
-    a server of another org is 404. The answer holds the server key, the
+    a server of another org is 403 ``mcp_not_allowed``, as a server that the
+    member may not use (the grant ``integrations:use:mcp-<server>`` or the
+    agent scope) is. A bad key is 404. The answer holds the server key, the
     count and the result, and never a url, a header or an error text."""
     org = getattr(user, "organization_id", None)
     if not flags.studio_allowed(org):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     try:
-        done = await mcp_tools.refresh(str(org), server)
+        done = await mcp_tools.refresh(str(org), server, may_use=user.has_permission)
     except mcp_tools.ServerNotFound:
         raise HTTPException(status_code=404, detail=NOT_FOUND) from None
+    except mcp_tools.RefreshRefused:
+        # I11a review: no grant, no agent scope and no such server give one
+        # answer, so the answer does not say that a server exists.
+        raise HTTPException(status_code=403, detail={
+            "code": "mcp_not_allowed", "message": _REFRESH_REFUSED}) from None
     except mcp_tools.RefreshTooSoon as soon:
         raise HTTPException(
             status_code=429, detail=_REFRESH_SOON.format(s=soon.retry_after),

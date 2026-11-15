@@ -24,7 +24,7 @@ makes a network call.
 **Acceptance.**
 
 a. A refresh of org A reads only a server of org A, on the registry path
-   and on the legacy path. A server of org B is 404, and no client call
+   and on the legacy path. A server of org B is 403 (I11a review), and no client call
    runs for it.
 b. The rows of org A name only the servers of org A, and the rows of org B
    only those of org B (not vacuous).
@@ -145,7 +145,8 @@ async def two_orgs(registry_on_promoted, monkeypatch):  # noqa: F811
 
 def _user(org: str) -> UserContext:
     return UserContext(email="m@example.test", role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:studio"]), organization_id=org)
+                       access=build_access(["feature:studio", "integrations:use:*"]),
+                       organization_id=org)
 
 
 async def _refresh(org: str, server: str) -> Any:
@@ -178,8 +179,8 @@ async def test_r8_a_refresh_reads_only_a_server_of_the_own_org(two_orgs) -> None
     p, names, _raw, calls, _tag = two_orgs
     assert (await _refresh(p.org_a, names["reg_a"]))["ok"] is True
     assert (await _refresh(p.org_a, names["old_a"]))["ok"] is True
-    assert await _refresh(p.org_a, names["reg_b"]) == 404
-    assert await _refresh(p.org_a, names["old_b"]) == 404
+    assert await _refresh(p.org_a, names["reg_b"]) == 403
+    assert await _refresh(p.org_a, names["old_b"]) == 403
     assert calls == [f"https://{names['reg_a']}.example.com/mcp",
                      f"https://{names['old_a']}.example.com/mcp"]
 
@@ -217,7 +218,7 @@ async def test_r8_a_server_of_one_name_in_both_orgs_never_crosses(two_orgs) -> N
 
 async def test_r8_a_refresh_of_org_a_never_moves_an_old_row_of_org_b(two_orgs) -> None:
     p, names, _raw, _calls, _tag = two_orgs
-    assert await _refresh(p.org_a, names["old_b"]) == 404
+    assert await _refresh(p.org_a, names["old_b"]) == 403
     with p.admin_engine.connect() as c:
         legacy = [str(r[0]) for r in c.execute(text(
             "SELECT organization_id FROM mcp_servers WHERE name = :n"), {"n": names["old_b"]})]

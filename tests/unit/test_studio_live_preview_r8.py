@@ -34,7 +34,8 @@ e. Two members of org A never share an answer.
 f. The ``connections`` read of the door binds the org of the session.
 g. A class B tool of a real row makes no call.
 h. A member whose access denies ``integrations:use:mcp-<server>`` makes no
-   call on a real row, and a server of ``agent_scope: []`` refuses.
+   call on a real row, and a server of ``agent_scope: []`` refuses. The
+   refresh door holds the same two rules, and it claims no slot.
 
 **The mutations (R7).** Each ran on 2026-11-15, then was restored with git.
 
@@ -51,6 +52,8 @@ h. A member whose access denies ``integrations:use:mcp-<server>`` makes no
   ``test_r8_two_members_never_share_an_answer`` goes red.
 * M4. ``call_read_tool``: drop the grant check.
   ``test_r8_a_denied_grant_or_no_agent_scope_makes_no_call`` goes red.
+* M5. ``refresh``: drop the grant check, and M6, drop the scope check. Each
+  turns ``test_r8_a_refresh_needs_the_grant_and_the_scope`` red.
 
 Run (one R8 suite at a time on the shared scratch database)::
 
@@ -217,7 +220,7 @@ async def test_r8_a_cached_list_of_org_b_never_serves_org_a(two_orgs) -> None:
     from gateway.connections import mcp_tools
 
     w = two_orgs
-    assert (await mcp_tools.refresh(w.p.org_b, SHARED)).ok is True
+    assert (await mcp_tools.refresh(w.p.org_b, SHARED, may_use=lambda _p: True)).ok is True
     assert w.lists == [f"https://shared-b-{w.tag}.example.com/mcp"]
     await _read(w.p.org_a, SHARED)
     # Org A read its own live list, never the fresh list of org B.
@@ -277,3 +280,27 @@ async def test_r8_a_denied_grant_or_no_agent_scope_makes_no_call(two_orgs) -> No
                    connected_by="r8-seed", always_confirm=False, agent_scope=())
     assert await _read(w.p.org_a, reg_a) == "scope_denied"
     assert w.calls == [] and w.lists == []
+
+
+async def test_r8_a_refresh_needs_the_grant_and_the_scope(two_orgs) -> None:
+    from acb_auth import build_access
+    from gateway.connections import mcp, mcp_tools
+
+    w = two_orgs
+    reg_a = w.names["reg_a"]
+    denied = build_access(["integrations:use:*"], [(f"integrations:use:mcp-{reg_a}", "deny")])
+    for may_use in (denied.has, build_access([]).has):
+        with pytest.raises(mcp_tools.RefreshRefused):
+            await mcp_tools.refresh(w.p.org_a, reg_a, may_use=may_use)
+    # A server of org B is refused as one that the member may not use.
+    with pytest.raises(mcp_tools.RefreshRefused):
+        await mcp_tools.refresh(w.p.org_a, w.names["reg_b"], may_use=lambda _p: True)
+    await mcp.save(w.p.org_a, name=reg_a, url=_url(reg_a), headers={"Authorization": "x"},
+                   connected_by="r8-seed", always_confirm=False, agent_scope=())
+    with pytest.raises(mcp_tools.RefreshRefused):
+        await mcp_tools.refresh(w.p.org_a, reg_a, may_use=lambda _p: True)
+    assert w.lists == []
+    assert not any(":refresh:" in k for k in w.raw.data)
+    # Not vacuous: with the grant and the scope, the refresh reads.
+    assert (await mcp_tools.refresh(w.p.org_a, SHARED, may_use=lambda _p: True)).ok is True
+    assert w.lists == [f"https://shared-a-{w.tag}.example.com/mcp"]

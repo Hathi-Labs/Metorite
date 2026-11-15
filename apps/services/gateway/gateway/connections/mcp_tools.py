@@ -209,6 +209,29 @@ def _identity(server: Any) -> str:
     return hashlib.sha256(text.encode("ascii")).hexdigest()[:32]
 
 
+def _answer_identity(server: Any) -> str:
+    """:func:`_identity` and the ``updated_at`` of the row, for the key of a
+    live answer only.
+
+    A re-save by the same admin with a new header or a new token keeps
+    :func:`_identity`, so the answer of the old token must not serve. Each
+    write of the row sets ``updated_at``. The time is not a secret, and
+    ``enabled_meta`` gives it with no blob opened. It is NOT in
+    :func:`_identity`: a token refresh and a status write set it too, so the
+    catalog would drop the rows of an OAuth server at each refresh."""
+    updated = getattr(server, "updated_at", None)
+    stamp = updated.isoformat() if hasattr(updated, "isoformat") else str(updated or "")
+    text = json.dumps([_identity(server), stamp], ensure_ascii=True)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()[:32]
+
+
+def _scope_open(meta: Any) -> bool:
+    """True when the ``agent_scope`` of the server holds ``*``. A preview and a
+    refresh are no agent, so a server of ``[]`` or of named agents fails
+    closed."""
+    return "*" in tuple(getattr(meta, "agent_scope", None) or ())
+
+
 @dataclass(frozen=True)
 class Refreshed:
     """What a refresh gives the route. It holds no url and no header."""
@@ -513,15 +536,39 @@ async def _claim_refresh(org: str, server: str) -> float:
     raise RefreshTooSoon(left if left > 0 else REFRESH_INTERVAL_S)
 
 
-async def refresh(org: str, server: str, *, lister: Lister | None = None) -> Refreshed:
+class RefreshRefused(Exception):
+    """The member may not refresh this server, or the org holds no such
+    connected server. One class for each case, so the answer does not say
+    which (I11a review). ``reason`` is a ``LIVE_*`` code, for the log only."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+async def refresh(org: str, server: str, *, may_use: Callable[[str], bool],
+                  lister: Lister | None = None) -> Refreshed:
     """Read ONE server of *org* and fill its cache (the member action).
 
-    The slot comes first, so a name that the org does not hold costs a slot
-    too. A failed read drops the list of that server only, unless the stored
-    list is newer than the start of this refresh. ``ServerNotFound`` and
-    ``RefreshTooSoon`` reach the caller. A Redis fault reaches the caller too."""
+    A bad key is :class:`ServerNotFound`. Then, before any slot and any read
+    of a credential, the same two checks as the live read (I11a review):
+    the member's access allows ``integrations:use:mcp-<server>`` (*may_use*,
+    the ``has_permission`` of the session), and the connected server of
+    *org* has ``*`` in its ``agent_scope``. A miss of either, and a server
+    that the org does not hold, raise :class:`RefreshRefused`. A failed read
+    drops the list of that server only, unless the stored list is newer than
+    the start of this refresh. ``RefreshTooSoon`` reaches the caller. A
+    Redis fault reaches the caller too."""
     if not _server_key(server):
         raise ServerNotFound(server)
+    if not _may_use(may_use, server):
+        raise RefreshRefused(LIVE_NO_GRANT)
+    meta = next((s for s in await mcp_registry.enabled_meta(org)
+                 if s.name == server and s.enabled is True), None)
+    if meta is None:
+        raise RefreshRefused(LIVE_NO_SERVER)
+    if not _scope_open(meta):
+        raise RefreshRefused(LIVE_NO_SCOPE)
     started = await _claim_refresh(org, server)
     try:
         listed = await list_tools(org, server, lister=lister)
@@ -880,7 +927,7 @@ def _decode_answer(raw: Any) -> tuple[dict[str, Any], bool, float] | None:
 async def _spend(org: str, member: str) -> None:
     """Count one live read that makes a network call, or raise
     :class:`LiveLimited`. A fixed window of :data:`RATE_WINDOW_S` in
-    ``tenant_redis``, with INCR and EXPIRE: one counter for the member and
+    ``tenant_redis``, with SET NX EX and then INCR: one counter for the member and
     one for the org. A member over the limit does not count for the org. A
     cache that does not answer raises :class:`ListFailed` (fail closed)."""
     now = _now()
@@ -892,9 +939,15 @@ async def _spend(org: str, member: str) -> None:
             for key, cap in ((_live_key("rate", "m", _member_part(member), window),
                               MEMBER_CALLS_PER_WINDOW),
                              (_live_key("rate", "org", window), ORG_CALLS_PER_WINDOW)):
-                count = int(await client.incr(key))
-                if count == 1:
-                    await client.expire(key, RATE_WINDOW_S + 1)
+                # SET NX EX makes the key WITH its TTL in one command, so no
+                # key ever lives without one. A key that is there takes INCR.
+                if await client.set(key, "1", nx=True, ex=RATE_WINDOW_S + 1):
+                    count = 1
+                else:
+                    count = int(await client.incr(key))
+                    if int(await client.ttl(key)) == -1:
+                        # INCR after the key expired made a new key: give it a TTL.
+                        await client.expire(key, RATE_WINDOW_S + 1)
                 if count > cap:
                     raise LiveLimited(left)
     except LiveLimited:
@@ -971,7 +1024,7 @@ async def call_read_tool(org: str, member: str, server: str, tool: str, args: di
                  if s.name == server and s.enabled is True), None)
     if meta is None:
         raise LiveRefused(LIVE_NO_SERVER)
-    if "*" not in tuple(getattr(meta, "agent_scope", None) or ()):
+    if not _scope_open(meta):
         raise LiveRefused(LIVE_NO_SCOPE)
     loaded: list[Any] = []
     held: list[str] = []
@@ -1001,7 +1054,8 @@ async def _live(org: str, member: str, server: str, tool: str, args: dict[str, A
     listed = await fresh_tool_list(org, meta, _load, lister=lister)
     _class_a_item(listed, meta, tool)
     identity = _identity(meta)
-    parts = ("answer", _member_part(member), server, tool, _input_part(identity, args))
+    parts = ("answer", _member_part(member), server, tool,
+             _input_part(_answer_identity(meta), args))
     try:
         client = _redis()
         with _scope(org):
@@ -1053,6 +1107,7 @@ __all__ = [
     "LiveLimited",
     "LiveRead",
     "LiveRefused",
+    "RefreshRefused",
     "RefreshTooSoon",
     "Refreshed",
     "ServerNotFound",

@@ -80,6 +80,11 @@ M16 come from the second review (P1, P2-a and P2-b).
 * M16 (P2-b). ``catalog_tools``: no compare of the identity hash.
   ``test_a_new_server_with_an_old_name_gets_no_cached_row`` goes red.
 
+* M17 and M18 (I11a review). ``refresh``: drop the grant check, or drop
+  the scope check. ``test_a_refresh_without_the_grant_reads_nothing`` or
+  ``test_a_refresh_of_a_server_that_no_agent_may_use_reads_nothing`` goes red
+  (``test_studio_live_preview.py`` mutations s and t).
+
 ``test_a_cancel_of_the_read_reaches_the_caller`` is a guard, not a fence. The
 old ``contextlib.suppress`` cleanup passes it too, so no mutation turns it red.
 """
@@ -209,7 +214,8 @@ class RawRedis:
 def _server(name: str, org: str, *, always_confirm: bool = False) -> SimpleNamespace:
     return SimpleNamespace(
         name=name, enabled=True, always_confirm=always_confirm, read_only_key=False,
-        url=f"https://{HOST}/{org}/{name}", headers={"Authorization": SECRET}, oauth=False)
+        url=f"https://{HOST}/{org}/{name}", headers={"Authorization": SECRET}, oauth=False,
+        agent_scope=("*",))
 
 
 def _tool(name: str, annotations: Any = None, description: Any = "") -> dict[str, Any]:
@@ -232,7 +238,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         raw=raw, calls=[], tools={}, fail={}, bound=ORG_A,
         servers={ORG_A: [_server("github", ORG_A), _server("linear", ORG_A)],
                  ORG_B: [_server("github", ORG_B), _server("secret-b", ORG_B)]},
-        registry_reads=[],
+        registry_reads=[], grants=["feature:studio", "integrations:use:*"], denies=[],
     )
     monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
     monkeypatch.setattr(mcp_tools, "_now", lambda: raw.now)
@@ -281,7 +287,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
         email="m@example.test", role=UserRole.EMPLOYEE,
-        access=build_access(["feature:studio"]), organization_id=w.bound)
+        access=build_access(w.grants, [(d, "deny") for d in w.denies]),
+        organization_id=w.bound)
     w.client = TestClient(app, raise_server_exceptions=False)
     return w
 
@@ -328,11 +335,12 @@ def test_a_get_never_calls_a_server(world, warm: bool) -> None:
     _give(world, ORG_A, "github", [_tool("get_issue", READ)])
     if warm:
         assert _refresh(world, "github").status_code == 200
-    before = len(world.calls)
+    before, reads = len(world.calls), len(world.registry_reads)
     for _ in range(3):
         assert _get(world).status_code == 200
     assert len(world.calls) == before
-    assert ("servers_for_org", ORG_A) not in world.registry_reads[before:]
+    # I11a review: the refresh reads enabled_meta too, so count the reads.
+    assert ("servers_for_org", ORG_A) not in world.registry_reads[reads:]
 
 
 def test_a_cold_cache_gives_no_row_and_stale(world) -> None:
@@ -417,10 +425,12 @@ def test_a_disconnected_server_shows_no_cached_row(world) -> None:
 # ── The org ────────────────────────────────────────────────────────────────
 
 
-def test_a_server_of_another_org_is_404(world) -> None:
+def test_a_server_of_another_org_is_403_as_a_refused_one(world) -> None:
+    """I11a review: a server that the org does not hold gets the answer of a
+    server that the member may not use, so the answer says nothing of it."""
     _give(world, ORG_B, "secret-b", [_tool("a", READ)])
     r = _refresh(world, "secret-b", org=ORG_A)
-    assert r.status_code == 404 and r.json() == {"detail": "Not found"}
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "mcp_not_allowed"
     assert world.calls == []
 
 
@@ -428,7 +438,7 @@ def test_the_org_never_comes_from_the_body_or_the_query(world) -> None:
     _give(world, ORG_B, "secret-b", [_tool("a", READ)])
     r = world.client.post(f"/studio/mcp/secret-b/refresh?organization_id={ORG_B}",
                           json={"organization_id": ORG_B, "org": ORG_B})
-    assert r.status_code == 404
+    assert r.status_code == 403
     assert world.calls == []
 
 
@@ -527,7 +537,7 @@ def test_a_late_failure_never_drops_the_list_of_a_newer_refresh(world) -> None:
         return [_tool("fresh", READ)]
 
     async def _run() -> Any:
-        first = asyncio.ensure_future(mcp_tools.refresh(ORG_A, "github", lister=_slow_then_fail))
+        first = asyncio.ensure_future(mcp_tools.refresh(ORG_A, "github", may_use=lambda _p: True, lister=_slow_then_fail))
         slot = f"{tenant_redis.KEY_ROOT}:{ORG_A}:{mcp_tools.NAMESPACE}:refresh:github"
         for _ in range(1000):  # bounded, so a broken key fails and never hangs
             if world.raw.data.get(slot):
@@ -535,7 +545,7 @@ def test_a_late_failure_never_drops_the_list_of_a_newer_refresh(world) -> None:
             await asyncio.sleep(0)
         assert world.raw.data.get(slot), "refresh 1 took no slot"
         world.raw.now += mcp_tools.REFRESH_INTERVAL_S + 1
-        second = await mcp_tools.refresh(ORG_A, "github", lister=_good)
+        second = await mcp_tools.refresh(ORG_A, "github", may_use=lambda _p: True, lister=_good)
         gate.set()
         return second, await first
 
@@ -561,7 +571,7 @@ def test_a_failure_after_the_slot_expired_still_drops_the_old_list(world) -> Non
 
     async def _run() -> Any:
         first = asyncio.ensure_future(
-            mcp_tools.refresh(ORG_A, "github", lister=_outlasts_the_slot))
+            mcp_tools.refresh(ORG_A, "github", may_use=lambda _p: True, lister=_outlasts_the_slot))
         await asyncio.wait_for(entered.wait(), 3)
         assert await _slot_live(world)
         world.raw.now += mcp_tools.REFRESH_INTERVAL_S + 10  # the slot ends
@@ -1116,3 +1126,46 @@ def test_no_log_line_names_a_header_or_an_exception_text() -> None:
                 text = ast.unparse(kw.value)
                 assert "headers" not in text and "url" not in text, text
                 assert text in ("server", "reason", "type(exc).__name__"), text
+
+
+# ── The grant and the scope of a refresh (I11a review) ─────────────────────
+
+
+def _slots(w: SimpleNamespace) -> list[str]:
+    return [k for k in w.raw.data if f":{mcp_tools.NAMESPACE}:refresh:" in k]
+
+
+@pytest.mark.parametrize("grants,denies", [
+    (["feature:studio"], []),                                          # no grant
+    (["feature:studio", "integrations:use:*"], ["integrations:use:mcp-github"]),  # denied
+    (["feature:studio", "integrations:use:mcp-linear"], []),           # another server
+])
+def test_a_refresh_without_the_grant_reads_nothing(world, grants, denies) -> None:
+    world.grants, world.denies = grants, denies
+    _give(world, ORG_A, "github", [_tool("a", READ)])
+    r = _refresh(world, "github")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "mcp_not_allowed"
+    assert world.calls == [] and _slots(world) == []
+    assert world.registry_reads == []  # the grant comes before any read
+
+
+@pytest.mark.parametrize("scope", [(), ("agent-sales",)])
+def test_a_refresh_of_a_server_that_no_agent_may_use_reads_nothing(world, scope) -> None:
+    world.servers[ORG_A][0].agent_scope = scope
+    _give(world, ORG_A, "github", [_tool("a", READ)])
+    r = _refresh(world, "github")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "mcp_not_allowed"
+    assert world.calls == [] and _slots(world) == []
+    assert ("servers_for_org", ORG_A) not in world.registry_reads
+
+
+def test_a_refresh_with_the_exact_grant_reads(world) -> None:
+    world.grants = ["feature:studio", "integrations:use:mcp-github"]
+    _give(world, ORG_A, "github", [_tool("a", READ)])
+    assert _refresh(world, "github").status_code == 200
+    assert len(world.calls) == 1
+
+
+async def test_refresh_needs_may_use() -> None:
+    with pytest.raises(TypeError):
+        await mcp_tools.refresh(ORG_A, "github")  # type: ignore[call-arg]

@@ -76,6 +76,24 @@ The review fixes (P1, P2 and the notes on the shape). Each ran on 2026-11-15.
   ``test_a_long_key_is_cut_with_truncated`` goes red.
 * (n) ``_Shaper.value``: let a second key overwrite the first.
   ``test_two_keys_that_clean_to_one_keep_the_first`` goes red.
+
+The last round (2026-11-15):
+
+* (o) ``fresh_tool_list``: drop the compare of the stored server. The
+  ``server_changed`` case of ``test_each_other_state_makes_no_call`` goes red.
+* (p) ``_live``: drop the compare of the stored server before the call. The
+  ``server_changed_before_call`` case goes red.
+* (q) ``_spend``: INCR then EXPIRE, as before. 2 tests go red:
+  ``test_a_rate_key_never_lives_without_a_ttl`` and
+  ``test_a_rate_key_that_expired_gets_a_ttl_again``.
+* (r) ``_live``: key the answer with ``_identity`` and not
+  ``_answer_identity``. ``test_a_new_updated_at_serves_no_cached_answer`` goes red.
+* (s) ``refresh``: drop the grant check. The 3 cases of
+  ``test_a_refresh_without_the_grant_reads_nothing`` (in
+  ``test_studio_mcp_tools.py``) and the R8 test of the refresh go red.
+* (t) ``refresh``: drop the scope check. Both cases of
+  ``test_a_refresh_of_a_server_that_no_agent_may_use_reads_nothing`` and the
+  R8 test of the refresh go red.
 """
 
 from __future__ import annotations
@@ -359,6 +377,14 @@ def _changed_between_reads(w: Any, monkeypatch: Any) -> None:
     monkeypatch.setattr(mcp_registry, "servers_for_org", _other)
 
 
+def _changed_before_call(w: Any, monkeypatch: Any) -> None:
+    """The list is fresh, so the first read of ``servers_for_org`` is the one
+    right before ``tools/call``. Its server is not the server of
+    ``enabled_meta``. The compare in ``_live`` refuses it."""
+    _warm_list(w)
+    _changed_between_reads(w, monkeypatch)
+
+
 def _no_server(w: Any, monkeypatch: Any) -> None:
     w.servers[ORG] = []
 
@@ -387,6 +413,7 @@ NO_CALL = {
     "fresh_list_without_tool": (_fresh_without_tool, "issue_a", (403, "source_not_open"), 0),
     "duplicate_name": (_duplicate, "issue_a", (403, "source_not_open"), 1),
     "server_changed": (_changed_between_reads, "issue_a", (403, "source_not_open"), 0),
+    "server_changed_before_call": (_changed_before_call, "issue_a", (403, "source_not_open"), 0),
     "server_removed": (_no_server, "issue_a", (403, "source_not_open"), 0),
     "server_disabled": (_disabled, "issue_a", (403, "source_not_open"), 0),
 }
@@ -1122,3 +1149,63 @@ def test_a_long_key_is_cut_with_truncated() -> None:
 def test_two_keys_that_clean_to_one_keep_the_first() -> None:
     result, cut = mcp_tools.shape_result({"structuredContent": {"ab": 1, "a\u200bb": 2}})
     assert cut is True and result["structured"] == {"ab": 1}
+
+
+# ── The last round of the review ───────────────────────────────────────────
+
+
+class _NoExpire(RawRedis):
+    """A raw Redis whose EXPIRE fails."""
+
+    async def expire(self, name: str, seconds: int) -> bool:
+        raise ConnectionError("expire failed")
+
+
+def test_a_rate_key_never_lives_without_a_ttl(lw, monkeypatch) -> None:
+    raw = _NoExpire()
+    raw.now = lw.raw.now
+    monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
+    monkeypatch.setattr(mcp_tools, "_now", lambda: raw.now)
+    lw.raw = raw
+    _warm_list(lw)
+    pid = _pid(lw)
+    for i in range(3):
+        assert _preview(lw, pid, "issue_a", {"n": i}).status_code == 200
+    rate = [k for k in raw.data if ":rate:" in k]
+    assert rate and all(k in raw.expiry for k in rate)
+    window = str(int(raw.now // mcp_tools.RATE_WINDOW_S))
+    assert [raw.data[k] for k in rate if ":rate:m:" in k and k.endswith(window)] == ["3"]
+
+
+def test_a_rate_key_that_expired_gets_a_ttl_again(lw) -> None:
+    """INCR on a key that expired between the SET and the INCR makes a key
+    with no TTL. The TTL check gives it one."""
+    _warm_list(lw)
+    pid = _pid(lw)
+    _preview(lw, pid, "issue_a", {"n": 0})
+    [key] = [k for k in lw.raw.data if ":rate:m:" in k]
+    del lw.raw.expiry[key]  # as if INCR made it again
+    _preview(lw, pid, "issue_a", {"n": 1})
+    assert key in lw.raw.expiry
+
+
+def test_a_new_updated_at_serves_no_cached_answer(lw) -> None:
+    """The same admin saves a new header: the url, ``connected_by`` and
+    ``created_at`` stay, ``updated_at`` moves. The old answer is not served."""
+    _warm_list(lw)
+    pid = _pid(lw)
+    lw.servers[ORG][0].updated_at = datetime(2026, 11, 5, tzinfo=UTC)
+    _preview(lw, pid, "issue_a", {"n": 1})
+    _preview(lw, pid, "issue_a", {"n": 1})
+    assert len(lw.calls) == 1  # control: the same row hits the cache
+    lw.servers[ORG][0].updated_at = datetime(2026, 11, 6, tzinfo=UTC)
+    lw.servers[ORG][0].headers = {"Authorization": "Bearer NEW"}
+    r = _preview(lw, pid, "issue_a", {"n": 1})
+    assert r.status_code == 200 and len(lw.calls) == 2
+
+
+def test_the_answer_identity_holds_updated_at_and_the_list_identity_does_not() -> None:
+    one = _server(ORG, updated_at=datetime(2026, 11, 5, tzinfo=UTC))
+    two = _server(ORG, updated_at=datetime(2026, 11, 6, tzinfo=UTC))
+    assert mcp_tools._identity(one) == mcp_tools._identity(two)
+    assert mcp_tools._answer_identity(one) != mcp_tools._answer_identity(two)
