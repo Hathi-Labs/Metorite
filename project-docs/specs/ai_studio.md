@@ -983,7 +983,9 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C12** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C12.md) |
 | **C13** | 🔨 BUILT (2026-11-09) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C13.md) |
 | **C14** | 🔨 BUILT (2026-11-09) | STD | AGENT-SAFE | [row](ai_studio_rows/C14.md) |
-| **C15** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15.md) |
+| **C15a** | 🔨 BUILT, dark (2026-11-14, task 2345) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15a.md) |
+| **C15b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C15b.md) |
+| **C15c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C15c.md) |
 | **C16** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C16.md) |
 | **C17** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C17.md) |
 | **C18** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C18.md) |
@@ -1007,7 +1009,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D3** | 🔨 BUILT, preview only (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/D3.md) |
 | **D3b** | 🔨 BUILT, preview only (2026-11-05) | STD | AGENT-SAFE | [row](ai_studio_rows/D3b.md) |
 | **D4** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/D4.md) |
-| **D5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D5.md) |
+| **D5** | 🔨 BUILT, part (2026-11-13, STU-D5 and D5-W2, task 1165) | STD | AGENT-SAFE | [row](ai_studio_rows/D5.md) |
 | **D6** | 🔨 BUILT, part (2026-11-13, STU-D6, task 1166) | STD | AGENT-SAFE | [row](ai_studio_rows/D6.md) |
 | **D7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D7.md) |
 | **D8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/D8.md) |
@@ -1072,7 +1074,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **AF-10a** | 🔨 BUILT, dark (2026-11-13, task 3158) | HIGH | AGENT-SAFE | [row](ai_studio_rows/AF-10a.md) |
 | **AF-10b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-10b.md) |
 | **AF-11a** | open | STD | see row | [row](ai_studio_rows/AF-11a.md) |
-| **AF-11b** | 🔨 BUILT, part (2026-11-14, AF-11b-1, task 3326) | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
+| **AF-11b** | 🔨 BUILT, dark (2026-11-15, AF-11b-1 and AF-11b-2, tasks 3326 and 3327) | STD | AGENT-SAFE | [row](ai_studio_rows/AF-11b.md) |
 
 ### Group E — Workflows in Studio
 
@@ -1234,6 +1236,8 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **J2b-1** | 🔨 BUILT, dark (2026-11-13, task 3088) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-1.md) |
 | **J2b-2** | 🔨 BUILT, dark (2026-11-13, task 3089) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-2.md) |
 | **J2b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-3.md) |
+| **J2b-4a** | 🔨 BUILT, dark (2026-11-13, task 3091) | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4a.md) |
+| **J2b-4b** | open | STD | see row | [row](ai_studio_rows/J2b-4b.md) |
 | **J2b-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4.md) |
 | **J2b-5** | 🔨 BUILT, dark (2026-11-13, task 3103) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
 | **J3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3.md) |
