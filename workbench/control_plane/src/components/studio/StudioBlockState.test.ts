@@ -24,6 +24,11 @@ describe("StudioBlockState", () => {
     expect(html).toContain('aria-busy="true"');
     expect(html).toContain("animate-pulse");
   });
+  it("draws one skeleton card for a tile of a dashboard", () => {
+    const html = draw({ loading: true, shape: "tile" });
+    expect(html).toContain("animate-pulse");
+    expect(html.match(/animate-pulse/g)).toHaveLength(1);
+  });
   it("draws the empty state with the create action", () => {
     const html = draw({ onCreate: () => {} });
     expect(html).toContain("No visits yet.");

@@ -9,9 +9,10 @@
  * no-permission states come from `StudioBlockState` through the caller of `renderView`, and the
  * fence of `StudioBlockState.test.ts` refuses a local copy in this folder.
  *
- * Built: `table_workspace` (LY-2) and `board` (LY-4). Both draw the one view of their `main` region. The
- * other presets name a block or a bar that a later slice builds (LY-5 to LY-7), and each one says so in a
- * plain sentence until then.
+ * Built: `table_workspace` (LY-2) and `board` (LY-4), which draw the one view of their `main` region, and
+ * `dashboard` (LY-7): the `kpis` in a grid (2 columns on a phone, 4 from a tablet), the `charts` in a grid
+ * (one column on a phone, 2 on a wide screen) and the `worklist` table. The other presets name a block or a
+ * bar that a later slice builds, and each one says so in a plain sentence until then.
  */
 
 import type { ReactNode } from "react";
@@ -27,12 +28,13 @@ export interface LayoutBodyProps {
 }
 
 /** The presets that this file draws. A later slice adds one. */
-export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board"];
+export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board", "dashboard"];
 
 export default function LayoutBody({ layout, regions, renderView, titleOf }: LayoutBodyProps) {
   if (!DRAWN_LAYOUTS.includes(layout)) {
     return <p data-layout-pending={layout} className="text-sm text-muted-foreground">This layout is not drawn yet.</p>;
   }
+  if (layout === "dashboard") return <Dashboard regions={regions} renderView={renderView} titleOf={titleOf} />;
   const main = regions.main?.[0];
   const node = main ? renderView(main) : null;
   return (
@@ -42,6 +44,31 @@ export default function LayoutBody({ layout, regions, renderView, titleOf }: Lay
       ) : (
         <p className="text-sm text-muted-foreground">{`This page has no ${layout === "board" ? "board" : "table"} to show.`}</p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The dashboard (L4). The most important tile is first in `kpis`, so it sits top-left. Each tile is its own
+ * labelled region, and the caller of `renderView` gives each one its own loading and error state, so one
+ * failed tile never blanks the page.
+ */
+function Dashboard({ regions, renderView, titleOf }: Pick<LayoutBodyProps, "regions" | "renderView" | "titleOf">) {
+  const tile = (id: string) => {
+    const node = renderView(id);
+    return node ? <section key={id} aria-label={titleOf(id)} className="min-w-0">{node}</section> : null;
+  };
+  const kpis = (regions.kpis ?? []).map(tile);
+  const charts = (regions.charts ?? []).map(tile);
+  const work = (regions.worklist ?? []).map(tile);
+  if (kpis.every((x) => x === null)) {
+    return <p className="text-sm text-muted-foreground">This page has no stat to show.</p>;
+  }
+  return (
+    <div data-layout="dashboard" className="flex min-w-0 flex-col gap-3 sm:gap-4">
+      <div data-dashboard-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
+      {charts.length > 0 ? <div data-dashboard-charts className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2">{charts}</div> : null}
+      {work.length > 0 ? <div data-dashboard-worklist>{work}</div> : null}
     </div>
   );
 }

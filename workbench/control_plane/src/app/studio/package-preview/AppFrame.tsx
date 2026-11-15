@@ -110,13 +110,13 @@ function FilteredList({ source, door, active, onClear, children }: {
 }
 
 /**
- * The table or the board of a page with a preset (STU-LY-2, STU-LY-4). It draws the shared states of `StudioBlockState`
+ * The table or the board of a page with a preset (STU-LY-2, STU-LY-4), or one tile of a dashboard (STU-LY-7). It draws the shared states of `StudioBlockState`
  * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
  * It reads the same cached key as the block's own read, so this adds no second read.
  */
-function LayoutList({ source, door, active, noun, shape = "rows", onClear, children }: {
+function LayoutList({ source, door, active, noun, shape = "rows", tile = false, onClear, children }: {
   source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
-  active: number; noun: string; shape?: "rows" | "board"; onClear: () => void; children: React.ReactNode;
+  active: number; noun: string; shape?: "rows" | "board" | "tile"; tile?: boolean; onClear: () => void; children: React.ReactNode;
 }) {
   const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
   const n = rows.data?.length ?? 0;
@@ -127,6 +127,8 @@ function LayoutList({ source, door, active, noun, shape = "rows", onClear, child
       onClearFilters={onClear} onRetry={rows.refresh} />
   );
   if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
+  // A tile of a dashboard has no count line: the tile says its own number.
+  if (tile) return <>{children}</>;
   return (
     <div className="space-y-2">
       <p role="status" className="text-xs text-muted-foreground">
@@ -214,6 +216,13 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
             <LayoutList source={src} door={door} active={bar ? activeCount(bar.fields, bar.value) : 0}
               noun={pluralOf(object?.label || object?.name || "")} shape={preset === "board" ? "board" : "rows"}
               onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
+        // A tile of a dashboard (STU-LY-7): its own loading, error and empty state, so one tile never blanks the page.
+        if (preset === "dashboard" && src && (view?.block === "stat" || view?.block === "chart")) {
+          return (
+            <LayoutList source={src} door={door} active={0} tile shape="tile"
+              noun={(view.title || view.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
           );
         }
         if (!bar || id !== bar.lens.view || !src) return node;
