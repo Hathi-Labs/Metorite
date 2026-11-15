@@ -963,7 +963,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C3** | 🔨 BUILT, dark (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/C3.md) |
 | **C4** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4.md) |
 | **C4a-1** | 🔨 BUILT, dark (2026-11-13, task 3084) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4a-1.md) |
-| **C4a-2** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4a-2.md) |
+| **C4a-2** | 🔨 BUILT, dark (2026-11-13, task 3085) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C4a-2.md) |
 | **C4b** | 🔨 BUILT, dark (2026-11-15, task 3086) | STD | AGENT-SAFE | [row](ai_studio_rows/C4b.md) |
 | **C5a** | 🔨 BUILT, dark (2026-11-13, task 1159) | HIGH | AGENT-SAFE | [row](ai_studio_rows/C5a.md) |
 | **C5b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C5b.md) |
