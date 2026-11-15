@@ -395,6 +395,7 @@ def test_one_caller_reads_the_flag() -> None:
         },
         "tool_packs_orgs": {
             "packages/acb_skills/acb_skills/tool_packs.py",
+            "packages/acb_common/acb_common/flag_registry.py",
             "packages/acb_common/acb_common/settings.py",
         },
         "TOOL_PACKS": {
