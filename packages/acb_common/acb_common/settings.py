@@ -1313,6 +1313,21 @@ class Settings(BaseSettings):
     tool_packs: str = ""
     tool_packs_orgs: str = ""
 
+    # ── Tool search of the one assistant (WS-67 TS-2a, D222) ────────────────
+    #
+    # `tool_search_orgs` lists the organization ids whose chat holds
+    # `find_tools`, or `*` for each one. Empty means off, and the run is then
+    # byte-identical to a run with no search. The one reader is
+    # `acb_skills.tool_packs.tool_search_on`, and it fails closed. It acts
+    # only where the tool pack flags give a pack. A SIGHUP reload applies a
+    # change (docs/flag_reload.md).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4). The dev-phase window does not open it, because a found tool moves
+    # what the chat can do and spends model tokens.
+    # Fence: tests/unit/test_tool_search_off.py.
+    tool_search_orgs: str = ""
+
     # ── The floor trim of the one assistant (WS-67 OA-8f) ──────────────────
     #
     # ON takes ten floor tools out of the orchestrator's request: the tools
