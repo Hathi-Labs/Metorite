@@ -138,3 +138,17 @@ describe("the page key (STU-AF1)", () => {
     }
   });
 });
+
+/** STU-D23a: `floor` is a key of the viewer and no part of the page state. */
+describe("the floor view key (STU-D23a)", () => {
+  it("is ignored on decode, and the state is the one without it", () => {
+    const query = "pkg=p1&page=visit&rec=r1&ro=visit&tab=board";
+    expect(decodePageState(`${query}&floor=1`)).toEqual(decodePageState(query));
+  });
+
+  it("is never a filter, and never written back by encode", () => {
+    const s = decodePageState("floor=1&f.status=open");
+    expect(Object.keys(s.filters)).toEqual(["status"]);
+    expect(encodePageState(s)).not.toContain("floor");
+  });
+});

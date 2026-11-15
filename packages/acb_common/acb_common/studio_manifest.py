@@ -79,14 +79,14 @@ BLOCKS: tuple[str, ...] = (
 RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
 
 #: Each verb of an ``object:<name>.<op>`` action: the record verbs, and the
-#: aggregate of C2b (STU-D4b). No action is added for the aggregate by itself,
-#: so a package declares it.
-OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate")
+#: aggregate of C2b (STU-D4b), and the tree read of C18 (STU-D18-2a). No action
+#: is added for the aggregate or the tree by itself, so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate", "tree")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
 #: (``catalog_rows``) gives the class of each other source. A read is A, and an
-#: aggregate is a read. A create or an update is B, because the app can undo
+#: aggregate and a tree are reads. A create or an update is B, because the app can undo
 #: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
 #: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
@@ -96,6 +96,7 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "update": "B",
     "delete": "C",
     "aggregate": "A",
+    "tree": "A",
 }
 
 #: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
@@ -269,6 +270,11 @@ class FieldDef(_Strict):
     min: int | None = None
     max: int | None = None
     units: list[str] | None = None
+    #: C24a. The ranges of a `quantity` in its base unit, and the conversions to it.
+    #: `studio_fields._check_ranges` holds the rules. The flag is computed on read.
+    normal: dict[str, Any] | None = None
+    critical: dict[str, Any] | None = None
+    conversions: list[dict[str, Any]] | None = None
     format: str | None = None
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.

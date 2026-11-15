@@ -34,6 +34,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from fastapi import Depends, HTTPException, UploadFile
 from gateway.routes.tasks.attachments import _safe_name, _storage_dir
 from gateway.routes.tasks.core import (
@@ -51,6 +52,8 @@ from sqlalchemy import text
 
 _RESUME_MAX_BYTES = 15 * 1024 * 1024  # 15 MB
 _RESUME_EXT = {".pdf", ".docx", ".txt", ".md"}
+
+_log = get_logger("gateway.people")
 
 
 class OrgPersonModel(BaseModel):
@@ -152,6 +155,63 @@ PRIVATE_FIELDS: tuple[str, ...] = (
     "personal_email",
     "birthday",
 )
+
+
+#: The directory tier of a WRITABLE person field (STU-E12a): what any holder of
+#: the feature reads. It is the writable set less :data:`HR_FIELDS`, less
+#: :data:`PRIVATE_FIELDS`, and less `clickup_user_id` (an outside id, not a
+#: directory fact). `people.person.updated` names only these keys.
+#: `test_core_app_events.py` pins that every `PersonWrite` field is in exactly
+#: one of the four sets.
+DIRECTORY_FIELDS: tuple[str, ...] = (
+    "name",
+    "email",
+    "role",
+    "title",
+    "department",
+    "team",
+    "reports_to",
+    "manager_id",
+    "status",
+    "domain",
+    "preferred_name",
+    "pronouns",
+    "location",
+    "timezone",
+    "working_hours",
+    "bio",
+    "links",
+    "languages",
+)
+
+#: Writable, and in no event: an outside id.
+NON_EVENT_FIELDS: tuple[str, ...] = ("clickup_user_id",)
+
+
+def _same_value(old: Any, new: Any) -> bool:
+    """Is a submitted value the stored one? None and '' are the same blank. A
+    UUID equals its text. A JSON column may come back as text. The store writes
+    a string as sent, so a case or whitespace change is a real change."""
+    def norm(v: Any) -> Any:
+        if v is None or v == "" or v == [] or v == {}:
+            return None
+        if isinstance(v, str):
+            parsed = _jsonb(v) if v.lstrip().startswith("{") else None
+            return parsed if parsed is not None else v
+        if isinstance(v, (list, tuple)):
+            return [norm(i) for i in v]
+        if isinstance(v, (dict, int, float, bool)):
+            return v
+        return str(v)
+    return norm(old) == norm(new)
+
+
+def changed_directory_keys(fields: dict[str, Any], row: Any) -> list[str]:
+    """The directory-tier keys of *fields* whose value differs from *row*."""
+    return sorted(
+        k for k in fields
+        if k in DIRECTORY_FIELDS and not _same_value(getattr(row, k, None), fields[k])
+    )
 
 
 def _blank_hr() -> dict[str, Any]:
@@ -836,6 +896,14 @@ async def update_person(
                 raise HTTPException(
                     status_code=409, detail=f"{fields['email']} already belongs to {holder}."
                 )
+        # STU-E12a: the keys whose value differs from the row, read BEFORE the
+        # UPDATE. The editor sends its whole form, so a submitted key is not a
+        # changed key.
+        try:
+            moved = changed_directory_keys(fields, row)
+        except Exception:  # an event is never worth a failed write
+            _log.warning("people.changed_keys_failed")
+            moved = []
         set_parts, params = build_person_update(fields, row, actor=_uid(user))
         params["id"] = person_id
         await db.execute(
@@ -855,6 +923,11 @@ async def update_person(
     # own transaction (best-effort; H2 restructure).
     async with _tenant_session() as db:
         await _reembed_capability(db, person_id)
+    # After the commit, one event for the whole PATCH (STU-E12a). It never
+    # raises, and it names directory-tier keys only.
+    from gateway.core_events import emit_person_updated
+
+    await emit_person_updated(person_id, _uid(user), moved)
     # The route gate already proved this caller holds
     # `admin:members:manage`, which is the private tier's key (D-PC-3).
     return _row_to_person(person, include_hr=True, include_private=True)
