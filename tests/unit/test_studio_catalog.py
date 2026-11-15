@@ -332,9 +332,10 @@ class TestTheChatTool:
 
 PKG_A = str(uuid.uuid4())
 PKG_B = str(uuid.uuid4())
-#: The class of each object op. STU-D4b adds the aggregate, and C4a-2 the history, both reads.
+#: The class of each object op. STU-D4b adds the aggregate, STU-D18-2a the tree
+#: and C4a-2 the history, each a read.
 VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C", "aggregate": "A",
-         "history": "A"}
+         "tree": "A", "history": "A"}
 
 
 def _pkg(pid, objects=(), actions=()):
@@ -410,8 +411,8 @@ class TestThePackageRows:
         _open(monkeypatch, "*")
         body = _client().get(URL, params={"app": PKG_B.upper()}).json()["actions"]
         assert {r["app"] for r in body} == {PKG_B}
-        # The five record verbs, the aggregate (STU-D4b) and the history (C4a-2): one
-        # row for each object op.
+        # The five record verbs, the aggregate (STU-D4b), the tree (STU-D18-2a) and the
+        # history (C4a-2): one row for each object op.
         assert len(body) == 7
         assert db.package_calls[-1][1] == PKG_B
 

@@ -43,6 +43,7 @@ import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal, localcontext
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -131,6 +132,11 @@ MAX_PERCENT_BP = 10**9
 #: C14. A quantity takes a declared list of units.
 MAX_UNITS = 30
 MAX_UNIT_CHARS = 20
+#: C24a. A quantity holds at most this many conversions to its base unit.
+MAX_CONVERSIONS = 30
+#: C24a. The flag of a quantity value. It is computed, and never stored.
+QUANTITY_FLAGS: tuple[str, ...] = (
+    "none", "unchecked", "normal", "low", "high", "critical_low", "critical_high")
 #: C14. The barcode formats. EAN-13 has a check digit. Code 128 is printable ASCII.
 BARCODE_FORMATS: tuple[str, ...] = ("ean13", "code128", "qr")
 MAX_CODE_CHARS = 80
@@ -141,7 +147,9 @@ HOT_TEXT_CHARS = 256
 
 #: C14. The parts of a field spec that belong to one type.
 SPEC_PARTS: dict[str, tuple[str, ...]] = {
-    "rating": ("min", "max"), "quantity": ("units",), "barcode": ("format",),
+    "rating": ("min", "max"),
+    "quantity": ("units", "normal", "critical", "conversions"),
+    "barcode": ("format",),
 }
 
 #: C14. One sentence for each new type: what a caller sends. ``studio_describe fields``
@@ -150,14 +158,15 @@ VALUE_SHAPES: dict[str, str] = {
     "richText": f"markdown text, at most {MAX_RICH_TEXT_CHARS} characters, with no HTML tag",
     "rating": "a whole number from the field's min to its max (1 to 5 when it has none)",
     "duration": "whole seconds, as 5400 for 1h 30m",
-    "quantity": "{'value': '12.5', 'unit': one of the units of the field}, the value as decimal text",
+    "quantity": "{'value': '12.5', 'unit': one of the units of the field}, the value as decimal text. "
+                "The value stays {value, unit}. A flag against the field's ranges is computed on read",
     "percent": "basis points as a whole number: 15% is 1500 and 0.5% is 50",
     "barcode": "text in the field's format: ean13 (13 digits, check digit last), code128 or qr",
 }
 
 _SPEC_KEYS = frozenset({
     "key", "type", "label", "required", "many", "options", "to", "hot",
-    "min", "max", "units", "format", "lines",
+    "min", "max", "units", "format", "lines", "normal", "critical", "conversions",
 })
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
@@ -174,6 +183,8 @@ _UUID_FORM_RE = re.compile(
     r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}", re.ASCII)
 # C14. A quantity value is a decimal string: no exponent, so no float is stored.
 _QUANTITY_RE = re.compile(r"-?[0-9]{1,15}(?:\.[0-9]{1,6})?", re.ASCII)
+# C24a. A conversion factor is a positive decimal with at most 6 decimals.
+_FACTOR_RE = re.compile(r"[0-9]{1,15}(?:\.[0-9]{1,6})?", re.ASCII)
 _EAN13_RE = re.compile(r"[0-9]{13}", re.ASCII)
 # A tag or a comment in a rich text. The text is markdown, and never HTML.
 _RAW_HTML_RE = re.compile(r"<[A-Za-z/!?]")
@@ -233,6 +244,13 @@ class FieldSpec:
     max: int | None = None
     #: C14. The units of a quantity.
     units: tuple[str, ...] | None = None
+    #: C24a. The ranges of a quantity, as ``(low, high)`` decimal text in the base
+    #: unit (the first unit). None is no range, and a None bound is open.
+    normal: tuple[str | None, str | None] | None = None
+    critical: tuple[str | None, str | None] | None = None
+    #: C24a. ``(from, to, factor)``: a value in ``from`` times ``factor`` is in ``to``,
+    #: the base unit.
+    conversions: tuple[tuple[str, str, str], ...] | None = None
     #: C14. The format of a barcode.
     format: str | None = None
     #: C13. A lines relation: the key of the relation field of the object ``to``
@@ -256,6 +274,13 @@ class FieldSpec:
             out["max"] = self.max
         if self.units is not None:
             out["units"] = list(self.units)
+        if self.normal is not None:
+            out["normal"] = {"low": self.normal[0], "high": self.normal[1]}
+        if self.critical is not None:
+            out["critical"] = {"low": self.critical[0], "high": self.critical[1]}
+        if self.conversions is not None:
+            out["conversions"] = [
+                {"from": a, "to": b, "factor": c} for a, b, c in self.conversions]
         if self.format is not None:
             out["format"] = self.format
         if self.lines is not None:
@@ -345,6 +370,101 @@ def _int(v: Any) -> bool:
     return type(v) is int
 
 
+def range_of(raw: Any) -> tuple[str | None, str | None] | None:
+    """C24a. A stored range as ``(low, high)``, or None. It runs no check:
+    a bound that is not decimal text reads as open."""
+    if not isinstance(raw, Mapping):
+        return None
+    lo, hi = raw.get("low"), raw.get("high")
+    return (lo if isinstance(lo, str) and _QUANTITY_RE.fullmatch(lo) else None,
+            hi if isinstance(hi, str) and _QUANTITY_RE.fullmatch(hi) else None)
+
+
+def conversions_of(raw: Any) -> tuple[tuple[str, str, str], ...] | None:
+    """C24a. Stored conversions as ``(from, to, factor)`` tuples, or None. It runs
+    no check: an item of the wrong shape is dropped."""
+    if not isinstance(raw, list):
+        return None
+    return tuple(
+        (c["from"], c["to"], c["factor"]) for c in raw
+        if isinstance(c, Mapping) and isinstance(c.get("from"), str)
+        and isinstance(c.get("to"), str) and isinstance(c.get("factor"), str))
+
+
+def _bound(path: str, v: Any, out: list[SpecProblem]) -> Decimal | None:
+    if v is None:
+        return None
+    if not isinstance(v, str) or not _QUANTITY_RE.fullmatch(v):
+        out.append(SpecProblem(
+            path, "A bound is decimal text with up to 6 decimals and no exponent, or null."))
+        return None
+    return Decimal(v)
+
+
+def _check_range(name: str, raw: Any, out: list[SpecProblem]) -> tuple[Decimal | None, Decimal | None]:
+    """C24a. One range: an object with ``low`` and ``high``, each decimal text or
+    null, and low at most high. Returns the two bounds."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, Mapping) or not set(raw) <= {"low", "high"}:
+        out.append(SpecProblem(name, f"`{name}` is an object with `low` and `high`."))
+        return None, None
+    lo = _bound(f"{name}.low", raw.get("low"), out)
+    hi = _bound(f"{name}.high", raw.get("high"), out)
+    if lo is not None and hi is not None and lo > hi:
+        out.append(SpecProblem(f"{name}.high", f"`{name}.high` must not be below `{name}.low`."))
+    return lo, hi
+
+
+def _check_conversions(raw: Any, units: list[str], out: list[SpecProblem]) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, list) or len(raw) > MAX_CONVERSIONS:
+        out.append(SpecProblem(
+            "conversions", f"`conversions` is a list of at most {MAX_CONVERSIONS} items."))
+        return
+    base = units[0] if units else None
+    pairs: set[tuple[str, str]] = set()
+    for i, c in enumerate(raw):
+        at = f"conversions[{i}]"
+        if not isinstance(c, Mapping) or set(c) != {"from", "to", "factor"}:
+            out.append(SpecProblem(at, "A conversion is an object with `from`, `to` and `factor`."))
+            continue
+        a, b, fac = c["from"], c["to"], c["factor"]
+        if not isinstance(a, str) or a not in units:
+            out.append(SpecProblem(f"{at}.from", "`from` must be one of the `units`."))
+            continue
+        if not isinstance(b, str) or b not in units:
+            out.append(SpecProblem(f"{at}.to", "`to` must be one of the `units`."))
+            continue
+        if (b, a) in pairs:
+            out.append(SpecProblem(at, "A conversion and its inverse are both listed. List one."))
+        elif b != base:
+            out.append(SpecProblem(
+                f"{at}.to", "`to` must be the base unit, the first of `units`. A chain is not allowed."))
+        elif a == b:
+            out.append(SpecProblem(at, "`from` and `to` must differ."))
+        elif (a, b) in pairs:
+            out.append(SpecProblem(at, "This pair is listed twice."))
+        pairs.add((a, b))
+        if (not isinstance(fac, str) or not _FACTOR_RE.fullmatch(fac) or Decimal(fac) <= 0):
+            out.append(SpecProblem(
+                f"{at}.factor", "`factor` is positive decimal text with up to 6 decimals."))
+
+
+def _check_ranges(spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C24a. ``normal`` and ``critical`` of a quantity, and ``conversions``."""
+    n_lo, n_hi = _check_range("normal", spec.get("normal"), out)
+    c_lo, c_hi = _check_range("critical", spec.get("critical"), out)
+    if c_lo is not None and n_lo is not None and c_lo > n_lo:
+        out.append(SpecProblem("critical.low", "`critical.low` must not be above `normal.low`."))
+    if c_hi is not None and n_hi is not None and c_hi < n_hi:
+        out.append(SpecProblem("critical.high", "`critical.high` must not be below `normal.high`."))
+    units = spec.get("units")
+    ok = isinstance(units, list) and all(isinstance(u, str) for u in units)
+    _check_conversions(spec.get("conversions"), units if ok else [], out)
+
+
 def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
     """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
     of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
@@ -379,6 +499,7 @@ def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) ->
                     out.append(SpecProblem(f"units[{i}]", "This unit is listed twice."))
                 else:
                     seen.add(u)
+        _check_ranges(spec, out)
     elif kind == "barcode" and spec.get("format") not in BARCODE_FORMATS:
         out.append(SpecProblem(
             "format", f"A barcode field needs a `format`: {', '.join(BARCODE_FORMATS)}."))
@@ -513,6 +634,8 @@ def parse_field_spec(spec: Mapping[str, Any], *,
         to=spec.get("to"), hot=spec.get("hot") is True,
         min=spec.get("min"), max=spec.get("max"),
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
+        normal=range_of(spec.get("normal")), critical=range_of(spec.get("critical")),
+        conversions=conversions_of(spec.get("conversions")),
         format=spec.get("format"), lines=spec.get("lines"))
 
 
@@ -535,6 +658,8 @@ def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> Fie
         min=spec["min"] if _int(spec.get("min")) else None,
         max=spec["max"] if _int(spec.get("max")) else None,
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
+        normal=range_of(spec.get("normal")), critical=range_of(spec.get("critical")),
+        conversions=conversions_of(spec.get("conversions")),
         format=spec["format"] if isinstance(spec.get("format"), str) else None,
         lines=spec.get("lines") if isinstance(spec.get("lines"), str) else None)
 
@@ -653,7 +778,7 @@ def _relation(f: FieldSpec, v: Any) -> dict[str, str]:
 
 
 def _file(f: FieldSpec, v: Any) -> dict[str, str]:
-    # The id of an `attachments` row. The door checks that the viewer may open it.
+    # Only the id shape is checked. No Studio code reads `attachments` yet (D13b).
     try:
         if isinstance(v, Mapping) and set(v) == {"id"} and isinstance(v["id"], str):
             return {"id": str(uuid.UUID(v["id"]))}
@@ -736,6 +861,44 @@ def _quantity(f: FieldSpec, v: Any) -> dict[str, str]:
         shown = ", ".join((f.units or ())[:10])
         raise FieldError(f.key, f"Field `{f.key}` takes one of its units: {shown}.")
     return {"value": v["value"], "unit": v["unit"]}
+
+
+def quantity_flag(f: FieldSpec, v: Mapping[str, Any]) -> str:
+    """C24a. The flag of one quantity value, one of :data:`QUANTITY_FLAGS`.
+
+    The flag is advice, computed on read and never stored, so a change of a range
+    rewrites no data. The value goes to the base unit (the first unit) with exact
+    decimals, and then meets the ranges. ``critical`` goes first. A bound is
+    inclusive. No range gives ``none``, and a unit with no conversion gives
+    ``unchecked``. Nothing rounds before the compare. ``quantity_flag`` in
+    ``fieldCheck.ts`` is the twin.
+    """
+    ranges = [r for r in (f.normal, f.critical) if r is not None and r != (None, None)]
+    if not ranges:
+        return "none"
+    text, unit = v.get("value"), v.get("unit")
+    if not isinstance(text, str) or not _QUANTITY_RE.fullmatch(text) or not f.units:
+        return "none"
+    with localcontext() as ctx:
+        ctx.prec = 60
+        x = Decimal(text)
+        if unit != f.units[0]:
+            factor = next((c for a, b, c in (f.conversions or ())
+                           if a == unit and b == f.units[0]), None)
+            if factor is None or not _FACTOR_RE.fullmatch(factor) or Decimal(factor) <= 0:
+                return "unchecked"
+            x = x * Decimal(factor)
+        c_lo, c_hi = (Decimal(b) if b is not None else None for b in (f.critical or (None, None)))
+        n_lo, n_hi = (Decimal(b) if b is not None else None for b in (f.normal or (None, None)))
+        if c_lo is not None and x < c_lo:
+            return "critical_low"
+        if c_hi is not None and x > c_hi:
+            return "critical_high"
+        if n_lo is not None and x < n_lo:
+            return "low"
+        if n_hi is not None and x > n_hi:
+            return "high"
+    return "normal"
 
 
 def _percent(f: FieldSpec, v: Any) -> int:

@@ -1,0 +1,1039 @@
+[
+  {
+    "seed": 11,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "reports",
+              "title": "Reports",
+              "cells": [
+                {
+                  "view": "board",
+                  "span": 2
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "check_in",
+                  "span": 2
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "more",
+              "title": "More",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "more",
+              "title": "More",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "board"
+                }
+              ]
+            },
+            {
+              "id": "main",
+              "title": "Main",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": []
+            },
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "board"
+                }
+              ]
+            },
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "More",
+              "cells": [
+                {
+                  "view": "board",
+                  "span": 2
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "main",
+              "title": "Main",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "cells": [
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "More",
+              "cells": [
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "board",
+                  "span": 2
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "cells": [
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "board"
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "More",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "reports",
+              "title": "Reports",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Main",
+              "cells": [
+                {
+                  "view": "board",
+                  "span": 2
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "reports",
+              "title": "Main",
+              "cells": []
+            },
+            {
+              "id": "reports-2",
+              "title": "Reports",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "main",
+              "title": "Main",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "reports",
+              "title": "Reports",
+              "cells": []
+            },
+            {
+              "id": "reports-2",
+              "title": "Reports",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Ops",
+              "cells": [
+                {
+                  "view": "board",
+                  "span": 2
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "b",
+              "title": "B",
+              "cells": [
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "more",
+              "title": "More",
+              "cells": []
+            },
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "More",
+              "cells": [
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Ops",
+              "cells": [
+                {
+                  "view": "board",
+                  "span": 2
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "sales-2",
+              "title": "Sales",
+              "cells": []
+            },
+            {
+              "id": "more",
+              "title": "More",
+              "cells": []
+            },
+            {
+              "id": "sales-3",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "More",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "sales-2",
+              "title": "Reports",
+              "cells": []
+            },
+            {
+              "id": "more",
+              "title": "Ops",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": []
+            },
+            {
+              "id": "reports",
+              "title": "Reports",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "More",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "tab-app",
+      "views": [
+        {
+          "id": "board",
+          "block": "board"
+        },
+        {
+          "id": "week",
+          "block": "calendar"
+        },
+        {
+          "id": "check_in",
+          "block": "form"
+        },
+        {
+          "id": "list",
+          "block": "table"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "title": "Home",
+          "cols": 3,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "Sales",
+              "cells": [
+                {
+                  "view": "list"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "reports",
+              "title": "Reports",
+              "cells": []
+            }
+          ]
+        },
+        {
+          "id": "solo",
+          "cols": 1,
+          "tabs": [
+            {
+              "id": "more",
+              "title": "Sales",
+              "cells": []
+            },
+            {
+              "id": "sales",
+              "title": "Sales",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

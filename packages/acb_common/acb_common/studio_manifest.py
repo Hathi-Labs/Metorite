@@ -79,15 +79,15 @@ BLOCKS: tuple[str, ...] = (
 RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
 
 #: Each verb of an ``object:<name>.<op>`` action: the record verbs, the
-#: aggregate of C2b (STU-D4b) and the change history of one record (C4a-2). No
-#: action is added for the aggregate or the history by itself, so a package
-#: declares it.
-OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate", "history")
+#: aggregate of C2b (STU-D4b), the tree read of C18 (STU-D18-2a) and the change
+#: history of one record (C4a-2). No action is added for the aggregate, the tree
+#: or the history by itself, so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate", "tree", "history")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
 #: (``catalog_rows``) gives the class of each other source. A read is A, and an
-#: aggregate and a history are reads. A create or an update is B, because the app can undo
+#: aggregate, a tree and a history are reads. A create or an update is B, because the app can undo
 #: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
 #: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
@@ -97,6 +97,7 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "update": "B",
     "delete": "C",
     "aggregate": "A",
+    "tree": "A",
     "history": "A",
 }
 
@@ -271,6 +272,11 @@ class FieldDef(_Strict):
     min: int | None = None
     max: int | None = None
     units: list[str] | None = None
+    #: C24a. The ranges of a `quantity` in its base unit, and the conversions to it.
+    #: `studio_fields._check_ranges` holds the rules. The flag is computed on read.
+    normal: dict[str, Any] | None = None
+    critical: dict[str, Any] | None = None
+    conversions: list[dict[str, Any]] | None = None
     format: str | None = None
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
