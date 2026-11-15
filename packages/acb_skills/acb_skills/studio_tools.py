@@ -1295,8 +1295,8 @@ LAYOUT_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("board", ("pipeline", "stages", "status columns", "kanban", "hiring")),
     ("dashboard", ("overview", "kpi", "summary", "how are we doing", "dashboard")),
     ("list_detail", ("directory", "details beside", "browse")),
-    ("table_workspace", ("spreadsheet", "bulk", "inventory", "track", "manage")),
     ("app_home", ("home page", "first screen", "start page", "my day", "field staff")),
+    ("table_workspace", ("spreadsheet", "bulk", "inventory", "track", "manage")),
 )
 
 

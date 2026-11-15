@@ -96,9 +96,16 @@ function AppHome({ regions, renderView, titleOf, greeting }: Pick<LayoutBodyProp
   const kpis = (regions.kpis ?? []).map(part);
   const work = (regions.worklist ?? []).map((id) => [id, part(id)] as const).filter(([, n]) => n !== null);
   const recent = (regions.recent ?? []).map((id) => [id, part(id)] as const).filter(([, n]) => n !== null);
+  // A Home with no part asks the member for the next step, so the page is never blank (spec section 11.3).
+  const empty = kpis.every((x) => x === null) && work.length === 0 && recent.length === 0;
   return (
     <div data-layout="app_home" className="flex min-w-0 flex-col gap-4 sm:gap-5">
       {greeting ? <p data-home-greeting className="text-lg font-semibold text-foreground sm:text-xl">{greeting}</p> : null}
+      {empty ? (
+        <p data-home-empty className="text-sm text-muted-foreground">
+          This home page has nothing to show yet. Add a number or a list to it.
+        </p>
+      ) : null}
       {kpis.some((x) => x !== null) ? (
         <div data-home-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
       ) : null}

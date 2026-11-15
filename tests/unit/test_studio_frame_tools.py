@@ -357,6 +357,8 @@ def test_the_words_only_point_to_a_built_preset() -> None:
         ("Visits on a map of sites", None),
         ("An inspection checklist, SOP steps", None),
         ("Plan installations over time as a Gantt", None),
+        ("An app for field staff to track site visits", "app_home"),
+        ("Field staff manage their jobs for the day", "app_home"),
     ],
 )
 def test_the_hint_picks_the_preset_for_fourteen_prompts(prompt: str, want) -> None:

@@ -165,7 +165,8 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     const object = target ? detail.objects.find((o) => o.name === target.object) : undefined;
     // A dashboard has no list bar: its worklist is one short table, and the bar over the KPIs would push them
     // down (capture finding, task 3320).
-    if (built.page.layout === "dashboard") return null;
+    // App Home has none either: the greeting is the first thing to read (LOOK-1, review finding).
+    if (built.page.layout === "dashboard" || built.page.layout === "app_home") return null;
     if (!target || !object) return null;
     const fields = object.fields as unknown as BarField[];
     const lanes = boardGroupKeys(fieldSpecs(object), computedKeys(object.rules))

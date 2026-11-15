@@ -126,6 +126,15 @@ describe("App Home (LOOK-1)", () => {
     expect(html).not.toContain("data-home-kpis");
     expect(html).not.toContain("data-home-worklist");
   });
+  it("asks the member to add a number or a list when it has no part, with or without a greeting", () => {
+    expect(home({}, "Good morning.")).toContain("data-home-empty");
+    expect(home({})).toContain("data-home-empty");
+    expect(home({ kpis: ["a"] })).not.toContain("data-home-empty");
+  });
+  it("gives the page no list bar, as for a dashboard", () => {
+    const src = readFileSync(join(__dirname, "../../../app/studio/package-preview/AppFrame.tsx"), "utf-8");
+    expect(src).toMatch(/layout === "dashboard" \|\| built\.page\.layout === "app_home"\) return null/);
+  });
   it("puts 2 numbers per row on a phone and 4 from a tablet", () => {
     expect(home({ kpis: ["a"] })).toMatch(/data-home-kpis[^>]*grid-cols-2[^>]*sm:grid-cols-4/);
   });
