@@ -76,7 +76,7 @@ PATH = f"/studio/packages/{PID}/connections"
 NOT_FOUND = {"detail": "Not found"}
 MEMBER = ["feature:studio"]
 ADMIN = ["feature:studio", "integrations:manage"]
-ROW_KEYS = {"name", "label", "met", "reason", "checkable", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "as", "met", "reason", "checkable", "setup_href", "can_connect"}
 SRC = ROOT / "apps/services/gateway/gateway/routes/studio/connections.py"
 
 
@@ -256,12 +256,13 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
     assert all(set(x) == ROW_KEYS for x in rows)
     # I9b-1: a draft is never an approved install, so an org need with an org row waits
     # for an admin (`org_approval`), and `met` is False.
-    assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "met": False, "reason": "org_approval",
+    assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "as": "org", "met": False,
+                       "reason": "org_approval",
                        "checkable": True, "setup_href": "/crm", "can_connect": False}
-    assert rows[1] == {"name": "mcp:tally", "label": "tally", "met": False, "reason": "missing",
+    assert rows[1] == {"name": "mcp:tally", "label": "tally", "as": "org", "met": False, "reason": "org_approval",
                        "checkable": True,
                        "setup_href": "/integrations?add=mcp&name=tally", "can_connect": False}
-    assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "met": False,
+    assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "as": "member", "met": False,
                        "reason": "missing", "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True}
     assert world.sessions == 1
     assert world.met_reads == [OWEN]
@@ -277,7 +278,7 @@ def test_a_row_is_met_by_the_set_of_its_own_need(world: _World) -> None:
     rows = _client(_user()).get(PATH).json()["connections"]
     assert [(x["name"], x["met"]) for x in rows] == [
         ("zoho", False), ("google_drive", True), ("mcp:tally", False), ("google_calendar", False)]
-    assert [x["reason"] for x in rows] == ["org_approval", "ok", "missing", "missing"]
+    assert [x["reason"] for x in rows] == ["org_approval", "ok", "org_approval", "missing"]
 
 
 def test_i9b1_the_step_says_the_reason_of_each_need(world: _World) -> None:
@@ -343,7 +344,8 @@ def test_an_unknown_provider_id_reads_its_own_id_and_is_blocked(world: _World, g
     meets it: it is not checkable and offers no Connect, for an admin too."""
     world.names = ["acme"]
     rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
-    assert rows == [{"name": "acme", "label": "acme", "met": False, "reason": "missing",
+    assert rows == [{"name": "acme", "label": "acme", "as": "org", "met": False,
+                     "reason": "org_approval",
                      "checkable": False,
                      "setup_href": "/integrations", "can_connect": False}]
 
