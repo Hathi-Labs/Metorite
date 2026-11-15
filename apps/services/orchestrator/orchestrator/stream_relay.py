@@ -856,20 +856,54 @@ def tool_step(name: Any) -> str | None:
     return plain_step(words[:1].upper() + words[1:])
 
 
+#: CSY-10 (``chat_connected_systems.md`` §3.8): the most characters of a server
+#: label in a step. The whole step still caps at ``LAST_STEP_MAX_CHARS``.
+SERVER_LABEL_MAX_CHARS = 24
+
+
+def mcp_tool_step(ev: dict[str, Any]) -> str | None:
+    """``<server label>: <tool in words>`` for a tool start that the server
+    stamped with ``mcp`` (``event_translator.function_call_events``).
+
+    The label is the registry row's label, and the words come from the tool
+    NAME. The stamp holds no argument and no result, and this reads none. The
+    name must still start with the stamped server, so a wrong stamp is no step.
+    None gives the caller the plain :func:`tool_step`.
+    """
+    from orchestrator.event_translator import mcp_server_of  # noqa: PLC0415
+
+    stamp = ev.get("mcp")
+    name = ev.get("toolCallName")
+    if not isinstance(stamp, dict) or not isinstance(name, str):
+        return None
+    server, label = stamp.get("server"), stamp.get("label")
+    if not isinstance(server, str) or not isinstance(label, str):
+        return None
+    name = name.strip()
+    if not _TOOL_NAME_RE.match(name) or name == "tool":
+        return None
+    found = mcp_server_of(name, {server: label})
+    shown = plain_step(label, SERVER_LABEL_MAX_CHARS)
+    if not found or not shown:
+        return None
+    return plain_step(f"{shown}: {found[2]}")
+
+
 def step_from_events(events: list[dict[str, Any]]) -> str | None:
     """The latest step in *events*, which are NEWEST FIRST.
 
     The first event that names a step wins. A tool start gives its tool name
-    as a label, a text delta gives "Writing a reply" and a thinking delta gives
-    "Thinking". A progress update, a result, an argument and every other event
-    are skipped, because their TEXT can be tool output.
+    as a label (an MCP tool also gives its server's label, CSY-10), a text
+    delta gives "Writing a reply" and a thinking delta gives "Thinking". A
+    progress update, a result, an argument and every other event are skipped,
+    because their TEXT can be tool output.
     """
     for ev in events:
         if not isinstance(ev, dict):
             continue
         kind = ev.get("type")
         if kind in ("TOOL_CALL_START", "SUB_AGENT_TOOL_CALL_START"):
-            step = tool_step(ev.get("toolCallName"))
+            step = mcp_tool_step(ev) or tool_step(ev.get("toolCallName"))
             if step:
                 return step
         elif kind in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"):

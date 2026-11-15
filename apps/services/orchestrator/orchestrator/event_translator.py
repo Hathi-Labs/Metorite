@@ -38,8 +38,11 @@ parity: identical updates must translate identically on every path.
 """
 from __future__ import annotations
 
+import contextvars
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -52,6 +55,49 @@ _log = get_logger("orchestrator.event_translator")
 RESULT_CAP = 2000       # chars of tool result forwarded to the stream
 PARTIAL_CAP = 2000      # chars of live partial tool output per frame
 PROGRESS_CAP = 200      # chars of a progress header line
+
+
+#: CSY-10 (``chat_connected_systems.md`` §3.8): the registry labels of the
+#: servers that THIS run attached, ``{server name: label}``. The injection sets
+#: it from the rows it already read (no second read), on the org of the run.
+MCP_LABELS: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
+    "acb_mcp_labels", default=MappingProxyType({}),
+)
+
+
+def _norm_server(name: str) -> str:
+    return name.strip().lower().replace("-", "_")
+
+
+def mcp_server_of(name: Any, labels: Mapping[str, str] | None) -> tuple[str, str, str] | None:
+    """``(server, label, tool words)`` for an MCP tool NAME, else None.
+
+    MAF names an MCP tool ``<server>_<tool>`` (``tool_name_prefix`` is the
+    server name, ``test_maf_mcp_injection.py``). An older runtime used
+    ``mcp__<server>__<tool>``. The longest server name that prefixes the name
+    wins, and ``-`` reads as ``_``. Only the NAME is read.
+    """
+    import re
+
+    if not labels or not isinstance(name, str):
+        return None
+    flat = _norm_server(name)
+    for lead in ("mcp__", "mcp_"):
+        if flat.startswith(lead):
+            flat = flat[len(lead):]
+            break
+    best: tuple[str, str] | None = None
+    for server, label in labels.items():
+        key = _norm_server(server)
+        if not key or not flat.startswith(key) or flat[len(key):len(key) + 1] != "_":
+            continue
+        if best is None or len(key) > len(_norm_server(best[0])):
+            best = (server, label)
+    if best is None:
+        return None
+    rest = flat[len(_norm_server(best[0])):]
+    words = " ".join(p for p in re.split(r"[_.:-]+", rest) if p)
+    return (best[0], best[1], words) if words else None
 
 
 @dataclass
@@ -183,6 +229,11 @@ def function_call_events(
         "type": "TOOL_CALL_START",
         "toolCallId": cid, "toolCallName": name, "args": delta,
     }]
+    # CSY-10: an MCP tool names its server. The stamp holds the registry name
+    # and label only, never an argument or a result.
+    found = mcp_server_of(name, MCP_LABELS.get())
+    if found:
+        out[0]["mcp"] = {"server": found[0], "label": str(found[1])[:80]}
     if delta:
         out.append({"type": "TOOL_CALL_ARGS", "toolCallId": cid, "delta": delta})
     return out

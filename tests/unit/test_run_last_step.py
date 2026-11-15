@@ -344,3 +344,95 @@ def test_a_question_has_no_step(fake_redis, db_down, monkeypatch):
     assert rows[0]["state"] == "needs_input"
     assert rows[0]["lastStep"] is None
     assert fake_redis.xrev_calls == []
+
+
+# ---------------------------------------------------------------------------
+# CSY-10: an MCP step keeps its server's label (chat_connected_systems.md 3.8)
+#
+# The wire name of an MCP tool is "<server>_<tool>": MAF's tool_name_prefix is
+# the server name (test_maf_mcp_injection.py). The translator stamps
+# ``mcp: {server, label}`` on the tool start, and the step reads the stamp.
+# ---------------------------------------------------------------------------
+
+_SENT = "SENTINEL-c5d1"
+_LABELS = {"shaurrya-app": "Shaurrya App", "ops": "Ops"}
+
+
+def _mcp_start(name, labels=None, mcp=True):
+    ev = {"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": name}
+    if mcp and labels is not None:
+        from orchestrator.event_translator import mcp_server_of
+
+        found = mcp_server_of(name, labels)
+        if found:
+            ev["mcp"] = {"server": found[0], "label": found[1]}
+    return ev
+
+
+@pytest.mark.parametrize(
+    ("name", "step"),
+    [
+        ("shaurrya-app_search_operations", "Shaurrya App: search operations"),
+        ("shaurrya_app_search_operations", "Shaurrya App: search operations"),
+        ("mcp__ops__list_items", "Ops: list items"),
+        ("ops_read", "Ops: read"),
+    ],
+)
+def test_an_mcp_tool_reads_its_server_label(name, step):
+    assert stream_relay.step_from_events([_mcp_start(name, _LABELS)]) == step
+
+
+def test_a_tool_with_no_stamp_keeps_the_old_step():
+    assert stream_relay.step_from_events([_mcp_start("ops_read", _LABELS, mcp=False)]) == "Ops read"
+    assert stream_relay.step_from_events([_mcp_start("search_tasks", _LABELS)]) == "Search tasks"
+
+
+def test_a_stamp_that_does_not_match_the_name_is_ignored():
+    ev = {"type": "TOOL_CALL_START", "toolCallName": "search_tasks",
+          "mcp": {"server": "ops", "label": "Ops"}}
+    assert stream_relay.step_from_events([ev]) == "Search tasks"
+    ev["mcp"] = {"server": 3, "label": None}
+    assert stream_relay.step_from_events([ev]) == "Search tasks"
+
+
+def test_the_server_label_is_bounded_and_plain():
+    ev = {"type": "TOOL_CALL_START", "toolCallName": "ops_read",
+          "mcp": {"server": "ops", "label": "A\x00B\x1b<b>C</b>" + "x" * 80}}
+    step = stream_relay.step_from_events([ev])
+    assert step is not None and step.endswith(": read")
+    assert len(step) <= stream_relay.LAST_STEP_MAX_CHARS
+    assert len(step.split(": ")[0]) <= stream_relay.SERVER_LABEL_MAX_CHARS
+    assert "<" not in step and all(ord(c) >= 32 for c in step)
+
+
+# Mutation: read an argument or a result into the step or the stamp, and this fails.
+def test_the_translator_stamps_the_server_and_never_an_argument_or_a_result():
+    import types
+
+    from orchestrator import event_translator as et
+
+    token = et.MCP_LABELS.set(_LABELS)
+    try:
+        state = et.ToolCallStreamState("run-1")
+        call = types.SimpleNamespace(
+            type="function_call", call_id="c1", name="ops_read",
+            arguments='{"q": "%s"}' % _SENT,
+        )
+        events = et.function_call_events(call, state)
+        start = events[0]
+        assert start["mcp"] == {"server": "ops", "label": "Ops"}
+        assert _SENT not in json.dumps(start["mcp"])
+        # A result event never reaches the step.
+        events.append({"type": "TOOL_CALL_RESULT", "toolCallId": "c1", "content": _SENT})
+        step = stream_relay.step_from_events(list(reversed(events)))
+        assert step == "Ops: read"
+        assert _SENT not in step
+        # No labels, no stamp: a native tool is not stamped.
+        et.MCP_LABELS.set({})
+        plain = et.function_call_events(
+            types.SimpleNamespace(type="function_call", call_id="c2", name="ops_read", arguments="{}"),
+            et.ToolCallStreamState("run-2"),
+        )
+        assert "mcp" not in plain[0]
+    finally:
+        et.MCP_LABELS.reset(token)

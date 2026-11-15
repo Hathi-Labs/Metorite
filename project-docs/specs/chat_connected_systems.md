@@ -2,7 +2,10 @@
 
 **Status: PROPOSED, 2026-11-15. Verified against the code on 2026-11-15
 (`origin/main` at `539221a29`).** Epic WS-CSY is task 3390, and CSY-0 is task
-3391. This spec builds nothing. The owner decides D-CSY-1 to D-CSY-6 (§9). The
+3391. **CSY-10 (task 3410) is BUILT, 2026-11-16:** the translator stamps
+`mcp: {server, label}` on an MCP tool start, `stream_relay` reads it, and
+the tool row draws "<label>: <tool in words>". No other slice is built. The
+owner decides D-CSY-1 to D-CSY-6 (§9). The
 defaults hold until the owner answers.
 
 **The seam owners.** This spec adds no second seam. It extends four owners:

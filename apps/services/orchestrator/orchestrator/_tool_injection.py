@@ -4808,10 +4808,26 @@ async def _inject_mcp_servers(
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
             )
+            _note_mcp_labels(servers)
         return
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
+
+
+def _note_mcp_labels(servers: list[Any]) -> None:
+    """CSY-10: keep ``{name: label}`` of the attached servers for this run, so
+    the translator can stamp each MCP tool start with its server's label
+    (``event_translator.MCP_LABELS``). It reuses the rows that the read above
+    gave, so it adds no registry read. A fault here never blocks the run."""
+    try:
+        from orchestrator import event_translator
+
+        labels = dict(event_translator.MCP_LABELS.get())
+        labels.update({str(s.name): str(s.label) for s in servers if s.name and s.label})
+        event_translator.MCP_LABELS.set(labels)
+    except Exception as exc:  # noqa: BLE001 — no label gives the plain step
+        _log.warning("mcp.labels_unavailable", error=type(exc).__name__)
 
 
 def _oauth_wanted(agent_name: str, native: bool, is_authorized: Any) -> Any:
