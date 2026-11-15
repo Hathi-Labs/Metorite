@@ -1109,11 +1109,16 @@ class TestTheAttachments:
         assert not [p for p in board.paths() if p.endswith("/attachments")]
 
     async def test_g17_the_route_is_read_only_on_the_allowlist(self):
+        """MCP-G18 kept the list a read. CIV-14b (spec §12.9) adds ONE write of
+        the same template, the POST of ``upload_task_image``. The detach
+        (``DELETE .../attachments/{attachment_id}``) stays off the edge."""
         from acb_auth import agent_oauth
         pair = ("GET", tools.ATTACHMENTS_ROUTE)
         assert pair in agent_oauth.MCP_ROUTES and pair not in agent_oauth.MCP_WRITE_ROUTES
-        assert not [m for m, t in agent_oauth.MCP_ROUTES
-                    if t.endswith("/attachments") and m != "GET"]
+        assert [m for m, t in agent_oauth.MCP_ROUTES
+                if t.endswith("/attachments") and m != "GET"] == ["POST"]
+        assert ("POST", tools.ATTACHMENTS_ROUTE) in agent_oauth.MCP_WRITE_ROUTES
+        assert not [p for p in agent_oauth.MCP_ROUTES if p[0] == "DELETE" and "/attachments" in p[1]]
 
     async def test_g17_no_agent_text_names_a_removal(self):
         assert "delet" not in tools.GET_TASK_CONTEXT.description.lower()
