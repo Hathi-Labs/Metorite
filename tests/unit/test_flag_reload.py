@@ -89,6 +89,22 @@ def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not agent_questions_allowed("globex")
 
 
+def test_tool_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-67 TS-2a, one_assistant_context.md §4.2.9. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from acb_skills.tool_packs import tool_search_on
+
+    assert fr.reloadable("TOOL_SEARCH_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("TOOL_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not tool_search_on("acme")
+    env(**{**_START, "TOOL_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("TOOL_SEARCH_ORGS",)
+    assert tool_search_on("acme")
+    assert not tool_search_on("globex")
+
+
 def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
     the one reader sees a change with no restart."""

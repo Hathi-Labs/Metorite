@@ -83,13 +83,20 @@ PACK_ARMS = ck.PACK_ARMS
 STUDIO_PACKS = ("studio",)
 
 
+#: TS-5b sets this True when the scripted plans that call ``find_tools`` are in.
+#: TS-2a PR 3 added the field ``tool_search_orgs`` first, so the field alone no
+#: longer tells that the arm can run.
+SEARCH_PLANS = False
+
+
 def search_built() -> bool:
-    """True when the settings hold ``tool_search_orgs``: the flag of TS-2. Until
-    then the ``search`` arm prints SKIP and runs nothing. It reads the settings
-    with ``getattr``, so it needs no import from the branch that adds the field."""
+    """True when the plans of TS-5b are in (:data:`SEARCH_PLANS`) and the
+    settings hold ``tool_search_orgs``, the flag of TS-2a. Until then the
+    ``search`` arm prints SKIP and runs nothing. It reads the settings with
+    ``getattr``, so it needs no import of the field."""
     from acb_common import get_settings
 
-    return getattr(get_settings(), "tool_search_orgs", None) is not None
+    return SEARCH_PLANS and getattr(get_settings(), "tool_search_orgs", None) is not None
 
 
 def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
@@ -119,6 +126,10 @@ PRODUCTION: dict[str, Any] = {
     # Run 2 of OA-8e (OA-8f): the base trim we would ship. BOTH arms hold it,
     # so the comparison is fair.
     "orchestrator_floor_trim": True,
+    # TS-2a PR 3: no arm but ``search`` holds ``find_tools``, also where the
+    # .env of a developer sets TOOL_SEARCH_ORGS. The search arm sets it again
+    # (:func:`flag_for`), because its flag comes after this one.
+    "tool_search_orgs": "",
 }
 
 
@@ -1691,8 +1702,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         return EXIT_NO_GO
     arms = tuple(a for a in asked if a in ALL_ARMS)
     if SEARCH_ARM in arms and (args.scripted or args.live) and not search_built():
-        print(f"SKIP: arm {SEARCH_ARM}: the settings hold no tool_search_orgs yet (TS-2). "
-              "The arm runs when the flag exists, and the plans of TS-5b are in.")
+        print(f"SKIP: arm {SEARCH_ARM}: it waits for the plans of TS-5b (SEARCH_PLANS). "
+              "The arm runs when they are in, beside the flag tool_search_orgs.")
         arms = tuple(a for a in arms if a != SEARCH_ARM)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
     chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)
