@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
+from acb_skills import ask_tools as eg_ask
 from acb_skills import egress as eg
 from acb_skills import reply_card as rcard
 
@@ -791,12 +791,19 @@ async def test_compose_reply_never_trashes_on_a_discard_or_a_timeout(
 ) -> None:
     """``request_confirmation`` answers None for Discard and for a timeout
     alike. So the tool trashes nothing, and a card that timed out keeps its
-    draft. The member's own Discard click posts the trash (``ReplyCardForm``)."""
+    draft. The member's own Discard click posts the trash (``ReplyCardForm``).
+    HRD-7: the outcome of the card tells the two apart, in the words of the
+    one table of card outcomes."""
     monkeypatch.setattr(agents, "_egress_held", lambda: False)  # a chat that read no outside mail
-    _card_answer(monkeypatch, lambda kw: None)
+    _card_answer(monkeypatch, lambda kw: eg_ask._noted(eg_ask.CARD_DECLINED, None))
     out = await agents.compose_reply(MAIL, BOX)
-    assert out.startswith("Reply discarded") and "Nothing was sent." in out
-    assert gw.posts == [("/email/reply-card", {"message_id": MAIL})]
+    assert out.startswith("Declined:") and "The reply was not sent." in out
+    assert "nothing was done" in out
+    _card_answer(monkeypatch, lambda kw: eg_ask._noted(eg_ask.CARD_TIMED_OUT, None))
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out.startswith("Timed out:") and "The reply was not sent." in out
+    # Each call posts only its card: no trash, for a Discard or a timeout.
+    assert gw.posts == [("/email/reply-card", {"message_id": MAIL})] * 2
 
 
 async def test_the_form_carries_the_cards_draft_id(monkeypatch, gw) -> None:
@@ -830,7 +837,8 @@ async def test_another_members_answer_does_nothing(monkeypatch, gw) -> None:
     _card_answer(monkeypatch, lambda kw: ReplyAnswer("r", text, rcard.parse_reply_answer(text),
                                                      "lee@contoso.test"))
     out = await agents.compose_reply(MAIL, BOX)
-    assert out.startswith("Nothing was sent.")
+    # HRD-7: the words of the one table of card outcomes.
+    assert out.startswith("Answered by another member:") and "The reply was not sent." in out
     assert [p for p, _ in gw.posts] == ["/email/reply-card"]
 
 
