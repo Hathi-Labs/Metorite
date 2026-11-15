@@ -334,7 +334,7 @@ def test_r8_the_app_filter_narrows_to_one_package(pworld):
     rows = _list(pworld, pworld.a, ANA, app=pworld.p2)
     assert {r["app"] for r in rows} == {pworld.p2}
     # The five record verbs, the aggregate (STU-D4b), the tree (STU-D18-2a) and the history (C4a-2).
-    assert len([r for r in rows if r["id"].startswith("object:")]) == 7
+    assert len([r for r in rows if r["id"].startswith("object:")]) == 8
     # The package of another member and of org B give nothing.
     assert _list(pworld, pworld.a, ANA, app=pworld.p_ben) == []
     assert _list(pworld, pworld.a, ANA, app=pworld.p_b) == []

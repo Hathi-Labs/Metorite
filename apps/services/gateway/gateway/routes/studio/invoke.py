@@ -516,7 +516,7 @@ REFUSALS: dict[str, str] = {
         "This action writes data and needs an approval, which this door cannot ask for yet."),
     SOURCE_NOT_OPEN: (
         "This door runs get, list, aggregate, tree, history, create, update and delete on an "
-        "object, and a read of another app where Metorite turned that on."),
+        "object, and a read of another app that Metorite allows."),
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
     READ_ONLY: "This app is shared with you to read, so you cannot change its records.",
     OUTSIDE_AGENT: (
@@ -2605,3 +2605,121 @@ def _read_answer(out: _Outcome) -> dict[str, Any]:
     if out.history is not None:
         return {"history": [dataclasses.asdict(c) for c in out.history.changes],
                 "next": out.history.next}
+    return _record_answer(out)
+
+
+def _logic_answer(out: _Outcome) -> dict[str, Any]:
+    """The answer of a logic run (B4a): ids and names, never a value. A record
+    of a preview create has no id, because it was never stored."""
+    rows = [{"object": w.object_name, "op": w.op,
+             "id": None if out.preview and w.op == "create" else w.record_id}
+            for w in out.logic_writes or []]
+    if not out.preview:
+        return {"writes": rows}
+    return {"preview": True, "simulated": {
+        "action": _cap(out.action), "uses": _cap(out.uses), "class": _cap(out.cls)},
+        "writes": rows}
+
+
+def _record_answer(out: _Outcome) -> dict[str, Any]:
+    """The answer of a record read or an object write: the record and its
+    lines, or the id of a delete. A record that names nothing raises 404."""
+    if out.logic_writes is not None:
+        return _logic_answer(out)
+    mark: dict[str, Any] = {"preview": True} if out.preview else {}
+    if out.deleted is not None:
+        return {"deleted": True, "id": out.deleted, **mark}
+    if out.missing or out.record is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if out.lines:
+        return {"record": dataclasses.asdict(out.record), "lines": out.lines, **mark}
+    return {"record": dataclasses.asdict(out.record), **mark}
+
+
+@router.post("/apps/{app_id}/actions/{action}", response_model=None)
+async def invoke_action(
+    app_id: str,
+    action: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any] | Response:
+    """Run the action *action* of the caller's package *app_id*. See the
+    module docstring for the order of the checks."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not _ACTION_ID.fullmatch(action):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    pid = _app_id(app_id)
+    # G4: the preview mark, from the query only. A bad value is 422 here,
+    # before any read, so it never falls through to a live write.
+    preview = _previews(request)
+    out = _Outcome(action=action)
+    # The proof is read once, here, before any body read (B2c-1).
+    direct = _is_direct(request, user)
+    # B2c-2a: a call that is not direct is delegated only when it asks for a
+    # card with ask=1, or names a request (fix round 1). While APP_REQUESTS_ORGS
+    # leaves the org out, or with no marker, it gets today's 403. So an
+    # unsigned Save of the member's own screen never gets a 202. A preview
+    # (G4) asks for no card and spends none.
+    allowed = not direct and not preview and app_requests.requests_allowed(
+        user.organization_id)
+    request_id = _request_id(request) if allowed else None
+    delegated = allowed and (request_id is not None or _asks(request))
+    with preview_scope(preview):
+        async with _tenant_session() as db:
+            package, ref = await _check(db, user.email, pid, action, out, direct, delegated,
+                                        preview, org=user.organization_id)
+        # Fix round 2: where an ask works (the org flag, an object write, a person
+        # present), the text of approval_required names the step: ask=1.
+        out.can_ask = (allowed and ref is not None and not out.viewer
+                       and (ref.source, ref.op) in DELEGATED_EXECUTORS
+                       and not no_person_present())
+        if ref is not None and out.uses is not None and ref.source not in ("object", "logic"):
+            try:
+                out.cls = await _catalog_class(out.uses)
+            except Exception as exc:
+                _log.warning("studio.invoke.catalog_failed", error=type(exc).__name__)
+                out.catalog_down = True
+            else:
+                # J2a: a viewer gets read_only for a class B or C action, also
+                # in a preview (G4), so a viewer never gets a simulated send.
+                out.refusal = refusal_for(
+                    ref, out.cls, viewer=out.viewer, preview=preview,
+                    door_ops=flags.door_ops_allowed(user.organization_id))
+                if out.refusal is None and _key(ref) == DOOR_OP and out.cls == "A":
+                    # B2b-2b: a class A door op runs as the caller, a viewer
+                    # too. The app's own gates decide. A read in a preview is
+                    # a real read (G4).
+                    out.refusal, door = _door_op_of(ref, user)
+                    if out.refusal is None and door_op.repeated(request.headers):
+                        # Two values of one identity header name no single caller.
+                        out.fail = _Fail("refused", BAD_INPUT, HTTPException(
+                            status_code=400,
+                            detail={"code": BAD_INPUT, "message": REPEATED_HEADERS}))
+                    elif out.refusal is None:
+                        await _run_executor(request, user, pid, action, out, direct,
+                                            delegated, DOOR_OP_MODE, None, preview, door)
+                elif out.refusal is None and not preview:
+                    # No executor of another source exists. Fail closed.
+                    out.refusal = SOURCE_NOT_OPEN
+                elif out.refusal is None:
+                    # A preview of a class B or C action: no executor of
+                    # another source runs, and nothing is sent (G4).
+                    out.preview = out.simulated = True
+        elif ref is not None and out.refusal is None:
+            mode = _mode(ref, direct, delegated, request_id, preview)
+            if mode in _DELEGATED_MODES and no_person_present():
+                # AUTO-7a: nobody sees the card of a run with no person present,
+                # so it opens none and spends none. The mark is a ContextVar: it
+                # binds an in-process caller, and an HTTP call does not carry it.
+                out.refusal = NO_PERSON
+            else:
+                await _run_executor(request, user, pid, action, out, direct, delegated, mode,
+                                    request_id, preview)
+        if not out.audited:
+            await record_app_audit_bound(app_id=package.id, user_email=user.email,
+                                         kind="action", detail=_audit_detail(out))
+        # C3: after the commit of the write, so no event names a rolled back change.
+        await _emit_record_event(out, str(user.organization_id or ""))
+        await _emit_logic_events(out, str(user.organization_id or ""))
+    return _answer(out)

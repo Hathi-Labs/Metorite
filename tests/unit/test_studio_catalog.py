@@ -413,7 +413,7 @@ class TestThePackageRows:
         assert {r["app"] for r in body} == {PKG_B}
         # The five record verbs, the aggregate (STU-D4b), the tree (STU-D18-2a) and the
         # history (C4a-2): one row for each object op.
-        assert len(body) == 7
+        assert len(body) == 8
         assert db.package_calls[-1][1] == PKG_B
 
     def test_a_bad_app_filter_is_422_and_reads_nothing(self, monkeypatch, db):
