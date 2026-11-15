@@ -22,7 +22,7 @@ orchestrator changes the golden too. Then write it again on the code of main
 WITHOUT a change to the search (``--write``), and say so in the PR.
 
 Run: ``uv run pytest tests/unit/test_tool_search_off.py -q -p no:xdist``.
-Write: ``uv run python tests/unit/test_tool_search_off.py --write``.
+Write: ``uv run python -m tests.unit.test_tool_search_off --write``.
 """
 
 from __future__ import annotations
@@ -451,7 +451,7 @@ def test_the_reader_does_not_call_packs_on(monkeypatch) -> None:
 
 if __name__ == "__main__":  # write the golden again, on the code of main only
     if "--write" not in sys.argv:
-        raise SystemExit("usage: python tests/unit/test_tool_search_off.py --write")
+        raise SystemExit("usage: python -m tests.unit.test_tool_search_off --write")
     patcher = pytest.MonkeyPatch()
     try:
         install_memory_mark_store(patcher)
