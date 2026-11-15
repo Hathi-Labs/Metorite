@@ -24,6 +24,8 @@ export interface BlockStateInput {
   error: string | null;
   /** The viewer may not read the block (a 403 of the door). */
   forbidden: boolean;
+  /** A second try may work. False for a refusal that would fail the same way (a 422, a gone record). Default true. */
+  retryable?: boolean;
   /** The one record is gone, or the viewer may not read it. The door says one text for both (STU-LY-3). */
   missing?: boolean;
   /** The rows that the block draws now. */
@@ -60,6 +62,8 @@ export interface BlockStateWords {
   askWho?: string;
   /** A queue that is empty is a success, not a gap (STU-LY-6): "All clear." and no action. */
   allClear?: boolean;
+  /** A second try may work (see `BlockStateInput.retryable`). */
+  retryable?: boolean;
 }
 
 /** The sentence of one state. Loading has no copy, and the skeleton draws it. */
@@ -87,6 +91,14 @@ export function blockStateCopy(
         action: "Clear filters",
       };
     case "error":
+      // A refusal that a second try cannot change has no Retry and no "try again" (capture finding, task 3320).
+      if (words.retryable === false) {
+        return {
+          icon: "TriangleAlert",
+          message: `The ${noun} cannot be shown.`,
+          hint: "Your data is safe. The app asks for something that it cannot read. Tell the owner of the app.",
+        };
+      }
       return {
         icon: "TriangleAlert",
         message: `The ${noun} did not load.`,

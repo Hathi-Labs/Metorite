@@ -47,6 +47,7 @@ import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { pluralOf } from "@/lib/studio/blockState";
+import { retryableRead } from "@/lib/studio/readError";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -123,7 +124,7 @@ function LayoutList({ source, door, active, noun, shape = "rows", tile = false, 
   const failed = Boolean(rows.error) && rows.data === undefined;
   const state = (
     <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
-      forbidden={false} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
+      forbidden={false} retryable={retryableRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
       allClear={allClear} onClearFilters={onClear} onRetry={rows.refresh} />
   );
   if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
@@ -161,6 +162,9 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     [cells, detail.views, controls.actions]);
   const bar = useMemo(() => {
     const object = target ? detail.objects.find((o) => o.name === target.object) : undefined;
+    // A dashboard has no list bar: its worklist is one short table, and the bar over the KPIs would push them
+    // down (capture finding, task 3320).
+    if (built.page.layout === "dashboard") return null;
     if (!target || !object) return null;
     const fields = object.fields as unknown as BarField[];
     const lanes = boardGroupKeys(fieldSpecs(object), computedKeys(object.rules))
@@ -174,7 +178,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       args: toListArgs(fields, value),
     };
     return { fields, lanes, layouts, layout, value, lens };
-  }, [target, detail.objects, state]);
+  }, [target, detail.objects, state, built.page.layout]);
   // The record page (STU-AF5). A row or a card links to its record only when the app declares the get.
   const getters = useMemo(() => new Set(detail.objects
     .filter((o) => controls.actions.some((a) => a.uses === `object:${o.name}.get`)).map((o) => o.name)),
