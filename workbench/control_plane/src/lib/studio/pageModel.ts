@@ -8,7 +8,7 @@
  * (STU-D11b) draws the page that `buildPage` returns.
  */
 
-import type { PageDef, ViewDef } from "./manifest";
+import { LAYOUTS, PRESET_REGIONS, type LayoutName, type PageDef, type ViewDef } from "./manifest";
 
 /** The caps of A2. `pageModel.test.ts` holds them equal to the `maxItems` of the schema file. */
 export const PAGE_CAPS = { pages: 8, tabsPerPage: 8, cellsPerList: 12, maxCols: 4 } as const;
@@ -39,6 +39,10 @@ export interface PageModel {
   cells: CellModel[];
   /** The view that opens when a record is selected, or `null`. */
   side: string | null;
+  /** The preset of the page (STU-LY-0), or `null` for a page of cells and tabs. */
+  layout: LayoutName | null;
+  /** The view ids of each region of a preset page. Empty when `layout` is `null`. */
+  regions: Record<string, string[]>;
 }
 
 /** The manifest parts that a page reads. `actions` and `objects` serve the default pages. */
@@ -72,13 +76,16 @@ function readCols(v: unknown): number {
 }
 
 /** Read a cell list. A bad cell, a span over `cols`, an unknown view and any cell over the cap are dropped. */
-function readCells(v: unknown, cols: number, views: ReadonlySet<string> | null): CellModel[] {
+function readCells(
+  v: unknown, cols: number, views: ReadonlySet<string> | null, wide: ReadonlySet<string> | null = null,
+): CellModel[] {
   if (!Array.isArray(v)) return [];
   const out: CellModel[] = [];
   for (const raw of v) {
     const c = obj(raw);
     if (!c || !dashed(c.view) || (views && !views.has(c.view))) continue;
-    let span = 1;
+    // A view of a wide block (a calendar) with no span takes the full row.
+    let span = wide?.has(c.view) ? cols : 1;
     if (c.span !== undefined && c.span !== null) {
       if (typeof c.span !== "number" || !Number.isInteger(c.span) || c.span < 1 || c.span > cols) continue;
       span = c.span;
@@ -94,11 +101,14 @@ function readCells(v: unknown, cols: number, views: ReadonlySet<string> | null):
  * cells, or when it has neither (A2 refuses each). `views`, when given, is the set of
  * declared view ids, and a cell of another view is dropped.
  */
-export function readPage(def: unknown, views: ReadonlySet<string> | null = null): PageModel | null {
+export function readPage(
+  def: unknown, views: ReadonlySet<string> | null = null, wide: ReadonlySet<string> | null = null,
+): PageModel | null {
   const d = obj(def);
   if (!d || !dashed(d.id)) return null;
   const hasTabs = Array.isArray(d.tabs) && d.tabs.length > 0;
   const hasCells = Array.isArray(d.cells) && d.cells.length > 0;
+  if (d.layout !== undefined && d.layout !== null) return readLayoutPage(d, views);
   if (hasTabs === hasCells) return null;
   const cols = readCols(d.cols);
   const tabs: TabModel[] = [];
@@ -108,7 +118,7 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
       const t = obj(raw);
       if (!t || !dashed(t.id) || seen.has(t.id) || typeof t.title !== "string" || !t.title.trim()) continue;
       seen.add(t.id);
-      tabs.push({ id: t.id, title: t.title, cells: readCells(t.cells, cols, views) });
+      tabs.push({ id: t.id, title: t.title, cells: readCells(t.cells, cols, views, wide) });
       if (tabs.length >= PAGE_CAPS.tabsPerPage) break;
     }
   }
@@ -119,8 +129,41 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
     title: typeof d.title === "string" ? d.title : null,
     cols,
     tabs,
-    cells: hasTabs ? [] : readCells(d.cells, cols, views),
+    cells: hasTabs ? [] : readCells(d.cells, cols, views, wide),
     side: sideView,
+    layout: null,
+    regions: {},
+  };
+}
+
+/**
+ * A page with a preset (STU-LY-0). A page with tabs, cells or a side view is not valid, and A2
+ * refuses it. Each region keeps only the views that it may hold, as `readCells` does for cells.
+ * It drops a region that the preset does not name and a view of another set. It never repairs.
+ */
+function readLayoutPage(d: Record<string, unknown>, views: ReadonlySet<string> | null): PageModel | null {
+  const layout = (LAYOUTS as readonly unknown[]).includes(d.layout) ? (d.layout as LayoutName) : null;
+  if (!layout) return null;
+  const hasGrid = (Array.isArray(d.tabs) && d.tabs.length > 0) || (Array.isArray(d.cells) && d.cells.length > 0);
+  if (hasGrid || obj(d.side)) return null;
+  const rules = PRESET_REGIONS[layout];
+  const raw = obj(d.regions) ?? {};
+  const regions: Record<string, string[]> = {};
+  for (const [name, rule] of Object.entries(rules)) {
+    const ids = Array.isArray(raw[name]) ? (raw[name] as unknown[]) : [];
+    regions[name] = ids
+      .filter((v): v is string => dashed(v) && (!views || views.has(v)))
+      .slice(0, rule.cap);
+  }
+  return {
+    id: d.id as string,
+    title: typeof d.title === "string" ? d.title : null,
+    cols: readCols(d.cols),
+    tabs: [],
+    cells: [],
+    side: null,
+    layout,
+    regions,
   };
 }
 
@@ -135,6 +178,8 @@ export function defaultPage(views: readonly Pick<ViewDef, "id">[] = []): PageMod
       .filter((v) => dashed(v.id))
       .map((v) => ({ view: v.id, span: 1 })),
     side: null,
+    layout: null,
+    regions: {},
   };
 }
 
@@ -190,11 +235,11 @@ export function defaultPages(manifest: {
   const pages: PageModel[] = [];
   for (const [name, ids] of byObject) {
     const label = manifest.objects?.find((o) => o.name === name)?.label;
-    pages.push({ id: name, title: label || name, cols: 1, tabs: [], cells: cells(ids), side: null });
+    pages.push({ id: name, title: label || name, cols: 1, tabs: [], cells: cells(ids), side: null, layout: null, regions: {} });
   }
   if (board.length > 0) {
     // An object that is named "dashboard" keeps its own page, and the dashboard takes the next id.
-    pages.push({ id: byObject.has("dashboard") ? "dashboard-2" : "dashboard", title: "Dashboard", cols: 2, tabs: [], cells: cells(board), side: null });
+    pages.push({ id: byObject.has("dashboard") ? "dashboard-2" : "dashboard", title: "Dashboard", cols: 2, tabs: [], cells: cells(board), side: null, layout: null, regions: {} });
   }
   return pages.slice(0, PAGE_CAPS.pages);
 }
@@ -216,9 +261,10 @@ export function buildPage(
 ): BuiltPage {
   const views = manifest.views ?? [];
   const ids = new Set(views.map((v) => v.id));
+  const wide = new Set(views.filter((v) => v.block === "calendar").map((v) => v.id));
   const pages = (Array.isArray(manifest.pages) ? manifest.pages : [])
     .slice(0, PAGE_CAPS.pages)
-    .map((p) => readPage(p, ids))
+    .map((p) => readPage(p, ids, wide))
     .filter((p): p is PageModel => p !== null);
   // With no readable page the manifest gets the default pages (STU-AF1).
   const all = pages.length > 0 ? pages : defaultPages({ ...manifest, views });

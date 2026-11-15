@@ -16,7 +16,7 @@ import { ownListArgs } from "@/lib/studio/viewBlocks";
 /** The store counts to this number, and then says "at least". */
 export const COUNT_CAP = 10_000;
 
-type PageCells = Pick<PageModel, "cells" | "tabs" | "side">;
+type PageCells = Pick<PageModel, "cells" | "tabs" | "side"> & { regions?: PageModel["regions"] };
 type ObjectFields = { name: string; fields: readonly { key: string; type: string }[] };
 type ActionRef = readonly { id: string; uses: string }[];
 
@@ -26,6 +26,7 @@ export function pageViewIds(page: PageCells): string[] {
     ...page.cells.map((c) => c.view),
     ...page.tabs.flatMap((t) => t.cells.map((c) => c.view)),
     ...(page.side ? [page.side] : []),
+    ...Object.values(page.regions ?? {}).flat(),
   ];
 }
 

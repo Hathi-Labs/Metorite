@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/EmptyState";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioCalendar from "@/components/studio/StudioCalendar";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioNewButton from "@/components/studio/StudioNewButton";
@@ -36,7 +37,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
-import { floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
+import { floorPages, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
   activeCount, barOf, barTarget, chipsOf, clearedBar, layoutsFor, searchKeyOf, toListArgs, withFilter,
@@ -194,6 +195,10 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
               submitLabel="Add record" savedMessage="Record added" />
           </div>
         );
+      case "calendar":
+        // The block draws its own card. A record link opens in the panel through `onLinkClick`.
+        return <StudioCalendar model={model} door={door}
+          onOpenRecord={(rid) => go((s) => openRecord(s, model.object, rid))} />;
       case "detail":
         return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected} />;
     }
@@ -207,6 +212,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     }), detail.objects, controls.actions, controls.owner),
   [cells, detail.views, detail.objects, controls.actions, controls.owner]);
   // The rail replaces the page picker. An app with one page draws neither (nothing to pick).
+  // The floor view draws no rail, and only there the picker comes back (`floorPages`, STU-D23a-2).
   const railed = hasRail(built.pages);
   // The rail hides a page whose object the viewer cannot read (rule 5), then counts the rows that remain (rule 6).
   const sections = useMemo(() => {
@@ -233,10 +239,16 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       <DeletePackageButton id={pkg} onDeleted={onDeleted} />
     </>
   ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>;
+  // The floor view has no rail, so its page picker comes first in the toolbar (STU-D23a-2). It
+  // offers the rows of the rail and picks through `setPage`, as a row of the rail does.
+  const floorPick = floorPages(parts, sections);
   // The floor view keeps "New <Object>" and drops the end-date bar. With no part left, no toolbar row.
-  const toolbarShown = parts.lifetime || adds.length > 0 || (isMobile && ownerBar !== null);
+  const toolbarShown = parts.lifetime || adds.length > 0 || (isMobile && ownerBar !== null) || floorPick !== null;
   const toolbar = (
     <>
+      {floorPick ? (
+        <SelectButton label="Page" value={built.page.id} widthClass="w-48" options={floorPick} onChange={setPage} />
+      ) : null}
       {parts.lifetime ? <PackageLifetimeBar pkg={pkg} /> : null}
       {adds.map((b) => {
         const o = detail.objects.find((x) => x.name === b.object);
