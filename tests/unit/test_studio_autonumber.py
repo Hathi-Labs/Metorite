@@ -259,4 +259,6 @@ def test_the_ts_twin_knows_the_type() -> None:
     assert f"[0-9]{{1,{len(str(sf.MAX_AUTONUMBER))}}}" in check
     assert '"autonumber"' in (_TS / "blocks.ts").read_text(encoding="utf-8")
     assert 'f.type !== "autonumber"' in (_TS / "packagePreview.ts").read_text(encoding="utf-8")
-    assert 'f.type === "autonumber"' in (_TS / "inlineEdit.ts").read_text(encoding="utf-8")
+    inline = (_TS / "inlineEdit.ts").read_text(encoding="utf-8")
+    types = inline[inline.index("export const INLINE_TYPES"):].split("]);", 1)[0]
+    assert "autonumber" not in types  # a cell never edits the type
