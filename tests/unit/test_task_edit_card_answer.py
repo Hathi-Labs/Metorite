@@ -672,6 +672,86 @@ def test_an_edited_status_is_resolved_again_after_the_card(
     assert reads_after.count(f"/projects/nodes/{PID}/statuses") == 2, reads_after
 
 
+#: The model's call with two names that only the ``decide`` engine resolves:
+#: "Pri" (no exact person) and "todo" (no exact lane).
+FUZZY_CALL: dict[str, Any] = {**CALL, "assignees": "Pri", "status": "todo"}
+
+
+def _decide(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, str], int]:
+    """``choices.resolve_name`` that picks the close row on its first call for a
+    name, and ANOTHER row on each later call. Gives the count of each call."""
+    import skill_projects.choices as choices
+
+    seen: dict[tuple[str, str], int] = {}
+
+    async def _pick(rows: list[dict[str, Any]], wanted: str, what: str, **_kw: Any) -> Any:
+        n = seen[(what, wanted)] = seen.get((what, wanted), 0) + 1
+        if what == "person":
+            return PEOPLE[0] if n == 1 else PEOPLE[1]  # Priya, then Ravi
+        if what == "status":
+            return STATUSES[0] if n == 1 else STATUSES[1]  # To do, then Doing
+        return None
+
+    monkeypatch.setattr(choices, "resolve_name", _pick)
+    return seen
+
+
+def test_an_untouched_fuzzy_name_is_not_resolved_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review P1a. The member edits the due date only. The person and the lane
+    stay the ones the card showed: no second ``decide`` call can change them,
+    and none can refuse after the Approve."""
+    _flag(monkeypatch, "*")
+    seen = _decide(monkeypatch)
+    card, out, calls = _drive(monkeypatch, _answer(due="2026-12-24"), call=FUZZY_CALL)
+    assert card is not None
+    shown = card["value"]["edit"]["values"]
+    # The form holds the RESOLVED values, never the model's raw words.
+    assert shown["assignees"] == ["priya@acme.test"] and shown["status"] == "To do"
+    [body] = _posted(calls)
+    assert body["due_at"] == "2026-12-24"
+    assert body["status_id"] == TODO
+    assert _assigned(calls) == [["priya@acme.test"]]
+    assert seen == {("status", "todo"): 1, ("person", "Pri"): 1}
+    assert out.startswith("Created:"), out
+
+
+def test_a_plain_approve_writes_the_resolved_person_of_a_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The verifier's gap: ``who`` is the resolved address of a name-form
+    assignee, on the form and on the write."""
+    _flag(monkeypatch, "*")
+    seen = _decide(monkeypatch)
+    card, _o, calls = _drive(monkeypatch, "APPROVE", call=FUZZY_CALL)
+    assert card is not None
+    assert card["value"]["edit"]["values"]["assignees"] == ["priya@acme.test"]
+    assert _assigned(calls) == [["priya@acme.test"]]
+    assert seen == {("status", "todo"): 1, ("person", "Pri"): 1}
+
+
+def test_an_edited_name_resolves_by_exact_match_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An edited bare name resolves only when one person has exactly that
+    name. A close name is refused in the tool's own words, with no ``decide``
+    call and no question after the Approve, and nothing is written."""
+    _flag(monkeypatch, "*")
+    seen = _decide(monkeypatch)
+    _c, out, calls = _drive(monkeypatch, _answer(assignees=["Ravi"]))
+    assert _assigned(calls) == [["ravi@acme.test"]], out
+    _c, out, calls = _drive(monkeypatch, _answer(assignees=["Rav"]))
+    assert "No person is called exactly «Rav»" in out, out
+    assert writes(calls) == []
+    assert ("person", "Rav") not in seen and ("person", "Ravi") not in seen
+
+
+def test_an_edited_status_resolves_by_exact_match_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _flag(monkeypatch, "*")
+    seen = _decide(monkeypatch)
+    _c, out, calls = _drive(monkeypatch, _answer(status="Doin"))
+    assert "No status is called «Doin»" in out, out
+    assert writes(calls) == []
+    assert ("status", "Doin") not in seen
+
+
 def test_an_unknown_status_is_refused_and_nothing_is_written(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -470,15 +470,17 @@ def _refuse_agent_assignee(assignee: str) -> str:
     return assignee
 
 
-async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
+async def _resolve_assignee(value: str, *, dispatch: bool = True, exact: bool = False) -> str:
     """An email or ``agent:<name>`` passes through. A person's name resolves
     through the picker, and only when exactly one person matches.
 
     With *dispatch* (an assignee to ADD), an agent is refused in a run that
     may not send (:func:`_refuse_agent_assignee`, H-236). A removal passes
     ``dispatch=False``, because taking an agent off a task starts nothing.
+    With *exact* (a name that the member edited on a card, EAC-1), a name
+    that no person has exactly is refused, and no ``decide`` call is made.
     """
-    resolved = await _resolve_assignee_name(value)
+    resolved = await _resolve_assignee_name(value, exact=exact)
     if not dispatch:
         return resolved
     # RX-1: a top-level run in a marked chat binds no `no_egress`.
@@ -487,7 +489,7 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
     return _refuse_agent_assignee(resolved)
 
 
-async def _resolve_assignee_name(value: str) -> str:
+async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise GatewayRefusal("An assignee needs a value.")
@@ -500,20 +502,22 @@ async def _resolve_assignee_name(value: str) -> str:
     # return one person whose title is "Ops Lead". Only an exact name match
     # resolves on its own. Anything looser is a list for the member to pick
     # from, never a silent pick.
-    exact = [p for p in people + agents if str(p.get("name") or "").strip().lower() == raw.lower()]
-    if len(exact) == 1:
-        return str(exact[0].get("assignee")).lower()
-    found = exact or (people + agents)
+    same = [p for p in people + agents if str(p.get("name") or "").strip().lower() == raw.lower()]
+    if len(same) == 1:
+        return str(same[0].get("assignee")).lower()
+    found = same or (people + agents)
     if not found:
         raise GatewayRefusal(f"Nobody matches {data(raw)}. Use people_for to find them.")
     names = ", ".join(f"{data(p.get('name'))} ({data(p.get('assignee'))})" for p in found[:8])
-    if len(exact) > 1:
+    if len(same) > 1:
         raise GatewayRefusal(f"{data(raw)} matches more than one person: {names}. Ask which.")
     # Owner, 2026-10-09: close matches and no exact one. ONE typed question
     # picks the person the name means, by NAME only (no address leaves). An
     # `unsure` or a failure gives the refusal below. The card names the
-    # person and the address before anything is written.
-    picked = await choices.resolve_name(found, raw, "person")
+    # person and the address before anything is written. EAC-1: a name that
+    # the member edited AFTER the card gets no question, because no card
+    # would show the pick.
+    picked = None if exact else await choices.resolve_name(found, raw, "person")
     if picked is not None and str(picked.get("assignee") or "").strip():
         return str(picked.get("assignee")).lower()
     raise GatewayRefusal(
@@ -1128,23 +1132,22 @@ async def create_task(
     chat_files = await _chat_files_for_new_task(files)
     if isinstance(chat_files, str):
         return chat_files
-    # The arguments of the one prepare step. EAC-1: an edited answer runs the
-    # step again AFTER the card, on these with the member's changes.
-    prep: dict[str, Any] = {
-        "description": description,
-        "status": status,
-        "due_at": repeating.due_at(due),
-        "flags": flags,
-        "estimate_mins": estimate_mins,
-        "tags": _split(tags),
-        "start": start,
-        "type_name": type,
-        "fields": fields,
-        "parent_task_id": parent_task_id,
-        "assignees": _split(assignees),
-        "source": source,
-    }
-    new = await _prepare_new_task(pid, name, **prep)
+    new = await _prepare_new_task(
+        pid,
+        name,
+        description=description,
+        status=status,
+        due_at=repeating.due_at(due),
+        flags=flags,
+        estimate_mins=estimate_mins,
+        tags=_split(tags),
+        start=start,
+        type_name=type,
+        fields=fields,
+        parent_task_id=parent_task_id,
+        assignees=_split(assignees),
+        source=source,
+    )
     card = _priority_card(new.payload)
     # The card names the type and each field by NAME (`extra.card`).
     card.pop("type_id", None)
@@ -1192,8 +1195,8 @@ async def create_task(
     )
     if not answer:
         return _not_confirmed()
-    # The member's changes on the card, each checked again AFTER the answer.
-    edit = await _card_edit(pid, name, prep, new, form, answer)
+    # The member's changes on the card, each checked AFTER the answer.
+    edit = await _card_edit(pid, new, form, answer)
     new = edit.new
     task, saved, failed = await _create_new_task(new, repeating)
     status_label = new.status_label
@@ -1444,10 +1447,10 @@ async def _prepare_new_task(
 # ── EAC-1: the card of a new task that the member edits ──────────────────────
 #
 # Spec: ``project-docs/specs/projects_ai_chat.md`` §32. ``acb_skills.task_card``
-# builds the form and parses the answer. These three helpers tie it to
+# builds the form and parses the answer. These helpers tie it to
 # ``create_task``: the form from the values resolved before the card, the
-# values that the member changed, and the arguments of the prepare step that
-# runs again on them. Fences: ``tests/unit/test_task_edit_card_answer.py``,
+# values that the member changed, and the task with only those values
+# resolved again, by exact name. Fences: ``tests/unit/test_task_edit_card_answer.py``,
 # ``tests/unit/test_task_edit_card_r8.py`` (R8).
 
 
@@ -1515,21 +1518,21 @@ class _CardEdit:
 
 
 async def _card_edit(
-    pid: str, name: str, prep: dict[str, Any], new: _NewTask,
-    form: dict[str, Any] | None, answer: Any,
+    pid: str, new: _NewTask, form: dict[str, Any] | None, answer: Any,
 ) -> _CardEdit:
     """The task that the write sends after the card (EAC-1).
 
-    With no change, it is *new*, as the card showed it. With changes, every
-    name and date goes through the one prepare step again, AFTER the answer,
-    so each check of the tool applies: the status by name, each person
-    through ``_resolve_assignee``, the dates. The project stays the card's,
-    and no id of the answer is read. The write runs as the member, under the
-    grants of each route. A refusal raises, and nothing is written."""
+    With no change, it is *new*, as the card showed it. With changes, only
+    the changed keys are resolved again, AFTER the answer
+    (:func:`_edited_task`). Each value that the member did not change stays
+    as the card showed it, so no second ``decide`` call can pick another
+    person or lane. The project stays the card's, and no id of the answer is
+    read. The write runs as the member, under the grants of each route. A
+    refusal raises, and nothing is written."""
     changes = _card_changes(form, answer)
     if not changes:
         return _CardEdit(new, {}, [])
-    edited = await _prepare_new_task(pid, name, **_edited_prep(prep, changes))
+    edited = await _edited_task(pid, new, changes)
     strangers = await _unknown_addresses(edited.who) if "assignees" in changes else []
     return _CardEdit(edited, changes, strangers)
 
@@ -1560,31 +1563,63 @@ def _flag_fields(name: str, value: bool) -> dict[str, Any]:
     return fields
 
 
-def _edited_prep(prep: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
-    """The arguments of :func:`_prepare_new_task` with the member's changes.
+def _put(payload: dict[str, Any], key: str, value: Any) -> None:
+    """Set *key* of *payload* to *value*, or take the key out for no value."""
+    if value:
+        payload[key] = value
+    else:
+        payload.pop(key, None)
 
-    Each changed value replaces the argument that it edits, and each other
-    argument stays as the tool resolved it. The prepare step then checks each
-    value as it checks the tool's own: a status by name, each person through
-    ``_resolve_assignee``, the start date. A due date that is not a date is
-    refused here. ``important`` of None takes the judgement away."""
-    out = dict(prep)
+
+async def _edited_lane(pid: str, new: _NewTask, wanted: str, payload: dict[str, Any]) -> str:
+    """The lane that the member chose on the card, by EXACT name, and its label.
+
+    ``_one_named`` takes each lane whose name is the edited name (case does
+    not count), and it refuses none or two in the tool's own words. No
+    ``decide`` call runs, because no card would show its pick. ``""`` is the
+    default lane, or the parent's lane for a subtask, as at the create."""
+    payload.pop("status_id", None)
+    if not wanted.strip():
+        if new.parent is not None:
+            return await _parent_lane_label(pid, new.parent)
+        return "the default"
+    row = _one_named(await _statuses_of(pid), wanted, "status", "statuses")
+    payload["status_id"] = str(row.get("id"))
+    return str(row.get("name"))
+
+
+async def _edited_task(pid: str, new: _NewTask, changes: dict[str, Any]) -> _NewTask:
+    """*new* with the member's changes, each checked as the tool checks it.
+
+    Only a changed key is resolved again. A date must be a date. A lane and a
+    person resolve by EXACT name only: an edited name that no lane or person
+    has exactly is refused, with no ``decide`` call and no question after the
+    Approve. An address passes, and the receipt warns of a stranger (H-162).
+    Each person goes through ``_resolve_assignee``, so an agent stays refused
+    in a run that may not send. ``important`` of None takes the judgement
+    away. The type, the fields, the tags and the parent stay as resolved."""
+    payload = dict(new.payload)
     if "due" in changes:
-        out["due_at"] = _date_arg(changes["due"], "due")
-    for key, arg in (("start", "start"), ("status", "status"), ("description", "description")):
-        if key in changes:
-            out[arg] = changes[key]
-    if "assignees" in changes:
-        out["assignees"] = list(changes["assignees"])
-    flags = dict(out.get("flags") or {})
+        _put(payload, "due_at", _date_arg(changes["due"], "due"))
+    if "start" in changes:
+        _put(payload, "start_date", _date_arg(changes["start"], "start"))
+    if "description" in changes:
+        _put(payload, "description", str(changes["description"]).strip())
     if "important" in changes:
-        flags.pop("importance", None)
+        payload.pop("importance", None)
         if changes["important"] is not None:
-            flags.update(_flag_fields("important", changes["important"]))
+            payload.update(_flag_fields("important", changes["important"]))
     if "leveraged" in changes:
-        flags.update(_flag_fields("leveraged", changes["leveraged"]))
-    out["flags"] = flags
-    return out
+        payload.update(_flag_fields("leveraged", changes["leveraged"]))
+    label = new.status_label
+    if "status" in changes:
+        label = await _edited_lane(pid, new, str(changes["status"]), payload)
+    who = list(new.who)
+    if "assignees" in changes:
+        who = [await _resolve_assignee(a, exact=True) for a in changes["assignees"]]
+    edited = _NewTask(pid, payload, label, who, new.extra)
+    edited.parent = new.parent
+    return edited
 
 
 async def _create_new_task(
