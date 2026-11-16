@@ -24,8 +24,9 @@ approves the values of the card as the assistant wrote them.
   It resolves a CHANGED lane or person again after the answer, by exact name
   only. Each value that the member did not change stays as the card showed it.
 * :func:`is_task_edit_answer` is the ONE shape test of an edit answer, and it
-  reads no value. ``gateway.chat_recovery.card_resend`` asks it for a late
-  answer (below).
+  reads no value. :func:`is_late_edit_answer` adds the card to that test.
+  ``gateway.chat_recovery.card_resend`` calls :func:`is_late_edit_answer`, and
+  never the shape test alone, for a late answer (below).
 * :func:`task_edit_card_on` is the ONE reader of ``PROJECT_EDIT_CARD_ORGS``.
   It reads the settings on each call, so a flag reload (SIGHUP,
   ``docs/flag_reload.md``) applies a change. The org is the bound tenant of
