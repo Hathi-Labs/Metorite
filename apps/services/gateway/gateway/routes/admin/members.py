@@ -930,6 +930,16 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     _PersonRows("chat_topics", "chat_topic",
                 "scope = 'member' AND lower(owner_email) = :email"
                 f" AND organization_id = {_BOUND_ORG}"),
+    # Task 3435 (chat_run_continuity.md §4.12.4 item 1): the chat cards that
+    # asked the member, in THIS organization. A row holds the card, the
+    # member's answer and, with RESUME, the arguments of a call. Only the
+    # member who was asked may answer a card, so a row waits on nothing after
+    # the member goes. The table has no key to `chat_session`, so the delete
+    # of the private chats above takes none of these rows. The clause names
+    # the bound org beside RLS, as `connection_asks` does. No table hangs off
+    # `chat_pending_ask`.
+    _PersonRows("chat_pending_asks", "chat_pending_ask",
+                f"lower(actor_email) = :email AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )

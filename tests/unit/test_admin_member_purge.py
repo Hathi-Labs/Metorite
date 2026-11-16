@@ -547,6 +547,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "connection_asks": 0,
         # WS-CO CO-2a: the fake holds no private topic of the member.
         "chat_topics": 0,
+        # Task 3435: the fake holds no chat card that asked the member.
+        "chat_pending_asks": 0,
         "member_record": 1,
     }
     assert out.kept == {
@@ -993,6 +995,31 @@ def test_the_private_topics_of_this_org_go_and_the_company_topics_stay() -> None
     assert keys.index("chat_topics") < keys.index("member_record")
     assert "chat_topic" not in {r.table for r in _PURGE_KEEPS}
     assert cascade_closure("chat_topic") == set()
+
+
+def test_the_chat_cards_that_asked_the_member_in_this_org_go_and_no_other() -> None:
+    """Task 3435 (``chat_run_continuity.md`` §4.12.4 item 1): the purge
+    deletes the ``chat_pending_ask`` rows that asked the member. A row holds
+    the card, the answer and the arguments of a stored call, and only the
+    member who was asked may answer it. The clause names the member and the
+    bound org, so the rows of the same address in another org stay. The
+    table has no key to ``chat_session``, so the delete of the private chats
+    takes none of them, and no table hangs off it.
+
+    ⚠️ Mutation-checked: dropping the org term fails here, and
+    ``test_pending_ask_prune_r8.py`` fails on the real database."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "chat_pending_ask"]
+    assert rows.key == "chat_pending_asks"
+    assert rows.where == f"lower(actor_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("chat_pending_asks") < keys.index("member_record")
+    assert "chat_pending_ask" not in {r.table for r in _PURGE_KEEPS}
+    assert cascade_closure("chat_pending_ask") == set()
 
 
 def test_the_chat_rows_of_this_org_go_before_her_private_chats() -> None:
