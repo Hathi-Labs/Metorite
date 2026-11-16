@@ -41,6 +41,18 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
+CO-11). For each listed org, a member may pin a chat, and the chat list shows a
+Pinned group. `*` lists every org, and the default is empty. Empty means the
+list sends no pin key, and PUT and DELETE `/chat/sessions/{id}/pin` answer
+404.
+
+Its one reader is `gateway.chat_session_member.pin_allowed`. The chat list,
+the pin routes and `GET /auth/me/shell` ask it on each call. The shell read
+gives the answer to the client as `chat_pin`. So a tab shows a change at its
+next shell read. A reload applies a change. The flip stays OWNER-GATE
+(`enforcement-flip`), after the owner preview.
+
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
 runs past 6 s sends the member one line. A WhatsApp run of a listed org
@@ -147,12 +159,36 @@ start. So set the same value in the env file of both units, reload
 `acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
+member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of
+the member, and it adds the affinity of each kind to the score. A needs card
+goes to Later at worst, and the bell does not change. `*` lists every org, and
+the default is empty. Empty gives the answer of before, byte for byte.
+
+The reach loop, the briefs and the chat brief read the same learned feed. So
+a kind that the member mutes leaves them too. A muted needs card in Later is
+no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect on
+reach.
+
+Its one reader is `gateway.routes.shell.state.learn_allowed`, and each feed
+read asks it. The read cache keys on the flag, so a flip misses at once. A
+reload applies a change. The flip is `enforcement-flip`, and it waits for the
+owner preview (D218).
+
 `PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
 also selects the orgs where the daily expiry tick may delete installs
 (PKG-10b). A reload that widens it to `*` widens the delete to every org at
 the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
+
+`PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
+edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
+`create_task` carries a form of its values, and the write takes the values
+that the member approved. `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
+gate ask it at each card, so a reload applies to the next card. A flip stays
+OWNER-GATE (`enforcement-flip`, EAC-7).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves

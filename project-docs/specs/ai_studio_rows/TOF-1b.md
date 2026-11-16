@@ -12,6 +12,8 @@ Gate: AGENT-SAFE. Task 3411, epic 3393 (WS-TOF, D224 rung 1). Demo task 3414. St
 
 **Decision 2, the flag.** `_tool_injection._chat_tools_open` reads `STUDIO_CHAT_TOOLS_ORGS` through `flags.chat_tools_allowed`, for the org of the run. It fails closed. `_turn_with_skills` reads it once, and only when the turn has a skill to build. `choose` and the rest of `tool_packs` read no flag.
 
+TOF-1c: when no name matches, the description pass reads the flag first, and the build uses that answer. So a turn still reads the flag once at most (`ai_studio_rows/TOF-1c.md`).
+
 `skill_packs.build` takes the answer as `chat_tools`, and the default is False. With False, a `tool:` action gives the reason `chat_tools_off`, so the skill fails to load and brings no pack.
 
 **Decision 3, the order.** The packs of a skill come last. They join after the cap (step 4) and the step-aside (step 5) of `choose`, in the room that is left. They never move a sticky pack or a new pack out. The skills go in the order of their slug, as in F3. A skill gets all of its packs or none.

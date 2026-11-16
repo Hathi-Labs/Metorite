@@ -6,7 +6,17 @@ import { describe, expect, it } from "vitest";
 
 import type { ChatSession } from "@/lib/sessions";
 
-import { dateGroups, matchesQuery, mergeFileEntry, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
+import {
+  PINNED_GROUP,
+  chatGroups,
+  dateGroups,
+  isPinned,
+  matchesQuery,
+  mergeFileEntry,
+  relativeAge,
+  sessionTitle,
+  splitSessions,
+} from "./chatHistory";
 
 const NOW = Date.parse("2026-10-12T12:00:00Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -119,3 +129,46 @@ describe("the chat list by day (CO-0, owner 2026-11-02)", () => {
   });
 });
 
+describe("the Pinned group (CO-11, chat_organization.md §18)", () => {
+  const H = 60 * 60 * 1000;
+  const noon = new Date(2026, 10, 16, 12, 0, 0).getTime();
+  const iso = (ms: number) => new Date(noon - ms).toISOString();
+  const row = (id: string, over: Partial<ChatSession> = {}) =>
+    chat(id, { updatedAt: iso(1 * H), ...over });
+
+  it("puts the pinned chats first, newest pin first, and each once", () => {
+    const groups = chatGroups(
+      [
+        row("today"),
+        row("old-pin", { updatedAt: iso(40 * 24 * H), pinnedAt: iso(5 * H) }),
+        row("new-pin", { updatedAt: iso(3 * 24 * H), pinnedAt: iso(1 * H) }),
+        row("yesterday", { updatedAt: iso(20 * H) }),
+      ],
+      noon,
+      true,
+    );
+    expect(groups.map((g) => [g.label, g.items.map((s) => s.id)])).toEqual([
+      [PINNED_GROUP, ["new-pin", "old-pin"]],
+      ["Today", ["today"]],
+      ["Yesterday", ["yesterday"]],
+    ]);
+  });
+
+  it("an archived chat is not pinned, so it never shows in Pinned", () => {
+    const put = row("put-away", { pinnedAt: iso(1 * H), archivedAt: iso(0) });
+    expect(isPinned(put)).toBe(false);
+    expect(isPinned(row("kept", { pinnedAt: iso(1 * H) }))).toBe(true);
+    const groups = chatGroups([put, row("today")], noon, true);
+    expect(groups.map((g) => g.label)).not.toContain(PINNED_GROUP);
+  });
+
+  it("with the switch off there is no Pinned group, and the day groups are as before", () => {
+    const sessions = [row("a", { pinnedAt: iso(1 * H) }), row("b", { updatedAt: iso(20 * H) })];
+    expect(chatGroups(sessions, noon, false)).toEqual(dateGroups(sessions, noon));
+    expect(chatGroups(sessions, noon, false).map((g) => g.label)).not.toContain(PINNED_GROUP);
+  });
+
+  it("no pinned chat, no Pinned group", () => {
+    expect(chatGroups([row("a"), row("b")], noon, true).map((g) => g.label)).toEqual(["Today"]);
+  });
+});
