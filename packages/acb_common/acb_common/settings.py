@@ -1480,6 +1480,20 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_email_new_mail_card.py.
     email_edit_card_orgs: str = ""
 
+    # ── The card of a new task that the member edits (projects_ai_chat.md §32) ──
+    #
+    # `project_edit_card_orgs` lists the organization ids whose chat shows the
+    # card of `create_task` as a form that the member edits before Approve, or
+    # `*` for each one (EAC-1). Empty means off, and the card is the card of
+    # before. The one reader is `acb_skills.task_card.task_edit_card_on`, and
+    # it fails closed. The name ends in `_orgs`, so a SIGHUP applies a change
+    # with no restart.
+    #
+    # A value on a box is an `enforcement-flip` (EAC-7): it changes what a card
+    # writes. Name the flag and the box in the same message.
+    # Fence: tests/unit/test_task_edit_card_answer.py.
+    project_edit_card_orgs: str = ""
+
     # ── Outlook all-mail webhook (WS-17, task 1966) ─────────────────────────
     #
     # `outlook_all_mail_webhook_orgs` lists the organization ids whose Outlook
