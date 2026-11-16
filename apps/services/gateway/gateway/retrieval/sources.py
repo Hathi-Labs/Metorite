@@ -44,6 +44,13 @@ address, a web domain), never text. ``open`` gives the hits of the refs that
 the member can open, and checks the app's gates itself. Each calls a function
 of its app's own module, as ``find`` does, with ids checked as UUIDs first.
 
+**One more ability, ``named``** (WS-FIND FIND-5, ``find_engine.md`` §4.2
+``names`` and §5.2). The CRM, People and Email sources declare it, with the
+kinds of record whose names ``resolve_name`` reads. ``named`` calls the same
+app function as ``find``, and gives each record as a :class:`Named`: its kind,
+id, name as stored and link. Email gives each mail sender once, with the link
+of the newest mail. ``GET /search/names`` tests the name itself.
+
 **Two more options of ``find``** (CX-1, §4.2 and §4.5), each for a source
 that declares it, like ``meaning``. A source with ``dated=True`` takes
 ``after`` and filters in its app's own SQL. A source with ``reviewed=True``
@@ -189,6 +196,29 @@ RelatedReader = Callable[..., Awaitable[list[tuple[str, str, str]]]]
 #: refs that the member can open, and nothing for any other ref.
 OpenReader = Callable[..., Awaitable[list[Hit]]]
 
+
+@dataclass(frozen=True)
+class Named:
+    """One record that an app's own search found for a name (FIND-5).
+
+    *name* is the name as the record holds it, and *href* is the link that
+    code built. *also* is a second stored text that the name test reads too:
+    the full name of a person with a preferred name, or the part of a sender's
+    address before the ``@``. The route never puts *also* in an answer.
+    """
+
+    kind: str
+    id: str
+    name: str
+    href: str
+    also: str = ""
+
+
+#: ``named(user, name, k)`` (FIND-5): at most *k* records that the app's own
+#: search finds for *name*, and True when the app gave a full page, so more
+#: records may match.
+NamedReader = Callable[..., Awaitable[tuple[list[Named], bool]]]
+
 #: The kinds of record of the CRM source, as a ref names them.
 CRM_REF_KINDS: tuple[str, ...] = ("deal", "lead", "contact", "company")
 
@@ -262,6 +292,11 @@ class Source:
     open: OpenReader | None = None
     #: The kinds of ref that :attr:`open` opens: the kinds of hit it gives.
     kinds: tuple[str, ...] = ()
+    #: The kinds of record whose names ``resolve_name`` reads (FIND-5,
+    #: ``find_engine.md`` §4.2 ``names``).
+    names: tuple[str, ...] = ()
+    #: The named ability of FIND-5, or ``None``. :meth:`named_records` calls it.
+    named: NamedReader | None = None
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -279,6 +314,18 @@ class Source:
         if self.near is None or not words or not self.reaches(user):
             return {}
         return await self.near(user, list(words), k)
+
+    async def named_records(
+        self, user: UserContext, name: str, k: int,
+    ) -> tuple[list[Named], bool]:
+        """The records of the kinds of :attr:`names` that the app's own search
+        finds for *name*, as *user*, and True when the app gave a full page
+        (FIND-5). No ability, no feature or a closed switch: no call and no
+        record. The function checks the rest of the app's gates itself."""
+        if self.named is None or not self.names or not name or not self.reaches(user):
+            return [], False
+        found, more = await self.named(user, name, k)
+        return [n for n in found if n.kind in self.names][:k], bool(more)
 
     async def related_refs(self, user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
         """The triples of the refs of :attr:`takes` in *refs*, as *user*
@@ -867,6 +914,98 @@ async def _crm_near(user: UserContext, words: list[str], k: int) -> dict[str, li
     return await records.near_names(user, words, k)
 
 
+# ── named (FIND-5, ``find_engine.md`` §4.2 ``names`` and §5.2) ──────────────
+# Each calls the same app function as its ``find``, as the member. The route
+# of ``resolve_name`` tests each name itself, so a record that the search
+# matched by another field (an address, a company, a linked contact) is no row.
+
+#: The kinds of CRM record that have a name of their own. A deal has a title.
+CRM_NAME_KINDS: tuple[str, ...] = ("lead", "contact", "company")
+
+#: An address that a sender row may carry: one ``@``, a dot after it, and no
+#: space, quote or angle bracket. A sender writes the header, so any other
+#: value gives no row.
+_SENDER_ADDRESS = re.compile(r"[^\s@<>«»\"'`]{1,64}@[^\s@<>«»\"'`]{1,189}\.[^\s@<>«»\"'`.]{1,63}")
+_ADDRESS_MAX = 254
+
+
+async def _crm_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
+    """The CRM records of *name*, through :func:`_crm`: the kill switch, the
+    access rule, then ``records.search_records``. Its 403 reaches the caller.
+    ``search_records`` cuts its four kinds to *k* together, so a full page may
+    hide a record."""
+    hits = await _crm(user, name, k)
+    return ([Named(h.kind, h.id, h.title, h.href) for h in hits if h.kind in CRM_NAME_KINDS],
+            len(hits) >= k)
+
+
+async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
+    """The people of *name*, through the directory's own read. The row names
+    the person as the directory does, and the full name is :attr:`Named.also`."""
+    from gateway.routes.people.directory import list_directory
+
+    answer = await list_directory(
+        user=user, q=name, department=None, team=None, status=None, skill=None,
+        has_capacity=False,
+    )
+    rows = list(answer.rows or [])
+    out = [
+        Named("person", str(p["id"]), _title(p.get("preferred_name") or p.get("name")),
+              f"/people/{quote(str(p['id']))}", also=str(p.get("name") or ""))
+        for p in rows[:k]
+    ]
+    return out, len(rows) > k
+
+
+def sender_address(value: Any) -> str:
+    """*value* as the address of a sender row, in lower case, or ``""`` when
+    it is no plain address (FIND-5)."""
+    address = str(value or "").strip().lower()
+    if len(address) > _ADDRESS_MAX or not _SENDER_ADDRESS.fullmatch(address):
+        return ""
+    return address
+
+
+async def _email_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
+    """The senders whose name or address holds *name*, in the mailboxes that
+    the member can read, through the Email app's own search: ``from_addr``,
+    newest first, as the near step of HRD-18b asks it. One row for each
+    sender, with the link of the newest mail. A mail of a folder of
+    ``core.NOT_INBOUND_FOLDERS`` (sent, drafts, outbox) gives no row: the
+    member wrote it, from any of the member's mailboxes. The member's own
+    address gives no row either."""
+    from gateway.routes.email.core import NOT_INBOUND_FOLDERS
+    from gateway.routes.email.transport.search import search_messages
+
+    # ⚠️ Every parameter, by name, as in `_email`: the route declares them with
+    # `Query(...)` defaults.
+    answer = await search_messages(
+        q="", account_id=None, folder="all", label=None, labels=None,
+        uncategorized=False, from_addr=name, to_addr=None, received_after=None,
+        received_before=None, is_read=None, is_starred=None, has_attachments=None,
+        sender_category=None, importance=None, hybrid=False, light=True, page=1,
+        page_size=k, with_total=False, user=user,
+    )
+    mails = list(answer.get("emails") or [])[:k]
+    own = str(user.email or "").strip().lower()
+    out: list[Named] = []
+    seen: set[str] = set()
+    for mail in mails:
+        row = _as_dict(mail)
+        if str(row.get("folder") or "").strip().lower() in NOT_INBOUND_FOLDERS:
+            continue
+        sender = row.get("from_address") or {}
+        address = sender_address(sender.get("email"))
+        if not address or address == own or address in seen:
+            continue
+        seen.add(address)
+        who = str(sender.get("name") or "").strip()
+        out.append(Named("sender", address, who or address,
+                         f"/email?email={quote(str(row['id']))}",
+                         also=address.partition("@")[0]))
+    return out, len(mails) >= k
+
+
 # ── related and open (FIND-3, ``find_engine.md`` §4.3 and §6) ───────────────
 # Each calls its app's own function, which reads ids and addresses as the
 # member, in the bound tenant. Each ``open`` checks the app's gates itself
@@ -965,13 +1104,14 @@ REGISTRY: dict[str, Source] = {
         Source("tasks", "projects", "Tasks", _tasks),
         Source("email", "email", "Email", _email, dated=True, vectors=True,
                near=_email_near, senders=True, related=_email_related,
-               takes=("address", "domain"), open=_email_opened, kinds=("email",)),
+               takes=("address", "domain"), open=_email_opened, kinds=("email",),
+               names=("sender",), named=_email_named),
         Source("people", "people", "People", _people, near=_people_near,
                related=_people_related, takes=("person",), open=_people_opened,
-               kinds=("person",)),
+               kinds=("person",), names=("person",), named=_people_named),
         Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near,
                related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
-               kinds=CRM_REF_KINDS),
+               kinds=CRM_REF_KINDS, names=CRM_NAME_KINDS, named=_crm_named),
         Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,

@@ -18,6 +18,11 @@ person or company. The CRM, People and Email sources have `related` and
 `open`. The records go to the answer key `related`: 3 for each hit, 15 at
 most, inside one second. A record that the member cannot open leaves no trace.
 
+**FIND-5 is built** (task 3242, 2026-11-16). Behind `FIND_ORGS`, the core tool
+`resolve_name` reads the new route `GET /search/names`. It gives each person,
+contact, lead, company and mail sender that holds one name, exact or near.
+§5.2 holds the shape as built.
+
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
 extends §20 and replaces nothing in it. It adds no second read path and no
@@ -419,6 +424,48 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
 `GET /search/names` asks each source that can `near`, with the lookups of rung
 3. So a near name is the same in the ladder and in the tool.
 
+**As built (FIND-5, task 3242, 2026-11-16).**
+
+- **The route.** `gateway/retrieval/names.py` holds it. An org off
+  `FIND_ORGS` gets 404 before any check of the input. The route takes `name`
+  and `kinds` only, and the org and the member come from the session.
+- **The name.** One name of 2 to 60 characters and at most 3 words. `kinds` is
+  a comma list from the closed list person, contact, lead, company and sender.
+  An unknown kind gets a 422 with fixed text.
+- **The sources.** The CRM gives contact, lead and company. People gives
+  person. Email gives sender. No source gives a member yet, so `resolve_person`
+  keeps the members until FIND-6.
+- **The reads.** Each source has the ability `named` (`Source.named_records`).
+  It calls the same app function as `find`. Each source runs `named` with the
+  name and `Source.near_names` at once. Then it runs `named` once more, with
+  each word replaced by its best near spelling.
+- **The name test is code.** A record is `exact` when its stored name holds
+  each word, and `near` when it holds each word of the near spelling. A
+  record that matched by another field gives no row.
+- **A sender row.** Its id is the address, from a mailbox that the member can
+  read. Its link opens the newest mail of the sender. The name test reads the
+  name and the part of the address before the `@`, not the domain. The
+  member's own sent mail gives no row.
+- **The time.** One deadline of 1 s for every read, and each read takes a
+  slot of `FIND_SESSIONS`.
+- **A failed read.** A failed name read gives no row, and `skipped` names the
+  app with `timed_out`, `failed` or `refused`. `refused` is a 401 or a 403 of
+  the app only. A failed near read keeps the exact rows, and `near_skipped`
+  names the app.
+- **The verdict.** `one` is one exact record, and every app answered in
+  full. `partial` is one exact record, but an app gave no answer or a full
+  page. The other verdicts are `several`, `near` and `none`.
+- **The caps.** At most 5 rows of each kind and 15 in all, the exact rows
+  first. `cut` says when a cap left a row out.
+- **The tool.** `resolve_name(name, kinds)` in `company_search_tools.py`
+  answers with the header of `search_company`. Two values come from data: a
+  stored name in guillemets, and a sender address that passed the address
+  check. Every other word comes from a closed list. The tool ends with the
+  fixed line "One exact match: use it. Several, or near only: ask the member."
+- **The flag.** The orchestrator holds the tool only for an org of
+  `FIND_ORGS`, with `COMPANY_SEARCH_ENABLED` on. So the tool list of each
+  other org does not change.
+
 ### 5.3 How the app search tools wrap the engine
 
 | Tool (where) | What stays | What changes | Slice |
@@ -546,7 +593,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
 | **HRD-21** | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a `no_egress` session and the current chat never show. The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
-| **FIND-5** | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
+| **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
 | **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |

@@ -108,6 +108,13 @@ caller that sends `near_sender`. Only `query_inbox` sends it. When
 `from_email` finds no mail, the tool tries the near spelling of the sender and
 names it. That part needs no `CONTEXT_RECENCY`.
 
+The flag also opens the chat tool `resolve_name` and its route
+`GET /search/names` (FIND-5, `find_engine.md` §5.2). The route gives each
+person, contact, lead, company and mail sender that holds one name. An org
+off the list gets 404. The orchestrator gives the tool only to an org on the
+list, so the tool list of each other org does not change. That part needs no
+`CONTEXT_RECENCY`. The next chat turn after a reload reads the change.
+
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
 `enforcement-flip` grant, after the FIND-1 eval.

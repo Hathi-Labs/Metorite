@@ -23,6 +23,11 @@ Against a REAL Postgres, as the non-privileged role of the phase-4 rehearsal
   ``neuropeek``. Flag off: nothing changes.
 * **The ladder.** "Sharath 3D printer" finds the deal of «Sharat
   Satyanarayana» and his mail in one call, and "nuropeak" finds both.
+* **resolve_name** (FIND-5, ``GET /search/names``). "Sharat" gives the lead,
+  the contact and the mail sender, each with its link, exact. "Sharath" gives
+  them near, with the spelling. A sender of B's mailbox, the member's own sent
+  mail and org B never show. A member whom the CRM refuses gets no CRM row.
+  People names need ``feature:people``. ``one`` means one exact record.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -134,7 +139,8 @@ async def world(ns, app_engine, monkeypatch):  # noqa: F811
                 "INSERT INTO people (name, department, source, organization_id) "
                 "VALUES (:n, 'Ops', :s, CAST(:o AS uuid))"),
                 {"n": name, "s": f"near-{TAG}", "o": org})
-    yield {"p": p, "deal": deal, "mail_a": mail_a, "mail_b": mail_b, "box_a": box_a}
+    yield {"p": p, "deal": deal, "mail_a": mail_a, "mail_b": mail_b, "box_a": box_a,
+           "contact": sharat}
     with p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM email_accounts WHERE user_id IN (:a, :b, :c)"),
                   {"a": A, "b": B, "c": C})
@@ -485,3 +491,202 @@ async def test_flag_off_the_ladder_tries_no_near_spelling(world, flags, roomy) -
     flags("")
     answer = await _ask(p, _member(A, p.org_a, *ALL), "nuropeak")
     assert "near" not in answer and answer["hits"] == []
+
+
+# ── resolve_name: GET /search/names (FIND-5, task 3242) ─────────────────────
+
+@pytest.fixture
+async def lead(world) -> str:
+    """A lead «Sharat Satyanarayana» of org A. The ladder tests above assert
+    on their hit sets, so the world itself holds no lead."""
+    p = world["p"]
+    return await _make(p, p.org_a, "/crm/leads", {"lead_name": "Sharat Satyanarayana"})
+
+
+@pytest.fixture
+def roomy_names(monkeypatch):
+    """A cold scratch database is slower than the route's one deadline."""
+    from gateway.retrieval import names
+
+    monkeypatch.setattr(names, "NAMES_BUDGET_S", 60.0)
+
+
+async def _names(p: Any, user: UserContext, name: str, **params: str) -> tuple[int, Any]:
+    """``GET /search/names`` through FastAPI, as a request runs it: the tenant
+    comes from the user."""
+    import httpx
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+    from gateway.retrieval import names
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    async def _caller() -> UserContext:
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(names.router)
+    app.dependency_overrides[get_current_user] = _caller
+    scope = clear_tenant()
+    try:
+        async with (
+            tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                              base_url="http://names.test") as client,
+        ):
+            res = await client.get("/search/names", params={"name": name, **params})
+    finally:
+        release_tenant(scope)
+    return res.status_code, res.json()
+
+
+async def _resolve(p: Any, user: UserContext, name: str, **params: str) -> dict[str, Any]:
+    status, body = await _names(p, user, name, **params)
+    assert status == 200, body
+    return body
+
+
+def _rows(answer: dict[str, Any]) -> set[tuple[str, str, str, str]]:
+    return {(r["app"], r["kind"], r["id"], r["match"]) for r in answer["rows"]}
+
+
+def _person(p: Any, org: str, name: str) -> str:
+    with p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "SELECT id FROM people WHERE name = :n AND organization_id = CAST(:o AS uuid)"),
+            {"n": name, "o": org}).scalar_one())
+
+
+async def test_sharat_gives_the_lead_the_contact_and_the_sender(
+        world, lead, flags, roomy_names) -> None:
+    from gateway.retrieval.sources import crm_href
+
+    p = world["p"]
+    flags("*")
+    answer = await _resolve(p, _member(A, p.org_a, *ALL), "Sharat")
+    assert answer["skipped"] == [] and answer["near_skipped"] == []
+    assert _rows(answer) == {
+        ("crm", "lead", lead, "exact"), ("crm", "contact", world["contact"], "exact"),
+        ("email", "sender", NEUROPEEK, "exact")}
+    links = {r["id"]: r["href"] for r in answer["rows"]}
+    assert links[lead] == crm_href("lead", lead)
+    assert links[world["contact"]] == crm_href("contact", world["contact"])
+    assert links[NEUROPEEK] == f"/email?email={world['mail_a']}"
+    assert {r["name"] for r in answer["rows"]} == {"Sharat Satyanarayana"}
+    # Three records hold the name: the member is asked which.
+    assert answer["verdict"] == "several"
+    # The deal matched "Sharat" through its contact. It has no name of its own.
+    assert world["deal"] not in json.dumps(answer)
+
+
+async def test_sharath_gives_near_rows_that_say_so(world, lead, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    answer = await _resolve(p, _member(A, p.org_a, *ALL), "Sharath")
+    assert _rows(answer) == {
+        ("crm", "lead", lead, "near"), ("crm", "contact", world["contact"], "near"),
+        ("email", "sender", NEUROPEEK, "near")}
+    assert {r["as"] for r in answer["rows"]} == {"Sharat"}
+    assert answer["verdict"] == "near"
+
+
+async def test_a_sender_of_member_b_never_shows_for_member_a(world, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    for asked in ("Secretname", "Sicretname"):
+        mine = await _resolve(p, _member(A, p.org_a, *ALL), asked)
+        assert mine["rows"] == [] and mine["verdict"] == "none", asked
+        assert "secret@" not in json.dumps(mine) and world["mail_b"] not in json.dumps(mine)
+    # Non-vacuity: B, who owns the mailbox, gets the sender.
+    own = await _resolve(p, _member(B, p.org_a, *ALL), "Secretname")
+    assert _rows(own) == {("email", "sender", f"secret@hidden-{TAG}.test", "exact")}
+    near = await _resolve(p, _member(B, p.org_a, *ALL), "Sicretname")
+    assert _rows(near) == {("email", "sender", f"secret@hidden-{TAG}.test", "near")}
+
+
+async def test_the_members_own_sent_mail_gives_no_sender(world, flags, roomy_names) -> None:
+    """A sent mail comes from a mailbox of the member. Its address is the
+    mailbox's own, not the login, and it still gives no sender row."""
+    from tests.unit.test_email_keep_separate import _address
+
+    p = world["p"]
+    box = _address(p.admin_engine, world["box_a"])
+    sent = _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name="Nandita Owner",
+                 address=box, subject="My quote", body="sent by me")
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE email_messages SET folder = 'sent' WHERE id = CAST(:i AS uuid)"),
+                  {"i": sent})
+    _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name="Nandita Client",
+          address=f"nandita@client-{TAG}.test", subject="Your quote", body="thanks")
+    flags("*")
+    answer = await _resolve(p, _member(A, p.org_a, *ALL), "Nandita")
+    assert _rows(answer) == {("email", "sender", f"nandita@client-{TAG}.test", "exact")}
+    assert box not in json.dumps(answer) and sent not in json.dumps(answer)
+
+
+async def test_org_b_names_never_show_in_org_a(world, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    for asked in ("Shobhana", "Rivalname", "Bhaskar"):
+        mine = await _resolve(p, _member(A, p.org_a, *ALL), asked)
+        assert mine["rows"] == [], asked
+    theirs = await _resolve(p, _member(C, p.org_b, *ALL), "Shobhana")
+    assert {(r["app"], r["kind"], r["match"]) for r in theirs["rows"]} == {
+        ("crm", "contact", "exact")}
+    rival = await _resolve(p, _member(C, p.org_b, *ALL), "Rivalname")
+    assert _rows(rival) == {("email", "sender", f"rival@orgb-{TAG}.test", "exact")}
+    bhaskar = await _resolve(p, _member(C, p.org_b, *ALL), "Bhaskar")
+    assert _rows(bhaskar) == {("people", "person", _person(p, p.org_b, "Bhaskar Rival"), "exact")}
+
+
+async def test_a_member_the_crm_refuses_gets_no_crm_row_and_no_trace(
+        world, lead, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    answer = await _resolve(p, _member(B, p.org_a, "feature:crm", "feature:email"), "Sharat")
+    assert answer["rows"] == [] and answer["verdict"] == "none"
+    assert answer["skipped"] == [{"app": "crm", "reason": "refused"}]
+    said = json.dumps(answer)
+    for ident in (lead, world["contact"], world["deal"]):
+        assert ident not in said
+    assert "Satyanarayana" not in said
+
+
+async def test_people_names_need_feature_people(world, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    person = _person(p, p.org_a, "Gitanjali Peoplea")
+    answer = await _resolve(p, _member(A, p.org_a, *ALL), "Gitanjali")
+    assert _rows(answer) == {("people", "person", person, "exact")}
+    assert answer["rows"][0]["href"] == f"/people/{person}"
+    near = await _resolve(p, _member(A, p.org_a, *ALL), "Gitanjaly")
+    assert _rows(near) == {("people", "person", person, "near")}
+    blind = await _resolve(p, _member(A, p.org_a, "feature:email", "feature:crm",
+                                      "admin:access:manage"), "Gitanjali")
+    assert blind["rows"] == [] and "people" not in blind["searched"]
+    assert person not in json.dumps(blind)
+
+
+async def test_the_verdict_is_one_only_for_exactly_one_exact_record(
+        world, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    assert (await _resolve(p, me, "Gitanjali"))["verdict"] == "one"
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (name, department, source, organization_id) "
+            "VALUES ('Gitanjali Second', 'Ops', :s, CAST(:o AS uuid))"),
+            {"s": f"near-{TAG}", "o": p.org_a})
+    assert (await _resolve(p, me, "Gitanjali"))["verdict"] == "several"
+    # A near name alone is never "one".
+    assert (await _resolve(p, me, "Gitanjaly"))["verdict"] == "near"
+
+
+async def test_flag_off_the_name_route_answers_404(world, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("")
+    status, _body = await _names(p, _member(A, p.org_a, *ALL), "Sharat")
+    assert status == 404
