@@ -27,6 +27,8 @@ R7, each with the mutation that turns it red:
   of org A takes each session of its own thread.
 * ``test_r8_two_agents_in_one_thread_are_both_marked_and_both_drop`` - add
   ``AND agent_name = :agent`` back, and agent Y keeps a stale hit.
+* ``test_r8_a_mark_leaves_another_thread_of_the_same_org_alone`` - drop the
+  ``thread_id`` predicate, and thread B's row is marked with thread A's.
 * ``test_r8_a_key_with_no_row_makes_no_row`` - an upsert in place of the
   UPDATE makes a row.
 * ``test_r8_a_second_mark_is_a_no_op`` - drop ``transcript_digest <>
@@ -252,3 +254,33 @@ def test_r8_a_second_mark_is_a_no_op(graph_as_app, store_log) -> None:
     assert _row(graph_as_app, tid) == first
     assert [f["outcome"] for f in store_log.named("native_session.mark_stale")] == [
         "marked", "unchanged"]
+
+
+def test_r8_a_mark_leaves_another_thread_of_the_same_org_alone(
+    graph_as_app, store_log,
+) -> None:
+    """Two threads of ONE org, each with a session of the same agent. The
+    mark of thread A is scoped by thread, so thread B keeps its session."""
+    org = graph_as_app.org_a
+    tid_a, tid_b = _tid(), _tid()
+    for tid in (tid_a, tid_b):
+        _chat(org, tid)
+        _one_turn(org, tid, _LIST, _LISTED)
+    before_b = _row(graph_as_app, tid_b)
+    assert before_b is not None and before_b[0] != store.STALE_DIGEST
+    assert _mark(org, tid_a) == "marked"
+    assert _row(graph_as_app, tid_a)[0] == store.STALE_DIGEST
+    # Digest, updated_at and body of thread B are byte-identical.
+    assert _row(graph_as_app, tid_b) == before_b
+    # Thread B reads its session. Thread A reads the text history.
+    _user_row(org, tid_b, _NEXT)
+    turn_b = _begin(tid_b, _NEXT, org=org)
+    assert turn_b.loaded and turn_b.outcome == "hit"
+    loads = store_log.named("native_session.load")
+    assert loads[-1]["outcome"] == "hit"
+    _agent_row(org, tid_a, _REPLY)
+    _user_row(org, tid_a, _NEXT)
+    turn_a = _begin(tid_a, _NEXT, org=org, browser=_browser())
+    assert turn_a.outcome == "digest_drop" and not turn_a.loaded
+    loads = store_log.named("native_session.load")
+    assert (loads[-1]["outcome"], loads[-1]["reason"]) == ("digest_drop", "resume_stale")
