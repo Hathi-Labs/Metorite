@@ -66,3 +66,26 @@ describe("the session row strip", () => {
     expect(STRIP_CLASS).toMatch(/\$\{hasActions \? "" : "hidden"\}/);
   });
 });
+
+describe("the touch row (task 3566)", () => {
+  // Mutation: drop `pointer-coarse:hidden` from the strip and a sticky hover
+  // shows the icons on a phone again. Fails here.
+  it("hides the hover strip on touch with the shared variant, and keeps its desktop classes", () => {
+    expect(STRIP_CLASS).toMatch(/pointer-coarse:hidden/);
+    expect(STRIP_CLASS).toMatch(/rail-row-actions/);
+    expect(STRIP_CLASS).toMatch(/reveal-on-hover/);
+  });
+  // Mutation: a desktop-visible More button (no `hidden`) fails here.
+  it("draws one More button, shown on touch only, never a new media query", () => {
+    const more = ROW.slice(ROW.indexOf("data-session-more"));
+    expect(/data-session-more=""\s+className="([^"]*)"/.exec(ROW)?.[1]).toMatch(/hidden.*pointer-coarse:flex/);
+    expect(more).toContain('icon="MoreHorizontal"');
+    expect(more).toContain("More actions for ${title}");
+    expect(more).toMatch(/e\.stopPropagation\(\)/);
+    expect(more).toContain("<ContextMenu");
+    expect(SRC).not.toMatch(/@media|matchMedia/);
+  });
+  it("puts the More button after the strip, so the desktop DOM order is unchanged", () => {
+    expect(ROW.indexOf("data-session-more")).toBeGreaterThan(ROW.indexOf('data-session-acts=""'));
+  });
+});
