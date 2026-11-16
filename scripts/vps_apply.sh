@@ -712,6 +712,21 @@ if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
   echo "    Disabled GRAPHITI (Neo4j) — saves ~500MB RAM"
 fi
 
+# 2449 S1 (owner rule 2026-11-08, every AI call goes through the console): Mem0
+# and Graphiti call an embeddings vendor with their own key, and D132 item 4
+# keeps both off. A line with any value but false is written back as false on
+# EVERY release, also when an earlier line of the same key says false (the last
+# line wins in the env file). The guard compares the number of lines of the key
+# with the number of lines that say false. env_edit_in_place keeps the inode of
+# .env and keeps a full copy when the write fails.
+# Fence: tests/unit/test_no_direct_ai_vendor_calls_web.py.
+for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
+  if [ "$(grep -cE "^${_var}=" "$ENV_FILE" 2>/dev/null)" != "$(grep -cxE "${_var}=false" "$ENV_FILE" 2>/dev/null)" ]; then
+    env_edit_in_place "$ENV_FILE" sed "s/^${_var}=.*/${_var}=false/"
+    echo "    = forced $_var=false in .env"
+  fi
+done
+
 echo "==> Ensuring public-URL env vars"
 # This block used to also seed MICROSOFT_TENANT_ID / AUTH_MICROSOFT_ENTRA_ID_TENANT
 # with one company's directory GUID — wrong on every deployment except that one
