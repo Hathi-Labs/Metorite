@@ -33,6 +33,17 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_FOCUS_ORGS` turns on the item in focus of a chat
+(`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
+the email or the Projects task that a tool call read or acted on last. The
+per-turn context then shows its kind, its id and its link, with the rule for
+"it", "this" and "mark it done". `*` lists every org, and the default is
+empty. Empty gives each prompt of before, byte for byte.
+
+Its one reader is `acb_skills.chat_focus.focus_on`. The executor asks it at
+the start of each turn, and each write and each block ask it again. So a
+reload applies to the next turn. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.

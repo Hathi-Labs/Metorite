@@ -101,6 +101,14 @@ def install_memory_mark_store(patcher: Any) -> MemoryMarkClient | None:
         pass
     else:
         patcher.setattr(chat_constraints, "get_tenant_redis", lambda: store)
+    # HRD-11a: the item in focus of a chat lives in the same tenant Redis,
+    # and each orchestrator turn of an org on CHAT_FOCUS_ORGS reads it.
+    try:
+        from acb_skills import chat_focus
+    except ImportError:
+        pass
+    else:
+        patcher.setattr(chat_focus, "get_tenant_redis", lambda: store)
     # WS-67 OA-7c: the sticky packs of a chat live in the same tenant Redis.
     try:
         from acb_skills import tool_packs

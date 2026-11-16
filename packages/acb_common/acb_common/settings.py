@@ -1071,6 +1071,20 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_progress_notice.py.
     chat_progress_notice_orgs: str = ""
 
+    # ── The item in focus of a chat (HRD-11a, chat_failure_modes.md §6) ─────
+    #
+    # CHAT_FOCUS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default, and each turn keeps the bytes of its prompt. On, the chat
+    # keeps the email or the Projects task that a tool call read or acted on
+    # last, for each chat and member, in tenant Redis. The per-turn context of
+    # the orchestrator then shows its kind, its id and its link, after the
+    # OA-4 block, with the rule for "it", "this" and "mark it done". A shared
+    # room, a WhatsApp run and a delegated run read and write nothing. The one
+    # reader is `acb_skills.chat_focus.focus_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_focus_item.py.
+    chat_focus_orgs: str = ""
+
     # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
     #
     # CHAT_RUN_PHASE_ORGS: a comma list of organization ids, or `*`. Empty:
