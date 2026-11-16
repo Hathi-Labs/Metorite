@@ -431,6 +431,20 @@ def test_the_job_queue_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE jobs FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_chat_topic_table_is_tenant_scoped() -> None:
+    """WS-CO CO-2a (``chat_organization.md`` §6 and §10). ``chat_topic`` holds
+    the company topics of an org and the private topics of its members. It
+    must never be exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "chat_topic" in gen.discover_tables()
+    assert "chat_topic" not in gen.EXEMPT
+    assert "chat_topic" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE chat_topic FORCE  ROW LEVEL SECURITY" in policies
+
+
 @pytest.mark.parametrize("table", ["unattended_runs", "unattended_incidents"])
 def test_the_unattended_ledger_tables_are_tenant_scoped(table: str) -> None:
     """WS-BRIEF AUTO-2 (``docs/job_queue.md`` §9). A ledger row and an
