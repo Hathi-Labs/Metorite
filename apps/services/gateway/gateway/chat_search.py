@@ -26,11 +26,14 @@ read the answer of an untrusted agent (the egress mark). Such a chat binds
 ``no_egress`` on each delegation, so it is a ``no_egress`` chat. The read of
 the marks is read-only, and a fault raises, so no chat shows.
 
-**What it reads, and what it prints.** Each word of the query must be in the
-title, or in ONE ``user`` or ``assistant`` row of the chat (the word rule of
-``routes/projects/filters.py``). So a hit holds every word, and a query of
-more distinct words than that rule checks reads nothing. It never reads a
-``system`` row or the tool events. The snippet comes ONLY from a row that the member typed
+**What it reads, and what it prints.** Each content word of the query
+(``find.chat_words``) must be in the title, or in ONE ``user`` or
+``assistant`` row of the chat, as a WHOLE word: the stem rule of
+``find.coverage`` (``find.whole_word_pattern``). So "AI" never matches inside
+"email", and "printers" holds "printer". The end of a cut text is no end of a
+word (:data:`CUT`). So a hit holds every content word, and the route counts it
+so. A query with no content word, or more than ``find.CHAT_MAX_WORDS``, reads
+nothing. It never reads a ``system`` row or the tool events. The snippet comes ONLY from a row that the member typed
 (``member_typed``, the member as author, ``typed_text``, not a card answer),
 so a reply of Mira that restates a mail, a WhatsApp message or a page never
 prints. The statement returns the text of no other row.
@@ -39,8 +42,10 @@ prints. The statement returns the text of no other row.
 chats that pass every rule, the newest :data:`SCAN_ROWS` rows of each, and
 :data:`MATCH_CHARS` characters of each row. The rules run before that cut, so
 the walk can pass more chats, and :data:`ONLY_AGENT_SQL` reads every row of
-each chat that it tests. A LOCAL ``statement_timeout`` of :data:`STATEMENT_MS`
-bounds the whole statement. HRD-21 measured no plan on a large chat history.
+each chat that it tests. Each word arm is a ``LIKE`` of the stem, then a regular
+expression, and no index serves either. So a long chat history can run to the
+limit. A LOCAL ``statement_timeout`` of :data:`STATEMENT_MS` bounds the whole
+statement. HRD-21 measured no plan on a large chat history.
 
 Fences: ``tests/unit/test_chat_source.py``, ``tests/unit/test_chat_source_r8.py``
 (R8).
@@ -84,6 +89,10 @@ CURRENT_MAX = 200
 SNIPPET_LEAD = 60
 #: The longest typed row that may give a snippet (``assistant_profile.TYPED_MAX``).
 TYPED_MAX = 1500
+#: The character that ends a CUT text (review P2-1). It is no word edge
+#: (``find.WORD_EDGES``) and no form holds it, so the cut end of a text is no
+#: end of a word: «print» of a cut «printers» matches nothing.
+CUT = "\u00e9"
 
 #: The bound tenant, named beside RLS, as each store module names it.
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
@@ -130,16 +139,30 @@ class ChatHit:
     snippet: str
 
 
-def _words_clause(column: str, count: int) -> str:
-    """``column ILIKE :w0 AND ...``: each word in one text."""
-    return "(" + " AND ".join(f"{column} ILIKE :w{i}" for i in range(count)) + ")"
+def _words_clause(probe: str, count: int) -> str:
+    """Each word in one text, as a whole word (review P2-1). *probe* is the
+    text in lower case, with :data:`CUT` after a cut. Each arm is a cheap
+    ``LIKE`` of the stem (each form starts with it), then the pattern of
+    ``find.whole_word_pattern``. Both are bound values, so no word of the
+    query is ever part of the statement."""
+    return "(" + " AND ".join(
+        f"({probe} LIKE :s{i} AND {probe} ~ :rx{i})" for i in range(count)) + ")"
+
+
+def _probe(column: str) -> str:
+    """*column* as the words see it: its first :data:`MATCH_CHARS`
+    characters, with :data:`CUT` after them when the text is longer, in
+    lower case. So a word cut in half is no whole word."""
+    return (f"lower(left({column}, :chars) || CASE WHEN char_length({column}) > :chars "
+            f"THEN :cut ELSE '' END)")
 
 
 def search_sql(count: int) -> str:
     """The one statement of the search, for *count* words."""
     return f"""
 WITH mine AS (
-    SELECT s.id, left(COALESCE(s.title, ''), :title_chars) AS title, s.updated_at
+    SELECT s.id, left(COALESCE(s.title, ''), :title_chars) AS title, s.updated_at,
+           {_probe("COALESCE(s.title, '')")} AS title_probe
       FROM chat_session s
      WHERE s.user_id = :uid
        AND s.organization_id = {_BOUND_ORG}
@@ -157,18 +180,19 @@ said AS (
       FROM mine
       CROSS JOIN LATERAL (
             SELECT m.id, m.role, m.member_typed, m.author_kind, m.author_email,
-                   m.timestamp_ms, left(m.content, :chars) AS body
+                   m.timestamp_ms, left(m.content, :chars) AS body,
+                   {_probe("m.content")} AS probe
               FROM chat_message m
              WHERE m.session_id = mine.id AND m.role IN ('user', 'assistant')
              ORDER BY m.timestamp_ms DESC, m.id DESC
              LIMIT :rows) AS r
-     WHERE {_words_clause("r.body", count)}
+     WHERE {_words_clause("r.probe", count)}
      ORDER BY mine.id, ({MEMBER_ROW_SQL}) DESC, r.timestamp_ms DESC, r.id DESC
 )
 SELECT mine.id, mine.title, mine.updated_at, said.said
   FROM mine
   LEFT JOIN said ON said.id = mine.id
- WHERE said.id IS NOT NULL OR {_words_clause("mine.title", count)}
+ WHERE said.id IS NOT NULL OR {_words_clause("mine.title_probe", count)}
  ORDER BY mine.updated_at DESC, mine.id DESC
  LIMIT :pool
 """
@@ -204,32 +228,34 @@ async def search_own_chats(
     chat away. With no current chat, or one longer than :data:`CURRENT_MAX`,
     it reads nothing (fail closed).
 
-    Each hit holds EVERY word of the query, and the route counts it so
-    (``find.stamp_first``). The shared word rule checks at most
-    ``MAX_QUERY_WORDS`` words, so a query of more distinct words reads nothing.
+    Each hit holds EVERY content word of the query as a whole word, by the
+    stem rule of ``find.coverage``, and the route counts it so
+    (``find.stamp_first``). ``find.chat_words`` is the ONE rule of the words:
+    with no content word, or more than ``find.CHAT_MAX_WORDS``, it reads
+    nothing. The route asks the source only when that rule gives a list.
     """
     from acb_skills.egress import marked_sessions
 
-    from gateway.routes.projects.filters import MAX_QUERY_WORDS, like_escape, query_words
+    from gateway.retrieval.find import chat_words, whole_word_pattern, word_stem
 
     org = user.organization_id
     member = (user.email or "").strip()
     here = (current or "").strip()
     if not org or not member or not here or len(here) > CURRENT_MAX or k < 1:
         return []
-    term = " ".join(q.split())
-    if len({token.lower() for token in term.split()}) > MAX_QUERY_WORDS:
-        return []
-    words = query_words(term)
-    if not words:
+    words = chat_words(q)
+    if words is None:
         return []
     params: dict[str, Any] = {
         "uid": user.email, "member": member.lower(), "agent": AGENT, "current": here,
         "title_chars": TITLE_CHARS, "chars": MATCH_CHARS, "rows": SCAN_ROWS,
-        "sessions": SCAN_SESSIONS, "typed_max": TYPED_MAX,
+        "sessions": SCAN_SESSIONS, "typed_max": TYPED_MAX, "cut": CUT,
         "pool": max(k, min(POOL_MAX, 3 * k)),
     }
-    params.update({f"w{i}": f"%{like_escape(w)}%" for i, w in enumerate(words)})
+    for i, word in enumerate(words):
+        # A stem is letters and digits only, so the LIKE needs no escape.
+        params[f"s{i}"] = f"%{word_stem(word)}%"
+        params[f"rx{i}"] = whole_word_pattern(word)
     async with tenant_session(org) as db:
         await db.execute(text(_LIMIT_SQL), {"ms": str(STATEMENT_MS)})
         rows = (await db.execute(text(search_sql(len(words))), params)).fetchall()

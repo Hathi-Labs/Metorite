@@ -167,6 +167,21 @@ def world(promoted):  # noqa: F811 — a fixture
     _row(admin, org=oa, sid=sid, role="system", content=f"The {TOOL_WORD} is ready.", ts=1)
     _row(admin, org=oa, sid=sid, role="user", content="ok", ts=2, typed=True, author=A,
          kind="human", tool_events=[{"name": "search", "result": f"{TOOL_WORD} details"}])
+    # Review P2-1: each word as a whole word. "AI" is only inside "email" and
+    # "again". "gearboxes" holds "gearbox" by the stem rule. "spectro" is only
+    # a part of a word. The long row is cut inside «zeppelins», after "zeppe".
+    from gateway.chat_search import MATCH_CHARS
+
+    sid = make("ai_mail", org=oa, user_id=A, title="Sheet request", minutes_ago=20)
+    _typed(admin, oa, sid, A, "Please email the quotation sheet again")
+    sid = make("plural", org=oa, user_id=A, title="Deliveries", minutes_ago=21)
+    _typed(admin, oa, sid, A, "The gearboxes ship on Monday")
+    sid = make("partial", org=oa, user_id=A, title="Plant", minutes_ago=22)
+    _typed(admin, oa, sid, A, "The spectrometer runs nightly")
+    sid = make("cut", org=oa, user_id=A, title="Long log", minutes_ago=23)
+    _typed(admin, oa, sid, A, "." * (MATCH_CHARS - 6) + " zeppelins later")
+    sid = make("uncut", org=oa, user_id=A, title="Short log", minutes_ago=24)
+    _typed(admin, oa, sid, A, "We saw the zeppe today")
     # B's chat in org A, and C's chat in org B, with the same words.
     sid = make("b_own", org=oa, user_id=B, title="Snowflake printer for B", minutes_ago=3)
     _typed(admin, oa, sid, B, "B asks about the Snowflake printer")
@@ -355,6 +370,30 @@ async def test_a_reply_of_mira_makes_a_hit_with_no_snippet(world, marks, flags) 
     hit = _chats(answer)[chats["own"]]
     assert hit["snippet"] == "" and MIRA_WORD not in json.dumps(answer["hits"])
     assert (hit["covers"], hit["of"]) == (1, 1)
+
+
+# ── Each word as a whole word (review P2-1) ─────────────────────────────────
+
+async def test_each_word_is_a_whole_word_of_the_chat(world, marks, flags) -> None:
+    """The SQL proves each word as ``find.coverage`` counts it: a whole word,
+    or a form of its stem. A word inside another word proves nothing, and the
+    end of a cut row is no word edge. So ``covers = of`` is true."""
+    p, chats = world
+    flags("*")
+    me = _member(A, p.org_a, "feature:chat")
+
+    async def hits(q: str) -> dict[str, dict[str, Any]]:
+        return _chats(await _ask(p, me, q=q, current_chat=chats["current"]))
+
+    assert await hits("AI quotation") == {}, "AI is only inside email and again"
+    assert set(await hits("email quotation")) == {chats["ai_mail"]}
+    plural = await hits("gearbox Monday")
+    assert set(plural) == {chats["plural"]}
+    assert (plural[chats["plural"]]["covers"], plural[chats["plural"]]["of"]) == (2, 2)
+    assert await hits("spectro nightly") == {}, "spectro is only a part of a word"
+    assert set(await hits("spectrometer nightly")) == {chats["partial"]}
+    # The row of «cut» ends in "zeppe" after the cut. Only the whole word shows.
+    assert set(await hits("zeppe")) == {chats["uncut"]}
 
 
 # ── The flag off ────────────────────────────────────────────────────────────

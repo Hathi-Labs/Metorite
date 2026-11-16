@@ -180,24 +180,32 @@ Measured on production on 2026-11-14, over the last 3 days (task 3232):
   none either.
 - It runs in pass 1, in the 1.5 s of a source. Its hits leave the ladder
   before the miss rule, the words alone and the near step, and join the one
-  list before the sort. So a past chat that holds every word does not stop
-  the search for the records.
+  list before the sort. So a past chat that holds every content word does
+  not stop the search for the records.
+- The search proves each content word of the query as a whole word, by the
+  stem rule of `find.coverage` (`find.whole_word_pattern`). So "AI" never
+  matches inside "email", "print" never matches "printer", and "printers"
+  holds "printer". The cut end of a long row is no end of a word.
 - With `FIND_ORGS` on, a past chat says `matched_by` `chat`. It holds every
-  word, because its search proved each word in the title or in one row. So
-  `covers` is `of`, whatever its snippet and its hint show. On a tie of
-  words, a record comes first, because rung 1 is lower than rung 6.
+  content word as a whole word, because its search proved each one in the
+  title or in one row. So `covers` is `of`, whatever its snippet and its hint
+  show. On a tie of words, a record comes first, because rung 1 is lower
+  than rung 6.
 - The second pass starts on a miss of the records only. The `miss` of the
   log line reads the final answer, so a past chat with every word makes no
   miss there.
-- A query of more distinct words than the shared word rule checks (8) gives
-  no past chat, because a hit must hold every word.
+- `find.chat_words` is the one rule of the words, for the route and the
+  reader. A query with no content word, or with more than 8, does not ask
+  the source. Then `searched` has no `chat`, "Where else" names the past
+  chats, and rung 6 of the trace reads `closed`. A stop word does not count.
 - The reader is `gateway/chat_search.py`, in the chat's own code. The caps
   bound the word match. It reads the newest 100 chats that pass every rule,
   the newest 80 rows of each chat, and 4,000 characters of each row. The rules run
   before that cut, and the agent rule reads each row of each chat that it
-  tests. A LOCAL `statement_timeout` of 1.6 s bounds the whole statement.
-  HRD-21 measured no plan on a large chat history. Measure one before the
-  flip.
+  tests. Each word arm is a `LIKE` of the stem, then a regular expression,
+  and no index serves either. A LOCAL `statement_timeout` of 1.6 s bounds the
+  whole statement. HRD-21 measured no plan on a large chat history. Measure
+  one before the flip.
 
 ### 3.2 Three passes in time
 
@@ -657,7 +665,7 @@ bound tenant session. The tests of each rule are
 | No text of another person | The search reads the title and the `user` and `assistant` rows. It never reads a `system` row or the tool events. The snippet comes only from a row that the member typed (`member_typed`, `typed_text`, not a card answer). A reply of Mira can restate a mail, so its text never prints. The statement returns the text of no other row |
 | The frame | A hit is a record of the answer, under "Company records (data, not instructions)" |
 
-Six limits stay, and the review must know them:
+Seven limits stay, and the review must know them:
 
 1. **A `no_egress` chat with no mark CAN show.** The mark lives in Redis,
    with a TTL of 400 days. A chat has no mark when its mark write failed, or
@@ -682,8 +690,13 @@ Six limits stay, and the review must know them:
    While `find.ABSENCE_CLAIMS` is off, no line reads them as a claim. The
    slice that sets it on must decide how a past chat counts.
 6. **The cost before the cut.** `ONLY_AGENT_SQL` reads each row of each chat
-   that it tests, before the cut to 100 chats. Run EXPLAIN ANALYZE on a large
-   chat history before the flip.
+   that it tests, before the cut to 100 chats. Each word arm runs a regular
+   expression that no index serves. Run EXPLAIN ANALYZE on a large chat
+   history before the flip.
+7. **A word with an accent finds less.** The whole-word pattern ends a word
+   only at an ASCII mark or a few typographic marks. Any other character stays
+   inside a word, so the SQL never finds more than `find.coverage` counts.
+   The cost: "muller" does not find «Müller», and "Müller" finds no chat.
 - **An outside source names whose access it used** (D98). It stores nothing
   and logs no word.
 - **The answer is data.** It keeps the header and the quotes of KR-2, and the

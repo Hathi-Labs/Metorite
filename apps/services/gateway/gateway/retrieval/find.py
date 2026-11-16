@@ -657,13 +657,98 @@ TRACE_RUNGS: tuple[str, ...] = ("exact", "word", "near", "related")
 CHAT_KEY = "chat"
 
 
+#: The most content words that the past chats prove in one search (HRD-21).
+#: Each word is one arm of the chat SQL, so a pasted paragraph cannot become a
+#: long WHERE. It is the cap of the Projects word rule
+#: (``routes/projects/filters.MAX_QUERY_WORDS``).
+CHAT_MAX_WORDS = 8
+
+#: The characters where a word ends, for the whole-word pattern of a past chat
+#: (review P2-1). Each is a character where :func:`name_match.words` splits a
+#: text too: each ASCII character that is no letter and no digit, and a few
+#: typographic marks. Any other character stays inside a word, such as "é",
+#: which ``name_match`` folds to "e". So the SQL can only find FEWER words
+#: than :func:`coverage` counts, never more. The cost: "muller" does not find
+#: «Müller» in a past chat. Fence: ``test_chat_source.py``.
+WORD_EDGES: str = "".join(chr(c) for c in range(1, 128) if not chr(c).isalnum()) + (
+    "\u00a0\u00ab\u00bb\u2013\u2014\u2018\u2019\u201c\u201d\u2026")
+
+#: A form of a word: letters and digits in ASCII, so no form needs an escape.
+_FORM = re.compile(r"[0-9a-z]+")
+
+
+def chat_words(query: str) -> list[str] | None:
+    """The words that a past chat must hold, or ``None`` (HRD-21). Pure.
+
+    They are the content words of *query* (:func:`content_words`), the words
+    that ``of`` counts. ``None`` when the query has none, or more than
+    :data:`CHAT_MAX_WORDS`. The ONE rule of the route and the reader: the
+    route asks the ``chat`` source only with a list, and the reader reads
+    nothing without one. A WHERE with no arm would match every chat."""
+    words = content_words(query)
+    if not words or len(words) > CHAT_MAX_WORDS:
+        return None
+    return words
+
+
+def stem_forms(word: str) -> tuple[str, ...]:
+    """Each token that :func:`coverage` counts as *word*: each word of letters
+    and digits whose :func:`_stem` is the stem of *word*. Longest first. Pure.
+
+    :func:`_stem` cuts at most one ending of ``ing``, ``ed``, ``es`` and ``s``,
+    then at most one final "e". So a token with the stem ``s`` is ``s`` or
+    ``s + "e"``, with one of those endings or none. Each such form is tried
+    with :func:`_stem` itself, so the list follows the rule and copies none of
+    it. Each form starts with the stem."""
+    stem = _stem(word)
+    out: list[str] = []
+    for base in (stem, stem + "e"):
+        for ending in ("", "ing", "ed", "es", "s"):
+            form = base + ending
+            if _stem(form) == stem and _FORM.fullmatch(form) and form not in out:
+                out.append(form)
+    return tuple(sorted(out, key=lambda f: (-len(f), f)))
+
+
+def word_stem(word: str) -> str:
+    """The stem of *word* (:func:`_stem`). Each form of :func:`stem_forms`
+    starts with it, so the chat search puts a cheap ``LIKE`` of it before the
+    pattern. Pure."""
+    return _stem(word)
+
+
+def _edge_class() -> str:
+    """:data:`WORD_EDGES` as one bracket of escapes that Postgres and Python
+    both read: ``\\xhh`` for ASCII and ``\\uhhhh`` for the rest."""
+    return "[" + "".join(
+        f"\\x{ord(ch):02x}" if ord(ch) < 128 else f"\\u{ord(ch):04x}" for ch in WORD_EDGES
+    ) + "]"
+
+
+def whole_word_pattern(word: str) -> str:
+    """The pattern that a lower-case text matches when it holds *word* as
+    :func:`coverage` counts it: one form of :func:`stem_forms`, with a word
+    edge or an end of the text on each side (review P2-1). Postgres (``~``)
+    and Python (``re``) read it alike. Pure.
+
+    A text of letters and digits in ASCII matches it exactly when
+    :func:`coverage` counts the word. A text with other letters can only
+    match less. The caller must make the end of a CUT text no edge."""
+    forms = stem_forms(word)
+    if not forms or not all(_FORM.fullmatch(f) for f in forms):
+        raise ValueError("a word of the chat search is letters and digits only")
+    edge = _edge_class()
+    return f"(^|{edge})({'|'.join(forms)})({edge}|$)"
+
+
 def stamp_first(key: str, hit: Any, words: list[str]) -> Any:
     """*hit*, a hit of pass 1 of source *key*, with ``matched_by``, ``covers``
     and ``of`` (§3.5). Pure.
 
     A past chat (rung 6, HRD-21) says ``chat``, and it holds every word:
-    ``covers`` is ``of``. Its search proved each word of the query in its title
-    or in one row (``gateway.chat_search``). Its snippet can show none of
+    ``covers`` is ``of``. Its search proved each content word of the query as
+    a whole word, by the stem rule of :func:`coverage`, in its title or in one
+    row (``gateway.chat_search``, :func:`whole_word_pattern`). Its snippet can show none of
     them, and its hint "Your chat" holds a word that the chat may not. So its
     printed text does not decide its count. Every other source says
     ``exact``, counted on its printed text, as :func:`stamped` counts it.

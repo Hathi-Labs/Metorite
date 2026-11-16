@@ -1288,7 +1288,7 @@ def _not_open(user: UserContext) -> list[str]:
 CURRENT_CHAT_MAX = 200
 
 
-def _chat_current(user: UserContext, current_chat: str | None) -> str | None:
+def _chat_current(user: UserContext, current_chat: str | None, words: str) -> str | None:
     """The id of the chat that the search runs in, when the route asks the
     ``chat`` source, else ``None`` (HRD-21, ``find_engine.md`` §6, D-FIND-5).
 
@@ -1298,12 +1298,20 @@ def _chat_current(user: UserContext, current_chat: str | None) -> str | None:
     characters. So a closed switch reads no value of the parameter, and with
     no current chat no past chat shows (fail closed). The id only takes a
     chat away: it never names a chat to read, a member or an org.
+
+    The query must also give the words that a past chat can prove
+    (``find.chat_words``, the ONE rule that the reader reads too, review
+    P2-2). With none, or more than ``find.CHAT_MAX_WORDS``, the source is not
+    asked. So it is not in ``searched``, "Where else" names the past chats,
+    and rung 6 of the trace reads ``closed``.
     """
     source = REGISTRY.get(find.CHAT_KEY)
     if source is None or not source.reaches(user):
         return None
     here = (current_chat or "").strip()
     if not here or len(here) > CURRENT_CHAT_MAX:
+        return None
+    if find.chat_words(words) is None:
         return None
     return here
 
@@ -1398,10 +1406,10 @@ async def company_search(
             detail=f"Give {MIN_CHARS} to {MAX_CHARS} characters to find.",
         )
     per_app = max(1, min(int(k), MAX_K))
-    # HRD-21: the past chats are asked only with their switch open and the
-    # current chat named. Else the source is not asked at all, so the answer
-    # is the one of before HRD-21, byte for byte.
-    current = _chat_current(user, current_chat)
+    # HRD-21: the past chats are asked only with their switch open, the
+    # current chat named and words that a chat can prove. Else the source is
+    # not asked at all, so the answer is the one of before HRD-21, byte for byte.
+    current = _chat_current(user, current_chat, words)
     # An app the member does not hold is not asked, and it is not "skipped":
     # the member has no such app. Each source checks the feature again.
     order = [key for key in _order(apps, user) if holds(user, REGISTRY[key].feature)

@@ -301,18 +301,127 @@ def test_the_ladder_reads_no_miss_when_a_chat_holds_every_word(
 
 
 def test_a_query_past_the_word_cap_gives_no_chat(monkeypatch) -> None:
-    """The shared word rule checks at most ``MAX_QUERY_WORDS`` words. A chat
+    """The chat proves at most ``find.CHAT_MAX_WORDS`` content words. A chat
     hit says that it holds every word, so a longer query gives no chat, and
-    the reader opens no session."""
-    from gateway.routes.projects.filters import MAX_QUERY_WORDS
-
+    the reader opens no session. The same helper decides it for the route."""
     def _no_session(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("the reader opened a session")
 
     monkeypatch.setattr(chat_search, "tenant_session", _no_session)
-    many = " ".join(f"word{i}" for i in range(MAX_QUERY_WORDS + 1))
+    many = " ".join(f"word{i}" for i in range(find.CHAT_MAX_WORDS + 1))
+    assert find.chat_words(many) is None
     assert asyncio.run(chat_search.search_own_chats(member("chat"), many, 5,
                                                     current=HERE)) == []
+
+
+# ── The words that a past chat proves (review P2-1 and P2-2) ────────────────
+
+#: Nine content words, and eight.
+NINE = "alpha bravo charlie delta echo foxtrot golf hotel india"
+EIGHT = "alpha bravo charlie delta echo foxtrot golf hotel"
+#: Nine tokens with three stop words: six content words (the coordinator's case).
+SIX_OF_NINE = "invoice from Acme about the Snowflake 3D printer order"
+
+
+def test_the_cap_counts_the_content_words() -> None:
+    """The chat proves the content words that ``of`` counts, so the cap counts
+    them too. A stop word costs nothing, and a query with none asks nothing."""
+    assert find.CHAT_MAX_WORDS == 8
+    assert find.chat_words(EIGHT) == EIGHT.split()
+    assert find.chat_words(NINE) is None
+    assert find.chat_words(SIX_OF_NINE) == ["invoice", "acme", "snowflake", "3d", "printer",
+                                            "order"]
+    assert find.chat_words("to do") is None and find.chat_words("the a") is None
+
+
+def test_a_query_past_the_cap_asks_no_past_chat(w, open_chats) -> None:
+    """Review P2-2: the ROUTE decides, with the helper of the reader. The
+    source is not asked, is not searched, "Where else" names the past chats,
+    and rung 6 of the trace did not run."""
+    user = member(*ALL, "chat")
+    answer = _route(NINE, user, current_chat=HERE)
+    assert open_chats.calls == []
+    assert "chat" not in answer["searched"]
+    assert answer["where_else"][0] == {"why": "past_chats"}
+    trace = _route(NINE, user, current_chat=HERE, explain=True)["trace"]["rungs"]
+    assert [r for r in trace if r["source"] == "chat"] == [
+        {"rung": "chat", "source": "chat", "ran": False, "hits": 0, "ms": 0,
+         "outcome": "closed"}]
+    assert open_chats.calls == []
+
+
+@pytest.mark.parametrize("q", [EIGHT, SIX_OF_NINE])
+def test_a_query_inside_the_cap_asks_the_past_chats(w, open_chats, q) -> None:
+    answer = _route(q, member(*ALL, "chat"), current_chat=HERE)
+    assert open_chats.calls == [(q, 5, HERE)] and "chat" in answer["searched"]
+
+
+#: Each word, a text that holds it as a whole word (or by the stem rule), and
+#: a text that holds it only inside another word.
+WORD_CASES = [
+    ("ai", "AI pricing for Q3", "Please email the pricing sheet again"),
+    ("printer", "The printers ship", "The printing plant"),
+    ("print", "Print it twice", "The printer is down"),
+    ("gearbox", "The gearboxes ship on Monday", "gearboxy is no word"),
+    ("delayed", "Two delays this week", "undelayable"),
+    ("invoice", "Invoicing went well", "It was reinvoiced later"),
+    ("hr", "Ask HR today", "Three hrs left"),
+    ("q3", "the Q3 plan", "Q34 plan"),
+    ("3d", "a 3D printer", "a 3Dprinter"),
+]
+
+
+@pytest.mark.parametrize(("word", "holds", "inside"), WORD_CASES)
+def test_the_pattern_proves_the_word_that_coverage_counts(word, holds, inside) -> None:
+    """The pattern of a word matches a text exactly when ``find.coverage``
+    counts the word in it, for each text of letters and digits in ASCII. So
+    ``covers = of`` of a past chat is true."""
+    import re
+
+    pattern = find.whole_word_pattern(word)
+    for text in (holds, inside):
+        matched = re.search(pattern, text.lower()) is not None
+        assert matched == bool(find.coverage([word], text)), (word, text)
+    assert re.search(pattern, holds.lower()) and not re.search(pattern, inside.lower())
+
+
+def test_each_form_is_a_form_of_the_stem() -> None:
+    """``stem_forms`` takes its forms from ``_stem``, and each form is letters
+    and digits only, so no form needs an escape in a pattern."""
+    import re
+
+    for word in ("printer", "gearbox", "delayed", "invoice", "ai", "q3", "sharath"):
+        forms = find.stem_forms(word)
+        assert word in forms or find._stem(word) in forms
+        for form in forms:
+            assert re.fullmatch(r"[0-9a-z]+", form)
+            assert find._stem(form) == find._stem(word)
+            assert form.startswith(find._stem(word)), "the LIKE of the stem holds each form"
+    assert set(find.stem_forms("gearbox")) >= {"gearbox", "gearboxes"}
+    assert "printers" in find.stem_forms("printer") and "printer" not in find.stem_forms("print")
+
+
+def test_each_edge_character_splits_a_word() -> None:
+    """The pattern treats a character as an edge only when
+    ``name_match.words`` splits there too. Any other character, such as "é"
+    that folds to "e", stays inside a word, so the SQL can only be stricter."""
+    from acb_common import name_match
+
+    for ch in find.WORD_EDGES:
+        assert name_match.words(f"ab{ch}cd") == ["ab", "cd"], repr(ch)
+    for ch in ("é", "ü", "ø", "ß"):
+        assert ch not in find.WORD_EDGES
+
+
+def test_a_cut_text_ends_in_no_edge() -> None:
+    """The reader appends ``CUT`` to a cut text. It is no edge and no form
+    holds it, so a word cut in half («print» of «printers») matches nothing."""
+    import re
+
+    assert chat_search.CUT not in find.WORD_EDGES and not re.fullmatch(r"[0-9a-z]", chat_search.CUT)
+    pattern = find.whole_word_pattern("print")
+    assert re.search(pattern, "the print")
+    assert not re.search(pattern, "the print" + chat_search.CUT)
 
 
 def test_no_current_chat_asks_no_past_chat(w, open_chats) -> None:
@@ -463,12 +572,26 @@ class TestTheStatement:
         "LIMIT :sessions",
         "LIMIT :rows",
         "left(m.content, :chars)",
-        "r.body ILIKE :w0 AND r.body ILIKE :w1",
-        "mine.title ILIKE :w0 AND mine.title ILIKE :w1",
+        # Review P2-1: each word as a whole word, the stem rule of
+        # `find.coverage`, after a cheap LIKE of its stem.
+        "(r.probe LIKE :s0 AND r.probe ~ :rx0) AND (r.probe LIKE :s1 AND r.probe ~ :rx1)",
+        "(mine.title_probe LIKE :s0 AND mine.title_probe ~ :rx0) AND "
+        "(mine.title_probe LIKE :s1 AND mine.title_probe ~ :rx1)",
+        # The end of a cut text is no word boundary: a cut text ends in a word
+        # character that no pattern holds.
+        "lower(left(m.content, :chars) || CASE WHEN char_length(m.content) > :chars "
+        "THEN :cut ELSE '' END) AS probe",
+        "lower(left(COALESCE(s.title, ''), :chars) || CASE WHEN "
+        "char_length(COALESCE(s.title, '')) > :chars THEN :cut ELSE '' END) AS title_probe",
         "LIMIT :pool",
     ])
     def test_each_rule_is_in_the_statement(self, rule: str) -> None:
         assert rule in self.sql
+
+    def test_no_substring_match_is_left(self) -> None:
+        """Review P2-1: a substring match (``ILIKE '%ai%'`` inside "email")
+        proves no word, so no arm matches by ILIKE alone."""
+        assert "ILIKE" not in self.sql
 
     def test_the_solo_rule_and_the_agent_rule_are_the_shared_text(self) -> None:
         from gateway.rooms import SOLO_ROOM_SQL
