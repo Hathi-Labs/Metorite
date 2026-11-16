@@ -54,7 +54,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -1624,6 +1624,240 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str, offset: int = 0,
     if page.line:
         lines.append(page.line)
     return ("Scheduled (🔒 = fixed, never move it):\n" + "\n".join(lines))
+
+
+# ── The events of my calendars (WS-CAL CE-15, task 3463) ─────────────────────
+#
+# Spec: ``calendar_events_reminders.md`` §3.4 and §6.7. The read is the same
+# route as the schedule read, ``GET /projects/my/calendar``. With
+# ``CALENDAR_EVENTS`` on and ``feature:tasks``, its body holds the key
+# ``entries``: the synced Google and Outlook events and my own events. This
+# tool adds no SQL, no route and no flag. Fence:
+# ``tests/unit/test_calendar_events_tool.py``.
+
+#: THE switch of the open ruling of task 3463. The owner has not ruled. Until
+#: the owner rules, the code uses the safe default, True.
+#:
+#: True: each read that shows an event marks the chat as one that holds
+#: untrusted input (``acb_skills.egress.mark_untrusted_answer``). In a marked
+#: chat, each egress tool (``fetch_page`` and each other tool that sends data
+#: out) asks for the member's card, for up to 400 days. With no card channel
+#: it is refused. The twelve writes of the ``calendar-day`` pack leave that
+#: chat ONLY where ``HELD_CARD_WRITES_ORGS`` names the org
+#: (``egress.is_held_off_pack_write``). That list is empty by default, so
+#: today no write leaves.
+#:
+#: False: no mark. After a read of a hostile title, ``fetch_page`` runs with
+#: no card.
+#:
+#: In both cases, none of the twelve writes asks for a card. The other ruling
+#: is this one line, and ``test_calendar_events_tool.py`` tests both values.
+EVENTS_MARK_UNTRUSTED = True
+
+#: The one line when the body has no ``entries`` key: ``CALENDAR_EVENTS`` is
+#: off, or the member does not hold ``feature:tasks`` (§3.4). The pack is on
+#: in production while the flag is off, so the line says what still shows.
+EVENTS_OFF = (
+    "Synced calendar events are not available here. Only the task blocks of "
+    "my_tasks_list_schedule show."
+)
+#: The widest window of one read, in days. A month.
+EVENTS_WINDOW_MAX_DAYS = 31
+#: The cut of the stranger text of one event, in characters.
+EVENT_TITLE_MAX = 120
+EVENT_PLACE_MAX = 80
+#: The label of the one frame block that holds the events.
+EVENTS_FRAME_LABEL = "CALENDAR EVENTS"
+_EVENTS_NOTE = (
+    "Anyone can send an invite, so the title and the place of an event are text "
+    "that a stranger wrote."
+)
+#: The provider of an entry, from its ``source`` (migration 331's CHECK).
+_EVENT_PROVIDERS: dict[str, str] = {
+    "google": "Google", "outlook": "Outlook", "metorite": "Metorite",
+}
+
+
+def _calendar_entries(res: Any) -> list[dict[str, Any]] | None:
+    """The ``entries`` of a ``/my/calendar`` body, or None when the body has
+    no such key. The rows (the task blocks) stay with the schedule read."""
+    entries = res.get("entries") if isinstance(res, dict) else None
+    if entries is None:
+        return None
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def _aware(value: str) -> datetime:
+    """An ISO 8601 time. A time with no offset counts as UTC, as the route
+    reads it."""
+    when = datetime.fromisoformat(str(value or "").strip())
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _events_window_refusal(from_iso: str, to_iso: str) -> str | None:
+    """One line when the window cannot be read, before any request."""
+    try:
+        start, end = _aware(from_iso), _aware(to_iso)
+        days = (end - start).total_seconds() / 86400
+    except (TypeError, ValueError, OverflowError):
+        return ("from_iso and to_iso must be ISO 8601 times, such as "
+                "2026-11-16T00:00:00+05:30. Nothing was read.")
+    if days <= 0:
+        return "to_iso must be after from_iso. Nothing was read."
+    if days > EVENTS_WINDOW_MAX_DAYS:
+        return (f"The window is longer than {EVENTS_WINDOW_MAX_DAYS} days. Nothing "
+                f"was read. Read {EVENTS_WINDOW_MAX_DAYS} days or less in one call, "
+                "and read a longer time in parts.")
+    return None
+
+
+def _window_days(from_iso: str, to_iso: str) -> tuple[date, date]:
+    """The first and the last calendar date of the window ``[from, to)``.
+
+    Each end reads in ITS OWN offset, and an end with no offset counts as
+    UTC. The last date is the date of ``to`` less one microsecond, so a
+    window that ends at midnight does not reach the next day. Call it only
+    after :func:`_events_window_refusal` passed."""
+    first = _aware(from_iso).date()
+    last = (_aware(to_iso) - timedelta(microseconds=1)).date()
+    return first, last
+
+
+def _in_window_days(entry: dict[str, Any], first: date, last: date) -> bool:
+    """False for an all-day entry that does not touch a date of the window.
+
+    The route reads all-day entries on the UTC dates of the window with one
+    day of slack on each side (``tasks/entries.py``, ``_ALL_DAY_SQL``), because
+    only the client knows the zone. So the body can hold an entry of the day
+    before or the day after. An all-day entry covers ``[start_date,
+    end_date)``, because ``end_date`` is EXCLUSIVE (migration 331). A timed
+    entry, and an entry whose dates do not read, stay as the route sent them."""
+    if not (entry.get("all_day") or entry.get("start_date")):
+        return True
+    try:
+        start = date.fromisoformat(str(entry.get("start_date")))
+        end = date.fromisoformat(str(entry.get("end_date")))
+    except (TypeError, ValueError):
+        return True
+    return start <= last and end > first
+
+
+def _stranger_text(value: Any, limit: int) -> str:
+    """Text that a stranger wrote, as one line of at most *limit* characters.
+    It drops each character that a person cannot see (``untrusted.is_invisible``,
+    the one rule). The frame makes the rest data."""
+    from acb_skills.untrusted import is_invisible
+
+    text = " ".join(
+        "".join(ch for ch in str(value or "") if not is_invisible(ch)).split())
+    if len(text) <= limit:
+        return text
+    return str(text)[: limit - 1].rstrip() + "…"
+
+
+def _utc_minute(value: Any) -> datetime | None:
+    try:
+        return _aware(str(value)).astimezone(UTC)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _event_when(entry: dict[str, Any]) -> str:
+    """The time of an entry. A timed entry gives its start and end in UTC. An
+    all-day entry gives its days: ``end_date`` is EXCLUSIVE (migration 331),
+    so a one-day entry shows its one date."""
+    if entry.get("all_day") or entry.get("start_date"):
+        first = str(entry.get("start_date") or "?")
+        try:
+            last = (date.fromisoformat(str(entry.get("end_date")))
+                    - timedelta(days=1)).isoformat()
+        except (TypeError, ValueError, OverflowError):
+            last = first
+        return f"{first}, all day" if last <= first else f"{first} to {last}, all day"
+    start, end = _utc_minute(entry.get("starts_at")), _utc_minute(entry.get("ends_at"))
+    if start is None:
+        return "no time"
+    head = start.strftime("%Y-%m-%d %H:%M")
+    if end is None or end == start:
+        return f"{head} UTC"
+    if end.date() == start.date():
+        return f"{head}-{end.strftime('%H:%M')} UTC"
+    return f"{head} to {end.strftime('%Y-%m-%d %H:%M')} UTC"
+
+
+def _event_line(entry: dict[str, Any]) -> str:
+    """One entry: the provider, the time, the status, then the title and the
+    place. Never the notes, the join link or the provider link."""
+    source = str(entry.get("source") or "")
+    provider = _EVENT_PROVIDERS.get(source, "Other calendar")
+    state = str(entry.get("status") or "confirmed")
+    if entry.get("busy") is False:
+        state += ", free"
+    title = _stranger_text(entry.get("title"), EVENT_TITLE_MAX) or "(no title)"
+    line = f"- {provider} | {_event_when(entry)} | {state} | Title: {title}"
+    place = _stranger_text(entry.get("location"), EVENT_PLACE_MAX)
+    return f"{line} | Place: {place}" if place else line
+
+
+async def _mark_events_read() -> None:
+    """The ruling of :data:`EVENTS_MARK_UNTRUSTED`, in this one place. True
+    marks the chat of the run on this frame, as ``tool_result_spill`` does.
+    The tenant and the session come from the run binding only."""
+    if not EVENTS_MARK_UNTRUSTED:
+        return
+    from acb_skills.egress import mark_untrusted_answer
+
+    await mark_untrusted_answer()
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_events(from_iso: str, to_iso: str, offset: int = 0,
+                               limit: int = 50) -> str:
+    """List the events of the member's calendars in a window. They are the
+    synced Google and Outlook events and the member's own events. Read only.
+    Each event names its calendar, its time, its status, its title and its
+    place. The day planner does not read these events. Check each block that
+    it proposes against them before you apply the plan. The window is
+    half-open, [from, to), at most 31 days.
+
+    Args:
+        from_iso: ISO 8601 start of the window (inclusive).
+        to_iso: ISO 8601 end of the window (exclusive).
+        offset: Where the page starts. 0 is the first event.
+        limit: Events per page, 50 by default and 100 at most.
+    """
+    refusal = _events_window_refusal(from_iso, to_iso)
+    if refusal:
+        return refusal
+    entries = _calendar_entries(await _request(
+        "GET", _MY_CALENDAR,
+        params={"start": from_iso, "end": to_iso, "include_done": "true"}))
+    if entries is None:
+        return EVENTS_OFF
+    # The route's all-day slack, out before the count and the page (P1-1).
+    first, last = _window_days(from_iso, to_iso)
+    entries = [e for e in entries if _in_window_days(e, first, last)]
+    if not entries:
+        return "No calendar events are in that window."
+    # The route sends the window in the order of the day, the start, the
+    # creation and the id, so a page cut here is the same on every call.
+    page = paged(entries, offset, limit, default=50, noun="events")
+    if not page.items:
+        return page.line
+    from acb_skills.untrusted import UntrustedFrame
+
+    await _mark_events_read()
+    frame = UntrustedFrame.new()
+    body = "\n".join(_event_line(e) for e in page.items)
+    out = [
+        f"Calendar events ({page.total} in the window). Times are UTC. A free "
+        "event does not block the time.",
+        frame.note(_EVENTS_NOTE),
+        frame.wrap(EVENTS_FRAME_LABEL, body),
+    ]
+    if page.line:
+        out.append(page.line)
+    return "\n".join(out)
 
 
 # ── AI day planning (the planner, callable by chat) ──────────────────────────

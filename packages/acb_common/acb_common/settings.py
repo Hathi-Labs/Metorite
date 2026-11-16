@@ -762,10 +762,12 @@ class Settings(BaseSettings):
     # TOF-1a: STUDIO_CHAT_TOOLS_ORGS lists the org ids where the Studio
     # action catalog serves one `tool:<name>` row for each chat tool of the
     # CRM, Email, Projects and Calendar packs. `*` opens every org. Empty
-    # opens none, and the catalog then has no such row. Reader:
+    # opens none, and the catalog then has no such row. TOF-1b: it also gates
+    # the skill load. For an org that it leaves out, each skill with a
+    # `tool:` action fails to load with `chat_tools_off`. Reader:
     # `gateway.routes.studio.flags.chat_tools_allowed`. A SIGHUP reload
     # applies a change (docs/flag_reload.md). A flip in production is the
-    # gate `enforcement-flip`. Spec: ai_studio.md section 14 TOF-1a.
+    # gate `enforcement-flip`. Spec: ai_studio.md section 14 TOF-1a, TOF-1b.
     studio_chat_tools_orgs: str = ""
     # TOF-1d: STUDIO_SKILL_OFFER_ORGS lists the org ids where the chat draws
     # the card "Save this as a skill?" after a finished turn (STU-F6a). `*`
