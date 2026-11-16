@@ -56,6 +56,15 @@ export interface ChatSession {
    * reads null.
    */
   pinnedAt?: string | null;
+  /**
+   * WS-CO CO-2b: the topic of the chat for THIS member, or null. The server
+   * sends it only while `CHAT_TOPICS_ORGS` holds the org, and only a topic
+   * that shows to the member: a company topic, or the member's own. A
+   * colleague in the same room never reads it.
+   */
+  topicId?: string | null;
+  /** CO-2b: the name of `topicId`, as the server sends it. */
+  topicName?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +890,61 @@ export function setSessionPinned(id: string, pinned: boolean, onUndo?: () => voi
   return true;
 }
 
+/** A topic as the chat names it: its id and its name (CO-2b). */
+export interface SessionTopic {
+  id: string;
+  name: string;
+}
+
+/**
+ * The member moves a chat into a topic, or to "No topic" with null (CO-2b,
+ * `chat_organization.md` §6). The topic is the member's own, on the server,
+ * so it shows on each device, and the automatic pass never moves it back.
+ * The list draws the move at once. The server answers with its own name of
+ * the topic, and the list takes it. A refusal (404 for a topic or a chat the
+ * member may not use) puts the old topic back, and `onUndo` runs so the list
+ * draws again. Returns whether the mark changed here.
+ */
+export function setSessionTopic(id: string, topic: SessionTopic | null, onUndo?: () => void): boolean {
+  const sessions = getSessions();
+  const s = sessions.find((x) => x.id === id);
+  if (!s || (s.topicId ?? null) === (topic?.id ?? null)) return false;
+  const before = { topicId: s.topicId ?? null, topicName: s.topicName ?? null };
+  s.topicId = topic?.id ?? null;
+  s.topicName = topic?.name ?? null;
+  writeList(sessions);
+  const undo = () => {
+    const now = getSessions();
+    const row = now.find((x) => x.id === id);
+    if (!row) return;
+    row.topicId = before.topicId;
+    row.topicName = before.topicName;
+    writeList(now);
+    onUndo?.();
+  };
+  void fetch(`/api/chat/sessions/${encodeURIComponent(id)}/topic`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic_id: topic?.id ?? null }),
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        undo();
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as { topicId?: string | null; topicName?: string | null } | null;
+      const now = getSessions();
+      const row = now.find((x) => x.id === id);
+      // The server's name, unless a later move already changed the row.
+      if (body && row && (row.topicId ?? null) === (body.topicId ?? null) && body.topicName !== undefined) {
+        row.topicName = body.topicName;
+        writeList(now);
+      }
+    })
+    .catch(undo);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Postgres API helpers (all async, all fire-and-forget safe)
 // ---------------------------------------------------------------------------
@@ -944,6 +1008,8 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       hasUserMessage?: boolean;
       archivedAt?: string | null;
       pinnedAt?: string | null;
+      topicId?: string | null;
+      topicName?: string | null;
     }>;
 
     const local = readList(key);
@@ -970,6 +1036,13 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       // sends the key only with the switch on. Off, the local mark stays,
       // and the list draws no pin.
       if (r.pinnedAt !== undefined) s.pinnedAt = r.pinnedAt;
+      // CO-2b: a move made on another device reaches this one, and so does
+      // a topic that the server no longer shows. The server sends the keys
+      // only with the switch on. Off, the local mark stays and draws nothing.
+      if (r.topicId !== undefined) {
+        s.topicId = r.topicId;
+        s.topicName = r.topicName ?? null;
+      }
       if (r.title && shellChatOn()) s.title = r.title;
     }
 
@@ -1002,6 +1075,8 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           hasUserMessage: r.hasUserMessage,
           archivedAt: r.archivedAt ?? null,
           pinnedAt: r.pinnedAt ?? null,
+          topicId: r.topicId ?? null,
+          topicName: r.topicName ?? null,
         });
       }
     }

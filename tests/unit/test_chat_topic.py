@@ -303,6 +303,68 @@ def test_a_bidi_control_a_line_mark_and_a_control_are_refused(point: int) -> Non
         clean_name("Sa" + _cp(point) + "les")
 
 
+@pytest.mark.parametrize("points", [
+    (0x200B,), (0x200C,), (0x200D,), (0x2060,), (0xFEFF,),  # zero-width (Cf)
+    (0x3164,), (0x115F,), (0x1160,), (0xFFA0,),  # the Hangul fillers (Lo)
+    (0xE0067, 0xE0062, 0xE007F),  # tag characters alone (Cf)
+    (0xFE0F,), (0xFE00, 0xFE0F), (0xE0100,),  # variation selectors alone (Mn)
+    (0x2800,), (0x034F,), (0x17B4, 0x17B5),  # a blank Braille cell and invisible marks
+    (0x200B, 0x200D, 0xFEFF, 0x3164),  # several of them
+    (0xAD,), (0x1D173,),  # a soft hyphen and a music format mark (Cf)
+    (0xFDD0,), (0x10FFFF,),  # noncharacters: unassigned (Cn) in each Unicode table
+])
+def test_a_name_with_no_character_that_shows_is_refused(points: tuple[int, ...]) -> None:
+    """CO-2a verifier P2: a name of invisible characters only showed as a
+    blank row. A name must hold one character that shows. Mutation: drop the
+    ``_shows`` check of ``clean_name`` -> red."""
+    from gateway.chat_topic import TopicNameError, clean_name
+
+    with pytest.raises(TopicNameError, match="that shows"):
+        clean_name(_cp(*points))
+    # With a space at each end too: the trim leaves the same characters.
+    with pytest.raises(TopicNameError):
+        clean_name(" " + _cp(*points) + " ")
+
+
+def test_a_new_emoji_alone_follows_the_unicode_table_of_the_runtime() -> None:
+    """A decision of CO-2b, not a wish: U+1FAE9 alone is refused while the
+    runtime's table is older than Unicode 16 (it reads ``Cn``), and passes
+    once the table knows it (``So``). With a word beside it, it passes in
+    each table (``test_an_emoji_a_flag_and_a_new_code_point_pass``)."""
+    import unicodedata
+
+    from gateway.chat_topic import TopicNameError, clean_name
+
+    if unicodedata.category(NEW_EMOJI) == "Cn":
+        with pytest.raises(TopicNameError, match="that shows"):
+            clean_name(NEW_EMOJI)
+    else:
+        assert clean_name(NEW_EMOJI) == NEW_EMOJI
+
+
+@pytest.mark.parametrize("point", [0x200E, 0x200F, 0x061C])
+def test_lrm_rlm_and_alm_are_refused_as_bidi_controls(point: int) -> None:
+    """LRM, RLM and ALM can make a name read as another name, as the other
+    bidi controls can. Mutation: drop them from ``_BIDI_CONTROLS`` -> red."""
+    from gateway.chat_topic import TopicNameError, clean_name
+
+    for raw in ("Sa" + _cp(point) + "les", _cp(point) + "Sales", "Sales" + _cp(point)):
+        with pytest.raises(TopicNameError, match="control character"):
+            clean_name(raw)
+
+
+@pytest.mark.parametrize("raw", [
+    ENGLAND, FAMILY, "Tired " + NEW_EMOJI, _cp(0x2764, 0xFE0F), "x" + _cp(0x200B),
+    _cp(0x200B) + "7", "עברית",
+])
+def test_a_name_that_shows_passes(raw: str) -> None:
+    """A flag, a joined family, a heart with its selector, a word beside a
+    zero-width space, and Hebrew pass: each holds a character that shows."""
+    from gateway.chat_topic import clean_name
+
+    assert clean_name(raw) == raw
+
+
 def test_the_migration_check_agrees_with_the_cap() -> None:
     from gateway.chat_topic import NAME_MAX
 

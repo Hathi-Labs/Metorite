@@ -102,8 +102,10 @@ import {
   renameSession,
   setSessionArchived,
   setSessionPinned,
+  setSessionTopic,
   upsertSession,
   type ChatSession,
+  type SessionTopic,
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
@@ -122,7 +124,9 @@ import {
   requestReminderOpen,
   useKnownReminder,
 } from "./reminderOpen";
-import { markBuddyHello, markChatFirstMessage, setHelloPending, useChatPinOn } from "./shellPrefs";
+import { markBuddyHello, markChatFirstMessage, setHelloPending, useChatPinOn, useChatTopicsOn } from "./shellPrefs";
+import TopicChip from "./TopicChip";
+import { chipLabel } from "./chatTopics";
 import {
   dockFloats,
   dockFoldsNav,
@@ -635,6 +639,13 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     pin: (id: string, pinned: boolean) => {
       if (setSessionPinned(id, pinned, refresh)) refresh();
     },
+    /**
+     * CO-2b: move a chat into a topic for this member, or to "No topic". The
+     * list draws the move at once. A refusal of the server puts it back.
+     */
+    move: (id: string, topic: SessionTopic | null) => {
+      if (setSessionTopic(id, topic, refresh)) refresh();
+    },
     activity: (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
       if (!activeId) return;
       enrichSession(activeId, info);
@@ -888,6 +899,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const [chatFirst] = useState(() => chatFirstOn());
   // CO-11: the shell read says whether the member may pin a chat.
   const pinsOn = useChatPinOn();
+  // CO-2b: the shell read says whether the chats sort into topics.
+  const topicsOn = useChatTopicsOn();
+  // CO-2b: the phone's "…" control opens the topic menu, hung from the header.
+  const [topicMenuOpen, setTopicMenuOpen] = useState(false);
+  const [headerEl, setHeaderEl] = useState<HTMLElement | null>(null);
   const strip = phone && form === "peek";
   // Every desktop has the side panel. Below the floor it floats over the
   // page instead of sitting beside it (owner, 2026-10-14).
@@ -1150,6 +1166,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // has a message) and it is not archived. An archive takes it out of Pinned.
   const pinnable = pinsOn && active != null && active.messageCount > 0 && !active.archivedAt;
   const activePinned = active != null && isPinned(active);
+  // CO-2b: the chat on screen may take a topic when the server holds it (it
+  // has a message). The move is the member's own.
+  const topicable = topicsOn && active != null && active.messageCount > 0;
+  const moveActive = (topic: SessionTopic | null) => chat.move(chat.activeId, topic);
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
@@ -1171,9 +1191,18 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                   onClick: () => chat.pin(chat.activeId, !activePinned),
                 }]
               : []),
+            // CO-2b: the topic menu, for the same reason as the pin. It hangs
+            // from the header, under the chat's name.
+            ...(topicable
+              ? [{
+                  icon: "Tag",
+                  label: `Topic: ${chipLabel(active)}`,
+                  onClick: () => setTopicMenuOpen(true),
+                }]
+              : []),
           ]
         : [],
-    [phoneChrome, chat, router, pinnable, activePinned],
+    [phoneChrome, chat, router, pinnable, activePinned, topicable, active],
   );
   const pickerProps = {
     sessions: chat.sessions,
@@ -1187,6 +1216,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     onRemove: chat.remove,
     onPin: chat.pin,
     pinsOn,
+    topicsOn,
   };
 
   return (
@@ -1243,7 +1273,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       {/* The header says what each control does (owner, 2026-11-01): the
           title switches chats, "New" starts one, Files shows this chat's
           files, and the window controls sit apart, after a rule. */}
-      <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border glass:border-transparent px-2">
+      <header ref={setHeaderEl} className="flex h-11 shrink-0 items-center gap-1 border-b border-border glass:border-transparent px-2">
         {columnForm ? (
           // The full view lists the chats in a column: this shows or hides it.
           <Button
@@ -1306,6 +1336,32 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           >
             {phone ? null : "Files"}
           </Button>
+        ) : null}
+        {topicable && !phoneChrome ? (
+          // CO-2b: the topic of the chat on screen, for this member. A press
+          // opens the menu that moves it. The full view shows the name. The
+          // side panel and a phone have no room for it beside the title, so
+          // they show the icon, whose name says the topic. The chat-first
+          // phone offers it in the chat's "…" control (CF-8).
+          <TopicChip
+            key={active.id}
+            session={active}
+            onMove={moveActive}
+            trigger={columnForm ? "chip" : "icon"}
+            phone={phone}
+          />
+        ) : null}
+        {topicable && phoneChrome ? (
+          <TopicChip
+            key={active.id}
+            session={active}
+            onMove={moveActive}
+            trigger="none"
+            phone
+            open={topicMenuOpen}
+            onOpenChange={setTopicMenuOpen}
+            anchor={headerEl}
+          />
         ) : null}
         {pinnable && !phone ? (
           // CO-11: the member's own pin of the chat on screen. The phone
