@@ -7,7 +7,8 @@
 built. The owner activates this spec after an Opus spec audit gives GO.
 
 No build slice starts before the owner activates this spec. The defaults of
-§15 hold until the owner answers.
+§15 hold until the owner answers. TOF-Q2 is the exception: TOF-2b waits for
+the owner's answer.
 
 **Merge after PR 2445.** This spec cites D225, which only the open PR 2445
 holds. Merge this spec after PR 2445. At merge, re-check D225 here, in
@@ -109,7 +110,8 @@ Re-verify each anchor at dispatch. Line numbers move.
 | The exempt list | `scripts/gen_tenant_migration.py`, `EXEMPT` line 70 | The security review of each cross-tenant table |
 | The precedents | `infra/postgres/222_chat_session_exists.sql`, `276_email_detached_purges.sql` | A DEFINER function that answers across tenants. A table that only DEFINER functions reach |
 | The job incident ledger | `apps/services/gateway/gateway/jobs/unattended.py`, `record_failure` line 323. `unattended_incidents` (migration 313) | One open incident for each job and error class (AUTO-2), dark |
-| The one recurring seam | `docs/job_queue.md` §5c, `worker.seed_hooks` | A consumer adds a seed hook, and starts no second loop |
+| The one recurring seam | `docs/job_queue.md` §5c, `worker.seed_hooks`. `gateway/main.py` lines 520 to 556 import the seed consumers | A consumer adds a seed hook, and starts no second loop |
+| The job registry | `apps/services/gateway/gateway/jobs/worker.py`, `register` line 193, `EFFECTS` line 151. `worker.prune_hooks` (`docs/job_queue.md` §5b) | A `write` kind names a policy. A prune hook runs in the session of each org |
 | The Studio live read | `routes/studio/invoke.py` lines 2438 to 2445, raised at line 2721 | Turns a `ListFailed` of `_live` into an `HTTPException` 502 |
 | The core tools | `apps/services/orchestrator/orchestrator/agents.py` lines 1170 to 1182 | The Knowledge tools are core tools. `pack_tool_guard` never wraps them |
 | The task status categories | `routes/projects/core.py` `STATUS_CATEGORIES` line 339 | `backlog`, `todo`, `in_progress`, `done`, `cancelled`, `triage`. No category names review |
@@ -164,11 +166,23 @@ member.
 1. **The tool.** Admit a name only when a platform registry holds it.
    - A chat tool: the name, when `builtin_tool_names()` holds it. A new
      module, `acb_skills/builtin_tools.py` (TOF-2b), holds the function. It
-     reads the code packs of `acb_skills.tool_packs`, and does not edit that
-     file, which the session cal-tasks holds. The set never holds an F3 skill
-     pack, because a skill name is tenant text. Any other name gives `other`.
-   - A chat capture site passes the set to the normaliser. So the normaliser
-     stays pure, and `acb_common` imports nothing from `acb_skills`.
+     does not edit `acb_skills/tool_packs.py`, which the session cal-tasks
+     holds. The set never holds an F3 skill pack, because a skill name is
+     tenant text. Any other name gives `other`.
+   - `acb_skills.builtin_tools` gives the set to
+     `failure_log.set_builtin_names()` once, at import. `record_tool_failure`
+     passes it to the normaliser, so no site passes it. With no set, a chat
+     name gives `other`.
+   - The set comes from the tool names that `acb_skills.skill_families`
+     declares. That module imports the standard library only. So
+     `builtin_tools` imports `skill_families` and `acb_common.failure_log`,
+     and no cycle can form.
+   - `pack_tool_guard.py` and `unknown_tool.py` import `builtin_tools` at
+     their top. The guard wraps every pack tool, so the set is in place before
+     C1, C2 or C4 runs. The C4 wrapper runs inside a guarded pack tool.
+   - The fence: `test_failure_fingerprint.py` asserts that
+     `failure_fingerprint.py` and `failure_log.py` import no `acb_skills`
+     module.
    - A Studio skill or action: `studio`. An MCP server and its tools: `mcp`.
      A sandbox user tool: `user_tool`. Each name of these is tenant text.
    - A door 5xx: `route:<METHOD> <path>`. The path is `scope["route"].path`.
@@ -286,6 +300,12 @@ scope. D2 skips the response of a marked request. So a Studio live read that
 times out writes one `mcp_timeout` at C7. The 502 that `routes/studio/invoke.py`
 then answers writes no `route_upstream`.
 
+**The mark.** `TenantScopeMiddleware` puts a mutable holder in a `ContextVar`
+before it calls the app. `record_tool_failure` sets a flag on that holder. A
+`ContextVar.set()` lower down would not reach the middleware from a child task
+or the thread pool, such as the `ensure_future` of `_pinned`. A shared holder
+does. The mark stops D2 only, and D1 still records an exception.
+
 **A 5xx that nobody writes.** D2 counts 500, 502 and 504 only. A route that
 answers 501, 505 or another 5xx writes nothing, on purpose. Such a status
 says "not built" or names a protocol, and it is not a fault.
@@ -341,21 +361,31 @@ with a test that the tenant is still bound at D1.
 
 ### 4.3 The MCP map
 
-C5, C6 and C7 map the deepest exception that they caught to one code. The
-first row that matches wins. The map reads classes and frames only.
+C5, C6 and C7 test each row in order against every exception of the chain
+that they caught. The chain holds the causes, the contexts and the groups, as
+the walk of `mcp_tools._reason` does. The first row that matches wins. The last two rows
+test the deepest exception that is an `Exception`. `asyncio.timeout` raises
+`TimeoutError` from a `CancelledError`, so a timeout is never the deepest
+exception. The map reads classes, numbers and frames only.
 
-| Deepest exception | Code | Owned by us |
+| Exception in the chain | Code | Owned by us |
 |---|---|---|
-| `TimeoutError` | `mcp_timeout` | No |
-| `outbound_guard.AnswerTooLarge`. It comes first, because it is a subclass of `OutboundRefused` (`outbound_guard.py` line 354) | `mcp_too_large` | No |
+| `TimeoutError`, or an `McpError` whose `.error.code` is 408 (`httpx.codes.REQUEST_TIMEOUT`, `mcp/shared/session.py` line 296) | `mcp_timeout` | No |
+| `outbound_guard.AnswerTooLarge` or `_maf_mcp.McpListTooLong` (line 386). `AnswerTooLarge` comes before the next row, because it is a subclass of `OutboundRefused` (`outbound_guard.py` line 354) | `mcp_too_large` | No |
 | `outbound_guard.OutboundRefused` | `mcp_refused` | No |
-| `ToolExecutionException` with no cause (the server's `isError`), `mcp.shared.exceptions.McpError`, or a `ListFailed(REASON_TOOL_ERROR)` of `shape_result` | `mcp_tool_error` | No |
-| `OSError`, `httpx.TransportError`, `httpx.HTTPStatusError`, `anyio.ClosedResourceError`, `anyio.BrokenResourceError` | `mcp_unreachable` | No |
-| The last frame of its traceback is in one of the four trees of §3.2 rule 4, or its class has one of our roots of §3.2 rule 3 | `mcp_exception`, with the type and the site kept | Yes |
-| Any other class | `mcp_unreachable` | No |
+| `OSError`, `httpx.TransportError`, `httpx.HTTPStatusError`, `anyio.ClosedResourceError`, `anyio.BrokenResourceError`, or an `McpError` whose code is `CONNECTION_CLOSED` (-32000) | `mcp_unreachable` | No |
+| `ToolExecutionException` with no cause (the server's `isError`), an `McpError` with any other code, or a `ListFailed(REASON_TOOL_ERROR)` of `shape_result` | `mcp_tool_error` | No |
+| The deepest `Exception`: the last frame of its traceback is in one of the four trees of §3.2 rule 4, or its class has one of our roots of §3.2 rule 3 | `mcp_exception`, with the type and the site kept | Yes |
+| The deepest `Exception`, of any other class | `mcp_unreachable` | No |
 
 So a `KeyError` that our `_maf_mcp.py` or `mcp_tools.py` raises is
-`mcp_exception`, not an outage.
+`mcp_exception`, not an outage. A server that lists too many tools is not
+ours to fix, so `McpListTooLong` gives `mcp_too_large`, even with our root.
+
+**An edge that we accept.** A fault of ours inside a handler for a transport
+error has that error in its context. So it sorts as `mcp_unreachable`. The
+outage rows need the context walk for the errors that the SDK wraps, so this
+spec keeps the walk and accepts the edge.
 
 So a customer server that is down gives codes that we do not own. It makes no
 task at once (§7.2). Only a fault in our own client makes a task at once.
@@ -445,7 +475,7 @@ with `SET search_path = pg_catalog, pg_temp`. It names each table with
 `public.`. EXECUTE goes to `acb_app` only, and the file revokes it from
 `PUBLIC` and the three Supabase roles.
 
-1. **`failure_count`** takes the fingerprint and its four fields. It also
+1. **`failure_tally`** takes the fingerprint and its four fields. It also
    takes the source, the surface, the release and a count `p_n`.
    - It reads the tenant from `current_setting('app.tenant_id', true)`. No
      argument names a tenant (R5 e). With no tenant, it raises.
@@ -472,13 +502,13 @@ with `SET search_path = pg_catalog, pg_temp`. It names each table with
 `app.tenant_id` equals `failure_config.internal_org`. They also raise when
 `failure_config` has no row. So a session of any other tenant gets a refusal
 from the database, not only from fence P6.
-`failure_count` is open to each tenant, for its own counts.
+`failure_tally` is open to each tenant, for its own counts.
 
 ### 5.4 Retention
 
 | Table | Kept | How |
 |---|---|---|
-| `failure_events` | 30 days | The prune of TOF-2e binds each organization in turn, as the app role, and deletes its own old rows |
+| `failure_events` | 30 days | The prune hook of TOF-2e (§7.1) runs in the session of each org, as the app role, and deletes its old rows |
 | `failure_org_days` | 90 days | The same prune |
 | `failure_daily` | 400 days | The sync job calls `failure_prune_daily` |
 | `failure_fingerprints` | While its task exists | It holds no tenant data |
@@ -499,7 +529,9 @@ site of §4 calls it, and nothing else writes a `failure_*` table. The name
 differs from `unattended.record_failure`, which stays the job ledger.
 
 1. The caller passes the exception (or none), the source, the code, the tool
-   name and the surface. It passes no tenant.
+   name and the surface. It passes no tenant, and no set of built-in names.
+   `record_tool_failure` takes the set that `set_builtin_names()` stored
+   (§3.2 rule 1). With no set, a chat name gives `other`.
 2. `record_tool_failure` reads the tenant with `current_tenant()`. With no
    tenant, or with the org off `TOOL_FAILURE_LOG_ORGS`, it returns at once.
 3. It computes the platform fields at once, inside the `except` block, so
@@ -509,7 +541,7 @@ differs from `unattended.record_failure`, which stays the job ledger.
 5. One drain task for each process takes the queue. It joins equal records
    within 2 seconds into one call with `p_n`.
 6. For each tenant, the drain opens `tenant_session(org)`. It inserts the
-   event rows and calls `failure_count` in one transaction, with a timeout of
+   event rows and calls `failure_tally` in one transaction, with a timeout of
    2 seconds.
 7. **The sample cap.** An org writes at most 20 event rows for each
    fingerprint and hour. A tenant Redis counter through `tenant_redis` holds
@@ -539,12 +571,23 @@ an exact number, because a crash loses the queue.
 - **Its statuses.** TOF-2b makes the project with four statuses: Open
   (`todo`), Review (`in_progress`), Done (`done`) and Cancelled
   (`cancelled`). No status category names review (`core.py` line 339). So the
-  job finds each lane by its name in this project.
+  job finds each lane by its name in this project. If a person renames a
+  lane, the job finds no lane of that name. Then it moves no task, and it logs
+  `failure_sync.lane_missing` with the name, until the name is back.
 - **The writer.** `failure.sync` is a seed hook of the job queue
   (`docs/job_queue.md` §5c), every 15 minutes. It returns for each org except
   `TOOL_FAILURE_ORG_ID`. It starts no lifespan loop. If `JOB_QUEUE` is off on
   production, TOF-2f asks the owner to flip it. The dedupe key of the bucket
   gives one live job.
+- **Its registration.** TOF-2e registers `failure.sync` with
+  `mode="detached"`, `idempotent=True`, `effect="write"`, and a policy that
+  names D225 and the internal org only. See `gateway/jobs/worker.py`
+  `register` and the fence `test_job_effects_fence.py`. It imports the module in
+  `gateway/main.py` beside the other seed consumers. It adds a consumer line
+  to `docs/job_queue.md` §5c.
+- **The prune.** The tenant prune of §5.4 is a `worker.prune_hooks` hook
+  (`docs/job_queue.md` §5b). The daily `jobs.prune` runs it in the session of
+  each org.
 - **The principal.** The job binds the internal org with
   `tenant_session(TOOL_FAILURE_ORG_ID)`. It makes a task through
   `check_task_values` and `create_task_in`, as the member
@@ -690,7 +733,7 @@ holds.
 | P3 | The DB refuses a bad shape, a made-up fingerprint and a call with no tenant | `tests/unit/test_failure_store_r8.py`, new. R8, FORCE RLS, as a role that is not the owner, not a superuser and not BYPASSRLS |
 | P4 | An org sees only its own tenant rows. `acb_app` cannot read a platform table. Only the internal org runs the job functions | `test_failure_store_r8.py` |
 | P5 | The band shows `<3` for 1 or 2 organizations | `test_failure_store_r8.py` |
-| P6 | One writer and one capture list | `tests/unit/test_failure_capture_sites.py`, new. Each site of §4.2 calls `record_tool_failure`. No module but `failure_log.py` and the sync job names one of these exact SQL names: `failure_events`, `failure_org_days`, `failure_fingerprints`, `failure_daily`, `failure_config`, `failure_reports`, `failure_count`, `failure_org_band`, `failure_due`, `failure_set`, `failure_prune_daily`. The fence matches whole words, so `failure_text` and `record_failure` do not match |
+| P6 | One writer and one capture list | `tests/unit/test_failure_capture_sites.py`, new. Each site of §4.2 calls `record_tool_failure`. No module but `failure_log.py` and the sync job names one of these exact SQL names: `failure_events`, `failure_org_days`, `failure_fingerprints`, `failure_daily`, `failure_config`, `failure_reports`, `failure_tally`, `failure_org_band`, `failure_due`, `failure_set`, `failure_prune_daily`. The fence matches whole words, so `failure_text` and `record_failure` do not match. The fence reads `apps/` and `packages/`. `scripts/gen_tenant_migration.py`, `infra/postgres/` and `tests/` are out of its scope. `failure_tally` is a new name, because `push/store.py` already uses the column `failure_count` |
 | P7 | The logger never fails a tool call, and it holds its bounds | `tests/unit/test_failure_log_queue.py`, new. With the store down, each tool answers as before. A full queue drops and counts. Equal records join into one `p_n`. The sample cap stops event rows at 20 and keeps the count |
 | P8 | The coverage fence holds the tenant tables, and EXEMPT holds the platform tables with a reason | `tests/unit/test_tenant_coverage.py` |
 | P9 | A row older than its retention is gone after the prune, in each org, as the app role | `test_failure_store_r8.py` |
@@ -728,7 +771,7 @@ fingerprint and new work in TOF-2b to TOF-2e.
 | T3 | Tenant text enters through a name or a path | Only a registry name and a declared route template pass. MCP, Studio and model names become placeholders |
 | T4 | Tenant code names a class or a frame | The module allow list with the attribute walk, and frames in the four trees only |
 | T5 | Error text injects an instruction into a coding agent | The task holds no tenant text. A report is read only by a person, in an untrusted frame (§8.2). The Metorite MCP returns comments as `untrusted_text` |
-| T6 | A caller forges a tenant or a fingerprint | `failure_count` reads `app.tenant_id` and computes the hash again |
+| T6 | A caller forges a tenant or a fingerprint | `failure_tally` reads `app.tenant_id` and computes the hash again |
 | T7 | A failure loop floods the database | The queue bound, the join of equal records, and the sample cap. Fence P7 |
 | T8 | A DEFINER function leaks across tenants | Each returns platform columns or a band. Only the internal org runs the job functions (§5.3) |
 | T9 | A secret reaches a report | The `secret_shapes` scrub before the card shows, and the 90-day delete |
@@ -780,8 +823,8 @@ The planner made each task in Backlog under epic 3393 (2026-11-16) and wrote its
 | **TOF-2a** | 3416 | 2 | This spec, its INDEX row, the pointers in `agent_sandbox.md`, and the board rows of `work_plan.md` §2.1 | The lint passes. INDEX names the spec. An Opus audit gives GO | `test_index_completeness.py`, `test_doc_names_resolve.py`, ste-lint | HIGH, docs · AGENT-SAFE | none |
 | **TOF-2b** | 3543 | 2 | The normaliser (§3), the migration of §5, `record_tool_failure` (§6), the EXEMPT entries, the generated tenant set, `builtin_tool_names()`, and the private project with its four statuses (§7.1). Files: `acb_common/failure_fingerprint.py`, `acb_common/failure_log.py`, `acb_skills/builtin_tools.py` (new), `infra/postgres/<next>_failure_store.sql`, `scripts/gen_tenant_migration.py`, `infra/postgres/generated/`, `settings.py`, `.env.example` | The 10 golden cases pass. A fixture call writes one event row and one count. A call with no tenant, a bad field or a made-up fingerprint gets a refusal. Another org gets a refusal from the job functions | P2, P3, P4, P5, P7, P8 | HIGH · AGENT-SAFE dark. The apply is OWNER-GATE | The owner activates this spec and answers TOF-Q2, because the code site is an input of the v1 hash |
 | **TOF-2c** | 3544 | 2 | The chat sites C1 to C4, the C1 skip rule, the `channel` key, and the two status errors to convert (`skill_my_tasks._GatewayError`, and agent-crm `_MirrorBlocked`, a 409). Out of scope: `knowledge_tools.py`, whose tools are core tools. Files: `acb_skills/pack_tool_guard.py`, `acb_skills/unknown_tool.py`, `acb_common/tool_refusals.py`, `skill_my_tasks/core.py`, `apps/agents/agent-crm/agents.py`, `orchestrator/executor.py` | Each site writes one record for one failure. A refusal of §4.1 writes none. A gateway 5xx seen in the chat writes none. A 401 from an outside host writes none. A 401 from the gateway writes `auth_401`. A connect error to an outside host writes `outside_unreachable` | `test_failure_capture_sites.py`, new. `test_every_pack_tool_answers_text.py`, `test_unknown_tool_answer.py`, `test_tool_argument_shapes.py` | STANDARD, Opus review: a shared seam · AGENT-SAFE dark | TOF-2b |
-| **TOF-2d** | 3545 | 2 | The door sites D1 and D2, the route set of §3.2 rule 1, and the MCP sites C5 to C7 with the map of §4.3. Files: `gateway/main.py`, `orchestrator/_maf_mcp.py`, `gateway/connections/mcp_tools.py` | A route that raises writes one `unhandled_500` with the tenant of the request. A route that answers 500 writes one `route_500`. A `db_busy` 503 writes none. A concrete path writes `route:other`. An MCP timeout writes `mcp_timeout`, with the server in `tool_name` only. An `isError` answer writes `mcp_tool_error`, in the chat and in `shape_result`. A refused connect writes `mcp_unreachable`. A Studio live read that times out writes one `mcp_timeout` and no `route_upstream`. A `KeyError` raised in our MCP client code writes `mcp_exception` with its site | `test_failure_capture_sites.py`, `test_db_busy.py`, `test_maf_mcp_confirm.py`, `test_studio_mcp_tools.py` | HIGH: the tenant seam · AGENT-SAFE dark | TOF-2b |
-| **TOF-2e** | 3546 | 2 | `failure.sync` as a seed hook (§7.1), the task text, the states of §7.4, `build_committed_at`, the prune of §5.4 under `TOOL_FAILURE_TASKS`, the GH-6 skip and the `next-ticket.md` line. Files: `gateway/failures/sync.py` (new), `gateway/build_info.py`, `routes/projects/github_merge.py`, `github_integration.md` §12.3, `.claude/commands/next-ticket.md` | On a real database: one task for each fingerprint. A repeat updates the counts. A merge, a live build and 7 clean days close it. A repeat of a release that holds the fix reopens it, and a repeat of an old release does not. A move to Done goes back to Review. GH-6 skips the project. After the prune, in each org and as the app role, `failure_events` rows older than 30 days and `failure_org_days` rows older than 90 days are gone. `failure_daily` rows older than 400 days are gone | `tests/unit/test_tool_failure_tasks_r8.py`, new. P1, P9. `test_github_merge_r8.py` | HIGH: writes into the internal org · AGENT-SAFE dark | TOF-2b |
+| **TOF-2d** | 3545 | 2 | The door sites D1 and D2, the route set of §3.2 rule 1, and the MCP sites C5 to C7 with the map of §4.3. Files: `gateway/main.py`, `orchestrator/_maf_mcp.py`, `gateway/connections/mcp_tools.py` | A route that raises writes one `unhandled_500` with the tenant of the request. A route that answers 500 writes one `route_500`. A `db_busy` 503 writes none. A concrete path writes `route:other`. An MCP timeout writes `mcp_timeout`, with the server in `tool_name` only. An `isError` answer writes `mcp_tool_error`, in the chat and in `shape_result`. A refused connect writes `mcp_unreachable`. A Studio live read that times out writes one `mcp_timeout` and no `route_upstream`. A `KeyError` raised in our MCP client code writes `mcp_exception` with its site. A server that lists too many tools writes `mcp_too_large` | `test_failure_capture_sites.py`, `test_db_busy.py`, `test_maf_mcp_confirm.py`, `test_studio_mcp_tools.py` | HIGH: the tenant seam · AGENT-SAFE dark | TOF-2b |
+| **TOF-2e** | 3546 | 2 | `failure.sync` as a seed hook (§7.1), the task text, the states of §7.4, `build_committed_at`, the prune of §5.4 under `TOOL_FAILURE_TASKS`, the GH-6 skip and the `next-ticket.md` line. Files: `gateway/failures/sync.py` (new), `gateway/main.py`, `docs/job_queue.md` §5c, `gateway/build_info.py`, `routes/projects/github_merge.py`, `github_integration.md` §12.3, `.claude/commands/next-ticket.md` | On a real database: one task for each fingerprint. A repeat updates the counts. A merge, a live build and 7 clean days close it. A repeat of a release that holds the fix reopens it, and a repeat of an old release does not. A move to Done goes back to Review. GH-6 skips the project. After the prune, in each org and as the app role, `failure_events` rows older than 30 days and `failure_org_days` rows older than 90 days are gone. `failure_daily` rows older than 400 days are gone | `tests/unit/test_tool_failure_tasks_r8.py`, new. P1, P9. `test_github_merge_r8.py` | HIGH: writes into the internal org · AGENT-SAFE dark | TOF-2b |
 | **TOF-2f** | 3547 | 2 | Turn it on: the `failure_config` row, the ids, the grant of the TOF-Q3 group on the project, `JOB_QUEUE` if it is off, then `TOOL_FAILURE_LOG_ORGS` and `TOOL_FAILURE_TASKS` together, for the internal org first | One real failure on production makes one task. Evidence: the ledger line, the deployed SHA, the `failure_log` line and the task | none: an act | OWNER-GATE | TOF-2c, TOF-2d, TOF-2e, TOF-Q2, TOF-Q3 |
 | **TOF-2g** | 3548 | Later | The consent card, `failure_reports` and its two deletes (§8.1) | Narrowed out, not dispatchable until an owner-activated amendment. It then names its files | P10 | HIGH | TOF-2b, TOF-Q4 |
 | **TOF-2h** | 3549 | Later | The audited read (§8.2) | Narrowed out, as TOF-2g | `tests/unit/test_failure_report_read_r8.py`, new | HIGH | TOF-2g |
@@ -790,7 +833,7 @@ The planner made each task in Backlog under epic 3393 (2026-11-16) and wrote its
 **The order.** TOF-2b first. Then TOF-2c, TOF-2d and TOF-2e can run in
 parallel. TOF-2f and the demo come last. TOF-2d and CSY-2 both edit
 `_McpPermissionGate.process`, so the second to start takes the first as its
-base.
+base. TOF-2d and TOF-2e both edit `gateway/main.py`, with the same rule.
 
 A test file marked "new" does not exist yet. The slice that names it writes
 it, red first.
