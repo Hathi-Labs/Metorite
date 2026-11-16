@@ -951,6 +951,20 @@ class _ClosedOutsideDev:
         assert line["acb_env"] == "prod"
         assert ORG_KEY not in repr(line), "the log line holds a secret"
 
+    async def test_a_wired_production_box_reaches_the_Router(
+        self, monkeypatch, tmp_path, _fresh_settings
+    ):
+        """🔴 The guard sits AFTER the Router branch. Production with the flag
+        on and a wired Console sends the call to the Router, with no refusal,
+        no vendor call and no key load. Mutation: move ``refuse_direct_arm``
+        above ``if routing_is_on():`` → this case raises → red."""
+        _box(monkeypatch, tmp_path, env=None, flag="1", url=CONSOLE_URL)
+        spies = self._spies(monkeypatch)
+        await self._call()
+        assert len(spies.router.calls) == 1, "the Router did not get the call"
+        assert spies.litellm_calls == 0, "a routed call reached a vendor"
+        assert spies.keys_loaded == 0, "a routed call loaded a vendor key"
+
     async def test_a_dev_box_still_takes_the_direct_arm(
         self, monkeypatch, tmp_path, _fresh_settings
     ):
@@ -1148,6 +1162,34 @@ class TestTheV1DoorIsClosedOutsideDev:
         assert lines[0]["seam"] == self.seam
         assert lines[0]["router_wired"] is True
         assert ORG_KEY not in repr(lines[0]), "the log line holds a secret"
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_a_wired_production_box_reaches_the_Router(
+        self, monkeypatch, tmp_path, _fresh_settings, stream
+    ):
+        """🔴 The refusal sits AFTER the Router hop. Production with the flag
+        on and a wired Console serves through the Router: no 502, no vendor
+        call, no key load."""
+        from acb_auth import console_resolve
+
+        v1 = self._v1()
+        _box(monkeypatch, tmp_path, env=None, flag="1", url=CONSOLE_URL)
+        spies = self._spies(monkeypatch, v1)
+        streamed: list[dict[str, Any]] = []
+
+        async def _frames(payload, **_kw):
+            streamed.append(payload)
+            yield b'data: {"choices": []}\n\n'
+
+        monkeypatch.setattr(console_resolve, "stream_completion_on_console", _frames)
+        body = {"model": "tier-balanced", "messages": MESSAGES, "stream": stream}
+        got = await v1._handle_chat_completions(_V1Request(body))
+        assert getattr(got, "status_code", 200) == 200, "a routed call got a refusal"
+        sent = len(streamed) if stream else len(spies.router.calls)
+        assert sent == 1, "the Router did not get the call"
+        assert spies.litellm_calls == 0, "a routed call reached a vendor"
+        assert spies.keys_loaded == 0, "a routed call loaded a vendor key"
+        assert v1.ROUTER_FAILED_AT == 0.0
 
     async def test_a_dev_box_still_takes_the_local_arm(
         self, monkeypatch, tmp_path, _fresh_settings

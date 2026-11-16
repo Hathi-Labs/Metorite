@@ -15,8 +15,8 @@ Neither flag covers an agent on any box.
 
 **Task 3554 (2449 S3) is built, with no flag (2026-11-16, branch
 `ai3554-no-direct-fallback`).** Outside `ACB_ENV=dev`, a chat call that the
-Router does not take raises `ConsoleRouterUnavailable("unrouted")`. It loads
-no vendor key and calls no vendor. The `/v1` door answers the 502 of a Router
+Router does not take raises `ConsoleRouterUnavailable("unrouted")`. The
+refused call loads no key and calls no vendor. The `/v1` door answers the 502 of a Router
 outage. §2.10 and the S5 row of §11 hold the detail. **It merges only on
 evidence that production routes:** see the S5 row.
 

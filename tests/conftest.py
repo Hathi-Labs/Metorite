@@ -413,15 +413,19 @@ def _allow_the_direct_ai_arm(request, monkeypatch):
     and runs the real guard. Fence: the classes that ``refuse_direct_arm``
     names in ``tests/unit/test_internal_ai_is_routed.py``.
 
-    ``sys.modules`` and not an import: ``acb_llm`` loads litellm, and a test
-    that never loads it pays nothing. ``acb_llm.client`` loads the guard
-    module, so each seam has it in place before its first call.
+    The fixture imports the guard module itself, so a test that imports
+    ``acb_llm`` only in its body still gets the allow. ``acb_llm`` loads
+    litellm, once for each process. A tree with no ``acb_llm`` skips.
     """
-    import sys
-
-    routed = sys.modules.get("acb_llm.routed")
-    if routed is not None and request.node.get_closest_marker("direct_arm_guard") is None:
-        monkeypatch.setattr(routed, "direct_arm_allowed", lambda: True)
+    if request.node.get_closest_marker("direct_arm_guard") is not None:
+        yield
+        return
+    try:
+        from acb_llm import routed
+    except ImportError:  # acb_llm unavailable: no direct arm to allow
+        yield
+        return
+    monkeypatch.setattr(routed, "direct_arm_allowed", lambda: True)
     yield
 
 
