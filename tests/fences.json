@@ -141,6 +141,7 @@
       "workbench/control_plane/src/app/signin/signin.test.ts",
       "workbench/control_plane/src/app/signup/signup.test.ts",
       "workbench/control_plane/src/components/rawControls.test.ts",
+      "workbench/control_plane/src/lib/chatResume.test.ts",
       "workbench/control_plane/src/lib/e2eGate.test.ts",
       "workbench/control_plane/src/lib/emailOtpAdapter.test.ts",
       "workbench/control_plane/src/lib/gateway.test.ts",

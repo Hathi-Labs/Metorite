@@ -33,7 +33,8 @@ const TONE_ICON: Record<RunTone, string> = {
   working: "LoaderCircle",
   finishing: "LoaderCircle",
   waiting: "MessageCircleQuestion",
-  parked: "CirclePause",
+  // D-RES-6: a parked card looks the same as a live wait.
+  parked: "MessageCircleQuestion",
   done: "CircleCheck",
   stopped: "CircleStop",
 };
