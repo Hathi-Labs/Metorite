@@ -1227,9 +1227,10 @@ async def _llm_draft_reply(
         )
         files = email.get("_files")
         if on_delta is not None and isinstance(files, DraftFiles) and files.images:
-            # The streamed call goes to litellm with no Router hop, so no
-            # model is chosen for the images (review round 1, P1-c). They
-            # are named as not read instead.
+            # The streamed call sends no images (review round 1, P1-c). With
+            # routing off it goes to litellm with no Router hop. With routing
+            # on it is one Router answer (task 3541), and that slice did not
+            # add a vision task to it. So the images are named as not read.
             files.unread.extend((n, UNREAD_IMAGE) for n, _u in files.images)
             files.images = []
         # Fit the parts to the window of the tier, or move to a tier with a
