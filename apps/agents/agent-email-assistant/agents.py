@@ -2501,24 +2501,100 @@ async def _closed_card_line(form: dict[str, Any], kept: str) -> str:
 _KEPT_DRAFT = (" Your earlier draft of this email stays in Drafts as it was, and "
                "the new text is a second draft beside it.")
 
-#: The answer of a send card that the member wrote over in the chat
-#: (``ask_tools.REVISED``). Their words follow this result.
-_CARD_REVISED = (
-    card_outcome_head(CLOSED_BY_YOUR_MESSAGE, "Nothing was sent.")
-    + " The draft of this reply in Drafts holds the "
-    "text of the card, and a new card updates it. The member's words come "
-    "next, as their own chat message. If "
-    "they change this mail, change it, keep every part they did not ask to "
-    "change, and show a new card with the new text. If they ask about "
-    "something else, answer that first, then ask whether to show the card "
-    "again. If they ask to copy people, find each person with find_contact, "
-    "and ask with ask_questions when names clash. Then call compose_reply "
-    "again with ALL the people in cc, in ONE call, so ONE card shows them. "
-    "The card keeps every person of the email, the Cc of the email "
-    "included, so never drop one. \"X and Y\" means one mail to both. For a "
-    "Bcc, call compose_reply again with the person in bcc, or add it to the "
-    "draft with edit_draft and offer send_draft. "
-    "Never send the member to the Email app for it.")
+# ── HRD-8a: a card that a chat message closed keeps its act ─────────────────
+#
+# Task 2987 (``chat_failure_modes.md`` C2). On 2026-11-11 the owner asked to
+# forward a mail with a note, and wrote in the chat while the card was open.
+# The forward answered with the text of a reply card, which said "call
+# compose_reply again". The redraft became a NEW mail. So each email card
+# answers with the text of its own act, and the text names the one tool that
+# does that act again. Only ``compose_reply`` answers with the reply text.
+# Fence: ``tests/unit/test_redraft_keeps_act.py``.
+
+#: The steps of each act of an email card, after the head of the one table
+#: of card outcomes (HRD-7). Each text names its act and its tool, and no
+#: other send tool. ``_held_card`` maps each kind of held card to its act.
+_CLOSED_STEPS: dict[str, str] = {
+    "reply": (
+        "This card was a reply. Its tool is compose_reply. The draft of this "
+        "reply in Drafts holds the text of the card, and a new card updates "
+        "it. The member's words come next, as their own chat message. If they "
+        "change this mail, change it. Keep every part that they did not ask to "
+        "change. Then call compose_reply again with the new text, so a new card "
+        "shows. If they ask about something else, answer that first, then ask "
+        "whether to show the card again. If they ask to copy people, find each "
+        "person with find_contact, and ask with ask_questions when names clash. "
+        "Then call compose_reply again with ALL the people in cc, in ONE call, "
+        "so ONE card shows them. The card keeps every person of the email, the "
+        "Cc of the email included, so never drop one. \"X and Y\" means one "
+        "mail to both. For a Bcc, call compose_reply again with the person in "
+        "bcc. Or add the Bcc to the draft with edit_draft, and offer "
+        "send_draft. Never send the member to the Email app for it."),
+    "new_mail": (
+        "This card was a new email. Its tool is send_email. The member's words "
+        "come next, as their own chat message. If they change this mail, "
+        "change it. Keep every part that they did not ask to change. Then call "
+        "send_email again with the new text, so a new card shows. If they ask "
+        "to add a person, find the address with find_contact first. If they "
+        "ask about something else, answer that first."),
+    "send": (
+        "This card was an email to send now. Its tool is send_email. The "
+        "member's words come next, as their own chat message. If they change "
+        "this mail, change it. Keep every part that they did not ask to "
+        "change. Then call send_email again with the new text, so a new card "
+        "shows. If the card was a reply, keep the same reply_to_email_id. If "
+        "they ask to add a person, find the address with find_contact first. "
+        "If they ask about something else, answer that first."),
+    "forward": (
+        "This card was a forward of an email. Its tool is forward_email. The "
+        "member's words come next, as their own chat message. Keep it a "
+        "forward of the same email. Do not make it a new email or a reply. If "
+        "they change it, call forward_email again with the same email_id, so a "
+        "new card shows. Send it to the people that the member names. Keep the "
+        "note, the files and each person that they do not change. If they ask "
+        "to add a person, find the address with find_contact first. If they "
+        "ask about something else, answer that first."),
+    "scheduled_send": (
+        "This card was a send of a draft at a later time. Its tool is "
+        "schedule_send. Nothing was scheduled, and the draft stays in Drafts. "
+        "The member's words come next, as their own chat message. If they "
+        "change the time, call schedule_send again with the same draft_id and "
+        "the new send_at. If they change the text or the people, change the "
+        "draft with edit_draft first. Then call schedule_send again, so a new "
+        "card shows. If they ask about something else, answer that first."),
+    "send_draft": (
+        "This card was a send of a draft. Its tool is send_draft. The draft "
+        "stays in Drafts. The member's words come next, as their own chat "
+        "message. If they change the text or the people, change the draft "
+        "with edit_draft first. Then call send_draft again with the same "
+        "draft_id, so a new card shows. If they ask about something else, "
+        "answer that first."),
+    "unsubscribe": (
+        "This card was an unsubscribe from a sender. Its tool is "
+        "unsubscribe_sender. No sender was unsubscribed. The member's words "
+        "come next, as their own chat message. If they change the senders, "
+        "call unsubscribe_sender again, so a new card shows. If they ask about "
+        "something else, answer that first."),
+}
+
+
+def _closed_by_message(act: str) -> str:
+    """The answer of an email card of *act* that a chat message closed
+    (``ask_tools.REVISED``), HRD-8a.
+
+    The head comes from the one table of card outcomes (HRD-7), so the chat
+    draws the receipt "Draft being changed" (``noActionOf``) and the member
+    line of the outcome (``memberLineOf``). The steps of *act* follow, and
+    they name the tool of the act. A ``KeyError`` names an act that is not in
+    :data:`_CLOSED_STEPS`."""
+    return (f"{card_outcome_head(CLOSED_BY_YOUR_MESSAGE, 'Nothing was sent.')} "
+            f"{_CLOSED_STEPS[act]}")
+
+
+#: The answer of a reply card that the member wrote over in the chat
+#: (``ask_tools.REVISED``). Their words follow this result. Only
+#: ``compose_reply`` gives it (HRD-8a).
+_CARD_REVISED = _closed_by_message("reply")
 
 #: The answer of a card that the member wrote over, when the card's draft is
 #: no longer in Drafts (task 1526, fix round 1, item 6). The tool hands the
@@ -6428,7 +6504,8 @@ async def send_email(
     )
     if not approved:
         if _revised(approved):
-            return _CARD_REVISED
+            # HRD-8a: the act of this card is a send_email, never a reply card.
+            return _closed_by_message("send")
         line = _unapproved_line()
         if line:
             return line
@@ -6445,14 +6522,8 @@ async def send_email(
 # ── The one email card of a new mail (§18.10, owner 2026-11-03) ──────────────
 
 #: The answer when the member wrote in the chat while a new-mail card was open.
-_NEW_MAIL_REVISED = (
-    card_outcome_head(CLOSED_BY_YOUR_MESSAGE, "Nothing was sent.")
-    + " The member's words come next, as their own "
-    "chat message. If they change "
-    "this mail, change it, keep every part they did not ask to change, and "
-    "call send_email again with the new text, so a new card shows. If they ask "
-    "to add a person, find the address with find_contact first. If they ask "
-    "about something else, answer that first.")
+#: A held new mail gives it too (``_held_card``, HRD-8a).
+_NEW_MAIL_REVISED = _closed_by_message("new_mail")
 #: §18.11 step 5: the line after the member's own version of the card. The
 #: version itself is the gateway's neutral data block (``compose_card_draft``).
 _START_FROM_THE_MEMBER = (
@@ -7071,7 +7142,8 @@ async def forward_email(
     )
     if not approved:
         if _revised(approved):
-            return _CARD_REVISED
+            # HRD-8a: the redraft stays a forward of this email (task 2987).
+            return _closed_by_message("forward")
         line = _unapproved_line()
         if line:
             return line
@@ -7241,13 +7313,17 @@ def _with_draft_text(
 # only the ticked rows that it recorded. The tool names no recipient, no
 # class and no file of its own.
 
-#: The answer when the member wrote in the chat while a held card was open.
-_HELD_CARD_REVISED = (
-    card_outcome_head(CLOSED_BY_YOUR_MESSAGE, "Nothing was sent.")
-    + " The member's words come next, as their own "
-    "chat message. If they change "
-    "this mail, change it, and show a new card. If they ask about something "
-    "else, answer that first.")
+#: The act of each kind of held card, for the answer when the member wrote in
+#: the chat while the card was open (HRD-8a). The text names the tool of that
+#: act, so a held forward stays a forward. Each kind that a tool sends to
+#: ``POST /email/held-card`` is here. Fence: ``tests/unit/test_redraft_keeps_act.py``.
+_HELD_KIND_ACTS: dict[str, str] = {
+    "new": "new_mail",
+    "forward": "forward",
+    "draft": "send_draft",
+    "schedule": "scheduled_send",
+    "unsubscribe": "unsubscribe",
+}
 
 
 async def _held_card(
@@ -7263,7 +7339,12 @@ async def _held_card(
 
     *form* (§18.10): a new mail draws the gateway's form of the same record,
     the ONE email card that the member edits, where a run can draw it. A
-    WhatsApp run and an older gateway keep the rows card."""
+    WhatsApp run and an older gateway keep the rows card.
+
+    HRD-8a: a card that the member's words closed answers with the text of
+    the act of its kind (:data:`_HELD_KIND_ACTS`). A kind with no act raises
+    before any card shows."""
+    closed = _closed_by_message(_HELD_KIND_ACTS[str(body.get("kind") or "")])
     try:
         from acb_skills import ask_tools
     except ImportError:  # an older platform with no card
@@ -7282,7 +7363,7 @@ async def _held_card(
             return _held_refusal(exc, lead)
         raise
     if edit and isinstance(prep.get("form"), dict):
-        return await _held_form_card(prep, lead, act, thread)
+        return await _held_form_card(prep, lead, act, thread, closed=closed)
     answer = await ask_tools.request_confirmation(
         title=str(prep.get("title") or "Send this mail?"),
         detail=str(prep.get("detail") or ""),
@@ -7293,7 +7374,7 @@ async def _held_card(
         close_on_steer=True,
     )
     if _revised(answer):
-        return _HELD_CARD_REVISED
+        return closed
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
         return _unapproved_line() or _not_done(act)
     member = _current_user_email().strip().lower()
@@ -7312,7 +7393,7 @@ async def _held_card(
 
 
 async def _held_form_card(
-    prep: dict[str, Any], lead: str, act: str, thread: str = "",
+    prep: dict[str, Any], lead: str, act: str, thread: str = "", *, closed: str,
 ) -> dict[str, Any] | str:
     """The held new mail as the one email card (§18.10), on the gateway's
     record. The gateway's form keeps each §21 rule: the classes, and a new
@@ -7321,14 +7402,15 @@ async def _held_form_card(
     A chat message that closes it (§18.11) spends the record through the
     same revise route as a plain card. The next held card works out its
     classes and its ticks again, so the member's version never ticks a new
-    address. A revise that did not run shows the same card again."""
+    address. A revise that did not run shows the same card again. *closed*
+    is the text of the card's act that the model then reads (HRD-8a)."""
     form = dict(prep["form"])
     form["notices"] = list(form.get("notices") or [])
     if any(c == "new" for c in (form.get("classes") or {}).values()):
         _form_notice(form, _NEW_MAIL_NEW_UNTICKED)
     card_id = str(prep.get("card_id") or "")
     answer, revised, came_back = await _ask_until_revised(
-        form, card_id, thread, _HELD_CARD_REVISED)
+        form, card_id, thread, closed)
     if revised is not None:
         return revised
     return _noted(await _held_form_answered(answer, lead), came_back)
@@ -8281,7 +8363,8 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     )
     if not approved:
         if _revised(approved):
-            return _CARD_REVISED
+            # HRD-8a: the redraft stays a send later of this draft.
+            return _closed_by_message("scheduled_send")
         line = _unapproved_line()
         if line:
             return line
