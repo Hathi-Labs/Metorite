@@ -98,6 +98,16 @@ default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CONNECTED_SYSTEMS_ORGS` turns on the "Connected systems" block of the chat
+(`chat_connected_systems.md` §3.2, CSY-1). For each listed org, a chat that
+attached an MCP server gets one block at the end of the per-turn context: the
+brief of each attached server and the standing rule. `*` lists every org, and
+the default is empty. Empty means the context keeps its bytes. Its one reader
+is `orchestrator._maf_mcp.connected_systems_org_allowed`, which
+`executor._connected_systems_block` asks on each turn, on the run's org. A
+reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`), after
+the owner preview.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the

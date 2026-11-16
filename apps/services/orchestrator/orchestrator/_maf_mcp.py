@@ -181,6 +181,10 @@ class McpServer:
     #: IN-8c (D98): the admin that an OAuth connection acts as, from the
     #: ``connected_by`` of its row. Empty for a header server.
     acts_as: str = ""
+    #: CSY-1: the registry label and the admin's description, for the brief of
+    #: the server (``acb_skills.server_brief``). Data, never an instruction.
+    label: str = ""
+    description: str = ""
 
 
 #: An open server: the tool and the client that the run must close.
@@ -206,6 +210,20 @@ def maf_mcp_org_allowed(organization_id: str | None) -> bool:
     if not org:
         return False
     orgs = maf_mcp_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def connected_systems_orgs() -> frozenset[str]:
+    """The organization ids in ``CONNECTED_SYSTEMS_ORGS`` (CSY-1). Empty means none."""
+    return _parse_orgs(str(getattr(get_settings(), "connected_systems_orgs", "") or ""))
+
+
+def connected_systems_org_allowed(organization_id: str | None) -> bool:
+    """True when ``CONNECTED_SYSTEMS_ORGS`` allows *organization_id*. No org is false."""
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    orgs = connected_systems_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 
