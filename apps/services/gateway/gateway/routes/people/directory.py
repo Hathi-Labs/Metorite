@@ -234,9 +234,12 @@ RELATED_ADDRESS_SQL = (
     f"WHERE id = ANY(CAST(:ids AS uuid[])) AND {_BOUND} ORDER BY id"
 )
 
-#: The people of a set of ids, as the directory reads them.
+#: The people of a set of ids, as the directory reads them: active people
+#: only, the rule of ``open`` in ``knowledge_graph.md`` §6 (FIND-3 fix round,
+#: P2-2). An alumni, an invited person and a row with no status never open.
 OPEN_PEOPLE_SQL = (
-    f"SELECT * FROM people WHERE id = ANY(CAST(:ids AS uuid[])) AND {_BOUND} ORDER BY name"
+    "SELECT * FROM people WHERE id = ANY(CAST(:ids AS uuid[])) "
+    f"AND status = 'active' AND {_BOUND} ORDER BY name"
 )
 
 
@@ -263,10 +266,8 @@ async def open_people(user: UserContext, ids: list[str]) -> list[dict[str, Any]]
     """The people of *ids* that the member can open, for the company search
     (FIND-3, ``knowledge_graph.md`` §6).
 
-    The directory and ``GET /people/{id}`` open every person of the tenant
-    for a holder of ``feature:people``, so this reads every person too. The
-    HR half follows the caller's grant, as in :func:`list_directory`, and no
-    private field comes back.
+    Active people only, the rule of §6. The HR half follows the caller's
+    grant, as in :func:`list_directory`, and no private field comes back.
     """
     hr = can_read_hr_fields(user)
     async with _tenant_session() as db:

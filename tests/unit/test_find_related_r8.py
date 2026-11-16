@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -56,6 +57,7 @@ SHARAT = f"sharat@{DOMAIN}"
 PRIYA = f"priya@bitnib.n{TAG}.test"
 RAVI = f"ravi.{TAG}@gmail.com"
 MEERA = f"meera@fracktal.n{TAG}.test"
+KIRAN = f"kiran@kiranco.n{TAG}.test"
 
 #: Every app of the ladder, and the CRM admin's right, so the access rule passes.
 ALL = ("feature:email", "feature:crm", "feature:people", "admin:access:manage")
@@ -91,6 +93,25 @@ async def _crm(p: Any, org: str) -> dict[str, str]:
             {"o": org, "d": deal, "c": contact})
     return {"company": company, "deal": deal, "lead": lead, "contact": contact,
             "gmail_co": gmail_co, "ravi": ravi}
+
+
+def _copied(admin: Any, *, org: str, account_id: str, sender: str, subject: str,
+            folder: str = "inbox", to: tuple[str, ...] = (), cc: tuple[str, ...] = (),
+            bcc: tuple[str, ...] = (), minutes_ago: int = 10) -> str:
+    """One mail with To, Cc and Bcc lists, in its own thread."""
+    with admin.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO email_messages (account_id, provider_message_id, thread_id, folder, "
+            "from_address, to_addresses, cc_addresses, bcc_addresses, subject, body_text, "
+            "received_at, is_read, organization_id) VALUES (CAST(:a AS uuid), :p, :t, :f, "
+            "CAST(:frm AS jsonb), CAST(:to AS jsonb), CAST(:cc AS jsonb), CAST(:bcc AS jsonb), "
+            ":s, 'A note.', :r, false, CAST(:o AS uuid)) RETURNING id"),
+            {"a": account_id, "p": f"pm-{uuid.uuid4().hex[:10]}", "t": f"t-{uuid.uuid4().hex[:8]}",
+             "f": folder, "frm": json.dumps({"name": "N", "email": sender}),
+             "to": json.dumps([{"email": e} for e in to]),
+             "cc": json.dumps([{"email": e} for e in cc]),
+             "bcc": json.dumps([{"email": e} for e in bcc]), "s": subject,
+             "r": datetime.now(UTC) - timedelta(minutes=minutes_ago), "o": org}).scalar_one())
 
 
 @pytest.fixture
@@ -132,15 +153,46 @@ async def world(ns, app_engine):  # noqa: F811
                   subject="For member B only", body="B's copy.")
     org_b = _mail(p.admin_engine, org=p.org_b, account_id=box_c, sender=SHARAT,
                   subject="The mail of org B", body="Org B.")
+    # Fix round, P2-3: a mail where Priya is only in Cc, and A's own sent mail
+    # where Priya is only in Bcc. Each is newer than the quote of `to_priya`.
+    cc_priya = _copied(p.admin_engine, org=p.org_a, account_id=box_a,
+                       sender=f"vendor@vendor.n{TAG}.test", subject="Shared note on the bench",
+                       to=(A,), cc=(PRIYA,), minutes_ago=1)
+    bcc_priya = _copied(p.admin_engine, org=p.org_a, account_id=box_a, sender=A, folder="sent",
+                        subject="Blind copy note", to=(f"else@else.n{TAG}.test",),
+                        bcc=(PRIYA,), minutes_ago=2)
+    # Fix round, P2-1: Kiran wrote in thread tk, A answered in tk, and Kiran
+    # wrote again in tk2, longer ago.
+    kiran = await _make(p, p.org_a, "/crm/contacts", {
+        "first_name": "Kiran", "last_name": "Threadtest", "email": KIRAN})
+    tk, tk2 = f"t-kiran-{TAG}", f"t-kiran2-{TAG}"
+    kiran_mail = {
+        "first": _mail(p.admin_engine, org=p.org_a, account_id=box_a, sender=KIRAN, thread=tk,
+                       subject="Bench calibration", body="The dates.", minutes_ago=5),
+        "reply": _mail(p.admin_engine, org=p.org_a, account_id=box_a, sender=A, thread=tk,
+                       folder="sent", to=[KIRAN], subject="Re: Bench calibration",
+                       body="Agreed.", minutes_ago=3),
+        "other": _mail(p.admin_engine, org=p.org_a, account_id=box_a, sender=KIRAN,
+                       thread=tk2, subject="Spare parts list", body="The list.",
+                       minutes_ago=50),
+    }
     with p.admin_engine.begin() as c:
         meera = str(c.execute(text(
             "INSERT INTO people (name, email, department, source, organization_id) "
             "VALUES ('Meera Colleague', :e, 'Ops', :s, CAST(:o AS uuid)) RETURNING id"),
             {"e": MEERA, "s": f"related-{TAG}", "o": p.org_a}).scalar_one())
+        # Fix round, P2-2: two people that `open` must not open.
+        gone = {status: str(c.execute(text(
+            "INSERT INTO people (name, email, department, status, source, organization_id) "
+            "VALUES (:n, :e, 'Ops', :st, :s, CAST(:o AS uuid)) RETURNING id"),
+            {"n": f"{status.title()} Person", "e": f"{status}@fracktal.n{TAG}.test",
+             "st": status, "s": f"related-{TAG}", "o": p.org_a}).scalar_one())
+            for status in ("alumni", "invited")}
     yield {"p": p, "a": crm_a, "b": crm_b, "sharat": sharat, "to_priya": to_priya,
            "portal": portal, "chatter": chatter, "from_ravi": from_ravi,
            "from_meera": from_meera, "separate": separate, "for_b": for_b, "org_b": org_b,
-           "meera": meera}
+           "meera": meera, "gone": gone, "cc_priya": cc_priya, "bcc_priya": bcc_priya,
+           "kiran": kiran, "kiran_mail": kiran_mail, "threads": (tk, tk2)}
     with p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM email_accounts WHERE user_id IN (:a, :b, :c)"),
                   {"a": A, "b": B, "c": C})
@@ -393,8 +445,58 @@ async def test_the_people_abilities_read_the_tenant_and_the_feature(world) -> No
     c = _member(C, p.org_b, *ALL)
     assert await _abilities(p, c, "people", [ref], opening=True) == []
     assert await _abilities(p, c, "people", [ref], opening=False) == []
+    # Fix round, P2-2 (``knowledge_graph.md`` §6): active people only. An
+    # alumni and an invited person do not open, and Meera still does.
+    gone = [f"person:{ident}" for ident in world["gone"].values()]
+    assert await _abilities(p, me, "people", gone, opening=True) == []
+    both = await _abilities(p, me, "people", [ref, *gone], opening=True)
+    assert [h.id for h in both] == [world["meera"]]
     # No feature:people: nothing, also past `open_refs`.
     no_people = _member(A, p.org_a, "feature:email")
     for raw in (False, True):
         assert await _abilities(p, no_people, "people", [ref], opening=True, raw=raw) == []
         assert await _abilities(p, no_people, "people", [ref], opening=False, raw=raw) == []
+
+
+# ── One conversation, one place (fix round, P2-1) ───────────────────────────
+
+async def test_one_thread_takes_one_place_of_a_hit(world, flags, roomy) -> None:
+    """Kiran wrote in thread tk, and A answered in tk. mail_from gives the
+    first and mail_to gives the answer, so one round would show tk twice. The
+    contact gets tk once, and tk2 takes the next place."""
+    p, mails = world["p"], world["kiran_mail"]
+    flags("*")
+    answer = await _ask(p, _member(A, p.org_a, *ALL), "Kiran Threadtest")
+    assert world["kiran"] in {h["id"] for h in answer["hits"]}
+    related = _related(answer)
+    kiran = {i: h for i, h in related.items() if h["from"] == f"contact:{world['kiran']}"}
+    assert list(kiran) == [mails["first"], mails["other"]]
+    assert mails["reply"] not in json.dumps(answer)
+    # The thread is internal: no answer key and no text holds it.
+    for thread in world["threads"]:
+        assert thread not in json.dumps(answer)
+    # Non-vacuity: the related read gives the answer, a mail_to of tk.
+    me = _member(A, p.org_a, *ALL)
+    triples = await _abilities(p, me, "email", [f"address:{KIRAN}"], opening=False)
+    assert (f"address:{KIRAN}", "mail_to", f"email:{mails['reply']}") in triples
+
+
+# ── Cc and Bcc (fix round, P2-3) ────────────────────────────────────────────
+
+async def test_a_mail_with_the_contact_in_cc_or_bcc_is_mail_to_it(world, flags, roomy) -> None:
+    """A mail where Priya is only in Cc, and A's own sent mail where she is
+    only in Bcc, are mail to her address."""
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    triples = set(await _abilities(p, me, "email", [f"address:{PRIYA}"], opening=False))
+    for key in ("cc_priya", "bcc_priya", "to_priya"):
+        assert (f"address:{PRIYA}", "mail_to", f"email:{world[key]}") in triples, key
+    answer = await _ask(p, me, "Priya Bitnib")
+    related = _related(answer)
+    for key in ("cc_priya", "bcc_priya"):
+        assert related[world[key]]["edge"] == "mail_to", key
+    # Member B's mailbox holds none of them, and B gets none.
+    seen_b = await _ask(p, _member(B, p.org_a, *ALL), "Priya Bitnib")
+    assert world["cc_priya"] not in json.dumps(seen_b)
+    assert world["bcc_priya"] not in json.dumps(seen_b)

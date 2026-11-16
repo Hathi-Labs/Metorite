@@ -98,6 +98,9 @@ class Graph:
         self.mail_links = list(MAIL_LINKS)
         #: Refs that the member cannot open: ``open`` leaves them out.
         self.closed: set[str] = set()
+        #: The thread of each mail that Email's ``open`` gives (FIND-3 fix
+        #: round, P2-1). A mail that is not here carries no thread.
+        self.threads: dict[str, str] = {}
         #: Seconds that a stage of one source takes: ``(key, "related")``.
         self.slow: dict[tuple[str, str], float] = {}
         self.related_calls: list[tuple[str, list[str]]] = []
@@ -131,9 +134,10 @@ class Graph:
 
     def mail_hit(self, ident: str) -> Hit:
         subject, who, _text = self.mail[ident]
+        thread = {"thread": self.threads[ident]} if ident in self.threads else {}
         return Hit(app="email", kind="email", id=ident, title=subject, hint=f"Email · from {who}",
                    href=f"/email?email={ident}", snippet=subject,
-                   stamp="2026-11-12T00:00:00+00:00")
+                   stamp="2026-11-12T00:00:00+00:00", **thread)
 
     def related(self, key: str):
         async def links(user: Any, refs: list[str]) -> list[tuple[str, str, str]]:
@@ -680,3 +684,115 @@ class TestThePrint:
         assert dated.index(cst.RELATED_HEADER) > dated.index(cst.NOTHING)
         assert cst.format_answer({**body, "related": []}, dated=True) == cst.format_answer(
             {"query": "x", "hits": []}, dated=True)
+
+
+# ── One conversation, one place (fix round, P2-1) ───────────────────────────
+
+SHARAT_KEY = "address:sharat@neuropeek.com"
+
+
+class TestOneConversationTakesOnePlace:
+    def test_a_thread_takes_one_place_of_a_hit(self, world, recency, find_on):  # noqa: F811
+        """The lead wrote m-1 in thread t-1, and the member answered with m-8 in
+        t-1. mail_from gives m-1 and mail_to gives m-8, so one round would show
+        t-1 twice. The hit gets t-1 once, and t-2 takes the next place."""
+        recency(True)
+        find_on("*")
+        world.crm["l-1"] = ("lead", "Sharat Satyanarayana", "sharat satyanarayana")
+        world.mail["m-7"] = ("Second unit", "Sharat Satyanarayana", "second unit")
+        world.mail["m-8"] = ("Re: Snowflake payment", "Fracktal Sales", "re snowflake")
+        world.threads = {"m-1": "t-1", "m-8": "t-1", "m-7": "t-2"}
+        world.mail_links = [(SHARAT_KEY, "mail_from", "email:m-1"),
+                            (SHARAT_KEY, "mail_from", "email:m-7"),
+                            (SHARAT_KEY, "mail_to", "email:m-8")]
+        answer = run("Sharat Satyanarayana")
+        assert _ids(answer, "hits") == ["l-1"]
+        assert _ids(answer) == ["m-1", "m-7"]
+        # Non-vacuity: with no thread, m-8 is a conversation of its own.
+        world.threads = {}
+        assert _ids(run("Sharat Satyanarayana")) == ["m-1", "m-8", "m-7"]
+
+    def test_a_thread_taken_by_one_hit_takes_no_place_of_another(self):
+        def mail(ident: str, thread: str) -> Hit:
+            return Hit(app="email", kind="email", id=ident, title=ident, hint="Email",
+                       href="/e", thread=thread)
+
+        opened = {"email:m-1": mail("m-1", "t-1"), "email:m-8": mail("m-8", "t-1"),
+                  "email:m-7": mail("m-7", "t-2")}
+        picked = find.pick_related(
+            ["deal:d-1", "lead:l-1"],
+            {"deal:d-1": {"mail_from": [("email:m-1", "mail_from", "lead_of")]},
+             "lead:l-1": {"mail_to": [("email:m-8", "mail_to", None)],
+                          "mail_from": [("email:m-7", "mail_from", None)]}},
+            opened, set(), 3, lambda _hit: True,
+        )
+        assert [h.id for h, _e, _v in picked["deal:d-1"]] == ["m-1"]
+        assert [h.id for h, _e, _v in picked["lead:l-1"]] == ["m-7"]
+
+    def test_the_thread_is_internal_and_never_printed(self):
+        hit = Hit(app="email", kind="email", id="m-1", title="t", hint="h", href="/e",
+                  matched_by="related", covers=0, of=1, from_="deal:d-1", edge="mail_from",
+                  thread="t-secret-1")
+        shown = hit.as_dict(stamp=True, find=True)
+        assert "thread" not in shown and "t-secret-1" not in json.dumps(shown)
+        body = {"query": "x", "hits": [], "related": [shown]}
+        assert "t-secret-1" not in cst.format_answer(body, dated=True)
+
+    def test_the_email_open_carries_the_thread(self, monkeypatch):
+        from gateway.routes.email.transport import search
+
+        one, two = "6f1c1e2a-0000-4000-8000-000000000001", "6f1c1e2a-0000-4000-8000-000000000002"
+
+        async def opened(user: Any, ids: list[str]) -> list[dict[str, Any]]:
+            row = {"subject": "s", "from_address": {"name": "N", "email": "n@x.co"},
+                   "snippet": "", "highlight": "", "received_at": None}
+            return [{**row, "id": one, "thread_id": "t-9"}, {**row, "id": two, "thread_id": None}]
+
+        monkeypatch.setattr(search, "open_mail", opened)
+        hits = asyncio.run(sources._email_opened(member(*ALL), [f"email:{one}", f"email:{two}"]))
+        # A mail with no thread is a conversation of its own.
+        assert [(h.id, h.thread) for h in hits] == [(one, "t-9"), (two, two)]
+
+
+# ── The statement limit of the mail reads (fix round, P2-3) ─────────────────
+
+class TestTheMailReadsAreBounded:
+    def test_each_mail_read_runs_under_a_local_statement_timeout(self, monkeypatch):
+        """The related read scans the member's mail. A client that stops
+        waiting at RELATED_BUDGET_S must not leave the scan running, so each
+        read sets a LOCAL ``statement_timeout`` in its own session first."""
+        from contextlib import asynccontextmanager
+
+        from gateway.routes.email.transport import search
+
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        class Rows:
+            def fetchall(self) -> list[Any]:
+                return []
+
+        class Db:
+            async def execute(self, statement: Any, params: Any = None) -> Rows:
+                seen.append((str(statement), dict(params or {})))
+                return Rows()
+
+        @asynccontextmanager
+        async def session(*_a: Any, **_k: Any):
+            seen.append(("BEGIN", {}))
+            yield Db()
+
+        monkeypatch.setattr(search, "_tenant_session", session)
+        user = member(*ALL)
+        asyncio.run(search.related_mail(user, ["a@b.co"], ["b.co"], 3))
+        asyncio.run(search.open_mail(user, ["6f1c1e2a-0000-4000-8000-000000000001"]))
+        kinds = ["begin" if sql == "BEGIN" else "limit" if "set_config('statement_timeout'" in sql
+                 else "read" for sql, _p in seen]
+        assert kinds == ["begin", "limit", "read", "begin", "limit", "read"]
+        limits = [p for sql, p in seen if "statement_timeout" in sql]
+        assert limits == [{"ms": str(search.RELATED_STATEMENT_MS)}] * 2
+        assert all("true)" in sql for sql, _p in seen if "statement_timeout" in sql)
+
+    def test_the_limit_sits_just_above_the_budget_of_the_step(self):
+        from gateway.routes.email.transport import search
+
+        assert company.RELATED_BUDGET_S * 1000 < search.RELATED_STATEMENT_MS <= 2000

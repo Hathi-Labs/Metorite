@@ -434,7 +434,12 @@ def pick_related(
     a record of the answer's hits (*shown*), a record that an earlier ref
     took, and a record that *kept* refuses (``after``) take no place. So a
     record that the member cannot open leaves the answer as if it did not
-    exist. Pure.
+    exist.
+
+    One conversation takes one place (fix round, P2-1). A mail whose
+    ``thread`` an earlier pick holds takes no place, over every lane and key
+    of a hit and over the hits, as a record does. So the lead's mail and the
+    member's answer in one thread show once. Pure.
     """
     taken: set[str] = set()
     out: dict[str, list[tuple[Any, str, str | None]]] = {}
@@ -446,13 +451,36 @@ def pick_related(
             for queue in queues:
                 if len(mine) >= per_hit:
                     break
-                while queue:
-                    record, edge, via = queue.pop(0)
-                    hit = opened.get(record)
-                    if hit is None or record in shown or record in taken or not kept(hit):
-                        continue
-                    taken.add(record)
-                    mine.append((hit, edge, via))
-                    break
+                picked = _next_pick(queue, opened, shown, taken, kept)
+                if picked is not None:
+                    mine.append(picked)
         out[ref] = mine
     return out
+
+
+def _conversation(hit: Any) -> str | None:
+    """The key of the conversation of an opened hit, or ``None``. Its prefix
+    is no kind of ref, so it never equals a record in ``taken``."""
+    thread = getattr(hit, "thread", None)
+    return f"thread:{hit.app}:{thread}" if thread else None
+
+
+def _next_pick(
+    queue: list[Candidate], opened: dict[str, Any], shown: set[str], taken: set[str],
+    kept: Callable[[Any], bool],
+) -> tuple[Any, str, str | None] | None:
+    """The next candidate of *queue* that may take a place, or ``None``. It
+    adds the record, and its conversation, to *taken*."""
+    while queue:
+        record, edge, via = queue.pop(0)
+        hit = opened.get(record)
+        if hit is None or record in shown or record in taken or not kept(hit):
+            continue
+        conversation = _conversation(hit)
+        if conversation is not None and conversation in taken:
+            continue
+        taken.add(record)
+        if conversation is not None:
+            taken.add(conversation)
+        return hit, edge, via
+    return None

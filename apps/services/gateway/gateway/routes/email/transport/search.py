@@ -476,6 +476,17 @@ async def semantic_messages(
 
 # ── The related mail of company search (WS-FIND FIND-3) ─────────────────────
 
+#: The limit of each read of :func:`related_mail` and :func:`open_mail`, in
+#: milliseconds: a little more than ``RELATED_BUDGET_S`` of the step (1.0 s).
+#: The step stops waiting at its budget. This limit stops the statement, so a
+#: scan of a large mailbox never runs on with no one to read it (FIND-3 fix
+#: round, P2-3).
+RELATED_STATEMENT_MS = 1500
+
+#: ``SET LOCAL``: it ends with the read's transaction. ``set_config`` takes a
+#: bind, and ``SET`` does not (``crm/aggregate.py``, ``shell/feed_measure.py``).
+_RELATED_LIMIT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+
 #: The sender address of the mail ``em``, in its match form: trimmed and in
 #: lower case, as the KG-5 forms compare an address.
 _SENDER_KEY = "lower(btrim(em.from_address->>'email'))"
@@ -566,6 +577,7 @@ async def related_mail(
         scope=scope, folder=folder,
     )
     async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(RELATED_STATEMENT_MS)})
         rows = (await db.execute(text(sql), params)).fetchall()
     return [(str(r.key), str(r.edge), f"email:{r.id}") for r in rows]
 
@@ -585,6 +597,7 @@ async def open_mail(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"uid": user.email or "anonymous", "ids": ids}
     scope = _account_scope(None, params, pooled_only=True, level="read")
     async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(RELATED_STATEMENT_MS)})
         rows = (await db.execute(text(
             f"""SELECT em.id, em.provider_message_id, em.thread_id,
                        em.account_id, em.folder, em.labels,

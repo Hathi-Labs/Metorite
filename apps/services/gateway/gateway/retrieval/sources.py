@@ -126,6 +126,11 @@ class Hit:
     #: closed list, or ``None``. So "mail from the lead of deal:…" is
     #: ``edge`` ``mail_from`` and ``via`` ``lead_of``.
     via: str | None = None
+    #: The conversation of a mail that Email's ``open`` gives: its thread id,
+    #: or its own id when it has none (FIND-3 fix round, P2-1). Internal: the
+    #: related step takes one place for each thread. :meth:`as_dict` never
+    #: emits it, so no answer and no text holds it.
+    thread: str | None = None
 
     def as_dict(self, *, stamp: bool = False, find: bool = False) -> dict[str, Any]:
         """The hit for a consumer. *stamp* adds ``stamp`` as the ninth key.
@@ -431,7 +436,9 @@ def email_meaning_on() -> bool:
         return False
 
 
-def _email_hit(m: Any) -> Hit:
+def _email_hit(m: Any, *, thread: bool = False) -> Hit:
+    """One mail as a hit. *thread* (``open``, FIND-3) also sets
+    :attr:`Hit.thread`. The search leaves it unset, so its hits are as before."""
     row = _as_dict(m)
     sender = row.get("from_address") or {}
     who = sender.get("name") or sender.get("email") or "someone"
@@ -442,6 +449,7 @@ def _email_hit(m: Any) -> Hit:
         hint=f"Email · from {who}", href=f"/email?email={quote(str(row['id']))}",
         snippet=_clip(text), when=_when(row.get("received_at")),
         stamp=_when(row.get("received_at")),
+        thread=str(row.get("thread_id") or row["id"]) if thread else None,
     )
 
 
@@ -947,7 +955,7 @@ async def _email_opened(user: UserContext, refs: list[str]) -> list[Hit]:
     if not ids or not holds(user, "email"):
         return []
     search = await _module("gateway.routes.email.transport.search")
-    return [_email_hit(m) for m in await search.open_mail(user, ids)]
+    return [_email_hit(m, thread=True) for m in await search.open_mail(user, ids)]
 
 
 #: Every source, in the order the command bar and the route ask them.
