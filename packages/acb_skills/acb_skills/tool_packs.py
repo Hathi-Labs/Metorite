@@ -104,6 +104,7 @@ __all__ = [
     "owner_scope",
     "owner_tools",
     "pack",
+    "pack_of_tool",
     "pack_only_refusal",
     "pack_tool_runs",
     "pack_write_refusal",
@@ -113,6 +114,7 @@ __all__ = [
     "rules_for",
     "surface_scope",
     "surfaces",
+    "with_resume_pack",
 ]
 
 #: The most tools that one pack may hold (§4.2.2, "The cap"). OA-5 measured
@@ -2676,6 +2678,49 @@ async def begin_turn(
         return PackTurn(org_id, chat, part, 0, (), text, stored=False, surface=where)
     return PackTurn(
         org_id, chat, part, int(turn), _sticky_of(raw), text, stored=True, surface=where)
+
+
+def pack_of_tool(name: str, allowed: Iterable[str]) -> str:
+    """The first pack of *allowed*, in the order of :data:`PACKS`, whose
+    skill family holds the tool *name*, or "" (RESUME-2a review, P1-B).
+
+    A slug that is no pack, and a pack of more than :data:`MAX_PACK_TOOLS`
+    tools, never count, as in :func:`choose`."""
+    allow = frozenset(allowed)
+    if not name:
+        return ""
+    for slug in PACKS:
+        if (slug in allow and is_pack(slug) and _tool_count(slug) <= MAX_PACK_TOOLS
+                and name in SKILL_FAMILIES[slug]["tools"]):
+            return slug
+    return ""
+
+
+def with_resume_pack(turn: PackTurn, slug: str) -> PackTurn:
+    """*turn* with pack *slug* as a sticky pack that THIS turn used
+    (RESUME-2a review, P1-B).
+
+    A continuation run calls the stored call of a card that the member
+    approved late. Its turn has no words and no surface, and the park ended
+    the run of the card before ``note_used`` made the pack sticky. So layer
+    (a) would load no pack, and the stored tool would be missing. The pack
+    of that tool goes in as sticky and used now: :func:`choose` keeps it, the
+    cap moves it out last, and the step-aside never moves it (it is fresh).
+    The flag and the admin toggles still apply, because :func:`choose` keeps
+    a sticky pack only when *allowed* names it. ``executor._start_pack_turn``
+    is the one caller, with the tool name of the server's ``resume_call``,
+    never a request field (R11). A slug that is no pack gives *turn* as it
+    was."""
+    if pack(slug) is None:
+        return turn
+    old = next((entry for entry in turn.sticky if entry.slug == slug), None)
+    first = old.first if old is not None else (turn.turn, len(turn.sticky))
+    rest = tuple(entry for entry in turn.sticky if entry.slug != slug)
+    held = Sticky(slug=slug, first=first, used=turn.turn)
+    return PackTurn(turn.org, turn.session, turn.member_part, turn.turn,
+                    tuple(sorted((*rest, held), key=lambda e: e.first)),
+                    turn.words, stored=turn.stored, surface=turn.surface,
+                    skills=turn.skills)
 
 
 async def drop_sticky(turn: PackTurn | PackRun, slugs: Iterable[str]) -> None:
