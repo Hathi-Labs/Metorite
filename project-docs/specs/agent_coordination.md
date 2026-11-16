@@ -695,7 +695,7 @@ Today the board does not hold three facts: the machine, the model and who dispat
 
 #### 3.12.1 What the board holds today
 
-Read on 2026-11-17, from the code and from the open runs of HathiLabs.
+Read on 2026-11-17, from the code and from the 50 newest open runs of HathiLabs (`list_agent_runs`).
 
 | Fact | Today | Where it lives | The gap |
 |---|---|---|---|
@@ -703,10 +703,10 @@ Read on 2026-11-17, from the code and from the open runs of HathiLabs.
 | The client | Yes | `pm_agent_runs.client_via`, for example `mcp:claude.ai:claude-code` | All sessions of one client share one stamp. The stamp does not tell one machine from another |
 | The session and its name | Yes | `pm_agent_runs.session_key` (migration 302, on since SW-7a) and `agent_label` (SW-7b, migration 418) | Nothing |
 | The task and its state | Yes | `pm_agent_runs.task_id` and the run states of §3.2 | Nothing |
-| The machine | Only for a box token | `agent_connection.credential` is `oauth` or `box` (EA-19a). SW-50 (task 1883) plans to show the connection name of a box token | A session that signs in with OAuth has no machine. On 2026-11-17, all the open runs of HathiLabs signed in with OAuth |
+| The machine | Only for a box token | `agent_connection.credential` is `oauth` or `box` (EA-19a). SW-50 (task 1883) plans to show the connection name of a box token | A session that signs in with OAuth has no machine. On 2026-11-17, the 50 newest open runs of HathiLabs all carried one client stamp, and none of them named its machine |
 | The model | No | Nothing stores it. AGA-9 leaves the model out of a built-in agent's run on purpose (`agent_summary.py`) | A field and a writer |
 | Who dispatched whom | No | A hand-off between two sessions happens outside Metorite. The run lines say only "at the orchestrator's ask" | A field. The HathiLabs orchestrator held no run on 2026-11-17, so it has no node |
-| A sub-agent | No | SW-39 plans child runs with `parent_run_id` (§3.11.9). The board search of 2026-11-17 found no open task for SW-39 | SW-39 |
+| A sub-agent | No | SW-39 (task 1065) plans child runs with `parent_run_id` (§3.11.9). A board search on 2026-11-17 did not find task 1065, so read its state before SW-110 starts | SW-39 |
 | The health of a machine | No | SW-77 (task 1923, in progress) plans the heartbeat of a box | SW-77 |
 
 #### 3.12.2 What the map shows
@@ -715,7 +715,7 @@ Read on 2026-11-17, from the code and from the open runs of HathiLabs.
 - **The tree.** From left to right: a person, each session of that person, and the task of each run. From rung M3, an orchestrator's session sits to the left of the sessions that it dispatched, also across people. From rung M4, a session opens into its sub-agents.
 - **A session node.** It shows the name (`agent_label`, else "Unnamed session"), the client, the machine, the model, the state chip and the time of the last event. The node key is the person, the connection and the name. So a lane that restarts under the same name keeps its node. A session with no name keys on its session key. The node id is an opaque hash, and the session key never leaves the server.
 - **A task node.** It shows the task number, the title, the run state, the age and the last line. A click opens the task. A click on a session opens its run panel, where the controls already are.
-- **Quiet runs fold.** A run with no event for 2 hours folds into one line under its session, for example "12 quiet runs, newest 3 h ago". A run that is `waiting` does not fold. The switch "Show quiet runs" opens them, and an ended run leaves the map. On 2026-11-17, most of the open runs of HathiLabs were stale. Without the fold, the map is a wall of old work.
+- **Quiet runs fold.** A run with no event for 2 hours folds into one line under its session, for example "12 quiet runs, newest 3 h ago". A run that is `waiting` does not fold. The switch "Show quiet runs" opens them, and an ended run leaves the map. On 2026-11-17, most of the 50 newest open runs of HathiLabs were stale. Without the fold, the map is a wall of old work.
 - **An orchestrator in a quiet stretch.** An orchestrator works in bursts between events. Before a long wait, it posts `waiting` on `agent` (1045a). So its node reads "waiting" with its last event time. The map never calls a quiet run lost. Only the stranded sweep (SW-10a) marks a run stranded.
 - **Group by machine.** From rung M2, a switch groups the sessions by machine, so the owner sees what runs on each box.
 - **Read only.** No control on the map acts on an agent. A layout function places the nodes, and the map stores no position.
@@ -1981,7 +1981,7 @@ They keep their own gates.
 - **Scope.** A session opens into the child runs of SW-39 (§3.11.9), each with its model. A machine node opens the heartbeat card of SW-77: memory, load, sessions and the time of its last report. The sessions of a machine with no report for 3 minutes read "offline", as SW-77 says.
 - **Done when.** `visual-review` passes at four widths. A child run shows only under a parent that the viewer can see.
 - **Fence.** `tests/unit/test_agent_map_r8.py` (extended), `lib/agentMap.test.ts`.
-- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-39, SW-77 (task 1923).
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-39 (task 1065), SW-77 (task 1923).
 
 #### SW-111 · Metorite's own agents on the map (Later)
 
@@ -2263,7 +2263,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 
 | # | Question | Recommendation | Blocks |
 |---|---|---|---|
-| Q19 | May an agent report the name of its own machine and its model? The map shows such a machine as "reported", because no box token proves it | **Yes.** On 2026-11-17, every open run of HathiLabs signed in with OAuth. Without a report, no session on the map has a machine. The value grants nothing | SW-104, SW-105, SW-106 |
+| Q19 | May an agent report the name of its own machine and its model? The map shows such a machine as "reported", because no box token proves it | **Yes.** On 2026-11-17, the 50 newest open runs of HathiLabs all carried one client stamp, and none of them named its machine. Without a report, no session on the map has a machine. The value grants nothing | SW-104, SW-105, SW-106 |
 | Q20 | Must an orchestrator hold a run on a coordination task to show on the map? | **Yes, for now.** It needs no new table. The other way is a session record that the edge writes on each MCP call. That way needs a new table, and a write on the edge's one database connection. Look again if orchestrators skip the rule | SW-107, SW-108, SW-109 |
 | Q21 | Do Metorite's own agents, such as chat sub-agents and Studio and workflow agents, join the map? | **Later, after rung M3.** Their machine reads "Metorite", and their model reads "Metorite AI", never a model or tier name | SW-111 |
 
