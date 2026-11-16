@@ -230,6 +230,7 @@
       "tests/unit/test_billing_purchase_capability.py",
       "tests/unit/test_catalog_health_r8.py",
       "tests/unit/test_chat_session_archive_r8.py",
+      "tests/unit/test_chat_sessions_is_brief_r8.py",
       "tests/unit/test_console_bootstrap.py",
       "tests/unit/test_console_dependency_boundary.py",
       "tests/unit/test_credential_tenant_threading.py",

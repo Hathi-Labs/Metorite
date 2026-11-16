@@ -123,6 +123,64 @@ class MessageRecord(BaseModel):
 # Thin sync helpers (run in a thread to stay non-blocking)
 # ---------------------------------------------------------------------------
 
+#: The start of the id of a day's brief row (``chat_brief.brief_message_id``
+#: writes ``brief-<YYYY-MM-DD>``). ``_upsert_messages`` refuses a sealing write
+#: of such an id, so only ``chat_brief._post_row`` seals one (task 3564).
+BRIEF_ID_PREFIX = "brief-"
+
+#: The whole id of a brief row, as the list reads it. It is the rule of
+#: ``assistant_summaries.BRIEF_ROW`` and of ``isBriefRow`` in ``briefTurn.ts``.
+BRIEF_ID_SQL_PATTERN = "^brief-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+
+#: Whether a chat holds the day's brief: the ``isBrief`` of the list (task
+#: 3564). It reads only what the server writes and a member cannot write. A
+#: client save inserts only a human row (S14), and the brief row is an agent
+#: row. A client update of a sealed row is refused (S13). Only
+#: ``chat_brief._post_row`` seals a row with a brief id, because
+#: ``_upsert_messages`` refuses a fold of one. The mark is computed and never
+#: stored, so it needs no migration. RLS binds the tenant of each row it reads.
+#:
+#: ⚠️ A scalar subquery with ``LIMIT 1``, never ``EXISTS``. The planner can
+#: turn an ``EXISTS`` of the list into ONE hashed scan of every
+#: ``chat_message`` row of the tenant, for each list read. A scalar subquery
+#: is never hashed, so each chat gets one probe of an index that leads with
+#: ``session_id``. The R8 suite reads the plan.
+#: Fence: ``tests/unit/test_chat_sessions_is_brief_r8.py``.
+_IS_BRIEF_SQL = (
+    "COALESCE((SELECT true FROM chat_message b "
+    "          WHERE b.session_id = s.id "
+    f"           AND b.id ~ '{BRIEF_ID_SQL_PATTERN}' "
+    "            AND b.author_kind = 'agent' "
+    "            AND b.run_final_at IS NOT NULL "
+    "          LIMIT 1), false)"
+)
+
+#: The session list of ``_get_sessions``. A module constant, so the R8 suite
+#: reads the plan of this exact statement.
+_SESSIONS_SQL = (
+    "SELECT s.id, s.agent_name, s.title, s.last_preview, "
+    "       s.message_count, s.created_at, s.updated_at, "
+    "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
+    "       (SELECT count(*) FROM chat_session_participant p "
+    "          WHERE p.session_id = s.id) AS participant_count, "
+    # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
+    # The brief row is an agent turn, so a chat that holds only
+    # the brief reads false, and the nudge stays (§4.7). A scalar
+    # subquery for the reason of ``_IS_BRIEF_SQL`` (task 3564).
+    "       COALESCE((SELECT true FROM chat_message m "
+    "                 WHERE m.session_id = s.id AND m.role = 'user' "
+    "                 LIMIT 1), false) AS has_user_message, "
+    f"      {_IS_BRIEF_SQL} AS is_brief, "
+    "       me.role AS my_role, s.archived_at "
+    "FROM chat_session s "
+    # One join on the participant key, so no query per row.
+    "LEFT JOIN chat_session_participant me "
+    "  ON me.session_id = s.id AND me.subject = :uid "
+    f"WHERE {SESSION_VISIBLE_SQL} "
+    "ORDER BY s.updated_at DESC"
+)
+
+
 def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     """Every room this person can open, newest first.
 
@@ -134,29 +192,7 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
-        rows = s.execute(
-            text(
-                "SELECT s.id, s.agent_name, s.title, s.last_preview, "
-                "       s.message_count, s.created_at, s.updated_at, "
-                "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
-                "       (SELECT count(*) FROM chat_session_participant p "
-                "          WHERE p.session_id = s.id) AS participant_count, "
-                # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
-                # The brief row is an agent turn, so a chat that holds only
-                # the brief reads false, and the nudge stays (§4.7).
-                "       EXISTS (SELECT 1 FROM chat_message m "
-                "               WHERE m.session_id = s.id AND m.role = 'user') "
-                "         AS has_user_message, "
-                "       me.role AS my_role, s.archived_at "
-                "FROM chat_session s "
-                # One join on the participant key, so no query per row.
-                "LEFT JOIN chat_session_participant me "
-                "  ON me.session_id = s.id AND me.subject = :uid "
-                f"WHERE {SESSION_VISIBLE_SQL} "
-                "ORDER BY s.updated_at DESC"
-            ),
-            {"uid": user_id},
-        ).fetchall()
+        rows = s.execute(text(_SESSIONS_SQL), {"uid": user_id}).fetchall()
     return [
         {
             "id": r.id,
@@ -185,6 +221,9 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
             "hasUserMessage": bool(r.has_user_message),
+            # Task 3564: the chat holds the day's brief (``_IS_BRIEF_SQL``).
+            # The sidebar folds a brief chat with no member message.
+            "isBrief": bool(r.is_brief),
             # D99 (migration 254): an archived chat stays in the list, and
             # the assistant shows it under "Archived".
             "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
@@ -961,6 +1000,10 @@ def _upsert_messages(
     (``_TOUCH_SESSION_SQL``, PZ-33b round 4). The seed of the summary job
     finds the chats of its window by that column.
 
+    With ``author_from_run`` an id that starts with :data:`BRIEF_ID_PREFIX`
+    writes nothing and is in the return value (task 3564). So the brief mark
+    of the list stays a mark that only the brief route makes.
+
     ⚠️ **No setup value is stored** (WS-54 fix round 2, item 5). Every text
     field of every turn passes through ``acb_common.setup_markers``, so a
     ``<<<SETUP:service:KEY=value>>>`` marker in a model answer leaves no
@@ -1006,6 +1049,14 @@ def _upsert_messages(
         except SessionOfAnotherTenant:
             return [m.id for m in messages]
         for m in messages:
+            # Task 3564: a sealing write never takes a brief id. The fold
+            # seals the row under the id that the client sent, so a run could
+            # otherwise forge the list's brief mark (``_IS_BRIEF_SQL``). Only
+            # ``chat_brief._post_row`` seals a brief row, with no fold.
+            if author_from_run and m.id.startswith(BRIEF_ID_PREFIX):
+                _log.warning("chat.brief_id_fold_refused", session_id=session_id[:12])
+                declined.append(m.id)
+                continue
             kind, author = _attribute(m, actor_email, agent_name)
             # S14: a client inserts a human row only. The fold and the mint
             # are the server, and they may insert an agent row.
