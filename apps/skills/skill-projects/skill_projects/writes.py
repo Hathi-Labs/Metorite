@@ -1495,9 +1495,10 @@ def _new_task_form(
 class _CardEdit:
     """What the member changed on the edit card of a new task (EAC-1).
 
-    ``new`` is the task that the write sends: the one the tool prepared, or
-    the one that the prepare step made again from the member's changes.
-    ``changes`` is empty for a plain approve. ``strangers`` names each
+    ``new`` is the task that the write sends. With no change, it is the task
+    that the tool resolved before the card. With changes, it starts from that
+    task, and :func:`_edited_task` applies only the changed keys. No second
+    prepare step runs. ``changes`` is empty for a plain approve. ``strangers`` names each
     address of the changed people that the directory does not know (H-162)."""
 
     def __init__(self, new: _NewTask, changes: dict[str, Any], strangers: list[str]) -> None:

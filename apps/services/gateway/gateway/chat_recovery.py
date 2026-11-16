@@ -612,12 +612,13 @@ def card_resend(
 ) -> CardResend:
     """The envelope and the display of one card answer.
 
-    EAC-1 (``projects_ai_chat.md`` §32.4): an edit answer of a card that no
-    run took wrote nothing, so it goes as ``task_card.LATE_EDIT_ANSWER``, a
-    line with no value. The display shows the same line."""
-    from acb_skills.task_card import LATE_EDIT_ANSWER, is_task_edit_answer
+    EAC-1 (``projects_ai_chat.md`` §32.4): an edit answer of an edit card
+    that no run took wrote nothing (``task_card.is_late_edit_answer``), so it
+    goes as ``task_card.LATE_EDIT_ANSWER``, a line with no value. The display
+    shows the same line. Each other answer goes as before."""
+    from acb_skills.task_card import LATE_EDIT_ANSWER, is_late_edit_answer
 
-    if is_task_edit_answer(answer):
+    if is_late_edit_answer(kind, value, answer):
         kind, answer = "ask_user", LATE_EDIT_ANSWER
     return CardResend(
         compose_card_answer(card_question(kind, value, question), answer),

@@ -7649,12 +7649,26 @@ a dead run).
 - A plain late `APPROVE` writes the original values once. The HRD-22 grant takes
   the same card by its digest (`late_approve`), and RESUME-2a resumes the stored
   call (`stored_call`, migration 448). Both take the exact word `APPROVE` only.
-- A late edit answer writes nothing. `task_card.is_task_edit_answer` finds it,
-  and `chat_recovery.card_resend` sends `task_card.LATE_EDIT_ANSWER` in its
-  place. That line holds no value, and it asks the member to show the card
-  again. The display shows the same line. So no edited value, and no text that
-  the model wrote into the form, reaches the next run as the member's words.
+- An edit answer that comes late writes nothing. `task_card.is_late_edit_answer`
+  finds it.
+  The card is a confirmation card with an edit form, or a card that the route
+  does not know. The body decodes, by the one decode of the parser, to an
+  object with the key `edit`. So an escaped key counts. A free-text note with
+  the word `"edit"` does not count.
+- `chat_recovery.card_resend` then sends `task_card.LATE_EDIT_ANSWER` in place
+  of that answer. The line holds no value, and it asks the member to show the
+  card again. The display shows the same line. So no edited value, and no text
+  that the model wrote into the form, reaches the next run as the member's
+  words.
+- An answer of an `ask_user` card, and of a plain card, goes as before.
 - The client line that says the edits were not used is EAC-2.
+
+**Known edges.**
+
+- An edit Approve marks the act SPENT (`ask_tools.py`, `stored_call.py`) before
+  `_card_edit` resolves a changed name. A name that no lane or person has
+  exactly then refuses AFTER the Approve, and the tool writes nothing.
+- So EAC-2 shows the exact-name rule on the form, before the Approve.
 
 **Receipts and declines.**
 

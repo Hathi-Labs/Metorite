@@ -757,6 +757,16 @@ def test_an_edited_name_resolves_by_exact_match_only(monkeypatch: pytest.MonkeyP
     assert ("person", "Rav") not in seen and ("person", "Ravi") not in seen
 
 
+def test_a_lane_cleared_on_the_card_takes_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delta round 3a. The card showed "To do" (a lane by name). The member
+    clears it. The write sends no lane, so the gateway takes the default."""
+    _flag(monkeypatch, "*")
+    _c, out, calls = _drive(monkeypatch, _answer(status=""))
+    [body] = _posted(calls)
+    assert "status_id" not in body, body
+    assert out.startswith("Created:"), out
+
+
 def test_an_edited_status_resolves_by_exact_match_only(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag(monkeypatch, "*")
     seen = _decide(monkeypatch)
@@ -885,8 +895,26 @@ def _reads_of_edit(node: ast.AST) -> list[int]:
     return out
 
 
+def _is_call_of(node: ast.AST, name: str) -> bool:
+    """True for a call of *name*, by its bare name or as an attribute
+    (``task_card.is_task_edit_answer(...)``)."""
+    return isinstance(node, ast.Call) and (
+        getattr(node.func, "id", "") == name or getattr(node.func, "attr", "") == name)
+
+
+def _files_calling(name: str) -> list[str]:
+    """Each file under ``packages`` and ``apps`` that calls *name*, once."""
+    out = []
+    for base in (ROOT / "packages", ROOT / "apps"):
+        for p in base.rglob("*.py"):
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if name in text and any(_is_call_of(n, name) for n in ast.walk(ast.parse(text))):
+                out.append(p.relative_to(ROOT).as_posix())
+    return sorted(out)
+
+
 def test_parse_task_edit_answer_is_the_one_parser_of_the_edit_key() -> None:
-    defs, calls = [], []
+    defs = []
     for base in (ROOT / "packages", ROOT / "apps"):
         for p in base.rglob("*.py"):
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -895,11 +923,8 @@ def test_parse_task_edit_answer_is_the_one_parser_of_the_edit_key() -> None:
             for n in ast.walk(ast.parse(text)):
                 if isinstance(n, ast.FunctionDef) and n.name == "parse_task_edit_answer":
                     defs.append(p.relative_to(ROOT).as_posix())
-                if (isinstance(n, ast.Call) and getattr(n.func, "id", "")
-                        == "parse_task_edit_answer"):
-                    calls.append(p.relative_to(ROOT).as_posix())
     assert defs == ["packages/acb_skills/acb_skills/task_card.py"]
-    assert calls == ["packages/acb_skills/acb_skills/ask_tools.py"]
+    assert _files_calling("parse_task_edit_answer") == ["packages/acb_skills/acb_skills/ask_tools.py"]
     # In task_card, only the parser reads the values of the body. The shape
     # test names the key and reads no value (review P2).
     tree = _tree(TASK_CARD)
@@ -909,7 +934,8 @@ def test_parse_task_edit_answer_is_the_one_parser_of_the_edit_key() -> None:
         if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any(isinstance(n, ast.Name) and n.id == "EDIT_KEY" for n in ast.walk(f))
     }
-    assert users == {"parse_task_edit_answer", "is_task_edit_answer"}
+    # The late test reads the card's form too (is the card an edit card).
+    assert users == {"parse_task_edit_answer", "is_task_edit_answer", "is_late_edit_answer"}
     assert any(isinstance(n, ast.Name) and n.id == "EDIT_KEY" for n in ast.walk(parser))
     shape = _function(tree, "is_task_edit_answer")
     assert not [n for n in ast.walk(shape) if isinstance(n, ast.Subscript)
@@ -918,24 +944,23 @@ def test_parse_task_edit_answer_is_the_one_parser_of_the_edit_key() -> None:
 
 
 def test_only_the_late_resend_asks_the_shape_of_an_edit_answer() -> None:
-    """``chat_recovery.card_resend`` is the one caller of the shape test, and
-    no late path reads the key of an answer."""
-    calls = []
-    for base in (ROOT / "packages", ROOT / "apps"):
-        for p in base.rglob("*.py"):
-            text = p.read_text(encoding="utf-8", errors="replace")
-            if "is_task_edit_answer" not in text:
-                continue
-            for n in ast.walk(ast.parse(text)):
-                if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "is_task_edit_answer":
-                    calls.append(p.relative_to(ROOT).as_posix())
-    assert calls == ["apps/services/gateway/gateway/chat_recovery.py"]
+    """``chat_recovery.card_resend`` is the one caller of the late test, and
+    the late test is the one caller of the shape test. A call counts by its
+    bare name and as an attribute. No late path reads the key of an answer."""
+    assert _files_calling("is_late_edit_answer") == [
+        "apps/services/gateway/gateway/chat_recovery.py"]
+    assert _files_calling("is_task_edit_answer") == ["packages/acb_skills/acb_skills/task_card.py"]
+    late_test = _function(_tree(TASK_CARD), "is_late_edit_answer")
+    assert any(_is_call_of(n, "is_task_edit_answer") for n in ast.walk(late_test))
+    callers = {f.name for f in ast.walk(_tree(TASK_CARD))
+               if isinstance(f, ast.FunctionDef)
+               and any(_is_call_of(n, "is_task_edit_answer") for n in ast.walk(f))}
+    assert callers == {"is_late_edit_answer"}
     recovery = ROOT / "apps" / "services" / "gateway" / "gateway" / "chat_recovery.py"
     late = ROOT / "packages" / "acb_skills" / "acb_skills" / "late_approve.py"
     assert _reads_of_edit(_tree(recovery)) == [] and _reads_of_edit(_tree(late)) == []
     resend = _function(_tree(recovery), "card_resend")
-    assert any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "is_task_edit_answer"
-               for n in ast.walk(resend))
+    assert any(_is_call_of(n, "is_late_edit_answer") for n in ast.walk(resend))
 
 
 def test_request_confirmation_reads_edit_nowhere_else() -> None:

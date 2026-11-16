@@ -311,6 +311,22 @@ def _no_constant(_name: str) -> Any:
     raise ValueError("not JSON")
 
 
+#: What :func:`_decoded` gives for a body that is no JSON by its guards.
+_NOT_JSON = object()
+
+
+def _decoded(body: str) -> Any:
+    """The JSON value of the body of an answer, or :data:`_NOT_JSON`. The ONE
+    decode of an answer body, with the guards of the parser: no key twice, no
+    ``NaN`` or ``Infinity``, no nesting past the depth that Python allows, and
+    no text after the value. The parser and the shape test both call it, so
+    they read the same key (``"ed\\u0069t"`` is ``edit``)."""
+    try:
+        return json.loads(body, object_pairs_hook=_no_twin_keys, parse_constant=_no_constant)
+    except (TypeError, ValueError, RecursionError):
+        return _NOT_JSON
+
+
 def parse_task_edit_answer(answer: Any, responder: Any) -> TaskEdit | None:
     """The member's edit of a new task, or None when *answer* is no edit.
 
@@ -336,11 +352,7 @@ def parse_task_edit_answer(answer: Any, responder: Any) -> TaskEdit | None:
     text = text.strip()
     if text[:len(EDIT_ANSWER_PREFIX)].upper() != EDIT_ANSWER_PREFIX:
         return None
-    try:
-        body = json.loads(text[len(EDIT_ANSWER_PREFIX):],
-                          object_pairs_hook=_no_twin_keys, parse_constant=_no_constant)
-    except (TypeError, ValueError, RecursionError):
-        return None
+    body = _decoded(text[len(EDIT_ANSWER_PREFIX):])
     if not isinstance(body, dict) or set(body) != {EDIT_KEY}:
         return None
     values = body[EDIT_KEY]
@@ -375,27 +387,46 @@ _APPROVE_HEAD = re.compile(r"(?i)APPROVE\s")
 
 
 def is_task_edit_answer(answer: Any) -> bool:
-    """True when *answer* has the shape of an edit answer: ``APPROVE`` and a
-    body that names the key ``edit``. It reads the shape only, never a value.
+    """True when *answer* is an edit answer by its shape. It reads no value.
 
-    It fails closed. A body that names the key and does not parse, a body
-    over :data:`MAX_TASK_EDIT_ANSWER` that names it, and a body that is no
-    object but names it each read True. So a broken edit answer never goes
-    to the model as the member's words. A plain ``APPROVE``, a ``rows`` answer
-    and a ``reply`` answer read False."""
-    text = answer.strip() if isinstance(answer, str) else ""
+    THE rule: the answer is at most :data:`MAX_TASK_EDIT_ANSWER` characters,
+    it starts with ``APPROVE`` (any case) and white space, and its body
+    decodes (:func:`_decoded`, the decode of the parser) to an object that
+    HAS the key ``edit``. The decode comes first, so an escaped key counts.
+    Any other body is no edit answer: no JSON, not an object, no ``edit`` key,
+    text after the value, a key twice, ``NaN``, too deep or too long. The
+    parser refuses each of those too, so no such body is an edit answer
+    anywhere. Whenever :func:`parse_task_edit_answer` takes an answer, this
+    says True. An object with the key and bad values says True too."""
+    raw = answer if isinstance(answer, str) else ""
+    if len(raw) > MAX_TASK_EDIT_ANSWER:
+        return False
+    text = raw.strip()
     if not _APPROVE_HEAD.match(text):
         return False
-    body = text[len("APPROVE"):]
-    if f'"{EDIT_KEY}"' not in body:
+    body = _decoded(text[len("APPROVE"):])
+    return isinstance(body, dict) and EDIT_KEY in body
+
+
+#: The kinds of a card that can carry an edit form: a confirmation card, and
+#: a card whose kind the late route does not know.
+_EDIT_CARD_KINDS = frozenset({"confirmation", ""})
+
+
+def is_late_edit_answer(kind: Any, card: Any, answer: Any) -> bool:
+    """True when the late answer *answer* of a card whose run ended is an
+    edit answer of an edit card. ``gateway.chat_recovery.card_resend`` asks
+    it, and then sends :data:`LATE_EDIT_ANSWER` in place of the answer.
+
+    The card is a confirmation card, or its kind is not known. When the card
+    value is known (*card* is not empty), it carries an edit form. The answer
+    passes :func:`is_task_edit_answer`. An ``ask_user`` card, a plain card
+    and a note that only names ``"edit"`` keep the member's words."""
+    if str(kind or "") not in _EDIT_CARD_KINDS:
         return False
-    if len(text) > MAX_TASK_EDIT_ANSWER:
-        return True
-    try:
-        parsed = json.loads(body)
-    except (TypeError, ValueError, RecursionError):
-        return True
-    return not isinstance(parsed, dict) or EDIT_KEY in parsed
+    if isinstance(card, Mapping) and card and card.get(EDIT_KEY) is None:
+        return False
+    return is_task_edit_answer(answer)
 
 
 def changed_values(form: Mapping[str, Any], edit: TaskEdit) -> dict[str, Any]:
@@ -424,6 +455,7 @@ __all__ = [
     "changed_values",
     "clean_task_edit_form",
     "create_task_form",
+    "is_late_edit_answer",
     "is_task_edit_answer",
     "parse_task_edit_answer",
     "task_edit_card_on",
