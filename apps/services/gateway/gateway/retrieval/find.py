@@ -47,7 +47,6 @@ _STOP = frozenset(
     "very s t can will just don should now".split()
 )
 
-_PLURAL = re.compile(r"(?<=[a-z0-9]{3})s$")
 #: One token of the query as the member typed it: letters and digits only.
 _TOKEN = re.compile(r"[^\W_]+")
 
@@ -79,9 +78,33 @@ def content_words(query: str) -> list[str]:
     return out
 
 
+#: The fewest letters that a stem keeps after :func:`_stem` cuts an ending.
+STEM_MIN = 4
+#: The endings that :func:`_stem` cuts, the longest first. "es" goes only
+#: after s, x, z, ch or sh, and "s" never after s or u.
+_ENDINGS = ("ing", "ed", "es", "s")
+_ES_AFTER = ("s", "x", "z", "ch", "sh")
+
+
 def _stem(word: str) -> str:
-    """A plural folded to its singular, so "printers" holds "printer"."""
-    return _PLURAL.sub("", word)
+    """*word* with one common ending cut, then a final "e", on both sides of
+    a test (review of 2026-11-16, P2-c). The full text matched by stem, so
+    "delays" holds "delayed", "printers" holds "printer", "shipping" holds
+    "shipped" and "invoices" holds "invoice". Each cut keeps
+    :data:`STEM_MIN` letters or more. Pure."""
+    out = word
+    for ending in _ENDINGS:
+        stem = out[: -len(ending)]
+        if not out.endswith(ending) or len(stem) < STEM_MIN:
+            continue
+        if (ending == "es" and not stem.endswith(_ES_AFTER)) or (
+                ending == "s" and stem.endswith(("s", "u"))):
+            continue
+        out = stem
+        break
+    if out.endswith("e") and len(out) - 1 >= STEM_MIN:
+        out = out[:-1]
+    return out
 
 
 def coverage(words: list[str], text: str) -> int:
@@ -118,26 +141,46 @@ def held(found: dict[str, list[Any]], words: list[str]) -> set[str]:
 OWN_RUNGS = frozenset({"exact", "words", "word"})
 
 
+def _alone(asked: list[str], broadened: list[dict[str, Any]] | None, *,
+           words_of: list[str], first_zero: bool) -> tuple[int, bool] | None:
+    """What the word *asked* found alone: its hits, and whether an app was
+    skipped. From its entry of ``broadened``, or from the first pass when the
+    query is the word itself. ``None`` when it was never searched alone."""
+    for entry in broadened or []:
+        if isinstance(entry, dict) and name_match.words(entry.get("word")) == asked:
+            hits = entry.get("hits")
+            return (hits if isinstance(hits, int) else 0), bool(entry.get("skipped"))
+    if len(asked) == 1 and words_of == asked:
+        return (0 if first_zero else 1), False
+    return None
+
+
 def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
-                broadened: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+                broadened: list[dict[str, Any]] | None, *, words_of: list[str],
+                first_zero: bool, skipped: list[str]) -> list[dict[str, Any]]:
     """Each entry of the route's ``near``, with ``held`` (HRD-18b).
 
     ``held`` is true when the word has a hit of its own: the word alone found
-    records (``broadened``), or a hit of the answer that matched the member's
-    own words holds it in its title, hint or snippet. Only a word with no
-    such hit may open the answer with "No record holds" (§3.6). Pure.
+    records, or a hit of the answer that matched the member's own words holds
+    it in its title, hint or snippet. It is false only with proof: the word
+    was searched alone in every app that was asked, no app was skipped, in
+    the first pass (*skipped*) or alone, and it found nothing. In each other
+    case it is ``None``: not known. Only a false word may open the answer
+    with "No record holds" (§3.6, review of 2026-11-16). Pure.
     """
     own = [f"{h.title} {h.hint} {h.snippet}" for hits in found.values() for h in hits
            if h.matched_by in OWN_RUNGS]
     out: list[dict[str, Any]] = []
     for entry in entries:
         asked = name_match.words(entry.get("word"))
-        alone = any(
-            isinstance(b, dict) and name_match.words(b.get("word")) == asked and b.get("hits")
-            for b in broadened or []
-        )
-        text = len(asked) == 1 and any(coverage(asked, t) for t in own)
-        out.append({**entry, "held": bool(alone or text)})
+        alone = _alone(asked, broadened, words_of=words_of, first_zero=first_zero)
+        held: bool | None = None
+        if (alone is not None and alone[0] > 0) or (
+                len(asked) == 1 and any(coverage(asked, t) for t in own)):
+            held = True
+        elif alone is not None and not alone[1] and not skipped:
+            held = False
+        out.append({**entry, "held": held})
     return out
 
 

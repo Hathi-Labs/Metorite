@@ -269,6 +269,9 @@ async def list_messages(
         mailbox_sql = _mailbox_clause(account_id, thread_id, params)
         if mailbox_sql:
             where_clauses.append(mailbox_sql)
+        # HRD-18b: the mailboxes of the read and nothing else. The near retry
+        # of a sender asks them whether the sender has any mail at all.
+        scope = list(where_clauses)
         if thread_id:
             # Conversation view: every message in the thread, ignore the folder
             # filter (a thread spans inbox/sent/etc.).
@@ -392,7 +395,7 @@ async def list_messages(
         where_sql, total, near = await _near_sender_retry(
             db, user, from_email, account_id, clauses=where_clauses, at=from_at,
             params=params, where_sql=where_sql, total=total, count_sql=count_sql,
-            listing=near_sender is True and not thread_id,
+            listing=near_sender is True and not thread_id, scope=scope,
         )
         _counted = time.monotonic()
 
@@ -523,19 +526,26 @@ NEAR_FROM_MAX = 20
 async def _near_sender_retry(
     db: Any, user: UserContext, from_email: str | None, account_id: str | None, *,
     clauses: list[str], at: int | None, params: dict[str, Any], where_sql: str,
-    total: int, count_sql: Any, listing: bool,
+    total: int, count_sql: Any, listing: bool, scope: list[str],
 ) -> tuple[str, int, dict[str, Any]]:
     """The list's WHERE and total after the near retry of a sender filter.
 
     It runs only when *listing* is true: the caller sent ``near_sender`` and
-    the read is no thread load. The sender filter must have found no mail. An exact total of 0 is 0 on each page, so each page
-    retries, and the pages agree. With a near spelling (:func:`_near_from`),
-    the filter's clause becomes the addresses of the near senders, and the
-    count runs again. The third value is ``{"near": ...}`` for the answer,
-    else ``{}``: a closed shape of the filter as the member gave it and one
-    token of a sender that the member may read.
+    the read is no thread load. The whole read must have found no mail, and
+    then the sender ALONE must have no mail either (:func:`_sender_has_mail`,
+    review of 2026-11-16). So "unread mail from Vijay" with Vijay's mail all
+    read tries no near spelling, and a sender whose name holds the word is
+    never replaced by another. An exact total of 0 is 0 on each page, so each
+    page retries, and the pages agree. With a near spelling
+    (:func:`_near_from`), the filter's clause becomes the addresses of the
+    near senders, and the count runs again. The third value is
+    ``{"near": ...}`` for the answer, else ``{}``: a closed shape of the
+    filter as the member gave it and one token of a sender that the member
+    may read.
     """
-    if total or at is None or not listing:
+    if total or at is None or not listing or not _near_wanted(user, from_email or ""):
+        return where_sql, total, {}
+    if await _sender_has_mail(db, scope, params, from_email or ""):
         return where_sql, total, {}
     found = await _near_from(db, user, from_email or "", account_id)
     if found is None:
@@ -546,6 +556,39 @@ async def _near_sender_retry(
     where_sql = " AND ".join(clauses)
     total = (await db.execute(text(count_sql(where_sql)), params)).scalar() or 0
     return where_sql, total, {"near": {"word": (from_email or "").strip()[:80], "as": found[0]}}
+
+
+def _near_wanted(user: UserContext, wanted: str) -> bool:
+    """True when ``FIND_ORGS`` holds the member's org and the sender filter
+    is one word of 4 letters or more, so a near spelling may be tried."""
+    from acb_common import name_match
+    from gateway.retrieval.find import find_allowed
+
+    if not find_allowed(getattr(user, "organization_id", None)):
+        return False
+    asked = name_match.words(wanted)
+    return len(asked) == 1 and name_match.near_eligible(asked[0])
+
+
+#: A sender whose address or name holds the filter (HRD-18b review, P1-a).
+_HELD_SENDER = (
+    "(LOWER(em.from_address->>'email') LIKE :held_sender"
+    " OR LOWER(em.from_address->>'name') LIKE :held_sender)"
+)
+
+
+async def _sender_has_mail(db: Any, scope: list[str], params: dict[str, Any],
+                           wanted: str) -> bool:
+    """True when a mail of the read's mailboxes (*scope*) comes from a sender
+    whose address or name holds *wanted*, in any folder and with no other
+    filter: no folder, no read state, no date and no words. Then the word has
+    mail of its own, and no near spelling stands in for it."""
+    sql = (
+        "SELECT 1 FROM email_messages em JOIN email_accounts ea ON em.account_id = ea.id "
+        "WHERE " + " AND ".join([*scope, _HELD_SENDER]) + " LIMIT 1"
+    )
+    held = {**params, "held_sender": f"%{wanted.strip().lower()}%"}
+    return (await db.execute(text(sql), held)).first() is not None
 
 
 async def _near_from(
@@ -563,17 +606,15 @@ async def _near_from(
     import asyncio
 
     from acb_common import name_match
-    from gateway.retrieval.find import find_allowed
     from gateway.routes.email.transport.contacts import sender_names, sender_rows
 
-    if not find_allowed(getattr(user, "organization_id", None)):
+    if not _near_wanted(user, wanted):
         return None
     asked = name_match.words(wanted)
-    if len(asked) != 1 or not name_match.near_eligible(asked[0]):
-        return None
     rows = await sender_rows(db, user.email or "anonymous", account_id)
     found = await asyncio.to_thread(
-        name_match.near_names, asked[0], sender_names(rows), NEAR_FROM_NAMES)
+        name_match.near_names, asked[0], sender_names(rows), NEAR_FROM_NAMES,
+        deadline=name_match.scoring_deadline())
     best = name_match.best_spelling(asked[0], found)
     if best is None:
         return None

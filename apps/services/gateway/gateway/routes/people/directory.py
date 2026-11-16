@@ -219,7 +219,8 @@ async def near_names(
             text(NEAR_NAME_SQL), {"cap": name_match.NEAR_VOCABULARY},
         )).fetchall()
     names = [str(n) for r in rows for n in (r.preferred_name, r.name) if n]
-    return await asyncio.to_thread(name_match.near_lookup, words, names, k)
+    return await asyncio.to_thread(
+        name_match.near_lookup, words, names, k, deadline=name_match.scoring_deadline())
 
 
 @router.get("/facets")

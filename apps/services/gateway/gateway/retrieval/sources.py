@@ -355,13 +355,17 @@ async def _email(
     user: UserContext, q: str, k: int, *, after: datetime | None = None,
     vectors: bool = False, budget_s: float | None = None, sender: str | None = None,
 ) -> list[Hit]:
-    """The member's mail. *sender* (HRD-18b) keeps the mail from a sender
-    whose name or address holds it, through the route's own ``from_addr``
-    filter. A full-text word never matches inside an address, so "neuropeek"
-    finds the mail from ``neuropeek.com`` only this way."""
+    """The member's mail. *sender* (HRD-18b) gives the mail from a sender
+    whose name or address holds it, newest first, through the route's own
+    ``from_addr`` filter, and *q* is not read then. A full-text word never
+    matches inside an address, so "neuropeek" finds the mail from
+    ``neuropeek.com`` only this way."""
     from gateway.routes.email.transport.search import search_messages
 
     started = time.monotonic()
+    if sender:
+        # The near step asks for one sender alone (review of 2026-11-16).
+        q = ""
 
     # ⚠️ Every parameter, by name. The route declares them with `Query(...)`
     # defaults, and a direct call that left one out would pass the `Query`

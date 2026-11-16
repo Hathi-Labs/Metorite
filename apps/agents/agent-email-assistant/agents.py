@@ -1684,7 +1684,10 @@ def _near_sender_line(near: Any, *, found: bool) -> str:
         return ""
     if found:
         return f"No mail from «{word}». Mail from the near spelling «{spelt}»:"
-    return f"No mail from «{word}», and none from the near spelling «{spelt}»."
+    # The near sender may have mail that the other filters leave out, so the
+    # line claims only what the read shows.
+    return (f"No mail from «{word}». No mail from the near spelling «{spelt}» "
+            "matches these filters.")
 
 
 @_annotate_risk(open_world=False)
@@ -1753,7 +1756,9 @@ async def query_inbox(
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
     total = data.get("total", 0)
-    near = _near_sender_line(data.get("near"), found=bool(emails))
+    # The total, not the page: a page past the end holds no row of a total
+    # that is not zero (review of 2026-11-16).
+    near = _near_sender_line(data.get("near"), found=bool(total))
     if not emails:
         empty = page_line(total, start, 0) or "No emails matched those filters."
         return f"{near}\n{empty}" if near else empty

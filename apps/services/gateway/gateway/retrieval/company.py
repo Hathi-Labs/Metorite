@@ -168,6 +168,9 @@ BROADEN_MAX_WORDS = 5
 NEAR_LOOKUP_S = 0.5
 #: The most names that one source gives for one word of the near lookup.
 NEAR_NAMES_K = 5
+#: The most of the second pass that the near step takes, lookup and asks,
+#: when the words alone follow it. They keep the rest (HRD-18b review, P2-a).
+NEAR_SHARE = 1 / 3
 #: The English stop words of Postgres (``english.stop``). The full-text half
 #: of each app drops them, so a stop word alone finds nothing useful.
 _STOP_TEXT = (
@@ -643,75 +646,55 @@ async def _near_lookup(
     the source key and the error type, and no word.
     """
     loop = asyncio.get_running_loop()
-    allowed = min(NEAR_LOOKUP_S, until - loop.time())
+    deadline = loop.time() + min(NEAR_LOOKUP_S, until - loop.time())
     able = [key for key in keys if REGISTRY[key].near is not None]
-    if allowed <= 0.05 or not able:
+    if deadline - loop.time() <= 0.05 or not able:
         return {}
 
     async def one(key: str) -> tuple[str, dict[str, list[NearName]]]:
-        try:
-            got = await asyncio.wait_for(
-                REGISTRY[key].near_names(user, words, NEAR_NAMES_K), allowed,
-            )
-        except Exception as exc:
-            logger.info("search.company near lookup skipped",
-                        extra={"source": key, "error": type(exc).__name__})
-            return key, {}
+        # Each lookup holds one session, so it takes a slot of FIND_SESSIONS
+        # as a source does (HRD-4). Its time runs to the one deadline.
+        async with _slots():
+            left = deadline - loop.time()
+            if left <= 0.05:
+                return key, {}
+            try:
+                got = await asyncio.wait_for(
+                    REGISTRY[key].near_names(user, words, NEAR_NAMES_K), left,
+                )
+            except Exception as exc:
+                logger.info("search.company near lookup skipped",
+                            extra={"source": key, "error": type(exc).__name__})
+                return key, {}
         return key, got if isinstance(got, dict) else {}
 
     return {key: got for key, got in await asyncio.gather(*(one(key) for key in able)) if got}
 
 
 def near_asks(
-    words_of: list[str], chosen: list[str], names: dict[str, dict[str, list[NearName]]],
-    asked: list[str],
+    chosen: list[str], names: dict[str, dict[str, list[NearName]]], asked: list[str],
 ) -> list[NearAsk]:
-    """The asks of the near step, in order (HRD-18b). Pure.
+    """The asks of the near step: ONE for each word of *chosen*, so at most
+    ``name_match.NEAR_MAX_WORDS`` (HRD-18b review of 2026-11-16, P2-a). Pure.
 
-    For each word of *chosen*: each app of *asked* takes the best spelling of
-    its own names, else the best spelling of all. Each spelling gives the
-    query with that one word replaced, then the spelling alone. Email, with
-    a spelling of its own senders, then asks for the mail from that sender:
-    with the other words, then alone.
+    The ask carries the best spelling of all the sources alone
+    (``name_match.best_spelling``: the score, then the raw trigrams), to each
+    app of *asked*. An app with ``senders`` (Email) reads the mail from its
+    own best sender in the same ask (``sender``), because a full-text word
+    never matches inside an address.
     """
     out: list[NearAsk] = []
-    seen: set[tuple[str, tuple[str, ...], str | None]] = set()
-
-    def add(ask: NearAsk) -> None:
-        mark = (ask.q, ask.keys, ask.sender)
-        if ask.keys and mark not in seen:
-            seen.add(mark)
-            out.append(ask)
-
     for word in chosen:
-        own = {
-            key: best for key in asked
-            if (best := name_match.best_spelling(word, names.get(key, {}).get(word, [])))
-        }
         every = name_match.best_spelling(
             word, [n for by_word in names.values() for n in by_word.get(word, [])])
-        groups: dict[str, list[str]] = {}
-        spelt: dict[str, str] = {}
-        by_sender: list[tuple[str, str]] = []
-        for key in asked:
-            best = own.get(key) or every
-            if best is None:
-                continue
-            if key in own and REGISTRY[key].senders:
-                by_sender.append((key, best.spelling))
-                continue
-            low = best.spelling.lower()
-            spelt.setdefault(low, best.spelling)
-            groups.setdefault(low, []).append(key)
-        for low, keys in groups.items():
-            if len(words_of) > 1:
-                replaced = " ".join(find.spelled(words_of, word, low))
-                add(NearAsk(replaced, tuple(keys), word, spelt[low]))
-            add(NearAsk(low, tuple(keys), word, spelt[low]))
-        for key, spelling in by_sender:
-            rest = " ".join(w for w in words_of if w != word)
-            add(NearAsk(rest, (key,), word, spelling, sender=spelling))
-            add(NearAsk("", (key,), word, spelling, sender=spelling))
+        if every is None or not asked:
+            continue
+        sender = next((
+            mine.spelling for key in asked if REGISTRY[key].senders
+            and (mine := name_match.best_spelling(word, names.get(key, {}).get(word, [])))
+        ), None)
+        out.append(NearAsk(every.spelling.lower(), tuple(asked), word, every.spelling,
+                           sender=sender))
     return out
 
 
@@ -748,16 +731,27 @@ def _first_in_order(hit: Hit) -> tuple[int, int]:
     return -(hit.covers or 0), find.rung_of(hit.matched_by)
 
 
+def _wins_a_tie(new: Hit, kept: Hit) -> bool:
+    """True when *new* replaces *kept*, two copies of one record that two
+    rungs found (HRD-18b review of 2026-11-16, P2-d).
+
+    The copy that holds more words wins, and on a tie the lower rung: the
+    order of §3.4. The text of §3.5 says the lower rung alone. The owner is
+    asked (a3). To go back to §3.5, compare ``find.rung_of`` here only.
+    """
+    return _first_in_order(new) < _first_in_order(kept)
+
+
 def _merge_near(merged: dict[str, list[Hit]], passes: list[dict[str, list[Hit]]],
                 order: list[str], per_app: int) -> dict[str, list[Hit]]:
     """*merged* with the hits of *passes* added, with no repeated id (HRD-18b).
 
-    A hit that two passes found keeps the lower rung of ``find.RUNGS``
-    (§3.5), in the place of its first copy, as ``find.stamped`` does. So a
-    mail that "3D" alone found too says "the word 3D alone", even when its
-    near copy holds more words. Each app's list is cut to *per_app*, the hit
-    with more words first (§3.4). Pure. No pass gives *merged* itself, so an
-    answer with no near ask is the answer of FIND-2, byte for byte.
+    A hit that two passes found keeps the copy of :func:`_wins_a_tie`, in the
+    place of its first copy: the copy that holds more words, then the lower
+    rung. So a mail from «Sharat» that holds "3D printer" keeps ``near``,
+    3 of 3 words, over "the word 3D alone", 2 of 3. Each app's list is cut to
+    *per_app* in the same order (§3.4). Pure. No pass gives *merged* itself,
+    so an answer with no near ask is the answer of FIND-2, byte for byte.
     """
     if not passes:
         return merged
@@ -774,7 +768,7 @@ def _merge_near(merged: dict[str, list[Hit]], passes: list[dict[str, list[Hit]]]
                 if hit.id not in place:
                     place[hit.id] = len(hits)
                     hits.append(hit)
-                elif find.rung_of(hit.matched_by) < find.rung_of(hits[place[hit.id]].matched_by):
+                elif _wins_a_tie(hit, hits[place[hit.id]]):
                     hits[place[hit.id]] = hit
         if len(hits) > per_app:
             # `sorted` is stable, so a tie keeps the order of the passes.
@@ -798,10 +792,11 @@ async def _near_step(
 
     The near lookup over each source the member holds (*order*), for the
     words of :func:`find.near_words`: first the words that no hit of *found*
-    holds. Then the asks of :func:`near_asks` to the apps that answered. Each
-    ask takes an equal share of the time left before *until*, counting the
-    *after_asks* asks of the words alone that follow. No vector half runs. It
-    returns ``near`` for the answer and the stamped hits of each ask.
+    holds. Then the asks of :func:`near_asks` to the apps that answered, one
+    for each word. When the words alone follow (*after_asks*), the whole step
+    takes at most :data:`NEAR_SHARE` of the time left before *until*, so the
+    words alone keep the rest (review of 2026-11-16, P2-a). No vector half
+    runs. It returns ``near`` for the answer and the stamped hits of each ask.
     """
     loop = asyncio.get_running_loop()
     if (not words_of or not miss or bare_words(words) is None
@@ -809,15 +804,17 @@ async def _near_step(
         return [], []
     asked = list(found)
     started = loop.time()
+    if after_asks:
+        until = started + (until - started) * NEAR_SHARE
     chosen = find.near_words(words, words_of, find.held(found, words_of))
     names = await _near_lookup(user, chosen, order, until) if chosen else {}
-    asks = near_asks(words_of, chosen, names, asked) if names else []
+    asks = near_asks(chosen, names, asked) if names else []
     lexical = {k: v for k, v in options.items() if k not in ("vectors", "budget_s")}
     passes: list[dict[str, list[Hit]]] = []
     #: Each word and spelling, and the records that they found, with no repeat.
     counts: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for i, ask in enumerate(asks):
-        share = max(0.0, until - loop.time()) / (len(asks) - i + after_asks)
+        share = max(0.0, until - loop.time()) / (len(asks) - i)
         extra = dict(lexical)
         if ask.sender:
             extra["sender"] = ask.sender
@@ -826,13 +823,14 @@ async def _near_step(
             since=since, deadline=loop.time() + share, timed=False,
         )
         typed = find.asked_form(words, ask.word)
-        got = {
-            key: [find.stamped(h, words_of, "near", word=typed, as_=ask.spelling) for h in hits]
-            for key, hits in got.items()
-        }
+        # A spelling that was tried and found nothing still names its word.
+        counts.setdefault((typed, ask.spelling), set())
+        for key, hits in got.items():
+            # Email read the mail of its own best sender, so its hits name it.
+            spelt = ask.sender if ask.sender and REGISTRY[key].senders else ask.spelling
+            got[key] = [find.stamped(h, words_of, "near", word=typed, as_=spelt) for h in hits]
+            counts.setdefault((typed, spelt), set()).update((key, h.id) for h in got[key])
         passes.append(got)
-        counts.setdefault((typed, ask.spelling), set()).update(
-            (key, h.id) for key, hits in got.items() for h in hits)
     report = [{"word": typed, "as": spelling, "hits": len(records)}
               for (typed, spelling), records in counts.items()]
     _events.info(
@@ -925,6 +923,7 @@ async def company_search(
     # With FIND_ORGS on, the miss of D-FIND-4 (§3.3): the best hit holds fewer
     # than all the content words, so a hit of 1 word of 3 asks again too.
     broadened: list[dict[str, Any]] | None = None
+    first_zero = not any(found.values())
     miss = _missed(found, words_of)
     alone = alone_words(words) if miss else []
     if words_of is not None and alone:
@@ -964,5 +963,7 @@ async def company_search(
     if broadened is not None:
         answer["broadened"] = broadened
     if near:
-        answer["near"] = find.near_report(near, found, broadened)
+        answer["near"] = find.near_report(
+            near, found, broadened, words_of=words_of or [], first_zero=first_zero,
+            skipped=skipped)
     return answer

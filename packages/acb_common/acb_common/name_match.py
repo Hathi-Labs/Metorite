@@ -44,6 +44,7 @@ import it. It opens no connection. Fence: ``tests/unit/test_name_variants.py``.
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from collections.abc import Iterable
 from functools import lru_cache
@@ -109,6 +110,13 @@ SOUND_WEIGHT = 0.9
 #: The most rows of one table that a near lookup reads (HRD-18b). Each app
 #: reads its newest rows first, so the cap drops the oldest names.
 NEAR_VOCABULARY = 2000
+
+#: The most seconds that one scoring of a vocabulary runs in its thread. It
+#: matches the near lookup's own limit, so a thread stops near when its
+#: lookup does (HRD-18b review of 2026-11-16).
+NEAR_SCORING_S = 0.5
+#: How many names :func:`near_names` scores between two looks at the clock.
+_CHECK_EVERY = 256
 
 _SPLIT = re.compile(r"[^0-9a-z]+")
 #: One token of a name as the record spells it: letters and digits only.
@@ -266,7 +274,8 @@ def _as_spelled(name: str, word: str) -> str:
     return word[:NEAR_MAX_CHARS]
 
 
-def near_names(asked: Any, names: Iterable[Any], k: int) -> list[NearName]:
+def near_names(asked: Any, names: Iterable[Any], k: int, *,
+               deadline: float | None = None) -> list[NearName]:
     """The names near to one asked word, one name for each near spelling.
 
     Each distinct word of *names* is scored once with :func:`word_score`. A
@@ -274,7 +283,9 @@ def near_names(asked: Any, names: Iterable[Any], k: int) -> list[NearName]:
     holds it stands for it, so the caller gives the newest names first. The
     asked word itself counts too, so a caller can tell exact from near. At
     most *k*, nearest first, then by raw nearness. Pure, so a caller may run
-    it in a thread.
+    it in a thread. *deadline* is a ``time.monotonic()`` instant: past it,
+    the scoring stops and gives what it found, so a thread whose lookup
+    timed out does not keep the CPU (HRD-18b review of 2026-11-16).
     """
     ask = _words(str(asked or ""))
     if len(ask) != 1 or not near_eligible(ask[0]) or k <= 0:
@@ -282,7 +293,9 @@ def near_names(asked: Any, names: Iterable[Any], k: int) -> list[NearName]:
     word = ask[0]
     scores: dict[str, float] = {}
     found: dict[str, tuple[float, str]] = {}
-    for raw in names:
+    for i, raw in enumerate(names):
+        if deadline is not None and i % _CHECK_EVERY == 0 and time.monotonic() > deadline:
+            break
         name = str(raw or "").strip()
         for part in _words(name):
             if part not in scores:
@@ -294,10 +307,18 @@ def near_names(asked: Any, names: Iterable[Any], k: int) -> list[NearName]:
             for part, (score, name) in ranked[:k]]
 
 
-def near_lookup(asked: Iterable[str], names: Iterable[Any], k: int) -> dict[str, list[NearName]]:
-    """:func:`near_names` for each asked word over one list of names. Pure."""
+def near_lookup(asked: Iterable[str], names: Iterable[Any], k: int, *,
+                deadline: float | None = None) -> dict[str, list[NearName]]:
+    """:func:`near_names` for each asked word over one list of names, each
+    with the one *deadline*. Pure."""
     pool = [str(n or "") for n in names]
-    return {word: near_names(word, pool, k) for word in asked}
+    return {word: near_names(word, pool, k, deadline=deadline) for word in asked}
+
+
+def scoring_deadline() -> float:
+    """The deadline of one scoring in a thread: :data:`NEAR_SCORING_S` from
+    now, on the ``time.monotonic()`` clock."""
+    return time.monotonic() + NEAR_SCORING_S
 
 
 def best_spelling(asked: Any, found: Iterable[NearName]) -> NearName | None:

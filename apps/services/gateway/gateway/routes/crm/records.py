@@ -745,7 +745,8 @@ async def near_names(
                 text(sql), {"cap": name_match.NEAR_VOCABULARY},
             )).fetchall()
             names += [str(r.name) for r in rows if r.name]
-    return await asyncio.to_thread(name_match.near_lookup, words, names, k)
+    return await asyncio.to_thread(
+        name_match.near_lookup, words, names, k, deadline=name_match.scoring_deadline())
 
 
 def _activity_instant(row: dict[str, Any]) -> datetime:

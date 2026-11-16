@@ -80,11 +80,17 @@ class Near:
         self.near_calls: list[tuple[str, list[str]]] = []
         self.names = {key: list(v) for key, v in NAMES.items()}
         self.slow: dict[str, float] = {}
+        #: Seconds that a reader takes for one query, by the query.
+        self.slow_q: dict[str, float] = {}
         self.broken: set[str] = set()
+        #: The near lookups running now, and the most at one time.
+        self.active = 0
+        self.peak = 0
 
     def reader(self, key: str):
         async def read(user: Any, q: str, k: int, **options: Any) -> list[Hit]:
             self.calls.append((key, q, dict(options)))
+            await asyncio.sleep(self.slow_q.get(q, 0.0))
             hits = []
             if key == "crm":
                 for ident, title, kind, text in CRM_ROWS:
@@ -98,9 +104,10 @@ class Near:
                     if sender and sender not in who:
                         continue
                     # Full text holds the subject, the body and the sender name,
-                    # and an address only as one whole token.
+                    # and an address only as one whole token. With a sender,
+                    # the reader reads the mail from that sender only.
                     text = f"{subject} {body} {name} {address}"
-                    if not q.strip() or _holds(q, text):
+                    if sender or not q.strip() or _holds(q, text):
                         hits.append(Hit(app="email", kind="email", id=ident, title=subject,
                                         hint=f"Email · from {name}", href=f"/email?email={ident}",
                                         snippet=body))
@@ -110,7 +117,12 @@ class Near:
     def near(self, key: str):
         async def look(user: Any, words: list[str], k: int) -> dict[str, list[Any]]:
             self.near_calls.append((key, list(words)))
-            await asyncio.sleep(self.slow.get(key, 0.0))
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(self.slow.get(key, 0.0))
+            finally:
+                self.active -= 1
             if key in self.broken:
                 raise RuntimeError("the app is down")
             return name_match.near_lookup(words, self.names.get(key, []), k)
@@ -204,25 +216,33 @@ class TestTheWords:
 
 
 class TestTheAsks:
-    def test_one_word_replaced_then_the_spelling_alone_and_email_by_sender(self):
-        words_of = ["sharath", "3d", "printer"]
+    def test_one_ask_for_each_word_with_the_best_spelling_of_all(self):
+        """Review of 2026-11-16 (P2-a): one ask for each word, so at most 3.
+        Email reads the mail from its own best sender in the same ask."""
         names = {key: name_match.near_lookup(["sharath"], NAMES[key], 5) for key in NAMES}
-        asks = company.near_asks(words_of, ["sharath"], names, ["crm", "email", "tasks"])
+        asks = company.near_asks(["sharath"], names, ["crm", "email", "tasks"])
         assert [(a.q, a.keys, a.sender, a.spelling) for a in asks] == [
-            ("sharat 3d printer", ("crm", "tasks"), None, "Sharat"),
-            ("sharat", ("crm", "tasks"), None, "Sharat"),
-            ("3d printer", ("email",), "Sharat", "Sharat"),
-            ("", ("email",), "Sharat", "Sharat"),
+            ("sharat", ("crm", "email", "tasks"), "Sharat", "Sharat"),
         ]
 
-    def test_a_source_with_no_names_takes_the_best_of_all(self):
+    def test_the_best_of_all_and_the_best_sender_of_email(self):
         names = {"crm": name_match.near_lookup(["nuropeak"], NAMES["crm"], 5),
                  "email": name_match.near_lookup(["nuropeak"], NAMES["email"], 5)}
-        asks = company.near_asks(["nuropeak"], ["nuropeak"], names, ["crm", "email", "people"])
-        assert [(a.q, a.keys, a.sender) for a in asks] == [
-            ("neuropeak", ("crm", "people"), None),
-            ("", ("email",), "neuropeek"),
+        asks = company.near_asks(["nuropeak"], names, ["crm", "email", "people"])
+        # A tie of score goes to the raw trigrams: «Neuropeak» over «neuropeek».
+        assert [(a.q, a.keys, a.spelling, a.sender) for a in asks] == [
+            ("neuropeak", ("crm", "email", "people"), "Neuropeak", "neuropeek"),
         ]
+
+    def test_three_words_and_three_sources_give_at_most_three_asks(self):
+        words = ["sharath", "laxmi", "puja"]
+        pool = {"crm": ["Sharat S", "Lakshmi R", "Pooja K"],
+                "email": ["Sarath M", "Laxmy T", "Pujaa N", "sharat@x.test"],
+                "people": ["Sharat P", "Lakshmi Q", "Pooja Z"]}
+        names = {key: name_match.near_lookup(words, pool[key], 5) for key in pool}
+        asks = company.near_asks(words, names, ["crm", "email", "people", "tasks"])
+        assert len(asks) == 3
+        assert [a.word for a in asks] == words
 
 
 class TestAHitFoundTwice:
@@ -245,17 +265,17 @@ class TestAHitFoundTwice:
         merged = company._merge_near({"crm": [near]}, [{"crm": [word]}], ["crm"], 5)
         assert [(h.id, h.matched_by) for h in merged["crm"]] == [("d-1", "word")]
 
-    def test_the_lower_rung_wins_also_with_fewer_words(self):
-        """§3.5: "A hit found by two rungs keeps the lower rung." The near copy
-        holds «Sharat» and so 3 words, and the copy of "3D" alone 2. The word
-        copy stays: the §3.4 order is for the cut to k, not for a duplicate."""
+    def test_the_copy_with_more_words_wins(self):
+        """Review of 2026-11-16 (P2-d): §3.4 puts coverage first, so a record
+        that two rungs found keeps the copy that holds more words. The near
+        copy holds «Sharat», 3 of 3 words. The copy of "3D" alone holds 2."""
         base = self._base(snippet="lead Sharat Satyanarayana")
         word = find.stamped(base, self.WORDS, "word", word="3d")
         near = find.stamped(base, self.WORDS, "near", word="Sharath", as_="Sharat")
         assert (word.covers, near.covers) == (2, 3)
         for merged in (company._merge_near({"crm": [word]}, [{"crm": [near]}], ["crm"], 5),
                        company._merge_near({"crm": [near]}, [{"crm": [word]}], ["crm"], 5)):
-            assert [(h.id, h.matched_by, h.covers) for h in merged["crm"]] == [("d-1", "word", 2)]
+            assert [(h.id, h.matched_by, h.covers) for h in merged["crm"]] == [("d-1", "near", 3)]
 
     def test_the_cut_to_k_keeps_the_hits_with_more_words(self):
         weak = [find.stamped(Hit(app="crm", kind="deal", id=f"w-{i}", title=f"Printer {i}",
@@ -272,6 +292,39 @@ class TestAHitFoundTwice:
         near = find.stamped(hit, ["sharath", "3d", "printer"], "near", word="Sharath",
                             as_="Sharat")
         assert (near.covers, near.of, near.word, near.as_) == (3, 3, "Sharath", "Sharat")
+
+
+class TestTheStem:
+    """Review of 2026-11-16 (P2-c): the full text matched by stem, so a word
+    that the text holds in another form must count, or a hit reads as a false
+    miss and starts a second pass."""
+
+    def test_a_common_ending_folds_on_both_sides(self):
+        assert find.coverage(["shipping", "delays"], "Shipping delayed") == 2
+        assert find.coverage(["printer"], "3D printers") == 1
+        assert find.coverage(["shipping"], "the order shipped") == 1
+        assert find.coverage(["delayed"], "two delays") == 1
+        assert find.coverage(["addresses"], "one address") == 1
+
+    def test_a_short_stem_and_another_word_stay_apart(self):
+        # "printed" is not "printer", and a stem under 4 letters is not cut.
+        assert find.coverage(["printer"], "Neuropeak printed 3Dx") == 0
+        assert find.coverage(["need"], "a ne b") == 0
+        assert find.coverage(["sharath"], "Sharat") == 0
+
+
+class TestTheScoringStops:
+    def test_a_deadline_in_the_past_stops_the_scoring(self):
+        """The thread that scores names keeps no CPU after its lookup timed
+        out: it checks a deadline and stops."""
+        names = [f"Name{i} Sharat" for i in range(5000)]
+        began = time.monotonic()
+        found = name_match.near_names("sharath", names, 5, deadline=time.monotonic() - 1)
+        assert found == [] and time.monotonic() - began < 0.5
+        assert name_match.near_lookup(["sharath"], names, 5, deadline=time.monotonic() - 1) == {
+            "sharath": []}
+        # No deadline: the whole list.
+        assert name_match.near_names("sharath", names, 5)[0].spelling == "Sharat"
 
 
 # ── The route ───────────────────────────────────────────────────────────────
@@ -362,20 +415,67 @@ class TestTheFracktalCase:
         # found records, so the word is held, and no near line prints.
         assert answer["near"] == [{"word": "Sharath", "as": "Sharat", "hits": 3, "held": True}]
         assert "No record holds «" not in cst.format_answer(answer, dated=True)
-        # "3D" alone found the mail and the deal too, and the lower rung wins
-        # (§3.5). The near copy of the mail held 3 of 3 words, the word copy
-        # holds 2: the cost of §3.5 against the order of §3.4.
+        # "3D" alone found the mail too. Its near copy holds 3 of 3 words and
+        # the word copy 2, so the near copy stays (P2-d), and it comes first.
         mail = _hit(answer, "m-7")
-        assert (mail["matched_by"], mail["word"], mail["covers"], mail["of"]) == (
-            "word", "3d", 2, 3)
+        assert (mail["matched_by"], mail["word"], mail["as"], mail["covers"], mail["of"]) == (
+            "near", "Sharath", "Sharat", 3, 3)
+        assert answer["hits"][0]["id"] == "m-7"
+        # The deal holds 2 words in each copy: the tie goes to the lower rung.
         deal = _hit(answer, "d-1")
         assert (deal["matched_by"], deal["covers"]) == ("word", 2)
         assert _hit(answer, "m-9")["matched_by"] == "word"
-        # Each word alone still ran, after the near asks.
+        # Each word alone still ran, after the one near ask.
         assert [b["word"] for b in answer["broadened"]] == ["sharath", "3d", "printer"]
         asked = world.asked("crm")
-        assert asked.index(("sharat 3d printer", {})) < asked.index(("sharath", {}))
-        assert ("3d printer", {"sender": "Sharat"}) in world.asked("email")
+        assert asked.index(("sharat", {})) < asked.index(("sharath", {}))
+        assert ("sharat", {"sender": "Sharat"}) in world.asked("email")
+
+    def test_a_long_query_that_never_ran_alone_claims_nothing(
+            self, world, recency, find_on):  # noqa: F811
+        """Review of 2026-11-16 (P1-b): 7 tokens never ask each word alone, so
+        nothing proves that no record holds «Sharath». The BMS contact does."""
+        recency(True)
+        find_on("*")
+        answer = run("Sharath BMS order for the 3D printer")
+        assert "broadened" not in answer
+        (entry,) = answer["near"]
+        assert (entry["word"], entry["as"], entry["held"]) == ("Sharath", "Sharat", None)
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
+
+    def test_the_near_asks_leave_the_words_alone_most_of_the_time(
+            self, world, recency, find_on, monkeypatch):  # noqa: F811
+        """P2-a: the near asks take at most a third of the second pass, so a
+        slow near ask never starves the words alone."""
+        recency(True)
+        find_on("*")
+        monkeypatch.setattr(company, "BROADEN_BUDGET_S", 1.2)
+        for q in ("sharat", "sharat 3d printer", "3d printer", ""):
+            world.slow_q[q] = 3.0
+        lines: list[tuple[str, dict[str, Any]]] = []
+
+        class _Log:
+            def info(self, event: str, **fields: Any) -> None:
+                lines.append((event, fields))
+
+        monkeypatch.setattr(company, "_events", _Log())
+        answer = run("Sharath 3D printer")
+        (_e, near), = [line for line in lines if line[0] == "search.company.near"]
+        assert near["asks"] == 1 and near["ms"] <= 1200 / 3 + 150, near
+        alone = {b["word"]: b["hits"] for b in answer["broadened"]}
+        assert alone["3d"] >= 2 and alone["printer"] >= 2
+
+    def test_the_near_lookups_take_a_session_slot(
+            self, world, recency, find_on, monkeypatch):  # noqa: F811
+        """P2-b: each near lookup takes a slot of FIND_SESSIONS, as a source
+        does, so the near step never opens more sessions than the cap."""
+        recency(True)
+        find_on("*")
+        monkeypatch.setattr(company, "FIND_SESSIONS", 2)
+        world.slow.update({"crm": 0.15, "email": 0.15, "people": 0.15})
+        answer = run("nuropeak")
+        assert len(world.near_calls) == 3 and world.peak == 2
+        assert {e["as"] for e in answer["near"]} == {"Neuropeak", "neuropeek"}
 
     def test_nuropeak_finds_the_deal_and_the_mail_from_its_domain(
             self, world, recency, find_on):  # noqa: F811
@@ -464,7 +564,7 @@ class TestTheNearLookup:
         monkeypatch.setattr(company, "_events", _Log())
         run("nuropeak")
         (_event, fields), = [line for line in lines if line[0] == "search.company.near"]
-        assert fields["words"] == 1 and fields["asks"] == 2 and fields["hits"] == 2
+        assert fields["words"] == 1 and fields["asks"] == 1 and fields["hits"] == 2
         assert "nuropeak" not in repr(lines).lower() and "neuropeek" not in repr(lines)
 
 
@@ -512,10 +612,35 @@ class TestThePrint:
         found = {"crm": [hit("a", "Laxmi Rao", "exact"), hit("b", "Puja Shah", "near")]}
         broadened = [{"word": "sharath", "hits": 2, "skipped": []},
                      {"word": "puja", "hits": 0, "skipped": []}]
-        got = {e["word"]: e["held"] for e in find.near_report(near, found, broadened)}
+        got = {e["word"]: e["held"] for e in find.near_report(
+            near, found, broadened, words_of=["sharath", "laxmi", "puja"], first_zero=False,
+            skipped=[])}
         # Sharath alone found 2. Laxmi is in a hit of its own words. Puja is
-        # only in a near hit, and alone it found nothing.
+        # only in a near hit, and alone it found nothing in every app.
         assert got == {"Sharath": True, "Laxmi": True, "Puja": False}
+
+    def test_held_is_unknown_unless_every_app_searched_the_word_alone(self):
+        """P1-b: "No record holds" needs proof. A word alone that an app
+        skipped, a first pass with a skipped app, and a word that was never
+        searched alone (a query of more than 5 tokens) are all unknown."""
+        near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
+        words = ["puja", "shah"]
+
+        def held(broadened: Any, *, first_zero: bool = True, skipped: Any = (),
+                 words_of: Any = None) -> Any:
+            (entry,) = find.near_report(near, {}, broadened, words_of=words_of or words,
+                                        first_zero=first_zero, skipped=list(skipped))
+            return entry["held"]
+
+        zero = [{"word": "puja", "hits": 0, "skipped": []}]
+        assert held(zero) is False
+        assert held([{"word": "puja", "hits": 0, "skipped": ["crm"]}]) is None
+        assert held(zero, skipped=["email"]) is None
+        assert held(None) is None
+        # A query of the word alone: the first pass is the word alone.
+        assert held(None, words_of=["puja"]) is False
+        assert held(None, words_of=["puja"], skipped=["crm"]) is None
+        assert held(None, words_of=["puja"], first_zero=False) is True
 
     def test_undated_text_has_no_near_line(self):
         body = {"hits": [], "near": [{"word": "Sharath", "as": "Sharat", "hits": 1}],
@@ -591,5 +716,19 @@ class TestQueryInbox:
         state["answer"] = {"emails": [], "total": 0,
                            "near": {"word": "Sharath\n«x»", "as": "Sharat"}}
         out = asyncio.run(module.query_inbox(from_email="Sharath"))
+        # P1-a: the near sender may have mail that the other filters leave
+        # out, so the line says only that none of it matches these filters.
         assert out.splitlines()[0] == (
-            "No mail from «Sharath x», and none from the near spelling «Sharat».")
+            "No mail from «Sharath x». No mail from the near spelling «Sharat» "
+            "matches these filters.")
+
+    def test_a_page_past_the_end_makes_no_false_claim(self, agent):
+        """P1-a: the route found 3 mails from the near spelling, and the page
+        asked is past them. The line must not say that none came."""
+        module, state = agent
+        state["answer"] = {"emails": [], "total": 3,
+                           "near": {"word": "Sharath", "as": "Sharat"}}
+        out = asyncio.run(module.query_inbox(from_email="Sharath", offset=50))
+        assert out.splitlines()[0] == (
+            "No mail from «Sharath». Mail from the near spelling «Sharat»:")
+        assert "matches these filters" not in out and "none from" not in out

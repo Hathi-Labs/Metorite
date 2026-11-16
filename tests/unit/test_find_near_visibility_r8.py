@@ -134,7 +134,7 @@ async def world(ns, app_engine, monkeypatch):  # noqa: F811
                 "INSERT INTO people (name, department, source, organization_id) "
                 "VALUES (:n, 'Ops', :s, CAST(:o AS uuid))"),
                 {"n": name, "s": f"near-{TAG}", "o": org})
-    yield {"p": p, "deal": deal, "mail_a": mail_a, "mail_b": mail_b}
+    yield {"p": p, "deal": deal, "mail_a": mail_a, "mail_b": mail_b, "box_a": box_a}
     with p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM email_accounts WHERE user_id IN (:a, :b, :c)"),
                   {"a": A, "b": B, "c": C})
@@ -322,15 +322,52 @@ async def test_a_sender_filter_tries_the_near_spelling(world, flags) -> None:
     assert second["near"] == {"word": "Sharath", "as": "Sharat"}
 
 
+async def test_a_sender_with_mail_left_out_by_other_filters_tries_no_near_spelling(
+        world, flags) -> None:
+    """Review of 2026-11-16 (P1-a): "unread mail from Vijay", and all of
+    Vijay's mail is read. The total is 0 because of the unread filter, not
+    the sender. So no near spelling is tried, and nothing says «Vijaya»."""
+    p = world["p"]
+    me = _member(A, p.org_a, "feature:email")
+    read = _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name="Vijay Raghav",
+                 address=f"vijay@vr-{TAG}.test", subject="Read already", body="done")
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE email_messages SET is_read = true WHERE id = CAST(:i AS uuid)"),
+                  {"i": read})
+    _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name="Vijaya Kumar",
+          address=f"vk@vk-{TAG}.test", subject="Not read", body="new")
+    flags("*")
+    unread = await _inbox(p, me, "Vijay", is_read=False)
+    assert unread["total"] == 0 and unread["emails"] == [] and "near" not in unread
+    # Non-vacuity: with no other filter, the exact filter finds Vijay.
+    every = await _inbox(p, me, "Vijay")
+    assert [str(e["id"]) for e in every["emails"]] == [read] and "near" not in every
+
+
+async def test_a_word_held_by_a_sender_name_tries_no_near_spelling(world, flags) -> None:
+    """P1-a: «Sharath Kumar <sk@bms…>» holds "Sharath" in his name, and the
+    exact filter reads the address only. The word is held, so no near
+    spelling is tried, and Sharat's mail is not shown as a stand-in."""
+    p = world["p"]
+    me = _member(A, p.org_a, "feature:email")
+    _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name="Sharath Kumar",
+          address=f"sk@bms-{TAG}.test", subject="Quote", body="the quote")
+    flags("*")
+    got = await _inbox(p, me, "Sharath")
+    assert "near" not in got and world["mail_a"] not in {str(e["id"]) for e in got["emails"]}
+
+
 async def test_a_sender_of_another_mailbox_never_answers(world, flags) -> None:
     p = world["p"]
     flags("*")
-    hidden = await _inbox(p, _member(A, p.org_a, "feature:email"), "Secretnam")
+    # "Sicretname" is near «Secretname», and no address or name holds it, so
+    # the sender alone has no mail (P1-a) and a near spelling may be tried.
+    hidden = await _inbox(p, _member(A, p.org_a, "feature:email"), "Sicretname")
     assert hidden["total"] == 0 and "near" not in hidden
     assert "Secretname" not in json.dumps(hidden, default=str)
     # Non-vacuity: B, who owns the mailbox, gets the near spelling.
-    own = await _inbox(p, _member(B, p.org_a, "feature:email"), "Secretnam")
-    assert own["near"] == {"word": "Secretnam", "as": "Secretname"}
+    own = await _inbox(p, _member(B, p.org_a, "feature:email"), "Sicretname")
+    assert own["near"] == {"word": "Sicretname", "as": "Secretname"}
     assert [str(e["id"]) for e in own["emails"]] == [world["mail_b"]]
 
 
@@ -367,9 +404,11 @@ async def test_sharath_3d_printer_finds_the_deal_and_the_mail_in_one_call(
     assert (near["word"], near["as"]) == ("Sharath", "Sharat") and near["hits"] >= 2
     hits = {h["id"]: h for h in answer["hits"]}
     assert world["deal"] in hits and world["mail_a"] in hits
-    # "3D" alone found both too, and the lower rung wins (§3.5). The near tag
-    # of a hit is proved by "nuropeak" below.
-    assert hits[world["mail_a"]]["matched_by"] == "word"
+    # "3D" alone found the mail too. Its near copy holds «Sharat», 3 of 3
+    # words, and the word copy 2, so the near copy stays (review P2-d).
+    mail = hits[world["mail_a"]]
+    assert (mail["matched_by"], mail["as"], mail["covers"], mail["of"]) == (
+        "near", "Sharat", 3, 3)
     # B's mail never reaches A, as a hit or a word.
     assert world["mail_b"] not in str(answer) and "Secretname" not in str(answer)
 

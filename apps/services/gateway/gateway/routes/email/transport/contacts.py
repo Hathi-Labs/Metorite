@@ -959,4 +959,6 @@ async def near_senders(
     """
     async with _tenant_session() as db:
         rows = await sender_rows(db, user.email or "anonymous")
-    return await asyncio.to_thread(name_match.near_lookup, words, sender_names(rows), k)
+    return await asyncio.to_thread(
+        name_match.near_lookup, words, sender_names(rows), k,
+        deadline=name_match.scoring_deadline())
