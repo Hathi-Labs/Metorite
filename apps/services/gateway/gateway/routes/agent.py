@@ -3548,16 +3548,15 @@ async def run_agent_stream_endpoint(
     # The detached run of this turn: the same arguments for a run that this
     # request reads (`run_detached` below) and for a continuation run that no
     # request reads (`start_detached`, RESUME-2a).
+    # `organization_id` stays an explicit keyword at each call below, so the
+    # fence of test_executor_org_threading reads it. It is the server-side
+    # tenant only, never req.payload (R11).
     _detached: dict[str, Any] = {
         "tee": False,
         "on_complete": _persist_on_complete,
         "actor": _actor or None,
         "source": str(req.payload.get("source") or "chat"),
         "floor": _floor,
-        # Server-side tenant only (see the run_agent_stream call above) —
-        # never req.payload. Binds the detached drain task's own scope so
-        # the on_complete persist hook sees the right tenant (R11).
-        "organization_id": _organization_id,
         # What the restart sweep needs to save this run's partial
         # reply if this process dies (orchestrator.run_liveness).
         "record": {
@@ -3582,7 +3581,10 @@ async def run_agent_stream_endpoint(
             # in another tab. A refusal raises before anything began.
             _resume_launch.phase = "starting"
             try:
-                await start_detached(thread_id, agent_gen, exclusive=True, **_detached)
+                await start_detached(
+                    thread_id, agent_gen, exclusive=True,
+                    organization_id=_organization_id, **_detached,
+                )
             except SupersedeRefused:
                 _resume_launch.phase = "refused"
                 await _release_cap_slot()
@@ -3621,7 +3623,10 @@ async def run_agent_stream_endpoint(
 
     async def _serve_run(timing: _RunTiming):
         try:
-            async for evt in run_detached(thread_id, agent_gen, **_detached):
+            async for evt in run_detached(
+                thread_id, agent_gen,
+                organization_id=_organization_id, **_detached,
+            ):
                 timing.see(evt)
                 yield f"data: {json.dumps(evt)}\n\n"
         except SupersedeRefused:
