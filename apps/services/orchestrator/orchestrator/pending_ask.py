@@ -915,8 +915,10 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
-    except Exception:
-        _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+    except Exception as exc:
+        # Class and id only (task 3538): the answer is a statement parameter.
+        _log.warning("pending_ask.settle_failed", request_id=request_id[:12],
+                     error=type(exc).__name__)
         return
     if row:
         # The question no longer waits, so it leaves My Day at once.

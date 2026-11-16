@@ -65,3 +65,13 @@ def test_the_handlers_that_hold_an_answer_never_log_exc_info(name) -> None:
         and any(k.arg == "exc_info" for k in n.keywords)
     ]
     assert bad == [], f"exc_info in {name} at {bad}"
+
+
+def test_settle_never_logs_exc_info() -> None:
+    """The same leak in ``pending_ask.settle`` (found by the verifier of PR 2519)."""
+    tree = ast.parse(inspect.getsource(pending_ask.settle).lstrip())
+    assert "answer" in inspect.signature(pending_ask.settle).parameters
+    bad = [n.lineno for n in ast.walk(tree)
+           if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "warning"
+           and any(k.arg == "exc_info" for k in n.keywords)]
+    assert bad == []
