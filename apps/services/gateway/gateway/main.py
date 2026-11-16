@@ -537,6 +537,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
     try:
+        # The retention of the waiting chat cards registers its prune hook at
+        # import (task 3435, orchestrator/pending_ask.py). A route imports the
+        # module late, so the import here puts the hook in place before the
+        # first tick. Its own try, as above.
+        from orchestrator import pending_ask as _pending_ask  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.pending_ask_prune_skipped", error=type(exc).__name__)
+    try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
         from gateway.align import check as _align_check  # noqa: F401
