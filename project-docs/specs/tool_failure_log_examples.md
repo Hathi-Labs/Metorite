@@ -24,7 +24,7 @@ each row. TOF-2b uses the table as golden cases in
 | 8 | The chat called the MCP server "shaurrya-app", and it timed out | `mcp` | `mcp_timeout` | `-` | `-` | `c66c2e978c30822d` |
 | 9 | A Studio view read the MCP server "acme-erp" of org C, and it timed out | `mcp` | `mcp_timeout` | `-` | `-` | `c66c2e978c30822d` |
 | 10 | The Projects pack tool `create_task` raised `KeyError` in its body | `create_task` | `exception` | `builtins.KeyError` | `skill_projects.writes:create_task` | `bbdc60d2363e37a9` |
-| 11 | `create_task` caught an `httpx.HTTPStatusError`, and its `except` block raised `KeyError` with no `from` | `create_task` | `exception` | `builtins.KeyError` | `skill_projects.writes:create_task` | `bbdc60d2363e37a9` |
+| 11 | A helper, `skill_projects.client:_post`, raised an `httpx.HTTPStatusError`. `create_task` caught it, and its `except` block raised `KeyError` with no `from` | `create_task` | `exception` | `builtins.KeyError` | `skill_projects.writes:create_task` | `bbdc60d2363e37a9` |
 | 12 | The same, but the `except` block raised `KeyError(...) from exc`. `create_task` itself called `raise_for_status()` | `create_task` | `exception` | `httpx.HTTPStatusError` | `skill_projects.writes:create_task` | `7c1d06d5d3968dc5` |
 
 **What the rows show.**
@@ -34,13 +34,27 @@ each row. TOF-2b uses the table as golden cases in
 - Row 10 shows that a frame under `apps/skills` wins over the guard frame.
 - Rows 11 and 12 are the fence of the walk of §3.2 rules 3 and 4. The walk
   follows `__cause__` and the groups, and never `__context__`. So row 11
-  equals row 10, and row 12 names the cause. A walk that follows
-  `__context__` gives `httpx.HTTPStatusError` for row 11, and the test fails.
-- The test builds rows 11 and 12 in a fixture module under a temporary
-  `apps/skills/` root, so the frame rule of rule 4 applies.
+  equals row 10, and row 12 names the cause.
+- A rule 3 walk that follows `__context__` gives `httpx.HTTPStatusError` for
+  row 11. A rule 4 walk that follows it gives the site
+  `skill_projects.client:_post`. Either one fails the test.
+- **The fixture.** The test writes two files under a temporary root:
+  `apps/skills/skill-projects/skill_projects/writes.py` with `create_task`,
+  and `client.py` beside it with `_post`. It loads them as the modules
+  `skill_projects.writes` and `skill_projects.client`. It passes that root as
+  `repo_root` (§3.2 rule 4), so the tree test of rule 4 accepts the frames.
+  With the repository root, the frames are out of every tree, the site is
+  `-`, and rows 11 and 12 fail.
+- The inputs of rows 11 and 12 did not change, so their hashes stay.
 
 **Which rows a capture site writes today.** No site of §4.2 writes rows 1 and
 2. `crm_get_record` is an injected CRM read tool. No guard wraps it, so C1
 never sees its raise, and C4 records a gateway 401 only. Rows 1 and 2 test
-the normaliser alone. Rows 6, 7 and 10 use real code at `origin/main`
+the normaliser alone.
+
+Rows 11 and 12 hold an `httpx.HTTPStatusError` with a status. So C1 writes
+them as `exception` only for a gateway status that the C1 skip rule does not
+name, such as 405 or 410. A gateway 401 gives `auth_401`. A gateway 5xx, a
+status of §4.1 and a status of an outside host give no row. So rows 11 and 12
+also test the normaliser first. Rows 6, 7 and 10 use real code at `origin/main`
 `20ef30cfb`.
