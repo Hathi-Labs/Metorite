@@ -4918,11 +4918,100 @@ async def _root_of(pid: str, node: dict[str, Any]) -> dict[str, Any]:
     return current
 
 
-def _tree_scope(root: dict[str, Any], node: dict[str, Any]) -> str:
+#: The space on a card when the member cannot see the root of the tree
+#: (``chat_failure_modes.md`` §8, Q5). The card names no hidden space.
+HIDDEN_SPACE = "the space above it"
+
+#: The words of each vocabulary kind on the reach line (HRD-9a).
+REACH_WORDS = {"tags": "tags", "fields": "custom fields", "types": "task types"}
+
+
+class _Space:
+    """The root of a tree, which owns a root-local tag, field or type (HRD-9a).
+
+    ``name`` is ``None`` when the member cannot see the root, so the card says
+    :data:`HIDDEN_SPACE`. ``projects`` is N, the projects of the tree that
+    hold tasks, or ``None`` when the read failed.
+    """
+
+    def __init__(self, root_id: str | None, name: Any, projects: int | None) -> None:
+        self.id = root_id
+        self.name = name
+        self.projects = projects
+
+    @property
+    def words(self) -> str:
+        """The space on a card: its fenced name, or :data:`HIDDEN_SPACE`."""
+        return data(self.name) if self.name is not None else HIDDEN_SPACE
+
+
+def _reach_count(body: Any) -> int | None:
+    """N from the reach read, or ``None`` for an answer of another shape."""
+    if not isinstance(body, dict) or not body.get("root_id"):
+        return None
+    n = body.get("projects")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        return None
+    return n
+
+
+async def _space_of(pid: str, node: dict[str, Any]) -> _Space:
+    """The space of ``node``, and N (HRD-9a, ``chat_failure_modes.md`` §6).
+
+    ``GET /projects/nodes/{id}/vocabulary/reach`` gives both, and
+    ``core.vocabulary_reach`` counts. A read that fails gives the space from
+    the walk of :func:`_root_of`, and no N. A walk that fails too gives
+    :data:`HIDDEN_SPACE`. So no read here stops the write: the card always
+    shows, and the route decides the write.
+    """
+    try:
+        node_id = uuid_of(pid, "project_id")
+        body = await get(f"/projects/nodes/{node_id}/vocabulary/reach")
+    except Exception:  # a card detail, never a write
+        body = None
+    n = _reach_count(body)
+    if n is not None:
+        return _Space(str(body["root_id"]), body.get("root_name"), n)
+    try:
+        root = await _root_of(pid, node)
+    except Exception:  # a hidden parent ends the walk: the card names no space
+        return _Space(None, None, None)
+    root_id = root.get("id")
+    return _Space(str(root_id) if root_id else None, root.get("name"), None)
+
+
+def shared_vocab_line(kind: str, space: _Space) -> str:
+    """The card words when a root-local row reaches 2 or more projects, or ``""``.
+
+    HRD-9a: "Changes the task types of «Space» for 5 projects". With N of 1,
+    or with no N, the card has no line (§8, Q3), as PST-4 has none.
+    """
+    if space.projects is None or space.projects < 2:
+        return ""
+    return f"Changes the {REACH_WORDS[kind]} of {space.words} for {_n_projects(space.projects)}"
+
+
+def _with_line(detail: str, line: str) -> str:
+    """``detail``, and the reach line after it when there is one (as PST-4)."""
+    return f"{detail}. {line}" if line else detail
+
+
+def _card_place(space: _Space | None, node: dict[str, Any]) -> str:
+    """The ``project`` row of an edit card: the space of a root-local row.
+
+    An org-wide row has no space (``space`` is ``None``), and its card keeps
+    the node, as before HRD-9a.
+    """
+    return data(node.get("name")) if space is None else space.words
+
+
+def _tree_scope(space: _Space, node: dict[str, Any]) -> str:
     """``«Root» and every project in its tree`` for the card."""
-    if root.get("id") == node.get("id"):
-        return f"{data(root.get('name'))} and every project under it"
-    return f"{data(root.get('name'))}, the root of {data(node.get('name'))}, and its whole tree"
+    if space.id is not None and space.id == str(node.get("id")):
+        return f"{space.words} and every project under it"
+    if space.name is None:
+        return f"the space above {data(node.get('name'))}, and its whole tree"
+    return f"{space.words}, the root of {data(node.get('name'))}, and its whole tree"
 
 
 def _local(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -5199,7 +5288,8 @@ async def create_type(
     rows = await _vocab(pid, "types")
     if _matches_by_name(_local(rows), label):
         return f"{data(label)} already exists here. The types are: {_names(rows)}."
-    root = await _root_of(pid, node)
+    # An org-wide row keeps its card of today, so it reads no space (HRD-9a).
+    space = None if org_wide else await _space_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if icon.strip():
         payload["icon"] = icon.strip()
@@ -5215,10 +5305,11 @@ async def create_type(
         payload["is_epic"] = True
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
+    where = "every project (organization-wide)" if space is None else _tree_scope(space, node)
+    reach = "" if space is None else shared_vocab_line("types", space)
     if not await _confirm(
         title="Add this task type?",
-        detail=f"{data(label)} in {where}",
+        detail=_with_line(f"{data(label)} in {where}", reach),
         context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
     ):
         return _not_confirmed()
@@ -5277,7 +5368,11 @@ async def update_type(
             f"{data(row.get('name'))} is organization-wide. Only its name can change "
             "from here. Set an icon, colour or default on a project's own type."
         )
-    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    # HRD-9a: a root-local type is the space's, so the card names the space
+    # and N. An org-wide type keeps its card of today.
+    space = None if _org_wide(row) else await _space_of(pid, node)
+    scope = "organization-wide" if space is None else space.words
+    reach = "" if space is None else shared_vocab_line("types", space)
     card: dict[str, Any] = dict(payload)
     if demoted:
         card["no longer the default"] = demoted
@@ -5285,8 +5380,8 @@ async def update_type(
         card["scope"] = "organization-wide — every project"
     if not await _confirm(
         title="Change this task type?",
-        detail=f"{data(row.get('name'))} in {scope}",
-        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
+        detail=_with_line(f"{data(row.get('name'))} in {scope}", reach),
+        context=_fields_block({**card, "project": _card_place(space, node)}, before=before),
     ):
         return _not_confirmed()
     updated = await patch(f"/projects/types/{tid}", payload)
@@ -5355,7 +5450,8 @@ async def create_field(
     rows = await _vocab(pid, "fields")
     if _matches_by_name(_local(rows), label):
         return f"A field called {data(label)} already exists here."
-    root = await _root_of(pid, node)
+    # An org-wide row keeps its card of today, so it reads no space (HRD-9a).
+    space = None if org_wide else await _space_of(pid, node)
     payload: dict[str, Any] = {"name": label, "field_type": kind}
     if choices:
         payload["options"] = choices
@@ -5363,7 +5459,8 @@ async def create_field(
         payload["description"] = description.strip()
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
+    where = "every project (organization-wide)" if space is None else _tree_scope(space, node)
+    reach = "" if space is None else shared_vocab_line("fields", space)
     card: dict[str, Any] = {**payload, "project": data(node.get("name")), "scope": where}
     if required:
         # The create route's INSERT carries no `required` column
@@ -5373,7 +5470,9 @@ async def create_field(
         card["required"] = "a task cannot move into this project without a value"
     if not await _confirm(
         title="Add this custom field?",
-        detail=f"{data(label)} ({kind}) in {where}" + (" · required" if required else ""),
+        detail=_with_line(
+            f"{data(label)} ({kind}) in {where}" + (" · required" if required else ""), reach,
+        ),
         context=_fields_block(card),
     ):
         return _not_confirmed()
@@ -5427,14 +5526,20 @@ async def update_field(
         before["field_type"] = row.get("field_type")
     if not payload:
         return "Nothing to change. Pass at least one field."
-    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    # HRD-9a: a root-local field is the space's, so the card names the space
+    # and N. An org-wide field keeps its card of today.
+    space = None if _org_wide(row) else await _space_of(pid, node)
+    scope = "organization-wide" if space is None else space.words
+    reach = "" if space is None else shared_vocab_line("fields", space)
     card: dict[str, Any] = dict(payload)
     if _org_wide(row):
         card["scope"] = "organization-wide — every project"
     if not await _confirm(
         title="Change this custom field?",
-        detail=f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {scope}",
-        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
+        detail=_with_line(
+            f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {scope}", reach,
+        ),
+        context=_fields_block({**card, "project": _card_place(space, node)}, before=before),
     ):
         return _not_confirmed()
     updated = await patch(f"/projects/fields/{fid}", payload)
@@ -5464,7 +5569,8 @@ async def create_tag(
     rows = await _vocab(pid, "tags")
     if _matches_by_name(_local(rows), label):
         return f"{data(label)} already exists here. The tags are: {_names(rows)}."
-    root = await _root_of(pid, node)
+    # An org-wide row keeps its card of today, so it reads no space (HRD-9a).
+    space = None if org_wide else await _space_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if color.strip():
         payload["color"] = hue_of(color)
@@ -5472,15 +5578,36 @@ async def create_tag(
         payload["description"] = description.strip()
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
+    where = "every project (organization-wide)" if space is None else _tree_scope(space, node)
+    reach = "" if space is None else shared_vocab_line("tags", space)
     if not await _confirm(
         title="Add this tag?",
-        detail=f"{data(label)} in {where}",
+        detail=_with_line(f"{data(label)} in {where}", reach),
         context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
     ):
         return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/tags", payload)
     return f"Added tag {data(row.get('name') or label)} to {where}.\n  tag_id: {row.get('id')}"
+
+
+async def _rename_count(gid: str, row: dict[str, Any]) -> int:
+    """How many tasks a rename of a root-local tag rewrites (HRD-9a).
+
+    ``tags._rewrite`` changes each task of the tree that wears the tag, an
+    archived task too. The list's ``task_count`` counts open tasks only, so
+    it is short. ``GET /tags/{id}/impact`` counts with the scope of the
+    rewrite, as ``merge_tags`` reads it. A failed read gives the list's
+    count, so the card always shows.
+    """
+    try:
+        tag_id = uuid_of(gid, "tag_id")
+        hit = await get(f"/projects/tags/{tag_id}/impact")
+    except Exception:  # a card detail, never a write
+        hit = None
+    tasks = hit.get("tasks") if isinstance(hit, dict) else None
+    if isinstance(tasks, int) and not isinstance(tasks, bool):
+        return tasks
+    return int(row.get("task_count") or 0)
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
@@ -5507,28 +5634,33 @@ async def update_tag(
         before["description"] = row.get("description")
     if not payload:
         return "Nothing to change. Pass at least one field."
-    worn = int(row.get("task_count") or 0)
     card: dict[str, Any] = dict(payload)
     size = ""
+    # HRD-9a: a root-local tag is the space's, so the card names the space
+    # and N. An org-wide tag keeps its card of today.
+    space = None if _org_wide(row) else await _space_of(pid, node)
     if "name" in payload and _org_wide(row):
-        # The list's count is scoped to THIS tree on purpose (tags.py
-        # `list_tags`), and an org-wide rename rewrites every project's
-        # tasks. No number the tool can read is the truth, so the card says
-        # the scope and no count (S2b review).
+        # An org-wide rename rewrites the tasks of each space that keeps no
+        # tag of its own with that name (`core.governed_tasks_scope`). The
+        # chat can read that count: `GET /tags/{id}/impact`, a read of
+        # delete_tag in the manifest (PS-3b). HRD-9b puts it on this card.
+        # Until then the card says the scope and no count, as before.
         card = {"scope": "organization-wide — every project's tasks that wear it", **payload}
         size = " · organization-wide"
     elif "name" in payload:
         # The count FIRST on a rename: it is the size of the act. The route
         # rewrites every task that wears the tag (tags.py `_rewrite`).
+        worn = await _rename_count(gid, row)
         card = {"tasks renamed": worn, **payload}
         size = f" · renames {worn} task{'s' if worn != 1 else ''}"
     elif _org_wide(row):
         card["scope"] = "organization-wide — every project"
-    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    scope = "organization-wide" if space is None else space.words
+    reach = "" if space is None else shared_vocab_line("tags", space)
     if not await _confirm(
         title="Change this tag?",
-        detail=f"{data(row.get('name'))} in {scope}{size}",
-        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
+        detail=_with_line(f"{data(row.get('name'))} in {scope}{size}", reach),
+        context=_fields_block({**card, "project": _card_place(space, node)}, before=before),
     ):
         return _not_confirmed()
     updated = await patch(f"/projects/tags/{gid}", payload)

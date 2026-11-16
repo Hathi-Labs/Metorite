@@ -458,6 +458,8 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/vocabulary", "", "X", reason=_SETTINGS_LIST),
         Route("GET", "/projects/vocabulary/{kind}/{row_id}/impact", "", "X",
               reason=_SETTINGS_IMPACT),
+        Route("GET", "/projects/nodes/{project_id}/vocabulary/reach", "vocabulary", "A",
+              off_door=LATER),
         # ── assignees.py ──
         Route("GET", "/projects/people/names", "people_for", "A", off_door=LATER),
         Route("GET", "/projects/assignees", "people_for", "A", off_door=LATER),
