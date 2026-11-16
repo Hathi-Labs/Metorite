@@ -352,7 +352,8 @@ def _email(monkeypatch: pytest.MonkeyPatch, outcome: str) -> str | None:
 
     async def _go() -> str | None:
         if outcome == at.CLOSED_BY_YOUR_MESSAGE:
-            # The send card: its own steps follow the table's head (HRD-8a).
+            # The reply card: the steps of its act follow the table's head.
+            # Each act has its own steps (HRD-8a, ``test_redraft_keeps_act.py``).
             return email._CARD_REVISED
         return await email._card_refusal("Delete the rule?", "one rule", EMAIL_ACT)
 

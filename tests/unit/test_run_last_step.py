@@ -344,3 +344,152 @@ def test_a_question_has_no_step(fake_redis, db_down, monkeypatch):
     assert rows[0]["state"] == "needs_input"
     assert rows[0]["lastStep"] is None
     assert fake_redis.xrev_calls == []
+
+
+# ---------------------------------------------------------------------------
+# CSY-10: an MCP step keeps its server's label (chat_connected_systems.md 3.8)
+#
+# The wire name of an MCP tool is exactly "<server.name>_<tool>": MAF's
+# tool_name_prefix is the server name (test_maf_mcp_injection.py), and a
+# registry name keeps its dashes. The translator stamps ``mcp: {server, label}``
+# on the tool start, and the step reads the stamp. The injection fence is in
+# test_maf_mcp_injection.py.
+# ---------------------------------------------------------------------------
+
+_SENT = "SENTINEL-c5d1"
+_LABELS = {"shaurrya-app": "Shaurrya App", "ops": "Ops"}
+
+
+def _mcp_start(name, labels=None, mcp=True):
+    ev = {"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": name}
+    if mcp and labels is not None:
+        from orchestrator.event_translator import mcp_server_of
+
+        found = mcp_server_of(name, labels)
+        if found:
+            ev["mcp"] = {"server": found[0], "label": found[1]}
+    return ev
+
+
+@pytest.mark.parametrize(
+    ("name", "step"),
+    [
+        ("shaurrya-app_search_operations", "Shaurrya App: search operations"),
+        ("ops_read", "Ops: read"),
+        ("ops_list-items", "Ops: list items"),
+    ],
+)
+def test_an_mcp_tool_reads_its_server_label(name, step):
+    assert stream_relay.step_from_events([_mcp_start(name, _LABELS)]) == step
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["shaurrya_app_search_operations", "mcp__ops__list_items", "mcp_ops_read", "OPS_read", "ops_", "opsread"],
+)
+def test_a_name_that_is_not_exactly_server_underscore_tool_is_not_guessed(name):
+    from orchestrator.event_translator import mcp_server_of
+
+    assert mcp_server_of(name, _LABELS) is None
+
+
+def test_each_server_maps_to_its_own_label():
+    from orchestrator.event_translator import mcp_server_of
+
+    labels = {"mcp-ops": "Ops One", "mcp-ops-mirror": "Ops Mirror", "mcp": "Bare"}
+    assert mcp_server_of("mcp-ops_read", labels)[:2] == ("mcp-ops", "Ops One")
+    assert mcp_server_of("mcp-ops-mirror_read", labels)[:2] == ("mcp-ops-mirror", "Ops Mirror")
+    assert mcp_server_of("mcp_read", labels)[:2] == ("mcp", "Bare")
+
+
+def test_a_tool_with_no_stamp_keeps_the_old_step():
+    assert stream_relay.step_from_events([_mcp_start("ops_read", _LABELS, mcp=False)]) == "Ops read"
+    assert stream_relay.step_from_events([_mcp_start("search_tasks", _LABELS)]) == "Search tasks"
+
+
+def test_a_stamp_that_does_not_match_the_name_is_ignored():
+    ev = {"type": "TOOL_CALL_START", "toolCallName": "search_tasks",
+          "mcp": {"server": "ops", "label": "Ops"}}
+    assert stream_relay.step_from_events([ev]) == "Search tasks"
+    ev["mcp"] = {"server": 3, "label": None}
+    assert stream_relay.step_from_events([ev]) == "Search tasks"
+
+
+def test_the_server_label_is_bounded_and_plain():
+    ev = {"type": "TOOL_CALL_START", "toolCallName": "ops_read",
+          "mcp": {"server": "ops", "label": "A\x00B\x1b<b>C</b>‮​D" + "x" * 80}}
+    step = stream_relay.step_from_events([ev])
+    assert step is not None and step.endswith(": read")
+    assert len(step) <= stream_relay.LAST_STEP_MAX_CHARS
+    assert len(step.split(": ")[0]) <= stream_relay.SERVER_LABEL_MAX_CHARS
+    assert "<" not in step and all(ord(c) >= 32 for c in step)
+    assert not any(c in step for c in "‮​﻿")
+
+
+def _first_party_names():
+    import types
+
+    from orchestrator._tool_injection import _reserved_tool_names
+
+    return _reserved_tool_names(types.SimpleNamespace())
+
+
+@pytest.mark.parametrize("server", ["web", "search", "list", "call"])
+def test_a_server_never_relabels_a_first_party_tool(server):
+    from orchestrator import event_translator as et
+
+    reserved = _first_party_names()
+    clash = sorted(n for n in reserved if n.startswith(f"{server}_"))
+    assert clash, f"no first-party tool starts with {server}_: update this test"
+    token_l, token_r = et.MCP_LABELS.set({}), et.MCP_RESERVED.set(frozenset())
+    try:
+        et.set_mcp_labels({server: "Outside"}, reserved)
+        # The server is dropped, so no first-party name is stamped ...
+        assert dict(et.MCP_LABELS.get()) == {}
+        # ... and the matcher alone also skips a reserved name.
+        for name in clash:
+            assert et.mcp_server_of(name, {server: "Outside"}, reserved) is None
+    finally:
+        et.MCP_RESERVED.reset(token_r)
+        et.MCP_LABELS.reset(token_l)
+
+
+# Mutation: read an argument or a result into the step or the stamp, and this fails.
+def test_the_translator_stamps_the_server_and_never_an_argument_or_a_result():
+    import types
+
+    from orchestrator import event_translator as et
+
+    token_l, token_r = et.MCP_LABELS.set({}), et.MCP_RESERVED.set(frozenset())
+    try:
+        et.set_mcp_labels(_LABELS, frozenset({"search_tasks"}))
+        state = et.ToolCallStreamState("run-1")
+        call = types.SimpleNamespace(
+            type="function_call", call_id="c1", name="ops_read",
+            arguments=json.dumps({"q": _SENT}),
+        )
+        events = et.function_call_events(call, state)
+        start = events[0]
+        assert start["mcp"] == {"server": "ops", "label": "Ops"}
+        assert _SENT not in json.dumps(start["mcp"])
+        # A result event never reaches the step.
+        events.append({"type": "TOOL_CALL_RESULT", "toolCallId": "c1", "content": _SENT})
+        step = stream_relay.step_from_events(list(reversed(events)))
+        assert step == "Ops: read"
+        assert _SENT not in step
+        # A first-party tool is not stamped.
+        native = et.function_call_events(
+            types.SimpleNamespace(type="function_call", call_id="c3", name="search_tasks", arguments="{}"),
+            et.ToolCallStreamState("run-3"),
+        )
+        assert "mcp" not in native[0]
+        # No labels, no stamp.
+        et.set_mcp_labels({}, frozenset())
+        plain = et.function_call_events(
+            types.SimpleNamespace(type="function_call", call_id="c2", name="ops_read", arguments="{}"),
+            et.ToolCallStreamState("run-2"),
+        )
+        assert "mcp" not in plain[0]
+    finally:
+        et.MCP_RESERVED.reset(token_r)
+        et.MCP_LABELS.reset(token_l)

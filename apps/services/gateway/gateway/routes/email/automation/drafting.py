@@ -1031,6 +1031,41 @@ def _files_prompt(files: Any, frame: UntrustedFrame) -> tuple[str, list[tuple[st
     return block, list(files.images)
 
 
+#: The copy of a draft that the model could not write (task 3541). Each line
+#: says what happened and what the member does next.
+DRAFT_FAILED_COPY = (
+    "The AI could not write this draft. Your text is kept. Try Draft again "
+    "in a minute. If it fails again, tell your admin."
+)
+DRAFT_UNAVAILABLE_COPY = (
+    "The AI service did not answer, so no draft was written. Your text is "
+    "kept. Try Draft again in a minute."
+)
+
+
+def draft_failure(exc: BaseException) -> tuple[int, str]:
+    """The status and the member's copy for a draft that failed (task 3541).
+
+    Out of credits keeps the Router's own copy, because the member's next
+    step is different: an admin adds credits. An outage and any other
+    failure say to try again. No copy holds the error text, because it can
+    name a vendor, a key or an account.
+    """
+    # `acb_llm.routed`, never `acb_auth.console_resolve`: that module has a
+    # fixed set of callers (`test_console_dependency_boundary.py`).
+    from acb_llm.routed import (  # noqa: PLC0415
+        OUT_OF_CREDITS,
+        RoutedRefusal,
+        is_router_outage,
+    )
+
+    if isinstance(exc, RoutedRefusal) and exc.status == 402:
+        return 402, OUT_OF_CREDITS
+    if is_router_outage(exc):
+        return 503, DRAFT_UNAVAILABLE_COPY
+    return 503, DRAFT_FAILED_COPY
+
+
 async def _llm_draft_reply(
     email: dict[str, str], about: str, signature: str,
     instructions: str = "", context: str = "", user_email: str = "",
@@ -1054,9 +1089,12 @@ async def _llm_draft_reply(
         rule DRAFT_EMAIL action / follow-up nudge simply skips. An outage must
         NOT auto-file a generic "I'll get back to you" draft into the mailbox
         and then feed that boilerplate into the edit-learning loop.
-      * True (interactive paths — the compose box's "Draft with AI"): return a
-        neutral human-editable template so the user who clicked the button has a
-        starting point rather than a silent no-op.
+      * True (interactive paths — the compose box's "Draft with AI"): raise an
+        error that names the cause (task 3541). A stream bound raises its
+        ``StreamTimeout``, and every other failure raises an ``HTTPException``
+        with copy for the member. Before 2026-11-16 this path returned a
+        stock "I'll review this and get back to you shortly" body as if the
+        model wrote it, so a model with no balance looked like a bad draft.
     """
     try:
         from acb_llm.context import acompletion_with_fallback  # noqa: PLC0415
@@ -1189,9 +1227,10 @@ async def _llm_draft_reply(
         )
         files = email.get("_files")
         if on_delta is not None and isinstance(files, DraftFiles) and files.images:
-            # The streamed call goes to litellm with no Router hop, so no
-            # model is chosen for the images (review round 1, P1-c). They
-            # are named as not read instead.
+            # The streamed call sends no images (review round 1, P1-c). With
+            # routing off it goes to litellm with no Router hop. With routing
+            # on it is one Router answer (task 3541), and that slice did not
+            # add a vision task to it. So the images are named as not read.
             files.unread.extend((n, UNREAD_IMAGE) for n, _u in files.images)
             files.images = []
         # Fit the parts to the window of the tier, or move to a tier with a
@@ -1330,12 +1369,15 @@ async def _llm_draft_reply(
         if interactive_fallback and isinstance(exc, StreamTimeout):
             # EM-T17 PR-A (§17.3.7): a stalled model is not a draft. The
             # member waits at the composer, so the route sends an `error`
-            # with the reason, never the template below. The rule path keeps
-            # the sentinel.
+            # with the reason. The rule path keeps the sentinel.
             raise
         if interactive_fallback:
-            body = ("Hi,\n\nThanks for your email — I'll review this and get "
-                    "back to you shortly.")
+            # Task 3541: a failed model is not a draft either. The member
+            # sees why, and the composer keeps the member's own text. The
+            # SSE route sends `exc.detail` as its `error`, and the JSON route
+            # answers with it.
+            status, detail = draft_failure(exc)
+            raise HTTPException(status_code=status, detail=detail) from exc
         else:
             # Automation path: the sentinel makes the caller skip. Never file a
             # boilerplate draft the user didn't write (and never teach the
@@ -1636,6 +1678,14 @@ async def _llm_compose_assist(
             # watches in the composer, raises it. The route sends an `error`
             # with the reason, and the composer keeps the member's own text.
             raise
+        # Task 3541, review P2. The Router serves this call now, so a refusal
+        # (402: out of credits) or a Router outage can reach it. Each one
+        # names its cause. It never reads as "not confident enough".
+        from acb_llm.routed import RoutedRefusal, is_router_outage  # noqa: PLC0415
+
+        if isinstance(exc, RoutedRefusal) or is_router_outage(exc):
+            status, detail = draft_failure(exc)
+            raise HTTPException(status_code=status, detail=detail) from exc
         # Fall back to the owner's own text (improve) or a neutral opener (draft).
         return (current_body or "").strip() or DRAFT_NO_DRAFT_SENTINEL
     if _is_no_draft(body):
@@ -2564,12 +2614,21 @@ async def draft_reply_smart(
         # timeout (one specialist agent, short timeout). Interactive → the
         # COMPOSE tier, not the background one. Our code chooses it, and no
         # stored choice changes it (D-EM-61).
-        draft = await _agent_draft_reply(
-            email, about, signature, user.email or "",
-            max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
-            model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
-            interactive_fallback=True, extra_instructions=req.instruction,
-        )
+        try:
+            draft = await _agent_draft_reply(
+                email, about, signature, user.email or "",
+                max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
+                model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
+                interactive_fallback=True, extra_instructions=req.instruction,
+            )
+        except HTTPException:
+            # Task 3541, review P1. A failed model raises here, inside this
+            # session. The body fetch above can rotate an Outlook refresh
+            # token in this same session, and the session rolls back on an
+            # exception. Microsoft revokes the old token on use, so a rollback
+            # would cut the mailbox off. So the session commits first.
+            await db.commit()
+            raise
 
         # Confidence gate (defense-in-depth): if the drafter declined, never
         # persist or surface a literal "NO_DRAFT" body. (Sync requests default to
