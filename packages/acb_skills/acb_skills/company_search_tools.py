@@ -338,6 +338,44 @@ def _broadened_line(body: dict[str, Any]) -> str:
     return f"{BROADENED_OPENING} {', '.join(parts)}." if parts else ""
 
 
+def _count(value: Any) -> int | None:
+    """*value* when it is a count of the route, else ``None``."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _near_line(body: dict[str, Any]) -> str:
+    """The opening line of an answer that used a near spelling, or ``""``.
+
+    HRD-18b (``find_engine.md`` §3.1 rung 3). One clause for each word, from
+    the route's ``near``, a closed shape: "No record holds «Sharath». Records
+    for the near spelling «Sharat»:". A clause prints only for a word that
+    has no hit of its own: the route says ``held`` false. A word that found
+    records alone, and a spelling that found nothing, get no clause. The
+    route sends ``near`` only with ``FIND_ORGS`` on, so with it off the text
+    does not change.
+    """
+    entries = body.get("near")
+    if not isinstance(entries, list):
+        return ""
+    spellings: dict[str, list[str]] = {}
+    for entry in entries:
+        if (not isinstance(entry, dict) or not _count(entry.get("hits"))
+                or entry.get("held") is not False):
+            continue
+        # The route sends each value as one token of at most 40 characters.
+        word, spelt = _line(entry.get("word")), _line(entry.get("as"))
+        if word and spelt and spelt not in spellings.setdefault(word, []):
+            spellings[word].append(spelt)
+    clauses = []
+    for word, spelt in spellings.items():
+        if not spelt:
+            continue
+        noun = "spelling" if len(spelt) == 1 else "spellings"
+        listed = " and ".join(f"«{s}»" for s in spelt)
+        clauses.append(f"No record holds «{word}». Records for the near {noun} {listed}:")
+    return " ".join(clauses)
+
+
 def _tried_line(body: dict[str, Any]) -> str:
     """What a zero answer tried, and that zero is not proof (KR-ZERO)."""
     words = _line(body.get("query")).replace('"', "'")
@@ -385,16 +423,20 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
     Dated, the answer also reads KR-ZERO's keys. A broadened answer opens
     with :data:`BROADENED_OPENING`, on the line after the header. A zero
     answer adds a line that names what the route tried, says what became of
-    the meaning search, and says that zero is not proof.
+    the meaning search, and says that zero is not proof. An answer that used
+    a near spelling (HRD-18b) opens with :func:`_near_line`, before them.
     """
     hits = body.get("hits") if isinstance(body, dict) else None
     skipped = body.get("skipped") if isinstance(body, dict) else None
     data = body if isinstance(body, dict) else {}
     lines = [_dated_header(data) if dated else HEADER]
     opening = 1
+    if dated and _near_line(data):
+        lines.append(_near_line(data))
+        opening += 1
     if dated and _broadened_line(data):
         lines.append(_broadened_line(data))
-        opening = 2
+        opening += 1
     for hit in hits or []:
         if isinstance(hit, dict):
             lines += _hit_lines(hit, dated=dated)
