@@ -41,6 +41,18 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
+CO-11). For each listed org, a member may pin a chat, and the chat list shows a
+Pinned group. `*` lists every org, and the default is empty. Empty means the
+list sends no pin key, and PUT and DELETE `/chat/sessions/{id}/pin` answer
+404.
+
+Its one reader is `gateway.chat_session_member.pin_allowed`. The chat list,
+the pin routes and `GET /auth/me/shell` ask it on each call. The shell read
+gives the answer to the client as `chat_pin`. So a tab shows a change at its
+next shell read. A reload applies a change. The flip stays OWNER-GATE
+(`enforcement-flip`), after the owner preview.
+
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
 runs past 6 s sends the member one line. A WhatsApp run of a listed org
