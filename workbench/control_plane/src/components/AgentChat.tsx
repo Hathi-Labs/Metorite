@@ -83,10 +83,10 @@ import {
   heldKeys,
   receiptLabel,
   settleAnswer,
+  type FormEdit,
   type FormEdits,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
-import type { NewMailEdits } from "@/lib/replyCard";
 import {
   UNCHANGED_CLOSE_MS,
   changingLine,
@@ -1190,7 +1190,7 @@ export default function AgentChat({
     formEditsRef.current = getFormEdits(sessionId) ?? NO_EDITS;
     heldRef.current = new Set();
   }
-  const onFormEdits = useCallback((key: string, value: NewMailEdits) => {
+  const onFormEdits = useCallback((key: string, value: FormEdit) => {
     formEditsRef.current = formEditsReducer(formEditsRef.current, { key, value });
     keepFormEdits(sessionId, formEditsRef.current);
   }, [sessionId]);

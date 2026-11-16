@@ -44,6 +44,7 @@ import {
   NO_EDITS,
   REVISED_ANSWER,
   confirmationReducer,
+  asNewMailEdits,
   formEditsReducer,
   closedEdits,
   heldKeys,
@@ -881,7 +882,7 @@ describe("fix round 4: a change of tab keeps the member's edits", () => {
     expect(formEditsReducer(one, { key: OLD, value: { ...saved } })).toBe(one);
     const two = formEditsReducer(one, { key: NEW, value: { ...saved, body: "Other." } });
     expect(two.get(OLD)).toBe(saved);
-    expect(two.get(NEW)?.body).toBe("Other.");
+    expect(asNewMailEdits(two.get(NEW))?.body).toBe("Other.");
   });
 
   it("the CHAT keeps the edits, because the queue mounts again on each new message", () => {
@@ -890,7 +891,7 @@ describe("fix round 4: a change of tab keeps the member's edits", () => {
     // queue again → red.
     const queue = read("components/ConfirmationQueue.tsx");
     expect(queue).not.toContain("formEditsReducer");
-    expect(queue).toContain("savedEdits: savedEdits?.(card.key)");
+    expect(queue).toContain("savedEdits: asNewMailEdits(savedEdits?.(card.key))");
     const chat = read("components/AgentChat.tsx");
     expect(chat).toContain("const formEditsRef = useRef<FormEdits>(getFormEdits(sessionId) ?? NO_EDITS);");
     expect(chat).toContain("const next = closedEdits(formEditsRef.current, heldRef.current, now);");
@@ -992,7 +993,7 @@ describe("fix round 6: the card that came back says only what is true", () => {
     const card = state.cards.find((c) => c.key === OLD)!;
     return renderToStaticMarkup(createElement(NewMailCardForm, {
       form: card.reply!, onAnswer: noop, onDiscard: noop, armed: true,
-      savedEdits: edits.get(OLD),
+      savedEdits: asNewMailEdits(edits.get(OLD)),
     }));
   };
 
