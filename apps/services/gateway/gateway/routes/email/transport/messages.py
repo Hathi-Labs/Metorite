@@ -14,7 +14,7 @@ from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
-from email_ingestion.providers.base import local_folder_after_move
+from email_ingestion.providers.base import canonical_folder, local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
@@ -1119,15 +1119,17 @@ async def update_message(
         # Verify ownership
         result = await db.execute(
             text(
-                """SELECT em.id FROM email_messages em
+                """SELECT em.id, em.account_id FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
                    WHERE em.id = :id AND """
                 + mailbox_predicate("ea", uid="user_id", level="send")
             ),
             {"id": message_id, "user_id": user.email or "anonymous"},
         )
-        if not result.fetchone():
+        owned = result.fetchone()
+        if not owned:
             raise HTTPException(status_code=404, detail="Message not found")
+        acted_mailbox = str(owned.account_id)
 
         # A move asks the provider for its folder BEFORE any write, so a
         # refused move answers 400 and writes nothing (EM-G3b item 8).
@@ -1186,16 +1188,19 @@ async def update_message(
         # each added label are acts. A label name is a short word, never mail
         # text. Dark behind MEMBER_ACTIONS_ORGS, and never a failure of the
         # update (acb_common.member_actions.record_act).
-        if target is not None and str(folder or target).strip().lower() == "archive":
+        # The test reads the NAME the member sent. The stored folder of a Gmail
+        # move to a user label is also "archive" (O-GM-1), so it cannot tell.
+        if target is not None and canonical_folder(target) == "archive":
             await member_actions.record_act(
                 db, org=user.organization_id or "", member=user.email or "",
                 app="email", act="archive", via="app", item_kind="email",
-                item_id=message_id)
+                item_id=message_id, mailbox_id=acted_mailbox)
         for name in (updates.add_labels or [])[:5]:
             await member_actions.record_act(
                 db, org=user.organization_id or "", member=user.email or "",
                 app="email", act="label", via="app", item_kind="email",
-                item_id=message_id, features={"triage_label": name})
+                item_id=message_id, mailbox_id=acted_mailbox,
+                features={"triage_label": name})
 
         # The provider for the push. The build makes no network call. A failed
         # build keeps the push best-effort, as a failed push does.

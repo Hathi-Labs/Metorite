@@ -19,7 +19,12 @@ says False for it, so a learner never reads a rule as the member's choice.
 
 **Gates.** :func:`record_act` writes nothing, and says False, when
 ``MEMBER_ACTIONS_ORGS`` does not hold the org (:func:`enabled_for`, default
-OFF), or when the member turned ``learning`` off (D-PZ-7).
+OFF), when the act is in a shared mailbox (§19.4), or when the member turned
+``learning`` off (D-PZ-7).
+
+**``via`` is the seam's word.** A route seam says ``app``. A chat card that
+calls the same route is also recorded as ``app`` until MM-1b (task 3614) adds
+a card marker, so that one yes is one row.
 
 **Tenancy (R5).** The caller opens ``acb_common.db.tenant_session(org)`` and
 passes the session. The INSERT writes no ``organization_id``: the column
@@ -230,6 +235,27 @@ def build_row(*, member: str, app: str, act: str, via: str, item_kind: str,
     }
 
 
+#: A shared mailbox (WS-65, D-SM-1) records no act until its spec says how
+#: (§19.4): a team's triage is not one member's habit. ``shared_since`` is the
+#: mark of such a mailbox, and RLS binds the read to the org.
+SHARED_MAILBOX_SQL = (
+    "SELECT 1 FROM email_accounts "
+    "WHERE id = CAST(:mb AS uuid) AND shared_since IS NOT NULL"
+)
+
+
+async def _is_shared_mailbox(db: Any, mailbox_id: str | None) -> bool:
+    """True when *mailbox_id* names a shared mailbox. A value that is not an
+    id reads as not shared: the INSERT takes any short name."""
+    if mailbox_id is None:
+        return False
+    try:
+        uuid.UUID(mailbox_id)
+    except ValueError:
+        return False
+    return (await db.execute(text(SHARED_MAILBOX_SQL), {"mb": mailbox_id})).first() is not None
+
+
 async def learning_on(db: Any, org: str, member: str) -> bool:
     """False only when the member turned ``learning`` off (D-PZ-7). A member
     with no profile has it on. The read goes through the profile module, so
@@ -263,6 +289,8 @@ async def record_act(db: Any, *, org: str, member: str, app: str, act: str,
             item_id=str(item_id) if isinstance(item_id, (str, int, uuid.UUID)) else "",
             mailbox_id=mailbox_id, features=features, targets=targets)
         async with db.begin_nested():
+            if await _is_shared_mailbox(db, row["mailbox"]):
+                return False
             if not await learning_on(db, org, row["m"]):
                 return False
             await db.execute(text(INSERT_SQL), row)

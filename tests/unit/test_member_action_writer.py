@@ -142,7 +142,8 @@ class _Nested:
 
 
 class _Db:
-    def __init__(self, learning: Any = True, boom: bool = False) -> None:
+    def __init__(self, learning: Any = True, boom: bool = False, shared: bool = False) -> None:
+        self.shared = shared
         self.sql: list[str] = []
         self.learning = learning
         self.boom = boom
@@ -155,6 +156,8 @@ class _Db:
         self.sql.append(sql)
         if sql.startswith("INSERT") and self.boom:
             raise RuntimeError("secret value in message")
+        if "email_accounts" in sql:
+            return SimpleNamespace(first=lambda: (1,) if self.shared else None)
         if sql.startswith("SELECT"):
             return SimpleNamespace(first=lambda: None if self.learning is None else
                                    ({"v": 1, "learning": self.learning},))
@@ -201,6 +204,19 @@ def test_learning_off_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     db = _Db(learning=False)
     assert _run(ma.record_act(db, org=ORG, **_kw())) is False
     assert not any(s.startswith("INSERT") for s in db.sql)
+
+
+def test_a_shared_mailbox_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _flag(monkeypatch, ORG)
+    mb = "22222222-2222-2222-2222-222222222222"
+    db = _Db(shared=True)
+    assert _run(ma.record_act(db, org=ORG, **_kw(mailbox_id=mb))) is False
+    assert not any(s.startswith("INSERT") for s in db.sql)
+    assert _run(ma.record_act(_Db(shared=False), org=ORG, **_kw(mailbox_id=mb))) is True
+    # A name that is not an id runs no mailbox read.
+    plain = _Db(shared=True)
+    assert _run(ma.record_act(plain, org=ORG, **_kw(mailbox_id="mb-1"))) is True
+    assert not any("email_accounts" in s for s in plain.sql)
 
 
 def test_no_profile_row_counts_as_learning_on(monkeypatch: pytest.MonkeyPatch) -> None:

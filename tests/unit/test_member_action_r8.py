@@ -309,3 +309,30 @@ def test_r8_a_member_purge_removes_the_acts_of_this_org_only(world, role: str) -
     counted, deleted = asyncio.run(purge())
     assert counted == deleted == 2
     assert sorted(r["item_id"] for r in _rows(world)) == ["bens", "theirs"]
+
+
+# ── i. A shared mailbox ────────────────────────────────────────────────────
+
+def test_r8_a_shared_mailbox_records_nothing(world) -> None:
+    a = world.p.org_a
+    with world.p.admin_engine.begin() as c:
+        cols = set(c.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'email_accounts'")).scalars())
+    assert "shared_since" in cols
+    private, shared = str(uuid.uuid4()), str(uuid.uuid4())
+    with world.p.admin_engine.begin() as c:
+        for mid, since in ((private, None), (shared, "now()")):
+            c.execute(text(
+                "INSERT INTO email_accounts (id, organization_id, user_id, provider, email_address, credentials_encrypted, "
+                "shared_since) VALUES (CAST(:i AS uuid), CAST(:o AS uuid), :u, 'imap', :e, 'x', "
+                + ("now()" if since else "NULL") + ")"),
+                {"i": mid, "o": a, "u": ANA, "e": f"mb.{mid[:6]}.{TAG}@mm1.test"})
+    try:
+        assert _go(world, lambda: _act(a, mailbox_id=private)) is True
+        assert _go(world, lambda: _act(a, mailbox_id=shared, item_id="s")) is False
+        assert [r["mailbox_id"] for r in _rows(world)] == [private]
+    finally:
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM email_accounts WHERE id = ANY(CAST(:i AS uuid[]))"),
+                      {"i": [private, shared]})
