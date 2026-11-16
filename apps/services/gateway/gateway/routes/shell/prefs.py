@@ -7,8 +7,10 @@ any other key is a 422:
 =================  ==========================================================
 Key                Value
 =================  ==========================================================
-``mutes``          A list of feed kinds, 20 at most (§6.6). MD-9 reads it
-                   first. A mute changes the feed only, never the bell.
+``mutes``          A list of feed kinds, 20 at most (§6.6). The feed reads it
+                   for an org in ``MY_DAY_LEARN_ORGS`` (LOOP-4a,
+                   ``state.learned``). A mute changes the feed only, never
+                   the bell, and a needs card goes to Later at worst.
 ``open_in_app``    A list of feed kinds, 20 at most (§11.2 rule 4). MD-8
                    reads it.
 ``corrections``    The member's lines for ``decide``, newest first: 10 at

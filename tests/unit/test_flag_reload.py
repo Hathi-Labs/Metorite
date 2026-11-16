@@ -121,6 +121,22 @@ def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not waiting_allowed("globex")
 
 
+def test_my_day_learn_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-58 LOOP-4a, proactive_loop.md §7.2. The reload list holds the key,
+    and the one reader sees a change with no restart."""
+    from gateway.routes.shell.state import learn_allowed
+
+    assert fr.reloadable("MY_DAY_LEARN_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("MY_DAY_LEARN_ORGS", "")
+    get_settings.cache_clear()
+    assert not learn_allowed("acme")
+    env(**{**_START, "MY_DAY_LEARN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("MY_DAY_LEARN_ORGS",)
+    assert learn_allowed("acme")
+    assert not learn_allowed("globex")
+
+
 def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-MCP SW-53, agent_coordination.md. The reload list holds the key, and
     the one reader sees a change with no restart. The master stays a restart

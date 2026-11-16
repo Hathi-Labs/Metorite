@@ -15,7 +15,13 @@ The order is a score. Code owns time, and ``decide`` owns judgment::
   server matrix (``acb_common.priority``), as a level from 0 to 4, times 6.
   A signal with no task level weighs 0. A card with ``promise_due`` on it
   adds 10 (MD-3d, §5.9 item 8).
-* ``affinity`` is 0 until MD-9 builds it.
+* ``affinity`` is the member's own term for the main kind of the card (MD-9,
+  LOOP-4a, ``proactive_loop.md`` §7.2 P1): ``trunc((acted - not_useful) /
+  shown * 20)``, held between -20 and +20, and 0 for a kind shown fewer than
+  5 times in 30 days. :func:`affinity` is the formula. The counts come from
+  the one count read (``feed_decide._habits``), so only the state join adds
+  the term (``state.join``), beside fatigue, and only for an org in
+  ``MY_DAY_LEARN_ORGS``. With the org off, the term is 0.
 * ``fatigue`` is -8 for each visit of the day with no act, to -24 at most
   (MD-2a). Only the state knows the visits, so the state join subtracts it
   (``state.join``), after the fold and before the order.
@@ -37,7 +43,7 @@ MD-6a, and rule 4 (the order holds while the member reads) is the client's
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -125,6 +131,13 @@ LATE_MAX = 20
 FATIGUE_PER_VISIT = 8
 FATIGUE_MAX = 24
 
+#: The affinity terms (§7, ``proactive_loop.md`` §7.2 P1): the share of acts
+#: less "Not useful", times 20, from -20 to +20. A kind shown fewer than 5
+#: times gets 0, because the prior is 0 until LOOP-7 (§7.4 there).
+AFFINITY_SCALE = 20
+AFFINITY_MAX = 20
+AFFINITY_MIN_SHOWN = 5
+
 #: The weight of one level (§7: "the level from 0 to 4, times 6").
 WEIGHT_STEP = 6
 #: The old path adds this for a promise on the card (§7, §5.9 item 8, MD-3d).
@@ -180,9 +193,30 @@ def weight(facts: dict[str, Any], kinds: Iterable[str] = ()) -> int:
     return level + (PROMISE_WEIGHT if "promise_due" in kinds else 0)
 
 
-def affinity(_facts: dict[str, Any]) -> int:
-    """0 until MD-9 learns from the member's acts."""
-    return 0
+def _count(counts: Mapping[str, Any], name: str) -> int:
+    value = counts.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+def affinity(counts: Mapping[str, Any] | None) -> int:
+    """The member's affinity for one kind, from its counts over 30 days
+    (``{"shown", "acted", "not_useful"}``, the shape of
+    ``feed_decide._habits``). P1 of ``proactive_loop.md`` §7.2:
+
+    ``trunc((acted - not_useful) / shown * 20)``, held between -20 and +20.
+    A kind shown fewer than 5 times gives 0, and so do no counts. Integer
+    arithmetic, so 5 shown, 0 acted and 3 "Not useful" give exactly -12.
+    """
+    if not counts:
+        return 0
+    shown = _count(counts, "shown")
+    if shown < AFFINITY_MIN_SHOWN:
+        return 0
+    net = (_count(counts, "acted") - _count(counts, "not_useful")) * AFFINITY_SCALE
+    value = abs(net) // shown  # the truncation toward 0
+    return max(-AFFINITY_MAX, min(AFFINITY_MAX, -value if net < 0 else value))
 
 
 def fatigue(visits: int) -> int:
@@ -192,11 +226,11 @@ def fatigue(visits: int) -> int:
 
 def score(kind: str, facts: dict[str, Any], urgent_at: Any, now: datetime,
           kinds: Iterable[str] = ()) -> int:
-    """The score with no state: base + urgency + weight + affinity. The
-    state join subtracts ``fatigue`` (``state.join``). ``kinds`` are every
-    kind on the card, for the promise term of ``weight``."""
-    return (base(kind) + urgency(kind, facts, urgent_at, now) + weight(facts, kinds)
-            + affinity(facts))
+    """The score with no state: base + urgency + weight. The state join adds
+    the member's ``affinity`` and subtracts ``fatigue`` (``state.join``),
+    because only the state knows the member. ``kinds`` are every kind on the
+    card, for the promise term of ``weight``."""
+    return base(kind) + urgency(kind, facts, urgent_at, now) + weight(facts, kinds)
 
 
 def _is_day(value: Any, today: date) -> bool:

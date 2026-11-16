@@ -6596,6 +6596,13 @@ and one thing that cannot be written until a second person exists.
 > app, is owner-only because it reaches a real person. `specs/my_day_feed.md`
 > §17.1 is the authority. No plan-guard rule names these flags either.
 >
+> **WS-58 — `MY_DAY_LEARN_ORGS`.** *(Registered 2026-11-16 with LOOP-4a.)*
+> The flag lets the feed of an org learn from the member: the kind mutes and
+> the affinity of each kind. It changes what each member of the org sees, and
+> it spends no credits. So its flip is the `enforcement-flip` act. D218 binds
+> it: the owner approves the preview before the flip.
+> `specs/proactive_loop.md` §7.2 is the authority.
+>
 > **WS-53 — the CRM note labels.** *(Registered 2026-10-16 with CRM-Q26.)* To
 > build CRM-Q26 is AGENT-SAFE, and it ships dark. A mode other than `off` for
 > `crm.note_labels` in `DECIDE_FEATURE_MODES` is an owner flip, because each

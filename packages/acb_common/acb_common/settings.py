@@ -1557,6 +1557,20 @@ class Settings(BaseSettings):
     my_day_decide_orgs: str = ""
     my_day_decide_org_daily_calls: int = 0
 
+    # ── My Day learns from the member (WS-58 MD-9, LOOP-4a) ─────────────────
+    #
+    # `my_day_learn_orgs` lists the organization ids whose feed reads the
+    # member's own acts: the `affinity` term of each kind, and the kind mutes
+    # of `user_settings.my_day_prefs` (`my_day_feed.md` §6.6, §7,
+    # `proactive_loop.md` §7.2). `*` lists every organization. Default empty:
+    # the feed answers the same bytes as before. The one reader is
+    # `gateway/routes/shell/state.py` (`learn_allowed`), on each call, so a
+    # flag reload applies a change.
+    #
+    # The flip is `enforcement-flip`, after the owner preview (D218).
+    # Fence: tests/unit/test_my_day_state.py.
+    my_day_learn_orgs: str = ""
+
     # ── The CRM's `decide` org list (WS-53 CRM-Q26) ─────────────────────────
     #
     # `crm_decide_orgs` lists the organization ids that may run a `crm.*`

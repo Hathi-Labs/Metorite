@@ -35,9 +35,28 @@ urgent does not move.
 ``needs`` before the join, so a dismissed or snoozed needs-kind card still
 counts in the bell.
 
+**The feed learns from the member** (MD-9, LOOP-4a, ``proactive_loop.md``
+§7.2), only for an org in ``MY_DAY_LEARN_ORGS`` (:func:`learn_allowed`). The
+join then reads two things, in :func:`learned`:
+
+* **The kind mutes** of ``user_settings.my_day_prefs`` (§6.6). A muted kind
+  leaves the answer before the order (§6.8 item 7). A mute keys on the main
+  kind of the card (P4). A needs card never leaves: a muted needs card goes
+  to Later, and its own Dismiss, Snooze and "Not useful" still hide it (P3).
+* **The affinity of each kind** (§7), from the one count read
+  (``feed_decide._habits``) and the formula (``feed_rank.affinity``). The
+  join adds it beside fatigue. The day value stays in Redis under
+  ``key("my_day", "affinity", <member>, <feed day>)`` for 26 hours, so the
+  first read of the member's day computes it (P6).
+
+With the org off, the join reads nothing more and the answer keeps its bytes
+(P5). A failed prefs read or count read gives no mute and no affinity, and a
+Redis fault gives the affinity 0, as a failed state read keeps the feed. The
+member comes from the session, and the org from the bound session (R5).
+
 Fences: ``tests/unit/test_my_day_state.py`` (each rule, their order, the
-POST contract) and ``tests/unit/test_my_day_state_r8.py`` (a real Postgres,
-FORCE RLS, two organizations).
+POST contract, the learned join) and ``tests/unit/test_my_day_state_r8.py``
+(a real Postgres, FORCE RLS, two organizations).
 """
 
 from __future__ import annotations
@@ -46,13 +65,14 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
+from acb_common.settings import get_settings
 from fastapi import Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.shell import cache, feed_rank, needs
@@ -99,6 +119,12 @@ COLUMNS = ("kind", "state", "dismiss_reason", "fingerprint", "visits", "visits_d
 #: Seconds the state join may take. It runs after the providers, so a slow
 #: pool must not cost the feed, or the needs view the bell reads with it.
 STATE_TIMEOUT_S = 1.5
+
+#: Seconds the learned read may take (LOOP-4a): the prefs row, the Redis day
+#: value and, once a day, the counts. Past it, nothing is learned this read.
+LEARN_TIMEOUT_S = 0.5
+#: The life of the day value of the affinity, in seconds (P6: 26 hours).
+AFFINITY_TTL_S = 26 * 3600
 
 
 def state_fp(signal_id: str, facts: dict[str, Any]) -> str:
@@ -393,17 +419,50 @@ def expired(card: dict[str, Any], now: datetime) -> bool:
     return at is not None and at <= now
 
 
+@dataclass(frozen=True)
+class Learned:
+    """What the feed learned of one member for one read (LOOP-4a).
+
+    ``mutes`` are the kinds the member muted (§6.6). ``affinity`` holds the
+    term of each kind that is not 0 (§7). ``ok`` is False when a read of the
+    learned path failed, so the read cache keeps nothing (as ``Applied.ok``).
+    """
+
+    mutes: frozenset[str] = frozenset()
+    affinity: Mapping[str, int] = field(default_factory=dict)
+    ok: bool = True
+
+
 def join(cards: list[dict[str, Any]], rows: dict[str, dict[str, Any]],
-         ctx: Context) -> list[dict[str, Any]]:
+         ctx: Context, taught: Learned | None = None) -> list[dict[str, Any]]:
     """The state join (§6.8 item 7): after the fold, before the order. A
     snoozed, dismissed or expired card leaves here, so it takes no slot. Each
     card that stays gains ``state``, ``updated``, ``still_open``, ``visits``
-    and ``state_fp`` (§14.1a), and loses its fatigue (§7)."""
+    and ``state_fp`` (§14.1a), and loses its fatigue (§7).
+
+    With ``taught`` (LOOP-4a, :func:`learned`), a card of a muted main kind
+    leaves here too, before the order (P4). A needs card never leaves for a
+    mute. It goes to Later, unless its own Dismiss, Snooze or "Not useful"
+    hides it (P3). Each card that stays gains the affinity of its main kind.
+    With no ``taught``, the join is the join of before, to the byte (P5)."""
+    is_needs: Callable[[Mapping[str, Any]], bool] | None = None
+    mutes: frozenset[str] = frozenset()
+    affinity: Mapping[str, int] = {}
+    if taught is not None:
+        # feed_decide imports feed, and feed imports this module.
+        from gateway.routes.shell import feed_decide
+
+        is_needs = feed_decide.is_needs_card
+        mutes, affinity = taught.mutes, taught.affinity
     out: list[dict[str, Any]] = []
     for card in cards:
         card = {**card, "state_fp": state_fp(card["signal_id"], card.get("facts") or {})}
         if expired(card, ctx.now):
             continue
+        muted = card.get("kind") in mutes
+        needs_card = muted and is_needs is not None and is_needs(card)
+        if muted and not needs_card:
+            continue  # §6.8 item 7: a muted kind takes no slot
         row = rows.get(card["signal_id"])
         outcome = decide(card, row, ctx)
         if not outcome.visible:
@@ -414,10 +473,13 @@ def join(cards: list[dict[str, Any]], rows: dict[str, dict[str, Any]],
             "updated": outcome.updated,
             "still_open": outcome.still_open,
             "visits": outcome.visits,
-            "score": int(card["score"]) - (0 if acted else feed_rank.fatigue(outcome.visits)),
+            "score": int(card["score"]) - (0 if acted else feed_rank.fatigue(outcome.visits))
+            + int(affinity.get(str(card.get("kind")), 0)),
         })
         if outcome.group is not None:
             card["group"] = outcome.group
+        if needs_card:
+            card["group"] = "later"  # P3: a muted needs card goes to Later, at worst
         out.append(card)
     return out
 
@@ -683,6 +745,143 @@ def snooze_edge(rows: dict[str, dict[str, Any]], now: datetime) -> datetime | No
     return min(ends) if ends else None
 
 
+# ── What the feed learns (MD-9, LOOP-4a, ``proactive_loop.md`` §7.2) ─────────
+
+
+def learn_allowed(organization_id: str | None) -> bool:
+    """True when ``MY_DAY_LEARN_ORGS`` holds the org, or holds ``*``. Default
+    OFF.
+
+    The one reader of the flag. The org comes from the session, never from
+    request input (R5). It reads ``get_settings()`` on each call, so a flag
+    reload applies a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "my_day_learn_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def affinities(counts: Mapping[str, Mapping[str, Any]]) -> dict[str, int]:
+    """The affinity of each kind (``feed_rank.affinity``), from the counts of
+    ``feed_decide._habits``. A kind whose term is 0 is left out."""
+    out: dict[str, int] = {}
+    for kind, one in counts.items():
+        value = feed_rank.affinity(one)
+        if value:
+            out[str(kind)] = value
+    return out
+
+
+def affinity_key(member: str, feed_day: date) -> Any:
+    """``key("my_day", "affinity", <member>, <feed day>)`` (P6). The caller
+    binds the org with ``organization_scope``."""
+    from acb_common.tenant_redis import key
+
+    return key(cache.NAMESPACE, "affinity", member, feed_day.isoformat())
+
+
+def _stored_affinity(raw: Any) -> dict[str, int] | None:
+    """A stored day value, or None when it is not one. Each term is held
+    inside -20 to +20 again, so a bad value can never move a card far."""
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    top = feed_rank.AFFINITY_MAX
+    return {str(k): max(-top, min(top, v)) for k, v in value.items()
+            if isinstance(v, int) and not isinstance(v, bool) and v}
+
+
+async def _day_affinity(org: str, member: str, feed_day: date) -> tuple[dict[str, int] | None, bool]:
+    """The stored day value, and whether Redis answered. A miss is
+    ``(None, True)``. A Redis fault is ``(None, False)`` (P6)."""
+    from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+    try:
+        with organization_scope(org):
+            raw = await get_tenant_redis().get(affinity_key(member, feed_day))
+    except Exception as exc:
+        logger.warning("shell.feed affinity read failed", extra={"error": type(exc).__name__})
+        return None, False
+    return (_stored_affinity(raw) if raw else None), True
+
+
+async def _keep_day_affinity(org: str, member: str, feed_day: date,
+                             value: Mapping[str, int]) -> bool:
+    """Store the day value for 26 hours. False on a Redis fault."""
+    from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+    try:
+        with organization_scope(org):
+            await get_tenant_redis().set(affinity_key(member, feed_day),
+                                         json.dumps(dict(value), sort_keys=True),
+                                         ex=AFFINITY_TTL_S)
+    except Exception as exc:
+        logger.warning("shell.feed affinity store failed", extra={"error": type(exc).__name__})
+        return False
+    return True
+
+
+async def _learn_read(member: str, *, counts: bool) -> tuple[list[str], dict[str, Any] | None]:
+    """The member's stored mutes, and the counts of each kind when *counts*
+    is True. One session of the seam, in the bound tenant. The prefs read is
+    the one of ``prefs.py``, and the count read is ``feed_decide._habits``,
+    the one read of the counts. A failure raises to :func:`learned`."""
+    # prefs and feed_decide each import feed, and feed imports this module.
+    from gateway.routes.shell import feed_decide, prefs
+
+    async with _tenant_session() as db:
+        row = await prefs._read(db, member)
+        found = await feed_decide._habits(db, member) if counts else None
+    stored = prefs.stored_prefs(row[0] if row is not None else None)
+    return list(stored.get("mutes") or ()), found
+
+
+async def _learn(user: UserContext, now: datetime, day: Day) -> Learned:
+    from gateway.routes.shell.feed_decide import member_of
+
+    member = member_of(user)
+    org = str(user.organization_id or "")
+    feed_day = day.feed_day(now)
+    stored, redis_ok = await _day_affinity(org, member, feed_day)
+    mutes, counts = await _learn_read(member, counts=redis_ok and stored is None)
+    if stored is not None:
+        value: dict[str, int] = stored
+    elif not redis_ok:
+        value = {}  # P6: a Redis fault gives 0
+    else:
+        # The first read of the member's day computes the day value.
+        value = affinities(counts or {})
+        redis_ok = await _keep_day_affinity(org, member, feed_day, value)
+        if not redis_ok:
+            value = {}
+    return Learned(frozenset(mutes), value, ok=redis_ok)
+
+
+async def learned(user: UserContext, now: datetime, day: Day) -> Learned | None:
+    """What the feed learned of the member, or None when the member's org is
+    off ``MY_DAY_LEARN_ORGS``. With None, the read makes no other read and
+    the join keeps its bytes (P5).
+
+    Fail open, as the state read does (P5). A failed or slow prefs read or
+    count read gives no mute and no affinity. A Redis fault gives the
+    affinity 0 and keeps the mutes (P6). Each sets ``ok`` False, so the read
+    cache keeps nothing, and the next read tries again.
+    """
+    if not learn_allowed(getattr(user, "organization_id", None)):
+        return None
+    try:
+        return await asyncio.wait_for(_learn(user, now, day), LEARN_TIMEOUT_S)
+    except Exception as exc:  # a timeout too: the same fallback
+        logger.warning("shell.feed learn read failed", extra={"error": type(exc).__name__})
+        return Learned(ok=False)
+
+
 async def apply_state(user: UserContext, cards: list[dict[str, Any]],
                       now: datetime) -> Applied:
     """The state join of ``GET /shell/feed``. The read writes nothing.
@@ -691,6 +890,9 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
     goes to the log. A blank My Day would cost more than a dismissed card
     that shows again for one poll. ``Applied.ok`` says so, and the read
     cache then keeps nothing, so it stays one poll.
+
+    For an org in ``MY_DAY_LEARN_ORGS``, the join also takes what the feed
+    learned (:func:`learned`). A failed state read learns nothing.
     """
     member = user.email or ""
     ids = [c["signal_id"] for c in cards]
@@ -708,7 +910,11 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
     except Exception as exc:  # a timeout too: the same fallback
         logger.warning("shell.feed state read failed", extra={"error": type(exc).__name__})
         return Applied(join(cards, {}, Context(now, Day(ZoneInfo("UTC")))), ok=False)
-    return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day)
+    taught = await learned(user, now, day)
+    if taught is None:  # the org is off MY_DAY_LEARN_ORGS: the join of before
+        return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day)
+    return Applied(join(cards, rows, Context(now, day), taught), snooze_edge(rows, now), day,
+                   ok=taught.ok)
 
 
 async def write_state(user: UserContext, items: list[StateItem], now: datetime) -> int:

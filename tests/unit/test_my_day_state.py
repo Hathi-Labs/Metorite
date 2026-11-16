@@ -14,6 +14,11 @@ the POST contract, and each case is written so a wrong build fails it:
   member or an organization gets 422 and writes nothing.
 * **The needs view never changes** with state rows present (§6.8 item 9).
 * **Hidden cards take no slot**, and a signal that leaves writes no row.
+* **The feed learns** (MD-9, LOOP-4a, ``proactive_loop.md`` §7.2 P1 to P6),
+  only for an org in ``MY_DAY_LEARN_ORGS``. A mute drops its kind before the
+  order, and a needs card goes to Later at worst, by its main or its folded
+  kind. The affinity of the main kind lowers or lifts a card. The bell never
+  changes. A failed read learns nothing, and the day value lives 26 hours.
 """
 
 from __future__ import annotations
@@ -24,16 +29,24 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from acb_auth.permissions import EffectiveAccess
+from acb_auth.roles import UserContext, UserRole
+from acb_common import tenant_redis
+from acb_common.settings import Settings, get_settings
+from acb_common.tenant_redis import TenantRedis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from gateway.routes.shell import feed, feed_rank, needs, state
+from gateway.routes.shell import feed, feed_decide, feed_rank, needs, prefs, state
 from gateway.routes.shell.needs import Signal, link, tap
 from pydantic import ValidationError
 
+from tests.unit.test_feed_decide import FakeRedis
 from tests.unit.test_shell_feed import (  # noqa: F401  (fixture, by name)
     FULL,
     ME,
+    ORG,
     OTHER,
+    _bound,
     admin,
     card,
     fakes,
@@ -939,3 +952,318 @@ class TestOneZoneReader:
         out = needs._task_signals([("overdue", task)], "Mars/Olympus_Mons",
                                   "2026-10-14", calendar=False)
         assert out[0].facts["days_late"] == 4
+
+
+# ── What the feed learns (MD-9, LOOP-4a, ``proactive_loop.md`` §7.2) ─────────
+
+
+def _learned(mutes=(), affinity=None, ok: bool = True) -> state.Learned:
+    return state.Learned(frozenset(mutes), dict(affinity or {}), ok)
+
+
+class TestTheMuteInTheJoin:
+    """P3 and P4 of ``proactive_loop.md`` §7.2, ``my_day_feed.md`` §6.6 and
+    §6.8 item 7. Mutations, each killed here: the needs test left out (a
+    muted overdue card leaves), the needs test on the main kind only (the
+    folded case leaves), a mute that keys on a folded kind, a mute that
+    runs before the card's own state (a dismissed muted needs card shows in
+    Later), and a muted needs card that keeps its group."""
+
+    def test_a_muted_kind_leaves_before_the_order(self):
+        quiet = _card("stale_next", sid="tasks:q", group="fyi")
+        kept = _card("deal_quiet", sid="tasks:d", group="fyi")
+        out = state.join([quiet, kept], {}, CTX, _learned(mutes={"stale_next"}))
+        assert [c["signal_id"] for c in out] == ["tasks:d"]
+
+    @pytest.mark.parametrize("kind", sorted(feed_decide.NEEDS_KINDS))
+    def test_a_muted_needs_kind_goes_to_later_and_stays(self, kind):
+        (out,) = state.join([_card(kind, group="needs_you")], {}, CTX,
+                            _learned(mutes={kind}))
+        assert (out["signal_id"], out["group"]) == ("tasks:t1", "later")
+
+    def test_a_needs_kind_folded_in_keeps_the_card_too(self):
+        c = _card("block_soon", group="now", folded=("overdue",))
+        (out,) = state.join([c], {}, CTX, _learned(mutes={"block_soon"}))
+        assert out["group"] == "later"
+
+    def test_a_mute_keys_on_the_main_kind(self):
+        late = _card("overdue", group="needs_you", folded=("block_soon",))
+        quiet = _card("stale_next", sid="tasks:q", group="fyi", folded=("deal_quiet",))
+        out = state.join([late, quiet], {}, CTX,
+                         _learned(mutes={"block_soon", "deal_quiet"}))
+        assert [(c["signal_id"], c["group"]) for c in out] == [
+            ("tasks:t1", "needs_you"), ("tasks:q", "fyi")]
+
+    @pytest.mark.parametrize(("st", "reason", "on_change"), [
+        ("dismissed", "dismiss", False), ("dismissed", "not_useful", False),
+        ("snoozed", None, True)])
+    def test_dismiss_snooze_and_not_useful_still_hide_a_muted_needs_card(
+            self, st, reason, on_change):
+        c = _card("overdue", group="needs_you")
+        row = _row(c, st, reason=reason, on_change=on_change)
+        mute = _learned(mutes={"overdue"})
+        assert state.join([c], {"tasks:t1": row}, CTX, mute) == []
+        # Non-vacuity: with no row, the muted needs card shows, in Later.
+        assert state.join([c], {}, CTX, mute)[0]["group"] == "later"
+
+
+class TestTheAffinityInTheJoin:
+    """P1 and P3 of ``proactive_loop.md`` §7.2, ``my_day_feed.md`` §7: the
+    affinity of the main kind joins the score, beside fatigue. Mutations,
+    each killed here: the term left out, the term keyed on a folded kind,
+    the term left off an acted card, and a negative term that hides a card."""
+
+    def test_the_term_of_the_main_kind_joins_the_score_and_the_order(self):
+        low = _card("stale_next", sid="tasks:a", group="fyi", folded=("deal_quiet",))
+        other = _card("deal_quiet", sid="tasks:b", group="fyi")
+        before = state.join([low, other], {}, CTX)
+        assert [c["signal_id"] for c in feed_rank.order(before, 10)] == ["tasks:a", "tasks:b"]
+        out = state.join([low, other], {}, CTX, _learned(affinity={"stale_next": -12}))
+        assert {c["signal_id"]: c["score"] for c in out} == {"tasks:a": 88, "tasks:b": 100}
+        assert [c["signal_id"] for c in feed_rank.order(out, 10)] == ["tasks:b", "tasks:a"]
+
+    def test_the_term_sits_beside_fatigue_and_beside_an_act(self):
+        c = _card("stale_next", group="fyi")
+        seen = state.join([c], {"tasks:t1": _row(c, "seen", visits=2)}, CTX,
+                          _learned(affinity={"stale_next": 6}))
+        assert seen[0]["score"] == 100 - 16 + 6
+        acted = state.join([c], {"tasks:t1": _row(c, "acted", visits=2)}, CTX,
+                           _learned(affinity={"stale_next": -4}))
+        assert acted[0]["score"] == 100 - 4
+
+    def test_a_negative_term_never_takes_a_needs_card_out(self):
+        (out,) = state.join([_card("overdue", group="needs_you")], {}, CTX,
+                            _learned(affinity={"overdue": -20}))
+        assert (out["group"], out["score"]) == ("needs_you", 80)
+
+    def test_an_empty_learned_is_the_join_of_before(self):
+        cards = [_card("overdue"), _card("stale_next", sid="tasks:q", group="fyi")]
+        rows = {"tasks:t1": _row(cards[0], "seen", visits=1)}
+        assert json.dumps(state.join(cards, rows, CTX, _learned()), default=str) == \
+            json.dumps(state.join(cards, rows, CTX), default=str)
+
+
+class TestTheFlagReader:
+    """``state.learn_allowed`` is the one reader of ``MY_DAY_LEARN_ORGS``,
+    on each call. Mutations, each killed here: a default other than empty,
+    the star ignored, the case kept, and an org with no session org."""
+
+    def test_the_default_is_empty(self):
+        assert Settings.model_fields["my_day_learn_orgs"].default == ""
+
+    @pytest.mark.parametrize(("value", "org", "on"), [
+        ("", ORG, False), (ORG, ORG, True), ("*", ORG, True),
+        (f" x , {ORG.upper()} ", ORG, True), ("x,y", ORG, False),
+        (ORG, None, False), ("*", "", False)])
+    def test_the_list(self, monkeypatch, value, org, on):
+        monkeypatch.setattr(get_settings(), "my_day_learn_orgs", value)
+        assert state.learn_allowed(org) is on
+
+
+class TestTheCountClock:
+    """P2 of ``proactive_loop.md`` §7.2. An act counts by ``acted_at`` and a
+    "Not useful" by ``not_useful_at``, inside 30 days. No count reads
+    ``updated_at``, because a later sighting moves it and an old "Not useful"
+    outlives that sighting (``my_day_feed.md`` §13.1). The real clock runs in
+    ``test_feed_decide_r8.py``. Mutation: put back the ``updated_at`` window
+    of MD-6a-1, and this fails."""
+
+    def test_each_count_reads_its_own_time(self):
+        sql = " ".join(feed_decide._HABITS_SQL.split())
+        assert "FILTER (WHERE acted_at >= now() - interval '30 days') AS acted" in sql
+        assert ("FILTER (WHERE not_useful_at >= now() - interval '30 days') AS not_useful"
+                in sql)
+        assert ("GREATEST(last_seen_at, acted_at, not_useful_at) >= now() - interval "
+                "'30 days' GROUP BY kind") in sql
+        assert "updated_at" not in sql
+
+
+def _in_org(*features: str, email: str = ME) -> UserContext:
+    """A member of a tenant: the org comes from the session, as in the gateway."""
+    return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=ORG,
+                       access=EffectiveAccess(role_granted=frozenset(
+                           f"feature:{f}" for f in features)))
+
+
+class _Taught:
+    """The two reads of the learned path, each answering by the member it is
+    handed, and the Redis under the real tenant wrapper."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.prefs: dict[str, dict] = {}
+        self.counts: dict[str, dict] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.fail: dict[str, BaseException] = {}
+        self.redis = FakeRedis()
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis",
+                            lambda **_: TenantRedis(self.redis))
+        monkeypatch.setattr(prefs, "_read", self._read)
+        monkeypatch.setattr(feed_decide, "_habits", self._habits)
+
+    async def _read(self, db, uid):
+        self.calls.append(("prefs", uid))
+        if "prefs" in self.fail:
+            raise self.fail["prefs"]
+        stored = self.prefs.get(uid)
+        return None if stored is None else (json.dumps(stored),)
+
+    async def _habits(self, db, member):
+        self.calls.append(("counts", member))
+        if "counts" in self.fail:
+            raise self.fail["counts"]
+        return {k: dict(v) for k, v in self.counts.get(member, {}).items()}
+
+    def made(self, kind: str) -> list[tuple[str, str]]:
+        return [c for c in self.calls if c[0] == kind]
+
+
+@pytest.fixture()
+def taught(fakes, monkeypatch) -> _Taught:  # noqa: F811
+    """``MY_DAY_LEARN_ORGS`` holds the session's org, through its one reader."""
+    t = _Taught(monkeypatch)
+    monkeypatch.setattr(get_settings(), "my_day_learn_orgs", ORG)
+    return t
+
+
+def _flag(monkeypatch, value: str) -> None:
+    monkeypatch.setattr(get_settings(), "my_day_learn_orgs", value)
+
+
+def _day_id(fakes) -> str:  # noqa: F811
+    return f"calendar:{fakes._today().isoformat()}"
+
+
+def _joined_ok(user: UserContext) -> bool:
+    return _bound(lambda: feed.feed_cards(user)).joined.ok
+
+
+class TestTheFeedLearns:
+    """LOOP-4a done-when (``proactive_loop.md`` §10): a mute changes the feed
+    and not the bell, a needs card never leaves, and the affinity of five
+    cards shown with three "Not useful" is -12. ``day_overbooked`` is the
+    card that is not a needs kind: ME plans 120 minutes in a 60-minute day."""
+
+    def test_a_mute_drops_its_kind_and_the_bell_stays(self, fakes, taught):  # noqa: F811
+        fakes.capacity[ME] = 60
+        user = _in_org(*FULL)
+        before = run_feed(user)
+        assert card(before, _day_id(fakes))["kind"] == "day_overbooked"  # non-vacuity
+        taught.prefs[ME] = {"mutes": ["day_overbooked"]}
+        after = run_feed(user)
+        assert _of(after, _day_id(fakes)) is None
+        assert [c["signal_id"] for c in after["cards"]] == [
+            c["signal_id"] for c in before["cards"] if c["signal_id"] != _day_id(fakes)]
+        assert after["needs"] == before["needs"] == run_needs(user)
+
+    def test_a_muted_needs_kind_goes_to_later_and_the_bell_stays(self, fakes, taught):  # noqa: F811
+        user = _in_org(*FULL)
+        before = run_feed(user)
+        assert card(before, "tasks:t-late")["group"] != "later"
+        taught.prefs[ME] = {"mutes": ["overdue"]}
+        after = run_feed(user)
+        assert card(after, "tasks:t-late")["group"] == "later"
+        assert sorted(c["signal_id"] for c in after["cards"]) == sorted(
+            c["signal_id"] for c in before["cards"])
+        assert after["needs"] == before["needs"] == run_needs(user)
+
+    def test_five_shown_and_three_not_useful_lower_the_kind_by_12(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        fakes.capacity[ME] = 60
+        user = _in_org(*FULL)
+        _flag(monkeypatch, "")
+        base = card(run_feed(user), _day_id(fakes))["score"]
+        assert taught.calls == []  # the org off: no learned read at all
+        _flag(monkeypatch, ORG)
+        taught.counts[ME] = {"day_overbooked": {"shown": 5, "acted": 0, "not_useful": 3}}
+        assert card(run_feed(user), _day_id(fakes))["score"] == base - 12
+
+    def test_the_first_read_of_the_day_computes_and_keeps_it_26_hours(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        from tests.unit.test_shell_needs import _freeze
+
+        user = _in_org(*FULL)
+        taught.counts[ME] = {"stale_next": {"shown": 5, "acted": 0, "not_useful": 3},
+                             "overdue": {"shown": 3, "acted": 0, "not_useful": 3}}
+        day = state.Day(state.zone_of(fakes.zone), fakes.day_start[ME])
+        for _ in range(3):
+            run_feed(user)
+        # The key holds the session's org and the session's exact address (R5).
+        name = f"cc:{ORG}:my_day:affinity:{ME}:{day.feed_day(fakes.now).isoformat()}"
+        assert json.loads(taught.redis.store[name]) == {"stale_next": -12}
+        assert taught.redis.ttl[name] == 26 * 3600
+        assert taught.made("counts") == [("counts", ME)]  # once for the day
+        assert taught.made("prefs") == [("prefs", ME)] * 3  # a mute shows at the next read
+        # The next day of the member is a new key, and its first read counts again.
+        later = fakes.now + timedelta(days=1)
+        _freeze(monkeypatch, later)
+        taught.counts[ME] = {"stale_next": {"shown": 5, "acted": 5, "not_useful": 0}}
+        run_feed(user)
+        nxt = f"cc:{ORG}:my_day:affinity:{ME}:{day.feed_day(later).isoformat()}"
+        assert json.loads(taught.redis.store[nxt]) == {"stale_next": 20}
+        assert taught.made("counts") == [("counts", ME)] * 2
+
+    def test_another_org_on_the_list_learns_nothing_here(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        user = _in_org(*FULL)
+        _flag(monkeypatch, "org-other")
+        taught.prefs[ME] = {"mutes": ["overdue"]}
+        assert card(run_feed(user), "tasks:t-late")["group"] != "later"
+        assert taught.calls == [] and taught.redis.names == []
+        _flag(monkeypatch, "*")
+        assert card(run_feed(user), "tasks:t-late")["group"] == "later"
+
+
+class TestTheLearnedPathFailsOpen:
+    """P5 and P6 of ``proactive_loop.md`` §7.2. A failed prefs read or count
+    read gives no mute and no affinity, as a failed state read keeps the
+    feed. A Redis fault gives the affinity 0 and keeps the mutes. Each sets
+    ``Applied.ok`` False, so the read cache keeps nothing. Mutations, each
+    killed here: a fault that raises out of the feed, a fault that keeps the
+    mutes of a failed read, a Redis fault that still counts, and ``ok`` left
+    True."""
+
+    @pytest.mark.parametrize("fault", ["prefs", "counts"])
+    def test_a_failed_read_learns_nothing_and_keeps_the_feed(
+            self, fakes, taught, monkeypatch, fault):  # noqa: F811
+        fakes.capacity[ME] = 60
+        user = _in_org(*FULL)
+        _flag(monkeypatch, "")
+        off = run_feed(user)
+        _flag(monkeypatch, ORG)
+        taught.prefs[ME] = {"mutes": ["day_overbooked", "overdue"]}
+        taught.counts[ME] = {"stale_next": {"shown": 5, "acted": 0, "not_useful": 5}}
+        taught.fail[fault] = RuntimeError("the database is down")
+        assert json.dumps(run_feed(user), default=str) == json.dumps(off, default=str)
+        assert _joined_ok(user) is False
+        taught.fail.clear()  # non-vacuity: the same store changes the answer
+        assert _of(run_feed(user), _day_id(fakes)) is None
+        assert _joined_ok(user) is True
+
+    def test_a_slow_read_learns_nothing(self, fakes, taught, monkeypatch):  # noqa: F811
+        user = _in_org(*FULL)
+        taught.prefs[ME] = {"mutes": ["overdue"]}
+
+        async def slow(db, uid):
+            await asyncio.sleep(2)
+            return (json.dumps(taught.prefs[uid]),)
+
+        monkeypatch.setattr(prefs, "_read", slow)
+        monkeypatch.setattr(state, "LEARN_TIMEOUT_S", 0.05)
+        assert card(run_feed(user), "tasks:t-late")["group"] != "later"
+        assert _joined_ok(user) is False
+
+    def test_a_redis_fault_gives_affinity_0_and_keeps_the_mutes(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        fakes.capacity[ME] = 60
+        user = _in_org(*FULL)
+        _flag(monkeypatch, "")
+        off = run_feed(user)
+        _flag(monkeypatch, ORG)
+        taught.prefs[ME] = {"mutes": ["day_overbooked"]}
+        taught.counts[ME] = {"overdue": {"shown": 5, "acted": 0, "not_useful": 5}}
+        taught.redis.fail = ConnectionError("redis is down")
+        got = run_feed(user)
+        assert _of(got, _day_id(fakes)) is None  # the mute holds
+        assert card(got, "tasks:t-late")["score"] == card(off, "tasks:t-late")["score"]
+        assert taught.made("counts") == []  # a fault computes nothing
+        assert _joined_ok(user) is False
