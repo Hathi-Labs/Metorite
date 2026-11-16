@@ -256,7 +256,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-24 | Colleague onboarding readiness | 🟢 open | `specs/colleague_onboarding.md` | now in WS-TS (WS-24b, WS-24c) |
 | WS-25 | Deploy delivery path | 🟢 open | `specs/deploy_delivery_path.md` | now in WS-PL · WS-25d is in WS-CZ |
 | WS-26 | CRM app: native CRM and Zoho retirement | ✅ done | `specs/crm_app.md` (the as-built record) | new work went to WS-53 · now in WS-CRM |
-| WS-27 | Projects app: native PM | 🟢 open | `specs/project_management_app.md` §9.7 | now in WS-PT· WS-27bm chat cards: EAC (editable approval cards, planned 2026-11-16, task 2493, `projects_ai_chat.md` §32) |
+| WS-27 | Projects app: native PM | 🟢 open | `specs/project_management_app.md` §9.7 | now in WS-PT · WS-27bm chat cards: EAC (editable approval cards, planned 2026-11-16, task 2493, `projects_ai_chat.md` §32) |
 | WS-28 | People Center: directory, org chart, assignment | ✅ done | `specs/people_center_app.md` | now in WS-PP |
 | WS-29 | Multi-tenancy: Metorite sold to other companies | 🟢 open | `specs/saas_multitenancy.md` · `specs/saas_multitenancy_handover.md` | now in WS-TS |
 | WS-30 | Subscription Console | 🟢 open | `specs/subscription_console.md` | now in WS-CM |

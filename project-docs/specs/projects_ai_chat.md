@@ -7631,8 +7631,8 @@ values. The email cards already work this way (`email_app_master_plan.md`
 - The edit card refuses `files` in a held chat.
 
 **The flag.** `PROJECT_EDIT_CARD_ORGS` is new. The default is empty, and it fails
-closed. A value is `*` or a list of org ids. The code reads it on each call. A
-SIGHUP reloads it. It sits in `acb_common/env_guard.py` after
+closed. A value is `*` or a list of org ids. The code reads it on each call, and
+a SIGHUP reloads it. It sits in `acb_common/env_guard.py` after
 `EMAIL_EDIT_CARD_ORGS`, and in `docs/flag_reload.md` and the settings.
 
 **The assignee.** Today a member may assign any person that the picker lists.
@@ -7660,9 +7660,10 @@ shows one line that says the edits were not used. PR 2434 (RESUME-2a) changes
 - The held-card record keeps an act kind.
 - A check can compare the act kind and the To and Cc fields of a card with the
   card that it replaces (HRD-8b, task 3459).
-- HRD-10a (task 2989, flag `CHAT_CARD_PRECONDITION_ORGS`, `update_task` only)
-  compares against what the member SAW before the edit. It never compares
-  against the edited values.
+- HRD-10 (task 2989) is the `If-Match` check of `update_task`. It is not built.
+  Its split slice HRD-10a (stu-r3) plans the flag `CHAT_CARD_PRECONDITION_ORGS`.
+  The check compares against what the member SAW before the edit. It never
+  compares against the edited values.
 - Neither lane touches the tool text of the other.
 
 **Client.**
@@ -7671,12 +7672,14 @@ shows one line that says the edits were not used. PR 2434 (RESUME-2a) changes
   It becomes the union `NewMailEdits | TaskCardEdits`, in one small PR.
 - Two fences assert source text: `src/lib/cardEditsKept.test.ts` and
   `src/components/redraftCard.test.ts`.
-- Reuse these parts: `app/projects/components/AssigneePicker.tsx` with
-  `AssigneeChips`, `ProjectSelect.tsx` over `ProjectPicker.tsx` (a `PickRule`
-  limits it to the projects of the member), `components/ui/StatusMenu.tsx`,
-  the `PriorityChip` in `components/TaskMeta.tsx`, and `components/ui/Input.tsx`.
-- Priority is two flags, `important` and `leveraged` (D78, `PriorityChip`). A due date sets Urgent.
-  The form has no Urgent control.
+- Reuse `app/projects/components/AssigneePicker.tsx` with `AssigneeChips`.
+- Reuse `ProjectSelect.tsx` over `ProjectPicker.tsx`. A `PickRule` limits it to
+  the projects of the member.
+- Reuse `components/ui/StatusMenu.tsx`, the `PriorityChip` in
+  `components/TaskMeta.tsx`, and `components/ui/Input.tsx`.
+- Priority has two fields (D78). An Important toggle writes `importance` as 2 or 0.
+  A second toggle writes `leveraged`. A due date sets Urgent, so the form has
+  no Urgent control.
 - No shared date picker exists. Use `ui/Input` with `type=date`, or open a small
   task for the ui seam. Do not hand-roll a picker.
 
@@ -7696,7 +7699,7 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 | **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). |
 | **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `confirmationQueue.ts`, `lib/taskCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, a new `taskCard.test.ts` | AGENT-SAFE build, OWNER-GATE preview | A member edits the due date and one assignee on a `create_task` card, then presses Approve. |
 | **EAC-3** | 3470 | STANDARD for status, priority, start date and description. HIGH for project or subproject | 2 | `TaskCardForm.tsx`, `lib/taskCard.ts`, `task_card.py` | The tests of EAC-1 and EAC-2, extended | AGENT-SAFE | Each added field edits and writes. A project change passes the route grants. |
-| **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus a precondition test (§32.6) | AGENT-SAFE | An `update_task` card edits the changed fields. |
+| **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus `tests/unit/test_task_edit_card_precondition.py` (needs HRD-10) | AGENT-SAFE | An `update_task` card edits the changed fields. |
 | **EAC-5** | 3472 | HIGH, last | 2 | `TaskCardForm.tsx`, `task_card.py`, `egress.py` | A held-chat test for `files` | AGENT-SAFE | A member edits the files of a `create_task` card. A held chat refuses them. |
 | **EAC-6** | none | none | 2 | none | none | OWNER-GATE | The owner previews EAC-2 to EAC-5 on the local stack and approves or asks for a change. |
 | **EAC-7** | none | none | 2 | none | none | OWNER-GATE (`enforcement-flip`) | The owner, or a dated grant, flips `PROJECT_EDIT_CARD_ORGS`. The report names the flag and the box. |
@@ -7720,9 +7723,11 @@ union. It uses a type guard and not a cast (HRD-8b needs this).
   cannot open is not on the list.
 - **EAC-4.** An edit that changes `due`, then a change by a teammate between the
   card and Approve, gives "changed since the card" and does not overwrite. The
-  `If-Match` check of HRD-10a compares against the `updated_at` that the member
-  SAW before the edit. A named test covers this case.
+  `If-Match` check of HRD-10 (task 2989, not built) compares against the
+  `updated_at` that the member SAW before the edit. EAC-4 waits for HRD-10. The
+  test `tests/unit/test_task_edit_card_precondition.py` covers this case.
 - **EAC-5.** A held chat refuses `files` on the edit card.
+  `tests/unit/test_task_edit_card_files.py` covers this case.
 - **EAC-6 and EAC-7.** The owner answers in Metorite on the task.
 
 ### 32.7 Verify
