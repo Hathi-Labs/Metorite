@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 198
+-- Tables in this phase: 199
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -198,6 +198,13 @@ ALTER TABLE chat_session_agent ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_session_agent FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chat_session_agent_tenant_isolation ON chat_session_agent;
 CREATE POLICY chat_session_agent_tenant_isolation ON chat_session_agent
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE chat_session_member ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_session_member FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chat_session_member_tenant_isolation ON chat_session_member;
+CREATE POLICY chat_session_member_tenant_isolation ON chat_session_member
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
