@@ -441,6 +441,11 @@ MANIFEST: tuple[Route, ...] = (
         "The count shown before an admin deletes or merges a shared entry in "
         "Projects settings. The chat neither deletes nor merges shared entries.",
     ),
+    # HRD-9a (chat_failure_modes.md §6): the space of a node, and how many
+    # projects its own tags, fields and types reach. The card of each
+    # vocabulary write reads it before the card, and a failed read shows the
+    # card with no count.
+    Route("GET", "/projects/nodes/{project_id}/vocabulary/reach", "vocabulary", "A"),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),
