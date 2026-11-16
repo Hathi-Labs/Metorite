@@ -132,6 +132,14 @@ KEY_ROOT = "cc"
 #: answers 503 for it.
 OUTAGE_ERRORS: tuple[type[BaseException], ...] = (RedisError, OSError, TimeoutError)
 
+#: The one script of :meth:`TenantRedis.delete_unless`: delete ``KEYS[1]``
+#: unless it holds ``ARGV[1]``. Redis runs a script as one step. It names no
+#: key of its own, so the key discipline of the wrapper holds.
+_DELETE_UNLESS_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return 0 end "
+    "return redis.call('DEL', KEYS[1])"
+)
+
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -507,6 +515,18 @@ class TenantRedis:
         OAuth consent of WS-54 IN-8a. Redis 6.2 or later.
         """
         return await self._client.getdel(self._raw(k))
+
+    async def delete_unless(self, k: TenantKey, value: str) -> Any:
+        """Delete *k* unless it holds *value*, in ONE atomic step.
+
+        The step is the fixed Lua script :data:`_DELETE_UNLESS_LUA`. It
+        touches ``KEYS[1]`` only, and a caller gives no script, so it can
+        reach no key of another tenant. Gives 1 when it deleted the key, and
+        0 when the key held *value* or did not exist. A GET and then a DELETE
+        can remove a value that another writer set between the two
+        (``acb_skills.late_approve.drop_offer``, the SPENT mark of RESUME-2a).
+        """
+        return await self._client.eval(_DELETE_UNLESS_LUA, 1, self._raw(k), value)
 
     async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
         """Read many keys in ONE round trip. Each key goes through
