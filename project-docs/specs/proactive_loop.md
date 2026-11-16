@@ -485,11 +485,15 @@ only. The model gets typed facts at most: the kind, the date, a label and a
 link. So a check does not mark the chat (EM-G11d). A shared agent also gets no
 direct read tool of a mailbox (D91 item 4).
 
-**The label is a template word or text that the member wrote.** An example
-is the subject of the member's own sent mail. A label never holds a subject,
-a file name or a name from mail that another sender wrote. For
-`write_thread_moved`, the label is the template "a new message on this
-thread". The card can show more, because the card is not the model.
+**The label is a template word or text that the member wrote.** It may use
+the subject of a new mail that the member wrote. It never uses the subject of
+a reply or a forward, because that subject comes from the other sender. A
+label never holds a subject, a file name or a name from mail that another
+sender wrote. The stop list drops Re and Fwd for a match only, and never makes
+a label.
+
+For `write_thread_moved`, the label is the template "a new message on
+this thread". The card can show more, because the card is not the model.
 
 **Mira's sentence is not a nudge.** The card line stays the template
 (§6.4 rule 4). Mira's reply only refers to the typed facts, and it adds no
@@ -991,7 +995,7 @@ Each fence is advisory until its slice builds it.
 | Only the member reads the model | The privacy fence of PZ-9 and the fences of `personalization.md` §19.10 |
 | No model writes the words of a nudge | PZ-48's planned fence on the send path (`personalization.md` §17.9) |
 | A write check never fires on the current thread, and stays in its budget | `tests/unit/test_write_check.py` (LOOP-18, new) |
-| Mail text from a write check never reaches the model, and a label never holds another sender's text (the `write_thread_moved` case) | `tests/unit/test_write_check_card.py` (LOOP-20, new) |
+| Mail text from a write check never reaches the model, and a label never holds another sender's text (the `write_thread_moved` case, and a reply whose inherited subject holds an instruction) | `tests/unit/test_write_check_card.py` (LOOP-20, new) |
 | Mira's sentence about a heads-up states no fact beyond the typed facts | A golden case of LOOP-22 in the persona goldens |
 | A colleague's send shows only to a member who can open its record | An R8 test of LOOP-24, `tests/unit/test_write_check_teammate_r8.py` (new) |
 
