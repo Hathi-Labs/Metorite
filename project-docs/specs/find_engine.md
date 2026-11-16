@@ -8,6 +8,10 @@ planned (§9.2). **FIND-1 is built (branch `mt-45237431-find-misses-eval`, task
 `--fixture` prints its score. **HRD-4 is built (task 2983, 2026-11-16):** the sources run at once, 4 at most, and `find_tasks` ranks by the words held on a miss. The owner accepted D-FIND-1 to D-FIND-8 as
 recommended on 2026-11-14 (task 3233, answer `30dfa0d6`, §10).
 
+**HRD-18b is built (task 3226, 2026-11-16).** Behind `FIND_ORGS`, a miss of
+§3.3 (D-FIND-4) starts rung 2 and rung 3. `query_inbox` asks for the near
+spelling of a sender (`near_sender`). The Mail UI never asks.
+
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
 extends §20 and replaces nothing in it. It adds no second read path and no
@@ -323,7 +327,7 @@ in `retrieval/sources.py`, as `needs.register(Provider)` does for a bell item.
 | Ability | The function on `Source` | What it gives | The rule |
 |---|---|---|---|
 | `exact` | `find(user, q, k)`, as built | Hits | Required |
-| `near` | `near(user, word, k)` | Names with a score, from rows that the member can open | The floor comes from `acb_common.name_match` |
+| `near` | `near(user, words, k)` | For each word, names with a score, from rows that the member can open. One read serves every word of a lookup | The floor comes from `acb_common.name_match` |
 | `related` | `related(user, refs)` | Triples of a ref, an `edge` and a linked ref, from stored ids and addresses | Ids only, no text |
 | `open` | `open(user, refs)` | Hits for the refs that the member can open | The rule of `knowledge_graph.md` §6 |
 | `meaning` | `find(..., hybrid=True)`, as built | Hits | One embed, through the one embed door |
@@ -494,7 +498,7 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
-| `FIND_ORGS` | empty | `matched_by`, the coverage order, rung 3 in the engine, rung 4, the honest zero lines, the explain mode, `resolve_name` and the standing rule. It acts only with `CONTEXT_RECENCY` on. Empty gives the answer of KR-ZERO, byte for byte. It reloads with no restart (`docs/flag_reload.md`) | AGENT-SAFE. It spends nothing. Flip it under the `enforcement-flip` grant, after the FIND-1 eval |
+| `FIND_ORGS` | empty | `matched_by`, the coverage order, rung 3 in the engine, rung 4, the honest zero lines, the explain mode, `resolve_name` and the standing rule. In the engine it acts only with `CONTEXT_RECENCY` on. It also opens the sender near spelling of `query_inbox` (HRD-18b), which needs no `CONTEXT_RECENCY`. Empty gives the answer of KR-ZERO, byte for byte. It reloads with no restart (`docs/flag_reload.md`) | AGENT-SAFE. It spends nothing. Flip it under the `enforcement-flip` grant, after the FIND-1 eval |
 | `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21) | The owner sees the preview before the flip (task 3225) |
 | `FIND_OUTSIDE_ORGS` | empty | Rung 7 (FIND-10) | **OWNER-GATE.** A read of a third party |
 | `FIND_CLAIM_CHECK` | `off` | The "not found" check of §5.5: `off`, `shadow` or `on` | `shadow` is AGENT-SAFE. `on` is an `enforcement-flip` after 7 days of shadow |
@@ -526,7 +530,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **HRD-18a** | 2997 | 1 | The one matcher `acb_common/name_match.py`. CRM search word by word, a deal that matches its contacts and source lead, and `?near=true`. `resolve_person` and `find_contact` use the matcher | As its task. Built on `mt-53eeea95-near-names`, not merged | `test_name_variants.py`, `test_crm_near_search_r8.py` | STANDARD · AGENT-SAFE | none |
 | **HRD-4** | 2983 | 1 | Rung 1 at once: each source of pass 1 in parallel, at most `FIND_SESSIONS` (4) at a time. `find_tasks` ranks by most of the words on a miss | "Sharath 3D printer" names no skipped source on the fixture. A slow source does not hold a fast one. A fifth source waits for a slot | `test_search_fallback.py` | STANDARD · AGENT-SAFE | KR-ZERO |
 | **FIND-2** | 3239 | 1 | `matched_by`, `covers` and `of` on each hit, the order of §3.4, the fold of §3.3, the print of §3.5, and the flag `FIND_ORGS` | On the fixture, a deal that holds 3 of 3 words comes before 15 that hold 2. "Sharath's" folds to "sharath". With `FIND_ORGS` empty, the answer and the tool text are byte-identical | `test_find_matched_by.py`, new | STANDARD · AGENT-SAFE | KR-ZERO |
-| **HRD-18b** | 3226 | 1 | Rung 3 in the engine: the `near` ability of the CRM, people and email sources, the near lookup of pass 2, the query again with the best spelling, and `matched_by` `near`. `query_inbox` tries the near spelling of a sender | "Sharath 3D printer" finds the Neuropeak deal and the mail from «Sharat Satyanarayana». "nuropeak" finds the deal and the mail from `neuropeek.com`. A sender of member B never shows for member A | `test_find_near.py`, new. `test_find_near_visibility_r8.py`, new. `test_one_name_matcher.py`, new: each `pg_trgm` floor comes from `name_match` | STANDARD · AGENT-SAFE | KR-ZERO, HRD-18a, FIND-2 |
+| **HRD-18b** (built) | 3226 | 1 | Rung 3 in the engine: the `near` ability of the CRM, people and email sources, the near lookup of pass 2, the query again with the best spelling, and `matched_by` `near`. `query_inbox` tries the near spelling of a sender | "Sharath 3D printer" finds the Neuropeak deal and the mail from «Sharat Satyanarayana». "nuropeak" finds the deal and the mail from `neuropeek.com`. A sender of member B never shows for member A | `test_find_near.py`, new. `test_find_near_visibility_r8.py`, new. `test_one_name_matcher.py`, new: each `pg_trgm` floor comes from `name_match` | STANDARD · AGENT-SAFE | KR-ZERO, HRD-18a, FIND-2 |
 | **FIND-3** | 3240 | 1 | Rung 4: the `related` and `open` abilities of the CRM, people and email sources, and the step on the best 5 hits, 3 for each hit, in 1.0 s. It builds the step and `Source.open` that KG-6 names. KG-6 then adds the `kb_links` edges to the same step | "Neuropeak order" finds the deal, and the thread from the address of its lead, in one call. A contact's mail in the mailbox of another member never shows. A record that the member cannot open leaves no trace. Org B never shows | `test_find_related.py`, new. `test_find_related_r8.py`, new | HIGH · AGENT-SAFE | FIND-2 |
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
