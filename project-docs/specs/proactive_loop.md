@@ -448,7 +448,7 @@ no engine, store, card kind or model writer (§3.2).
 |---|---|
 | A read before the card | Built. "Reads may precede the card. Writes may not" (`skill_projects/writes.py` rule 1) |
 | The one place that sees each chat tool call | Built. `_agated` (`orchestrator/_tool_injection.py:1192`) runs `decide`, then `card_call` |
-| A card that tells the member a fact | Built. HRD-9a, the reach line on a shared change. stu-r3 plans HRD-9b (task 3465) and HRD-10 "changed since" (task 2989) |
+| A card that tells the member a fact | Built. HRD-9a (task 2988), the reach line on a shared change. stu-r3 plans HRD-9b (task 3465) and HRD-10 "changed since" (task 2989) |
 | Lines on a mail card | Built. A reply or new-mail form takes up to four `notices` (`acb_skills/ask_tools.py:949`) |
 | A check beside the draft | Built. `_orchestrate_draft` gathers memory and the consult plan side by side (`routes/email/automation/drafting.py:2231`) |
 | A newer reply on the thread | Built and dark: the recent-reply warning of the held card (`EMAIL_HELD_CARD_SEND`), and the 409 of `reply_card.py` when a reply landed first |
@@ -482,8 +482,19 @@ decides it (LOOP-Q11).
 
 **Mail text never reaches the model.** A finding about mail goes to the card
 only. The model gets typed facts at most: the kind, the date, a label and a
-link. So a check does not mark the chat (EM-G11d), and a shared agent gets no
-mailbox read (D91 item 4).
+link. So a check does not mark the chat (EM-G11d). A shared agent also gets no
+direct read tool of a mailbox (D91 item 4).
+
+**The label is a template word or text that the member wrote.** An example
+is the subject of the member's own sent mail. A label never holds a subject,
+a file name or a name from mail that another sender wrote. For
+`write_thread_moved`, the label is the template "a new message on this
+thread". The card can show more, because the card is not the model.
+
+**Mira's sentence is not a nudge.** The card line stays the template
+(§6.4 rule 4). Mira's reply only refers to the typed facts, and it adds no
+claim beyond them. A golden case fails when her sentence states a date, a
+person or an object that the typed facts do not hold (LOOP-22).
 
 **Another act is a new card.** "Send a follow-up instead" changes the payload.
 So it opens a new card with the new payload, and the first card closes.
@@ -499,6 +510,11 @@ So it opens a new card with the new payload, and the first card closes.
 | `write_teammate_contacted` | A send record says that another member mailed the same contact or company in 30 days, with a matching subject word or file name | The send record | A send record that the member cannot open. Blocked by LOOP-Q11 |
 | `write_context` | The customer card holds a fact for this recipient: an open deal, an overdue invoice, an open ticket | The record | Rung W4 |
 | `write_rule_conflict` | The project checker finds that the write contradicts a rule | The rule and the quote | Rung W4, with ALN-6 (task 1380) and LOOP-8 (task 3448) |
+
+**What counts as a match.** A subject word counts only after a stop list
+drops it. The list holds Re, Fwd, Fw, hi, hello, update, follow, up, the
+names of days and months, and each number. A file name counts without its
+extension and without a date stamp.
 
 Each kind ships in shadow first (§7.6) with its two fixtures (§6.5). The
 negative fixtures include a reply in a long thread, a weekly report to the same
@@ -532,7 +548,7 @@ each request) waits for rung W4 and LOOP-Q13.
 | Part | Owner |
 |---|---|
 | The chat cards | stu-r3 (HRD-9a, HRD-9b, HRD-10), lane-ui (EAC-1, EAC-2 in PR 2466) |
-| The mail draft card and the composer | metorite-a3 (task 3541) |
+| The mail draft card and the composer | metorite-a3, which fixes the AI draft path now (task 3541) |
 | The rule text of Mira | cal-tasks |
 | "Mail to and from an address" | FIND-3 `related` (built, behind `FIND_ORGS`), FIND-4 (task 3241), FIND-7 (task 3244) |
 | "Send anyway" on a shared mailbox | SM-4 of `shared_mailbox.md` |
@@ -943,10 +959,10 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-19** (task 3572) | W1 | An index of attachment names, and a recipient filter on the chat mail tools | `email_app_master_plan.md` | None | R8: the member finds their own sent mail by recipient and by file name, and never another member's mail | HIGH (migration) · AGENT-SAFE |
 | **LOOP-20** (task 3573) | W1 | `_agated` starts the check. `request_confirmation` shows its lines in `context`. The tool result holds typed facts only | `chat_failure_modes.md` | LOOP-18 | With `WRITE_CHECK_ORGS` on, the card shows one line. Off, the card is byte-identical | STANDARD · AGENT-SAFE, dark |
 | **LOOP-21** (task 3574) | W1 | The check beside the draft: `notices`, the composer banner, Refine, and the read again at the send | `email_app_master_plan.md` | LOOP-18 | The composer shows one banner line with a link. Visual review | STANDARD UI · owner preview |
-| **LOOP-22** (task 3575) | W1 | Mira says a heads-up in one sentence, from typed facts | The persona (cal-tasks) | LOOP-20 | The persona goldens and one eval case | LOW · AGENT-SAFE |
+| **LOOP-22** (task 3575) | W1 | Mira says a heads-up in one sentence, from typed facts, and adds no claim | The persona (cal-tasks) | LOOP-20 | The persona goldens. A golden case fails when her sentence states a fact that the typed facts do not hold | LOW · AGENT-SAFE |
 | **LOOP-23** (task 3576) | W2 | The send record: mail to a CRM contact writes one CRM activity, with no body | `crm_conversational.md` | LOOP-Q11 | R8: one activity, no body, nothing for a non-contact or "Do not log" | HIGH (privacy) · OWNER-GATE until LOOP-Q11 |
 | **LOOP-24** (task 3577) | W2 | `write_teammate_contacted` from the send record | This spec §4.9.3 | LOOP-23 | R8: a colleague's send shows, and a member without access sees nothing | STANDARD · AGENT-SAFE |
-| **LOOP-25** (task 3578) | W3 | Typed `facts` and `alternatives` on the card event. Another act opens a new card | `chat_failure_modes.md`, with stu-r3 and lane-ui | LOOP-20 | Its row | STANDARD UI · owner preview |
+| **LOOP-25** (task 3578) | W3 | Typed `facts` and `alternatives` on the card event: the same card kind, with a bigger payload (§3.2 rule 6). Another act opens a new card | `chat_failure_modes.md`, with stu-r3 and lane-ui | LOOP-20 | Its row | STANDARD UI · owner preview |
 | **LOOP-26** (task 3579) | W3 | A finding makes a write that acts at once show its card | `chat_first_surface.md` (D-CF-5) | LOOP-18, LOOP-Q12 | Its row | STANDARD · AGENT-SAFE |
 | **LOOP-27** (task 3580) | W4 | `write_context` from the customer card, and `write_rule_conflict` | `crm_conversational.md` §14, `project_alignment.md` | CRM-SIG-1 (2435), ALN-6 (1380), LOOP-8, LOOP-Q13 | Its row | STANDARD · AGENT-SAFE |
 
@@ -975,7 +991,8 @@ Each fence is advisory until its slice builds it.
 | Only the member reads the model | The privacy fence of PZ-9 and the fences of `personalization.md` §19.10 |
 | No model writes the words of a nudge | PZ-48's planned fence on the send path (`personalization.md` §17.9) |
 | A write check never fires on the current thread, and stays in its budget | `tests/unit/test_write_check.py` (LOOP-18, new) |
-| Mail text from a write check never reaches the model | `tests/unit/test_write_check_card.py` (LOOP-20, new) |
+| Mail text from a write check never reaches the model, and a label never holds another sender's text (the `write_thread_moved` case) | `tests/unit/test_write_check_card.py` (LOOP-20, new) |
+| Mira's sentence about a heads-up states no fact beyond the typed facts | A golden case of LOOP-22 in the persona goldens |
 | A colleague's send shows only to a member who can open its record | An R8 test of LOOP-24, `tests/unit/test_write_check_teammate_r8.py` (new) |
 
 ### 11.2 Verification commands
