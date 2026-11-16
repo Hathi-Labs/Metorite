@@ -222,7 +222,10 @@ offers the brief.
 path: the read-only pass, the card, and a refusal.
 
 - **Fields.** `server`, `tool` (the remote name), `outcome`, `ms`,
-  `read_only` (true when no card ran), `run_id`, `org`.
+  `read_only` (true when no card ran), `run_id`, `org`, `source`. `source` is
+  `chat` for a chat run and `job` for any other run, such as a background poll.
+  The code derives it from the run, never from request input, and an unknown
+  value reads `job`. CSY-8 counts `source=chat` only.
 - **The outcome** comes from a closed list: `ok`, `error`, `timeout`,
   `refused`, `card_approved`, `card_denied`, `card_refused`.
 - **Never logged.** An argument, a result, a header, a URL path.
