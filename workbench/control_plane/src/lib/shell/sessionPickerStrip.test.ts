@@ -89,3 +89,19 @@ describe("the touch row (task 3566)", () => {
     expect(ROW.indexOf("data-session-more")).toBeGreaterThan(ROW.indexOf('data-session-acts=""'));
   });
 });
+
+describe("the age and the dot of a touch row (task 3566)", () => {
+  const CSS = readFileSync(join(__dirname, "../../app/globals.css"), "utf-8").replace(/\r\n/g, "\n");
+  const block = CSS.slice(CSS.indexOf("@variant pointer-coarse {\n  .group[data-session-row]"));
+  // Mutation: remove the block, and a sticky :hover on a tapped row blanks the
+  // age and the run dot while the strip is hidden too: this test goes red.
+  it("keeps the age and the dot in place on touch, through the shared variant only", () => {
+    expect(block.startsWith("@variant pointer-coarse {")).toBe(true);
+    expect(block).toContain("[data-has-actions]:hover .rail-row-meta");
+    expect(block).toMatch(/clip-path: none;/);
+    expect(block).toMatch(/position: static;/);
+  });
+  it("does not widen to other rows: it names the session row", () => {
+    expect(block.slice(0, 200)).toContain("[data-session-row]");
+  });
+});
