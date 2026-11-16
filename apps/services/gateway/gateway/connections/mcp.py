@@ -24,14 +24,17 @@ and §7.3. The shape follows :mod:`gateway.connections.github`.
 * **Always confirm (H-300).** ``provider_meta.always_confirm`` is the admin's
   switch: with it ``true``, every tool of the server needs the member's card,
   whatever its hints say (``orchestrator._maf_mcp.McpPermissionGate``). A new
-  server gets ``true`` (:func:`save`). A row with no key reads as ``false``,
-  so a server that was stored before H-300 keeps its behaviour, and the move
-  of an old row writes ``false`` for the same reason. Any value but a real
-  ``false`` reads as ``true``, so a damaged value fails closed.
-  :func:`set_always_confirm` changes it on one row.
+  server gets ``false`` (:func:`save`, MCP-NC1, owner directive 2026-11-17):
+  with the switch off, a member's run calls each tool with no card. A row
+  that a save stored ``true`` before MCP-NC1 keeps ``true`` until an admin
+  turns it off. A row with no key reads as ``false``, and the move of an old
+  row writes ``false``. Any value but a real ``false`` reads as ``true``, so
+  a damaged value fails closed. :func:`set_always_confirm` changes it on one
+  row.
 * **The read-only key (MCP-C2, item 32).** ``provider_meta.read_only_key`` is
   the admin's statement that the key of the server can only read: with it,
-  no tool of the server needs the card. :func:`_read_only_key` is the ONE
+  no tool of the server needs the card. After MCP-NC1 it changes only a run
+  with no member, which then runs each tool. :func:`_read_only_key` is the ONE
   parse, into ``StoredServer.read_only_key``. It is true only for a real
   ``true`` on a row that is not an OAuth row and does not read as always
   confirm. A new server gets ``false``, and so does a row with no key.
@@ -880,17 +883,17 @@ async def save(
     transport: str = "http-sse",
     agent_scope: Sequence[str] = ("*",),
     enabled: bool = True,
-    always_confirm: bool = True,
+    always_confirm: bool = False,
     read_only_key: bool = False,
 ) -> StoredServer:
     """Add a server of *org*, or replace the one of that name.
 
     The caller checks the name, the transport and the URL first. The headers
     go into the blob only. *always_confirm* is the H-300 switch, and a new
-    server gets ``True`` unless the caller says otherwise. *read_only_key* is
-    the MCP-C2 switch, and a new server gets ``False``. A save is a full
-    register, so both keys are written, and a caller that names no
-    *read_only_key* turns it off. Both on, or the key on an OAuth row,
+    server gets ``False`` unless the caller says otherwise (MCP-NC1, task
+    3603). *read_only_key* is the MCP-C2 switch, and a new server gets
+    ``False``. A save is a full register, so both keys are written, and a
+    caller that names neither switch turns both off. Both on, or the key on an OAuth row,
     raises :class:`McpSwitchRefused`, and nothing is written.
 
     An OAuth row (IN-8a) is not replaced. Its public keys merge in, and its

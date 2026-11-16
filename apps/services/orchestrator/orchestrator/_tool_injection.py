@@ -1113,12 +1113,13 @@ def _permission_gate(
     actually about to do, not just their name.
 
     ``facts`` are fields that the CALLER knows and the arguments do not
-    carry. The MCP gate passes ``mcp_tool`` and the server's
-    ``mcp_annotations`` (H-299), so ``decide()`` applies its MCP rule. They
-    are set after the argument mapping, so a tool argument cannot write them.
-    A caller that needs a fail-closed answer must not trust ``gate_error``:
-    the MCP gate shows a card for every code but ``mcp_read_only`` and
-    ``mcp_read_only_key`` (MCP-C2).
+    carry. The MCP gate passes ``mcp_tool``, the server's
+    ``mcp_annotations`` (H-299) and ``mcp_member_present`` (MCP-NC1), so
+    ``decide()`` applies its MCP rule. They are set after the argument
+    mapping, so a tool argument cannot write them. A caller that needs a
+    fail-closed answer must not trust ``gate_error``: the MCP gate shows a
+    card for every code but ``mcp_read_only``, ``mcp_read_only_key`` (MCP-C2)
+    and ``mcp_member_run`` (MCP-NC1).
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
@@ -4891,10 +4892,11 @@ async def _inject_mcp_servers(
     A registry row always names its org, so there are no org-less "global"
     servers.
 
-    **The card** (H-299). *member_present* is True only when a member can
-    answer a confirmation card in this run. The executor passes it. The
-    default is False, so a caller that does not say refuses each MCP tool
-    that needs a card (``_maf_mcp.McpPermissionGate``).
+    **The card** (H-299, MCP-NC1). *member_present* is True only when a
+    member started this run. The executor passes it. Then a tool runs with no
+    card, unless its server is set to always confirm. The default is False,
+    so a caller that does not say refuses each MCP tool that does not say
+    read-only, and each tool that needs a card (``_maf_mcp.McpPermissionGate``).
 
     **No stdio** (D85). A stdio row starts a process on the host, so both
     paths drop it and log ``mcp.stdio_refused``.

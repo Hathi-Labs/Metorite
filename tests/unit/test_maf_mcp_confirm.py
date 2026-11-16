@@ -1,24 +1,38 @@
-"""H-299 — an MCP tool that can change data waits for the member's card.
+"""H-299 and MCP-NC1 — when an MCP tool asks the member's card.
 
 Spec: ``project-docs/specs/agent_architecture.md`` §12.2 WS-8c, items 13 to 17
-and acceptance A12 to A22.
+and 33, and acceptance A12 to A22 and A39.
 
 WS-8c gave a native MAF agent the tools of its org's MCP servers. Each call
 went through ``permission_policy.decide()``, and ``decide()`` approved any name
 it did not know as ``unknown_allowed``. So a server tool that deletes or sends
-ran with no card. Now ``decide()`` has an MCP rule, and the gate shows the one
-card seam, ``ask_tools.request_confirmation``.
+ran with no card. H-299 gave ``decide()`` an MCP rule, and the gate showed the
+one card seam, ``ask_tools.request_confirmation``.
+
+**MCP-NC1** (owner directive, 2026-11-17, task 3603, item 33) amends H-299.
+In a run that a member started, an MCP tool runs with no card, whatever its
+hints say: ``decide()`` answers ``mcp_member_run``. In a run with no member,
+a tool that does not say read-only is still refused. The admin's "always
+confirm" (H-300) and step 3a (an untrusted answer) still ask the card, so
+the card tests below use a server that is set to always confirm.
 
 Each fence names the acceptance item it covers:
 
-* **A12** The rule: a tool needs the card UNLESS ``readOnlyHint`` is true AND
-  ``destructiveHint`` is not true. No hints, and a hint that is not a JSON
-  boolean, need the card (fail closed).
+* **A12** The rule with no member: a tool is refused UNLESS ``readOnlyHint``
+  is true AND ``destructiveHint`` is not true. No hints, and a hint that is
+  not a JSON boolean, count as not read-only (fail closed).
+* **A39** The rule with a member (MCP-NC1): each tool runs with no card,
+  unless its server is set to always confirm or the chat read an untrusted
+  answer. Only a real ``True`` member fact counts. A function whose server
+  the gate cannot find still asks the card.
 * **A13** Approve runs the tool. Deny and a timeout return a refusal, and the
   tool never runs.
-* **A14** A run with no member, a batch run, and a run with no card channel
-  refuse a tool that needs a card. No card is shown.
-* **A15** A WhatsApp run never approves. It refuses, and parks nothing.
+* **A14** A run with no member and a batch run refuse a tool that does not
+  say read-only. A run with no card channel refuses a tool that needs a
+  card. No card is shown.
+* **A15** A WhatsApp run never shows a card. A tool that needs one is
+  refused there, and nothing parks. A member's WhatsApp run calls a tool
+  with no card (MCP-NC1).
 * **A16** The card shows the server, the tool, the arguments with sensitive
   values redacted, and the server's description under a label.
 * **A17** Each attach logs ``mcp.tool_annotations`` with the server, the tool
@@ -43,21 +57,23 @@ The end-to-end tests drive the REAL apis-config agent through the REAL
 Only the model wire is scripted, and the card is answered the way
 ``POST /agent/respond-input`` answers it.
 
-Mutation table (each mutation was made by hand, and the named test failed):
+Mutation table. Each mutation was made by hand, and the named test failed.
+Rows M1 to M48 were measured at their own slices, and their test names were
+updated for MCP-NC1. Rows M49 to M54 were measured on 2026-11-17.
 
 | # | Mutation | Test that fails |
 |---|---|---|
-| M1 | ``mcp_needs_confirmation`` returns ``False`` when hints are not a dict (fail open) | ``test_the_rule_table[no-hints]``, ``test_a_tool_with_no_hints_waits_for_the_card`` |
-| M2 | the rule reads ``readOnlyHint`` alone and ignores ``destructiveHint`` | ``test_the_rule_table[read-only-and-destructive]`` |
-| M3 | the rule takes a truthy hint (``bool(...)``) in place of ``is True`` | ``test_the_rule_table[decide-gets-a-string]`` |
+| M1 | ``mcp_needs_confirmation`` returns ``False`` when hints are not a dict (fail open) | ``test_the_rule_table[no-member-no-hints]``, ``test_a_tool_with_no_hints_is_refused_with_no_member`` |
+| M2 | the rule reads ``readOnlyHint`` alone and ignores ``destructiveHint`` | ``test_the_rule_table[no-member-read-only-and-destructive]`` |
+| M3 | the rule takes a truthy hint (``bool(...)``) in place of ``is True`` | ``test_the_rule_table[no-member-decide-gets-a-string]`` |
 | M4 | the gate runs the tool when the card answers False (deny ignored) | ``test_deny_returns_a_refusal_and_the_tool_never_runs`` |
 | M5 | ``request_confirmation`` answers True on a timeout | ``test_a_timeout_is_a_deny`` |
 | M6 | ``_card_refusal`` ignores ``member_present`` | ``test_a_run_with_no_member_refuses_and_shows_no_card`` |
 | M7 | the executor passes ``member_present=True`` always | ``test_a_run_with_no_member_refuses_end_to_end`` |
-| M8 | ``_card_refusal`` skips the WhatsApp check | ``test_a_whatsapp_run_refuses_and_parks_nothing`` |
+| M8 | ``_card_refusal`` skips the WhatsApp check | ``test_a_whatsapp_run_refuses_a_card_and_parks_nothing`` |
 | M9 | ``_sensitive_name`` returns False | ``test_the_card_redacts_sensitive_arguments`` |
 | M10 | the gate skips the card for the code ``gate_error`` | ``test_a_gate_fault_still_needs_the_card`` |
-| M11 | the ``tools/list`` record keeps no hints | ``test_a_read_only_tool_runs_with_no_card_end_to_end`` |
+| M11 | the ``tools/list`` record keeps no hints | ``test_a_run_with_no_member_runs_a_read_only_tool_end_to_end`` |
 | M12 | ``decide()`` checks the platform annotations before the MCP rule | ``test_an_mcp_tool_never_borrows_a_platform_tool_s_hints`` |
 | M13 | ``card_text`` cuts long arguments in place of a refusal | ``test_a_call_too_long_for_the_card_is_refused_and_never_runs`` |
 | M14 | a later ``tools/list`` may relax the hints of a tool | ``test_a_later_list_cannot_relax_a_tool_and_each_change_is_logged`` |
@@ -88,8 +104,8 @@ Rows M35 to M40 are fenced in ``tests/unit/test_mcp_always_confirm_r8.py``.
 |---|---|---|
 | M34 | the gate ignores the flag (it passes no ``mcp_always_confirm`` fact) | ``test_a_read_only_tool_of_an_always_confirm_server_waits_for_the_card``, ``test_a_read_only_tool_of_an_always_confirm_server_waits_end_to_end`` |
 | M35 | a missing key reads as true | ``test_the_registry_reads_the_key[missing]``, ``test_a_server_with_no_key_reads_false`` (R8) |
-| M36a | the route default of a new server is false | ``test_a_new_server_defaults_to_always_confirm`` (R8) |
-| M36b | the writer default of a new server is false | ``test_a_new_server_defaults_to_always_confirm`` (R8) |
+| M36a | the route default of a new server is true again (MCP-NC1 turned it to false) | ``test_a_new_server_defaults_to_no_always_confirm`` (R8) |
+| M36b | the writer default of a new server is true again (MCP-NC1 turned it to false) | ``test_a_new_server_defaults_to_no_always_confirm`` (R8) |
 | M37 | the PATCH skips the role check | ``test_a_member_without_manage_gets_403`` (R8), ``test_integrations_in0.py::test_a_member_without_manage_is_refused_before_the_handler`` |
 | M38 | the PATCH statement loses its org predicate | ``test_the_store_predicate_holds_on_a_session_that_bypasses_rls`` (R8) |
 | M39 | the register writes no audit event (review of #917) | ``test_a_register_writes_one_audit_event_and_no_secret`` (R8) |
@@ -111,6 +127,17 @@ R8 half is ``tests/unit/test_mcp_read_only_key_r8.py``.
 | M46 | the parse ignores always confirm or the OAuth row | ``test_the_registry_reads_the_read_only_key`` |
 | M47 | the injection drops the flag | ``test_the_injection_threads_the_read_only_key_from_the_row_to_the_server`` |
 | M48 | the attach does not mark the tool | ``test_the_attach_marks_each_tool_and_logs_the_read_only_key`` |
+
+**MCP-NC1, no card in a member's run** (item 33, acceptance A39).
+
+| # | Mutation | Test that fails |
+|---|---|---|
+| M49 | ``decide()`` ignores ``mcp_member_present``, so a member's write keeps ``mcp_confirm`` | ``test_the_rule_table[member-destructive]``, ``test_a_tool_that_can_change_data_runs_with_no_card_for_a_member``, ``test_a_destructive_tool_runs_with_no_card_for_a_member_end_to_end`` |
+| M50 | ``decide()`` takes a truthy member fact | ``test_only_a_real_true_counts_as_the_member`` |
+| M51 | ``decide()`` checks the member before always confirm | ``test_always_confirm_still_asks_in_a_member_run_in_decide``, ``test_a_destructive_tool_of_an_always_confirm_server_still_waits_for_the_card`` |
+| M52 | the gate leaves ``mcp_member_run`` out of the codes that run | ``test_a_tool_that_can_change_data_runs_with_no_card_for_a_member`` |
+| M53 | the gate passes the member fact for a function of no known server | ``test_a_function_of_no_known_server_waits_for_the_card`` |
+| M54 | the gate passes ``mcp_member_present=True`` in every run | ``test_a_run_with_no_member_refuses_and_shows_no_card`` |
 """
 from __future__ import annotations
 
@@ -227,37 +254,73 @@ def _gate(fn: Any, hints: dict[str, Any] | None, *, member: bool = True, **kw: A
     return _maf_mcp.McpPermissionGate(tools=[_server(fn, hints, **kw)], member_present=member)
 
 
-# ── A12: the rule ────────────────────────────────────────────────────────────
+# ── A12 and A39: the rule ────────────────────────────────────────────────────
+
+#: Each hint case of the rule, and True when the hints show a read.
+_HINT_CASES = [
+    ("no-hints", None, False),
+    ("empty", {}, False),
+    ("read-only", {"readOnlyHint": True}, True),
+    ("read-only-not-destructive", {"readOnlyHint": True, "destructiveHint": False}, True),
+    ("read-only-and-destructive", {"readOnlyHint": True, "destructiveHint": True}, False),
+    ("not-read-only", {"readOnlyHint": False}, False),
+    ("destructive", {"destructiveHint": True}, False),
+    ("only-not-destructive", {"destructiveHint": False}, False),
+    ("decide-gets-a-string", {"readOnlyHint": "true"}, False),
+    ("decide-gets-a-number", {"readOnlyHint": 1}, False),
+]
 
 
 @pytest.mark.parametrize(
-    ("hints", "code"),
-    [
-        (None, "mcp_confirm"),
-        ({}, "mcp_confirm"),
-        ({"readOnlyHint": True}, "mcp_read_only"),
-        ({"readOnlyHint": True, "destructiveHint": False}, "mcp_read_only"),
-        ({"readOnlyHint": True, "destructiveHint": True}, "mcp_confirm"),
-        ({"readOnlyHint": False}, "mcp_confirm"),
-        ({"destructiveHint": True}, "mcp_confirm"),
-        ({"destructiveHint": False}, "mcp_confirm"),
-        ({"readOnlyHint": "true"}, "mcp_confirm"),
-        ({"readOnlyHint": 1}, "mcp_confirm"),
-    ],
-    ids=["no-hints", "empty", "read-only", "read-only-not-destructive",
-         "read-only-and-destructive", "not-read-only", "destructive", "only-not-destructive",
-         "decide-gets-a-string", "decide-gets-a-number"],
+    ("hints", "member", "code"),
+    [pytest.param(hints, member,
+                  "mcp_read_only" if reads else ("mcp_member_run" if member else "mcp_confirm"),
+                  id=f"{'member' if member else 'no-member'}-{case}")
+     for case, hints, reads in _HINT_CASES for member in (False, True)],
 )
-def test_the_rule_table(hints, code) -> None:
-    approved, got, _ = permission_policy.decide(
-        {"tool_name": "srv_x", "mcp_tool": True, "mcp_annotations": hints})
+def test_the_rule_table(hints, member, code) -> None:
+    """A12 with no member, A39 with a member (MCP-NC1). With no member a tool
+    that does not say read-only gets ``mcp_confirm``, and the gate refuses
+    it. With a member it gets ``mcp_member_run``, and it runs with no card."""
+    request = {"tool_name": "srv_x", "mcp_tool": True, "mcp_annotations": hints}
+    if member:
+        request["mcp_member_present"] = True
+    approved, got, _ = permission_policy.decide(request)
     assert approved is True
     assert got == code
 
 
+@pytest.mark.parametrize("value", ["true", 1, "yes", None, False],
+                         ids=["string", "one", "yes", "missing", "false"])
+def test_only_a_real_true_counts_as_the_member(value) -> None:
+    """A39: the gate passes a bool. A fact of another type fails closed, so a
+    destructive tool keeps ``mcp_confirm``, and the gate refuses it."""
+    request = {"tool_name": "srv_x", "mcp_tool": True,
+               "mcp_annotations": {"destructiveHint": True}}
+    if value is not None:
+        request["mcp_member_present"] = value
+    assert permission_policy.decide(request)[1] == "mcp_confirm"
+
+
+def test_always_confirm_still_asks_in_a_member_run_in_decide() -> None:
+    """A39: the admin's switch wins over the member (H-300 holds)."""
+    _ok, code, _ = permission_policy.decide(
+        {"tool_name": "srv_x", "mcp_tool": True, "mcp_annotations": {"destructiveHint": True},
+         "mcp_always_confirm": True, "mcp_member_present": True})
+    assert code == permission_policy.MCP_ALWAYS_CONFIRM
+
+
+def test_an_untrusted_answer_still_asks_in_a_member_run_in_decide() -> None:
+    """A39: step 3a comes before the MCP rule, so it still asks the card."""
+    _ok, code, _ = permission_policy.decide(
+        {"tool_name": "srv_x", "mcp_tool": True, "mcp_annotations": {"destructiveHint": True},
+         "mcp_member_present": True, "after_untrusted_answer": True})
+    assert code == permission_policy.UNTRUSTED_ANSWER_CONFIRM
+
+
 def test_an_mcp_tool_never_borrows_a_platform_tool_s_hints() -> None:
     """``web_search`` is read-only in ``tool_annotations``. A server tool of the
-    same local name still needs the card."""
+    same local name is still refused in a run with no member."""
     _ok, code, _ = permission_policy.decide(
         {"tool_name": "web_search", "mcp_tool": True, "mcp_annotations": None})
     assert code == "mcp_confirm"
@@ -292,37 +355,42 @@ async def test_a_read_only_tool_runs_at_once_with_no_card() -> None:
     [{"readOnlyHint": False, "destructiveHint": True}, {"readOnlyHint": False}, None],
     ids=["destructive", "not-read-only", "no-hints"],
 )
-async def test_a_tool_that_can_change_data_waits_for_the_card(hints) -> None:
+async def test_a_tool_that_can_change_data_runs_with_no_card_for_a_member(hints) -> None:
+    """A39 (MCP-NC1): a member's run calls the tool at once. No card shows."""
     fn = _function()
     ran = _Ran()
     ctx = _ctx(fn)
-    with _card_channel() as queue:
-        task = asyncio.create_task(_gate(fn, hints).process(ctx, ran))
-        card = await _next_card(queue)
-        await asyncio.sleep(0.05)
-        assert ran.count == 0, "the tool ran before the member answered"
-        assert not task.done()
-        _answer(card["request_id"], "APPROVE")
-        await asyncio.wait_for(task, timeout=5)
-    assert ran.count == 1
+    with _card_channel() as queue, structlog.testing.capture_logs() as logs:
+        await _bounded(_gate(fn, hints).process(ctx, ran))
+    assert ran.count == 1, "a member's run did not call the tool"
+    assert queue.empty(), "a member's run showed a card"
+    assert ctx.result is None, ctx.result
+    decided = [e for e in logs if e["event"] == "permission.decision"]
+    assert [e["reason"] for e in decided] == ["mcp_member_run"]
+    assert decided[0]["tool"] == "srv_delete_record" and decided[0]["surface"] == "mcp_tool"
 
 
-async def test_a_tool_with_no_hints_waits_for_the_card() -> None:
-    """A server that sends no ``annotations`` at all (no ToolMeta)."""
+async def test_a_tool_with_no_hints_is_refused_with_no_member() -> None:
+    """A server that sends no ``annotations`` at all (no ToolMeta). A member's
+    run calls it with no card. A run with no member refuses it."""
     fn = _function()
-    gate = _maf_mcp.McpPermissionGate(
-        tools=[SimpleNamespace(name="srv", _functions=[fn])], member_present=True)
+    tools = [SimpleNamespace(name="srv", _functions=[fn])]
     ran = _Ran()
     with _card_channel() as queue:
-        task = asyncio.create_task(gate.process(_ctx(fn), ran))
-        card = await _next_card(queue)
-        assert ran.count == 0
-        _answer(card["request_id"], "REJECT")
-        await asyncio.wait_for(task, timeout=5)
-    assert ran.count == 0
+        await _bounded(_maf_mcp.McpPermissionGate(
+            tools=tools, member_present=True).process(_ctx(fn), ran))
+        assert ran.count == 1 and queue.empty()
+        ctx = _ctx(fn)
+        await _bounded(_maf_mcp.McpPermissionGate(
+            tools=tools, member_present=False).process(ctx, ran))
+    assert ran.count == 1, "a run with no member called a tool with no hints"
+    assert queue.empty()
+    assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
 
 
 async def test_a_function_of_no_known_server_waits_for_the_card() -> None:
+    """A39: the gate cannot read the "always confirm" of a server that it
+    cannot find, so the member fact stays false and the card shows."""
     fn = _function()
     ran = _Ran()
     with _card_channel() as queue:
@@ -365,6 +433,9 @@ async def test_a_policy_deny_still_blocks_before_any_card(monkeypatch) -> None:
 
 
 # ── A13: approve, deny, timeout ──────────────────────────────────────────────
+#
+# MCP-NC1: a member's run shows a card only for a server that is set to always
+# confirm (or after an untrusted answer). So these cards use such a server.
 
 
 async def test_deny_returns_a_refusal_and_the_tool_never_runs() -> None:
@@ -372,7 +443,8 @@ async def test_deny_returns_a_refusal_and_the_tool_never_runs() -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel() as queue:
-        task = asyncio.create_task(_gate(fn, {"destructiveHint": True}).process(ctx, ran))
+        task = asyncio.create_task(
+            _gate(fn, {"destructiveHint": True}, always_confirm=True).process(ctx, ran))
         card = await _next_card(queue)
         _answer(card["request_id"], "REJECT")
         await asyncio.wait_for(task, timeout=5)
@@ -389,7 +461,7 @@ async def test_a_timeout_is_a_deny(monkeypatch) -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel() as queue:
-        await asyncio.wait_for(_gate(fn, None).process(ctx, ran), timeout=5)
+        await asyncio.wait_for(_gate(fn, None, always_confirm=True).process(ctx, ran), timeout=5)
         events = []
         while not queue.empty():
             events.append(queue.get_nowait())
@@ -408,7 +480,7 @@ async def test_a_card_fault_is_a_deny(monkeypatch) -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel():
-        await _bounded(_gate(fn, None).process(ctx, ran))
+        await _bounded(_gate(fn, None, always_confirm=True).process(ctx, ran))
     assert ran.count == 0
     assert ctx.result == _maf_mcp.DENIED_TEXT.format(tool="srv_delete_record")
 
@@ -427,14 +499,26 @@ async def test_a_run_with_no_member_refuses_and_shows_no_card() -> None:
     assert [e for e in logs if e["event"] == "mcp.confirm" and e["outcome"] == "no_member"]
 
 
-async def test_a_member_with_no_card_channel_is_refused() -> None:
-    """A run with no event queue and no relay thread cannot show a card."""
+async def test_a_member_with_no_card_channel_is_refused_a_card() -> None:
+    """A run with no event queue and no relay thread cannot show a card. So a
+    tool of an always-confirm server is refused there."""
+    fn = _function()
+    ctx = _ctx(fn)
+    ran = _Ran()
+    await _bounded(_gate(fn, None, always_confirm=True).process(ctx, ran))
+    assert ran.count == 0
+    assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
+
+
+async def test_a_member_with_no_card_channel_runs_a_tool_that_needs_no_card() -> None:
+    """A39 (MCP-NC1): a member's run needs no card for the tool, so the run
+    calls it, also with no channel that can show a card."""
     fn = _function()
     ctx = _ctx(fn)
     ran = _Ran()
     await _bounded(_gate(fn, None).process(ctx, ran))
-    assert ran.count == 0
-    assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
+    assert ran.count == 1
+    assert ctx.result is None, ctx.result
 
 
 async def test_a_no_member_run_still_runs_a_read_only_tool() -> None:
@@ -457,13 +541,14 @@ def test_the_executor_passes_member_present_from_the_authority_and_the_batch() -
 
 
 @pytest.mark.parametrize("writes", [False, True], ids=["reads-only", "writes-on"])
-async def test_a_whatsapp_run_refuses_and_parks_nothing(writes) -> None:
+async def test_a_whatsapp_run_refuses_a_card_and_parks_nothing(writes) -> None:
+    """A tool that needs a card (here: an always-confirm server) is refused."""
     fn = _function()
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel() as queue, ask_tools.refuse_cards(), \
             wui.whatsapp_run("apis-config", writes=writes) as run:
-        await _bounded(_gate(fn, None).process(ctx, ran))
+        await _bounded(_gate(fn, None, always_confirm=True).process(ctx, ran))
     assert ran.count == 0 and queue.empty()
     assert run.parked is None, "an MCP call was parked for a WhatsApp Confirm"
     assert ctx.result == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
@@ -476,8 +561,26 @@ async def test_a_whatsapp_profile_with_no_refuse_scope_still_refuses() -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel() as queue, wui.whatsapp_run("apis-config", writes=True):
-        await _bounded(_gate(fn, None).process(ctx, ran))
+        await _bounded(_gate(fn, None, always_confirm=True).process(ctx, ran))
     assert ran.count == 0 and queue.empty()
+
+
+@pytest.mark.parametrize("member", [True, False], ids=["member", "no-member"])
+async def test_a_member_whatsapp_run_calls_a_write_with_no_card(member) -> None:
+    """A39 (MCP-NC1): a member's WhatsApp run calls the tool with no card,
+    and parks nothing. A WhatsApp run with no member still refuses it."""
+    fn = _function()
+    ctx = _ctx(fn)
+    ran = _Ran()
+    with _card_channel() as queue, ask_tools.refuse_cards(), \
+            wui.whatsapp_run("apis-config", writes=True) as run:
+        await _bounded(_gate(fn, {"destructiveHint": True}, member=member).process(ctx, ran))
+    assert queue.empty() and run.parked is None
+    if member:
+        assert ran.count == 1 and ctx.result is None
+    else:
+        assert ran.count == 0
+        assert ctx.result == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
 
 
 # ── A16: what the card shows ─────────────────────────────────────────────────
@@ -495,7 +598,8 @@ async def test_the_card_redacts_sensitive_arguments() -> None:
         "long": "x" * 600,
     }
     with _card_channel() as queue:
-        task = asyncio.create_task(_gate(fn, None).process(_ctx(fn, args), _Ran()))
+        task = asyncio.create_task(
+            _gate(fn, None, always_confirm=True).process(_ctx(fn, args), _Ran()))
         card = await _next_card(queue)
         _answer(card["request_id"], "REJECT")
         await asyncio.wait_for(task, timeout=5)
@@ -511,7 +615,8 @@ async def test_the_card_names_the_server_and_labels_its_description() -> None:
     fn = _function()
     with _card_channel() as queue:
         task = asyncio.create_task(
-            _gate(fn, {"destructiveHint": True}, name="crm-tools").process(_ctx(fn), _Ran()))
+            _gate(fn, {"destructiveHint": True}, name="crm-tools",
+                  always_confirm=True).process(_ctx(fn), _Ran()))
         card = await _next_card(queue)
         _answer(card["request_id"], "REJECT")
         await asyncio.wait_for(task, timeout=5)
@@ -544,7 +649,7 @@ async def test_a_call_too_long_for_the_card_is_refused_and_never_runs() -> None:
     ctx = _ctx(fn, {"sql": "SELECT " + "a" * 3000 + "; DELETE FROM customers"})
     ran = _Ran()
     with _card_channel() as queue:
-        await _bounded(_gate(fn, None).process(ctx, ran))
+        await _bounded(_gate(fn, None, always_confirm=True).process(ctx, ran))
     assert ran.count == 0 and queue.empty(), "a card hid part of the call"
     assert ctx.result == _maf_mcp.CARD_TOO_LONG_TEXT.format(tool="srv_delete_record")
 
@@ -557,7 +662,7 @@ async def test_a_call_nested_too_deep_is_refused_and_never_runs() -> None:
     ctx = _ctx(fn, deep)
     ran = _Ran()
     with _card_channel() as queue:
-        await _bounded(_gate(fn, None).process(ctx, ran))
+        await _bounded(_gate(fn, None, always_confirm=True).process(ctx, ran))
     assert ran.count == 0 and queue.empty()
     assert ctx.result == _maf_mcp.CARD_TOO_LONG_TEXT.format(tool="srv_delete_record")
 
@@ -594,7 +699,8 @@ def test_the_tools_list_record_keeps_hints_and_description() -> None:
 
 def test_a_later_list_cannot_relax_a_tool_and_each_change_is_logged() -> None:
     """Review of PR #888, P2: ``tools/list_changed`` reloads the list. A tool
-    that needed the card keeps its hints, and the change is logged."""
+    whose hints did not show a read keeps its hints, and the change is
+    logged. The hints still decide a run with no member (MCP-NC1)."""
     from mcp.types import ListToolsResult, Tool, ToolAnnotations
 
     def _page(**hints: bool) -> Any:
@@ -680,34 +786,43 @@ def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
 
 
 @pytest.mark.usefixtures("_a_tenant")
-def test_a_destructive_tool_waits_for_approval_end_to_end(monkeypatch):
+def test_a_destructive_tool_runs_with_no_card_for_a_member_end_to_end(monkeypatch):
+    """A39 (MCP-NC1): the real agent, the real ``run_agent_stream`` and a real
+    FastMCP server. ``delete_record`` says it is destructive, and a member's
+    run calls it with no card. The audit still has the hints of each tool
+    (``mcp.tool_annotations`` at the attach) and the code of the call
+    (``permission.decision``)."""
     with local_mcp_server() as srv:
         model = ScriptedModel([
             tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("done"),
         ])
         events, _built, seen, logs = _drive(
-            monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="APPROVE")
+            monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="REJECT")
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
-    assert len(seen["cards"]) == 1, "the destructive tool showed no card"
-    assert seen["calls_at_card"] == [], "the server ran the tool before the card"
-    assert srv.calls == ["delete:r-9"], "the approved tool did not run"
-    assert "Server: probe-srv" in seen["cards"][0]["detail"]
+    assert seen["cards"] == [], "a member's run showed a card for an MCP tool"
+    assert srv.calls == ["delete:r-9"], "a member's run did not call the tool"
     assert any("deleted:r-9" in r for r in _tool_results(model))
     hints = [e for e in logs if e["event"] == "mcp.tool_annotations"]
     by_tool = {e["tool"]: e for e in hints}
     assert by_tool["delete_record"]["server"] == "probe-srv"
     assert by_tool["delete_record"]["hints"] == {"readOnlyHint": False, "destructiveHint": True}
     assert by_tool["plain_note"]["hints"] is None
+    decided = [e for e in logs if e["event"] == "permission.decision"
+               and e.get("surface") == "mcp_tool"]
+    assert [(e["tool"], e["reason"]) for e in decided] == [
+        ("probe-srv_delete_record", "mcp_member_run")]
 
 
 @pytest.mark.usefixtures("_a_tenant")
 def test_a_denied_card_never_reaches_the_server_end_to_end(monkeypatch):
+    """A card shows only for a server that is set to always confirm."""
     with local_mcp_server() as srv:
         model = ScriptedModel([
             tool_turn("probe-srv_plain_note", '{"text": "hi"}'), text_turn("ok"),
         ])
         events, _built, seen, _logs = _drive(
-            monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="REJECT")
+            monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="REJECT",
+            always_confirm=True)
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
     assert len(seen["cards"]) == 1
     assert srv.calls == []
@@ -739,6 +854,18 @@ def test_a_run_with_no_member_refuses_end_to_end(monkeypatch):
     assert any("no member can confirm" in r for r in _tool_results(model))
 
 
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_run_with_no_member_runs_a_read_only_tool_end_to_end(monkeypatch):
+    """A12: with no member, the hints still decide. ``echo`` says it is
+    read-only, so it runs. A record that kept no hints would refuse it."""
+    with local_mcp_server() as srv:
+        model = ScriptedModel([tool_turn("probe-srv_echo", '{"text": "ping"}'), text_turn("ok")])
+        events, _built, seen, _logs = _drive(monkeypatch, srv, model, answer="REJECT")
+    assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
+    assert seen["cards"] == []
+    assert srv.calls == ["ping"], "a run with no member refused a read-only tool"
+
+
 def _a_session_member(monkeypatch: pytest.MonkeyPatch, email: str) -> None:
     """The REAL ``_integration_authorizer``, over an active member that the
     access read finds. Only the database read is replaced."""
@@ -759,12 +886,12 @@ def _a_session_member(monkeypatch: pytest.MonkeyPatch, email: str) -> None:
 
 
 @pytest.mark.usefixtures("_a_tenant")
-def test_a_session_member_with_no_body_claim_gets_the_card_end_to_end(monkeypatch):
+def test_a_session_member_with_no_body_claim_runs_the_tool_end_to_end(monkeypatch):
     """🔴 MCP-C1. The web chat route removes the body's ``user_email``
     (H-337) and passes the member as ``session_user``. The real access check
-    must find that member, so the card shows and an approved tool runs.
-    Before the fix, every web chat refused it with ``no_member`` (production,
-    2026-11-04)."""
+    must find that member, so the run counts as a member's run. MCP-NC1: the
+    tool then runs with no card. Before the MCP-C1 fix, every web chat refused
+    it with ``no_member`` (production, 2026-11-04)."""
     member = "sharat@c1.test"
     _a_session_member(monkeypatch, member)
     with local_mcp_server() as srv:
@@ -772,13 +899,13 @@ def test_a_session_member_with_no_body_claim_gets_the_card_end_to_end(monkeypatc
             tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("done"),
         ])
         events, _built, seen, logs = _drive(
-            monkeypatch, srv, model, answer="APPROVE", session_user=member)
+            monkeypatch, srv, model, answer="REJECT", session_user=member)
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
     refused = [e for e in logs if e["event"] == "mcp.confirm"
                and e.get("outcome") in ("no_member", "no_channel")]
-    assert refused == [], "a web chat member could not answer the card"
-    assert len(seen["cards"]) == 1, "the destructive tool showed no card"
-    assert srv.calls == ["delete:r-9"], "the approved tool did not run"
+    assert refused == [], "a web chat member counted as no member"
+    assert seen["cards"] == [], "a member's run showed a card"
+    assert srv.calls == ["delete:r-9"], "a member's run did not call the tool"
 
 
 # ── Hardening: review of PR #888 (three P2s and two nits) ────────────────────
@@ -802,14 +929,15 @@ def test_the_mcp_library_turns_a_string_hint_into_true() -> None:
 @pytest.mark.usefixtures("_a_tenant")
 def test_a_stream_that_shows_no_cards_refuses_end_to_end(monkeypatch):
     """The email chat (``email-chat:...``) forwards no CUSTOM event. Before
-    the fix its card waited 3600 s with no output. Now the run refuses."""
+    the fix its card waited 3600 s with no output. Now the run refuses. A
+    card shows only for an always-confirm server after MCP-NC1."""
     with local_mcp_server() as srv:
         model = ScriptedModel([
             tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("ok"),
         ])
         events, _built, seen, _logs = _drive(
             monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="APPROVE",
-            thread="email-chat:member@h299.test:s1", shows_cards=False)
+            thread="email-chat:member@h299.test:s1", shows_cards=False, always_confirm=True)
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
     assert seen["cards"] == [], "a stream that shows no cards emitted a card"
     assert srv.calls == []
@@ -1112,7 +1240,8 @@ def test_a_title_with_no_local_name_keeps_only_safe_characters() -> None:
 async def test_the_gate_puts_the_local_name_in_the_title() -> None:
     fn = _function()
     with _card_channel() as queue:
-        task = asyncio.create_task(_gate(fn, None).process(_ctx(fn), _Ran()))
+        task = asyncio.create_task(
+            _gate(fn, None, always_confirm=True).process(_ctx(fn), _Ran()))
         card = await _next_card(queue)
         _answer(card["request_id"], "REJECT")
         await asyncio.wait_for(task, timeout=5)
@@ -1127,9 +1256,9 @@ async def test_the_gate_puts_the_local_name_in_the_title() -> None:
 # registry row, EVERY tool of that server waits for the card, whatever its
 # hints say. The gate passes the flag to ``decide()`` as a fact, and
 # ``decide()`` answers ``mcp_always_confirm``, which is not ``mcp_read_only``.
-# A row with no key reads as false, so a server keeps its H-299 behaviour.
-# The R8 half (storage, the API, two orgs) is
-# ``tests/unit/test_mcp_always_confirm_r8.py``.
+# A row with no key reads as false. MCP-NC1: the switch is now the one way to
+# make a member's run ask a card, and a new server has it off. The R8 half
+# (storage, the API, two orgs) is ``tests/unit/test_mcp_always_confirm_r8.py``.
 
 _READ_ONLY = {"readOnlyHint": True, "destructiveHint": False}
 
@@ -1176,6 +1305,26 @@ async def test_a_read_only_tool_of_an_always_confirm_server_waits_for_the_card(a
     else:
         assert ran.count == 0
         assert ctx.result == _maf_mcp.DENIED_TEXT.format(tool="srv_echo")
+
+
+async def test_a_destructive_tool_of_an_always_confirm_server_still_waits_for_the_card() -> None:
+    """A39 (MCP-NC1): a member's run asks no card, but the admin's switch
+    still asks one for every tool. Approve runs it, and the card says why."""
+    fn = _function()
+    ran = _Ran()
+    gate = _maf_mcp.McpPermissionGate(
+        tools=[_server(fn, {"destructiveHint": True}, always_confirm=True)],
+        member_present=True)
+    with _card_channel() as queue:
+        task = asyncio.create_task(gate.process(_ctx(fn), ran))
+        card = await _next_card(queue)
+        await asyncio.sleep(0.05)
+        assert ran.count == 0, "always confirm did not stop a member's write"
+        _answer(card["request_id"], "APPROVE")
+        await asyncio.wait_for(task, timeout=5)
+    assert ran.count == 1
+    assert card["detail"].startswith(
+        "This server is set to always confirm. The server marks this tool as destructive.")
 
 
 @pytest.mark.parametrize("flag", [False, None], ids=["off", "missing"])
@@ -1226,6 +1375,10 @@ def test_the_card_says_why_it_shows_for_a_read_only_tool() -> None:
     _t, plain, _b = _maf_mcp.card_text("srv", "delete", {}, _maf_mcp.ToolMeta(
         hints={"destructiveHint": True}, description=""))
     assert plain.startswith("The server marks this tool as destructive.")
+    # MCP-NC1: a card for a read-only tool with no switch (an untrusted
+    # answer, step 3a) says read-only too, never "does not mark".
+    _t, read, _b = _maf_mcp.card_text("srv", "echo", {}, meta)
+    assert read.startswith("The server marks this tool as read-only.")
 
 
 def test_the_injection_threads_the_flag_from_the_row_to_the_server() -> None:
@@ -1355,8 +1508,10 @@ def test_a_tool_with_no_good_acts_as_value_reads_as_none(value) -> None:
 
 
 async def test_the_gate_card_of_an_oauth_server_names_the_admin() -> None:
+    """MCP-NC1: a card shows only for an always-confirm server, so the probe
+    server is set so."""
     fn = _function("notion_delete_page", "delete_page")
-    tool = _server(fn, {"destructiveHint": True}, name="notion")
+    tool = _server(fn, {"destructiveHint": True}, name="notion", always_confirm=True)
     tool.__dict__[_maf_mcp._ACTS_AS_KEY] = _ACTS
     gate = _maf_mcp.McpPermissionGate(tools=[tool], member_present=True)
     ran = _Ran()
@@ -1365,7 +1520,8 @@ async def test_the_gate_card_of_an_oauth_server_names_the_admin() -> None:
         card = await _next_card(queue)
         _answer(card["request_id"], "REJECT")
         await asyncio.wait_for(task, timeout=5)
-    assert card["detail"].startswith("The server marks this tool as destructive. "
+    assert card["detail"].startswith("This server is set to always confirm. "
+                                     "The server marks this tool as destructive. "
                                      "Acts as dana@fracktal.test at mcp.notion.com.")
     assert ran.count == 0
 
@@ -1411,7 +1567,8 @@ async def test_the_attach_keeps_the_admin_and_the_host_of_an_oauth_server(monkey
 # only, so the server refuses each write. The admin says so with the switch
 # ``provider_meta.read_only_key``, and then no tool of that server waits for
 # the card. ``decide()`` keeps the order: the untrusted answer (step 3a),
-# then always confirm, then the read-only key, then the hints.
+# then always confirm, then the read-only key, then the hints, then the
+# member (MCP-NC1). After MCP-NC1 the key changes only a run with no member.
 
 _DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
 
@@ -1478,20 +1635,18 @@ async def test_a_read_only_key_server_runs_a_destructive_tool_with_no_member() -
 
 
 @pytest.mark.parametrize("flag", [False, None], ids=["off", "missing"])
-async def test_with_the_read_only_key_off_a_destructive_tool_keeps_its_card(flag) -> None:
-    """A35: with the switch off, A12 to A14 hold."""
+async def test_with_the_read_only_key_off_a_destructive_tool_keeps_its_rule(flag) -> None:
+    """A35: with the switch off, A12 to A14 hold. MCP-NC1 (A39): a member's
+    run calls the tool with no card, and a run with no member refuses it."""
     fn = _function()
     ran = _Ran()
     gate = _maf_mcp.McpPermissionGate(
         tools=[_server(fn, _DESTRUCTIVE, read_only_key=flag)], member_present=True)
     with _card_channel() as queue:
-        task = asyncio.create_task(gate.process(_ctx(fn), ran))
-        card = await _next_card(queue)
-        assert ran.count == 0
-        _answer(card["request_id"], "REJECT")
-        await asyncio.wait_for(task, timeout=5)
-    assert ran.count == 0
+        await _bounded(gate.process(_ctx(fn), ran))
+    assert ran.count == 1 and queue.empty()
 
+    ran = _Ran()
     ctx = _ctx(fn)
     no_member = _maf_mcp.McpPermissionGate(
         tools=[_server(fn, _DESTRUCTIVE, read_only_key=flag)], member_present=False)

@@ -1975,10 +1975,11 @@ class McpServerRequest(BaseModel):
     agent_scope: list[str] = ["*"]
     enabled: bool = True
     #: H-300: every tool of the server needs the member's card, whatever its
-    #: hints say. A new server is set to always confirm unless the admin
-    #: says no.
+    #: hints say. MCP-NC1 (task 3603): a new server is off unless the admin
+    #: turns it on, so a member's run calls each tool with no card. A
+    #: register is a full register, so a body with no key turns it off.
     #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
-    always_confirm: StrictBool = True
+    always_confirm: StrictBool = False
     #: MCP-C2 (item 32): the admin says the key can only read, so no tool of
     #: the server waits for the card. Off for a new server. A register is a
     #: full register, so a body with no key turns it off. Strict too.

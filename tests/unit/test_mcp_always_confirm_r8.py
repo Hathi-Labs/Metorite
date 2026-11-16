@@ -9,7 +9,9 @@ connection registry. ``McpPermissionGate`` reads it (the gate half is in
 ``tests/unit/test_maf_mcp_confirm.py``). What this proves against a REAL
 Postgres, as the NON-privileged role of the phase-4 rehearsal, with two orgs:
 
-- **A31** a new server is set to always confirm, unless the POST says no;
+- **A31** a new server is NOT set to always confirm, unless the POST says
+  so (MCP-NC1, owner directive 2026-11-17, task 3603). The tests that
+  flip the switch post a server with it on;
 - **A32** a row with no key (written before H-300) and a row that the move
   of an old ``mcp_servers`` row wrote both read as false, so each keeps its
   H-299 behaviour;
@@ -105,28 +107,30 @@ async def _flag_of(org: str, name: str) -> bool:
     return server.always_confirm
 
 
-# ── A31: a new server is set to always confirm ──────────────────────────────
+# ── A31: a new server is not set to always confirm (MCP-NC1) ─────────────────
 
 
-async def test_a_new_server_defaults_to_always_confirm(ns, app_engine) -> None:  # noqa: F811
+async def test_a_new_server_defaults_to_no_always_confirm(ns, app_engine) -> None:  # noqa: F811
+    """MCP-NC1: a POST that names no switch stores it off, and a member's run
+    then calls each tool with no card. The admin can still turn it on."""
     _assert_non_priv(app_engine)
     user = _user(ADMIN_A, ns.org_a)
-    strict, loose = _name("new"), _name("off")
-    await _post(user, strict)
-    await _post(user, loose, always_confirm=False)
+    loose, strict = _name("new"), _name("on")
+    await _post(user, loose)
+    await _post(user, strict, always_confirm=True)
 
-    assert _meta(ns, ns.org_a, strict)["always_confirm"] is True
     assert _meta(ns, ns.org_a, loose)["always_confirm"] is False
-    assert (await _listed(user, strict))["always_confirm"] is True
+    assert _meta(ns, ns.org_a, strict)["always_confirm"] is True
     assert (await _listed(user, loose))["always_confirm"] is False
+    assert (await _listed(user, strict))["always_confirm"] is True
 
-    # The writer itself defaults to true, for a caller that names no value.
+    # The writer itself defaults to false, for a caller that names no value.
     from gateway.connections import mcp
 
     direct = _name("direct")
     await mcp.save(ns.org_a, name=direct, url="https://mcp.example.com/mcp",
                    headers={}, connected_by="r8")
-    assert _meta(ns, ns.org_a, direct)["always_confirm"] is True
+    assert _meta(ns, ns.org_a, direct)["always_confirm"] is False
 
 
 # ── A32: an older row reads as false ────────────────────────────────────────
@@ -165,7 +169,7 @@ async def test_a_legacy_row_moves_with_the_switch_off(ns) -> None:  # noqa: F811
 async def test_the_patch_flips_the_switch_keeps_the_headers_and_audits(ns, audit) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("flip")
-    await _post(user, name)
+    await _post(user, name, always_confirm=True)
     audit.clear()
 
     res = await _call(user, "PATCH", f"/integrations/mcp/{name}", {"always_confirm": False})
@@ -197,7 +201,7 @@ async def test_the_patch_flips_the_switch_keeps_the_headers_and_audits(ns, audit
 async def test_the_patch_flips_a_disabled_server_too(ns) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("disabled")
-    await _post(user, name, enabled=False)
+    await _post(user, name, enabled=False, always_confirm=True)
     res = await _call(user, "PATCH", f"/integrations/mcp/{name}", {"always_confirm": False})
     assert res.status_code == 200, res.text
     assert _registry(ns, ns.org_a)[name]["status"] == "disconnected"
@@ -208,7 +212,7 @@ async def test_a_member_without_manage_gets_403(ns, audit) -> None:  # noqa: F81
     from acb_auth import UserContext, UserRole, build_access
 
     name = _name("perm")
-    await _post(_user(ADMIN_A, ns.org_a), name)
+    await _post(_user(ADMIN_A, ns.org_a), name, always_confirm=True)
     audit.clear()
     for perms in (["feature:integrations"], ["feature:integrations", "admin:members:read"]):
         member = UserContext(email="plain@h300-r8.test", role=UserRole.EMPLOYEE,
@@ -222,8 +226,8 @@ async def test_a_member_without_manage_gets_403(ns, audit) -> None:  # noqa: F81
 
 async def test_org_b_cannot_flip_org_a_server(ns, audit) -> None:  # noqa: F811
     name_a, name_b = _name("a"), _name("b")
-    await _post(_user(ADMIN_A, ns.org_a), name_a)
-    await _post(_user(ADMIN_B, ns.org_b), name_b)
+    await _post(_user(ADMIN_A, ns.org_a), name_a, always_confirm=True)
+    await _post(_user(ADMIN_B, ns.org_b), name_b, always_confirm=True)
     audit.clear()
 
     res = await _call(_user(ADMIN_B, ns.org_b), "PATCH", f"/integrations/mcp/{name_a}",
@@ -246,7 +250,7 @@ async def test_a_register_writes_one_audit_event_and_no_secret(ns, audit) -> Non
     whole), so the register is audited as the PATCH is (review of #917)."""
     user = _user(ADMIN_A, ns.org_a)
     name = _name("repost")
-    await _post(user, name)
+    await _post(user, name, always_confirm=True)
     assert len(audit) == 1
     first = audit[0]
     assert first.action == "integration.mcp.registered" and first.target == f"mcp:{name}"
@@ -288,8 +292,8 @@ async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> N
     from tests.unit._tenant_ladder import tenant_engine_scope
 
     shared = _name("shared")
-    await _post(_user(ADMIN_A, ns.org_a), shared)
-    await _post(_user(ADMIN_B, ns.org_b), shared)
+    await _post(_user(ADMIN_A, ns.org_a), shared, always_confirm=True)
+    await _post(_user(ADMIN_B, ns.org_b), shared, always_confirm=True)
     admin_dsn = ns.admin_engine.url.render_as_string(hide_password=False)
     async with tenant_engine_scope(admin_dsn):
         changed = await mcp.set_always_confirm(ns.org_a, shared, False)
@@ -302,7 +306,7 @@ async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> N
 async def test_the_patch_refuses_a_body_with_no_flag(ns) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("body")
-    await _post(user, name)
+    await _post(user, name, always_confirm=True)
     for body in ({}, {"always_confirm": "maybe"}):
         res = await _call(user, "PATCH", f"/integrations/mcp/{name}", body)
         assert res.status_code == 422, (body, res.text)
@@ -317,7 +321,7 @@ async def test_the_reads_return_the_flag_and_no_header_value(ns, caplog) -> None
     name = _name("read")
     bodies: list[str] = []
     with structlog.testing.capture_logs() as logs:
-        await _post(user, name)
+        await _post(user, name, always_confirm=True)
         res = await _call(user, "PATCH", f"/integrations/mcp/{name}", {"always_confirm": False})
         bodies.append(res.text)
         listed = await _call(user, "GET", "/integrations/mcp")
@@ -342,8 +346,8 @@ async def test_a_run_carries_the_flag_of_each_server(ns, monkeypatch) -> None:  
     install_offline(monkeypatch)
     user = _user(ADMIN_A, ns.org_a)
     strict, loose = _name("strict"), _name("loose")
-    await _post(user, strict)
-    await _post(user, loose, always_confirm=False)
+    await _post(user, strict, always_confirm=True)
+    await _post(user, loose)
     token = bind_tenant(ns.org_a)
     try:
         agent = await _inject(ns.org_a)

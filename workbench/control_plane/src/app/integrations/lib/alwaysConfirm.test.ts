@@ -1,12 +1,14 @@
 // H-300: the "always confirm" switch of an MCP server, in the console.
 //
 // With the switch on, every tool of the server waits for a member's card,
-// whatever hints the server sends. A new server starts with it on. The panel
-// reads it from the row's `detail.always_confirm` and sends a PATCH.
+// whatever hints the server sends. MCP-NC1 (owner directive 2026-11-17, task
+// 3603): a new server starts with it OFF, and then a member's chat runs each
+// tool with no card. The panel reads it from the row's `detail.always_confirm`
+// and sends a PATCH.
 //
 // MCP-C2 (agent_architecture.md §12.2 WS-8c item 32, A38): the second switch,
-// "This key can only read". With it on, no tool of the server waits for a
-// card. The two are never both on: a tick of one clears the other, and the
+// "This key can only read". With it on, a run that no member starts uses each
+// tool too. The two are never both on: a tick of one clears the other, and the
 // console sends both keys in one PATCH. The BFF passes on only the keys that
 // it got, and refuses a value that is not a boolean.
 import { createElement, type ReactElement } from "react";
@@ -93,35 +95,39 @@ function tick(tree: unknown, type: unknown, next: boolean) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the switch in the Add form", () => {
-  it("starts ON for a new server", () => {
-    expect(EMPTY_MCP_FORM.alwaysConfirm).toBe(true);
+  it("starts OFF for a new server (MCP-NC1)", () => {
+    expect(EMPTY_MCP_FORM.alwaysConfirm).toBe(false);
   });
 
-  it("sends always_confirm, on by default and off when the admin turns it off", () => {
+  it("sends always_confirm, off by default and on when the admin turns it on", () => {
     const base = { ...EMPTY_MCP_FORM, name: "n", url: "https://x" };
-    expect(mcpBody(base).always_confirm).toBe(true);
-    expect(mcpBody({ ...base, alwaysConfirm: false }).always_confirm).toBe(false);
+    expect(mcpBody(base).always_confirm).toBe(false);
+    expect(mcpBody({ ...base, alwaysConfirm: true }).always_confirm).toBe(true);
     // A real boolean, never a string: the gateway takes a strict bool.
     expect(typeof mcpBody(base).always_confirm).toBe("boolean");
   });
 
-  it("draws one labelled, checked toggle with the help line", () => {
+  it("draws one labelled, unchecked toggle with the help line", () => {
     const html = renderToStaticMarkup(
       createElement(McpFormFields, { form: EMPTY_MCP_FORM, onChange: noop }),
     );
     expect(html).toContain(ALWAYS_CONFIRM_LABEL);
     expect(ALWAYS_CONFIRM_LABEL).toBe("Always ask before any tool runs");
+    expect(ALWAYS_CONFIRM_HELP).toBe(
+      "With this off, the chat runs each tool of this server without asking. " +
+        "With this on, every tool of this server waits for a member to approve it.",
+    );
     expect(html).toContain(ALWAYS_CONFIRM_HELP);
-    expect(html).toMatch(/type="checkbox"[^>]*checked=""|checked=""[^>]*type="checkbox"/);
+    expect(html).not.toMatch(/checked=""/);
     // The shared Checkbox draws it, never a raw platform control.
     expect(html).toContain("cc-checkbox");
   });
 
-  it("draws the toggle unchecked when the admin turned it off", () => {
+  it("draws the toggle checked when the admin turned it on", () => {
     const html = renderToStaticMarkup(
-      createElement(McpFormFields, { form: { ...EMPTY_MCP_FORM, alwaysConfirm: false }, onChange: noop }),
+      createElement(McpFormFields, { form: { ...EMPTY_MCP_FORM, alwaysConfirm: true }, onChange: noop }),
     );
-    expect(html).not.toMatch(/checked=""/);
+    expect(html).toMatch(/type="checkbox"[^>]*checked=""|checked=""[^>]*type="checkbox"/);
   });
 });
 
@@ -138,7 +144,7 @@ describe("the read-only key in the Add form (MCP-C2)", () => {
   it("draws a second labelled tick with the help line of the spec", () => {
     expect(READ_ONLY_KEY_LABEL).toBe("This key can only read");
     expect(READ_ONLY_KEY_HELP).toBe(
-      "Every tool of this server runs without asking. " +
+      "Runs that no member starts, such as scheduled runs, can then use every tool of this server. " +
         "Turn this on only when the key cannot change data at the source.",
     );
     const html = renderToStaticMarkup(
@@ -200,9 +206,10 @@ describe("one tick clears the other", () => {
       "New chats will ask before any tool runs.",
     );
     expect(switchesSavedText({ always_confirm: false, read_only_key: true })).toBe(
-      "New chats will run every tool of this server without asking.",
+      "New chats, and runs that no member starts, will run every tool of this server without asking.",
     );
-    expect(switchesSavedText(off)).toBe("New chats will ask only before tools that can change data.");
+    // MCP-NC1: with both switches off, a member's chat asks before no tool.
+    expect(switchesSavedText(off)).toBe("New chats will run every tool of this server without asking.");
   });
 });
 

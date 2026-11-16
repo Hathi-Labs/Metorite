@@ -5730,8 +5730,8 @@ async def _assemble_batch_agents(
     _log_agent_tools_resolved(agent_name, agents, own_tools)
     # WS-47 WAC-P3: the org's MCP servers, exactly as the stream path adds
     # them. H-236: an MCP server reaches outside, so a no_egress run gets
-    # none. H-299: a tool that can change data waits for a member's card,
-    # and a run that cannot show one refuses it (`_maf_mcp`).
+    # none. MCP-NC1: a member's run calls a tool that can change data with
+    # no card, and a run with no member refuses it (`_maf_mcp`).
     for _a in agents if mcp is not None and not no_egress else []:
         await _inject_mcp_servers(
             _a, agent_name,
@@ -7515,9 +7515,10 @@ async def run_agent_stream(
             # no_egress run gets none. WS-8c: the org is the gateway's
             # server-side stamp (never the payload), a native agent's servers
             # pass the run's grant check, and the finally closes them.
-            # H-299: an MCP tool that can change data waits for a member's
-            # card. A run with no member (no authority) or a batch run has
-            # nobody to answer it, so such a tool is refused there.
+            # MCP-NC1 (amends H-299): in a member's run, an MCP tool that can
+            # change data runs with no card. A run with no member (no
+            # authority) or a batch run has nobody behind it, so such a tool
+            # is refused there.
             for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(
                     _a, agent_name,

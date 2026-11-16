@@ -295,9 +295,9 @@ export const CONNECT_LABEL: Record<"connect" | "reconnect", string> = {
 
 /**
  * The words of the Connect dialog, before the consent (§3.6.9). They say
- * that every member's agents use the connection as this admin, and that a
- * read-only tool runs with no card. `admin` is the member who clicks, who is
- * the admin the connection will act as.
+ * that every member's agents use the connection as this admin, and that each
+ * tool runs with no card unless the server is set to always confirm (MCP-NC1).
+ * `admin` is the member who clicks, who is the admin the connection will act as.
  */
 export function connectDialogCopy(
   row: Pick<Connection, "acts_as" | "detail" | "label">,
@@ -329,10 +329,10 @@ export function connectDialogCopy(
       `The agents of every member in your organization use it as ${who}.${change}`,
     note: alwaysConfirm
       ? "This server is set to always confirm, so each tool waits for a member to approve it. " +
-        "If you turn that switch off, a tool that the server marks as read-only runs with no approval."
+        "If you turn that switch off, each tool runs with no approval."
       : keyStops +
-        "A tool that the server marks as read-only runs with no approval. So every member can " +
-        `read, through an agent, what ${who} can read at ${host}.`,
+        "Each tool runs with no approval. So every member can read and change, through an agent, " +
+        `what ${who} can read and change at ${host}.`,
     confirmLabel: "Open the sign-in",
   };
 }
@@ -497,10 +497,11 @@ export function mcpName(row: Connection): string | null {
 
 // ── The "always confirm" switch of an MCP server (H-300) ──────────────────
 //
-// A server says which of its tools only read, and a hostile server can lie.
 // With the switch on, every tool of the server waits for a member to approve
-// it. The gateway sends it as `detail.always_confirm`, "true" or "false". A
-// row with no key reads as off, which is what the gateway reads too.
+// it. With it off, a member's chat runs each tool with no card (MCP-NC1, owner
+// directive 2026-11-17). It is off for a new server. The gateway sends it as
+// `detail.always_confirm`, "true" or "false". A row with no key reads as off,
+// which is what the gateway reads too.
 
 export const ALWAYS_CONFIRM_LABEL = "Always ask before any tool runs";
 /** CSY-7: what the Description field tells the admin. The chat reads the text. */
@@ -515,7 +516,7 @@ export function mcpDescription(row: Connection): string {
 }
 
 export const ALWAYS_CONFIRM_HELP =
-  "A server says which of its tools only read data. Metorite does not trust that claim. " +
+  "With this off, the chat runs each tool of this server without asking. " +
   "With this on, every tool of this server waits for a member to approve it.";
 
 /** The switch of an MCP row. `null` on a row that is not an MCP server. */
@@ -528,14 +529,16 @@ export function mcpAlwaysConfirm(row: Connection): boolean | null {
 //
 // The admin says that the key of the server can only read, so the server
 // refuses each write at the source. With the switch on, no tool of the
-// server waits for a member to approve it. The gateway sends it as
+// server waits for a member to approve it. After MCP-NC1 a member's chat asks
+// for no tool anyway, so the switch changes only a run that no member starts:
+// that run then uses each tool. The gateway sends it as
 // `detail.read_only_key`, "true" or "false", and a row with no key reads as
 // off. The two switches are never both on: a tick of one clears the other,
 // and the console sends both keys in one PATCH.
 
 export const READ_ONLY_KEY_LABEL = "This key can only read";
 export const READ_ONLY_KEY_HELP =
-  "Every tool of this server runs without asking. " +
+  "Runs that no member starts, such as scheduled runs, can then use every tool of this server. " +
   "Turn this on only when the key cannot change data at the source.";
 /** The extra line under the tick on a row that acts as an admin through OAuth. */
 export const READ_ONLY_KEY_OAUTH_NOTE =
@@ -585,8 +588,11 @@ export function tickSwitch(current: McpSwitches, which: McpSwitch, next: boolean
  */
 export function switchesSavedText(s: McpSwitches): string {
   if (s.always_confirm) return "New chats will ask before any tool runs.";
-  if (s.read_only_key) return "New chats will run every tool of this server without asking.";
-  return "New chats will ask only before tools that can change data.";
+  // MCP-NC1: with the switch off, a member's chat asks before no tool.
+  if (s.read_only_key) {
+    return "New chats, and runs that no member starts, will run every tool of this server without asking.";
+  }
+  return "New chats will run every tool of this server without asking.";
 }
 
 /**
@@ -643,7 +649,7 @@ export interface McpForm {
   /** Write-only. It goes out in the POST and is never drawn again. */
   headerValue: string;
   agentScope: string;
-  /** H-300. ON for a new server. */
+  /** H-300. OFF for a new server (MCP-NC1, owner directive 2026-11-17). */
   alwaysConfirm: boolean;
   /** MCP-C2. OFF for a new server. Never on with `alwaysConfirm`. */
   readOnlyKey: boolean;
@@ -657,7 +663,7 @@ export const EMPTY_MCP_FORM: McpForm = {
   headerName: "",
   headerValue: "",
   agentScope: "*",
-  alwaysConfirm: true,
+  alwaysConfirm: false,
   readOnlyKey: false,
 };
 
