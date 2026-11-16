@@ -51,9 +51,18 @@ describe("the session row strip", () => {
     expect(ROW).not.toMatch(/group-hover:invisible|group-focus-within:invisible/);
   });
   it("holds every act as a direct Button of the one strip", () => {
-    for (const name of ["Pencil", "Archive", "ArchiveRestore", "Trash2"]) {
+    for (const name of ["Pencil", "Archive", "ArchiveRestore", "Trash2", "Pin", "PinOff"]) {
       expect(STRIP).toContain(`icon="${name}"`);
     }
     expect(STRIP).not.toMatch(/absolute/);
+  });
+  it("keeps the strip for a row that can only pin (a guest of a room has no archive)", () => {
+    // `data-has-actions` is what folds the dot and the age away on hover. A row whose only
+    // act is Pin must count it, or the strip hides and Pin never shows (CO-11, task 3510).
+    const has = /const hasActions = ([^;]*);/.exec(ROW)?.[1] ?? "";
+    expect(has).toMatch(/\bonPin\b/);
+    expect(has).toMatch(/\bonArchive\b/);
+    expect(has).toMatch(/isOwner !== false/);
+    expect(STRIP_CLASS).toMatch(/\$\{hasActions \? "" : "hidden"\}/);
   });
 });
