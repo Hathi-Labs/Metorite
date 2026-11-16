@@ -103,6 +103,8 @@ interface MarkdownMessageProps {
   isThinkingActive?: boolean;
   /** CS-1: the message is the placeholder that Send put in the thread (see `ChatMessage.firstLine`). */
   firstLine?: boolean;
+  /** CS-3b: the fixed words of the server's phase (see `ChatMessage.phaseWord`). */
+  phaseWord?: string;
   /** Sequential reasoning blocks — each its own timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3b, message-id-native). When
@@ -728,6 +730,7 @@ export default function MarkdownMessage({
   progressNotice,
   isThinkingActive,
   firstLine,
+  phaseWord,
   reasoningBlocks,
   segments,
   onChoice,
@@ -792,6 +795,7 @@ export default function MarkdownMessage({
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
             firstLine={firstLine}
+            phaseWord={phaseWord}
             answerStarted={!!content?.trim() || (segments ?? []).some((s) => s.text.trim().length > 0)}
             evidenceFor={evidenceFor}
             notice={progressNotice}

@@ -430,37 +430,69 @@ uv run python -m evals.one_assistant_measure.run --live --arms pack   --tier-map
    tier that went out) and `served` (the model the Router names). The
    results header lists `tier_map` and `served_models`. Read `served_models`
    first. If the operator rebinds `tier-fast`, only that field shows what ran.
-5. A call is priced by its `served` model, else by the target tier. The
-   cost is the vendor `usage.cost` when the call has one. Otherwise the
-   `flash` card in `rate_card.json` prices it, and the peak factor applies.
+5. The card of the `served` model prices a call, mapped or not (rule 1 of
+   the spend rules). The cost is the vendor `usage.cost` when the call has one.
+   Otherwise the card of the served model in `rate_card.json` prices it. The
+   peak factor applies to a DeepSeek model and to an unknown model.
 6. `--merge` refuses a chunk whose rows are not named by its own map. It also
    refuses one arm name that two maps share. A mapped and an unmapped chunk
    merge as two separate arms. The merged file lists `tier_maps`.
 
 ### Spend rules (after the drain of 2026-10-30)
 
-A live run goes through the production Router, on the one DeepSeek account.
-On 2026-10-30 the account ran out of funds, and production chat failed for
-about 50 minutes. The harness total had read USD 4.62, and the Router had
-billed USD 12.70 for the eval member. Three rules now bind each run.
+A live run goes through the production Router.
+On 2026-10-30 the DeepSeek account ran out of funds.
+Production chat then failed for about 50 minutes.
+The harness total had read USD 4.62. The Router had billed USD 12.70 for the eval member.
+Four rules now bind each run.
 
 1. **Count every call, and count the unknown at the worst case.**
-   - The wire tap now covers the System-1 client. Before, each turn that asked
-     the turn kind sent one request that no tap saw.
+   - The count covers every call that reaches the Router. The wire tap covers
+     each agent that a factory builds (`run.tap_every_agent`), the
+     specialists, the worker and the System-1 client.
+   - The card of the model that SERVED the call prices it (`card` on the
+     call). The tier does not set the price, because the Router can bind a
+     tier to another model. On 2026-11-15 the Router served Claude, the old
+     card priced DeepSeek, and the count read USD 0.328 against a bill of
+     USD 0.4889 (TS-7a-cap).
+   - A model that the card does not hold, or no served name, gets the most
+     expensive rate of the card (`spend.worst_card`). It never gets the
+     cheapest rate.
    - A call with no usage frame counts from the size of its request
      (`cost_source` `estimate`), and not as USD 0.
-   - A send that reached the Router and that no tap saw counts at a worst case
-     of 20k input tokens and 4k output tokens (`unseen_usd` on the row).
-   - A call that starts in a peak band counts double (`peak` on the call).
+   - A send that no tap saw still counts, at the worst case (`unseen_usd` on
+     the row). The worst case is 20k input tokens and 4k output tokens, at the
+     most expensive rate.
+   - A DeepSeek call counts double when it starts in a band of peak hours
+     (`peak` on the call).
    - A refused call (status 4xx or 5xx) counts nothing.
 
-   The counted total is a safe upper bound, not an exact bill. Compare it with
-   the `usage_event` rows of the eval member after each run.
-2. **The budget stops the run at once.** `--budget-usd` counts the earlier
-   chunks too (`--spent-before` and `--spent-before-from`). The runner checks it
-   before each chat and before each turn after the first. A chat that crosses
-   the cap ends there, and the file says `stopped`.
-3. **Do not run in a peak band.** DeepSeek charges double in two bands.
+   The counted total is a safe upper bound, not an exact bill. When the card
+   prices every call, the count is at or above the bill, and at most 2 times it.
+2. **The budget stops the run at once.** The budget is `--budget-usd`, and
+   it counts the earlier chunks too (`--spent-before`, `--spent-before-from`).
+   The runner checks the budget before each chat and before each turn.
+   Inside a turn, the runner checks it before each model send, with the
+   count of the turn so far (`run.cap_sends`).
+   A send past the cap gets a local answer with status 402. The Router
+   never sees it.
+   The row says `capped`, the console says `CAPPED`, and the file says `stopped`.
+   No check scores a capped turn. The pass rate and the stop results leave it
+   out, and the report lists it on its own line. Its spend stays in the count.
+   A served model that the card does not hold stops the run after its turn.
+   The stop line names the model. Add the model to `rate_card.json`, then run again.
+   The card takes a dated alias such as `claude-sonnet-5-5-20261101` as its model.
+3. **Check the bill by hand after each run.** The harness does not read
+   `usage_event`. The results file holds `started_utc` and `member`. The
+   last line of the run names both, and the counted total of the run:
+
+   ```text
+   check usage_event for member@example.com since 2026-11-15 04:23:00 UTC: expected about USD 0.4889. ...
+   ```
+
+   Sum the `usage_event` rows of that member since that time. When the bill is
+   above the count, stop and repair the card before the next run.
+4. **Do not run in a peak band.** DeepSeek charges double in two bands.
    They run from 01:00 to 04:00 and from 06:00 to 10:00 UTC, Monday to Friday
    (<https://api-docs.deepseek.com/quick_start/pricing/>). The bands are
    `spend.PEAK_BANDS_UTC`. `--live` refuses to start in a band and prints the
@@ -503,9 +535,12 @@ A re-score runs only the checks that read the stored answer and tasks. Each
 other check keeps its stored value, because a results file keeps no tool
 arguments, cards or gateway calls. Each change goes in `rescored`.
 
-The cost of a streamed call is the vendor's `usage.cost`. A buffered call
-has no such field, so `rate_card.json` prices it. The card reproduces each
-probe of 2026-10-25 within 1 percent.
+The vendor's `usage.cost` gives the cost of a streamed call.
+A buffered call has no such field. The card of its served model in
+`rate_card.json` prices it.
+The `deepseek-v4-pro` card reproduces each probe of 2026-10-25 within 1 percent.
+The two Claude cards reproduce the bill of the pilot of 2026-11-15
+(`tests/unit/test_eval_spend_count.py`).
 
 ## Exit codes
 

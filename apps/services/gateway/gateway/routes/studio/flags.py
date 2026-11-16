@@ -16,6 +16,11 @@ one reader.
 ``STUDIO_LOGIC_ORGS`` (B4a) has the same grammar and the same default. It
 opens the logic module of the action door: a ``logic:<name>`` action runs a
 first-party module. :func:`logic_allowed` is its one reader.
+
+``STUDIO_CHAT_TOOLS_ORGS`` (TOF-1a) has the same grammar and the same
+default. It opens the catalog source ``tool``: one ``tool:<name>`` row for
+each chat tool of the CRM, Email, Projects and Calendar packs.
+:func:`chat_tools_allowed` is its one reader.
 """
 
 from __future__ import annotations
@@ -63,6 +68,16 @@ def logic_allowed(organization_id: str | None) -> bool:
     if not organization_id:
         return False
     listed = _parse_orgs(str(getattr(get_settings(), "studio_logic_orgs", "") or ""))
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def chat_tools_allowed(organization_id: str | None) -> bool:
+    """True when ``STUDIO_CHAT_TOOLS_ORGS`` holds the org, or holds ``*``
+    (TOF-1a). Default OFF. The one reader of the setting. The org comes from
+    the session, never from request input (R5)."""
+    if not organization_id:
+        return False
+    listed = _parse_orgs(str(getattr(get_settings(), "studio_chat_tools_orgs", "") or ""))
     return "*" in listed or str(organization_id).strip().lower() in listed
 
 
