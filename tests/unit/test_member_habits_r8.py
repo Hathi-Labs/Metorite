@@ -13,6 +13,7 @@ b. Two acts give no habit. A rule act never makes one.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -73,15 +74,15 @@ def _seed(world: Any, org: str, member: str, act: str, n: int, *, via: str = "ap
                 "(CAST(:o AS uuid), :m, 'email', :a, :v, 'email', :i, :mb, "
                 "CAST(:f AS jsonb), :t, now() - make_interval(days => :d))"),
                 {"o": org, "m": member, "a": act, "v": via, "i": uuid.uuid4().hex,
-                 "mb": mailbox, "f": '{"sender_domain": "%s"}' % domain,
+                 "mb": mailbox, "f": json.dumps({"sender_domain": domain}),
                  "t": targets or [], "d": age})
 
 
 def _habit(world: Any, org: str, member: str = ANA, item: dict[str, Any] = ITEM) -> Any:
     async def go() -> Any:
-        async with tenant_engine_scope(world.p.app_url.render_as_string(hide_password=False)):
-            async with tenant_session(org) as db:
-                return await mh.member_habits(db, org=org, member=member, item=item)
+        dsn = world.p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(dsn), tenant_session(org) as db:
+            return await mh.member_habits(db, org=org, member=member, item=item)
     return asyncio.run(go())
 
 
