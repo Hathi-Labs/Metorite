@@ -555,7 +555,10 @@ control. Nothing in S3 is dark behind it.
    (`stream_relay.latest_step`). It reads the tail of the run's own stream,
    one XREVRANGE with COUNT 12, and adds no key.
    - ⚠️ **The step comes only from a tool NAME or a fixed label.** A tool
-     start gives its name in words, and an MCP name loses its server prefix.
+     start gives its name in words. An MCP tool start shows
+     "<server label>: <tool in words>" from the server's stamp
+     (`chat_connected_systems.md` §3.8). The stamp holds a name and a label,
+     and never an argument. Other names lose their prefix.
      A text delta gives "Writing a reply", and a thinking delta gives
      "Thinking". The text of a progress update, a result or an argument is
      never a step. A Copilot partial result with no tool id becomes a

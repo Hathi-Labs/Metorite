@@ -482,6 +482,43 @@ function phrase(verb: Verb, status: StepStatus, object: string): string {
   return object ? `${v} ${object}` : v;
 }
 
+/** The longest server label in a step (CSY-10). The server caps it the same. */
+export const SERVER_LABEL_CAP = 24;
+
+/** A label as one short line: no control character, no angle bracket. */
+function cleanLabel(raw: string): string {
+  const flat = raw
+    .replace(/<[^>]*>/g, " ")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f<>]/g, " ")
+    // Bidi marks and zero-width characters must not hide or reorder a label.
+    .replace(/[​-‏‪-‮⁠-⁤﻿]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > SERVER_LABEL_CAP ? `${flat.slice(0, SERVER_LABEL_CAP - 1).trimEnd()}…` : flat;
+}
+
+/**
+ * The step of an MCP tool: "<server label>: <tool in words>" (CSY-10,
+ * `chat_connected_systems.md` §3.8). The label is the registry row's label and
+ * the words come from the tool NAME. The arguments and the result are never
+ * read. Null when the tool names no server, or the name does not start with it.
+ */
+export function mcpStepLabel(
+  event: Pick<ToolEvent, "name" | "mcp">,
+): string | null {
+  const mcp = event.mcp;
+  if (!mcp || typeof mcp.label !== "string" || typeof mcp.server !== "string") return null;
+  const label = cleanLabel(mcp.label);
+  if (!label) return null;
+  // The wire name is exactly `<server>_<tool>`: no change of case, dash or
+  // lead. The browser trusts the server's stamp and never guesses a server.
+  const key = mcp.server;
+  if (!key || !event.name.startsWith(`${key}_`)) return null;
+  const words = event.name.slice(key.length + 1).split(/[_.:\s-]+/).filter(Boolean).join(" ");
+  return words ? `${label}: ${words}` : null;
+}
+
 /**
  * One step, in words. Pure: the same event always gives the same line.
  *
@@ -490,11 +527,15 @@ function phrase(verb: Verb, status: StepStatus, object: string): string {
  * name, then a regex guess at the kind, and last "Used <name>".
  */
 export function describeToolStep(
-  event: Pick<ToolEvent, "name" | "args" | "status" | "subAgentName" | "result">,
+  event: Pick<ToolEvent, "name" | "args" | "status" | "subAgentName" | "result" | "mcp">,
 ): ToolStep {
   const status = statusOf(event);
   const bare = bareToolName(event.name);
   const args = event.args ?? {};
+
+  // ── A tool of a connected MCP server (CSY-10) ─────────────────────────────
+  const mcpLabel = mcpStepLabel(event);
+  if (mcpLabel !== null) return { kind: "other", status, label: mcpLabel };
 
   // ── A profile tool that changed nothing (WS-63 PZ-32) ─────────────────────
   // The result is "done" on the wire, so the name alone would read "Saved to
