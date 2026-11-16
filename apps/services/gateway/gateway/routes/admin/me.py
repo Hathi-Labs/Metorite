@@ -28,6 +28,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from gateway.module_runs import module_runs_allowed
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
+from gateway.routes.studio.flags import skill_offer_allowed, studio_allowed
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -545,7 +546,7 @@ _SET_BY_MODE = {
 #: Fields of the ANSWER that are facts of the server, not of the layout. A
 #: tab on an older bundle spreads the whole answer back into its save, so the
 #: PUT drops these before it validates, and never stores them.
-READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide", "module_runs")
+READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide", "module_runs", "skill_offer")
 
 
 def _server_stamp() -> str:
@@ -602,14 +603,17 @@ def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
     ``guide`` is true when ``GUIDE_ORGS`` holds it (WS-OB GD-5a).
     ``module_runs`` is true when ``MODULE_RUN_ORGS`` holds it (WS-STU
     STU-Q15a), and `/studio` shows the Module Studio tab only then. The org
-    comes from the session, never from the request (R5). Neither is a fact of
-    the layout, so ``ShellPrefs`` refuses each in a body."""
+    comes from the session, never from the request (R5). ``skill_offer`` is
+    true when ``STUDIO_SKILL_OFFER_ORGS`` and ``STUDIO_ORGS`` both hold the org
+    (WS-TOF TOF-1d), and the chat draws the skill offer only then. None of
+    the three is a fact of the layout, so ``ShellPrefs`` refuses each in a body."""
     org = getattr(user, "organization_id", None)
     bound = str(org) if org else None
     return {
         **layout,
         "guide": guide_allowed(bound),
         "module_runs": module_runs_allowed(bound),
+        "skill_offer": studio_allowed(bound) and skill_offer_allowed(bound),
     }
 
 
@@ -781,7 +785,7 @@ async def put_my_shell(
     mode = "layout"
     keep: tuple[str, ...] = ()
     if body is not None:
-        # An old tab sends back the answer it read, ``guide`` and ``module_runs`` included.
+        # An old tab sends back the answer it read, ``guide``, ``module_runs`` and ``skill_offer`` included.
         body = {k: v for k, v in body.items() if k not in READ_ONLY_ANSWER_KEYS}
         # The hello route is the ONLY writer of ``buddy_hello_at`` (BUD-1).
         # A client PUT never claims it, so it never blocks the hello.
