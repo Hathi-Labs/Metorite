@@ -39,7 +39,10 @@ card with another act never reads, uses or removes it (:func:`act_of`).
 the act as SPENT on its offer key, and removes its grant (:func:`note_approved`).
 So a stale twin card of the same act, parked earlier, never acts on a late
 approve after the act ran. A decline, a REJECT and the park race drop the offer
-(:func:`drop_offer`).
+(:func:`drop_offer`). The mark is ONE ``SET … GET``, so of two approves at the
+same moment one only takes the act. It lives as long as a row
+(:func:`spent_ttl_s`). The stored-call yes of RESUME-2a takes the act with
+:func:`claim_act`, which fails closed.
 
 **The cards that take a grant.** A plain confirmation card only: no rows, no
 reply form and no held send id (the gate checks these). The card is not cut:
@@ -134,15 +137,23 @@ def late_approve_on(org: object = None) -> bool:
 
 def spent_ttl_s() -> int:
     """How long the SPENT mark of an act stays: at least :data:`GRANT_TTL_S`,
-    and longer than the park window, so a twin card that was open at the
-    approve and parks later records no offer."""
+    longer than the park window, and as long as the life of a row
+    (``chat_ask_ttl_hours``, 168 h by default).
+
+    So a twin card that was open at the approve and parks later records no
+    offer, and the stored call of a twin row that still waits never finds the
+    mark gone (RESUME-2a review, P1-A). The cost: when the member repeats an
+    identical act in the same thread within that life, its late approve shows
+    one more card. That is the safe side."""
     try:
         from acb_common import get_settings
 
-        park = int(getattr(get_settings(), "chat_ask_park_seconds", 600) or 600)
+        settings = get_settings()
+        park = int(getattr(settings, "chat_ask_park_seconds", 600) or 600)
+        hours = int(getattr(settings, "chat_ask_ttl_hours", 168) or 168)
     except Exception:
-        park = 600
-    return max(GRANT_TTL_S, park + 300)
+        park, hours = 600, 168
+    return max(GRANT_TTL_S, park + 300, max(1, hours) * 3600)
 
 
 # ── The pure parts ───────────────────────────────────────────────────────────
@@ -374,13 +385,19 @@ async def _call(coro: Any) -> Any:
     return await asyncio.wait_for(coro, _OP_TIMEOUT_S)
 
 
-async def _spend(redis: Any, member: str, thread: str, digest: str) -> None:
-    """Mark the act *digest* as run: no offer of it, and no grant."""
+async def _spend(redis: Any, member: str, thread: str, digest: str) -> bool:
+    """Mark the act *digest* as run: no offer of it, and no grant. True when
+    the act was SPENT already.
+
+    ONE ``SET … GET`` writes the mark and gives back the old value (Redis
+    6.2 or later). So of two writers at the same moment, exactly one reads a
+    value that is not SPENT (RESUME-2a review, P1-A)."""
     from acb_common.tenant_redis import key
 
-    await _call(redis.set(key(OFFER_NAMESPACE, member, thread, digest), _SPENT,
-                          ex=spent_ttl_s()))
+    old = await _call(redis.set(key(OFFER_NAMESPACE, member, thread, digest), _SPENT,
+                                ex=spent_ttl_s(), get=True))
     await _call(redis.delete(key(GRANT_NAMESPACE, member, thread, digest)))
+    return _is_spent(old)
 
 
 # ── Step 1: the offer (the run, at the park) ─────────────────────────────────
@@ -562,13 +579,46 @@ async def take_grant(card: Any) -> bool:
             if grant["keys"] != act.keys or grant["text"] != act.text:
                 _log.info("late_approve.grant_not_this_card", request_id=_short(grant["rid"]))
                 return False
-            await _spend(redis, member, thread, act.digest)
+            if await _spend(redis, member, thread, act.digest):
+                # The act ran at the same moment (the stored call of a twin
+                # row, RESUME-2a). The card shows, so it never writes twice.
+                _log.info("late_approve.grant_act_spent", request_id=_short(grant["rid"]))
+                return False
     except Exception as exc:
         _log.warning("late_approve.use_failed", error_type=type(exc).__name__)
         return False
     _log.info("late_approve.grant_used", request_id=_short(grant["rid"]),
               thread_id=_short(thread))
     return True
+
+
+async def claim_act(card: Any) -> bool:
+    """True when THIS call takes the act of *card*: it marks the act SPENT,
+    and the act was not SPENT before (RESUME-2a). The stored-call yes
+    (``stored_call.resume_answer``) is the one caller. It writes only on True.
+
+    The mark and the test are ONE ``SET … GET`` (:func:`_spend`). So the
+    stored calls of two twin rows that the member approves at the same moment
+    take the act once, and a twin row that waits longer than the mark finds
+    it still there (:func:`spent_ttl_s`). It fails CLOSED: a run with no scope
+    (the flag off, no verified member or no thread), a card with no act, and a
+    fault each give False, and the card shows. Never raises."""
+    try:
+        scope = _run_scope()
+        if scope is None:
+            return False
+        org, member, thread = scope
+        act = act_of(card, _run_agent())
+        if act is None:
+            return False
+        from acb_common.tenant_redis import organization_scope
+
+        with organization_scope(org):
+            spent = await _spend(_redis(), member, thread, act.digest)
+    except Exception as exc:
+        _log.warning("late_approve.claim_act_failed", error_type=type(exc).__name__)
+        return False
+    return not spent
 
 
 async def note_approved(card: Any) -> None:
@@ -601,6 +651,7 @@ __all__ = [
     "Act",
     "act_of",
     "card_text_of",
+    "claim_act",
     "digest_of",
     "drop_offer",
     "grant_from_offer",

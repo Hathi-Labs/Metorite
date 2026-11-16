@@ -54,12 +54,20 @@ that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 `CHAT_RESUME_ORGS` turns on the stored call of a card
 (`chat_run_continuity.md` §4.12.4 item 1, RESUME-1a). For each listed org, the
 row of a plain confirmation card of a listed write keeps the call that the
-card guards. No route reads it yet. `*` lists every org, and the default is
-empty. A flip stays OWNER-GATE (`enforcement-flip`).
+card guards. RESUME-2a: a late Approve of such a card then runs that call
+once, in a new reply, with no member turn. `*` lists every org, and the
+default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
+
+⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
+a late Approve takes the path of before. The late-approve scope holds the
+SPENT mark that stops the stored call of a twin card from writing twice. No
+client reads the answer `resumed` before RESUME-3, so do not add an org to
+`CHAT_RESUME_ORGS` before RESUME-3 merges.
 
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
-it at each card, and the injection asks it at the start of each run. So a
-reload applies to the next card, and the call id applies from the next run.
+it at each card, and the injection asks it at the start of each run. The late
+answer route asks it at each late Approve. So a reload applies to the next
+card and the next Approve, and the call id applies from the next run.
 
 `CHAT_RUN_PHASE_ORGS` turns on the phase of a streamed run
 (`chat_failure_modes.md` §6 row CS-3, CS-3a). For each listed org, a
