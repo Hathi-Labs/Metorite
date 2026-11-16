@@ -57,9 +57,12 @@ text is the text of KR-ZERO.
 **The past chats** (WS-FIND HRD-21, ``find_engine.md`` §3.1 rung 6). Each
 call sends the run's own chat thread as ``current_chat`` (:func:`_current_chat`),
 so the route never shows the chat that asks. A past chat prints like a record:
-its title, "Your chat", the date of its last message and the link that opens
+its title, "Your chat", the date of its last change and the link that opens
 it. With ``FIND_ORGS`` on it carries "[past chat]". Both docstrings keep their
-list of keys, so the schema that every org reads does not change.
+list of keys, so the schema that every org reads does not change. A run with
+no chat (a batch run, whose thread the executor made) and a run that is not
+solo send no thread, so their search shows no past chat. Above a past chat, the dated answer does not say
+"No record holds all of the words", because the chat can hold them.
 """
 
 from __future__ import annotations
@@ -103,8 +106,9 @@ WHEN_WORDS: dict[str, str] = {
     "artifacts": "updated",
     "whatsapp": "sent",
     "knowledge": "updated",
-    # HRD-21: a past chat's one date is its last message.
-    "chat": "last message",
+    # HRD-21: a past chat's one date is its last change (`chat_session.updated_at`).
+    # A new row moves it, and so does a rename, so it is not the last message.
+    "chat": "updated",
 }
 
 _SPACE = re.compile(r"\s+")
@@ -166,12 +170,27 @@ def _current_chat() -> str | None:
     the model. The route uses it only to leave the current chat out of the
     member's past chats (D-FIND-5). With none, the route shows no past chat.
     An id longer than :data:`CURRENT_CHAT_MAX` is not sent, so it can never
-    reach the route cut, and the route shows no past chat then too."""
+    reach the route cut, and the route shows no past chat then too.
+
+    A run with no chat gets a thread that the executor makes
+    (``<agent>:<run id>``), and its bound context says ``batch_thread``
+    (H-227). That thread names no chat, so the tool sends nothing for it, and
+    a batch run shows no past chat. A context that cannot be read sends
+    nothing too.
+
+    Only a solo run sends its thread (``executor.run_is_solo``). A room, and
+    a room of one that other members can read (visibility ``org`` or
+    ``people``), send nothing, so a member's past chats never print into a
+    chat that another person can open."""
     try:
-        from orchestrator.executor import resolve_relay_thread_id
+        from orchestrator.executor import resolve_relay_thread_id, run_is_solo
+
+        from acb_skills.write_artifact import artifact_context
     except ImportError:
         return None
     try:
+        if not run_is_solo() or (artifact_context() or {}).get("batch_thread") is True:
+            return None
         thread = str(resolve_relay_thread_id() or "").strip()
     except Exception:
         return None
@@ -743,7 +762,11 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
             lines.append(line)
             opening += 1
     elif dated and _broadened_line(data):
-        lines.append(_broadened_line(data))
+        # HRD-21: the records hold no hit with every word, but a past chat can.
+        # So the claim of KR-ZERO does not print above a past chat. With no
+        # past chat, the line is the line of KR-ZERO, byte for byte.
+        claim = not any(isinstance(h, dict) and h.get("app") == "chat" for h in hits or [])
+        lines.append(_broadened_line(data, BROADENED_OPENING if claim else EACH_WORD_OPENING))
         opening += 1
     for hit in hits or []:
         if isinstance(hit, dict):

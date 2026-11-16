@@ -466,14 +466,37 @@ CHAT_HIT = {"app": "chat", "kind": "chat", "id": "s-1", "title": "Snowflake orde
 
 
 def test_a_past_chat_prints_its_date_and_its_bracket() -> None:
+    """The date is ``chat_session.updated_at``. A rename moves it too
+    (``routes/chat.py``), so the word is "updated", never "last message"."""
     plain = cst._hit_lines(CHAT_HIT)
-    assert plain[0] == ("- «Snowflake order» (Your chat, last message 2026-11-12) "
+    assert plain[0] == ("- «Snowflake order» (Your chat, updated 2026-11-12) "
                         "/chat?do=open-chat&fill.session=s-1")
     dated = cst._hit_lines({**CHAT_HIT, "matched_by": "chat", "covers": 2, "of": 2},
                            dated=True)
-    assert dated[0] == ("- «Snowflake order» (Your chat, last message 2026-11-12) "
+    assert dated[0] == ("- «Snowflake order» (Your chat, updated 2026-11-12) "
                         "/chat?do=open-chat&fill.session=s-1 [past chat · 2 of 2 words]")
     assert dated[1] == '  full_id: chat:s-1  "the Snowflake printer"'
+    assert "message" not in cst.WHEN_WORDS["chat"]
+
+
+def test_no_claim_prints_above_a_past_chat_with_find_off(
+        w, chats, recency, find_on, chat_orgs) -> None:  # noqa: F811
+    """``CONTEXT_RECENCY`` on and ``FIND_ORGS`` off (KR-ZERO). The records
+    hold nothing, so the route asks each word alone, and a past chat holds
+    both words. "No record holds all of the words" would be false above it."""
+    recency(True)
+    find_on("")
+    chat_orgs(ORG)
+    answer = _route(f"{MARKER} Quasar", member(*ALL, "chat"), current_chat=HERE)
+    assert answer["broadened"] and [h["app"] for h in answer["hits"]] == ["chat"]
+    lines = cst.format_answer(answer, dated=True).splitlines()
+    assert cst.NO_RECORD_HOLDS_ALL not in "\n".join(lines)
+    assert lines[1] == f"{cst.EACH_WORD_OPENING} {MARKER} (0), Quasar (0)."
+    # Non-vacuity: with the chat dark, the line of KR-ZERO keeps its claim.
+    chat_orgs("")
+    dark = cst.format_answer(_route(f"{MARKER} Quasar", member(*ALL, "chat"),
+                                    current_chat=HERE), dated=True)
+    assert dark.splitlines()[1] == f"{cst.BROADENED_OPENING} {MARKER} (0), Quasar (0)."
 
 
 def test_the_tool_sends_the_runs_own_thread(monkeypatch) -> None:
@@ -494,7 +517,36 @@ def test_the_tool_sends_the_runs_own_thread(monkeypatch) -> None:
     assert "current_chat" not in sent[-1], "no thread sends the request of before"
 
 
-def test_the_thread_comes_from_the_run(monkeypatch) -> None:
+@pytest.fixture()
+def solo():
+    """The run on this frame is the member's own solo run, as the run
+    boundary binds it (``executor._bind_solo_room``)."""
+    from orchestrator import executor
+
+    token = executor._bind_solo_room(True)
+    yield
+    executor._release_solo_room(token)
+
+
+def test_only_a_solo_run_sends_its_thread(monkeypatch) -> None:
+    """A room, and a room of one that other members can read, bind
+    ``solo_room=False``. The tool sends no thread there, so the route asks no
+    past chat, and none prints into a chat that another person can open."""
+    from orchestrator import executor
+
+    monkeypatch.setattr(executor, "resolve_relay_thread_id", lambda: "t-run")
+    assert executor.run_is_solo() is False, "a frame with no run is not solo"
+    assert cst._current_chat() is None
+    for value, sent in ((False, None), (True, "t-run")):
+        token = executor._bind_solo_room(value)
+        try:
+            assert executor.run_is_solo() is value
+            assert cst._current_chat() == sent
+        finally:
+            executor._release_solo_room(token)
+
+
+def test_the_thread_comes_from_the_run(monkeypatch, solo) -> None:
     from orchestrator import executor
 
     monkeypatch.setattr(executor, "resolve_relay_thread_id", lambda: " t-run ")
@@ -511,6 +563,22 @@ def test_the_thread_comes_from_the_run(monkeypatch) -> None:
     monkeypatch.setattr(executor, "resolve_relay_thread_id", _boom)
     assert cst._current_chat() is None
     assert cst.CURRENT_CHAT_MAX == company.CURRENT_CHAT_MAX == chat_search.CURRENT_MAX
+
+
+def test_a_batch_run_sends_no_thread(monkeypatch, solo) -> None:
+    """A run with no chat gets a thread that the executor makes
+    (``<agent>:<run id>``), with ``batch_thread`` bound (H-227). It names no
+    chat, so the tool sends nothing, and the route asks no past chat."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+    from orchestrator import executor
+
+    monkeypatch.setattr(executor, "resolve_relay_thread_id", lambda: "orchestrator:run-1")
+    with artifact_context_scope():
+        bind_artifact_context(session_id="orchestrator:run-1", batch_thread=True)
+        assert cst._current_chat() is None
+    with artifact_context_scope():
+        bind_artifact_context(session_id="t-chat", batch_thread=False)
+        assert cst._current_chat() == "orchestrator:run-1"
 
 
 def test_the_schema_every_org_reads_names_no_past_chats() -> None:

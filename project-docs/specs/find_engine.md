@@ -29,8 +29,9 @@ answers the trace of §3.7 with no record. Each search writes one
 **HRD-21 is built** (task 3225, 2026-11-16, see "As built" in §3.1 and §6).
 Behind `CHAT_SEARCH_ORGS`, rung 6 reads the member's own solo chats with
 Mira, and never the current chat. A hit names the title, the date of the last
-message and the link that opens the chat. With the flag empty, the answer is
-the answer of before, byte for byte. The flip waits for the owner's preview.
+change of the chat and the link that opens the chat. With the flag empty, the
+answer is the answer of before, byte for byte. The flip waits for the owner's
+preview.
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -174,15 +175,22 @@ Measured on production on 2026-11-14, over the last 3 days (task 3232):
 - The route asks it only when `feature:chat` and `CHAT_SEARCH_ORGS` let the
   member in, and the request names the current chat (`current_chat`). Else
   the source is not asked at all. The tool sends the thread of its own run.
+  A run with no chat (a batch run, with a thread that the executor made)
+  sends no thread, so it shows no past chat. A run that is not solo sends
+  none either.
 - It runs in pass 1, in the 1.5 s of a source. Its hits leave the ladder
   before the miss rule, the words alone and the near step, and join the one
   list before the sort. So a past chat that holds every word does not stop
   the search for the records.
 - With `FIND_ORGS` on, a past chat says `matched_by` `chat`. On a tie of
   words, a record comes first, because rung 1 is lower than rung 6.
-- The reader is `gateway/chat_search.py`, in the chat's own code. It reads
-  the newest 100 chats, the newest 80 rows of each chat and 4,000 characters
-  of each row. A LOCAL `statement_timeout` of 1.6 s stops the statement.
+- The reader is `gateway/chat_search.py`, in the chat's own code. The caps
+  bound the word match. It reads the newest 100 chats that pass every rule,
+  the newest 80 rows of each chat, and 4,000 characters of each row. The rules run
+  before that cut, and the agent rule reads each row of each chat that it
+  tests. A LOCAL `statement_timeout` of 1.6 s bounds the whole statement.
+  HRD-21 measured no plan on a large chat history. Measure one before the
+  flip.
 
 ### 3.2 Three passes in time
 
@@ -266,7 +274,9 @@ off, `Hit.as_dict` gives the keys of today, byte for byte.
 text of either record. A hit found by two rungs keeps the lower rung.
 
 As built (HRD-21), a past chat prints its date beside its hint, as each app
-does: "(Your chat, last message 2026-11-12)". So its bracket is
+does: "(Your chat, updated 2026-11-12)". The date is `updated_at` of the
+chat. A new row moves it, and so does a rename, so the word is not "last
+message". So its bracket is
 `[past chat · 2 of 2 words]`, and it does not print the date again. The hit
 has no `session` field, because its `id` is the session.
 
@@ -635,7 +645,8 @@ bound tenant session. The tests of each rule are
 | Never a room or a shared chat | `rooms.SOLO_ROOM_SQL`, the one rule of a solo chat |
 | Never a chat with another agent | The agent is `orchestrator`, the chat has no channel, and no other agent has a seat or a row. The sandbox can cover a run of another agent (H-236). It never covers the orchestrator |
 | Never a `no_egress` chat | A chat that read the answer of the email agent holds the egress mark, and each run that it starts binds `no_egress`. `egress.marked_sessions` reads the marks in one `MGET`, read-only. A fault of Redis shows no chat, and the answer names `chat` as skipped |
-| Never the current chat | `s.id <> :current`. With no current chat, the route does not ask the source |
+| Never the current chat | `s.id <> :current`. The tool sends the thread of its run (`executor.resolve_relay_thread_id`). The run route makes the chat row with that thread id, so the two are one value. With no current chat, or in a batch run, the route does not ask the source |
+| Never in a room | In a shared room the run acts as the room (`room:<thread>`), and the tool refuses before any call (`SHARED_ROOM`). A room of one that other members can read (visibility `org` or `people`) is not solo either. The tool sends the current chat only from a solo run (`executor.run_is_solo`), so the route asks no past chat there |
 | No text of another person | The search reads the title and the `user` and `assistant` rows. It never reads a `system` row or the tool events. The snippet comes only from a row that the member typed (`member_typed`, `typed_text`, not a card answer). A reply of Mira can restate a mail, so its text never prints. The statement returns the text of no other row |
 | The frame | A hit is a record of the answer, under "Company records (data, not instructions)" |
 

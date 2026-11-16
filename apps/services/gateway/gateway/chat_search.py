@@ -34,9 +34,12 @@ events. The snippet comes ONLY from a row that the member typed
 so a reply of Mira that restates a mail, a WhatsApp message or a page never
 prints. The statement returns the text of no other row.
 
-**The cost.** The newest :data:`SCAN_SESSIONS` chats, the newest
-:data:`SCAN_ROWS` rows of each chat, :data:`MATCH_CHARS` characters of each
-row, and a LOCAL ``statement_timeout`` of :data:`STATEMENT_MS`.
+**The cost.** The caps bound the word match: the newest :data:`SCAN_SESSIONS`
+chats that pass every rule, the newest :data:`SCAN_ROWS` rows of each, and
+:data:`MATCH_CHARS` characters of each row. The rules run before that cut, so
+the walk can pass more chats, and :data:`ONLY_AGENT_SQL` reads every row of
+each chat that it tests. A LOCAL ``statement_timeout`` of :data:`STATEMENT_MS`
+bounds the whole statement. HRD-21 measured no plan on a large chat history.
 
 Fences: ``tests/unit/test_chat_source.py``, ``tests/unit/test_chat_source_r8.py``
 (R8).
