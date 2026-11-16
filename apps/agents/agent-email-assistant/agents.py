@@ -2815,6 +2815,55 @@ def _held_reply_form(form: dict[str, Any], prep: dict[str, Any]) -> None:
             form["notices"].append(_REPLY_NEW_UNTICKED_NOTICE)
         else:
             form["note"] = f"{_REPLY_NEW_UNTICKED_NOTICE} {form['note']}".strip()
+    # Task 3601: the warning goes FIRST, so the four-notice cut never drops it.
+    warning = _unticked_warning(form)
+    if warning:
+        form["notices"].insert(0, warning)
+        if len(form["notices"]) > 4:
+            spill = form["notices"].pop()
+            form["note"] = f"{spill} {form['note']}".strip()
+
+
+def _named_in(body: str, address: str) -> bool:
+    """True when *body* names the person of *address* (task 3601).
+
+    The test is the local part, split at ``. _ - +`` and digits. A part of
+    three letters or more that stands as a whole word in the body counts, so
+    ``vinay@d3.example`` is named by "Srishty, Gaurav and Vinay". A person
+    with a one-word address is the only case that it can catch, and a miss
+    only leaves out the extra sentence, never the unticked box.
+    """
+    text = (body or "").casefold()
+    local = address.split("@", 1)[0].casefold()
+    for part in re.split(r"[._+\-0-9]+", local):
+        if len(part) >= 3 and re.search(rf"\b{re.escape(part)}\b", text):
+            return True
+    return False
+
+
+def _unticked_warning(form: dict[str, Any]) -> str:
+    """The warning of a held reply card that leaves a person unticked (3601).
+
+    Owner decision, 2026-11-16, on the Vinay case of session a8296fc6: the
+    unknown address stays UNTICKED, and the card says so loudly. It names
+    each address that will not get the reply, and it says when the draft
+    names that person. No tick changes. Empty when everyone is ticked.
+    """
+    shown = (form.get("recipients") or {}).get("reply_all" if form.get("reply_all")
+                                               else "reply") or {}
+    on = {a.strip().lower() for key in ("to", "cc", "bcc")
+          for a in ((form.get("ticked") or {}).get(
+              "reply_all" if form.get("reply_all") else "reply") or {}).get(key) or []}
+    gone = [a for key in ("to", "cc", "bcc") for a in shown.get(key) or []
+            if a.strip().lower() not in on]
+    if not gone:
+        return ""
+    named = [a for a in gone if _named_in(str(form.get("body") or ""), a)]
+    text = f"Not ticked, so no copy goes to: {', '.join(gone)}."
+    if named:
+        text += (f" Your draft names {', '.join(named)}. "
+                 "Tick the box to send them a copy.")
+    return text
 
 
 def _reply_title(form: dict[str, Any], reply_all: bool) -> str:
