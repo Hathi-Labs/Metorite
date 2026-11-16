@@ -25,6 +25,9 @@ the answer of KR-ZERO, byte for byte.
   :func:`typed_alone`, :func:`shown_texts` and the result of
   :func:`named_itself`. While :data:`ABSENCE_CLAIMS` is off (the default),
   it proves nothing, so no line says that a record does not exist.
+* The past chats (HRD-21, §3.1 rung 6): :func:`chat_search_named` is the one
+  reader of ``CHAT_SEARCH_ORGS``, :data:`CHAT_KEY` names the source and its
+  rung, and :func:`first_rung` stamps its hits ``chat``.
 """
 
 from __future__ import annotations
@@ -649,8 +652,15 @@ _WORSE: dict[str, int] = {o: i for i, o in enumerate(
     ("closed", "skipped", "empty", "ok", "refused", "timed_out", "failed"))}
 #: The rungs of the trace whose sources run, in the order of §3.1.
 TRACE_RUNGS: tuple[str, ...] = ("exact", "word", "near", "related")
-#: The source key of rung 6 in the trace. No source has the key yet (HRD-21).
+#: The key of the past chats (HRD-21, rung 6): the source key, the rung of
+#: :data:`RUNGS` and the rung of the trace. The source runs in pass 1 only.
 CHAT_KEY = "chat"
+
+
+def first_rung(key: str) -> str:
+    """The ``matched_by`` of a pass-1 hit of source *key*: ``chat`` for the
+    past chats (rung 6, HRD-21), and ``exact`` for every other source. Pure."""
+    return CHAT_KEY if key == CHAT_KEY else "exact"
 #: The codes of a "Where else" line (§3.6), in the order of its list: an app
 #: that was skipped, the past chats, and an app that is not open to the member.
 WHERE_ELSE: tuple[str, ...] = ("skipped", "past_chats", "not_open")
@@ -663,16 +673,17 @@ TRACE_SPELLINGS = 3
 
 
 def chat_search_named(organization_id: str | None) -> bool:
-    """True when ``CHAT_SEARCH_ORGS`` holds the org, or holds ``*``.
+    """True when ``CHAT_SEARCH_ORGS`` holds the org, or holds ``*``. Default
+    OFF (HRD-21, ``find_engine.md`` §6 and §8).
 
-    The setting may not exist yet (HRD-21 adds it), so an absent setting reads
-    as empty. Only the "Where else" line and the trace read it: with the org
-    named, they say nothing about past chats. HRD-21 owns the flag and its
-    source, and its reader should replace this one.
+    The one reader of the setting. The ``chat`` source reads it as its gate,
+    before any read, and the trace reads it for ``flags_off``. The org comes
+    from the session, never from request input (R5). A reload applies a change
+    (``docs/flag_reload.md``).
     """
     if not organization_id:
         return False
-    raw = str(getattr(get_settings(), "chat_search_orgs", "") or "")
+    raw = str(get_settings().chat_search_orgs or "")
     listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
     return "*" in listed or str(organization_id).strip().lower() in listed
 
@@ -705,7 +716,9 @@ def where_else(skipped: list[str], why: dict[str, str], *, chat_named: bool,
     list, at most :data:`WHERE_ELSE_MAX`. Pure.
 
     1. Each app of *skipped*, with its reason from :data:`SKIP_REASONS`.
-    2. The past chats, when ``CHAT_SEARCH_ORGS`` does not name the org.
+    2. The past chats, when the search did not ask the ``chat`` source
+       (*chat_named* false): ``CHAT_SEARCH_ORGS`` does not name the org, or
+       the request named no current chat (HRD-21). So the line stays true.
     3. Each app of *not_open*: an app that is not open to the member.
 
     Each entry holds a code, an app key and a reason. It holds no record, no
@@ -731,11 +744,18 @@ def trace_rows(notes: dict[str, dict[str, dict[str, Any]]], keys: list[str],
     with ``closed``. A source that a rung did not ask has ``skipped``. A row
     holds a rung, a source key, two counts, a bool and an outcome, and nothing
     else.
+
+    Rung 6 is ONE row, with the key ``chat`` (HRD-21). The ``chat`` source runs
+    in pass 1 only, so its row reads its note of the first pass. With no such
+    source, or with the source closed or not asked, the row is ``closed``: the
+    row of before HRD-21, byte for byte.
     """
     rows: list[dict[str, Any]] = []
     for rung in TRACE_RUNGS:
         mine = notes.get(rung, {})
         for key in keys:
+            if key == CHAT_KEY:
+                continue  # rung 6 has its own row, below
             if key in closed:
                 if rung == TRACE_RUNGS[0]:
                     rows.append({"rung": rung, "source": key, "ran": False, "hits": 0,
@@ -745,11 +765,16 @@ def trace_rows(notes: dict[str, dict[str, dict[str, Any]]], keys: list[str],
             rows.append({"rung": rung, "source": key, "ran": bool(note["ran"]),
                          "hits": int(note["hits"]), "ms": int(note["ms"]),
                          "outcome": note["outcome"]})
-    # Rung 6: no source reads past chats yet (HRD-21), so it never ran. Once
-    # a source has the key, its own rows say what it did.
-    if CHAT_KEY not in keys:
+    note = None
+    if CHAT_KEY in keys and CHAT_KEY not in closed:
+        note = notes.get(TRACE_RUNGS[0], {}).get(CHAT_KEY)
+    if note is None:
         rows.append({"rung": CHAT_KEY, "source": CHAT_KEY, "ran": False, "hits": 0,
                      "ms": 0, "outcome": "closed"})
+    else:
+        rows.append({"rung": CHAT_KEY, "source": CHAT_KEY, "ran": bool(note["ran"]),
+                     "hits": int(note["hits"]), "ms": int(note["ms"]),
+                     "outcome": note["outcome"]})
     return rows
 
 

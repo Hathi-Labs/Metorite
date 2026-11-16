@@ -78,6 +78,16 @@ default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_SEARCH_ORGS` opens the past chats of `search_company`
+(`find_engine.md` §3.1 rung 6, §6, HRD-21). For each listed org, the search
+reads the member's own solo chats with Mira, and never the current chat or a
+chat that read mail. `*` lists every org, and the default is empty. Empty
+gives the answer of before HRD-21, byte for byte.
+
+Its one reader is
+`gateway.retrieval.find.chat_search_named`, and each search asks it. A reload
+applies a change. The flip waits for the owner's preview (task 3225).
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the

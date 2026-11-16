@@ -132,6 +132,7 @@ __all__ = [
     "is_held_off_write",
     "mark_untrusted_answer",
     "mark_untrusted_session",
+    "marked_sessions",
     "no_egress_for_this_run",
     "offer_continue",
     "read_untrusted_answer",
@@ -257,6 +258,11 @@ class _PositiveLRU:
             return False
         self._items.move_to_end(session)  # type: ignore[arg-type]
         return True
+
+    def holds(self, session: tuple[str, str]) -> bool:
+        """True when the cache holds *session*. Unlike ``in``, it does not
+        move the session, so a read for another purpose changes no order."""
+        return session in self._items
 
     def __len__(self) -> int:
         return len(self._items)
@@ -463,6 +469,40 @@ async def session_is_known_marked(ctx: Mapping[str, Any] | None = None) -> bool:
     blip never holds a send. Each egress tool of that run still asks its
     card through :func:`session_is_marked`."""
     return await session_mark_state(ctx) == MARK_MARKED
+
+
+async def marked_sessions(sessions: Iterable[str]) -> frozenset[str]:
+    """The sessions of *sessions* that hold the mark, in the bound tenant.
+
+    The read of the search of the member's past chats (WS-FIND HRD-21,
+    ``find_engine.md`` §6): a chat that read the answer of an agent of
+    :data:`UNTRUSTED_INPUT_AGENTS` is a ``no_egress`` chat, and the search
+    never shows it. It is read-only, unlike :func:`session_mark_state`: it
+    slides no TTL and adds nothing to the process cache. It reads the process
+    cache first, then each other session in ONE ``MGET``.
+
+    The tenant is the bound tenant (``acb_common.db.current_tenant``), never
+    an argument. With no bound tenant, or when Redis does not answer, it
+    raises, so the caller fails closed and shows no chat.
+    """
+    from acb_common.db import current_tenant
+
+    org = str(current_tenant() or "")
+    if not org:
+        raise RuntimeError("no bound tenant for the read of the session marks")
+    ids = list(dict.fromkeys(str(s) for s in sessions if str(s or "")))
+    if not ids:
+        return frozenset()
+    with _MARKED_LOCK:
+        found = {s for s in ids if _MARKED_SESSIONS.holds((org, s))}
+    rest = [s for s in ids if s not in found]
+    if rest:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            values = await get_tenant_redis().mget([key(MARK_NAMESPACE, s) for s in rest])
+        found |= {s for s, value in zip(rest, values, strict=True) if value is not None}
+    return frozenset(found)
 
 
 async def run_holds_mail(
