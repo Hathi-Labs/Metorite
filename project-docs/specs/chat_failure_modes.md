@@ -3,6 +3,8 @@
 **Status: ACCEPTED, 2026-11-12 (D217). BUILT: HRD-6 part 1 (the line of a slow
 tool), dark, 2026-11-13 (PR 2238). HRD-1 (an unknown tool name), 2026-11-14:
 the answer is live, and the auto-load is dark behind `CHAT_TOOL_AUTOLOAD`.
+HRD-1 follow-up (task 3599), 2026-11-17, with no flag: the trail shows a plain
+line in place of MAF's text, and a run tries one load for each name.
 HRD-4 (search in parallel, `find_tasks` on most of the words, task 2983), 2026-11-16.
 HRD-18a (names as people say them), 2026-11-14. HRD-22 (a late approve acts
 once, task 3231) is BUILT dark, 2026-11-14. Its flag is
@@ -180,7 +182,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | Slice | Task | What | Fence (R7) | Tier |
 |---|---|---|---|---|
 | **HRD-0** | 2979 | This spec, the INDEX row and the WS-CHAT row | STE lint | LOW |
-| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-14:** the answer is live. D217 allows the auto-load, and it ships dark behind `CHAT_TOOL_AUTOLOAD` (default off) | `tests/unit/test_unknown_tool_answer.py` | STANDARD |
+| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-14:** the answer is live. D217 allows the auto-load, and it ships dark behind `CHAT_TOOL_AUTOLOAD` (default off). **Task 3599, BUILT 2026-11-17, with no flag:** a member saw MAF's text for `query_inbox` in the chat. The stream event of a step sent the `exception` of MAF's result, `'Function "query_inbox" not found.'`, before the HRD-1 rewrite. The saved step kept it. `event_translator.tool_result_fields` is now the one mapping of a result for the stream and for a batch sub-run. MAF's result shows `unknown_tool.MEMBER_LINE`, and the step stays failed. A run asks the loader once for each name. A turn with no unknown call is byte-identical. A new step saves no MAF text, so a count of B1 such as §3 now reads the log line `unknown_tool.answered` of the orchestrator. **Not built:** the HRD-1 answer for the model of a sub-run (the worker, a delegated agent), and a client map for steps saved before the fix | `tests/unit/test_unknown_tool_answer.py`, `tests/unit/test_unloaded_pack_tool.py` | STANDARD |
 | **HRD-2** | 2981 | Print the hidden ids. Accept a task number and a `kind:` prefix | `tests/unit/test_tool_id_provenance.py` | STANDARD |
 | **HRD-3** | 2982 | One wrapper on each pack tool: text for each failure, and each argument in its declared shape | `tests/unit/test_every_pack_tool_answers_text.py`, `tests/unit/test_tool_argument_shapes.py` | STANDARD |
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |
