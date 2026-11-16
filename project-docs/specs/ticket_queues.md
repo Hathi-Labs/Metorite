@@ -103,12 +103,12 @@ All paths are on `origin/main` at `471704477`. `G/` is
 
 | Fact | Evidence |
 |---|---|
-| A mailbox has rules, with ten preset categories and custom rules | `G/routes/email/automation/rules.py` |
+| A mailbox has rules, with preset categories and custom rules | `G/routes/email/automation/rules.py` |
 | The rule actions: archive, label, move, reply, draft, forward, notify, webhook. No task action | `G/routes/email/automation/actions.py` |
 | An email becomes a task by a UI act only, in the member's personal project | `G/routes/tasks/capture_email.py`. The chat twin is debt in `acb_skills/chat_parity.py` |
 | The thread link syncs only Done | `G/routes/tasks/email_link.py` |
 | The Gmail receiver binds no tenant, so it starts no workflow | `G/routes/workflows/triggers.py:23` |
-| The shared mailbox: SM-1 and SM-2 built, dark. SM-3 to SM-9 planned | `EMAIL_SHARED_MAILBOX`, `shared_mailbox.md` |
+| The shared mailbox: SM-1 and SM-2 merged (commit `9aceb90c9`) and dark. SM-3 to SM-9 planned | `EMAIL_SHARED_MAILBOX`, `shared_mailbox.md`. Its header still says "not merged" |
 
 ### 1.4 Workflows
 
@@ -118,7 +118,7 @@ All paths are on `origin/main` at `471704477`. `G/` is
 | Each door refuses a `pm_task` step | `G/routes/workflows/service.py:80`. WFC-4a-3 (task 3306) waits on Q-d |
 | `human_step` writes only to one member's personal project | `G/routes/workflows/human_step.py` |
 | OTW-6 plans a mail event | OTW-6 (task 3017), `email` / `message.received`. E12 (task 2379) plans `email.*` and `whatsapp.*` |
-| An event replay starts a second run | OTW-1 (task 3012) plans the claim |
+| An event replay starts a second run. OTW-1 (task 3012) claims a one-time trigger only | `G/routes/workflows/triggers.py`. OTW-6 plans one event for each message |
 | Event runs need `WORKFLOW_UNATTENDED_ORGS`. Production has it empty | `G/routes/workflows/triggers.py` |
 
 ### 1.5 Studio and the chat
@@ -247,7 +247,8 @@ spec builds the picker, and the CRM builds its own slice.
 (WS-65), such as `support@`. A member's private mailbox never feeds a queue.
 D-EM-4 and D-EM-17 keep it private. D-TKT-2 asks the owner to confirm this.
 
-**The rule.** A rule of the shared mailbox (SM-6) matches a category. The
+**The rule.** A rule of the shared mailbox (SM-6, `shared_mailbox.md` §6.3)
+matches a category. The
 rule engine gets one new preset, "Support". The rule gets one new action,
 `OPEN_TICKET`, with one fixed queue project.
 
@@ -287,7 +288,8 @@ This node needs four things that other slices own:
 - **The mail event:** OTW-6 (task 3017) builds the one emitter of `email` /
   `message.received`, bound to the org. E12 (task 2379) lists it in the
   catalog and adds `whatsapp.*`. E12 builds no second mail emitter.
-- **The dedupe:** OTW-1 (task 3012), one run for one event.
+- **The dedupe:** OTW-6 emits one event for each message. The key of TKT-3
+  refuses a second ticket for one mail, also when a run starts twice.
 - **The member that the write checks:** Q-d, WFC-4a-3 (task 3306).
 - **The run identity:** B6, `ai_studio.md`.
 
@@ -311,8 +313,9 @@ makes a queue project, the Ticket type, the rule and a mail rule. Its views
 read tasks. D-TKT-6 asks what happens to the template until then.
 
 **The chat through the app.** "Add a ticket to the support desk" needs the
-app's skill at run time (F10b). It also needs the reach of tasks 3493 and
-3494. This spec cites them and builds neither.
+app's skill at run time (F10b). The solo web chat is enough for the demo of
+rung 3. Tasks 3493 and 3494 widen the reach to integration actions, WhatsApp
+and rooms. This spec cites them and builds neither.
 
 ### 3.7 The chat
 
@@ -401,14 +404,14 @@ checks whether the mail event needs it.
 | **TKT-4** | 3521 | 1 | The Ticket preset and the contact field type | A project gets the type and its three fields. A contact field holds a `crm_contacts` id that the reader can see | `test_pm_custom_fields_contact.py`, new | STANDARD | none |
 | **TKT-5** | 3522 | 1 | Chat: `open_ticket`, `assign` with `by_rule`, the queue settings | Each UI act has a chat twin. Each write shows its card | `test_chat_parity.py`, `test_projects_chat_coverage.py` | STANDARD | TKT-3 |
 | **TKT-6** | 3523 | 1 | The queue settings in Projects | Visual review in light and dark, compact density, a changed accent, phone width | Vitest for the settings panel | STANDARD UI | TKT-1 |
-| **TKT-7** | 3524 | 2 | `OPEN_TICKET` on the mail rule engine, shared mailboxes only | A private mailbox cannot hold the action. Mail text never sets the project, assignee or priority | `test_email_open_ticket_r8.py`, new | HIGH | TKT-3, SM-6, D-TKT-2, D-TKT-3 |
-| **TKT-8** | 3525 | 2 | The "Support" preset category | The preset matches a support mail in the eval set | `test_email_rule_presets.py`, extended | STANDARD | TKT-7 |
+| **TKT-7** | 3524 | 2 | `OPEN_TICKET` on the mail rule engine, shared mailboxes only | A private mailbox cannot hold the action. Mail text never sets the project, assignee or priority | `test_email_open_ticket_r8.py`, new | HIGH | TKT-3, SM-6 (§6.3), D-TKT-2, D-TKT-3 |
+| **TKT-8** | 3525 | 2 | The "Support" preset category | The preset matches a support mail in the eval set | `test_email_presets.py`, extended | STANDARD | TKT-7 |
 | **TKT-9** | 3526 | 2 | A reply joins its ticket | A reply adds a comment and opens a done ticket again | `test_ticket_reply_r8.py`, new | STANDARD | TKT-7, OTW-8 |
-| **TKT-10** | 3527 | 2 | SM-5 copies the ticket's assignee to the thread | One conversation has one assignee | `test_shared_mailbox_assign_r8.py`, extended | STANDARD | SM-5, D-TKT-5 |
+| **TKT-10** | 3527 | 2 | SM-5 copies the ticket's assignee to the thread | One conversation has one assignee | `test_shared_mailbox_ticket_assignee_r8.py`, new | STANDARD | SM-5, D-TKT-5 |
 | **TKT-11** | 3528 | 3 | Task ops on the Studio door | A Studio action creates and assigns a task with the member's card. A read shows only visible tasks | `test_mcp_edge_coverage.py`, `test_studio_manifest.py`, extended | HIGH | none |
-| **TKT-12** | 3529 | 3 | A Studio view over the tasks of a project | The view lists only the tickets that the viewer can open | `test_studio_views.py`, extended | STANDARD | TKT-11 |
+| **TKT-12** | 3529 | 3 | A Studio view over the tasks of a project | The view lists only the tickets that the viewer can open | `test_studio_task_view_r8.py`, new | STANDARD | TKT-11 |
 | **TKT-13** | 3530 | 3 | The Support desk template on the task store | The template makes a queue, the type, the rule and a mail rule. No `ticket` object stays | `test_studio_templates.py`, extended | STANDARD | TKT-11, TKT-12, D-TKT-6 |
-| **TKT-14** | 3531 | 4 | The workflow node "Open a ticket" | The node calls capture, so the queue's rule runs | `test_workflow_open_ticket_r8.py`, new | HIGH | OTW-6, OTW-1, WFC-4a-3, B6 |
+| **TKT-14** | 3531 | 4 | The workflow node "Open a ticket" | The node calls capture, so the queue's rule runs | `test_workflow_open_ticket_r8.py`, new | HIGH | OTW-6, WFC-4a-3, B6 |
 
 **The order.** TKT-4 can start at once. TKT-1 to TKT-3 wait for D-TKT-1. Then
 TKT-5 and TKT-6 run in parallel. In rung 2, TKT-7 waits for SM-6 and for
@@ -439,8 +442,7 @@ Task 3536 holds these questions for the owner.
   (`ingestion/event_hooks.emit_event`). This spec adds no second event path.
 - **WS-65.** It owns the shared mailbox, its rules (SM-6) and thread
   assignment (SM-5). This spec adds one action and one copy.
-- **WS-OTW.** It owns the mail event (OTW-6), the dedupe (OTW-1) and the thread
-  match (OTW-8).
+- **WS-OTW.** It owns the mail event (OTW-6) and the thread match (OTW-8).
 - **E7 Teams.** A team is a group. The queue's pool is a group.
 
 ## 11. Fences
