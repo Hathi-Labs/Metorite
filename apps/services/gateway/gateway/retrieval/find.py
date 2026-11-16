@@ -14,6 +14,12 @@ the answer of KR-ZERO, byte for byte.
   (FIND-3, §3.5). :func:`sort_links`, :func:`sort_mail`, :func:`lanes` and
   :func:`pick_related` sort the ids that the sources' ``related`` gave, and
   pick the records that their ``open`` gave.
+* The honest zero and the explain trace (FIND-4, §3.6 and §3.7) use closed
+  lists only: :data:`SKIP_REASONS`, :data:`OUTCOMES`, :data:`WHERE_ELSE` and
+  :data:`FLAGS`. :func:`add_note` keeps what each source did in one rung,
+  :func:`where_else` and :func:`trace_rows` build the answer keys, and
+  :func:`weighed` names the near spellings that the lookup gave.
+  :func:`word_absent` is the proof that no record holds all the words.
 """
 
 from __future__ import annotations
@@ -196,6 +202,36 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
             held = False
         out.append({**entry, "held": held})
     return out
+
+
+def word_absent(broadened: list[dict[str, Any]] | None, *, skipped: list[str],
+                limited: bool) -> bool:
+    """True when the words alone prove that no record holds all the words
+    (FIND-4, ``find_engine.md`` §3.6): one content word, searched alone in
+    each app that answered, found nothing. The rule is the rule of ``held``
+    false in :func:`near_report`. No app was skipped in the first pass
+    (*skipped*) or for that word, and no date or verified filter *limited*
+    the search. Pure.
+
+    A first pass with no hit proves nothing: People matches the whole query
+    as one phrase, so a person who holds the words in another order is no
+    hit. Each app matches one word alone, so a zero of one word is proof.
+    The word needs ``name_match.NEAR_MIN_LETTERS`` letters, as each word of
+    ``held`` does: an app may answer nothing for a short word, with no error.
+    """
+    if skipped or limited:
+        return False
+    return any(
+        isinstance(entry, dict) and _count_of(entry.get("hits")) == 0
+        and not entry.get("skipped") and isinstance(entry.get("word"), str)
+        and name_match.near_eligible(entry["word"])
+        for entry in broadened or []
+    )
+
+
+def _count_of(value: Any) -> int | None:
+    """*value* when it is a count, else ``None``."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def spelled(words: list[str], word: str, spelling: str) -> list[str]:
@@ -484,3 +520,149 @@ def _next_pick(
             taken.add(conversation)
         return hit, edge, via
     return None
+
+
+# ── The honest zero and the explain trace (FIND-4, §3.6, §3.7) ──────────────
+
+#: Why ``skipped`` names a source (§3.2 item 2): it ran out of time, it raised,
+#: or the app refused (an ``HTTPException``). A closed list.
+SKIP_REASONS: tuple[str, ...] = ("timed_out", "failed", "refused")
+#: The outcome of one source in one rung of the trace (§3.7). ``skipped``: the
+#: rung did not ask it. ``closed``: the app is not open to the member.
+OUTCOMES: tuple[str, ...] = ("ok", "empty", *SKIP_REASONS, "skipped", "closed")
+#: When two asks of one rung have different outcomes, the later one in this
+#: order wins: a failure is the news, and one hit makes ``ok``.
+_WORSE: dict[str, int] = {o: i for i, o in enumerate(
+    ("closed", "skipped", "empty", "ok", "refused", "timed_out", "failed"))}
+#: The rungs of the trace whose sources run, in the order of §3.1.
+TRACE_RUNGS: tuple[str, ...] = ("exact", "word", "near", "related")
+#: The source key of rung 6 in the trace. No source has the key yet (HRD-21).
+CHAT_KEY = "chat"
+#: The codes of a "Where else" line (§3.6), in the order of its list: an app
+#: that was skipped, the past chats, and an app that is not open to the member.
+WHERE_ELSE: tuple[str, ...] = ("skipped", "past_chats", "not_open")
+#: The most "Where else" lines of one answer (§3.6).
+WHERE_ELSE_MAX = 3
+#: The flags that the trace may name as off for the org (§3.7). A closed list.
+FLAGS: tuple[str, ...] = ("KNOWLEDGE_EMBED", "EMAIL_SEMANTIC_SEARCH_ENABLED", "CHAT_SEARCH_ORGS")
+#: The most near spellings of one word that the trace names.
+TRACE_SPELLINGS = 3
+
+
+def chat_search_named(organization_id: str | None) -> bool:
+    """True when ``CHAT_SEARCH_ORGS`` holds the org, or holds ``*``.
+
+    The setting may not exist yet (HRD-21 adds it), so an absent setting reads
+    as empty. Only the "Where else" line and the trace read it: with the org
+    named, they say nothing about past chats. HRD-21 owns the flag and its
+    source, and its reader should replace this one.
+    """
+    if not organization_id:
+        return False
+    raw = str(getattr(get_settings(), "chat_search_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def add_note(notes: dict[str, dict[str, Any]] | None, key: str, outcome: str, *,
+             hits: int = 0, ms: int = 0, ran: bool = True) -> None:
+    """Add one ask of source *key* to the notes of one rung (FIND-4).
+
+    Two asks of one source in one rung add their hits and their times, and
+    the outcome that :data:`_WORSE` puts later wins. *notes* ``None`` keeps
+    nothing. An outcome off :data:`OUTCOMES` is not kept. Pure but for
+    *notes*.
+    """
+    if notes is None or outcome not in OUTCOMES:
+        return
+    old = notes.get(key)
+    if old is None:
+        notes[key] = {"ran": bool(ran), "hits": int(hits), "ms": int(ms), "outcome": outcome}
+        return
+    old["ran"] = bool(old["ran"] or ran)
+    old["hits"] += int(hits)
+    old["ms"] += int(ms)
+    if _WORSE[outcome] > _WORSE[old["outcome"]]:
+        old["outcome"] = outcome
+
+
+def where_else(skipped: list[str], why: dict[str, str], *, chat_named: bool,
+               not_open: list[str]) -> list[dict[str, str]]:
+    """The "Where else" entries of an honest zero (§3.6), in the order of the
+    list, at most :data:`WHERE_ELSE_MAX`. Pure.
+
+    1. Each app of *skipped*, with its reason from :data:`SKIP_REASONS`.
+    2. The past chats, when ``CHAT_SEARCH_ORGS`` does not name the org.
+    3. Each app of *not_open*: an app that is not open to the member.
+
+    Each entry holds a code, an app key and a reason. It holds no record, no
+    count and no word of the query.
+    """
+    out: list[dict[str, str]] = [
+        {"why": "skipped", "app": key, "reason": why[key]}
+        for key in skipped if why.get(key) in SKIP_REASONS
+    ]
+    if not chat_named:
+        out.append({"why": "past_chats"})
+    out += [{"why": "not_open", "app": key} for key in not_open]
+    return out[:WHERE_ELSE_MAX]
+
+
+def trace_rows(notes: dict[str, dict[str, dict[str, Any]]], keys: list[str],
+               closed: set[str]) -> list[dict[str, Any]]:
+    """The rows of the explain trace (§3.7): for each rung of
+    :data:`TRACE_RUNGS` and each source of *keys*, whether it ran, its hits,
+    its time in ms and its outcome. Then one row of rung 6. Pure.
+
+    A source of *closed* is not open to the member: it has one row, in rung 1,
+    with ``closed``. A source that a rung did not ask has ``skipped``. A row
+    holds a rung, a source key, two counts, a bool and an outcome, and nothing
+    else.
+    """
+    rows: list[dict[str, Any]] = []
+    for rung in TRACE_RUNGS:
+        mine = notes.get(rung, {})
+        for key in keys:
+            if key in closed:
+                if rung == TRACE_RUNGS[0]:
+                    rows.append({"rung": rung, "source": key, "ran": False, "hits": 0,
+                                 "ms": 0, "outcome": "closed"})
+                continue
+            note = mine.get(key) or {"ran": False, "hits": 0, "ms": 0, "outcome": "skipped"}
+            rows.append({"rung": rung, "source": key, "ran": bool(note["ran"]),
+                         "hits": int(note["hits"]), "ms": int(note["ms"]),
+                         "outcome": note["outcome"]})
+    # Rung 6: no source reads past chats yet (HRD-21), so it never ran. Once
+    # a source has the key, its own rows say what it did.
+    if CHAT_KEY not in keys:
+        rows.append({"rung": CHAT_KEY, "source": CHAT_KEY, "ran": False, "hits": 0,
+                     "ms": 0, "outcome": "closed"})
+    return rows
+
+
+def weighed(chosen: list[str], names: dict[str, dict[str, list[Any]]],
+            query: str) -> list[dict[str, Any]]:
+    """The near spellings that the lookup of rung 3 gave, for the trace (§3.7).
+
+    For each word of *chosen*, at most :data:`TRACE_SPELLINGS` spellings over
+    every source, the nearest first. The word is as the member typed it
+    (:func:`asked_form`). A spelling that ``name_match.same_word`` calls the
+    word itself is no near spelling. ``over_floor`` is true when the score
+    reaches ``name_match.NEAR_SCORE``. Each value is one token of letters and
+    digits from a name that the member can open. Pure.
+    """
+    out: list[dict[str, Any]] = []
+    for word in chosen:
+        best: dict[str, Any] = {}
+        for by_word in names.values():
+            for item in by_word.get(word, []):
+                spelt = name_match.words(item.spelling)
+                if len(spelt) != 1 or name_match.same_word(word, spelt[0]):
+                    continue
+                if spelt[0] not in best or item.score > best[spelt[0]].score:
+                    best[spelt[0]] = item
+        ranked = sorted(best.values(), key=lambda n: (-n.score, n.spelling))
+        out += [{"word": asked_form(query, word), "as": item.spelling,
+                 "over_floor": item.score >= name_match.NEAR_SCORE}
+                for item in ranked[:TRACE_SPELLINGS]]
+    return out
