@@ -512,6 +512,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "email_accounts": 1,
         "whatsapp_accounts": 1,
         "task_accounts": 1,
+        # WS-CO CO-11: the fake holds no chat pin of the member.
+        "chat_member_rows": 0,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
@@ -543,6 +545,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "calendar_attendances": 1,
         # WS-STU I8b-1a: the fake holds no ask of the member.
         "connection_asks": 0,
+        # Task 3435: the fake holds no chat card that asked the member.
+        "chat_pending_asks": 0,
         "member_record": 1,
     }
     assert out.kept == {
@@ -965,6 +969,57 @@ def test_the_connection_asks_of_this_org_go_and_no_other() -> None:
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("connection_asks") < keys.index("member_record")
     assert cascade_closure("integration_attention") == set()
+
+
+def test_the_chat_cards_that_asked_the_member_in_this_org_go_and_no_other() -> None:
+    """Task 3435 (``chat_run_continuity.md`` §4.12.4 item 1): the purge
+    deletes the ``chat_pending_ask`` rows that asked the member. A row holds
+    the card, the answer and the arguments of a stored call, and only the
+    member who was asked may answer it. The clause names the member and the
+    bound org, so the rows of the same address in another org stay. The
+    table has no key to ``chat_session``, so the delete of the private chats
+    takes none of them, and no table hangs off it.
+
+    ⚠️ Mutation-checked: dropping the org term fails here, and
+    ``test_pending_ask_prune_r8.py`` fails on the real database."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "chat_pending_ask"]
+    assert rows.key == "chat_pending_asks"
+    assert rows.where == f"lower(actor_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("chat_pending_asks") < keys.index("member_record")
+    assert "chat_pending_ask" not in {r.table for r in _PURGE_KEEPS}
+    assert cascade_closure("chat_pending_ask") == set()
+
+def test_the_chat_rows_of_this_org_go_before_her_private_chats() -> None:
+    """WS-CO CO-11 (``chat_organization.md`` §18): the purge deletes the
+    member's own rows of ``chat_session_member``, her pins. The clause names
+    the member and the bound org, so the rows of the same address in another
+    org stay. It runs before ``private_chat_sessions``: that cascade takes
+    only the rows on her private chats, and her pin on a kept room would
+    stay. No table hangs off ``chat_session_member``.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above, and ``test_chat_pin_r8.py`` fails on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_children, cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "chat_session_member"]
+    assert rows.key == "chat_member_rows"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("chat_member_rows") < keys.index("private_chat_sessions")
+    assert keys.index("chat_member_rows") < keys.index("member_record")
+    assert "chat_session_member" not in {r.table for r in _PURGE_KEEPS}
+    assert "chat_session_member" in cascade_children("chat_session")
+    assert cascade_closure("chat_session_member") == set()
 
 
 def test_the_member_s_private_change_history_goes() -> None:

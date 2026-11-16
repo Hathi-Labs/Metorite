@@ -32,8 +32,9 @@
 
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
-import { isNewMail, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
+import { isNewMail, isNewMailEdits, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
+import { isTaskCardEdits, isUnchanged, taskEditFromEvent, type TaskCardEdits, type TaskEditForm } from "@/lib/taskEditCard";
 
 /** The event a closed card arrives as. The server owns the name
  *  (`CONFIRMATION_RESOLVED` in `ask_tools.py`), and
@@ -74,6 +75,12 @@ export interface PendingConfirmation {
    * form the card could not read: it then offers Discard only.
    */
   reply?: ReplyForm | null;
+  /**
+   * EAC-2 (`projects_ai_chat.md` §32): the edit form of a `create_task` card
+   * (`lib/taskEditCard.ts`). Only a form the client can read is kept, so a card
+   * with no `edit`, and one with an unknown shape, is the card of before.
+   */
+  edit?: TaskEditForm;
   /**
    * §18.11: the slot of a new-mail card that a chat message closed as
    * REVISED. "updating" waits for the new draft, and "unchanged" says that
@@ -196,11 +203,16 @@ export function withTicked(
 export type RowTicks = Readonly<Record<string, readonly string[]>>;
 
 /**
- * The member's edits of each new-mail form, by card key. The queue holds them
- * as it holds `RowTicks`, because a change of tab unmounts the form. Without
- * them, an untick came back ticked and Send went to that person.
+ * The member's edits of each form, by card key: a new-mail form (`NewMailEdits`)
+ * or a task card (`TaskCardEdits`, EAC-2). The queue holds them as it holds
+ * `RowTicks`, because a change of tab unmounts the form. Without them, an
+ * untick came back ticked and Send went to that person.
+ *
+ * A reader of one kind asks its guard (`isNewMailEdits`, `isTaskCardEdits`),
+ * and never casts. `redraftCard.ts` reads the `NewMailEdits` kind only.
  */
-export type FormEdits = ReadonlyMap<string, NewMailEdits>;
+export type FormEdit = NewMailEdits | TaskCardEdits;
+export type FormEdits = ReadonlyMap<string, FormEdit>;
 
 export const NO_EDITS: FormEdits = new Map();
 
@@ -221,7 +233,7 @@ export function heldKeys(state: Pick<ConfirmationQueueState, "cards" | "answerin
  * which thread's map it reads.
  */
 export function closedEdits(edits: FormEdits, before: ReadonlySet<string>, now: ReadonlySet<string>): FormEdits {
-  let out: Map<string, NewMailEdits> | null = null;
+  let out: Map<string, FormEdit> | null = null;
   for (const key of edits.keys()) {
     if (!before.has(key) || now.has(key)) continue;
     out ??= new Map(edits);
@@ -231,11 +243,30 @@ export function closedEdits(edits: FormEdits, before: ReadonlySet<string>, now: 
 }
 
 /** Keep the edits of one form. The same values change nothing. */
-export function formEditsReducer(edits: FormEdits, action: { key: string; value: NewMailEdits }): FormEdits {
+export function formEditsReducer(edits: FormEdits, action: { key: string; value: FormEdit }): FormEdits {
   const was = edits.get(action.key);
   const now = action.value;
-  if (was && was.subject === now.subject && was.body === now.body && was.ticks === now.ticks && was.fileTicks === now.fileTicks) return edits;
+  if (was && sameEdits(was, now)) return edits;
   return new Map(edits).set(action.key, now);
+}
+
+/** True when two kept edits of one card are the same values. A new mail and a task card are never the same. */
+function sameEdits(was: FormEdit, now: FormEdit): boolean {
+  if (isNewMailEdits(was) && isNewMailEdits(now)) {
+    return was.subject === now.subject && was.body === now.body && was.ticks === now.ticks && was.fileTicks === now.fileTicks;
+  }
+  if (isTaskCardEdits(was) && isTaskCardEdits(now)) return isUnchanged(was, now);
+  return false;
+}
+
+/** The kept edits as new-mail edits, or undefined for none and for another kind. */
+export function asNewMailEdits(e: FormEdit | undefined): NewMailEdits | undefined {
+  return isNewMailEdits(e) ? e : undefined;
+}
+
+/** The kept edits as task-card edits, or undefined for none and for another kind. */
+export function asTaskEdits(e: FormEdit | undefined): TaskCardEdits | undefined {
+  return isTaskCardEdits(e) ? e : undefined;
 }
 
 export const NO_TICKS: RowTicks = {};
@@ -483,12 +514,18 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     ...(v.rows !== undefined ? { rows: rowsFromEvent(v.rows) ?? [] } : {}),
     ...(v.fenced === true ? { fenced: true } : {}),
     ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply, requestId) } : {}),
+    // EAC-2: a form the client cannot read is no form, and the card is the card of before.
+    ...(taskEditOf(v.edit) ? { edit: taskEditOf(v.edit) } : {}),
   };
 }
 
 /** An answer that approves: a plain `APPROVE`, or an Approve of rows. */
 function isApproveAnswer(answer: string | undefined): boolean {
   return answer === "APPROVE" || (!!answer && answer.startsWith(ROWS_ANSWER_PREFIX));
+}
+
+function taskEditOf(raw: unknown): TaskEditForm | undefined {
+  return (raw === undefined ? null : taskEditFromEvent(raw)) ?? undefined;
 }
 
 function withAdded(set: ReadonlySet<string>, key: string): Set<string> {
