@@ -13,6 +13,13 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 `AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
 Neither flag covers an agent on any box.
 
+**Task 3554 (2449 S3) is built, with no flag (2026-11-16, branch
+`ai3554-no-direct-fallback`).** Outside `ACB_ENV=dev`, a chat call that the
+Router does not take raises `ConsoleRouterUnavailable("unrouted")`. It loads
+no vendor key and calls no vendor. The `/v1` door answers the 502 of a Router
+outage. §2.10 and the S5 row of §11 hold the detail. **It merges only on
+evidence that production routes:** see the S5 row.
+
 **Helper routes default to a tier name (task 1128 follow-up, 2026-11-02).**
 `/api/chat/sessions/[id]/compact` and `/api/chat/suggestions` defaulted to the
 bare model id `deepseek/deepseek-chat`. The Router refuses a bare id with a
@@ -497,7 +504,8 @@ ContextVar (`orchestrator/agents.py:287-289`).
 ### 2.10 AI calls that skip the Router
 
 `ROUTER_SERVING_ENABLED` turns on the gateway's Router hop
-(`v1_compat.py:482`) and the in-process seam `acb_llm/routed.py` (H-171). PR
+(`v1_compat.py:559`, `_router_should_serve`) and the in-process seam
+`acb_llm/routed.py` (H-171). PR
 #483's message says production runs with the hop on. `HANDOFF.md` H-69 still
 lists the flip as pending, so S2 reads the box at dispatch.
 
@@ -505,17 +513,26 @@ These paths reach a vendor without the Router, whatever the flag says:
 
 | Path | Anchor | Kind |
 |---|---|---|
-| The `/v1/embeddings` door calls OpenAI with `OPENAI_API_KEY` | `apps/services/gateway/gateway/main.py:1716-1719` | embed |
+| The `/v1/embeddings` door calls OpenAI with `OPENAI_API_KEY` | `apps/services/gateway/gateway/main.py:2519-2543` | embed |
 | Three embedding writers call `litellm.aembedding` | `email_ingestion/email_embeddings.py:85-100`, `whatsapp_ingestion/wa_embeddings.py:65-75`, `gateway/routes/tasks/capability.py:87-100` | embed |
 | Transcription through `acb_stt` | `packages/acb_stt/acb_stt/litellm_provider.py:196`, `assemblyai_provider.py:57` | transcribe |
 | Live notes mint Deepgram keys | `gateway/routes/notes/live.py:38` | transcribe |
 | ~~An integration check calls four vendor models~~ Moved to `acb_llm.client.complete`, task 3007 (2449 A6), 2026-11-12 | `gateway/routes/integrations.py`, `discover_api` | chat |
-| The prompt-cache warm-up | `gateway/main.py:500` | chat |
+| The prompt-cache warm-up | `gateway/main.py:854`, `_prewarm_prompt_cache` | chat |
 | ~~The streamed text helper~~ With routing on, it takes one answer from the Router, task 3541, 2026-11-16. Task 3542 makes it stream there | `acb_llm/context.py`, `acompletion_stream_text` (H-171) | chat |
 
 The key tests and model lists in `gateway/routes/settings.py` reach vendor
 hosts too. They move no tenant content, so they are not AI work, and this spec
 leaves them.
+
+**Task 3554 (2449 S3, 2026-11-16): the direct arm closes outside dev.** The
+rows above do not change. Five chat seams called litellm with the gateway's
+own key when the Router did not take the call. They are `acompletion_with_fallback`,
+`acompletion_stream_text`, `complete`, `complete_with_tools` and the `/v1`
+door. Each one now calls `acb_llm.routed.refuse_direct_arm` before it loads a
+key. Outside `ACB_ENV=dev` that guard raises
+`ConsoleRouterUnavailable("unrouted")`, and the `/v1` door answers the 502
+of a Router outage.
 
 ---
 
@@ -1375,6 +1392,26 @@ tool declare its task.
 **Done when, for each one:** its path leaves the baseline of
 `test_no_direct_ai_vendor_calls.py`, and a test proves the call reaches the
 Router with the declared task.
+
+**Task 3554 (2449 S3) · The direct arm closes outside dev — AGENT-SAFE
+(build), no flag.** Built 2026-11-16 on branch `ai3554-no-direct-fallback`.
+
+- `acb_llm.routed.refuse_direct_arm(seam)` is the one guard. Only
+  `ACB_ENV=dev` allows the direct arm. A settings read that fails refuses.
+- The five chat seams of §2.10 call it before a key loads. Outside dev, each
+  raises `ConsoleRouterUnavailable("unrouted")`, and the `/v1` door answers
+  the Router's 502.
+- The first refusal of a process logs `ai.route_refused_unwired` with the
+  seam, the serving flag and the wiring.
+- The siblings of §2.10 do not change: `acb_stt`, `/v1/embeddings`, the
+  warm-up, the embedding writers, `notes/live` and the meeting bot.
+- Fence: `tests/unit/test_internal_ai_is_routed.py`, one class for each seam
+  (`Test*IsClosedOutsideDev`) and `TestTheGuardItself`.
+
+**Merge condition:** evidence that production routes. That is a
+`v1.router_served` line in the gateway log, and no
+`v1.router_enabled_but_unwired` line. No flag covers this change. On a box
+with routing off, every chat call then fails.
 
 ### Order
 

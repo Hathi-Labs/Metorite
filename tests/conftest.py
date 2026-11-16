@@ -391,6 +391,40 @@ def _restore_the_database_url():
         os.environ["DATABASE_URL"] = before
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "direct_arm_guard: the test runs the real guard of the direct AI arm "
+        "(task 3554), so _allow_the_direct_ai_arm does not replace it",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _allow_the_direct_ai_arm(request, monkeypatch):
+    """Let a unit test take the direct AI arm (local litellm), as before task 3554.
+
+    ``acb_llm.routed.refuse_direct_arm`` closes the direct arm outside
+    ``ACB_ENV=dev``, and the suite runs as production. Many tests stub
+    litellm with routing off and pin the direct arm, so this fixture replaces
+    ``direct_arm_allowed`` with an allow. It does NOT set ``ACB_ENV=dev``,
+    because dev also opens the fail-closed auth rule of ``acb_auth.deps``.
+
+    A test that proves the refusal carries the ``direct_arm_guard`` marker,
+    and runs the real guard. Fence: the classes that ``refuse_direct_arm``
+    names in ``tests/unit/test_internal_ai_is_routed.py``.
+
+    ``sys.modules`` and not an import: ``acb_llm`` loads litellm, and a test
+    that never loads it pays nothing. ``acb_llm.client`` loads the guard
+    module, so each seam has it in place before its first call.
+    """
+    import sys
+
+    routed = sys.modules.get("acb_llm.routed")
+    if routed is not None and request.node.get_closest_marker("direct_arm_guard") is None:
+        monkeypatch.setattr(routed, "direct_arm_allowed", lambda: True)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_agent_repo_refresh_clock():
     """The loader pulls a repo at most once per TTL. That clock is module
