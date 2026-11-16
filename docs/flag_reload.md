@@ -78,6 +78,17 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`FIND_ORGS` turns on the new shape of a `search_company` hit
+(`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says
+how it matched (`matched_by`, `covers`, `of`), and the hit with the most of the
+query's words comes first. `*` lists every org, and the default is empty. Empty
+gives the answer of KR-ZERO, byte for byte. It acts only with `CONTEXT_RECENCY`
+on.
+
+Its one reader is `gateway.retrieval.find.find_allowed`, and each search
+asks it. A reload applies a change. The flip is AGENT-SAFE under the
+`enforcement-flip` grant, after the FIND-1 eval.
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns
@@ -108,6 +119,17 @@ also selects the orgs where the daily expiry tick may delete installs
 the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
+
+`STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
+(`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
+one `tool:<name>` row for each chat tool of the CRM, Email, Projects and
+Calendar packs. A member can then put that tool in a skill. `*` lists every
+org, and the default is empty. Its one reader is
+`gateway.routes.studio.flags.chat_tools_allowed`, and each catalog read asks
+it. The catalog also needs `STUDIO_ORGS`.
+
+A row runs nothing: a skill still loads only in a run that holds the tool. A
+reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
 (`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the

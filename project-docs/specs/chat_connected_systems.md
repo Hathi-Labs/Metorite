@@ -7,6 +7,11 @@ The owner decides D-CSY-1 to D-CSY-6 (§9). The defaults hold until the owner
 answers. CSY-10 covers the main chat row only. Sub-agent rows, saved history
 and the Tier 2 shim keep the old words.
 
+**CSY-7 (task 3407), description half: built, 2026-11-16.**
+`PATCH /integrations/mcp/{name}` takes `description` (trimmed, 400 characters at
+most). The side panel edits it in place, and the Add form's hint is the §3.7
+text. The `words` field is HELD until D-CSY-4.
+
 **The seam owners.** This spec adds no second seam. It extends four owners:
 
 | Topic | Owner | What this spec adds |

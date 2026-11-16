@@ -242,8 +242,8 @@ export const PROGRESS_EVENT = "progress";
 /**
  * CS-3a (`chat_failure_modes.md` §6 row CS-3): the CUSTOM event of the
  * server's phase of a run (`acb_skills.run_phase`). The BFF route forwards
- * none yet, and no loop keeps one on the message. CS-3b (task 3462) draws
- * it.
+ * it (CS-3b, task 3462), and no loop keeps one on the message. The hook
+ * turns it into fixed words (`phaseWordOf`).
  */
 export const RUN_PHASE_EVENT = "run_phase";
 

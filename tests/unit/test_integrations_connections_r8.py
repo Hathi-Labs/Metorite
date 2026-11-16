@@ -207,17 +207,21 @@ async def _seed(p: Any, org: str, tag: str, *, url: str = "https://mcp.example.c
 
 async def _call(
     p: Any, user: Any, method: str, path: str, body: dict | None = None,
+    *, router_module: Any = None,
 ) -> Any:
     """One request through the real router, as *user*.
 
     The override binds the tenant from the user, which is what
     ``_with_resolved_access`` does for a real request. The tenant never comes
-    from the request.
+    from the request. *router_module* names another router (CSY-7 calls the
+    ``PATCH /integrations/mcp/{name}`` of ``gateway.routes.integrations``).
     """
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
     from fastapi import FastAPI
-    from gateway.routes import integrations_connections as mod
+    from gateway.routes import integrations_connections as default_mod
+
+    mod = router_module or default_mod
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
@@ -583,3 +587,60 @@ async def test_a_locked_key_is_409_with_a_reason_and_stays(ns, app_engine, monke
     detail = res.json()["detail"]
     assert detail["code"] == "key_locked" and detail["message"].endswith(".")
     assert _count(ns, "SELECT count(*) FROM provider_keys WHERE provider = 'github:token'") == 1
+
+
+# -- CSY-7: the description of an MCP server, edited in place --------------------
+
+
+def _meta_description(p: Any, org: str, name: str) -> Any:
+    with p.admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT provider_meta FROM integration_connections "
+            "WHERE organization_id = CAST(:o AS uuid) AND provider = :p"),
+            {"o": org, "p": f"mcp:{name}"}).first()
+    return None if row is None else (row[0] or {}).get("description")
+
+
+async def _patch_mcp(p: Any, user: Any, name: str, body: dict) -> Any:
+    from gateway.routes import integrations as integrations_routes
+
+    return await _call(p, user, "PATCH", f"/integrations/mcp/{name}", body,
+                       router_module=integrations_routes)
+
+
+async def test_an_admin_edit_of_the_description_persists_in_provider_meta(ns, app_engine, audit) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    a = await _seed(ns, ns.org_a, "a")
+    res = await _patch_mcp(ns, _user(ADMIN_A, ns.org_a), a.mcp,
+                           {"description": "  Orders and invoices of the shop.  "})
+    assert res.status_code == 200, res.text
+    assert res.json()["description"] == "Orders and invoices of the shop."
+    assert _meta_description(ns, ns.org_a, a.mcp) == "Orders and invoices of the shop."
+    # The list shows it, and a body of the description alone leaves the switches.
+    rows = (await _call(ns, _user(ADMIN_A, ns.org_a), "GET",
+                        "/integrations/connections")).json()["connections"]
+    (row,) = [r for r in rows if r["id"] == f"mcp:{a.mcp}"]
+    assert row["detail"]["description"] == "Orders and invoices of the shop."
+    assert [e.action for e in audit] == ["integration.mcp.description"]
+    assert "Orders" not in json.dumps(audit[0].payload)
+
+
+async def test_org_b_cannot_change_the_description_of_org_a(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    a = await _seed(ns, ns.org_a, "a")
+    await _seed(ns, ns.org_b, "b")
+    await _patch_mcp(ns, _user(ADMIN_A, ns.org_a), a.mcp, {"description": "Mine."})
+    res = await _patch_mcp(ns, _user(ADMIN_B, ns.org_b), a.mcp, {"description": "Stolen."})
+    assert res.status_code == 404, res.text
+    assert _meta_description(ns, ns.org_a, a.mcp) == "Mine."
+    assert _meta_description(ns, ns.org_b, a.mcp) is None
+
+
+async def test_a_member_without_manage_gets_403_and_nothing_changes(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    a = await _seed(ns, ns.org_a, "a")
+    await _patch_mcp(ns, _user(ADMIN_A, ns.org_a), a.mcp, {"description": "Before."})
+    reader = _user("reader-a@in1-r8.test", ns.org_a, ["feature:integrations", "admin:members:read"])
+    res = await _patch_mcp(ns, reader, a.mcp, {"description": "After."})
+    assert res.status_code == 403, res.text
+    assert _meta_description(ns, ns.org_a, a.mcp) == "Before."

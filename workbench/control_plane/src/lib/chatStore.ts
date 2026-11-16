@@ -14,6 +14,7 @@
 
 import { IDLE_RUN, reduceRun, type RunEvent, type RunStatus } from "@/lib/runStatus";
 import { CARD_ANSWERED, type CardLogEntry } from "@/lib/cardReplay";
+import type { FormEdits } from "@/lib/confirmationQueue";
 
 // ── ChatMessage type (co-located here to avoid circular imports) ────────────
 
@@ -87,6 +88,12 @@ export interface ChatMessage {
    * again (attach) never has it, because the server may be far past reading by then. Never saved.
    */
   firstLine?: boolean;
+  /**
+   * CS-3b: the fixed words of the server's phase ("Gathering what I need") while the run has no real
+   * step. The header of the thinking trail says them in place of `firstLine`'s words. Live only: a
+   * re-attach clears it, a real step takes the header over, and no save names it. Never saved.
+   */
+  phaseWord?: string;
   /** Sequential reasoning blocks — each displayed as a separate timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3a, message-id-native): one entry
@@ -325,6 +332,25 @@ export function noteRunMoved(threadId: string, type: string): void {
 /** A new run, or the end of one: no card of it waits any more. */
 export function clearCardLog(threadId: string): void {
   _cardLog.delete(threadId);
+  _formEdits.delete(threadId);
+}
+
+// ── The member's edits of the waiting new-mail cards (task 1893) ─────────────
+
+/** The edits of each thread, by card key. The card log redraws a waiting card from the server's form, so
+ *  the edits live beside it and go with it: a chat switch and a new mount of the chat keep them, and a new
+ *  run or the end of one clears them (`clearCardLog`). Memory only: a page reload is out of scope. */
+const _formEdits = new Map<string, FormEdits>();
+
+/** The kept edits of one thread, or undefined when there are none. */
+export function getFormEdits(threadId: string): FormEdits | undefined {
+  return _formEdits.get(threadId);
+}
+
+/** Keep the edits of one thread. An empty map keeps nothing. */
+export function keepFormEdits(threadId: string, edits: FormEdits): void {
+  if (edits.size === 0) _formEdits.delete(threadId);
+  else _formEdits.set(threadId, edits);
 }
 
 /** The card events of the run in flight, oldest first. */

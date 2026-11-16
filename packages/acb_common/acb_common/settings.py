@@ -744,6 +744,14 @@ class Settings(BaseSettings):
     # `gateway.routes.studio.flags.search_allowed`. A SIGHUP reload applies a
     # change (docs/flag_reload.md). Spec: ai_studio.md section 14 C5.
     studio_search_orgs: str = ""
+    # WS-FIND FIND-2: FIND_ORGS lists the org ids where each hit of
+    # `search_company` says how it matched (`matched_by`, `covers`, `of`), and
+    # the hit with the most words comes first. `*` opens every org. Empty
+    # opens none, and the answer is the one of KR-ZERO, byte for byte. It acts
+    # only with CONTEXT_RECENCY on. Reader: `gateway.retrieval.find.
+    # find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # Spec: find_engine.md section 8.
+    find_orgs: str = ""
     # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
     # door runs a first-party logic module (`logic:<name>`). `*` opens every
     # org. Empty opens none. Reader: `gateway.routes.studio.flags.
@@ -751,6 +759,14 @@ class Settings(BaseSettings):
     # A flip in production is the gate `enforcement-flip`. Spec: ai_studio.md
     # section 14 B4a.
     studio_logic_orgs: str = ""
+    # TOF-1a: STUDIO_CHAT_TOOLS_ORGS lists the org ids where the Studio
+    # action catalog serves one `tool:<name>` row for each chat tool of the
+    # CRM, Email, Projects and Calendar packs. `*` opens every org. Empty
+    # opens none, and the catalog then has no such row. Reader:
+    # `gateway.routes.studio.flags.chat_tools_allowed`. A SIGHUP reload
+    # applies a change (docs/flag_reload.md). A flip in production is the
+    # gate `enforcement-flip`. Spec: ai_studio.md section 14 TOF-1a.
+    studio_chat_tools_orgs: str = ""
     # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
     # `connections` of a Studio manifest bind. A missing connection then makes
     # the install `needs_setup`, and the action door refuses each action with
