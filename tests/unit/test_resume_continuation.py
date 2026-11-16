@@ -841,6 +841,9 @@ def test_the_continuation_has_no_turn_no_words_and_one_slot(monkeypatch, livenes
     assert seen["admits"] == 0, "the slot is the one that _resume_from_row took"
     assert seen["memory"] == [""], "memory reads no note"
     assert seen["starts"][0]["kw"]["record"]["runId"] == "run-cont"
+    # R11: the continuation run binds the SERVER-side tenant (the verifier of
+    # 7a5d938c4 found that no test caught a dropped organization_id here).
+    assert seen["starts"][0]["kw"]["organization_id"] == _ORG_A
 
 
 def test_the_run_end_extracts_no_note(monkeypatch, liveness, no_persist):
