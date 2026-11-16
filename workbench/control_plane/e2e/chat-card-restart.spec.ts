@@ -278,3 +278,230 @@ test.describe("A card answered after the assistant restarted", () => {
     await expectNoEnvelope(page);
   });
 });
+
+// ── RESUME-3a (task 3262): a late Approve resumes, with no restart ─────────
+//
+// `chat_run_continuity.md` §4.12.4 item 5, case B. The run parks on a plain
+// card (its stream ends with a `done` that carries `parked`). The member
+// reloads, and Approves. `respond-input` answers 200 `resumed` with a NEW run
+// id. The gateway lists that run, and the chat attaches to it: its stream
+// closes the card, and a new reply opens at the end of the chat.
+//
+// The "server" lives in `sessionStorage`, so it outlives the reload, as the
+// gateway does (`chat-run-status-fixture.ts`).
+
+const RESUME_RID = "f".repeat(32);
+const RESUME_TITLE = "Move Acme to Payment Complete?";
+const PARKED_TEXT = "I need your answer before I move the deal.";
+const RESUMED_TEXT = "Acme is now in Payment Complete.";
+
+async function installResume(page: Page, opts: { mintRow: boolean }) {
+  await page.addInitScript(({ RID, TITLE, PARKED, RESUMED, mintRow }) => {
+    // The first load only: a reload keeps the chat and the "server".
+    if (!sessionStorage.getItem("__inited")) {
+      window.localStorage.clear();
+      sessionStorage.setItem("__inited", "1");
+      sessionStorage.setItem("__srv", JSON.stringify({ phase: "none" }));
+    }
+    const w = window as unknown as Record<string, unknown>;
+    const read = () => JSON.parse(sessionStorage.getItem("__srv") || "{}");
+    const write = (patch: Record<string, unknown>) =>
+      sessionStorage.setItem("__srv", JSON.stringify({ ...read(), ...patch }));
+    w.__srv = { read, write };
+    const calls: string[] = [];
+    w.__calls = calls;
+    // Did a "Done" or a working row ever draw on this page load?
+    const seen = { done: 0 };
+    w.__seen = seen;
+    new MutationObserver(() => {
+      if (document.querySelector('[data-run-tone="done"]')) seen.done++;
+    }).observe(document, { subtree: true, childList: true, attributes: true });
+
+    const card = { title: TITLE, detail: "", context: "", request_id: RID };
+    const enc = new TextEncoder();
+    const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const orig = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const s = read();
+      if (url.includes("/api/chat/active-sessions")) {
+        const row = { threadId: s.threadId, agentName: "orchestrator", title: "Move Acme" };
+        if (s.phase === "r1") return json([{ ...row, state: "running", live: true, runId: "r1", startedAt: new Date(s.r1At).toISOString() }]);
+        // C1: after a park the gateway lists the row with no run id.
+        if (s.phase === "parked") return json([{ ...row, state: "needs_input", live: false, askKind: "confirmation" }]);
+        if (s.phase === "r2") return json([{ ...row, state: "running", live: true, runId: "r2", startedAt: new Date(s.r2At).toISOString() }]);
+        return json([]);
+      }
+      if (url.includes("/api/chat/pending-asks")) {
+        if (s.phase !== "parked") return json([]);
+        return json([{
+          requestId: RID, kind: "confirmation", event: "confirmation_requested",
+          payload: card, askedAt: new Date(s.r1At).toISOString(), answerBy: "new_run",
+        }]);
+      }
+      if (url.includes("/api/agent/respond-input")) {
+        calls.push("respond");
+        if (s.phase !== "parked") return json({ detail: "no question waits on that id" }, 409);
+        // RESUME-2a: the stored call runs in a NEW run, with a new reply row.
+        write({ phase: "r2", r2At: Date.now() });
+        return json({ ok: true, resumed: true, threadId: s.threadId, runId: "r2" });
+      }
+      if (url.includes("/api/auth/me")) {
+        return json({
+          email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
+          organization: { id: "00000000-0000-0000-0000-0000000000e2", slug: "e2e" },
+          roles: ["owner"], legacy_role: "executive", features: ["chat"],
+          features_denied: [], agents: ["orchestrator"], permissions: ["*"],
+          capabilities: [], denied: [], is_admin: true,
+        });
+      }
+      if (url.includes("/api/health")) return json({ gateway: "up", build: "e2e" });
+      if (url.includes("/api/chat/sessions")) {
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.includes("/room")) return json({ detail: "not a room" }, 403);
+        if (method === "GET" && url.includes("/messages") && s.threadId && url.includes(s.threadId) && s.phase !== "none" && s.phase !== "r1") {
+          // A read of the saved rows after the run ended: the poll's merge.
+          if (s.phase === "ended") calls.push("rows-after-end");
+          const rows: unknown[] = [
+            { id: s.userId, role: "user", content: "Move Acme to Payment Complete", timestamp: s.r1At },
+            { id: s.replyId, role: "assistant", content: PARKED, timestamp: s.r1At + 1, toolEvents: [] },
+          ];
+          // The gateway mints the continuation's reply row at its start
+          // (S14). `mintRow: false` is a row that only the fold writes, at
+          // the end, under an id the chat never saw (C2).
+          if (s.phase === "r2" && mintRow) rows.push({ id: "reply-r2", role: "assistant", content: "", timestamp: s.r2At, toolEvents: [] });
+          if (s.phase === "ended") rows.push({ id: mintRow ? "reply-r2" : "fold-r2", role: "assistant", content: RESUMED, timestamp: s.r2At, toolEvents: [] });
+          return json(rows);
+        }
+        return method === "GET" ? json([]) : json({ ok: true, saved: 1, unchanged: [] });
+      }
+      if (url.includes("/api/agent/chat")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if (body.reconnect) {
+          calls.push("reconnect");
+          if (read().phase !== "r2") return json({}, 404);
+          return new Response(new ReadableStream<Uint8Array>({
+            async start(c) {
+              // RESUME-2a: the continuation's first event closes the old card.
+              c.enqueue(frame({ type: "custom", name: "confirmation_resolved", value: { request_id: RID, answer: "APPROVE" } }));
+              await new Promise((r) => setTimeout(r, 400));
+              c.enqueue(frame({ type: "message_start", messageId: "m-r2" }));
+              c.enqueue(frame({ type: "delta", content: RESUMED, messageId: "m-r2" }));
+              c.enqueue(frame({ type: "message_end", messageId: "m-r2" }));
+              write({ phase: "ended" });
+              c.enqueue(frame({ type: "done", run_id: "r2" }));
+              c.close();
+            },
+          }), { status: 200, headers: { "content-type": "text/event-stream" } });
+        }
+        calls.push("send");
+        write({ phase: "r1", r1At: Date.now(), threadId: body.threadId, userId: body.userMessageId, replyId: body.assistantMessageId });
+        return new Response(new ReadableStream<Uint8Array>({
+          async start(c) {
+            c.enqueue(frame({ type: "message_start", messageId: "m-1" }));
+            c.enqueue(frame({ type: "delta", content: PARKED, messageId: "m-1" }));
+            c.enqueue(frame({ type: "message_end", messageId: "m-1" }));
+            c.enqueue(frame({ type: "custom", name: "confirmation_requested", value: card }));
+            // Nobody answers. The run parks on its card and ends.
+            await new Promise((r) => setTimeout(r, 1_500));
+            write({ phase: "parked" });
+            c.enqueue(frame({ type: "done", run_id: "r1", parked: true }));
+            c.close();
+          },
+        }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return orig(input, init);
+    };
+  }, { RID: RESUME_RID, TITLE: RESUME_TITLE, PARKED: PARKED_TEXT, RESUMED: RESUMED_TEXT, mintRow: opts.mintRow });
+  await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
+  await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
+}
+
+const resumeRow = (page: Page) => page.locator('[data-run-status="composer"]');
+const resumeCalls = (page: Page) => page.evaluate(() => (window as unknown as { __calls: string[] }).__calls);
+const doneSeen = (page: Page) => page.evaluate(() => (window as unknown as { __seen: { done: number } }).__seen.done);
+
+/** The run parks, the member reloads, and the card waits again. */
+async function parkAndReload(page: Page) {
+  await startTurn(page, RESUME_TITLE);
+  // The park: the row reads as a live wait, never "Done", and the card stays.
+  await expect(resumeRow(page)).toHaveAttribute("data-run-tone", "parked", { timeout: 15_000 });
+  await expect(resumeRow(page)).toContainText("Waiting for your answer");
+  await expect(resumeRow(page)).not.toContainText("·");
+  await page.waitForTimeout(3_000);
+  await expect(page.locator("[data-confirmation-approve]")).toBeVisible();
+  expect(await doneSeen(page)).toBe(0);
+
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: /^Message / })).toBeVisible({ timeout: 60_000 });
+  // The card comes back from the pending asks, with the same words.
+  await expect(page.locator("[data-confirmation-approve]")).toBeVisible({ timeout: 30_000 });
+  await expect(resumeRow(page)).toHaveAttribute("data-run-tone", "parked", { timeout: 30_000 });
+  await expect(resumeRow(page)).toContainText("Waiting for your answer");
+  await expect(resumeRow(page)).not.toContainText("·");
+  await expect(page.getByText(PARKED_TEXT).first()).toBeVisible();
+  expect(await doneSeen(page)).toBe(0);
+}
+
+/** Approve, and the new run goes on at the end of the chat. */
+async function approveAndResume(page: Page) {
+  const approve = page.locator("[data-confirmation-approve]");
+  await page.waitForTimeout(500); // ARM_MS: a new card ignores the first 400 ms
+  await approve.click();
+
+  // The card closes as "Approved", and the reply goes on in a new bubble.
+  const receipt = page.locator('[data-confirmation-receipt="approved"]');
+  await expect(receipt).toBeVisible({ timeout: 10_000 });
+  await expect(receipt).toContainText(`Approved · ${RESUME_TITLE}`);
+  await expect(page.getByText(RESUMED_TEXT).first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("[data-confirmation-approve]")).toHaveCount(0);
+}
+
+/** One new reply, below the parked one, which stays as it was. */
+async function expectOneNewReply(page: Page) {
+  const turns = page.locator("[data-rollup-turn]");
+  await expect(turns.filter({ hasText: RESUMED_TEXT })).toHaveCount(1);
+  const parked = turns.filter({ hasText: PARKED_TEXT });
+  await expect(parked).toHaveCount(1);
+  await expect(parked).not.toContainText(RESUMED_TEXT);
+  const texts = await turns.allInnerTexts();
+  const parkedAt = texts.findIndex((t) => t.includes(PARKED_TEXT));
+  const resumedAt = texts.findIndex((t) => t.includes(RESUMED_TEXT));
+  expect(resumedAt).toBeGreaterThan(parkedAt);
+  // No restart, before or after the reload, and no resend.
+  const body = await page.locator("body").innerText();
+  expect(body).not.toMatch(/restarted/i);
+  expect(body).not.toContain("stopped waiting");
+  expect(body).not.toContain("as a new message");
+  // After the reload, the chat only re-attached: it sent no turn of its own.
+  expect((await resumeCalls(page)).filter((c) => c !== "reconnect" && c !== "respond" && c !== "rows-after-end")).toEqual([]);
+  expect((await resumeCalls(page)).filter((c) => c === "reconnect").length).toBeGreaterThanOrEqual(1);
+}
+
+test.describe("A late Approve resumes the parked card (RESUME-3a)", () => {
+  test.describe.configure({ timeout: 150_000 });
+
+  test("a park shows no Done, and an Approve after a reload goes on in one new reply", async ({ page }) => {
+    await installResume(page, { mintRow: true });
+    await parkAndReload(page);
+    await approveAndResume(page);
+    await expectOneNewReply(page);
+  });
+
+  test("a reply row that only the fold writes still leaves one new reply (C2)", async ({ page }) => {
+    await installResume(page, { mintRow: false });
+    await parkAndReload(page);
+    await approveAndResume(page);
+    await expectOneNewReply(page);
+    // The poll reads the fold's row under its own id, and merges it into
+    // the reply that the chat drew. Still one.
+    await expect.poll(async () => (await resumeCalls(page)).filter((c) => c === "rows-after-end").length, { timeout: 40_000 })
+      .toBeGreaterThan(0);
+    await page.waitForTimeout(1_500);
+    await expect(page.locator("[data-rollup-turn]").filter({ hasText: RESUMED_TEXT })).toHaveCount(1);
+  });
+});
