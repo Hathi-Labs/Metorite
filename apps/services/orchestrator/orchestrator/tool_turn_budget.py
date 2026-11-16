@@ -13,9 +13,12 @@ Rules that bind:
 1. **One budget for each turn.** :class:`ToolTurnBudgetProvider` makes a new
    :class:`ToolTurnBudget` in ``before_run``, so the state dies with the turn
    and is never shared across runs, members or organizations.
-2. **Reads only.** A tool that is not marked read-only is never counted and
-   never stopped. A delegation tool and a tool that waits for the member are
-   exempt too.
+2. **An allow-list of reads.** Only a tool in ``watchdog.BUDGET_TOOLS`` that is
+   marked read-only is counted or stopped. A delegation tool and a tool that
+   waits for the member are exempt too, and a write is never touched.
+   **Parallel calls:** MAF runs the calls of one model response together
+   (``asyncio.gather``), so all start before any answer. The limit binds from
+   the next model round, not inside one round.
 3. **The stop does not run the tool.** After 3 empty or refused answers from
    one tool, the next call gets ``watchdog.stop_text`` as its result.
 4. **Dark.** ``TOOL_TURN_BUDGET_ORGS`` (a comma list of organization ids, or
@@ -32,6 +35,7 @@ from typing import Any
 from acb_common import get_logger
 from agent_framework import ContextProvider, FunctionMiddleware
 
+from orchestrator import watchdog
 from orchestrator.watchdog import ToolTurnBudget
 
 _log = get_logger("orchestrator.tool_turn_budget")
@@ -70,9 +74,14 @@ def tool_turn_budget_on(org: object = None) -> bool:
 def _budgeted(function: Any) -> bool:
     """True when *function* is a read tool that the budget may count and stop."""
     from acb_skills.progress_notice import _exempt, _is_read
+    from acb_skills.tool_guard import tool_name
 
     try:
-        return not _exempt(function) and _is_read(function)
+        return (
+            tool_name(function) in watchdog.BUDGET_TOOLS
+            and not _exempt(function)
+            and _is_read(function)
+        )
     except Exception:
         return False
 

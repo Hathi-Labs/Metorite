@@ -116,6 +116,19 @@ _REFUSED_START = re.compile(
     r"^(?:refused\b|not run\b|error:|give (?:at least|\d+ to \d+) )",
     re.IGNORECASE,
 )
+#: The tools that the budget covers: the read tools whose empty and refused
+#: texts are pinned by ``tests/unit/test_tool_turn_budget.py``. An allow-list,
+#: not "every read tool", because a tool such as ``get_errors`` answers "No
+#: errors found." on SUCCESS, and a clean answer must never end a turn.
+BUDGET_TOOLS: frozenset[str] = frozenset({"search_company", "find_tasks", "list_tasks"})
+
+#: A success phrase is never an empty answer, whatever a tool adds later.
+_SUCCESS_START = re.compile(
+    r"^no (?:\w+ ){0,2}(?:errors?|issues?|problems?|warnings?|changes?|conflicts?)\b"
+    r"|^nothing to (?:do|change|fix)\b",
+    re.IGNORECASE,
+)
+
 #: A real answer is long. An empty or refused one is short, so a long text
 #: never counts, whatever its first words say.
 _MAX_SHORT_ANSWER = 1500
@@ -124,8 +137,10 @@ _MAX_SHORT_ANSWER = 1500
 def is_empty_or_refused(text: object) -> bool:
     """True when a READ tool's answer *text* is empty or refused.
 
-    It is deliberately narrow. A miss leaves today's behaviour, and a false
-    hit would stop a tool that works. It reads only the shapes that the chat
+    It is narrow, but not exact: it reads the first words of a short text. A
+    miss leaves today's behaviour. A success phrase ("No errors found.") never
+    counts, and the budget covers only the :data:`BUDGET_TOOLS`, so a false hit
+    cannot stop a tool outside that list. It reads the shapes that the chat
     tools return now: the zero line of ``search_company``, "No task matches
     ...", the short-query refusal of ``find_tasks``, and the texts that start
     with "Refused", "Not run" or "Error:". Pinned by
@@ -136,15 +151,22 @@ def is_empty_or_refused(text: object) -> bool:
     body = text.strip()
     if not body or len(body) > _MAX_SHORT_ANSWER:
         return False
+    if _SUCCESS_START.match(body):
+        return False
     lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
     if _NOTHING_LINE in lines[:4]:
         return True
     return bool(_EMPTY_START.match(body) or _REFUSED_START.match(body))
 
 
+# Every C0 control character, and DEL. ESC and NUL must not reach the model.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def _short(value: object) -> str:
-    """One argument value on one line, with no quote, cut to ``_TRIED_CHARS``."""
-    return " ".join(str(value).replace('"', "'").split())
+    """One argument value on one line, with no quote and no control character."""
+    text = _CONTROL.sub(" ", str(value)).replace('"', "'")
+    return " ".join(text.split())
 
 
 def tried_form(arguments: object) -> str:
@@ -158,7 +180,7 @@ def tried_form(arguments: object) -> str:
             items = [(str(k), v) for k, v in dumped.items()]
         except Exception:
             items = []
-    shown = [f"{k}={_short(v)}" for k, v in items if v not in (None, "")]
+    shown = [f"{_short(k)}={_short(v)}" for k, v in items if v not in (None, "")]
     return " ".join(shown)[:_TRIED_CHARS]
 
 

@@ -328,3 +328,78 @@ def test_the_seam_is_wired_in_the_injection_order():
            / "_tool_injection.py").read_text(encoding="utf-8")
     head = src.split("    _apply_progress_notice(agents)\n", 1)[0]
     assert "    _apply_tool_turn_budget(agents)\n" in head.rsplit("_apply_steer_turns(agents)", 1)[1]
+
+
+# ── 6. The repair round of the verifier ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("text", [
+    "No errors found.", "No errors found in 3 file(s).", "No issues found.",
+    "No problems detected.", "No warnings.", "No changes.", "Nothing to do.",
+])
+def test_a_success_phrase_is_never_empty(text):
+    assert not is_empty_or_refused(text)
+
+
+def test_the_budget_covers_an_allow_list_and_not_every_read_tool():
+    assert {"search_company", "find_tasks", "list_tasks"} == watchdog.BUDGET_TOOLS
+    assert "get_errors" not in watchdog.BUDGET_TOOLS
+    assert "run_diagnostics" not in watchdog.BUDGET_TOOLS
+
+
+def _named_tool(name: str, ran: list[str], answer: str):
+    async def tool(query: str) -> str:
+        """A tool."""
+        ran.append(query)
+        return answer
+    tool.__name__ = name
+    tool.__qualname__ = name
+    return tool
+
+
+@pytest.mark.parametrize("name", ["get_errors", "run_diagnostics"])
+def test_a_clean_diagnostics_answer_is_never_stopped(flag_on, name):
+    ran: list[str] = []
+    qs = ("q1", "q2", "q3", "q4", "q5")
+    client = ScriptedClient([*[("calls", [(name, {"query": q})]) for q in qs], ("text", "Ok.")])
+    tool = _named_tool(name, ran, "No errors found.")
+    view = _view(Agent(client=client, name="probe", tools=[tool]))
+    asyncio.run(view.run("check"))
+    assert ran == list(qs)
+
+
+@pytest.mark.parametrize("name", ["ask_user", "ask_questions", "request_confirmation"])
+def test_ask_tools_are_never_counted_or_stopped(flag_on, monkeypatch, name):
+    """Even when the allow-list names them, ``_exempt`` keeps them out. Removing
+    the ``_exempt`` check from ``_budgeted`` turns this red."""
+    from orchestrator import tool_turn_budget as ttb
+
+    monkeypatch.setattr(watchdog, "BUDGET_TOOLS", frozenset({name}))
+    ran: list[str] = []
+    qs = ("q1", "q2", "q3", "q4", "q5")
+    client = ScriptedClient([*[("calls", [(name, {"query": q})]) for q in qs], ("text", "Ok.")])
+    tool = _named_tool(name, ran, "Refused: no.")
+    view = _view(Agent(client=client, name="probe", tools=[tool]))
+    asyncio.run(view.run("ask"))
+    assert ran == list(qs)
+    assert ttb._budgeted(Agent(client=ScriptedClient([]), name="p", tools=[tool]).default_options["tools"][0]) is False
+
+
+def test_a_delegation_tool_is_never_budgeted(monkeypatch):
+    from acb_skills.egress import is_delegation_tool
+    from orchestrator import tool_turn_budget as ttb
+
+    class Fn:
+        name = "call_agent"
+        __name__ = "call_agent"
+
+    assert is_delegation_tool(Fn())
+    monkeypatch.setattr(watchdog, "BUDGET_TOOLS", frozenset({"call_agent"}))
+    monkeypatch.setattr("acb_skills.progress_notice._is_read", lambda f: True)
+    assert ttb._budgeted(Fn()) is False
+
+
+def test_the_tried_form_strips_every_control_character():
+    form = tried_form({"query": "a\x1b[31mb\x00c\x07d\x7fe\nf", "ke\x1by": "v"})
+    assert not re.search(r"[\x00-\x1f\x7f]", form)
+    assert "ke y=v" in tried_form({"ke\x1by": "v"})
