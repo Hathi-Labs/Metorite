@@ -35,6 +35,11 @@ registry holds only tools with ``integration=None``.
    ``catalog_rows`` never holds one, because two packages can both hold
    ``object:items.list``, and the callers of ``catalog_rows`` key on the id.
 
+7. ``tool`` (TOF-1a): each chat tool of the CRM, Email, Projects and Calendar
+   packs, as ``tool:<name>``, class A, B or C by the one fail-closed rule of
+   ``gateway.studio.chat_tool_actions``. A row shows only for an org on
+   ``STUDIO_CHAT_TOOLS_ORGS``. No package and no door runs one.
+
 A manifest row takes ``input_schema`` from ``agent_apps.args_schema`` (AD-9).
 
 No row is class X. ``output_schema`` is null for every row until a later
@@ -82,8 +87,8 @@ from gateway.routes.agent_apps import args_schema
 from gateway.routes.studio import flags
 from gateway.routes.workflows.engine.tool_args import parse_args_schema
 from gateway.routes.workflows.tools import list_tools
+from gateway.studio import chat_tool_actions, mcp_actions, packages_store
 from gateway.studio import logic as _logic
-from gateway.studio import mcp_actions, packages_store
 from sqlalchemy import text
 
 router = APIRouter(
@@ -196,6 +201,14 @@ def _logic_rows() -> list[dict[str, Any]]:
     } for name, module in sorted(_logic.MODULES.items())]
 
 
+def _chat_tool_rows() -> list[dict[str, Any]]:
+    """The chat tools of the packs (TOF-1a), for an org on ``STUDIO_CHAT_TOOLS_ORGS``.
+    The org is the bound tenant. A dark org gives no row and loads no tool."""
+    if not flags.chat_tools_allowed(current_tenant()):
+        return []
+    return chat_tool_actions.chat_tool_rows()
+
+
 async def _mcp_rows() -> tuple[list[dict[str, Any]], bool]:
     """The MCP tools of the bound org from the cache (B1b-2), and ``stale``.
 
@@ -220,8 +233,9 @@ class CatalogRows(list):
 
 async def catalog_rows() -> CatalogRows:
     """Every row of the catalog: the door ops, the integration tools, the
-    published workflows of the bound org, the logic modules (B4a) and the MCP
-    tools (B1b-1, from the cache of B1b-2). The one source of the catalog.
+    published workflows of the bound org, the logic modules (B4a), the MCP
+    tools (B1b-1, from the cache of B1b-2) and the chat tools of the packs
+    (TOF-1a). The one source of the catalog.
     ``routes/studio/skills.py`` checks a skill's actions against it.
 
     ⚠️ It opens its own ``_tenant_session()`` for the workflows. A caller runs
@@ -229,7 +243,7 @@ async def catalog_rows() -> CatalogRows:
     read opens a session only when the cache of the org names a server."""
     mcp, stale = await _mcp_rows()
     rows = CatalogRows([*_manifest_rows(), *_integration_rows(), *await _workflow_rows(),
-                        *_logic_rows(), *mcp])
+                        *_logic_rows(), *mcp, *_chat_tool_rows()])
     rows.stale = stale
     return rows
 
