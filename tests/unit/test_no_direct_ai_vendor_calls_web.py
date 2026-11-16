@@ -16,7 +16,7 @@ What the TypeScript scan reads
 ------------------------------
 Each ``.ts``, ``.tsx``, ``.js`` and ``.mjs`` file under ``workbench/``, with
 no ``node_modules``, build output, test or ``e2e`` file, and no file of the
-operator console UI (``workbench/operator_console/``, the front of the Router).
+operator console UI (``workbench/operator_console/``, the staff app of the operator plane).
 It strips comments first, so a comment never counts. It counts:
 
 * an import of a vendor AI package, through ``import``, ``require`` or a
@@ -60,9 +60,11 @@ _SKIP_PARTS = frozenset({
     "node_modules", ".next", "dist", "build", "out", "coverage", "e2e",
     "__pycache__", ".git",
 })
-#: The operator console UI. It is the front of the Router (the plane that holds
-#: the vendor keys), so it names vendor hosts in its key guides. The Python fence
-#: exempts ``apps/services/customer_console/`` for the same reason.
+#: The operator console UI. It is the staff-only app of the operator plane (CP-8
+#: README), and that plane holds the vendor keys. Its only vendor hosts are the
+#: key-guide text of ``src/lib/providerGuides.ts``. The Python fence exempts
+#: ``apps/services/customer_console/``, the Router, for the same plane. The
+#: exemption also hides a real call added there, so keep that app free of one.
 _EXEMPT_PREFIXES = ("workbench/operator_console/",)
 _TEST_NAME = re.compile(r"\.(test|spec)\.[cm]?[jt]sx?$|\.d\.ts$")
 
