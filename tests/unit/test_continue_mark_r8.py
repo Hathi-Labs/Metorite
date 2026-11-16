@@ -8,6 +8,8 @@ non-privileged role under RLS. Each case reads the list through
 
 - a chat made by the WT-1 route gives the source id and title to its owner;
 - a member of the new chat who cannot read the source gets no title and no id;
+- a member who had the source and then lost it reads "an earlier chat" with
+  no title and no link, because the title is read at list time (§9.3 item 4);
 - a deleted source gives no mark (``ON DELETE SET NULL``);
 - a link to a chat of another organization never resolves;
 - an archived source stays readable, with its title and link;
@@ -15,7 +17,8 @@ non-privileged role under RLS. Each case reads the list through
 
 Mutations, each red here: resolve the title with a second query that skips
 ``SESSION_VISIBLE_SQL`` (the cannot-read case); read the source without the
-tenant (the other-org case); fill a mark for a NULL link (the deleted case).
+tenant (the other-org case); fill a mark for a NULL link (the deleted case); cache or store the title at
+continue time in the new chat row (the lost-access case).
 """
 
 # ruff: noqa: F811 -- a fixture is imported by name, and each test takes it as a parameter
@@ -83,6 +86,30 @@ def test_a_member_who_cannot_read_the_source_gets_no_title_and_no_id(db) -> None
             {"s": new, "b": BOB, "o": db.org_a})
     row = _mark(db, BOB, db.org_a, new)
     assert row is not None, "Bob reads the new chat"
+    assert row["continuedFrom"] == {"id": None, "title": None}
+    assert "Pricing deck" not in repr(row) and src not in repr(row)
+    assert _mark(db, BOB, db.org_a, src) is None
+
+
+@_DB_GATE
+def test_a_member_who_lost_access_to_the_source_loses_the_title(db) -> None:
+    src, new = _continued(db)
+    with db.admin_engine.begin() as c:
+        for sid in (src, new):
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, role, "
+                "organization_id) VALUES (:s, :b, 'member', CAST(:o AS uuid))"),
+                {"s": sid, "b": BOB, "o": db.org_a})
+    # While Bob is a participant of the source, the participant arm of
+    # SESSION_VISIBLE_SQL lists it, so he reads its title.
+    assert _mark(db, BOB, db.org_a, new)["continuedFrom"] == {
+        "id": src, "title": "Pricing deck"}
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "DELETE FROM chat_session_participant WHERE session_id = :s AND subject = :b"),
+            {"s": src, "b": BOB})
+    row = _mark(db, BOB, db.org_a, new)
+    assert row is not None, "Bob stays in the new chat"
     assert row["continuedFrom"] == {"id": None, "title": None}
     assert "Pricing deck" not in repr(row) and src not in repr(row)
     assert _mark(db, BOB, db.org_a, src) is None
