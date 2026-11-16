@@ -156,6 +156,13 @@ def find_on(monkeypatch):
     return _set
 
 
+@pytest.fixture()
+def claims_on(monkeypatch):
+    """``find.ABSENCE_CLAIMS`` on (FIND-4 review round 4), so the rules of
+    ``held`` false stay fenced. The product ships with it off."""
+    monkeypatch.setattr(find, "ABSENCE_CLAIMS", True)
+
+
 def run(q: str, user: Any = None, k: int = 5) -> dict[str, Any]:
     return asyncio.run(company.company_search(q=q, apps=None, k=k, user=user or member(*ALL)))
 
@@ -505,9 +512,11 @@ class TestTheFracktalCase:
         recency(True)
         find_on("*")
         answer = run("nuropeak")
+        # FIND-4 review round 4: `find.ABSENCE_CLAIMS` is off, so `held` is
+        # never false. The word alone found nothing, so it is not known.
         assert answer["near"] == [
-            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": False},
-            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": False},
+            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": None},
+            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": None},
         ]
         assert {h["id"] for h in answer["hits"]} == {"d-1", "m-7"}
         for hit in answer["hits"]:
@@ -518,8 +527,11 @@ class TestTheFracktalCase:
         recency(True)
         find_on("*")
         lines = cst.format_answer(run("nuropeak"), dated=True).splitlines()
-        assert lines[1] == ("No record holds «nuropeak». Records for the near spellings "
-                            "«Neuropeak» and «neuropeek»:")
+        # FIND-4 review round 4: no line says that no record holds the word.
+        # The line names the spellings and their records only.
+        assert lines[1] == ("Near spellings: «nuropeak» as «Neuropeak» (1 record), "
+                            "«nuropeak» as «neuropeek» (1 record).")
+        assert "No record holds" not in "\n".join(lines)
         assert any(line.endswith("[near: nuropeak as Neuropeak · 1 of 1 words]")
                    for line in lines)
         assert cst.NOTHING not in lines
@@ -551,8 +563,11 @@ class TestTheNearLookup:
         answer = run("nuropeak")
         assert time.monotonic() - began < 1.5
         assert answer["skipped"] == []
+        # FIND-4 review round 3: the CRM never gave its names, so a name of
+        # the word itself may hide there. `held` is not known.
         assert answer["near"] == [
-            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": False}]
+            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": None}]
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
 
     def test_a_failed_reader_gives_no_name_and_no_skip(self, world, recency, find_on):  # noqa: F811
         recency(True)
@@ -560,8 +575,10 @@ class TestTheNearLookup:
         world.broken.add("email")
         answer = run("nuropeak")
         assert answer["skipped"] == []
+        # FIND-4 review round 3: Email gave no names, so `held` is not known.
         assert answer["near"] == [
-            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": False}]
+            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": None}]
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
 
     def test_no_near_name_no_near_key(self, world, recency, find_on):  # noqa: F811
         recency(True)
@@ -624,7 +641,8 @@ class TestThePrint:
         lines = cst.format_answer(body, dated=True).splitlines()
         assert lines[1] == "No record holds «Laxmi x». Records for the near spelling «Lakshmi»:"
 
-    def test_the_route_says_held_from_the_words_alone_and_from_an_own_hit(self):
+    def test_the_route_says_held_from_the_words_alone_and_from_an_own_hit(
+            self, claims_on):
         def hit(ident: str, title: str, rung: str) -> Hit:
             return Hit(app="crm", kind="deal", id=ident, title=title, hint="", href="/x",
                        matched_by=rung)
@@ -632,17 +650,32 @@ class TestThePrint:
         near = [{"word": "Sharath", "as": "Sharat", "hits": 1},
                 {"word": "Laxmi", "as": "Lakshmi", "hits": 1},
                 {"word": "Puja", "as": "Pooja", "hits": 1}]
-        found = {"crm": [hit("a", "Laxmi Rao", "exact"), hit("b", "Puja Shah", "near")]}
+        # A near hit shows the spelling «Pooja», not the word. A hit that shows
+        # «Puja» itself makes `held` unknown (FIND-4 review round 3,
+        # `test_find_honest_zero.py`).
+        found = {"crm": [hit("a", "Laxmi Rao", "exact"), hit("b", "Pooja Shah", "near")]}
         broadened = [{"word": "sharath", "hits": 2, "skipped": []},
                      {"word": "puja", "hits": 0, "skipped": []}]
+        # FIND-4 review round 3: the near lookup ran for each word, and gave no
+        # name of the word itself (`looked`).
         got = {e["word"]: e["held"] for e in find.near_report(
             near, found, broadened, query="Sharath Laxmi Puja", first_zero=False,
-            skipped=[])}
+            skipped=[], looked=dict.fromkeys(("sharath", "laxmi", "puja"), True))}
         # Sharath alone found 2. Laxmi is in a hit of its own words. Puja is
         # only in a near hit, and alone it found nothing in every app.
         assert got == {"Sharath": True, "Laxmi": True, "Puja": False}
 
-    def test_held_is_unknown_unless_every_app_searched_the_word_alone(self):
+    def test_held_is_never_false_while_the_claim_is_off(self):
+        """FIND-4 review round 4: `find.ABSENCE_CLAIMS` ships off, so the
+        word that the switch would prove absent is not known."""
+        assert find.ABSENCE_CLAIMS is False
+        (entry,) = find.near_report(
+            [{"word": "Puja", "as": "Pooja", "hits": 1}], {},
+            [{"word": "puja", "hits": 0, "skipped": []}], query="Puja Shah",
+            first_zero=True, skipped=[], looked={"puja": True})
+        assert entry["held"] is None
+
+    def test_held_is_unknown_unless_every_app_searched_the_word_alone(self, claims_on):
         """P1-b: "No record holds" needs proof. A word alone that an app
         skipped, a first pass with a skipped app, and a word that was never
         searched alone (a query of more than 5 tokens) are all unknown."""
@@ -652,7 +685,7 @@ class TestThePrint:
                  query: str = "Puja Shah", limited: bool = False) -> Any:
             (entry,) = find.near_report(near, {}, broadened, query=query,
                                         first_zero=first_zero, skipped=list(skipped),
-                                        limited=limited)
+                                        limited=limited, looked={"puja": True})
             return entry["held"]
 
         zero = [{"word": "puja", "hits": 0, "skipped": []}]
@@ -666,7 +699,7 @@ class TestThePrint:
         assert held(None, query="Puja", skipped=["crm"]) is None
         assert held(None, query="Puja", first_zero=False) is True
 
-    def test_a_typed_token_that_is_not_the_word_proves_nothing(self):
+    def test_a_typed_token_that_is_not_the_word_proves_nothing(self, claims_on):
         """Round 3 (P2-2): the first pass searched "Sharath's" as typed. The
         CRM matches each typed token, so «Sharath BMS» was missed. The first
         pass is the word alone only when the typed token is the word."""
@@ -676,7 +709,7 @@ class TestThePrint:
                                         skipped=[])
             assert entry["held"] is None, query
         (entry,) = find.near_report(near, {}, None, query="Sharath", first_zero=True,
-                                    skipped=[])
+                                    skipped=[], looked={"sharath": True})
         assert entry["held"] is False
 
     def test_the_route_makes_no_claim_for_a_possessive(
@@ -689,7 +722,7 @@ class TestThePrint:
         assert [(e["word"], e["held"]) for e in answer["near"]] == [("Sharath", None)]
         assert "No record holds «" not in cst.format_answer(answer, dated=True)
 
-    def test_a_search_limited_by_a_date_or_by_verified_proves_nothing(self):
+    def test_a_search_limited_by_a_date_or_by_verified_proves_nothing(self, claims_on):
         """Round 3 (P3-3): with `after` or `verified_only`, an older or an
         unverified record may hold the word, so held is not known."""
         near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
@@ -699,7 +732,8 @@ class TestThePrint:
                                         skipped=[], limited=True)
             assert entry["held"] is None, query
 
-    def test_the_route_limits_held_with_after(self, world, recency, find_on):  # noqa: F811
+    def test_the_route_limits_held_with_after(
+            self, world, recency, find_on, claims_on):  # noqa: F811
         recency(True)
         find_on("*")
         answer = asyncio.run(company.company_search(

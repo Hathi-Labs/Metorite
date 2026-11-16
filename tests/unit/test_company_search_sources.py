@@ -421,9 +421,12 @@ class TestTheRouteTakesNoTenant:
     def test_the_route_takes_the_words_the_apps_k_and_after_and_nothing_else(self):
         # CX-1 added `after`, a date (company_context.md §4.5). It names no
         # org and no member. KB-9a added `background`, the route's own
-        # BackgroundTasks, which FastAPI fills and no request can set.
+        # BackgroundTasks, which FastAPI fills and no request can set. FIND-4
+        # added `explain`, a bool that names no org and no member
+        # (find_engine.md §3.7, §5.2).
         params = inspect.signature(company.company_search).parameters
-        assert set(params) == {"q", "apps", "k", "after", "verified", "user", "background"}
+        assert set(params) == {"q", "apps", "k", "after", "verified", "explain", "user",
+                               "background"}
         assert params["user"].default.dependency is get_current_user
         assert params["background"].annotation in (BackgroundTasks, "BackgroundTasks")
 
