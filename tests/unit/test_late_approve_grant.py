@@ -24,14 +24,17 @@ What this file holds (R7), each with the mutation that turns it red:
    same act, writes nothing on a late approve. Drop the live cleanup, and the
    twin writes a second time. Two cards of two acts in one thread each keep
    their own grant: key the grant by the thread alone, and one is lost.
+   RESUME-2a follow-up, P2-1: a drop never removes a SPENT mark that a twin's
+   claim writes in its window. Put back the GET and then the DELETE in
+   ``drop_offer``, and the mark goes.
 5. A late decline and a late REJECT write nothing and open nothing, and drop
    the offer. So does an answer that came during the park.
 6. A grant never crosses a thread, a member or an org.
 7. The cards that never take a grant: rows, ``bulk_update`` (it keys as
    ``update_task``), a send, a call with no act key, and a cut card. Test the
    family head and not the real tool, and ``bulk_update`` takes one.
-8. Off is today: with the flag off, nothing is read or written, and the
-   message is the same, byte for byte.
+8. Off is today: with this flag and ``CHAT_RESUME_ORGS`` off, nothing is
+   read or written, and the message is the same, byte for byte.
 9. A Redis fault shows the normal card.
 10. The new message reads as an approve, and only a grant adds its paragraph.
 11. The places: the grant write sits after the move of the row, and the use
@@ -197,6 +200,15 @@ class _Store:
         self._check("delete", k)
         self.ttl.pop(k.value, None)
         return 1 if self.data.pop(k.value, None) is not None else 0
+
+    async def delete_unless(self, k: Any, value: str) -> int:
+        """``TenantRedis.delete_unless``: ONE step, as the Lua script."""
+        self._check("delete_unless", k)
+        if k.value not in self.data or self.data[k.value] == value:
+            return 0
+        self.ttl.pop(k.value, None)
+        del self.data[k.value]
+        return 1
 
     def keys(self, namespace: str) -> list[str]:
         return sorted(k for k in self.data if f":{namespace}:" in k)
@@ -454,6 +466,9 @@ def test_the_spent_mark_is_one_set_get_and_one_writer_wins():
     assert "get=True" in src and ".get(" not in src
     assert "if await _spend(" in inspect.getsource(late_approve.take_grant)
     assert "spent = await _spend(" in inspect.getsource(late_approve.claim_act)
+    # P2-1: the drop never reads the offer and then deletes it.
+    drop = inspect.getsource(late_approve.drop_offer)
+    assert "redis.delete_unless(" in drop and "redis.get(" not in drop
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +653,76 @@ def test_an_answer_during_the_park_drops_the_offer(
     rid = _cards(liveness, tid)[0]["request_id"]
     assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
     assert _offers(late_on) == [] and late_on.keys(late_approve.ASK_NAMESPACE) == []
+
+
+class _Window(_Store):
+    """The fake Redis, with ONE window on the offer key *okey*: a twin's
+    claim lands after the drop read the key (a GET), or just before its one
+    atomic step (``delete_unless``). Both are the worst order."""
+
+    def __init__(self, okey: str) -> None:
+        super().__init__()
+        self.okey = okey
+        self.hook: Any = None
+        self.fired = 0
+
+    async def _twin(self, k: Any) -> None:
+        if self.hook is not None and k.value == self.okey:
+            hook, self.hook = self.hook, None
+            self.fired += 1
+            await hook()
+
+    async def get(self, k: Any) -> str | None:
+        out = await super().get(k)
+        await self._twin(k)
+        return out
+
+    async def delete_unless(self, k: Any, value: str) -> int:
+        await self._twin(k)
+        return await super().delete_unless(k, value)
+
+
+def test_a_drop_never_removes_a_mark_that_a_twin_claim_writes_in_its_window(monkeypatch):
+    """RESUME-2a follow-up, P2-1. Twin rows A and B of one act. B's
+    ``_resume_from_row`` drops its offer while the offer is still there. A's
+    continuation runs ``claim_act`` in the window of that drop and writes
+    SPENT. After the drop the mark is STILL there, so B's claim reads SPENT
+    and the act writes once. Mutation: put back the GET and then the DELETE
+    in ``drop_offer`` -> the DELETE removes the mark -> red."""
+    from acb_common import get_settings
+    from acb_common.tenant_redis import key, organization_scope
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
+    tid, digest = "t-p21-window", "e" * 32
+    with organization_scope(_ORG_A):
+        okey = key(late_approve.OFFER_NAMESPACE, _ALICE, tid, digest)
+        akey = key(late_approve.ASK_NAMESPACE, _ALICE, tid, "rid-b")
+    store = _Window(okey.value)
+    store.data[okey.value] = late_approve._encode("rid-a", "Move it?", ['["m","update_deal_status",[]]'])
+    store.data[akey.value] = digest
+    monkeypatch.setattr(late_approve, "_redis", lambda: store)
+
+    async def _a_claims() -> None:
+        # What A's `claim_act` does: ONE `SET … GET` of the mark.
+        assert await late_approve._spend(store, _ALICE, tid, digest) is False
+
+    async def go() -> bool:
+        store.hook = _a_claims
+        await late_approve.drop_offer(_ORG_A, _ALICE, tid, "rid-b")
+        with organization_scope(_ORG_A):
+            # B's claim, after the drop.
+            return await late_approve._spend(store, _ALICE, tid, digest)
+
+    b_spent = asyncio.run(go())
+    assert store.fired == 1, "non-vacuity: A's claim landed in the window of the drop"
+    assert store.data[okey.value] == late_approve._SPENT, "the drop kept the mark"
+    assert b_spent is True, "B reads SPENT, so the act writes once"
+    assert akey.value not in store.data, "B's own ask record goes"
+    # With no mark, the drop still removes a plain offer.
+    store.data[okey.value] = late_approve._encode("rid-a", "Move it?", ['["m","x",[]]'])
+    store.data[akey.value] = digest
+    asyncio.run(late_approve.drop_offer(_ORG_A, _ALICE, tid, "rid-b"))
+    assert okey.value not in store.data
 
 
 # ---------------------------------------------------------------------------
@@ -865,6 +950,13 @@ def test_the_real_crm_tool_of_two_runs_writes_once(
 def test_with_the_flag_off_nothing_is_read_or_written(
     flag_on, store, ask_db, liveness, no_persist, monkeypatch,
 ):
+    """``CHAT_LATE_APPROVE_ORGS`` AND ``CHAT_RESUME_ORGS`` off: no Redis call
+    at all, so each card and each message is byte for byte as before. Since
+    P2-2 either flag writes the SPENT mark, so both must be off here."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
     tid = "t-hrd22-off"
     assert "parked" not in _run(liveness, tid, live="APPROVE", deal_id="d-neuro", stage="Won")
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")

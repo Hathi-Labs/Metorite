@@ -34,6 +34,9 @@ R7, each with the mutation that turns it red:
   and a SET, and both continuations write.
 * ``test_the_spent_mark_outlives_the_twin_row`` (review, P1-A (c)) — drop the
   row life from ``late_approve.spent_ttl_s``.
+* ``test_a_twin_claim_in_the_window_of_a_drop_still_writes_once`` (follow-up,
+  P2-1) — put back the GET and then the DELETE in ``late_approve.drop_offer``,
+  and the twin writes a second time.
 * ``test_flag_off_the_answer_is_as_before`` (review, P1-A (a)) — RESUME with
   ``CHAT_LATE_APPROVE_ORGS`` off resumes, so the twin guard has no mark.
 * ``test_a_refusal_after_the_claim_gives_the_row_back`` (review, P2) — drop
@@ -598,6 +601,94 @@ def test_twin_rows_approved_at_the_same_moment_write_once(scene, monkeypatch):
             assert PATCHES == [("d-neuro", "Payment Complete")], "ONE write"
             assert len(_cards(r, tid)) == 3, "two parked cards, and one new card"
             assert sum("already ran in this chat" in n for n in NOTES) == 1
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+class _DropWindow:
+    """The real ``TenantRedis``, with ONE window in a route's drop of the
+    offer (outside a continuation run): the hook runs after a GET of the
+    offer key, or just before the one atomic step of ``delete_unless``. A
+    continuation's first write of the mark waits for :attr:`release`, so it
+    can only land inside that window."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.hook: Any = None
+        self.fired = 0
+        self.release = asyncio.Event()
+
+    async def set(self, k: Any, value: Any, **kwargs: Any) -> Any:
+        if (IN_CONT.get() and getattr(k, "namespace", "") == late_approve.OFFER_NAMESPACE
+                and not self.release.is_set()):
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.release.wait(), timeout=20)
+        return await self._inner.set(k, value, **kwargs)
+
+    async def _gap(self, k: Any) -> None:
+        if (self.hook is None or IN_CONT.get()
+                or getattr(k, "namespace", "") != late_approve.OFFER_NAMESPACE):
+            return
+        hook, self.hook = self.hook, None
+        self.fired += 1
+        await hook()
+
+    async def get(self, k: Any) -> Any:
+        out = await self._inner.get(k)
+        await self._gap(k)
+        return out
+
+    async def delete_unless(self, k: Any, value: str) -> Any:
+        await self._gap(k)
+        return await self._inner.delete_unless(k, value)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def test_a_twin_claim_in_the_window_of_a_drop_still_writes_once(scene, monkeypatch):
+    """RESUME-2a follow-up, P2-1, end to end. Twin rows A and B of one act,
+    approved seconds apart. B's ``_resume_from_row`` drops its offer, and
+    A's continuation runs its claim in the window of that drop (SPENT). The
+    drop keeps the mark, so B's continuation reads SPENT, shows its card,
+    and writes nothing: ONE PATCH. Mutation: put back the GET and then the
+    DELETE in ``late_approve.drop_offer`` -> the mark goes -> two PATCHes
+    -> red."""
+    from acb_common.tenant_redis import TenantRedis
+
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        try:
+            _use_redis(monkeypatch, client)
+            first = await _park(r, tid, w.org_a)
+            twin = await _park(r, tid, w.org_a)
+            win = _DropWindow(TenantRedis(client))
+            monkeypatch.setattr(late_approve, "_redis", lambda: win)
+            a = await _answer(tid, first, _ALICE, w.org_a)
+            assert isinstance(a, dict) and a["resumed"] is True, a
+            # A's continuation waits at its claim. B's drop opens the window,
+            # and A's claim and write land in it.
+            async def _a_claims_in_the_window() -> None:
+                win.release.set()
+                await _settle()
+
+            win.hook = _a_claims_in_the_window
+            b = await _answer(tid, twin, _ALICE, w.org_a)
+            assert isinstance(b, dict) and b["resumed"] is True, b
+            assert win.fired == 1, "non-vacuity: A's claim landed in B's drop"
+            assert PATCHES == [("d-neuro", "Payment Complete")], "A wrote in the window"
+            await _settle()
+            assert len(STARTED) == 2, "two continuations ran"
+            assert PATCHES == [("d-neuro", "Payment Complete")], "ONE write"
+            assert len(_cards(r, tid)) == 3, "two parked cards, and one new card"
+            assert "Metorite ran the tool" in NOTES[0]
+            assert "already ran in this chat" in NOTES[1]
         finally:
             await client.flushdb()
             await client.aclose()

@@ -92,7 +92,9 @@ describe("the card with a form (EAC-2)", () => {
     expect(html).not.toContain('data-card-field="due_at"');
     expect(html).not.toContain('data-card-field="assignees"');
     expect(html).not.toContain('data-card-field="not in the directory"');
-    expect(html).toContain('data-card-field="status"');
+    for (const key of ["start_date", "status", "important", "leveraged", "priority", "description"]) {
+      expect(html).not.toContain(`data-card-field="${key}"`);
+    }
     expect(html).toContain('data-card-field="project"');
     // Nothing changed: the hint of before, and an Approve that is on.
     expect(html).toContain(CONFIRM_HINT);
@@ -110,6 +112,36 @@ describe("the card with a form (EAC-2)", () => {
     expect(html).toContain("Edited: due 2027-02-03 · removed ann@acme.test.");
     expect(html).toContain("data-task-edit-reset");
     expect(html).toContain(TASK_EDITED_HINT);
+  });
+
+  it("form-draws-the-new-fields: a start date, a status, the flags and a description, with the values of the card", () => {
+    const html = card({ edit: form, onEditAnswer: noop });
+    expect(html).toMatch(/<input[^>]*id="task-start-[^>]*type="date"|<input[^>]*type="date"[^>]*id="task-start-/);
+    expect(html).toContain("data-task-edit-start");
+    expect(html).toContain('data-task-edit-status=""');
+    expect(html).toContain('role="switch"');
+    expect(html).toContain("data-task-edit-description-field");
+    expect(html).toContain("Ship the pack.</textarea>");
+    // The lanes load in the browser, so a server render shows the loading line and the lane as text.
+    expect(html).toContain("data-task-edit-lanes-note");
+    expect(html).toContain("data-task-edit-status-text");
+  });
+
+  it("form-draws-the-new-fields: kept edits show the new values, and a start after the due date warns without holding Approve", () => {
+    const kept = { ...VALUES, start: "2026-12-09", leveraged: true, description: "Changed" };
+    const html = card({ edit: form, onEditAnswer: noop, savedTaskEdits: kept });
+    expect(html).toContain("Edited: start 2026-12-09 · leveraged · new description.");
+    expect(html).toContain("data-task-edit-date-order");
+    expect(html).toContain('aria-checked="true"');
+    const approve = html.split("<").find((t) => t.includes("data-confirmation-approve")) ?? "";
+    expect(approve).not.toContain(' disabled=""');
+  });
+
+  it("a description with a control character holds Approve and says why", () => {
+    const html = card({ edit: form, onEditAnswer: noop, savedTaskEdits: { ...VALUES, description: "a\u0000b" } });
+    const approve = html.split("<").find((t) => t.includes("data-confirmation-approve")) ?? "";
+    expect(approve).toContain(' disabled=""');
+    expect(html).toContain("cannot save");
   });
 
   it("a due date that the server would refuse turns Approve off", () => {
@@ -181,12 +213,20 @@ describe("the wiring (EAC-2)", () => {
     expect(src).not.toMatch(/<input\b|<textarea\b|<select\b|<form\b|onSubmit/);
     expect(src).not.toContain("lucide-react");
     expect(src).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\b(?:bg|text)-(?:red|amber|sky|green|blue|violet)-/);
-    expect(src).toContain('import { Input } from "@/components/ui/Input";');
+    expect(src).toContain('import { Input, Textarea } from "@/components/ui/Input";');
     expect(src).toContain('import AssigneePicker from "@/app/projects/components/AssigneePicker";');
     expect(src).toContain('import AssigneeChips from "@/app/projects/components/AssigneeChips";');
     expect(src).toContain('type="date"');
+    // The lane list, the flags and the description are shared parts, and the lanes come from the one client.
+    expect(src).toContain('import SelectButton from "@/components/ui/SelectButton";');
+    expect(src).toContain('import Switch from "@/components/ui/Switch";');
+    expect(src).toContain("projectsApi.statuses(projectId)");
+    expect(src).toContain("Textarea");
     // A person is added on Enter or a pick, never on a blur, so a click on Approve cannot race the add.
     expect(src).toContain("commitOnBlur={false}");
+    // A typed person that the server would read as no answer gets a plain line, and no add.
+    // Mutation: drop the `kind === "bad"` branch of `commit`, and this turns red.
+    expect(src).toContain('if (direct.kind === "bad") { setLine(typedLine(direct)); return; }');
     // Escape clears the text that no Enter added.
     expect(src).toContain('e.key === "Escape" && typed');
     // The project id of the card never leaves the form: it is an id for a later slice, not an answer value.
