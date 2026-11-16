@@ -4278,7 +4278,7 @@ like a sent mail. It is not a profile fact, so D-PZ-1 and D-PZ-2 stand.
 
 **The writer.** One function in `acb_common` writes a row. Each act seam
 calls it: the send, reply and forward routes, the Reply Zero resolve route,
-archive, snooze, label, and the card answer in `ask_tools`. A fence fails on
+archive, snooze, label, and the card answer at `POST /agent/respond-input` (`gateway/card_act.py`, MM-1b: a room of one person only, a plain APPROVE or REJECT, no decline). A fence fails on
 a second writer.
 
 **The limits:**

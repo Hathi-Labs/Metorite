@@ -27,8 +27,8 @@ _AGENT = Path(card_act.__file__).parent / "routes" / "agent.py"
 
 @pytest.mark.parametrize("answer,declined,act", [
     ("APPROVE", False, "card_approve"), (" approve ", False, "card_approve"),
-    ("REJECT", False, "card_reject"), ("anything", True, "card_reject"),
-    ("", True, "card_reject"),
+    ("REJECT", False, "card_reject"), ("anything", True, None),
+    ("APPROVE", True, None), ("", True, None),
     ('{"kind":"send","body":"hi"}', False, None), ("YES", False, None), ("", False, None),
 ])
 def test_the_act_of_an_answer(answer: str, declined: bool, act: str | None) -> None:
@@ -48,7 +48,8 @@ def test_the_flag_off_opens_no_session(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("a session was opened")
 
     monkeypatch.setattr(db, "tenant_session", boom)
-    assert asyncio.run(card_act.record_card_answer(USER, "r1", "APPROVE")) is False
+    assert asyncio.run(card_act.record_card_answer(
+        USER, "r1", "APPROVE", shared_room=False)) is False
 
 
 def test_a_row_is_written_with_the_session_member_and_org(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,12 +73,22 @@ def test_a_row_is_written_with_the_session_member_and_org(monkeypatch: pytest.Mo
         return True
 
     monkeypatch.setattr(member_actions, "record_act", fake)
-    assert asyncio.run(card_act.record_card_answer(USER, "req-1", "APPROVE")) is True
+    assert asyncio.run(card_act.record_card_answer(
+        USER, "req-1", "APPROVE", shared_room=False)) is True
     assert seen == {"db": "DB", "org": ORG, "member": "ana@example.com", "app": "chat",
                     "act": "card_approve", "via": "card", "item_kind": "card",
                     "item_id": "req-1"}
-    assert asyncio.run(card_act.record_card_answer(USER, "req-2", "", True)) is True
+    assert asyncio.run(card_act.record_card_answer(
+        USER, "req-2", "REJECT", shared_room=False)) is True
     assert seen["act"] == "card_reject"
+    # A decline records nothing, and so does a shared room (PZ-32).
+    seen.clear()
+    assert asyncio.run(card_act.record_card_answer(
+        USER, "req-3", "", True, shared_room=False)) is False
+    assert asyncio.run(card_act.record_card_answer(USER, "req-4", "APPROVE")) is False
+    assert asyncio.run(card_act.record_card_answer(
+        USER, "req-4", "APPROVE", shared_room=True)) is False
+    assert seen == {}
 
 
 def test_a_failure_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,15 +100,17 @@ def test_a_failure_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("secret")
 
     monkeypatch.setattr(db, "tenant_session", boom)
-    assert asyncio.run(card_act.record_card_answer(USER, "r", "APPROVE")) is False
-    assert asyncio.run(card_act.record_card_answer(SimpleNamespace(), "r", "APPROVE")) is False
+    assert asyncio.run(card_act.record_card_answer(
+        USER, "r", "APPROVE", shared_room=False)) is False
+    assert asyncio.run(card_act.record_card_answer(
+        SimpleNamespace(), "r", "APPROVE", shared_room=False)) is False
 
 
-def test_the_route_calls_the_seam_after_delivery_and_on_a_late_decline() -> None:
+def test_the_route_calls_the_seam_after_delivery_in_a_room_of_one() -> None:
     src = _AGENT.read_text(encoding="utf-8")
-    assert src.count("record_card_answer(") == 2
+    assert src.count("record_card_answer(") == 1
     body = src.split("async def respond_user_input", 1)[1]
-    first = body.index("record_card_answer(user, req.request_id, req.answer, req.declined)")
+    first = body.index("record_card_answer(")
     assert body.index("delivered = await dispatch_control") < first
     assert first < body.index("record_reply_answer(")
-    assert "record_card_answer(user, req.request_id, req.answer, True)" in body
+    assert "shared_room=bool(room.is_shared)" in body

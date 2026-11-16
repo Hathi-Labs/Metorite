@@ -46,13 +46,14 @@ def world(promoted, monkeypatch):  # noqa: F811
 
 
 def _answer(world: Any, org: str | None, request_id: str, answer: str,
-            declined: bool = False) -> bool:
+            declined: bool = False, shared: bool = False) -> bool:
     user = SimpleNamespace(organization_id=org, email=ANA.upper())
 
     async def go() -> bool:
         dsn = world.p.app_url.render_as_string(hide_password=False)
         async with tenant_engine_scope(dsn):
-            return await card_act.record_card_answer(user, request_id, answer, declined)
+            return await card_act.record_card_answer(
+                user, request_id, answer, declined, shared_room=shared)
     return asyncio.run(go())
 
 
@@ -66,7 +67,7 @@ def _rows(world: Any) -> list[dict[str, Any]]:
 def test_r8_a_yes_and_a_no_land_as_card_acts(world) -> None:
     a = world.p.org_a
     assert _answer(world, a, "r" * 32, "APPROVE") is True
-    assert _answer(world, a, "s" * 32, "", declined=True) is True
+    assert _answer(world, a, "s" * 32, "REJECT") is True
     rows = _rows(world)
     assert [(r["app"], r["act"], r["via"], r["item_kind"]) for r in rows] == [
         ("chat", "card_approve", "card", "card"), ("chat", "card_reject", "card", "card")]
@@ -80,6 +81,8 @@ def test_r8_other_shapes_the_flag_and_no_org_write_nothing(world, monkeypatch) -
     a = world.p.org_a
     assert _answer(world, a, "t" * 32, '{"kind":"send","body":"hi"}') is False
     assert _answer(world, None, "t" * 32, "APPROVE") is False
+    assert _answer(world, a, "t" * 32, "", declined=True) is False
+    assert _answer(world, a, "t" * 32, "APPROVE", shared=True) is False
     monkeypatch.setattr(get_settings(), "member_actions_orgs", "", raising=False)
     assert _answer(world, a, "t" * 32, "APPROVE") is False
     assert _rows(world) == []

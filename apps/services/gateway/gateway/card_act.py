@@ -10,10 +10,19 @@ say in who answered, so the act is not recorded there.
 card's ``request_id`` as the item, and one act:
 
 * ``card_approve`` for the answer ``APPROVE``.
-* ``card_reject`` for the answer ``REJECT``, and for a decline ("Not now").
+* ``card_reject`` for the answer ``REJECT``.
 
 An answer of another shape (a reply form, ticked rows, an edit form) records
-nothing here. Each of those is an approve with content, and a later slice reads
+nothing here. A decline ("Not now") records nothing either: the decline also
+closes a clarifying question, which is not a "no" to an act.
+
+**Only a room of one person.** The route cannot see which member the card asked
+(the run binds it, PZ-32). In a shared room, a second member who can send may
+press a card that asked the first one, and the run then reads that press as no
+choice. So the route records an answer only when the room has no second human
+(``room.is_shared`` is False). The session member then is the member that the
+run asked. A shared room records no card answer until a later slice records it
+on the run side, where the card's member and the run's verdict are known. Each of those is an approve with content, and a later slice reads
 it. A card steer ("make it shorter", ``card_revise``) does not come through this
 route, so this slice records no revise either. The row holds no text of the
 card or of the answer.
@@ -25,7 +34,9 @@ nothing. It never raises, and the session is opened only when
 
 **The route rows and this row.** An approved email card makes the email route
 write its own row (``via=app``, with the mailbox and the sender domain). The
-card row has no features, so ``member_habits`` never counts it with the mail row.
+two rows are by design: the card row says the member answered a card, and the
+route row is the act, with the features. The card row has no features, so
+``member_habits`` never counts it with the mail row.
 """
 
 from __future__ import annotations
@@ -38,9 +49,10 @@ _log = get_logger(__name__)
 
 
 def act_of(answer: str, declined: bool) -> str | None:
-    """The act of a card answer, or None when it is not a plain yes or no."""
+    """The act of a card answer, or None when it is not a plain yes or no. A
+    decline is never an act (see the module text)."""
     if declined:
-        return "card_reject"
+        return None
     said = str(answer or "").strip().upper()
     if said == "APPROVE":
         return "card_approve"
@@ -50,9 +62,13 @@ def act_of(answer: str, declined: bool) -> str | None:
 
 
 async def record_card_answer(user: Any, request_id: str, answer: str,
-                             declined: bool = False) -> bool:
-    """Record the member's answer to a card. True when a row was written."""
+                             declined: bool = False, *, shared_room: bool = True) -> bool:
+    """Record the member's answer to a card. True when a row was written.
+    *shared_room* defaults to True, so a caller that does not say records
+    nothing."""
     try:
+        if shared_room:
+            return False
         org = str(getattr(user, "organization_id", None) or "")
         email = str(getattr(user, "email", None) or "")
         act = act_of(answer, declined)

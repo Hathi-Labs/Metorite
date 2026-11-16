@@ -4170,7 +4170,9 @@ async def respond_user_input(
         # MEMBER_ACTIONS_ORGS, and it never fails the answer.
         from gateway.card_act import record_card_answer  # noqa: PLC0415
 
-        await record_card_answer(user, req.request_id, req.answer, req.declined)
+        await record_card_answer(
+            user, req.request_id, req.answer, req.declined,
+            shared_room=bool(room.is_shared))
     if delivered and not req.declined:
         # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
         # a reply card's answer, only AFTER the thread that owns the card took
@@ -4189,9 +4191,6 @@ async def respond_user_input(
         # chose to do something else. A card with a durable row closes, so
         # it never draws again. Anything else is the plain 409.
         if await _late_decline_from_row(req, user):
-            from gateway.card_act import record_card_answer  # noqa: PLC0415
-
-            await record_card_answer(user, req.request_id, req.answer, True)
             _log.info(
                 "agent.pending_ask_declined_late",
                 request_id=req.request_id[:12], thread_id=req.thread_id[:12],
