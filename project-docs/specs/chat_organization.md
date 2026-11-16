@@ -268,7 +268,7 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 | CO-8 | 3507 | Later | The Save to Knowledge suggestion | AGENT-SAFE, dark | The suggestion saves nothing by itself |
 | CO-9 | 3508 | Later | The gap count (§8.3) | AGENT-SAFE. The flag is `KNOWLEDGE_GAPS` | A gap under 5 askers does not show |
 | CO-10 | 3509 | 1 | Turn on the job worker and chat summaries for HathiLabs (§19 question 1) | **OWNER-GATE**. `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (D-PZ-35) | An idle chat on production has a stored summary, and the next new chat shows it |
-| CO-11 | 3510 | 2 | Pin (§18). **BUILT, dark** (2026-11-16), flag `CHAT_PIN_ORGS`. Chat parity: a separate slice, needs cal-tasks | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
+| CO-11 | 3510 | 2 | Pin (§18). **BUILT, dark** (2026-11-16), flag `CHAT_PIN_ORGS`. Chat parity: a follow-up slice, CO-11b (task 3563), needs cal-tasks. The flip waits for §18, §19 question 8 and the parity ceiling (§18) | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
 | CO-12 | 3511 | 2 | First-run hints and the empty state (§17.2, §17.3) | AGENT-SAFE | Each hint shows once per member, and the empty state shows no private topic of a colleague |
 | CO-13 | 3512 | 3 | The continue mark (§17.5) | AGENT-SAFE | A continued chat shows its source, and `test_continued_from_readers.py` stays green |
 | CO-14 | 3513 | Later | The length cue (§17.4). It waits for HRD-19 (task 2998) | AGENT-SAFE | The cue shows at 60 % and not below, and a tap runs Start clean |
@@ -661,9 +661,16 @@ and the default is empty.
 - **The purge.** The member purge deletes each row of the member in the
   bound org (`chat_member_rows`). A Delete of the chat deletes its rows.
 - **Chat parity: not built.** No chat tool lists or opens chats today. The
-  chat tool of the pin is a separate slice of P-7. It can need a line in
-  `tool_packs.py`, which the cal-tasks session owns. The two acts are debt
-  rows of P-7 in `acb_skills/chat_parity.py`.
+  chat tool of the pin is a follow-up slice of P-7: CO-11b, task 3563. It
+  can need a line in `tool_packs.py`, which the cal-tasks session owns. The
+  two acts are debt rows of P-7 in `acb_skills/chat_parity.py`, and the debt
+  ceiling of the chat goes from 25 to 27.
+
+**Before the flag flip.** The owner does three things first:
+
+1. Accept §18. It is still PROPOSED (§15 to §20).
+2. Answer §19 question 8: does a restore show the pin again?
+3. Accept the raise of the parity debt ceiling of the chat from 25 to 27.
 
 ## 19. Owner questions
 

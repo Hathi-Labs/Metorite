@@ -89,6 +89,8 @@ onClear(() => {
   setGuideAllowed(null);
   // A new member: Module Studio is off until their own read says so (STU-Q15a).
   setModuleRuns(false);
+  // A new member: the skill offer is off until their own read says so (TOF-1d).
+  setSkillOffer(false);
   // A new member: the chat pin is off until their own read says so (CO-11).
   setChatPin(false);
 });
@@ -178,6 +180,61 @@ export function useModuleRunsOn(): boolean {
   );
 }
 
+// ── The skill offer (WS-TOF TOF-1d, `ai_studio.md` §14) ────────────────────
+//
+// `skill_offer` is a fact of the server, as `module_runs` is:
+// `STUDIO_SKILL_OFFER_ORGS` on the gateway holds the member's org, and so does
+// `STUDIO_ORGS`. It replaces the build-time `NEXT_PUBLIC_SKILL_OFFER`, so a
+// flip needs no rebuild and holds for the listed orgs only. The chat draws the
+// card "Save this as a skill?" only when it is true, and it reads no catalog
+// for the offer before. The shell read is the one writer. Before the read
+// answers, after a failed read and after a member change, it reads as off.
+
+let skillOfferHere = false;
+const skillOfferListeners = new Set<() => void>();
+
+function setSkillOffer(on: boolean): void {
+  if (skillOfferHere === on) return;
+  skillOfferHere = on;
+  skillOfferListeners.forEach((l) => l());
+}
+
+/**
+ * The skill offer switch in an answer: true only when the gateway says
+ * `skill_offer: true`. A missing field, as from an older gateway, is off.
+ */
+export function skillOfferOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { skill_offer?: unknown }).skill_offer === true;
+}
+
+/** What the last shell read of this page said about the skill offer. */
+export function skillOfferAllowed(): boolean {
+  return skillOfferHere;
+}
+
+/**
+ * Live: whether the chat may offer to save a finished turn as a skill. The
+ * server snapshot is the live value too: no shell read runs on the server, so
+ * it is false there, and a test that sets it draws the card in static markup.
+ */
+export function useSkillOfferOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      skillOfferListeners.add(l);
+      return () => {
+        skillOfferListeners.delete(l);
+      };
+    },
+    skillOfferAllowed,
+    skillOfferAllowed,
+  );
+}
+
+/** Tests only: set what the shell read said about the skill offer. */
+export function __setSkillOfferForTests(on: boolean): void {
+  setSkillOffer(on);
+}
+
 // ── The chat pin (WS-CO CO-11, `chat_organization.md` §18) ─────────────────
 //
 // `chat_pin` is a fact of the server, as `module_runs` is: `CHAT_PIN_ORGS` on
@@ -242,6 +299,8 @@ export async function readShellPrefs(): Promise<StoredShell> {
   setGuideAllowed(guideOn(body));
   // And it tells `/studio` whether the Module Studio tab shows (STU-Q15a).
   setModuleRuns(moduleRunsOn(body));
+  // And it tells the chat whether it may offer to save a turn as a skill (TOF-1d).
+  setSkillOffer(skillOfferOn(body));
   // And it tells the chat list whether it shows Pin and the Pinned group (CO-11).
   setChatPin(chatPinOn(body));
   return layout;

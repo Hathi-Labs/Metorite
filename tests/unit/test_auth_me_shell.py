@@ -690,6 +690,54 @@ class TestTheModuleRunsFlag:
         assert "module_runs" not in json.loads(params["shell_prefs"])
 
 
+class TestTheSkillOfferFlag:
+    """The chat draws the skill offer only when the read says `skill_offer: true`
+    (WS-TOF TOF-1d). `gateway.routes.studio.flags.skill_offer_allowed` is the one
+    reader, STUDIO_ORGS must hold the org too, and the org is the session's."""
+
+    @staticmethod
+    def _orgs(monkeypatch: pytest.MonkeyPatch, offer: str, studio: str) -> None:
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "studio_skill_offer_orgs", offer, raising=False)
+        monkeypatch.setattr(get_settings(), "studio_orgs", studio, raising=False)
+
+    @pytest.mark.parametrize(("offer", "studio", "org", "on"), [
+        ("*", "*", "org-a", True),
+        ("org-b, ORG-A", "org-a", "org-a", True),
+        ("org-b", "*", "org-a", False),
+        ("", "*", "org-a", False),
+        ("*", "", "org-a", False),
+        ("*", "*", None, False),
+    ])
+    def test_the_read_says_skill_offer_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        offer: str, studio: str, org: str | None, on: bool,
+    ) -> None:
+        self._orgs(monkeypatch, offer, studio)
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["skill_offer"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._orgs(monkeypatch, "org-b", "*")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["skill_offer"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._orgs(monkeypatch, "*", "*")
+        body = {"pins": ["/tasks"], "skill_offer": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["skill_offer"] is True
+        [(_, params)] = _writes(fake)
+        assert "skill_offer" not in json.loads(params["shell_prefs"])
+
+
 # ── The chat pin flag (WS-CO CO-11, `chat_organization.md` §18) ─────────────
 
 
@@ -748,7 +796,7 @@ class TestTheWrite:
                                    headers={"Content-Type": "application/json"})
         assert res.status_code == 200
         assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
-                              "chat_pin": False}
+                              "skill_offer": False, "chat_pin": False}
         [(sql, params)] = _writes(fake)
         assert sql.startswith("UPDATE user_settings SET shell_prefs = NULL")
         assert params == {"uid": "ana@alpha.example"}
@@ -792,7 +840,7 @@ class TestTheRead:
         res = _client(_user()).get("/auth/me/shell")
         assert res.status_code == 200
         assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
-                              "chat_pin": False}
+                              "skill_offer": False, "chat_pin": False}
 
     def test_a_failed_read_is_503_never_the_empty_layout(self, fake: _FakeDB) -> None:
         fake.fail = True
@@ -807,7 +855,7 @@ class TestTheRead:
                         "known": None, "cardOrder": None, "newOrder": ["capture"],
                         "chat_first_message_at": None, "tour_seen_at": None,
                         "buddy_hello_at": None, "guide": False, "module_runs": False,
-                        "chat_pin": False}
+                        "skill_offer": False, "chat_pin": False}
 
     def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "answered", "preset": "engineer",
