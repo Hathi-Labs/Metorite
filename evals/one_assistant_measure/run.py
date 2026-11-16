@@ -227,8 +227,10 @@ def cached_of(usage: dict[str, Any]) -> int:
     return int(details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0)
 
 
-def cost_of(usage: dict[str, Any], card: dict[str, Any] = RATE_CARD) -> tuple[float, str]:
-    """The USD cost of one call, and its source: ``vendor`` or ``card``."""
+def cost_of(usage: dict[str, Any], card: dict[str, Any]) -> tuple[float, str]:
+    """The USD cost of one call, and its source: ``vendor`` or ``card``. *card*
+    is the card of one model (:func:`spend.card_of`). It has no default, so no
+    caller gets a cheap card by accident."""
     if isinstance(usage.get("cost"), (int, float)):
         return float(usage["cost"]), "vendor"
     rate = card["usd_per_1m"]
@@ -247,13 +249,19 @@ def call_row(c: ModelCall) -> dict[str, Any]:
     usage frame that was not refused is priced from its request size, as the
     worst case (``cost_source`` ``estimate``). A call that starts in a DeepSeek
     peak band counts double (``peak``), because ``usage.cost`` does not know
-    the band. A refused call (status 4xx or 5xx) costs nothing."""
+    the band. A refused call (status 4xx or 5xx) costs nothing.
+
+    The card is that of the model that SERVED the call (TS-7a-cap). An unknown
+    model gets the most expensive rate. ``unpriced`` marks a call that the
+    card had to guess: no vendor cost, and a served name that the card does
+    not hold. A live run stops on it (:func:`run_live`)."""
     mapped = bool(c.requested)
-    card = spend.card_for(c.served, c.model, RATE_CARD, mapped)
+    card = spend.card_of(c.served, RATE_CARD)
     usd, source = cost_of(c.usage, card)
     if not c.usage and (c.status is None or c.status < 400):
         usd, source = spend.unseen_usage_usd(c.request_chars, card), "estimate"
-    peak = bool(c.wall) and spend.is_peak(datetime.fromtimestamp(c.wall, UTC))
+    peak = (bool(c.wall) and card["peak"]
+            and spend.is_peak(datetime.fromtimestamp(c.wall, UTC)))
     if peak:
         usd *= spend.PEAK_FACTOR
 
@@ -271,6 +279,9 @@ def call_row(c: ModelCall) -> dict[str, Any]:
         "reasoning": int((c.usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
                          or 0),
         "cost_usd": round(usd, 6), "cost_source": source, "peak": peak,
+        "card": card["model"],
+        "unpriced": (bool(c.served) and not card["known"] and source != "vendor"
+                     and (c.status is None or c.status < 400)),
     }
 
 
@@ -622,6 +633,71 @@ def tap_system_one(mp: Any, sink: list[ModelCall]) -> None:
     mp.setattr(system_one, "_build_agent", build)
 
 
+def tap_every_agent(mp: Any) -> None:
+    """Put the wire tap on the client of EVERY agent that a factory builds.
+
+    ``harness._tap`` wraps the client of the first agent only. A specialist
+    or a worker whose factory builds two agents on two clients would send the
+    calls of the second one past the tap. Those sends count at the worst case
+    as ``unseen``, but the card can price a tapped call exactly. This replaces
+    the module function from here, so no harness file changes. A client that
+    has the tap already keeps one tap (``_tap`` checks it)."""
+    real = harness_mod._tap
+
+    def tap_all(agents: list[Any], name: str, sink: list[ModelCall]) -> None:
+        for agent in agents:
+            real([agent], name, sink)
+
+    mp.setattr(harness_mod, "_tap", tap_all)
+
+
+#: The status of a send that the cap refused. The OpenAI client does not
+#: retry it, and it does not read as a lost Router (:func:`_lost_the_router`).
+CAP_STATUS = 402
+
+
+def cap_sends(mp: Any, refuse: Any, refused: list[str]) -> None:
+    """Check the cap before each model send, inside a turn (TS-7a-cap).
+
+    *refuse* answers a reason when the next send must not go out, else an
+    empty string. The send then gets a local answer with :data:`CAP_STATUS`,
+    and the Router never sees it. The turn ends with that error, and the reason
+    goes in *refused*. Before this, the cap ran between turns only, so one turn
+    of 14 calls could pass it by all 14."""
+    real = harness_mod._WireTap.handle_async_request
+
+    async def handle(tap: Any, request: httpx.Request) -> httpx.Response:
+        why = refuse()
+        if why:
+            refused.append(why)
+            return httpx.Response(CAP_STATUS, request=request,
+                                  json={"error": {"message": f"the eval cap: {why}",
+                                                  "type": "eval_cap"}})
+        return await real(tap, request)
+
+    mp.setattr(harness_mod._WireTap, "handle_async_request", handle)
+
+
+def _cap_each_send(harness: RoutingHarness, should_stop: Any, turn_at: list[int],
+                   refused: list[str]) -> None:
+    """Ask *should_stop* before each model send, with the counted USD of the
+    turn so far: its tapped calls, and its sends that no tap saw at the worst
+    case. *turn_at* holds the marks of the turn, ``[model calls, Router sends]``.
+    A call still in flight has no usage yet, so it counts at the worst case.
+    No *should_stop* (a scripted run) installs nothing."""
+    if should_stop is None:
+        return
+
+    def refuse() -> str:
+        calls = harness.model_calls[turn_at[0]:]
+        unseen = max(0, len(harness.passed) - turn_at[1] - len(calls))
+        extra = (sum(call_row(c)["cost_usd"] for c in calls)
+                 + spend.unseen_sends_usd(unseen, RATE_CARD))
+        return f"USD {extra:.4f} counted in this turn before the send" if should_stop(extra) else ""
+
+    cap_sends(harness._mp, refuse, refused)
+
+
 #: The tools of the orchestrator that read the LOCAL database of the machine
 #: that runs the eval, in process. The first live run of OA-8e let them answer,
 #: and records of the local dev database reached the Router as tool results.
@@ -684,6 +760,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     *router* None is a scripted run: the plans of *sc* play, or *models*.
     *should_stop* is called before each turn after the first: when it answers
     True the chat ends there, so a budget stops the run inside a long chat.
+    It is also called before each model send, with the counted USD of the
+    turn so far (TS-7a-cap). When it answers True there, the send does not go
+    out (:func:`cap_sends`), and the row says ``capped``.
     Returns one row for each turn.
     """
     from acb_common import get_settings
@@ -693,12 +772,17 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     live = router is not None
     rows: list[dict[str, Any]] = []
     with RoutingHarness(live=live, real_specialists=live) as harness:
+        tap_every_agent(harness._mp)
         if live:
             _use_router(harness, router)
             harness._mp.setattr(harness_mod, "MODEL_REWRITE", dict(tier_map or {}))
         harness.mailboxes = mb.BOXES
         no_local_database(harness._mp)
         tap_schemas(harness._mp)
+        # The marks of the turn that runs now: (model calls, Router sends).
+        turn_at = [0, 0]
+        refused: list[str] = []
+        _cap_each_send(harness, should_stop, turn_at, refused)
         if sc.without_features:
             # TS-5a. The harness grants every feature of a pane. This chat's member
             # lacks some, so the run reads the narrower set (``in_app_path`` reads
@@ -766,7 +850,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 break
             marks = (len(gateway.calls), len(member.cards), len(harness.model_calls),
                      len(tap.events), len(harness.sent), len(harness.passed),
-                     len(store.calls), len(work.calls))
+                     len(store.calls), len(work.calls), len(refused))
+            turn_at[:] = [marks[2], marks[5]]
             # The gateway binds the app that the member is in, for this turn.
             with tool_packs.surface_scope(sc.surface):
                 record = asyncio.run(harness.drive(
@@ -833,6 +918,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "router_sends": len(harness.passed) - marks[5],
                 "unseen_sends": unseen,
                 "unseen_usd": round(spend.unseen_sends_usd(unseen, RATE_CARD), 6),
+                # TS-7a-cap: the first send that the cap refused in this turn.
+                "capped": next(iter(refused[marks[8]:]), None),
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
                 "set": sc.set, "surface": sc.surface,
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
@@ -866,6 +953,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "find_tools_offered": find_requests > 0,
                 "find_tools_requests": find_requests,
             }
+            if row["capped"]:
+                # TS-7a-cap: the turn did not end, so no check scores it.
+                row["passed"] = None
             marked = marked or row["mark_writes"] > 0
             rows.append(row)
             if on_turn is not None:
@@ -1004,12 +1094,29 @@ def _packs_before_first_call(row: dict[str, Any]) -> bool:
                for e in row.get("pack_events") or [])
 
 
+def capped_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The turns in which the cap refused a send (TS-7a-cap). Such a turn did
+    not end, so no check scores it. Its spend still counts."""
+    return [r for r in rows if r.get("capped")]
+
+
+def turn_state(row: dict[str, Any]) -> str:
+    """``CAPPED``, ``pass`` or ``FAIL``. A capped turn is not a product failure."""
+    if row.get("capped"):
+        return "CAPPED"
+    return "pass" if row["passed"] else "FAIL"
+
+
 def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The numbers of each arm. A capped turn is not scored: it is not in the
+    pass rate, in a stop result or in a per-arm number. Its spend stays in
+    ``cost_usd`` of the arm, and ``capped_turns`` counts it."""
     by_arm: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         by_arm[r.get("arm_label") or r["arm"]].append(r)
     out: dict[str, Any] = {}
-    for arm, rs in by_arm.items():
+    for arm, every in by_arm.items():
+        rs = [r for r in every if not r.get("capped")]
         totals = [turn_totals(r) for r in rs]
         per_check: dict[str, list[int]] = defaultdict(lambda: [0, 0])
         for r in rs:
@@ -1068,7 +1175,9 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "completion_per_turn": _mean([t["completion"] for t in totals]),
             "cost_per_turn_usd": round(statistics.fmean([t["cost_usd"] for t in totals]), 5)
             if totals else None,
-            "cost_usd": round(sum(t["cost_usd"] for t in totals), 4),
+            # The spend of the arm keeps its capped turns: the Router billed them.
+            "cost_usd": round(sum(turn_totals(r)["cost_usd"] for r in every), 4),
+            "capped_turns": len(every) - len(rs),
             "per_check": {k: f"{p}/{n}" for k, (p, n) in sorted(per_check.items())},
             "by_scenario": {k: f"{p}/{n}" for k, (p, n) in by_scenario.items()},
             **extra_summary(rs),
@@ -1225,6 +1334,24 @@ def set_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
 SEARCH_STOP_PCT = 15
 
 
+def _stop_seven(dele: dict[str, Any], packs: dict[str, Any]) -> tuple[int, str, str]:
+    """Stop result 7: the pack arm costs more a turn than delegation.
+
+    TS-7a-cap. A capped turn is not scored, so an arm whose turns were all
+    capped has no cost a turn (None). Two None values do not compare, and the
+    report crashed. Such an arm reads ``n/a``. An arm with scored turns only in
+    the ``email`` or ``fanout`` set keeps the comparison it had before."""
+    a, b = dele.get("cost_per_turn_usd"), packs.get("cost_per_turn_usd")
+    why = f"packs USD {b} vs delegation {a}"
+    if a is None or b is None:
+        return 7, "n/a", f"no scored turns: {why}"
+    cost = [v["by_set"][n]["cost_per_turn_usd"] for v in (dele, packs)
+            for n in v["by_set"] if n not in ("email", "fanout")]
+    if None in cost:
+        return 7, "n/a", why
+    return 7, "STOP" if b > a else "ok", why
+
+
 def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
     """The twelve stop results of §4.3.3 that one results file can show, as
     ``(number, state, why)``. State: ``STOP``, ``ok`` or ``n/a``. Results 3, 4 and
@@ -1246,11 +1373,7 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
             out.append((2, "n/a", "no app turn outside email"))
         else:
             out.append((2, "STOP" if b < a - 2 else "ok", f"packs {b:.1f}% vs delegation {a:.1f}%"))
-        cost = [v["by_set"][n]["cost_per_turn_usd"] for v in (dele, packs)
-                for n in v["by_set"] if n not in ("email", "fanout")]
-        out.append((7, "n/a" if None in cost else (
-            "STOP" if packs["cost_per_turn_usd"] > dele["cost_per_turn_usd"] else "ok"),
-            f"packs USD {packs['cost_per_turn_usd']} vs delegation {dele['cost_per_turn_usd']}"))
+        out.append(_stop_seven(dele, packs))
     if packs:
         share = packs.get("layer_b_share_pct")
         out.append((5, "n/a" if share is None else ("STOP" if share > 15 else "ok"),
@@ -1346,6 +1469,11 @@ def report(data: dict[str, Any]) -> str:
     row("Output tokens per turn", lambda v: v["completion_per_turn"])
     row("Cost per turn, USD", lambda v: v["cost_per_turn_usd"])
     row("Cost of the arm, USD", lambda v: v["cost_usd"])
+    capped = capped_rows(data.get("rows") or [])
+    if capped:
+        lines += ["", f"capped: {len(capped)} turns, not scored. Their spend is in the count: "
+                  + ", ".join(f"{r.get('arm_label') or r['arm']} {r['scenario']}#{r['turn']} "
+                              f"r{r.get('repeat', 1)}" for r in capped)]
     if data.get("rows"):
         lines += ["", "Counted spend by agent (USD):", "", spend.spend_table(data["rows"])]
     scen = sorted({k for a in arms for k in s[a]["by_scenario"]})
@@ -1476,6 +1604,29 @@ def _lost_the_router(rows: list[dict[str, Any]]) -> bool:
     return any(any(w in str(r.get("error") or "") for w in words) for r in rows)
 
 
+def stop_reason(spent: float, budget: float, unpriced: list[str]) -> str:
+    """Why a live run must stop now, or an empty string. *spent* holds the
+    count of the turn that runs, when a send asks (TS-7a-cap)."""
+    if unpriced:
+        return (f"the rate card has no price for the served model {unpriced[0]!r}. "
+                "Add it to rate_card.json, then run again")
+    if spent >= budget:
+        return f"the budget: USD {spent:.3f} spent"
+    return ""
+
+
+def stopped_inside(rows: list[dict[str, Any]], turns: int,
+                   reason: str) -> tuple[str, str] | None:
+    """``(why, where)`` when a chat stopped before its end, else None. It stopped
+    when it ran fewer turns than it has, when the cap refused a send in a turn,
+    or when *reason* says the run must stop now."""
+    capped = any(r.get("capped") for r in rows)
+    if len(rows) >= turns and not capped and not reason:
+        return None
+    where = "inside a turn" if capped else f"after turn {len(rows)}"
+    return reason or "the budget", f"{where} of {turns}"
+
+
 def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tuple[str, ...],
              *, repeat: int, tier: str, budget: float, out: Path, timeout: float,
              first_repeat: int = 1, spent_before: float = 0.0,
@@ -1486,44 +1637,64 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
     before each turn after the first, so one long chat cannot pass the cap by
     more than one turn. A chat that lost the Router is dropped, and the run
     stops. Unless *allow_peak*, the run also stops before a chat that would
-    start in a DeepSeek peak band (*clock* gives the time, for a test)."""
+    start in a DeepSeek peak band (*clock* gives the time, for a test).
+
+    TS-7a-cap. The cap is also checked before each model send inside a turn,
+    with the counted USD of the turn so far, so one turn passes it by at most
+    one call. A call that the card cannot price (a served model that the card
+    does not hold) stops the run after its turn. ``started_utc`` in the file
+    and the last printed line say where to read the real bill."""
     clock = clock or utc_now
+    started = utc_now()
     data: dict[str, Any] = {
-        "date": datetime.now(UTC).date().isoformat(), "sha": _sha(), "tier": tier,
+        "date": started.date().isoformat(), "sha": _sha(), "tier": tier,
+        "started_utc": started.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "member": ds.MEMBER,
         "tier_map": dict(tier_map or {}),
         "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
-        "repeat": repeat, "budget_usd": budget, "rate_card": RATE_CARD["usd_per_1m"],
+        "repeat": repeat, "budget_usd": budget,
+        "rate_card": {name: m["usd_per_1m"] for name, m in RATE_CARD["models"].items()},
         "rows": [], "stopped": None, "dropped": [], "spent_before_usd": spent_before,
     }
     spent = spent_before
+    unpriced: list[str] = []
+
+    def over(extra: float = 0.0) -> str:
+        return stop_reason(spent + extra, budget, unpriced)
 
     def on_turn(row: dict[str, Any]) -> None:
         nonlocal spent
         t = turn_totals(row)
         spent += t["cost_usd"]
+        unpriced.extend(c.get("served") or "" for c in row["model_calls"] if c.get("unpriced"))
         print(f"[{row.get('arm_label') or row['arm']:<10}] {row['scenario']}#{row['turn']} r{row['repeat']}: "
-              f"{'pass' if row['passed'] else 'FAIL'} first {row['first_text_s']} s, "
+              f"{turn_state(row)} first {row['first_text_s']} s, "
               f"total {row['total_s']} s, {t['calls']} calls, in {t['prompt']} "
               f"(cached {t['cached']}), out {t['completion']}, USD {t['cost_usd']:.4f}"
               f" | spent USD {spent:.3f} of {budget:.2f}", flush=True)
         bad = [k for k, v in row["checks"].items() if v is False]
-        if bad:
+        if bad and not row.get("capped"):
             print(f"      fails {bad}: {row['answer'][:240]!r}", flush=True)
+
+    def finish() -> dict[str, Any]:
+        data["spent_usd"] = round(spent, 4)
+        _write(out, data)
+        print(spend.bill_check_line(ds.MEMBER, data["started_utc"], spent - spent_before),
+              flush=True)
+        return data
 
     def stop(why: str) -> dict[str, Any]:
         data["stopped"] = why
-        data["spent_usd"] = round(spent, 4)
         print(why, flush=True)
-        _write(out, data)
-        return data
+        return finish()
 
     for rep in range(first_repeat, first_repeat + repeat):
         for i, sc in enumerate(scenarios):
             mine = arms_for(sc, arms)
             order = mine if (rep + i) % 2 else tuple(reversed(mine))
             for arm in order:
-                if spent >= budget:
-                    return stop(f"the budget: USD {spent:.3f} spent before {sc.id} {arm} r{rep}")
+                if why := over():
+                    return stop(f"{why} before {sc.id} {arm} r{rep}")
                 ok, why = spend.peak_gate(clock(), allow_peak)
                 if not ok:
                     return stop(f"peak band before {sc.id} {arm} r{rep}. {why}")
@@ -1531,7 +1702,8 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
                     return stop(f"the Router does not answer before {sc.id} {arm} r{rep}")
                 rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
                                 repeat=rep, on_turn=on_turn,
-                                should_stop=lambda: spent >= budget, tier_map=tier_map)
+                                should_stop=lambda extra=0.0: bool(over(extra)),
+                                tier_map=tier_map)
                 if _lost_the_router(rows) or not router_up(router[0]):
                     data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
                                             "usd": round(sum(turn_totals(r)["cost_usd"]
@@ -1540,13 +1712,10 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
                                 "the chat is dropped")
                 data["rows"] += rows
                 data["spent_usd"] = round(spent, 4)
-                if len(rows) < len(sc.turns):
-                    return stop(f"the budget: USD {spent:.3f} spent inside {sc.id} {arm} r{rep}, "
-                                f"after turn {len(rows)} of {len(sc.turns)}")
+                if inside := stopped_inside(rows, len(sc.turns), over()):
+                    return stop(f"{inside[0]} inside {sc.id} {arm} r{rep}, {inside[1]}")
                 _write(out, data)
-    data["spent_usd"] = round(spent, 4)
-    _write(out, data)
-    return data
+    return finish()
 
 
 def merge(paths: list[Path], out: Path) -> dict[str, Any]:
@@ -1660,7 +1829,7 @@ def rescore(data: dict[str, Any], when: str = "") -> list[str]:
                                f"no_email_delegation {was} -> {now}")
                 r["checks"]["no_email_delegation"] = now
             r["handoffs"] = [ck.handoff_kind(t) for t in obs.tasks]
-        r["passed"] = ck.passed(r["checks"])
+        r["passed"] = None if r.get("capped") else ck.passed(r["checks"])
     data["rescored"] = {"when": when or datetime.now(UTC).date().isoformat(),
                         "sha": _sha(), "checks": sorted(RESCORED), "changes": changes}
     data["summary"] = summarise(data["rows"])

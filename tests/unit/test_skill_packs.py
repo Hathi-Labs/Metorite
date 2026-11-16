@@ -77,11 +77,68 @@ def _turn(words: str = "", skills: tuple[Any, ...] = ()) -> tp.PackTurn:
     ("workflow:", None),
     ("projects.create_task", None),  # Projects is a tool app, no door op
     (42, None),
+    # TOF-1a: a chat tool of a pack in scope maps to itself.
+    ("tool:create_lead", "create_lead"),
+    ("tool:send_email", "send_email"),
+    ("tool:update_task", "update_task"),
+    ("tool:my_tasks_plan_day", "my_tasks_plan_day"),  # Calendar: calendar-day
+    ("tool:crm_search_notes", "crm_search_notes"),  # also in the injected crm family
+    # TOF-1a: every other name is dark.
+    ("tool:no_such_tool", None),
+    ("tool:studio_skill_save", None),  # the Studio builder
+    ("tool:studio_workflow_publish", None),  # a dark pack of the Studio builder
+    ("tool:create_rule", None),  # email-setup
+    ("tool:read_page", None),  # a door op tool, not a pack tool
+    ("tool:", None),
+    ("tool:Create_lead", None),
+    ("tool: create_lead", None),
+    ("tool:create_lead.x", None),
 ])
 def test_action_tool_is_the_one_map(action: Any, tool: str | None) -> None:
-    """Mutation: map each ``<app>.<op>`` to its op name, or map an object
-    action to a tool → red."""
+    """Mutation: map each ``<app>.<op>`` to its op name, map an object
+    action to a tool, or map any ``tool:`` name → red."""
     assert sp.action_tool(action) == tool
+
+
+def test_a_dark_tool_makes_the_skill_fail_to_load() -> None:
+    """TOF-1a. A name in no pack in scope gives ``action_unserved``, so the
+    skill gives Mira no rule. Mutation: let ``action_tool`` map a name that
+    ``chat_tools`` does not hold → red."""
+    for action in ("tool:no_such_tool", "tool:studio_skill_save", "tool:create_rule"):
+        built = sp.build(_ID_A, "Quote helper", "", 2, "f" * 64, _body(actions=[action]),
+                         max_tools=tp.MAX_PACK_TOOLS)
+        assert built == "action_unserved", action
+    ok = _pack(actions=["tool:create_lead", "tool:search_crm"])
+    assert ok.tools == ("create_lead", "search_crm")
+
+
+def test_the_chat_tool_scope_reads_the_registry_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TOF-1a. A new tool of a pack in scope joins with no edit, and a tool
+    that a door op maps keeps that door op as its one map. Mutation: keep a
+    fixed list of names, or drop the door check → red."""
+    from acb_skills import skill_families as sf
+
+    fam = sf.SKILL_FAMILIES["crm-records"]
+    monkeypatch.setitem(sf.SKILL_FAMILIES, "crm-records",
+                        {**fam, "tools": (*fam["tools"], "crm_new_tool", "read_page")})
+    assert sp.chat_tools()["crm_new_tool"] == "crm-records"
+    assert sp.action_tool("tool:crm_new_tool") == "crm_new_tool"
+    assert "read_page" not in sp.chat_tools()
+    assert sp.action_tool("tool:read_page") is None
+    assert sp.action_tool("knowledge.get_page") == "read_page"
+
+
+def test_the_chat_tool_scope_is_the_three_owners_less_email_setup() -> None:
+    """TOF-1a. Mutation: add the Studio builder to the owners, or drop
+    ``email-setup`` from the packs left out → red."""
+    from acb_skills import skill_families as sf
+
+    packs = set(sp.chat_tools().values())
+    assert packs
+    assert {str(sf.SKILL_FAMILIES[s]["owner"]) for s in packs} == set(sp.CHAT_TOOL_OWNERS)
+    assert sorted(sp.CHAT_TOOL_OWNERS) == ["crm-assistant", "email-assistant", "projects-assistant"]
+    assert "email-setup" not in packs and "calendar-day" in packs
+    assert not any(n.startswith("studio_") for n in sp.chat_tools())
 
 
 # ── F10a: the buttons of a manifest ───────────────────────────────────────
@@ -426,6 +483,24 @@ def test_a_skill_loads_only_when_the_run_holds_each_of_its_tools(monkeypatch) ->
     both = ti._skills_present((ok, lacks), {"run_workflow"}, object(), agent_name="orchestrator",
                               tool_scope=None, agent_config=None, disabled=frozenset())
     assert both == (ok, lacks)
+
+
+def test_a_chat_tool_skill_loads_only_where_the_run_holds_the_pack_tool(monkeypatch) -> None:
+    """TOF-1a, decision 2. The catalog lists each pack tool for an org on the
+    flag, and it reads no pack switch. The refusal of the org's pack switch
+    stays here: a skill whose ``tool:`` action names a tool that no code pack
+    of the run holds fails with ``tool_absent``. Mutation: let a skill pack
+    add its own tools to the run → red."""
+    from orchestrator import _tool_injection as ti
+
+    monkeypatch.setattr(ti, "_pack_base_names", lambda *_a, **_k: set())
+    found = _pack(actions=["tool:create_lead"])
+    assert found.tools == ("create_lead",)
+    args = dict(agent_name="orchestrator", tool_scope=None, agent_config=None,
+                disabled=frozenset())
+    assert ti._skills_present((found,), set(), object(), **args) == ()
+    assert ti._skills_present((found,), {"search_crm"}, object(), **args) == ()
+    assert ti._skills_present((found,), {"create_lead"}, object(), **args) == (found,)
 
 
 async def test_a_turn_that_names_a_skill_loads_its_rules_in_the_run(monkeypatch) -> None:

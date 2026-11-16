@@ -73,6 +73,8 @@ interface ThinkingContainerProps {
   isActive: boolean;
   /** CS-1: the turn was just sent and nothing has come back. The header then says `FIRST_STEP`. */
   firstLine?: boolean;
+  /** CS-3b: the fixed words of the server's phase. They take the place of `FIRST_STEP`, and a real step takes both over. */
+  phaseWord?: string;
   /** CS-1: answer text has started, so the header never says that Mira still reads the message. */
   answerStarted?: boolean;
   /**
@@ -659,6 +661,7 @@ export default function ThinkingContainer({
   narrationSegments,
   isActive,
   firstLine,
+  phaseWord,
   answerStarted,
   evidenceFor,
   notice,
@@ -778,7 +781,7 @@ export default function ThinkingContainer({
     ? (hasRunningTool && lastLabel ? lastLabel : null)
       ?? liveReasoningTail
       ?? lastLabel
-      ?? (answerStarted ? WRITING_STEP : firstLine ? FIRST_STEP : "Thinking…")
+      ?? (answerStarted ? WRITING_STEP : phaseWord ?? (firstLine ? FIRST_STEP : "Thinking…"))
     : summaryTitle;
 
   const totalMs = useMemo(() => {

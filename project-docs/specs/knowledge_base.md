@@ -1699,8 +1699,9 @@ page.
 
 - **Input.** `q` (2 to 300 characters), `apps` (an optional comma list of
   source keys), `k` (1 to 10 hits an app, default 5).
-- **Order.** The sources run one after another, never at once. The pool
-  budget is small, and `search.py` records why. Each gets 1.5 s, and the
+- **Order.** The sources run at once, four at most (`FIND_SESSIONS`,
+  D-FIND-6, HRD-4). The pool budget is small, and `search.py` records why.
+  A fifth source waits for a slot. Each gets 1.5 s from its own start, and the
   whole answer 4 s. A source can fail, refuse or run out of time. Then the
   answer leaves it out and names it in `skipped`. It never fails the call.
 - **Fusion.** Each app ranks its own hits, and the scores of two apps do not

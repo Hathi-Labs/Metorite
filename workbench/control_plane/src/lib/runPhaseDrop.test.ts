@@ -1,14 +1,12 @@
-// CS-3a (task 3438, `chat_failure_modes.md` §6 row CS-3): the server sends
-// the phase of a run as the CUSTOM event `run_phase` (`acb_skills.run_phase`).
-// No client draws it yet, so nothing on this side may change.
+// CS-3a (task 3438) and CS-3b (task 3462), `chat_failure_modes.md` §6 row CS-3: the server sends
+// the phase of a run as the CUSTOM event `run_phase` (`acb_skills.run_phase`). Since CS-3b the BFF
+// route forwards it and the hook draws fixed words. It is still never saved.
 //
 // R7 fences named here:
 //   * `run-phase-not-saved`: `withCustomEvent` never keeps a `run_phase`
 //     event, and both loops of the hook leave it out of `customEvents`.
-//   * `run-phase-not-forwarded`: the BFF route forwards no `run_phase` frame
-//     and saves none. So a tab with an older bundle saves nothing, and its
-//     run row keeps "Reading your message" (CS-1). A run that sent only
-//     phases saves no row at all.
+//   * `run-phase-forwarded-not-saved`: the BFF route forwards the `run_phase` frame as a custom
+//     event and saves none. A run that sent only phases saves no row at all.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -38,7 +36,7 @@ describe("run-phase-not-saved", () => {
   it("both loops of the hook leave the phase out of customEvents", () => {
     const hook = readFileSync(path.join(here, "../hooks/useAgentChat.ts"), "utf8");
     // The live loop (`upd`) and the attach loop (`updLast`): each guard of
-    // `withCustomEvent` names the phase.
+    // `withCustomEvent` names the phase. CS-3b: each loop also handles the phase before it.
     const guards = hook.split(/\r?\n/).filter((l) => l.includes("!HITL_CONTROL_EVENTS.has(evtName)"));
     expect(guards).toHaveLength(2);
     for (const g of guards) expect(g).toContain("evtName !== RUN_PHASE_EVENT");
@@ -90,7 +88,7 @@ async function replay(events: Record<string, unknown>[]): Promise<{
   return { frames, saved };
 }
 
-describe("run-phase-not-forwarded", () => {
+describe("run-phase-forwarded-not-saved", () => {
   beforeEach(() => {
     vi.resetModules();
   });
@@ -99,7 +97,7 @@ describe("run-phase-not-forwarded", () => {
     vi.doUnmock("@/lib/gateway");
   });
 
-  it("forwards no phase and saves no phase, around a real answer", async () => {
+  it("forwards each phase as a custom event and saves no phase, around a real answer", async () => {
     const { frames, saved } = await replay([
       { type: "RUN_STARTED", runId: "r1", threadId: "t1" },
       GATHERING,
@@ -107,21 +105,24 @@ describe("run-phase-not-forwarded", () => {
       { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "Hello." },
       { type: "RUN_FINISHED", runId: "r1", threadId: "t1" },
     ]);
-    expect(JSON.stringify(frames)).not.toContain("run_phase");
-    expect(frames.map((f) => f.type)).toEqual(["delta", "done"]);
+    expect(frames.map((f) => f.type)).toEqual(["custom", "custom", "delta", "done"]);
+    expect(frames.slice(0, 2)).toEqual([
+      { type: "custom", name: "run_phase", value: { phase: "gathering" } },
+      { type: "custom", name: "run_phase", value: { phase: "asking" } },
+    ]);
     expect(saved.length).toBeGreaterThan(0);
     expect(JSON.stringify(saved)).not.toContain("run_phase");
     expect(JSON.stringify(saved)).toContain("Hello.");
   });
 
-  it("a run that sent only phases forwards nothing and saves no row", async () => {
+  it("a run that sent only phases forwards them and saves no row", async () => {
     const { frames, saved } = await replay([
       { type: "RUN_STARTED", runId: "r1", threadId: "t1" },
       GATHERING,
       ASKING,
       { type: "RUN_ERROR", message: "boom" },
     ]);
-    expect(JSON.stringify(frames)).not.toContain("run_phase");
+    expect(frames.filter((f) => f.name === "run_phase")).toHaveLength(2);
     expect(saved).toEqual([]);
   });
 
@@ -133,7 +134,7 @@ describe("run-phase-not-forwarded", () => {
       card,
       { type: "RUN_FINISHED", runId: "r1", threadId: "t1" },
     ]);
-    expect(frames.filter((f) => f.type === "custom").map((f) => f.name)).toEqual(["artifact_created"]);
+    expect(frames.filter((f) => f.type === "custom").map((f) => f.name)).toEqual(["run_phase", "artifact_created"]);
     expect(JSON.stringify(saved)).toContain("artifact_created");
     expect(JSON.stringify(saved)).not.toContain("run_phase");
   });

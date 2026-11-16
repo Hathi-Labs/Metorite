@@ -231,6 +231,12 @@ An action is one typed capability: an id, a title, an input schema, an output sc
 4. **Published workflows.** A workflow is one action with its trigger input as the schema.
 5. **The package's own objects:** list, get, create, update and delete for each object, plus each named action in the manifest.
 
+**The chat tools of the packs (TOF-1a, dark).** The catalog has one more source, `tool`. For an org on `STUDIO_CHAT_TOOLS_ORGS`, each chat tool of the CRM, Email, Projects and Calendar packs is one row `tool:<name>`. The one scope is `acb_skills.skill_packs.chat_tools`, and `action_tool` maps the id back to the tool name.
+
+The rule of the class fails closed. Class C holds a send, a destructive tool, an open world tool and a tool with an unknown annotation. Class A holds only an explicit read, and class B holds each other tool.
+
+A skill can name a `tool:` row. The `uses` grammar has no `tool:` form, so a package cannot name the row, and the door never runs it. The row runs nothing itself: the skill loads only in a run that holds the tool. The row of the slice holds the decisions (`ai_studio_rows/TOF-1a.md`).
+
 **The class of an object action (B2a).** A list and a get are class A. A create and an update are class B, because the app can undo them. A delete is class C. `acb_common/studio_manifest.py::OBJECT_OP_CLASSES` is the one source of these classes, and a test holds its verbs equal to the `uses` grammar of A2. The B1 catalog (`catalog_rows`) gives the class of each other source. The door reads no class from anywhere else.
 
 **Why one catalog.** Today five consumers each keep their own list: the workflow palette, the `window.cc` bridge (`tools.call`), the `app_<slug>_<action>` agent tools, the chat tool packs and the MCP door. A catalog keyed by the D136 manifest serves all five. A new app joins all five when it ships its manifest.
@@ -980,6 +986,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **B16** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/B16.md) |
 | **B17** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B17.md) |
 | **B18** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B18.md) |
+| **TOF-1a** | 🔨 BUILT, dark (2026-11-16, task 3404) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-1a.md) |
 
 ### Group C — Objects
 

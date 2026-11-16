@@ -104,22 +104,31 @@ def _call(**kw) -> ModelCall:
 
 
 def test_a_mapped_call_records_both_names_and_is_priced_by_the_served_model() -> None:
-    """Mutation: drop ``card_for`` from ``call_row`` -> the Flash price reads as Pro -> red."""
+    """Mutation: drop ``card_of`` from ``call_row`` -> the Flash price reads as Pro -> red.
+
+    TS-7a-cap changed three cases. Before it, an unmapped call kept the Pro card
+    whatever served it, and a call with no served name took the card of its
+    tier. On 2026-11-15 the Router served Claude on those tiers, and the count
+    read USD 0.328 against a bill of USD 0.4889. Now each call takes the card
+    of its served model, mapped or not. No served name takes the worst card."""
     usage = {"prompt_tokens": 1_000_000, "completion_tokens": 0}
     flash = run.call_row(_call(usage=usage, served="deepseek/deepseek-flash"))
     pro = run.call_row(_call(usage=usage, served="deepseek/deepseek-v4-pro"))
     assert (flash["requested"], flash["model"], flash["mapped"]) == (
         "tier-balanced", "tier-fast", True)
     assert flash["cost_usd"] == pytest.approx(0.15) and pro["cost_usd"] == pytest.approx(0.66)
-    # No served name: the card of the target tier.
-    assert run.call_row(_call(usage=usage))["cost_usd"] == pytest.approx(0.15)
+    # No served name: the most expensive input rate of the card, never Flash.
+    worst = spend.worst_card(run.RATE_CARD)["usd_per_1m"]["input_miss"]
+    assert run.call_row(_call(usage=usage))["cost_usd"] == pytest.approx(worst) and worst > 0.66
     # The peak factor stays.
-    assert run.call_row(_call(usage=usage, wall=PEAK))["cost_usd"] == pytest.approx(0.30)
-    # An unmapped call keeps the Pro card.
+    assert run.call_row(_call(usage=usage, wall=PEAK, served="deepseek/deepseek-flash"))[
+        "cost_usd"] == pytest.approx(0.30)
+    # An unmapped call takes the card of its served model too.
     plain = run.call_row(_call(usage=usage, requested="", served="deepseek/deepseek-flash"))
-    assert plain["cost_usd"] == pytest.approx(0.66) and not plain["mapped"]
-    # No usage: the worst case on the Flash card.
-    assert run.call_row(_call())["cost_usd"] < run.call_row(_call(requested=""))["cost_usd"]
+    assert plain["cost_usd"] == pytest.approx(0.15) and not plain["mapped"]
+    # No usage: the worst case on the Flash card is below the worst case with no served name.
+    assert run.call_row(_call(served="deepseek/deepseek-flash"))["cost_usd"] < run.call_row(
+        _call(requested=""))["cost_usd"]
     assert spend.PEAK_FACTOR == 2.0
 
 
