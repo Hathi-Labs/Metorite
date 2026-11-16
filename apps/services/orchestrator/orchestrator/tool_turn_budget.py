@@ -17,8 +17,9 @@ Rules that bind:
    marked read-only is counted or stopped. A delegation tool and a tool that
    waits for the member are exempt too, and a write is never touched.
    **Parallel calls:** MAF runs the calls of one model response together
-   (``asyncio.gather``), so all start before any answer. The limit binds from
-   the next model round, not inside one round.
+   (``asyncio.gather``), so the stop binds from the next round. A call that
+   answers at once, before it awaits, may already see the count in its own
+   round.
 3. **The stop does not run the tool.** After 3 empty or refused answers from
    one tool, the next call gets ``watchdog.stop_text`` as its result.
 4. **Dark.** ``TOOL_TURN_BUDGET_ORGS`` (a comma list of organization ids, or

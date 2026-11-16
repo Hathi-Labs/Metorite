@@ -205,8 +205,8 @@ than empty is OWNER-ONLY (`work_plan.md` §6 D4), and the §3a window does not
 open it.
 
 `TOOL_TURN_BUDGET_ORGS` turns on the per-turn budget of a read tool
-(`chat_failure_modes.md` §4 row B5, HRD-5). It covers `search_company`,
-`find_tasks` and `list_tasks`. For each listed org, one of these tools may give
+(`chat_failure_modes.md` §4 row B5, HRD-5). It covers `search_company`
+and `find_tasks`. For each listed org, one of these tools may give
 3 empty or refused answers in a turn. Its next call in that turn does not run.
 The answer tells the chat to ask the member one question.
 

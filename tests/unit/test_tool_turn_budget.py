@@ -4,7 +4,8 @@ Spec: ``project-docs/specs/chat_failure_modes.md`` §4 row B5 and §6 HRD-5.
 Modules: ``orchestrator.watchdog`` (the rule and the counter) and
 ``orchestrator.tool_turn_budget`` (the middleware).
 
-1. The predicate reads the REAL texts of the chat tools, and stays narrow.
+1. The predicate reads pinned copies of the real texts of the chat tools
+   (``test_the_pinned_texts_still_exist_in_the_tool_source`` fails on drift).
 2. After 3 empty or refused answers from one tool, the 4th call is stopped.
    A real answer does not count and does not reset. Tools have separate
    budgets, and a new budget (a new turn) starts at zero.
@@ -342,7 +343,7 @@ def test_a_success_phrase_is_never_empty(text):
 
 
 def test_the_budget_covers_an_allow_list_and_not_every_read_tool():
-    assert {"search_company", "find_tasks", "list_tasks"} == watchdog.BUDGET_TOOLS
+    assert {"search_company", "find_tasks"} == watchdog.BUDGET_TOOLS
     assert "get_errors" not in watchdog.BUDGET_TOOLS
     assert "run_diagnostics" not in watchdog.BUDGET_TOOLS
 
@@ -403,3 +404,60 @@ def test_the_tried_form_strips_every_control_character():
     form = tried_form({"query": "a\x1b[31mb\x00c\x07d\x7fe\nf", "ke\x1by": "v"})
     assert not re.search(r"[\x00-\x1f\x7f]", form)
     assert "ke y=v" in tried_form({"ke\x1by": "v"})
+
+
+# ── 7. The second repair round ───────────────────────────────────────────────
+
+
+def test_the_pinned_texts_still_exist_in_the_tool_source():
+    """The copies in this file match the real tools. A drift fails here."""
+    reads = (ROOT / "apps/skills/skill-projects/skill_projects/reads.py").read_text(encoding="utf-8")
+    company = (ROOT / "packages/acb_skills/acb_skills/company_search_tools.py").read_text(
+        encoding="utf-8")
+    assert 'f"No task matches {data(term)}.' in reads
+    assert '"No task matches those filters."' in reads
+    assert "Give at least {MIN_QUERY} characters to search" in reads
+    assert 'NOTHING = "(no matching records)"' in company
+    assert '"Give 2 to 300 characters to find."' in company
+    assert EMPTY_TASKS.startswith("No task matches")
+
+
+def test_a_read_tool_outside_the_allow_list_is_never_stopped(flag_on):
+    """Removing the allow-list check from ``_budgeted`` turns this red."""
+    ran: list[str] = []
+    qs = ("q1", "q2", "q3", "q4", "q5")
+    client = ScriptedClient([*[("calls", [("get_errors", {"query": q})]) for q in qs],
+                             ("text", "Ok.")])
+    tool = _named_tool("get_errors", ran, "No task matches nothing. Refused: no.")
+    tool.__tool_risk__ = {"read_only": True}  # type: ignore[attr-defined]
+    view = _view(Agent(client=client, name="probe", tools=[tool]))
+    asyncio.run(view.run("check"))
+    assert ran == list(qs)
+    assert not any(r.startswith("Stop.") for r in client.results)
+
+
+def test_five_parallel_awaiting_calls_all_run_and_the_next_round_is_stopped(flag_on):
+    ran: list[str] = []
+
+    async def find_tasks(query: str) -> str:
+        """Find tasks."""
+        await asyncio.sleep(0.01)
+        ran.append(query)
+        return EMPTY_TASKS
+    find_tasks.__tool_risk__ = {"read_only": True}  # type: ignore[attr-defined]
+    qs = ("a1", "a2", "a3", "a4", "a5")
+    client = ScriptedClient([
+        ("calls", [("find_tasks", {"query": q}) for q in qs]),
+        ("calls", [("find_tasks", {"query": "later"})]),
+        ("text", "Which one?"),
+    ])
+    view = _view(Agent(client=client, name="probe", tools=[find_tasks]))
+    asyncio.run(view.run("find"))
+    assert sorted(ran) == list(qs), "one round runs together, and the later call did not run"
+    assert any(r.startswith("Stop. You tried: ") for r in client.results)
+
+
+def test_the_tried_form_strips_c1_control_characters():
+    form = tried_form({"query": "abcde"})
+    assert not re.search(r"[-]", form)
+    assert form == "query=a b c d e"

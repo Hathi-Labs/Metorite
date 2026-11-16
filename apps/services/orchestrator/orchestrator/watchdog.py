@@ -117,10 +117,10 @@ _REFUSED_START = re.compile(
     re.IGNORECASE,
 )
 #: The tools that the budget covers: the read tools whose empty and refused
-#: texts are pinned by ``tests/unit/test_tool_turn_budget.py``. An allow-list,
+#: texts are pinned (as copies, with a source check) by ``tests/unit/test_tool_turn_budget.py``. An allow-list,
 #: not "every read tool", because a tool such as ``get_errors`` answers "No
 #: errors found." on SUCCESS, and a clean answer must never end a turn.
-BUDGET_TOOLS: frozenset[str] = frozenset({"search_company", "find_tasks", "list_tasks"})
+BUDGET_TOOLS: frozenset[str] = frozenset({"search_company", "find_tasks"})
 
 #: A success phrase is never an empty answer, whatever a tool adds later.
 _SUCCESS_START = re.compile(
@@ -159,8 +159,8 @@ def is_empty_or_refused(text: object) -> bool:
     return bool(_EMPTY_START.match(body) or _REFUSED_START.match(body))
 
 
-# Every C0 control character, and DEL. ESC and NUL must not reach the model.
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Every C0 and C1 control character, and DEL. ESC and NUL must not reach the model.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def _short(value: object) -> str:
