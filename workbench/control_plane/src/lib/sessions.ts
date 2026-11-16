@@ -45,6 +45,18 @@ export interface ChatSession {
    */
   hasUserMessage?: boolean;
   /**
+   * Task 3564: whether the chat holds the day's brief, from the server's list
+   * (`_IS_BRIEF_SQL` in `routes/chat.py`). Only the server knows it, so only
+   * the merge below sets it. No save sends it: `_syncSessionToDb` and
+   * `_patchSessionInDb` name their fields (fence: `sessionsIsBrief.test.ts`).
+   * Undefined for a chat the server has not listed yet.
+   *
+   * The mark belongs to the chat, not to the reader. A room, or a chat that
+   * the org sees, that holds another member's brief reads true for each
+   * viewer. So a fold of brief chats needs `isOwner` true as well.
+   */
+  isBrief?: boolean;
+  /**
    * D99 (migration 254): when the member archived the chat, or null. An
    * archived chat stays, and the assistant lists it under "Archived".
    */
@@ -942,6 +954,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       isOwner?: boolean;
       participantCount?: number;
       hasUserMessage?: boolean;
+      isBrief?: boolean;
       archivedAt?: string | null;
       pinnedAt?: string | null;
     }>;
@@ -962,6 +975,8 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       // CF-5: a member turn seen here stays true. The server's answer can
       // lag a save by one list, and the fact never goes back to false.
       if (r.hasUserMessage !== undefined) s.hasUserMessage = s.hasUserMessage || r.hasUserMessage;
+      // Task 3564: the server alone knows the brief mark, so its answer wins.
+      if (r.isBrief !== undefined) s.isBrief = r.isBrief;
       // D99: an archive and a name made on another device reach this one.
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
@@ -1000,6 +1015,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           isOwner: r.isOwner,
           participantCount: r.participantCount,
           hasUserMessage: r.hasUserMessage,
+          isBrief: r.isBrief,
           archivedAt: r.archivedAt ?? null,
           pinnedAt: r.pinnedAt ?? null,
         });

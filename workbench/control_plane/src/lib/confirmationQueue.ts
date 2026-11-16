@@ -459,7 +459,14 @@ export type ConfirmationAction =
   /** The server closed a card. `answer` is the closing answer of
    *  `confirmation_resolved`: a new-mail card closed as REVISED stays as a
    *  slot (§18.11). */
-  | { type: "resolved"; requestId: string; answer?: string }
+  | {
+      type: "resolved"; requestId: string; answer?: string;
+      /** RESUME-3a: the card waited parked here, so an answer from another
+       *  tab or device can close it. An Approve then leaves "Approved". */
+      elsewhere?: boolean;
+      /** The message the line of that Approve draws under. */
+      afterId?: string | null;
+    }
   /** §18.11: a chat message carried this version of the card. */
   | { type: "memberVersion"; key: string; version: SentVersion }
   /** §18.11: the slots that read "The draft did not change." close. */
@@ -510,6 +517,11 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     // EAC-2: a form the client cannot read is no form, and the card is the card of before.
     ...(taskEditOf(v.edit) ? { edit: taskEditOf(v.edit) } : {}),
   };
+}
+
+/** An answer that approves: a plain `APPROVE`, or an Approve of rows. */
+function isApproveAnswer(answer: string | undefined): boolean {
+  return answer === "APPROVE" || (!!answer && answer.startsWith(ROWS_ANSWER_PREFIX));
 }
 
 function taskEditOf(raw: unknown): TaskEditForm | undefined {
@@ -662,12 +674,25 @@ export function confirmationReducer(
           errors: withoutError(state.errors, key),
         };
       }
+      // RESUME-3a: another tab or device approved a parked card that shows
+      // here, and this tab did not answer it. The card leaves with the same
+      // line as an Approve of this tab (§4.12.4 item 5).
+      const approvedElsewhere = !!shown && action.elsewhere === true && isApproveAnswer(action.answer) &&
+        !state.answering.has(key) && !state.receipts.some((r) => r.key === key);
       return {
         ...state,
         cards: state.cards.filter((c) => c.key !== key),
         resolved: withAdded(state.resolved, key),
         answering: withRemoved(state.answering, key),
         errors: withoutError(state.errors, key),
+        ...(approvedElsewhere && shown
+          ? {
+              receipts: [...state.receipts, {
+                key, label: receiptLabel(shown), kind: "approved" as const, intent: "approved" as const,
+                afterId: action.afterId ?? null,
+              }],
+            }
+          : {}),
         // The server closed it. An answer in flight keeps "Applying" until
         // its own POST says what became of it: the close can be a timeout.
         // Fix round 6: a chat message closed a card with no slot here, so a
