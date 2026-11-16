@@ -157,6 +157,7 @@ export default function TaskCardForm({ form, edits, onChange, typed, onTyped, di
     // An address or `agent:` passes. A name asks the directory, and must match one person exactly.
     const direct = matchTyped(typed, []);
     if (direct.kind === "add") { pick(direct.assignee); return; }
+    if (direct.kind === "bad") { setLine(typedLine(direct)); return; }
     let rows: DirectoryRow[];
     try {
       rows = rowsOf(await projectsApi.suggestAssignees(typed.trim()));
@@ -187,7 +188,7 @@ export default function TaskCardForm({ form, edits, onChange, typed, onTyped, di
           <Input
             id={dueId}
             type="date"
-            inputSize="sm"
+            inputSize="lg"
             value={edits.due}
             min="1000-01-01"
             max="9999-12-31"

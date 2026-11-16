@@ -214,7 +214,28 @@ export type TypedPerson =
   | { kind: "add"; assignee: string }
   | { kind: "none"; typed: string }
   | { kind: "many"; typed: string }
+  /** The server would read this value as no answer (`why`), so the form refuses it. */
+  | { kind: "bad"; typed: string; why: "control" | "long" }
   | { kind: "empty" };
+
+/**
+ * Why the server would refuse this person, or null. The same rule as
+ * `task_card._one_line` for an assignee: at most `ASSIGNEE_MAX` characters and
+ * no character of category Cc, Zl or Zp (a tab, a line break, U+0085, U+2028,
+ * U+2029). A value that fails reads as NO ANSWER there, and the card would
+ * fail with no word, so the form refuses it first. `taskEditCard.test.ts`
+ * reads the category list from `task_card.py`.
+ */
+export function assigneeProblem(value: string): "control" | "long" | null {
+  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)) return "control";
+  return value.length > ASSIGNEE_MAX ? "long" : null;
+}
+
+/** The refusal of a typed person that is not added, as `{kind: "bad"}`, or null. */
+function refused(typed: string, assignee: string): TypedPerson | null {
+  const why = assigneeProblem(assignee) ?? assigneeProblem(typed);
+  return why ? { kind: "bad", typed, why } : null;
+}
 
 /**
  * The rule for a typed person, the server's rule (`_resolve_assignee_name`).
@@ -227,9 +248,11 @@ export type TypedPerson =
 export function matchTyped(typed: string, directory: readonly DirectoryRow[]): TypedPerson {
   const raw = typed.trim();
   if (!raw) return { kind: "empty" };
-  if (raw.includes("@") || raw.toLowerCase().startsWith("agent:")) return { kind: "add", assignee: norm(raw) };
+  if (raw.includes("@") || raw.toLowerCase().startsWith("agent:")) {
+    return refused(raw, norm(raw)) ?? { kind: "add", assignee: norm(raw) };
+  }
   const same = directory.filter((p) => norm(p.name) === norm(raw));
-  if (same.length === 1) return { kind: "add", assignee: norm(same[0].assignee) };
+  if (same.length === 1) return refused(raw, norm(same[0].assignee)) ?? { kind: "add", assignee: norm(same[0].assignee) };
   return same.length === 0 ? { kind: "none", typed: raw } : { kind: "many", typed: raw };
 }
 
@@ -237,6 +260,11 @@ export function matchTyped(typed: string, directory: readonly DirectoryRow[]): T
 export function typedLine(t: TypedPerson): string {
   if (t.kind === "none") return `Nobody is called exactly “${t.typed}”. Pick a person from the list, or type an address.`;
   if (t.kind === "many") return `More than one person is called “${t.typed}”. Pick one from the list.`;
+  if (t.kind === "bad") {
+    return t.why === "long"
+      ? `That address is too long. A person is at most ${ASSIGNEE_MAX} characters.`
+      : "That text holds a tab or line break. Type the address on one line.";
+  }
   return "";
 }
 
@@ -252,7 +280,7 @@ export function fullLine(count: number): string {
  */
 export function addAssignee(list: readonly string[], assignee: string): string[] {
   const value = norm(assignee);
-  if (!value || value.length > ASSIGNEE_MAX) return list as string[];
+  if (!value || assigneeProblem(value)) return list as string[];
   if (list.length >= MAX_ASSIGNEES || list.some((a) => norm(a) === value)) return list as string[];
   return [...list, value];
 }

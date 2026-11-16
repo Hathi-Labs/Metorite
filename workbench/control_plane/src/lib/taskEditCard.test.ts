@@ -29,6 +29,7 @@ import {
   TASK_EDIT_KEYS,
   addAssignee,
   assigneeChanges,
+  assigneeProblem,
   changedSummary,
   fullLine,
   isIsoDate,
@@ -203,6 +204,32 @@ describe("limits-match-the-server (EAC-2)", () => {
   it("the head and the key of the answer equal those of task_card.py", () => {
     expect(PY).toContain('EDIT_ANSWER_PREFIX = "APPROVE "');
     expect(PY).toContain('EDIT_KEY = "edit"');
+  });
+});
+
+describe("a person the server would read as no answer (EAC-2 verifier P2)", () => {
+  it("person-chars-match-the-server: the refused categories are those of task_card._one_line", () => {
+    // Mutation: drop Zp from the client class, and the U+2029 case turns red.
+    expect(PY).toMatch(/unicodedata\.category\(ch\) in \("Cc", "Zl", "Zp"\)/);
+    for (const bad of ["a\tb@x.test", "a\u0085b@x.test", "a b@x.test", "a b@x.test", "a\u0000b@x.test", "a\nb@x.test"]) {
+      expect(assigneeProblem(bad), JSON.stringify(bad)).toBe("control");
+      expect(matchTyped(bad, [])).toEqual({ kind: "bad", typed: bad, why: "control" });
+      expect(addAssignee(["ann@acme.test"], bad)).toEqual(["ann@acme.test"]);
+    }
+    // A plain space, an accent and an agent name are legal, as on the server.
+    for (const ok of ["ann@acme.test", "Zoë@acme.test", "agent:scout", "a b@x.test"]) expect(assigneeProblem(ok)).toBeNull();
+  });
+
+  it("an address over the cap is refused with a line, not dropped", () => {
+    const long = `${"a".repeat(ASSIGNEE_MAX)}@x.test`;
+    expect(assigneeProblem(long)).toBe("long");
+    expect(matchTyped(long, [])).toEqual({ kind: "bad", typed: long, why: "long" });
+    expect(typedLine({ kind: "bad", typed: long, why: "long" })).toMatch(/at most 320/);
+    expect(typedLine({ kind: "bad", typed: "a\tb", why: "control" })).toMatch(/tab or line break/);
+  });
+
+  it("a person that the directory returns is checked by the same rule", () => {
+    expect(matchTyped("Tab Person", [{ assignee: "t\tp@x.test", name: "Tab Person" }]).kind).toBe("bad");
   });
 });
 

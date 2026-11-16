@@ -7766,8 +7766,10 @@ Fences: `taskEditCard.test.ts`, `taskCardForm.test.ts`,
 because Mira chat has no model there. The e2e file is the preview.
 
 EAC-2 needs a Visual review: light mode, compact density, a changed accent, and
-390 px. `redraftCard.ts` keeps reading only the `NewMailEdits` branch of the
-union. It uses a type guard and not a cast (HRD-8b needs this).
+390 px. `redraftCard.ts` holds no reader of `FormEdits` and no import of the
+task card. The test `redraftCard-reads-no-form-edits` in `taskCardForm.test.ts`
+pins this. The queue gives the mail form only the kept edits that pass
+`asNewMailEdits`, a type guard and not a cast (HRD-8b needs this).
 
 ### 32.6 Acceptance
 
