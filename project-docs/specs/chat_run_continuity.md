@@ -2295,7 +2295,7 @@ uv run pytest tests/unit/test_wac_writes_r8.py -rs
 
 **What exists, dark.**
 - `chat_pending_ask` (migration 237, `orchestrator/pending_ask.py`) keeps a waiting card. The flag is `CHAT_DURABLE_ASKS`, off. With it on, the run parks after 600 s, and the row stays answerable for 168 h.
-- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`, which is empty in production. Its title says only "{agent} asked you a question".
+- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`. In production that list holds `reminders,agent_questions` (read 2026-11-16, deployed `1f482db9e`). The card shows only when `chat` is on the list. Its title says only "{agent} asked you a question".
 - The "AI waiting on you" group of My Day (`lib/shell/AiWaitingCard.tsx`) reads chats in the state `needs_input`. That state exists only with the flag on.
 - A late answer goes to `POST /agent/respond-input`, and it starts a new run. For an approval, that run asks again on a new card. With `CHAT_LATE_APPROVE_ORGS` on (S2 item 8, HRD-22), the late tap is the member's own consent instead. It approves the same card once, in the same thread, within 30 minutes.
 
