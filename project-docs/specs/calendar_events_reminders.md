@@ -1648,7 +1648,9 @@ read marks the chat as one that holds untrusted input
 out asks for the member's card in that chat, for up to 400 days. The twelve
 `calendar-day` writes leave the chat only when `HELD_CARD_WRITES_ORGS` is on,
 and it is off by default. Without the mark, `fetch_page` runs with no card
-after a read of a hostile title. None of the twelve writes asks for a card.
+after a read of a hostile title. None of the twelve writes asks for a platform card. The day rules and
+the calendar settings use a propose-and-confirm step in the chat, and that
+step is not a card.
 
 The choice sits in one constant, `EVENTS_MARK_UNTRUSTED`, so the other ruling
 is a one-line change. `CALENDAR_EVENTS` is one flag for the whole calendar
