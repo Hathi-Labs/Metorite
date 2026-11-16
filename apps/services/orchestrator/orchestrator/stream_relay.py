@@ -812,13 +812,15 @@ LAST_STEP_MAX_CHARS = 60
 LAST_STEP_SCAN = 12
 
 _TAG_RE = re.compile(r"<[^>]*>")
+#: Bidi marks and zero-width characters: a label must not hide or reorder text.
+_INVISIBLE_RE = re.compile("[​-‏‪-‮⁠-⁤﻿]")
 
 
 def plain_step(text: Any, limit: int = LAST_STEP_MAX_CHARS) -> str | None:
     """*text* as one short line of plain text, or None when nothing is left."""
     if not isinstance(text, str):
         return None
-    s = _TAG_RE.sub(" ", text)
+    s = _INVISIBLE_RE.sub("", _TAG_RE.sub(" ", text))
     s = "".join(" " if (ord(c) < 32 or ord(c) == 127 or c in "<>") else c for c in s)
     s = " ".join(s.split())
     if not s:
@@ -870,7 +872,7 @@ def mcp_tool_step(ev: dict[str, Any]) -> str | None:
     name must still start with the stamped server, so a wrong stamp is no step.
     None gives the caller the plain :func:`tool_step`.
     """
-    from orchestrator.event_translator import mcp_server_of  # noqa: PLC0415
+    from orchestrator.event_translator import mcp_server_of
 
     stamp = ev.get("mcp")
     name = ev.get("toolCallName")

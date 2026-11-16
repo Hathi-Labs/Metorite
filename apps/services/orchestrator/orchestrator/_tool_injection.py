@@ -4766,6 +4766,7 @@ async def _inject_mcp_servers(
     """
     from orchestrator import _maf_mcp
 
+    _note_mcp_labels([], [], frozenset())  # CSY-10: no label of an older run stays
     if agent_name in UNTRUSTED_INPUT_AGENTS:
         # EM-G11d (UMCC): a mail could tell the model to send mailbox data to
         # a server, and no check here can prove that a server cannot fetch.
@@ -4803,30 +4804,59 @@ async def _inject_mcp_servers(
     if native:
         maf_servers = _maf_servers(servers, is_authorized)
         if maf_servers:
-            await _maf_mcp.attach_mcp_tools(
+            reserved = _reserved_tool_names(agent)
+            attached = await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
             )
-            _note_mcp_labels(servers)
+            # CSY-10: only a server that attached (after the grant check and
+            # the connect) gets a label, so a refused one never shows.
+            _note_mcp_labels(servers, attached, reserved)
         return
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
 
 
-def _note_mcp_labels(servers: list[Any]) -> None:
-    """CSY-10: keep ``{name: label}`` of the attached servers for this run, so
-    the translator can stamp each MCP tool start with its server's label
-    (``event_translator.MCP_LABELS``). It reuses the rows that the read above
-    gave, so it adds no registry read. A fault here never blocks the run."""
+#: Tools of the platform that no MCP server may take the look of.
+_FIRST_PARTY_LOADERS = frozenset({"load_skill_tools", "find_tools"})
+
+
+def _reserved_tool_names(agent: Any) -> frozenset[str]:
+    """CSY-10: the first-party tool names of the run: what the agent holds
+    before any server attaches, the registered platform surface and the
+    loader tools. A name of this set is never labelled as an MCP tool."""
+    try:
+        from orchestrator import _maf_mcp
+
+        held = _maf_mcp._names_held(agent)
+    except Exception:  # a fault gives the platform surface alone
+        held = set()
+    packs: set[str] = set()
+    try:
+        from acb_skills.skill_families import SKILL_FAMILIES
+
+        packs = {n for fam in SKILL_FAMILIES.values() for n in fam["tools"]}
+    except Exception:  # the platform surface alone
+        packs = set()
+    return frozenset(held | _registered_platform_surface() | packs | _FIRST_PARTY_LOADERS)
+
+
+def _note_mcp_labels(servers: list[Any], attached: Any, reserved: frozenset[str]) -> None:
+    """CSY-10: replace the ``{name: label}`` of this run with the servers that
+    attached (*attached* is what ``attach_mcp_tools`` returned), so the
+    translator can stamp each MCP tool start with its server's label
+    (``event_translator.set_mcp_labels``). It reuses the rows that the read
+    gave, so it adds no registry read. A fault never blocks the run."""
     try:
         from orchestrator import event_translator
 
-        labels = dict(event_translator.MCP_LABELS.get())
-        labels.update({str(s.name): str(s.label) for s in servers if s.name and s.label})
-        event_translator.MCP_LABELS.set(labels)
-    except Exception as exc:  # noqa: BLE001 — no label gives the plain step
+        names = {str(n) for n in (attached or [])}
+        labels = {str(s.name): str(s.label) for s in servers
+                  if s.name and s.label and str(s.name) in names}
+        event_translator.set_mcp_labels(labels, reserved)
+    except Exception as exc:
         _log.warning("mcp.labels_unavailable", error=type(exc).__name__)
 
 

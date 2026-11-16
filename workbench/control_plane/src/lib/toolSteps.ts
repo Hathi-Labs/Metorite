@@ -491,6 +491,8 @@ function cleanLabel(raw: string): string {
     .replace(/<[^>]*>/g, " ")
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f<>]/g, " ")
+    // Bidi marks and zero-width characters must not hide or reorder a label.
+    .replace(/[​-‏‪-‮⁠-⁤﻿]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   return flat.length > SERVER_LABEL_CAP ? `${flat.slice(0, SERVER_LABEL_CAP - 1).trimEnd()}…` : flat;
@@ -509,12 +511,11 @@ export function mcpStepLabel(
   if (!mcp || typeof mcp.label !== "string" || typeof mcp.server !== "string") return null;
   const label = cleanLabel(mcp.label);
   if (!label) return null;
-  const norm = (s: string) => s.trim().toLowerCase().replace(/-/g, "_");
-  let flat = norm(event.name);
-  flat = flat.replace(/^mcp__?/, "");
-  const key = norm(mcp.server);
-  if (!key || !flat.startsWith(`${key}_`)) return null;
-  const words = flat.slice(key.length).split(/[_.:\s]+/).filter(Boolean).join(" ");
+  // The wire name is exactly `<server>_<tool>`: no change of case, dash or
+  // lead. The browser trusts the server's stamp and never guesses a server.
+  const key = mcp.server;
+  if (!key || !event.name.startsWith(`${key}_`)) return null;
+  const words = event.name.slice(key.length + 1).split(/[_.:\s-]+/).filter(Boolean).join(" ");
   return words ? `${label}: ${words}` : null;
 }
 

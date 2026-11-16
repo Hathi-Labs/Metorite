@@ -29,10 +29,19 @@ export interface SubAgentTool {
   args?: Record<string, unknown>;
 }
 
+/** CSY-10: the connected MCP server of a tool. The server stamps it on the tool
+ *  start (`event_translator.function_call_events`). It holds no argument. */
+export interface McpStamp {
+  server: string;
+  label: string;
+}
+
 export interface ToolEvent {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  /** CSY-10: set when the tool belongs to a connected MCP server. */
+  mcp?: McpStamp;
   result?: string;
   status: ToolEventStatus;
   startedAt?: number;

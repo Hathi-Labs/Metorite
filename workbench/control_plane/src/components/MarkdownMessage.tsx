@@ -21,6 +21,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Options as MarkdownOptions } from "react-markdown";
+import type { McpStamp } from "@/lib/chatStore";
 import remarkTextOnly from "@/lib/remarkTextOnly";
 import ChatEntityPill from "@/components/ChatEntityPill";
 import ChatTaskRef from "@/components/ChatTaskRef";
@@ -79,10 +80,8 @@ export interface ToolEvent {
   /** Number of message segments that existed when this tool started (Phase 3b)
    *  — drives segment↔tool interleaving when the runtime sent real ids. */
   segmentCutoff?: number;
-  /** CSY-10: set when this tool belongs to a connected MCP server: the
-   *  registry name (the tool's name prefix) and its label. The step then reads
-   *  "<label>: <tool in words>". Never holds an argument or a result. */
-  mcp?: { server: string; label: string };
+  /** CSY-10: the connected MCP server of this tool (`chatStore.McpStamp`). */
+  mcp?: McpStamp;
   /** Set when this tool is a call_agent delegation — the target agent name. */
   subAgentName?: string;
   /** Live streaming text from the sub-agent (appended as it streams). */

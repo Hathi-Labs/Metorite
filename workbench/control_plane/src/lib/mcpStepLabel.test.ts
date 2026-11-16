@@ -10,6 +10,8 @@
 //     keeps the old words.
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describeToolStep, mcpStepLabel, SERVER_LABEL_CAP } from "@/lib/toolSteps";
 import { applyStreamEvent } from "@/lib/chatStream";
 
@@ -22,9 +24,16 @@ describe("an MCP tool row keeps its server label", () => {
     expect(describeToolStep({ ...base, status: "done" }).label).toBe("Shaurrya App: search operations");
   });
 
-  it("reads the older mcp__server__tool name too", () => {
-    const e = { name: "mcp__github__list_issues", mcp: { server: "github", label: "GitHub" } };
-    expect(mcpStepLabel(e)).toBe("GitHub: list issues");
+  it("matches the exact wire name <server>_<tool>, and guesses nothing", () => {
+    const stamp = { server: "ops", label: "Ops" };
+    expect(mcpStepLabel({ name: "ops_list-items", mcp: stamp })).toBe("Ops: list items");
+    expect(mcpStepLabel({ name: "mcp__ops__list", mcp: stamp })).toBeNull();
+    expect(mcpStepLabel({ name: "mcp_ops_list", mcp: stamp })).toBeNull();
+    expect(mcpStepLabel({ name: "OPS_list", mcp: stamp })).toBeNull();
+    expect(mcpStepLabel({ name: "ops_", mcp: stamp })).toBeNull();
+    // A dashed server keeps its dash: the wire name does not change it.
+    expect(mcpStepLabel({ name: "mcp-ops_read", mcp: { server: "mcp-ops", label: "A" } })).toBe("A: read");
+    expect(mcpStepLabel({ name: "mcp_ops_read", mcp: { server: "mcp-ops", label: "A" } })).toBeNull();
   });
 
   it("never holds an argument or a result", () => {
@@ -42,11 +51,12 @@ describe("an MCP tool row keeps its server label", () => {
   it("bounds the label and strips control characters", () => {
     const label = mcpStepLabel({
       name: "ops_read",
-      mcp: { server: "ops", label: "A\u0000B\u001b<b>C</b>" + "x".repeat(60) },
+      mcp: { server: "ops", label: "A\u0000B\u001b<b>C</b>‮​D" + "x".repeat(60) },
     });
     expect(label).not.toBeNull();
     // eslint-disable-next-line no-control-regex
     expect(label).not.toMatch(/[\u0000-\u001f<>]/);
+    expect(label).not.toMatch(/[​-‏‪-‮⁠-⁤﻿]/);
     expect((label as string).split(": ")[0].length).toBeLessThanOrEqual(SERVER_LABEL_CAP);
     expect(label).toMatch(/: read$/);
   });
@@ -78,5 +88,19 @@ describe("the stream puts the server on the tool row", () => {
       type: "tool_start", id: "t2", name: "ops_read", args: {}, mcp: { server: 1, label: {} },
     }, fold);
     expect(m.toolEvents![0].mcp).toBeUndefined();
+  });
+});
+
+describe("the chat route passes the stamp on", () => {
+  // The BFF copies `mcp` only when both parts are strings (no fetch, no guess).
+  const route = readFileSync(
+    join(process.cwd(), "src/app/api/agent/chat/route.ts"), "utf8",
+  );
+
+  it("copies mcp from the tool start, and only when server and label are strings", () => {
+    expect(route).toMatch(/typeof mcp\.server === "string" && typeof mcp\.label === "string"/);
+    expect(route).toMatch(/\{ mcp: \{ server: mcp\.server, label: mcp\.label \} \}/);
+    // It builds the copy from the two strings, never from args or a result.
+    expect(route).not.toMatch(/mcp:\s*\{[^}]*(args|result|delta)/);
   });
 });
