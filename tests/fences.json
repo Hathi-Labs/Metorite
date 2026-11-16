@@ -308,6 +308,7 @@
       "tests/unit/test_projects_status_slot_r8.py",
       "tests/unit/test_provider_keys.py",
       "tests/unit/test_resume_continuation_r8.py",
+      "tests/unit/test_resume_native_stale_r8.py",
       "tests/unit/test_resume_stored_call_r8.py",
       "tests/unit/test_seat_admin_proxy_route.py",
       "tests/unit/test_shared_vocab_reach_r8.py",
