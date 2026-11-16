@@ -75,11 +75,11 @@ A gateway path is under `apps/services/gateway/gateway/`. A `src/` path is under
 | The continue route (WT-1). **BUILT, dark** | `POST /chat/sessions/{id}/continue`, `continue_session`, `routes/chat.py:1417`. Flag `CHAT_CONTINUE_ORGS` | CO-15 adds a carry mode (§17.1) |
 | The link of a continued chat | `chat_session.continued_from`, migration 345, `ON DELETE SET NULL`. Fence `test_continued_from_readers.py` | CO-5 and CO-13 read it. Only the WT-1 route writes it |
 | The pill of a held chat (WT-2). **BUILT, dark** | `src/lib/chatContinue.ts`, `src/components/ContinueOffer.tsx`, drawn in `AgentChat.tsx` | The one caller of the route today |
-| Grouping the chat list (CO-0) | `dateGroups:78`, `DATE_GROUPS:71`, `splitSessions:117`, `src/lib/shell/chatHistory.ts`. `SessionPicker.tsx` draws it | Pinned, then topics, then dates |
+| Grouping the chat list (CO-0) | `dateGroups:78`, `DATE_GROUPS:71`, `splitSessions:117`, `src/lib/shell/chatHistory.ts`. `src/lib/shell/SessionPicker.tsx` draws it | Pinned, then topics, then dates |
 | Client search of title and preview | `matchesQuery`, `chatHistory.ts:99` | Replaced by the server search (CO-3) |
 | Rename and archive | `PATCH /chat/sessions/{id}` (`routes/chat.py:1121`), `archived_at` (migration 254) | Pin joins these acts |
 | Delete | `DELETE /chat/sessions/{id}` (`routes/chat.py:1137`). The picker offers Delete on an archived chat only. The route has no such check | §16.5 clears a note |
-| The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:753`) | CO-1 writes a better title |
+| The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:755`) | CO-1 writes a better title |
 | The rule for bar words | `barMayJoin:768`, `startsFresh:751`, `STALE_CHAT_MS:743`, `src/lib/shell/assistant.ts` | §7 widens it, only on a confident match |
 | The solo test | `SOLO_ROOM_SQL`, `rooms.py:590` | The join filter |
 | Removing the last turn | `POST /chat/sessions/{id}/supersede`, `routes/chat.py:1301` | The undo of §7.3 |
@@ -234,14 +234,18 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
   PZ-33b job and is the one pass. CX-4 reads its row and adds no second pass.
 - **One digest table.** `chat_session_digest` here and `chat_session_digests` in
   CX-4 are one table. The first slice that builds it names it for both specs.
-- **One source rule.** CX-4 §8.1 says that its atoms catch what the member
-  decided with the assistant. D-PZ-37 allows the member's typed words only. A
-  digest that reads assistant turns needs an owner decision first.
+- **One source rule.** The summary job reads typed words only (D-PZ-37), after
+  5 review rounds of PZ-33b. CX-4 §8.1 says that its atoms catch what the member
+  decided with the assistant. A CX-4 digest that reads assistant turns needs an
+  owner decision first.
 - **`chat_join_log` has no twin.** It is the shadow record of CO-4 only. CX-4
   plans no join log, so nothing reconciles with it.
 - **One search.** CO-3, HRD-21 (D-FIND-5) and the `chat` source of CX-4 all read
   past chats. HRD-21 builds first and stays narrow. CO-3 builds on the same
-  source and adds no second index (D132.3).
+  source and adds no second index (D132.3). If CO-3 needs rooms or chats that
+  are not solo, that is the wider scope of CX-4 (`find_engine.md` §14 item 6),
+  not a wider HRD-21. `find_engine.md` gives the chat search index of HRD-21
+  to CX-4 already.
 
 ## 11. The slices
 
@@ -263,9 +267,9 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 | CO-13 | 3512 | 3 | The continue mark (§17.5) | AGENT-SAFE | A continued chat shows its source, and `test_continued_from_readers.py` stays green |
 | CO-14 | 3513 | Later | The length cue (§17.4). It waits for HRD-19 (task 2998) | AGENT-SAFE | The cue shows at 60 % and not below, and a tap runs Start clean |
 | CO-15 | 3514 | 3 | The carry door: a carry mode of the WT-1 route (§17.1) | HIGH. AGENT-SAFE, dark. The §9 owner agrees first | The R8 cases of `test_continue_carry.py` pass for both modes, and a held source carries no summary |
-| CO-16 | 3515 | 4 | The condense note: pick, build, preview, edit, versions, Delete (§16.1, §16.2, §16.5) | HIGH: a new table, chat words to a model. AGENT-SAFE, dark | A pasted mail and an assistant reply never reach a note, and a deleted source leaves no text in any version |
+| CO-16 | 3515 | 4 | The condense note: pick, build, preview, edit, versions, Delete (§16.1, §16.2, §16.5) | HIGH: a new table, chat words to a model. AGENT-SAFE, dark | A pasted mail and an assistant reply never reach a note. A room and an `off` chat are never a source. A deleted source leaves no text in any version |
 | CO-17 | 3516 | 4 | The card record (§16.3) | HIGH: a migration. AGENT-SAFE, dark | An approved card writes one row with no model text, a declined card writes none, and a colleague reads none (R8) |
-| CO-18 | 3517 | 4 | The note in a new chat of its topic (§16.4) | AGENT-SAFE, dark | A new chat in the topic answers from the note and cites a source, and a chat in another topic does not load it |
+| CO-18 | 3517 | 4 | The note in a new chat of its topic (§16.4) | AGENT-SAFE, dark | A new chat in the topic answers from the note and cites a source by its link only. A chat in another topic does not load it. No session store holds the note |
 
 ### 11.1 The ladder (D211)
 
@@ -385,7 +389,8 @@ worker runs and no summary exists. So the briefing shows only due tasks.
 ### 16.1 What the member does
 
 - The member picks chats from the chat list, from a topic, or by asking in chat.
-  An optional focus line says what matters.
+  The picker shows only the chats that §16.2 allows. An optional focus line
+  says what matters.
 - The result is ONE note, visible and editable. Its shape is fixed: goal,
   decisions, open questions, constraints, next steps, and the source chats with
   links.
@@ -397,7 +402,24 @@ worker runs and no summary exists. So the briefing shows only due tasks.
 
 ### 16.2 The source rule
 
-This rule binds CO-16 and CO-18. A note reads three sources and nothing else:
+This rule binds CO-16 and CO-18. It says which chats may be sources, and what
+a note reads from them.
+
+**Which chats.** Each source chat passes `ELIGIBLE_SQL`
+(`assistant_summaries.py:1022`), the rule of the summary job today:
+
+- It is a chat with Mira on the web (`channel IS NULL`), so no WhatsApp chat.
+- It is not archived.
+- It is not `off` (PZ-35).
+- No other agent is in the chat.
+- It is solo (`SOLO_ROOM_SQL`).
+
+The reason is `_is_member_row` (`assistant_summaries.py:206`). It assumes a
+solo chat, and it counts a row with an empty `author_email` as the member's
+own. So in a room, a note could take the words of another member. Until the
+owner answers §19 question 7, an explicit pick does not override `off`.
+
+**What a note reads.** Three sources and nothing else:
 
 1. **The member's own typed words.** These are the rows with the typed mark
    (`chat_message.member_typed`, D-PZ-37), read through `assistant_summaries.py`.
@@ -405,9 +427,12 @@ This rule binds CO-16 and CO-18. A note reads three sources and nothing else:
    a pasted mail.
 2. **The cards that the member approved** (§16.3). The note uses the outcome
    key, the act kind and the record link. It never uses a card title or detail.
-3. **The records created**, by their links. Today two tables name their chat:
-   `artifacts.session_id` and `reminders.source_session_id`. A record with no
-   chat link stays out until its app writes one.
+3. **The records created: the link and the kind only.** Today two tables name
+   their chat: `artifacts.session_id` and `reminders.source_session_id`. The
+   note never reads the title or the body of a record. The assistant writes the
+   title and the body of an artifact. A reminder made from a mail can hold the
+   subject of its sender. The member opens each link as the member. A
+   record with no chat link stays out until its app writes one.
 
 Later, the decisions store of HRD-12 (task 2991) joins as a fourth source.
 
@@ -440,10 +465,18 @@ with HRD-12 before it builds.
 
 ### 16.4 Later chats in the topic (CO-18)
 
-- A new chat in the topic loads the note as context of the turn, beside the
-  PZ-34 briefing. The note holds about 400 words at most. No chat row stores it.
-- On demand, the assistant reads the typed words of a source chat through
-  `assistant_summaries.py`, and cites that chat by its link.
+- A new chat in the topic loads the note, beside the PZ-34 briefing. The note
+  holds about 400 words at most.
+- The note goes in as instructions, through `RunContextProvider`
+  (`apps/services/orchestrator/orchestrator/_native_run_context.py`). It never
+  goes in as an input message, because `native_session_store.py:180` stores
+  the inputs of a run. No history provider stores instructions, and no chat
+  row stores the note.
+- **A source on demand is a link only.** The assistant cites a source chat by
+  its link, and the member opens that chat. No tool reads the text of a source
+  chat into a later run. A tool result stays in the later chat, in
+  `chat_message.tool_events` (`chat_fold.py:268`) and in its stored native
+  session, and a Delete of the source reaches neither.
 - With the member's switch off (PZ-35), a new chat loads no note. The member can
   still condense and read the note.
 
@@ -457,9 +490,14 @@ with HRD-12 before it builds.
   chat (§19 question 3).
 - **The Delete dialog** names each note that clears, as it names the files that
   stay (D162.8).
-- **No store outlives a Delete.** A stored PZ-34 block can live up to 24 hours
-  after a Delete (D-PZ-38). The note load of CO-18 keeps no such store, so the
-  next new chat reads the cleared note.
+- **What a Delete reaches.** The note and each of its versions, at once. CO-18
+  loads the note with no cache, so the next new chat reads the cleared note. A
+  stored PZ-34 block can live up to 24 hours after a Delete (D-PZ-38), and the
+  note takes no such store. The note goes in as instructions, which no session
+  store keeps. The read on demand carries no source text (§16.4).
+- **What a Delete does not reach.** A reply that a later chat already wrote
+  from the note. That reply belongs to the later chat, as a quote does (§19
+  question 3).
 - **Forget and offboarding** delete each note of the member (D142.3).
 
 ### 16.6 Cost
@@ -512,8 +550,10 @@ the owner of `one_assistant_context.md` §9 agrees it first:
 - No context builder reads the old chat through the link after the carry.
 - The flag of the mode is open: the CO-5 flag, or `CHAT_CONTINUE_ORGS`.
 
-**RESUME is not this offer.** RESUME continues ONE run that waits at an approval
-card. Reopening an old session and its history is native session persistence
+**RESUME is not this offer.** RESUME continues ONE run that waits at a card.
+That is an approval card today. RESUME-1b (task 3434) adds the question cards.
+RESUME-4a-2 adds a late "Not now", and it waits for D-RES-9 (both in
+`chat_run_continuity.md`, the second on the branch of PR 2451). Reopening an old session and its history is native session persistence
 (`maf_coding_engine.md` §15.9, `MAF_NATIVE_SESSIONS`).
 
 ### 17.2 First-run hints (CO-12)
@@ -561,7 +601,7 @@ owns it. It reads only the member's own solo sessions in this org (D-FIND-5). It
 never reads a room, a `no_egress` session, the current chat or the chat of
 another member. A hit gives the title, the date and a link.
 
-The continue offer and the note may reuse a hit and its link. This spec does
+The continue offer and the note may reuse the link of a hit. This spec does
 not widen HRD-21. Rooms belong to the wider scope of CX-4 (`find_engine.md` §14
 item 6).
 
@@ -588,7 +628,8 @@ owner answers on task 3491 or on the slice.
    evidence (§16.2).
 3. **A source chat is deleted. Clear the note and offer a re-run, with no text
    of that chat?** Recommend YES. It matches D-PZ-33. The member loses their
-   edits of that note, and the Delete dialog says so first.
+   edits of that note, and the Delete dialog says so first. A reply that a
+   later chat already wrote from the note keeps its words.
 4. **Is the note a private topic brief, or also a Knowledge page to share?**
    Recommend a private topic brief first. Sharing comes later, as an act of the
    member (D104).
@@ -598,6 +639,9 @@ owner answers on task 3491 or on the slice.
    free. A tap in place of the send changes D163.5, so it needs the owner.
 6. **Who pays for a condense?** Recommend the org, as a chat turn, because the
    member asks for it each time (§16.6).
+7. **Does an explicit pick override `off`?** A chat that is `off` (PZ-35) is
+   out of the summaries. Recommend NO. Such a chat cannot be a source, and the
+   picker does not show it. A yes would change what the switch means (§16.2).
 
 ## 20. Sources
 
