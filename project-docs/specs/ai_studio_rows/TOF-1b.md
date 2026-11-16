@@ -99,3 +99,5 @@ The owner picks one option:
 - (b) Let a pack that a skill brings count as spare in the reach test, or raise the cap of places for skill packs. This changes the caps of WS-67, so the owner of WS-67 must agree.
 
 The fence `test_on_a_full_org_a_skill_brings_one_pack_at_most` pins the limit, so a change to it must change that test.
+
+**Decision of the owner (2026-11-16, on epic 3393).** The owner accepted option (a). A skill brings at most 1 pack in an org that allows every pack. The rung 1 demo (task 3414) uses a skill with one pack, for example the reads of `crm-records` only. Option (b) stays open as a later slice.
