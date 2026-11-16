@@ -424,7 +424,7 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
 `GET /search/names` asks each source that can `near`, with the lookups of rung
 3. So a near name is the same in the ladder and in the tool.
 
-**As built (FIND-5, task 3242, 2026-11-16).**
+**As built (FIND-5, task 3242, 2026-11-16, with its fix round).**
 
 - **The route.** `gateway/retrieval/names.py` holds it. An org off
   `FIND_ORGS` gets 404 before any check of the input. The route takes `name`
@@ -436,35 +436,79 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
   person. Email gives sender. No source gives a member yet, so `resolve_person`
   keeps the members until FIND-6.
 - **The reads.** Each source has the ability `named` (`Source.named_records`).
-  It calls the same app function as `find`. Each source runs `named` with the
-  name and `Source.near_names` at once. Then it runs `named` once more, with
-  each word replaced by its best near spelling.
+  It calls the app's own search. Each source runs `named` with the name and
+  `Source.near_names` at once. Then it runs `named` once more, with each word
+  replaced by its best near spelling.
+- **One word for People and Email.** Their own search matches its text as one
+  phrase, and the directory never reads the preferred name. So the route asks
+  them with one word: the longest word of the name, or the longest near
+  spelling. The name test checks the other words. The CRM matches word by
+  word, so it gets the whole name. "Kumar Sharath" finds «Sharath Kumar» in
+  each app.
 - **The name test is code.** A record is `exact` when its stored name holds
-  each word, and `near` when it holds each word of the near spelling. A
-  record that matched by another field gives no row.
-- **A sender row.** Its id is the address, from a mailbox that the member can
-  read. Its link opens the newest mail of the sender. The name test reads the
-  name and the part of the address before the `@`, not the domain. The
-  member's own sent mail gives no row.
+  each word of the name, and `near` when it holds each word of the near
+  spelling. Each asked word takes its own stored word, once. A word of one
+  letter takes a stored word that starts with it, after the full words take
+  theirs. So "Sharath S" is no exact match for «Sharath». An ask of initials
+  only, such as "S K", holds nothing. A record that matched by another field
+  gives no row.
+- **A sender row.** The Email app's own read `search.named_mail` gives it. The
+  read uses the mailbox scope of the search, drops the outbound mail (sent,
+  drafts, outbox) and sets a LOCAL `statement_timeout` of 1.5 s first. A `%`
+  or a `_` in the word is plain text. The id of the row is the address, and
+  its link opens the newest mail of the sender. An address that holds a
+  hidden character gives no row, and a joiner counts as one. The name test
+  reads the name and the part of the address before the `@`, not the domain.
+- **A person row** says the status of the person (active, contractor, alumni
+  or invited), because the directory shows each status.
 - **The time.** One deadline of 1 s for every read, and each read takes a
   slot of `FIND_SESSIONS`.
 - **A failed read.** A failed name read gives no row, and `skipped` names the
   app with `timed_out`, `failed` or `refused`. `refused` is a 401 or a 403 of
   the app only. A failed near read keeps the exact rows, and `near_skipped`
-  names the app.
-- **The verdict.** `one` is one exact record, and every app answered in
-  full. `partial` is one exact record, but an app gave no answer or a full
-  page. The other verdicts are `several`, `near` and `none`.
+  names the app. `full` names each app whose name read or near read gave a
+  full page of 20. A none answer does not count such an app as one where no
+  name matched.
 - **The caps.** At most 5 rows of each kind and 15 in all, the exact rows
   first. `cut` says when a cap left a row out.
 - **The tool.** `resolve_name(name, kinds)` in `company_search_tools.py`
   answers with the header of `search_company`. Two values come from data: a
   stored name in guillemets, and a sender address that passed the address
-  check. Every other word comes from a closed list. The tool ends with the
-  fixed line "One exact match: use it. Several, or near only: ask the member."
+  check. Every other word comes from a closed list. The last line is the
+  fixed instruction of the verdict (`NAME_NEXT`).
 - **The flag.** The orchestrator holds the tool only for an org of
   `FIND_ORGS`, with `COMPANY_SEARCH_ENABLED` on. So the tool list of each
   other org does not change.
+
+**The verdict (fix round, P2-c).** The rule "One exact match: use it" holds
+only for a sure match. One exact row beside a near row repeats the failure of
+§1.1. There «Sharath BMS» is exact, and the near «Sharat» is the man that the
+member means. A mail sender writes its own display name, so it is no known
+person.
+
+| Verdict | When | The last line of the tool |
+|---|---|---|
+| `one` | One exact record that is no mail sender, no near row, and each app answered in full | "One exact match: use it." |
+| `partial` | The same, but an app gave no answer or a full page, did not try its near spellings, or a cap cut a row | "Ask the member to confirm it before you act." |
+| `several` | Two exact records or more, or one exact record beside a near row | "Ask the member which one they mean." |
+| `near` | Near rows only, or one exact mail sender alone | "Ask the member to confirm one, and never act on it without a yes." |
+| `none` | No row | "Ask the member for the full name or the address." |
+
+**Limits of FIND-5.**
+
+- A word of the name must hold the letters a to z or the digits 0 to 9,
+  because `name_match.words` keeps only those. So a name in another script
+  gets the 422.
+- The directory search never reads the preferred name. A person whose
+  preferred name is not in the full name gives no row for it.
+- A sender with 20 mails or more fills the page of Email, so the answer reads
+  `partial` and not `one`.
+- A sender that is only in the sender rollup, with no mail, gives no row.
+- **The cap of a request.** The pack cap counts the orchestrator's own tools.
+  For an org of `FIND_ORGS`, a Studio turn with the email words drops the pack
+  `studio-more`, and keeps email and studio. Nothing fails. FIND-6 gives the
+  place back when `resolve_person` leaves the core list. The fence is
+  `test_resolve_name_tool.py`.
 
 ### 5.3 How the app search tools wrap the engine
 

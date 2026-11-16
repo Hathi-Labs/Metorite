@@ -46,10 +46,12 @@ of its app's own module, as ``find`` does, with ids checked as UUIDs first.
 
 **One more ability, ``named``** (WS-FIND FIND-5, ``find_engine.md`` §4.2
 ``names`` and §5.2). The CRM, People and Email sources declare it, with the
-kinds of record whose names ``resolve_name`` reads. ``named`` calls the same
-app function as ``find``, and gives each record as a :class:`Named`: its kind,
-id, name as stored and link. Email gives each mail sender once, with the link
-of the newest mail. ``GET /search/names`` tests the name itself.
+kinds of record whose names ``resolve_name`` reads. ``named`` calls the app's
+own search, and gives each record as a :class:`Named`: its kind, id, name as
+stored and link. Email gives each mail sender once, with the link of the
+newest mail, through its own read ``search.named_mail``. People and Email
+match one phrase (``names_word``), so the route asks them with one word.
+``GET /search/names`` tests the name itself.
 
 **Two more options of ``find``** (CX-1, §4.2 and §4.5), each for a source
 that declares it, like ``meaning``. A source with ``dated=True`` takes
@@ -205,6 +207,8 @@ class Named:
     code built. *also* is a second stored text that the name test reads too:
     the full name of a person with a preferred name, or the part of a sender's
     address before the ``@``. The route never puts *also* in an answer.
+    *state* is the record's state, such as a person's status. The route puts
+    it in the row only from a closed list.
     """
 
     kind: str
@@ -212,6 +216,7 @@ class Named:
     name: str
     href: str
     also: str = ""
+    state: str = ""
 
 
 #: ``named(user, name, k)`` (FIND-5): at most *k* records that the app's own
@@ -297,6 +302,10 @@ class Source:
     names: tuple[str, ...] = ()
     #: The named ability of FIND-5, or ``None``. :meth:`named_records` calls it.
     named: NamedReader | None = None
+    #: True when the app's own search reads its text as ONE phrase (People and
+    #: Email). ``resolve_name`` then asks it with one word, the longest, and
+    #: its name test checks the other words. The CRM matches word by word.
+    names_word: bool = False
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -941,7 +950,11 @@ async def _crm_named(user: UserContext, name: str, k: int) -> tuple[list[Named],
 
 async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
     """The people of *name*, through the directory's own read. The row names
-    the person as the directory does, and the full name is :attr:`Named.also`."""
+    the person as the directory does. :attr:`Named.also` is the full name when
+    the person has a preferred name, and :attr:`Named.state` is the status.
+    The directory matches *name* as one phrase in the full name (never the
+    preferred name), so ``resolve_name`` asks it with one word
+    (:attr:`Source.names_word`)."""
     from gateway.routes.people.directory import list_directory
 
     answer = await list_directory(
@@ -949,18 +962,31 @@ async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Name
         has_capacity=False,
     )
     rows = list(answer.rows or [])
-    out = [
-        Named("person", str(p["id"]), _title(p.get("preferred_name") or p.get("name")),
-              f"/people/{quote(str(p['id']))}", also=str(p.get("name") or ""))
-        for p in rows[:k]
-    ]
+    out = []
+    for p in rows[:k]:
+        shown = _title(p.get("preferred_name") or p.get("name"))
+        full = str(p.get("name") or "")
+        out.append(Named("person", str(p["id"]), shown, f"/people/{quote(str(p['id']))}",
+                         also=full if full.strip() != shown else "",
+                         state=str(p.get("status") or "")))
     return out, len(rows) > k
 
 
 def sender_address(value: Any) -> str:
     """*value* as the address of a sender row, in lower case, or ``""`` when
-    it is no plain address (FIND-5)."""
-    address = str(value or "").strip().lower()
+    it is no plain address (FIND-5). An address that holds a hidden character
+    gives ``""`` too, because the answer prints the address outside the
+    quotes: a character that ``hidden_text`` strips, and each character of
+    Unicode category C. The second test also refuses a joiner (ZWJ, ZWNJ),
+    which ``hidden_text`` keeps between two visible characters of a name."""
+    import unicodedata
+
+    from acb_skills.hidden_text import strip_hidden
+
+    raw = str(value or "").strip()
+    if strip_hidden(raw) != raw or any(unicodedata.category(ch).startswith("C") for ch in raw):
+        return ""
+    address = raw.lower()
     if len(address) > _ADDRESS_MAX or not _SENDER_ADDRESS.fullmatch(address):
         return ""
     return address
@@ -968,40 +994,24 @@ def sender_address(value: Any) -> str:
 
 async def _email_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
     """The senders whose name or address holds *name*, in the mailboxes that
-    the member can read, through the Email app's own search: ``from_addr``,
-    newest first, as the near step of HRD-18b asks it. One row for each
-    sender, with the link of the newest mail. A mail of a folder of
-    ``core.NOT_INBOUND_FOLDERS`` (sent, drafts, outbox) gives no row: the
-    member wrote it, from any of the member's mailboxes. The member's own
-    address gives no row either."""
-    from gateway.routes.email.core import NOT_INBOUND_FOLDERS
-    from gateway.routes.email.transport.search import search_messages
-
-    # ⚠️ Every parameter, by name, as in `_email`: the route declares them with
-    # `Query(...)` defaults.
-    answer = await search_messages(
-        q="", account_id=None, folder="all", label=None, labels=None,
-        uncategorized=False, from_addr=name, to_addr=None, received_after=None,
-        received_before=None, is_read=None, is_starred=None, has_attachments=None,
-        sender_category=None, importance=None, hybrid=False, light=True, page=1,
-        page_size=k, with_total=False, user=user,
-    )
-    mails = list(answer.get("emails") or [])[:k]
+    the member can read, through the Email app's own ``search.named_mail``:
+    the newest mails first, with its own statement limit, and no outbound
+    mail. One row for each sender, with the link of the newest mail. The
+    member's own address gives no row. The match is one phrase, so
+    ``resolve_name`` asks it with one word (:attr:`Source.names_word`)."""
+    search = await _module("gateway.routes.email.transport.search")
+    mails = list(await search.named_mail(user, name, k))[:k]
     own = str(user.email or "").strip().lower()
     out: list[Named] = []
     seen: set[str] = set()
     for mail in mails:
-        row = _as_dict(mail)
-        if str(row.get("folder") or "").strip().lower() in NOT_INBOUND_FOLDERS:
-            continue
-        sender = row.get("from_address") or {}
-        address = sender_address(sender.get("email"))
+        address = sender_address(mail.get("email"))
         if not address or address == own or address in seen:
             continue
         seen.add(address)
-        who = str(sender.get("name") or "").strip()
+        who = str(mail.get("name") or "").strip()
         out.append(Named("sender", address, who or address,
-                         f"/email?email={quote(str(row['id']))}",
+                         f"/email?email={quote(str(mail['id']))}",
                          also=address.partition("@")[0]))
     return out, len(mails) >= k
 
@@ -1105,10 +1115,11 @@ REGISTRY: dict[str, Source] = {
         Source("email", "email", "Email", _email, dated=True, vectors=True,
                near=_email_near, senders=True, related=_email_related,
                takes=("address", "domain"), open=_email_opened, kinds=("email",),
-               names=("sender",), named=_email_named),
+               names=("sender",), named=_email_named, names_word=True),
         Source("people", "people", "People", _people, near=_people_near,
                related=_people_related, takes=("person",), open=_people_opened,
-               kinds=("person",), names=("person",), named=_people_named),
+               kinds=("person",), names=("person",), named=_people_named,
+               names_word=True),
         Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near,
                related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
                kinds=CRM_REF_KINDS, names=CRM_NAME_KINDS, named=_crm_named),

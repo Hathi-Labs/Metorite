@@ -685,6 +685,59 @@ async def test_the_verdict_is_one_only_for_exactly_one_exact_record(
     assert (await _resolve(p, me, "Gitanjaly"))["verdict"] == "near"
 
 
+async def test_a_name_in_another_order_finds_each_app(world, lead, flags, roomy_names) -> None:
+    """Fix round, P2-a: People and Email match one phrase, so the route asks
+    them with one word and checks the rest itself. The CRM matches word by
+    word."""
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    person = _person(p, p.org_a, "Gitanjali Peoplea")
+    answer = await _resolve(p, me, "Peoplea Gitanjali")
+    assert _rows(answer) == {("people", "person", person, "exact")}
+    sharat = await _resolve(p, me, "Satyanarayana Sharat")
+    assert _rows(sharat) == {
+        ("crm", "lead", lead, "exact"), ("crm", "contact", world["contact"], "exact"),
+        ("email", "sender", NEUROPEEK, "exact")}
+
+
+async def test_a_sender_alone_is_no_sure_match(world, flags, roomy_names) -> None:
+    """Fix round, P2-c: a sender writes its own display name."""
+    p = world["p"]
+    flags("*")
+    own = await _resolve(p, _member(B, p.org_a, *ALL), "Secretname")
+    assert _rows(own) == {("email", "sender", f"secret@hidden-{TAG}.test", "exact")}
+    assert own["verdict"] == "near"
+
+
+async def test_an_address_with_a_hidden_character_gives_no_sender(
+        world, flags, roomy_names) -> None:
+    """Fix round, P2-b: the answer prints the address outside the quotes."""
+    p = world["p"]
+    hidden = f"tri{chr(0x202E)}cky@hide-{TAG}.test"
+    _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name="Trickyname Sender",
+          address=hidden, subject="Hello", body="hi")
+    flags("*")
+    answer = await _resolve(p, _member(A, p.org_a, *ALL), "Trickyname")
+    assert answer["rows"] == []
+    assert f"hide-{TAG}" not in json.dumps(answer)
+
+
+async def test_the_named_mail_read_takes_a_wildcard_as_plain_text(world) -> None:
+    """Fix round, P2-d: `_` and `%` of the word are text, not wildcards. The
+    read runs as the app role, in member A's mailboxes."""
+    from gateway.routes.email.transport import search
+
+    p = world["p"]
+    me = _member(A, p.org_a, *ALL)
+    async with _as_member(p, p.org_a):
+        plain = await search.named_mail(me, "Sharat", 20)
+        wild = await search.named_mail(me, "Sh_rat", 20)
+        every = await search.named_mail(me, "%", 20)
+    assert [m["email"] for m in plain] == [NEUROPEEK]
+    assert wild == [] and every == []
+
+
 async def test_flag_off_the_name_route_answers_404(world, flags, roomy_names) -> None:
     p = world["p"]
     flags("")

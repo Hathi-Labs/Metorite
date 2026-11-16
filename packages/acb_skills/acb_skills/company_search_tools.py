@@ -47,8 +47,8 @@ change.
 reads ``GET /search/names`` as the run's member. It finds each person,
 contact, lead, company and mail sender that holds one name, exact or near.
 Its answer has the same header, each stored name in guillemets, a sender's
-address after a shape check, a verdict from a closed list and the fixed line
-:data:`NAMES_RULE`. With no member it
+address after a shape check, a verdict from a closed list, and the fixed
+instruction of that verdict (:data:`NAME_NEXT`). With no member it
 answers a sentence and calls nothing, and each failure is a sentence. The
 orchestrator holds it in ``core_tools`` only for an org of ``FIND_ORGS``,
 so the tool list of every other org does not change.
@@ -59,6 +59,7 @@ from __future__ import annotations
 import functools
 import os
 import re
+import unicodedata
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -618,8 +619,6 @@ search_company_dated = _read_tool(_search_company_dated)
 
 #: The route of :func:`resolve_name`.
 NAMES_ROUTE = "/search/names"
-#: The fixed instruction that ends every answer. Code writes it, never data.
-NAMES_RULE = "One exact match: use it. Several, or near only: ask the member."
 #: The most characters of the name, as the route takes it.
 NAMES_MAX = 60
 
@@ -647,12 +646,27 @@ NAME_SKIPS: dict[str, str] = {
 }
 NAME_VERDICTS: dict[str, str] = {
     "one": "One record holds the name exactly.",
-    "partial": ("One record holds the name exactly, but an app was not searched in "
-                "full, so another record may hold it. Ask the member to confirm it."),
-    "several": "Several records hold the name exactly.",
-    "near": ("Each record above holds a near spelling of the name, and a near "
-             "spelling is not a match."),
+    "partial": ("One record holds the name exactly, but an app did not answer in "
+                "full, so another record may hold it."),
+    "several": "More than one record may be the one that the member means.",
+    "near": ("Each record above holds a near spelling of the name, or is a mail "
+             "sender. Neither is a sure match: a mail sender writes its own name."),
 }
+#: The fixed instruction that ends each answer, one for each verdict (fix
+#: round, P3-a). Code writes it, never data. Only ``one`` says to use it.
+NAME_NEXT: dict[str, str] = {
+    "one": "One exact match: use it.",
+    "partial": "Ask the member to confirm it before you act.",
+    "several": "Ask the member which one they mean.",
+    "near": "Ask the member to confirm one, and never act on it without a yes.",
+    "none": "Ask the member for the full name or the address.",
+}
+#: The end of an answer whose verdict is off the list.
+NAMES_ASK = "Ask the member before you act."
+#: The line of each app whose page was full (fix round, P3-b).
+NAMES_FULL = "The page was full in: {apps}, so a record past it may hold the name."
+#: The statuses of a person that a row may print (the directory's closed list).
+NAME_STATUSES: tuple[str, ...] = ("active", "contractor", "alumni", "invited")
 #: The end of an answer with no record (the rule of KR-ZERO).
 NAMES_NO_PROOF = "A zero is not proof that no record exists."
 #: An answer with no app to ask.
@@ -697,14 +711,25 @@ def _skips(entries: Any) -> list[str]:
 
 
 def _name_lines(row: Any) -> list[str]:
-    """The two lines of one record, or none for a row off the closed lists."""
+    """The two lines of one record, or none for a row off the closed lists.
+
+    A sender's id is an address that the sender wrote, and ``full_id`` prints
+    it outside the quotes. So an address with a hidden character prints
+    nothing (fix round, P2-b)."""
+    from acb_skills.hidden_text import strip_hidden
+
     if not isinstance(row, dict):
         return []
     app, kind, match = (str(row.get(key) or "") for key in ("app", "kind", "match"))
     ident = str(row.get("id") or "")
     if (app not in NAME_APPS or kind not in NAME_KINDS or match not in ("exact", "near")
-            or not (_ADDRESS if kind == "sender" else _RECORD_ID).fullmatch(ident)):
+            or not (_ADDRESS if kind == "sender" else _RECORD_ID).fullmatch(ident)
+            or strip_hidden(ident) != ident
+            or any(unicodedata.category(ch).startswith("C") for ch in ident)):
         return []
+    status = str(row.get("status") or "")
+    noun = NAME_KINDS[kind] + (f", {status}" if kind == "person" and status in NAME_STATUSES
+                               else "")
     name = _name_text(row.get("name")) or "(no name)"
     href = str(row.get("href") or "")
     link = f" {href}" if href.startswith("/") and not href.startswith("//") \
@@ -716,17 +741,18 @@ def _name_lines(row: Any) -> list[str]:
         how = f"[near spelling: {spelt}]"
     else:
         how = "[near spelling]"
-    return [f"- «{name}» ({NAME_APPS[app]} {NAME_KINDS[kind]}){link} {how}",
+    return [f"- «{name}» ({NAME_APPS[app]} {noun}){link} {how}",
             f"  full_id: {kind}:{ident}"]
 
 
 def format_names(body: Any) -> str:
     """The answer of ``GET /search/names`` as the text that the model reads.
 
-    The header of :data:`HEADER`, the apps that were not searched, each
-    record, the sentence of the verdict and :data:`NAMES_RULE`. Two values
-    come from data: a stored name, inside guillemets, and a sender address in
-    ``full_id``, which must pass :data:`_ADDRESS`. A record id must pass
+    The header of :data:`HEADER`, the apps that were not searched or read in
+    part, each record, the sentence of the verdict, and the instruction of
+    the verdict from :data:`NAME_NEXT`. Two values come from data: a stored
+    name, inside guillemets, and a sender address in ``full_id``, which must
+    pass :data:`_ADDRESS` and hold no hidden character. A record id must pass
     :data:`_RECORD_ID`, and a link must be an in-app path. Every other word
     comes from a closed list here.
     """
@@ -739,6 +765,9 @@ def format_names(body: Any) -> str:
     near_skipped = _skips(data.get("near_skipped"))
     if near_skipped:
         lines.append(f"Near spellings not tried in: {', '.join(near_skipped)}.")
+    full = _apps(data.get("full"))
+    if full:
+        lines.append(NAMES_FULL.format(apps=", ".join(full)))
     rows = data.get("rows")
     for row in rows if isinstance(rows, list) else []:
         lines += _name_lines(row)
@@ -747,8 +776,10 @@ def format_names(body: Any) -> str:
     if verdict in NAME_VERDICTS:
         lines.append(NAME_VERDICTS[verdict])
     elif verdict == "none":
-        searched = _apps(data.get("searched"))
-        if not searched and not skipped:
+        # An app whose page was full is no "No name matched" app: the line of
+        # NAMES_FULL above says that a record past its page may hold the name.
+        searched = [app for app in _apps(data.get("searched")) if app not in full]
+        if not searched and not skipped and not full:
             lines.append(NAMES_NO_APP)
         else:
             parts = [f"No name matched in: {', '.join(searched)}."] if searched else []
@@ -756,7 +787,7 @@ def format_names(body: Any) -> str:
                 parts.append(f"Not searched: {', '.join(skipped)}.")
             parts.append(NAMES_NO_PROOF)
             lines.append(" ".join(parts))
-    lines.append(NAMES_RULE)
+    lines.append(NAME_NEXT.get(verdict, NAMES_ASK))
     return "\n".join(lines)
 
 
@@ -810,10 +841,13 @@ async def resolve_name(name: str, kinds: str | None = None) -> str:
     record comes with its app, its link, its full_id and how it matched:
     exact, or a near spelling.
 
-    One exact match: use it. Several, or near only: ask the member. A near
-    spelling is not a match, so never act on one without a yes. When nothing
-    matches, the answer names the apps that it searched. That is not proof
-    that no record exists.
+    The answer ends with one instruction for its verdict. Follow it.
+    "one": one sure record, so use it. "partial": one record, but an app did
+    not answer in full, so ask the member to confirm it. "several": more than
+    one record may fit, so ask which. "near": only near spellings or a mail
+    sender, so ask the member to confirm one, and never act without a yes.
+    "none": nothing matched in the apps it names. That is not proof that no
+    record exists.
 
     Args:
         name: One name, 2 to 60 characters and at most 3 words, as the member
@@ -836,7 +870,7 @@ __all__ = [
     "BROADENED_OPENING",
     "DATED_HEADER",
     "HEADER",
-    "NAMES_RULE",
+    "NAME_NEXT",
     "RELATED_HEADER",
     "company_search_enabled",
     "context_recency_enabled",
