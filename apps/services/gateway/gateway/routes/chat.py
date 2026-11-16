@@ -128,9 +128,19 @@ class MessageRecord(BaseModel):
 #: of such an id, so only ``chat_brief._post_row`` seals one (task 3564).
 BRIEF_ID_PREFIX = "brief-"
 
-#: The whole id of a brief row, as the list reads it. It is the rule of
-#: ``assistant_summaries.BRIEF_ROW`` and of ``isBriefRow`` in ``briefTurn.ts``.
+#: The whole id of a brief row, as Postgres reads it: the rule of
+#: ``isBriefRow`` in ``briefTurn.ts``, with each ``\d`` as ``[0-9]``.
+#: ``assistant_summaries.BRIEF_ROW`` names the same shape in Python.
 BRIEF_ID_SQL_PATTERN = "^brief-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+
+#: The bound of the ids of a brief row on ``chat_message_pkey`` (review of
+#: a26ff7dda). The regex cannot bound an index scan under a non-C collation,
+#: so without this the probe reads each row of each chat. Each valid id sorts
+#: inside it in C, in en_US.utf8 and in ICU, and the R8 suite checks each
+#: collation that the server holds. ⚠️ Never ``>= 'brief-' AND < 'brief.'``:
+#: en_US.utf8 skips the hyphen at first, so the real brief sorts after
+#: ``'brief.'`` and the mark is lost.
+BRIEF_ID_RANGE = ("brief-0000-00-00", "brief-9999-99-99")
 
 #: Whether a chat holds the day's brief: the ``isBrief`` of the list (task
 #: 3564). It reads only what the server writes and a member cannot write. A
@@ -140,15 +150,23 @@ BRIEF_ID_SQL_PATTERN = "^brief-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 #: ``_upsert_messages`` refuses a fold of one. The mark is computed and never
 #: stored, so it needs no migration. RLS binds the tenant of each row it reads.
 #:
+#: The probe reads one chat. ``BETWEEN`` gives ``chat_message_pkey`` the range
+#: of ids, so the scan reads only the rows of the chat inside that range. The
+#: regex stays the exact rule.
+#:
 #: ⚠️ A scalar subquery with ``LIMIT 1``, never ``EXISTS``. The planner can
 #: turn an ``EXISTS`` of the list into ONE hashed scan of every
 #: ``chat_message`` row of the tenant, for each list read. A scalar subquery
-#: is never hashed, so each chat gets one probe of an index that leads with
-#: ``session_id``. The R8 suite reads the plan.
+#: is never hashed. The R8 suite reads the plan.
+#:
+#: The mark belongs to the chat, not to the reader. A room that holds the
+#: brief of another member reads true for each viewer, so the client folds a
+#: chat only when ``isOwner`` is true too.
 #: Fence: ``tests/unit/test_chat_sessions_is_brief_r8.py``.
 _IS_BRIEF_SQL = (
     "COALESCE((SELECT true FROM chat_message b "
     "          WHERE b.session_id = s.id "
+    f"           AND b.id BETWEEN '{BRIEF_ID_RANGE[0]}' AND '{BRIEF_ID_RANGE[1]}' "
     f"           AND b.id ~ '{BRIEF_ID_SQL_PATTERN}' "
     "            AND b.author_kind = 'agent' "
     "            AND b.run_final_at IS NOT NULL "
@@ -166,7 +184,8 @@ _SESSIONS_SQL = (
     # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
     # The brief row is an agent turn, so a chat that holds only
     # the brief reads false, and the nudge stays (§4.7). A scalar
-    # subquery for the reason of ``_IS_BRIEF_SQL`` (task 3564).
+    # subquery for the reason of ``_IS_BRIEF_SQL`` (task 3564). It reads
+    # the rows of one chat by ``session_id`` until the first member row.
     "       COALESCE((SELECT true FROM chat_message m "
     "                 WHERE m.session_id = s.id AND m.role = 'user' "
     "                 LIMIT 1), false) AS has_user_message, "
@@ -1052,7 +1071,9 @@ def _upsert_messages(
             # Task 3564: a sealing write never takes a brief id. The fold
             # seals the row under the id that the client sent, so a run could
             # otherwise forge the list's brief mark (``_IS_BRIEF_SQL``). Only
-            # ``chat_brief._post_row`` seals a brief row, with no fold.
+            # ``chat_brief._post_row`` seals a brief row, with no fold. The
+            # run's final reply is then not saved, and only the log says so.
+            # That is accepted: no client of ours sends a ``brief-`` id.
             if author_from_run and m.id.startswith(BRIEF_ID_PREFIX):
                 _log.warning("chat.brief_id_fold_refused", session_id=session_id[:12])
                 declined.append(m.id)

@@ -11,13 +11,20 @@ This file holds the rules that need no database:
 * the id of the brief row (``chat_brief.brief_message_id``) is the id that the
   SQL rule, the summary rule (``assistant_summaries.BRIEF_ROW``) and the
   refusal of a sealing write (``BRIEF_ID_PREFIX``) all name. The other agent
-  rows that open a chat match none of them.
+  rows that open a chat match none of them;
+* the SQL rule is the client rule (``isBriefRow`` in ``briefTurn.ts``), read
+  from the TypeScript file;
+* the probe carries the ``BETWEEN`` bound on ``id`` that lets
+  ``chat_message_pkey`` bound the scan (review of a26ff7dda).
 
 Mutations (R7): add ``is_brief: bool = False`` to ``SessionUpsertRequest``:
 ``test_no_save_model_declares_the_mark`` goes red. Change
 ``brief_message_id`` to ``f"brief_{day}"``: ``test_the_brief_id_is_the_id_each_rule_names``
 goes red. Add ``"isBrief"`` to a string in another gateway function:
-``test_only_the_session_list_names_the_mark`` goes red.
+``test_only_the_session_list_names_the_mark`` goes red. Drop the
+``BETWEEN`` from ``_IS_BRIEF_SQL``: ``test_the_probe_is_bounded_on_the_primary_key``
+goes red. Add the flag ``i`` to the regex of ``isBriefRow``:
+``test_the_sql_rule_is_the_client_rule`` goes red.
 """
 from __future__ import annotations
 
@@ -29,6 +36,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 GATEWAY = REPO / "apps" / "services" / "gateway" / "gateway"
+
+#: ASCII digits as two other scripts write them. Built from code points, so
+#: no look-alike character sits in the source.
+_ARABIC_INDIC = str.maketrans("0123456789", "".join(chr(0x0660 + i) for i in range(10)))
+_FULLWIDTH = str.maketrans("0123456789", "".join(chr(0xFF10 + i) for i in range(10)))
 
 
 def _names(model) -> set[str]:
@@ -94,26 +106,74 @@ def test_only_the_session_list_names_the_mark() -> None:
     }, sorted(hits)
 
 
+#: The client rule, ``isBriefRow`` in ``briefTurn.ts``: the regex literal
+#: that its body tests ``id`` with, and the flags after its closing slash.
+_TS_RULE = re.compile(r"/(\^brief-[^/\n]*\$)/([a-z]*)\.test\(id\)")
+
+
+def _client_rule() -> tuple[str, str]:
+    """The source and the flags of the regex of ``isBriefRow``, read from
+    the TypeScript file itself."""
+    source = (REPO / "workbench" / "control_plane" / "src" / "lib" / "shell"
+              / "briefTurn.ts").read_text(encoding="utf-8").replace("\r\n", "\n")
+    start = source.index("export function isBriefRow(")
+    body = source[start:source.index("\n}\n", start)]
+    found = _TS_RULE.findall(body)
+    assert len(found) == 1, body
+    return found[0]
+
+
+def test_the_sql_rule_is_the_client_rule() -> None:
+    """The SQL rule is ``isBriefRow`` of the client, character for character.
+    A JavaScript ``\\d`` is ``[0-9]`` (ASCII only), so the SQL spells it so.
+    The Postgres reading of the rule is the R8 suite's
+    (``test_an_id_that_only_looks_like_a_brief_is_not_one``), never Python's:
+    a Python ``$`` also matches before a final newline."""
+    from gateway.routes.chat import _IS_BRIEF_SQL, BRIEF_ID_SQL_PATTERN
+
+    rule, flags = _client_rule()
+    assert rule == r"^brief-\d{4}-\d{2}-\d{2}$"
+    assert flags == "", "a flag such as i or m changes the rule"
+    assert rule.replace(r"\d", "[0-9]") == BRIEF_ID_SQL_PATTERN
+    assert f"b.id ~ '{BRIEF_ID_SQL_PATTERN}'" in _IS_BRIEF_SQL
+
+
+def test_the_probe_is_bounded_on_the_primary_key() -> None:
+    """The regex cannot bound an index scan under a non-C collation, so the
+    probe would read each row of each chat. The ``BETWEEN`` gives the scan of
+    ``chat_message_pkey`` a range on ``id``, and the regex stays the exact
+    rule. ``>= 'brief-' AND < 'brief.'`` is wrong under en_US.utf8: it drops
+    the real brief, because that collation skips the hyphen at first."""
+    from gateway.routes.chat import _IS_BRIEF_SQL, BRIEF_ID_RANGE
+
+    assert BRIEF_ID_RANGE == ("brief-0000-00-00", "brief-9999-99-99")
+    assert "b.id BETWEEN 'brief-0000-00-00' AND 'brief-9999-99-99'" in _IS_BRIEF_SQL
+    assert "'brief.'" not in _IS_BRIEF_SQL
+
+
 def test_the_brief_id_is_the_id_each_rule_names() -> None:
     from gateway.assistant_summaries import BRIEF_ROW
-    from gateway.routes.chat import _IS_BRIEF_SQL, BRIEF_ID_PREFIX, BRIEF_ID_SQL_PATTERN
+    from gateway.routes.chat import BRIEF_ID_PREFIX, BRIEF_ID_RANGE, BRIEF_ID_SQL_PATTERN
     from gateway.routes.chat_brief import HELLO_MESSAGE_ID, brief_message_id
     from gateway.routes.chat_reminder import reminder_message_id
 
-    sql_rule = re.compile(BRIEF_ID_SQL_PATTERN)
-    assert f"'{BRIEF_ID_SQL_PATTERN}'" in _IS_BRIEF_SQL
-    for day in (date(2026, 11, 16), date(2027, 1, 1), date(2026, 2, 28)):
+    # ASCII and the whole string: the reading of Postgres and of JavaScript.
+    exact = re.compile(BRIEF_ID_SQL_PATTERN.removeprefix("^").removesuffix("$"), re.ASCII)
+    low, high = BRIEF_ID_RANGE
+    for day in (date(2026, 11, 16), date(2027, 1, 1), date(1, 1, 1), date(9999, 12, 31)):
         mid = brief_message_id(day)
         assert mid.startswith(BRIEF_ID_PREFIX), mid
-        assert sql_rule.match(mid) and BRIEF_ROW.match(mid), mid
+        assert exact.fullmatch(mid) and BRIEF_ROW.match(mid), mid
+        assert low <= mid <= high, mid  # code-point order; R8 holds the DB's order
 
     others = [
         reminder_message_id(uuid.uuid4()), HELLO_MESSAGE_ID,
         f"reach-{uuid.uuid4()}", f"assistant-t1-{uuid.uuid4().hex}", str(uuid.uuid4()),
         "brief-2026-11-3", "brief-2026-11-16-x", "my-brief-2026-11-16",
+        "brief-2026-11-16\n", "Brief-2026-11-16", "brief-2026-11-16".translate(_ARABIC_INDIC),
+        "brief-2026-11-16".translate(_FULLWIDTH),
     ]
     for mid in others:
-        assert not sql_rule.match(mid), mid
-        assert bool(sql_rule.match(mid)) == bool(BRIEF_ROW.match(mid)), mid
+        assert not exact.fullmatch(mid), repr(mid)
     for mid in others[:5]:
         assert not mid.startswith(BRIEF_ID_PREFIX), mid

@@ -50,6 +50,10 @@ export interface ChatSession {
    * the merge below sets it. No save sends it: `_syncSessionToDb` and
    * `_patchSessionInDb` name their fields (fence: `sessionsIsBrief.test.ts`).
    * Undefined for a chat the server has not listed yet.
+   *
+   * The mark belongs to the chat, not to the reader. A room, or a chat that
+   * the org sees, that holds another member's brief reads true for each
+   * viewer. So a fold of brief chats needs `isOwner` true as well.
    */
   isBrief?: boolean;
   /**

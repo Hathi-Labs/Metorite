@@ -32,9 +32,22 @@ What this proves:
 * a run cannot forge it: the fold of a brief id writes nothing;
 * org B never reads org A's brief, even a row planted in org B's chat;
 * a chat that the member cannot see stays hidden;
-* the list of 300 chats is ONE statement. Its plan probes an index of
-  ``chat_message`` for each chat, and never scans the whole table. An
-  ``EXISTS`` let the planner hash a scan of every row of the tenant.
+* each valid brief id, from ``brief-0001-01-01`` to ``brief-9999-12-31``,
+  reads true in the order of the DB collation, and stays inside the bound in
+  each collation that the server holds;
+* Postgres reads the id rule: a final newline, a capital ``B``, Arabic-Indic
+  digits and fullwidth digits each read false;
+* a sealed row with the brief id and the kind ``human`` reads false;
+* the list of 300 chats is ONE statement. Its plan never scans the whole
+  ``chat_message`` table, and the isBrief probe bounds the id on
+  ``chat_message_pkey``. An ``EXISTS`` let the planner hash a scan of every
+  row of the tenant.
+
+**For the client slice that folds the group.** The mark belongs to the chat,
+not to the reader. A room, or a chat that the org can see, that holds the
+brief of another member reads ``isBrief`` true for each person who can see
+it. So the client folds a chat only when ``isOwner`` is true too. Do not
+change the server for this.
 
 **The mutations (R7).** Commit first, restore with git after.
 
@@ -48,6 +61,12 @@ What this proves:
   ``test_a_brief_chat_is_brief_and_a_member_turn_keeps_it`` goes red.
 * Write ``_IS_BRIEF_SQL`` as an ``EXISTS``:
   ``test_three_hundred_chats_list_in_one_statement`` goes red.
+* In ``_IS_BRIEF_SQL`` drop the ``BETWEEN``:
+  ``test_three_hundred_chats_list_in_one_statement`` goes red.
+* Bound it with ``>= 'brief-' AND < 'brief.'``:
+  ``test_every_valid_brief_id_reads_true_under_the_db_collation`` goes red.
+* In ``_IS_BRIEF_SQL`` drop ``b.author_kind = 'agent'``:
+  ``test_a_sealed_human_row_with_a_brief_id_is_not_a_brief`` goes red.
 
 Run::
 
@@ -514,6 +533,127 @@ async def test_a_chat_the_member_cannot_see_stays_hidden(graph_as_app, feed):
         _unseed_member(ns, carol)
 
 
+# ── The id rule as Postgres reads it ─────────────────────────────────────────
+
+
+def _plant(ns, sid: str, mid: str, org: str, member: str, *,
+           kind: str = "agent", role: str = "assistant") -> None:
+    """A SEALED row that no route writes, put in by the superuser."""
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+            "author_kind, author_email, run_member_email, run_final_at, organization_id) "
+            "VALUES (:id, :sid, :role, 'Planted.', 1800000000000, :kind, :author, :m, "
+            "now(), :org)"),
+            {"id": mid, "sid": sid, "role": role, "kind": kind,
+             "author": member if kind == "human" else "orchestrator",
+             "m": None if kind == "human" else member, "org": org})
+
+
+#: ASCII digits as two other scripts write them. Built from code points, so
+#: no look-alike character sits in the source.
+_ARABIC_INDIC = str.maketrans("0123456789", "".join(chr(0x0660 + i) for i in range(10)))
+_FULLWIDTH = str.maketrans("0123456789", "".join(chr(0xFF10 + i) for i in range(10)))
+
+
+#: The collations a production database can have. Each one the server holds
+#: must keep each valid brief id inside the bound of ``_IS_BRIEF_SQL``.
+_COLLATIONS = ("C", "POSIX", "C.utf8", "en_US.utf8", "en_US", "und-x-icu", "en-US-x-icu")
+
+
+async def test_every_valid_brief_id_reads_true_under_the_db_collation(graph_as_app, feed):
+    """The ``BETWEEN`` bound must hold each valid id in the order of the DB
+    collation, or the probe drops a real brief. The rows come from the real
+    writer of a brief row (``chat_brief._post_row``)."""
+    from gateway.routes.chat import BRIEF_ID_RANGE
+    from gateway.routes.chat_brief import DEFAULT_AGENT, _post_row
+
+    ns = graph_as_app
+    org, email = ns.org_a, _address("gil")
+    _seed_member(ns, email, org)
+    ids = ("brief-2026-11-16", "brief-9999-12-31", "brief-0001-01-01")
+    try:
+        chats = {}
+        for mid in ids:
+            sid = _sid("bound")
+            _new_session(sid, email, org)
+            assert _post_row(sid, mid, member=email, agent_name=DEFAULT_AGENT,
+                             organization_id=org, lead=BRIEF_LEAD,
+                             event={"name": "generative_ui", "value": {}},
+                             now_ms=1_800_000_000_000)
+            chats[mid] = sid
+        listed = _listed(_member(email, org))
+        assert {mid: listed[sid]["isBrief"] for mid, sid in chats.items()} == dict.fromkeys(
+            ids, True)
+
+        low, high = BRIEF_ID_RANGE
+        with ns.admin_engine.connect() as c:
+            default = c.execute(text(
+                "SELECT datcollate FROM pg_database WHERE datname = current_database()"
+            )).scalar_one()
+            held = [r[0] for r in c.execute(text(
+                "SELECT collname FROM pg_collation WHERE collname = ANY(:n)"),
+                {"n": list(_COLLATIONS)})]
+            assert "C" in held and len(held) >= 3, held
+            print(f"\nDB collation {default}; bound checked in {sorted(held)}")
+            for coll in held:
+                for mid in ids:
+                    # The explicit collation of one side decides the order.
+                    inside = c.execute(text(
+                        f'SELECT (CAST(:id AS text) COLLATE "{coll}") '
+                        "BETWEEN CAST(:lo AS text) AND CAST(:hi AS text)"),
+                        {"id": mid, "lo": low, "hi": high}).scalar_one()
+                    assert inside is True, (coll, mid, default)
+    finally:
+        _unseed_member(ns, email)
+
+
+async def test_an_id_that_only_looks_like_a_brief_is_not_one(graph_as_app, feed):
+    """Postgres reads the rule, never Python: its ``$`` ends the string, its
+    ``~`` keeps the case, and ``[0-9]`` holds ASCII digits only. A planted
+    sealed agent row with the real id is the control, and it reads true."""
+    ns = graph_as_app
+    org, email = ns.org_a, _address("hal")
+    _seed_member(ns, email, org)
+    looks = {
+        "newline": "brief-2026-11-16\n",
+        "capital": "Brief-2026-11-16",
+        "arabic_indic": "brief-2026-11-16".translate(_ARABIC_INDIC),
+        "fullwidth": "brief-2026-11-16".translate(_FULLWIDTH),
+    }
+    try:
+        chats = {}
+        for name, mid in {**looks, "control": BRIEF_ID}.items():
+            sid = _sid(f"looks-{name.replace('_', '')}")
+            _new_session(sid, email, org)
+            _plant(ns, sid, mid, org, email)
+            chats[name] = sid
+        listed = _listed(_member(email, org))
+        got = {name: listed[sid]["isBrief"] for name, sid in chats.items()}
+        assert got == {**dict.fromkeys(looks, False), "control": True}
+    finally:
+        _unseed_member(ns, email)
+
+
+async def test_a_sealed_human_row_with_a_brief_id_is_not_a_brief(graph_as_app, feed):
+    """The kind is part of the mark (review M2 of a26ff7dda). A sealed row
+    with the brief id whose kind is ``human`` does not mark the chat. No route
+    writes such a row, so the superuser plants it."""
+    ns = graph_as_app
+    org, email = ns.org_a, _address("ida")
+    _seed_member(ns, email, org)
+    try:
+        sid = _sid("human-brief")
+        _new_session(sid, email, org)
+        _plant(ns, sid, BRIEF_ID, org, email, kind="human", role="user")
+        assert [(r.id, r.author_kind, r.sealed) for r in _rows(ns, sid)] == [
+            (BRIEF_ID, "human", True)]
+        row = _listed(_member(email, org))[sid]
+        assert (row["isBrief"], row["hasUserMessage"]) == (False, True)
+    finally:
+        _unseed_member(ns, email)
+
+
 # ── 300 chats: one statement, and an index probe for each chat ───────────────
 
 
@@ -550,7 +690,24 @@ def _probes_by_session(plan: str, alias: str) -> bool:
         if re.search(rf"(Index|Index Only|Bitmap Heap) Scan .*on chat_message {alias}$",
                      line.rstrip()):
             return any("Index Cond: (session_id = s.id)" in below
+                       or "Index Cond: ((session_id = s.id) AND" in below
                        for below in lines[i + 1:i + 6])
+    return False
+
+
+def _bounded_on_the_pkey(plan: str) -> bool:
+    """Whether the scan of ``chat_message b`` (the isBrief probe) uses
+    ``chat_message_pkey`` with the chat AND the id range as its Index Cond.
+    So the probe reads only the ids inside the brief bound of one chat."""
+    lines = plan.splitlines()
+    for i, line in enumerate(lines):
+        if re.search(r"Scan .*on chat_message b$", line.rstrip()):
+            block = "\n".join(lines[i:i + 7])
+            return (
+                "chat_message_pkey" in block
+                and "Index Cond: ((session_id = s.id) AND (id >= 'brief-0000-00-00'::text) "
+                    "AND (id <= 'brief-9999-99-99'::text))" in block
+            )
     return False
 
 
@@ -561,17 +718,22 @@ def _drop_many(ns, tag: str) -> None:
 
 async def test_three_hundred_chats_list_in_one_statement(graph_as_app, feed):
     """The mark adds no statement for each chat: the list of 300 chats runs
-    ONE statement after the tenant bind. Its plan probes an index of
-    ``chat_message`` for each chat and never reads the whole table, once the
-    table holds more than the member's own chats, as production does."""
+    ONE statement after the tenant bind. Its plan never reads the whole
+    ``chat_message`` table. The hasUserMessage probe reads one chat by an
+    index on ``session_id``. The isBrief probe reads one chat and only the ids
+    inside the brief bound, by ``chat_message_pkey``.
+
+    ⚠️ The seed stays SMALL (300 chats x 10 rows): the shared scratch
+    container keeps its data on a 1 GB tmpfs, and a large seed once filled
+    it. A scalar subquery is never hashed, so the plan shape does not need a
+    large table. Measure speed in a container of your own."""
     from gateway.routes.chat import _SESSIONS_SQL
 
     ns = graph_as_app
     org = ns.org_a
-    many, others = _address("many"), _address("others")
+    many = _address("many")
     _seed_member(ns, many, org)
-    _seed_member(ns, others, org)
-    tag, other_tag = f"n300{uuid.uuid4().hex[:6]}", f"bulk{uuid.uuid4().hex[:6]}"
+    tag = f"n300{uuid.uuid4().hex[:6]}"
     statements: list[str] = []
 
     def _count(conn, cursor, statement, parameters, context, executemany):
@@ -580,7 +742,6 @@ async def test_three_hundred_chats_list_in_one_statement(graph_as_app, feed):
     try:
         brief = await _brief_chat(ns, many, org)
         _seed_many(ns, many, org, chats=300, turns=10, tag=tag)
-        _seed_many(ns, others, org, chats=4000, turns=30, tag=other_tag)
         with ns.admin_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as c:
             c.execute(text("ANALYZE chat_message"))
             c.execute(text("ANALYZE chat_session"))
@@ -608,12 +769,12 @@ async def test_three_hundred_chats_list_in_one_statement(graph_as_app, feed):
         print("\nEXPLAIN of the session list:\n" + plan)
         # No hashed scan of the tenant's whole table. Each of the two marks
         # (``m`` for hasUserMessage, ``b`` for isBrief) probes an index that
-        # leads with session_id, once for each chat.
+        # leads with session_id, once for each chat. The isBrief probe also
+        # bounds the id, on the primary key (review of a26ff7dda).
         assert "Seq Scan on chat_message" not in plan, plan
         for alias in ("m", "b"):
             assert _probes_by_session(plan, alias), (alias, plan)
+        assert _bounded_on_the_pkey(plan), plan
     finally:
         _drop_many(ns, tag)
-        _drop_many(ns, other_tag)
         _unseed_member(ns, many)
-        _unseed_member(ns, others)
