@@ -243,3 +243,32 @@ test("a search shows a matching brief in the one list", async ({ page }) => {
   await expect(page.locator('[data-session-row="brief-b"]')).toBeVisible();
   await expect(page.locator('[data-chat-group="Daily briefs"]')).toHaveCount(0);
 });
+
+test("the group opens when the chat on screen is a brief and the list arrives late", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route("**/api/auth/me", (r) =>
+    r.fulfill({
+      json: {
+        email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
+        organization: { id: "00000000-0000-0000-0000-0000000000e2", slug: "e2e" },
+        roles: ["owner"], legacy_role: "executive", features: ["chat", "artifacts"],
+        features_denied: [], agents: ["orchestrator"], permissions: ["*"],
+        capabilities: [], denied: [], is_admin: true,
+      },
+    }),
+  );
+  await page.route("**/api/chat/active-sessions", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/chat/sessions", async (r) => {
+    await new Promise((done) => setTimeout(done, 1500));
+    await r.fulfill({ json: BRIEF_SESSIONS });
+  });
+  await page.route("**/api/chat/sessions/**", (r) => r.fulfill({ json: [] }));
+  await page.goto("/artifacts?session=brief-a");
+  const toggle = page.locator('[data-chat-group="Daily briefs"]').getByRole("button", { name: /Daily briefs/ });
+  await expect(toggle).toBeVisible({ timeout: 60_000 });
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-session-row="brief-a"]')).toBeVisible();
+  // The member closes it: it stays closed for the same chat on screen.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+});

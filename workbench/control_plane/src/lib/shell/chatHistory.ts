@@ -192,3 +192,28 @@ export function foldBriefs<T extends Parameters<typeof isFoldedBrief>[0]>(
 ): { main: T[]; briefs: T[] } {
   return { main: open.filter((s) => !isFoldedBrief(s)), briefs: open.filter(isFoldedBrief) };
 }
+
+/** The open state of the Daily briefs group, and the chat it last opened for. */
+export interface BriefsOpenState {
+  open: boolean;
+  /** The active chat that the group opened for, or null. */
+  handled: string | null;
+}
+
+/**
+ * The group opens when the chat on screen is a folded brief, for any reason:
+ * the list loads late, or the member moves into one. It opens once for each
+ * active chat, so a member who closed it keeps it closed on a re-render. A
+ * move to a chat outside the group forgets the last one, so a return opens it
+ * again. Pure, so the tests read every transition.
+ */
+export function nextBriefsOpen(
+  state: BriefsOpenState,
+  activeId: string,
+  briefIds: readonly string[],
+): BriefsOpenState {
+  const inGroup = briefIds.includes(activeId);
+  if (!inGroup) return state.handled === null ? state : { ...state, handled: null };
+  if (state.handled === activeId) return state;
+  return { open: true, handled: activeId };
+}

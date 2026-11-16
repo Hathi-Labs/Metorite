@@ -18,7 +18,8 @@ vi.mock("@/hooks/useActiveSessions", () => ({
   useUnreadIds: () => new Set<string>(),
 }));
 
-import { BRIEFS_GROUP, foldBriefs, isFoldedBrief } from "./chatHistory";
+import { readFileSync } from "node:fs";
+import { BRIEFS_GROUP, type BriefsOpenState, foldBriefs, isFoldedBrief, nextBriefsOpen } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
 
 const NOW = Date.now();
@@ -132,5 +133,53 @@ describe("the Daily briefs group in the list", () => {
     const html = draw([brief("b1")]);
     expect(html).toContain(BRIEFS_GROUP);
     expect(html).not.toContain("Your chats will show here.");
+  });
+});
+
+describe("when the Daily briefs group opens by itself", () => {
+  const shut: BriefsOpenState = { open: false, handled: null };
+  const step = (st: BriefsOpenState, active: string, ids: string[]) => nextBriefsOpen(st, active, ids);
+
+  it("opens at mount when the active chat is a brief", () => {
+    expect(step(shut, "b1", ["b1", "b2"])).toEqual({ open: true, handled: "b1" });
+  });
+  it("opens when the list arrives AFTER the picker mounted on a brief", () => {
+    const empty = step(shut, "b1", []);
+    expect(empty.open).toBe(false);
+    expect(step(empty, "b1", ["b1"])).toEqual({ open: true, handled: "b1" });
+  });
+  it("opens when the member moves into a brief", () => {
+    const on = step(shut, "plain", ["b1"]);
+    expect(on.open).toBe(false);
+    expect(step(on, "b1", ["b1"]).open).toBe(true);
+  });
+  it("stays as it is when the active chat is outside the group", () => {
+    const open = { open: true, handled: null };
+    expect(step(open, "plain", ["b1"])).toBe(open);
+    expect(step(shut, "plain", ["b1"])).toBe(shut);
+  });
+  it("keeps it closed after the member closed it, for the same active chat", () => {
+    const opened = step(shut, "b1", ["b1"]);
+    const closed = { ...opened, open: false };
+    expect(step(closed, "b1", ["b1", "b2"])).toBe(closed);
+  });
+  it("opens again for a NEW active brief, and for a return after a chat outside", () => {
+    const closed: BriefsOpenState = { open: false, handled: "b1" };
+    expect(step(closed, "b2", ["b1", "b2"])).toEqual({ open: true, handled: "b2" });
+    const away = step(closed, "plain", ["b1", "b2"]);
+    expect(away.handled).toBeNull();
+    expect(step(away, "b1", ["b1", "b2"]).open).toBe(true);
+  });
+});
+
+describe("the picker wires the open rule and names the list it controls", () => {
+  const src = readFileSync(new URL("./SessionPicker.tsx", import.meta.url), "utf-8").split(String.fromCharCode(13)).join("");
+  it("derives the open state from nextBriefsOpen on every render", () => {
+    expect(src).toMatch(/nextBriefsOpen\(briefsState, activeId, folded\.briefs\.map/);
+    expect(src).toMatch(/if \(nextBriefs !== briefsState\) setBriefsState\(nextBriefs\)/);
+  });
+  it("gives the toggle aria-controls and the list the same id", () => {
+    expect(src).toMatch(/aria-controls=\{briefsListId\}/);
+    expect(src).toMatch(/<ul id=\{briefsListId\}/);
   });
 });

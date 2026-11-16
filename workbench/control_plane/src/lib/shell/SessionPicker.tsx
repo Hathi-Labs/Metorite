@@ -17,7 +17,7 @@
  * holds the owner's acts.
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
 import SessionRunDot from "@/components/SessionRunDot";
@@ -26,7 +26,7 @@ import { Input } from "@/components/ui/Input";
 import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
-import { BRIEFS_GROUP, chatGroups, foldBriefs, isPinned, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
+import { BRIEFS_GROUP, type BriefsOpenState, chatGroups, foldBriefs, isPinned, nextBriefsOpen, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
 
 // ── The session picker ───────────────────────────────────────────────────────
 
@@ -226,14 +226,13 @@ export function SessionPicker({
     () => (query ? { main: lists.open, briefs: [] as ChatSession[] } : foldBriefs(lists.open)),
     [lists.open, query],
   );
-  // The group opens when the member moves into a chat that it holds, so the
-  // chat on screen never hides. The member may close it again.
-  const [showBriefs, setShowBriefs] = useState(() => folded.briefs.some((s) => s.id === activeId));
-  const [seenActive, setSeenActive] = useState(activeId);
-  if (seenActive !== activeId) {
-    setSeenActive(activeId);
-    if (folded.briefs.some((s) => s.id === activeId)) setShowBriefs(true);
-  }
+  // The group opens when the chat on screen is a folded brief, whether the
+  // list loads late or the member moves into one. The member may close it.
+  const [briefsState, setBriefsState] = useState<BriefsOpenState>({ open: false, handled: null });
+  const nextBriefs = nextBriefsOpen(briefsState, activeId, folded.briefs.map((s) => s.id));
+  if (nextBriefs !== briefsState) setBriefsState(nextBriefs);
+  const showBriefs = nextBriefs.open;
+  const briefsListId = useId();
   const row = (s: ChatSession, archived: boolean) => (
     <SessionRow
       key={s.id}
@@ -303,8 +302,9 @@ export function SessionPicker({
               variant="ghost"
               size="none"
               layout="flex items-center"
-              onClick={() => setShowBriefs((o) => !o)}
+              onClick={() => setBriefsState((st) => ({ ...st, open: !st.open }))}
               aria-expanded={showBriefs}
+              aria-controls={briefsListId}
               className="w-full gap-2 rounded-md px-2 py-1.5 text-left text-xs"
             >
               <Icon name={showBriefs ? "ChevronDown" : "ChevronRight"} size={14} />
@@ -314,7 +314,7 @@ export function SessionPicker({
               </span>
             </Button>
             {showBriefs ? (
-              <ul className="flex flex-col gap-0.5">{folded.briefs.map((s) => row(s, false))}</ul>
+              <ul id={briefsListId} className="flex flex-col gap-0.5">{folded.briefs.map((s) => row(s, false))}</ul>
             ) : null}
           </div>
         ) : null}
