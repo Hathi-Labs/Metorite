@@ -29,6 +29,7 @@ release keeps the work.
 | §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). RESUME-1a and RESUME-2a are built (the rows below) |
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. Do not flip it before RESUME-3. No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2c — the case-C design is decided (task 3461) | **SPEC** 2026-11-16. The owner decided case C on task 3461 (D-RES-10). Nothing is built. The build follows RESUME-2b |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1792,11 +1793,13 @@ result go into a fence as inert text, as `compose_card_answer` does today:
 |---|---|---|---|
 | A | The thread rests, and the parked turn is its last turn | The steps above | The card turns to "Approved", and the same reply goes on below it |
 | B | The thread rests, and the member wrote after the park | The stored call runs. The model reads the note at the end of the chat, not inside the old turn | The old card turns to "Approved". A new reply opens at the end of the chat, with no member bubble before it |
-| C | A run is live on the thread | The stored call runs at once, with no model. Its result goes into the live run as a steer note (§4.9) | The old card turns to "Approved". The live reply goes on, and it knows that the act is done |
+| C | A run is live on the thread | The stored call does not run. Metorite claims the row once, writes one HRD-22 grant for the stored digest, and steers an approval note into the live run. The model makes the call. An equal card passes once with no card. A changed card shows a new card | The old card turns to "Approved · <title>". The live reply goes on |
 
 In cases B and C the stream of the parked run is gone, because a new run
 reset it. When the member approves after the stream expired (D-RES-7), case A
 shows as case B: a new reply directly below the parked one.
+
+**The known limit of case C** (owner question O2, task 3461). The act runs only if the live model makes the call. The card reads "Approved · <title>" at once. If the model does not make the call, nothing is written. This limit is pending the owner's answer on task 3461 (accepted if the owner confirms).
 
 **What RESUME-2a built (2026-11-16).** The audit of 2026-11-16 split RESUME-2
 into three slices. RESUME-2a builds case B for each thread at rest: a new run
@@ -1975,8 +1978,9 @@ again. This design takes the parts of HRD-22:
 - With `CHAT_RESUME_ORGS` on, a row with a stored call takes RESUME-2, and
   HRD-22 never sees it. A row with no stored call takes HRD-22. That is a row
   from before RESUME-1, or a call above the size cap.
-- RESUME-8 removes the HRD-22 grant after RESUME has been on for each org for
-  7 days, the life of a row (D-RES-8).
+- RESUME-8 removes the 409 resend after RESUME has been on for each org for
+  7 days, the life of a row (D-RES-8). It keeps the grant code for case C
+  (D-RES-10).
 
 #### 4.12.5 A release keeps the work (RESUME-5, RESUME-6)
 
@@ -2059,7 +2063,7 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 | RESUME-1 (task 3260) | 1 | The card stores its call: the `stored_call` column, the bind at the card, and the resumable list. RESUME-1a (task 3260) is the plain card, BUILT 2026-11-15 and dark. RESUME-1b (task 3434) is the question cards | A plain card of each listed write stores its tool, arguments, call id, card text and act keys. A rows card, an email card and a large call store none. The browser never reads it. Each listed tool writes nothing before its card. R8 holds the column under FORCE RLS | `tests/unit/test_resume_stored_call.py`, `tests/unit/test_resume_stored_call_r8.py`, `tests/unit/test_tenant_coverage.py` | HIGH (a migration, consent). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | none |
 | RESUME-2a (task 3261) | 1 | A late Approve of a plain card claims its row once and runs the stored call once, in a NEW reply (case B): the claim, the 200 `resumed`, the stored-call yes, the prologue and the note path. **BUILT** 2026-11-16, dark | The sequence of 2026-11-14 on a real Postgres and a private Redis gives one card, one write, no 409 and no member turn. A changed record writes nothing and shows the new card. Another member, thread or org runs nothing. A second answer runs nothing. Flag off, the bytes are as before | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (consent, the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-1 |
 | RESUME-2b (task 3460) | 1 | Case A: the same reply. The same run id, no stream reset, the XDEL of the parked `RUN_FINISHED`, the fold into the same row, and D-RES-7 | A thread whose last turn is the parked turn goes on in the same reply | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (the run loop) | RESUME-2a |
-| RESUME-2c (task 3461) | 1 | Case C: a live run on the thread. The stored call runs at once, and its result goes into the live run as a steer note | An Approve during a live run acts once, and the live reply knows it | `tests/unit/test_resume_continuation.py` | HIGH (consent, the run loop) | RESUME-2a |
+| RESUME-2c (task 3461) | 1 | Case C: a live run of the same member on the thread (D-RES-10). The stored call does not run. A steer carries an approval note and a one-use HRD-22 grant for the digest | **AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`).** Both flags on. A parked plain card with a stored call is approved while a live chat run of the SAME member runs on the thread, and that run does not wait on a person. Then: (a) the row moves once, and a second Approve gets the plain 409 and no second grant. (b) One grant is written under (org, member, thread, digest) with a TTL of at most 1800 s. (c) One steer goes in with typed false, and no prompt row is saved. (d) The answer is 200 {ok, resumed: true, steered: true, threadId, runId = the live run, messageId?}. (e) No run starts and no cap slot is taken. (f) In the live run an equal card passes once and writes once, a changed card shows, and a second equal card shows. (g) Another member's run, an automation run, a run that waits on a card, an open row, a steer outside the floor, and either flag off keep today's path byte for byte | `tests/unit/test_resume_continuation.py`, `tests/unit/test_late_approve_grant.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (consent, the run loop) | RESUME-2a, and RESUME-2b (both rewrite `_resume_from_row`) |
 | RESUME-3 (task 3262) | 1 | The chat takes the resume: no envelope, no notice, the same bubble, the BFF keeps `parked`, and the words of §4.12.4 | A parked card approved after a reload turns to "Approved", and the same reply goes on. No "restarted" shows, before or after a reload. A park shows no "Done". Visual review of the card and the row | `src/lib/chatResume.test.ts`, `e2e/chat-card-restart.spec.ts` | HIGH (the attach loop) | RESUME-2 |
 | RESUME-D1 (task 3263) | 1 | Chat · Rung 1 demo · Approve a card an hour later, and the work goes on | The owner runs the script below on production and says so on the task | none | demo | RESUME-0a to RESUME-3 |
 | RESUME-4 (task 3264) | 2 | The exact path: save the session at the card with call X and a placeholder result, put the real result under X, and run with no new message | The model input of a continuation holds the call and its real result under one call id, and no orphan call. A plain message after a park sends no orphan call | `tests/unit/test_resume_native_session.py`, `tests/unit/test_native_session_persistence.py` | HIGH (the run loop) | RESUME-2 |
@@ -2067,7 +2071,7 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 | RESUME-6 (task 3266) | 2 | A cut run goes on by itself | A cut run with no open write goes on in the same reply with no notice. A run with an open write shows Continue, as today. Flag off, nothing goes on by itself | `tests/unit/test_resume_after_release.py` | HIGH (the run loop, the deploy path) | RESUME-2, RESUME-3 |
 | RESUME-D2 (task 3267) | 2 | Chat · Rung 2 demo · A release does not stop the chat | The owner runs the script below at a release slot | none | demo | RESUME-4 to RESUME-6, RESUME-D1 |
 | RESUME-7 (task 3268) | 3 | Approve and Not now on the My Day card | An Approve on My Day resumes the card with no chat open. It follows each consent rule of §4.12.4 | `tests/unit/test_my_day_card_approve.py` | HIGH (consent) | RESUME-2, WAIT-1 (1550), WAIT-2 (1551) |
-| RESUME-8 (task 3269) | 3 | Retire the HRD-22 grant and the old words | No code path writes the HRD-22 grant or shows "The assistant restarted" | `tests/unit/test_resume_retired_paths.py` | STANDARD | RESUME-D1, and 7 days with RESUME on for each org |
+| RESUME-8 (task 3269) | 3 | Retire the HRD-22 grant and the old words | RESUME-8 retires ONLY the 409 resend and the client envelope. It KEEPS `grant_from_offer`, `take_grant` and the offer written at the park, because case C needs them (owner question O1, pending the owner's answer on task 3461). No code path shows "The assistant restarted" | `tests/unit/test_resume_retired_paths.py` | STANDARD | RESUME-D1, and 7 days with RESUME on for each org |
 | RESUME-D3 (task 3270) | 3 | Chat · Rung 3 demo · Approve tomorrow, from My Day | The owner runs the script below | none | demo | RESUME-7, WAIT-1, WAIT-2, H-289 |
 
 **The demo scripts.**
@@ -2094,6 +2098,8 @@ Each slice is one PR. A foundation rides with the first rung that needs it
   "Done" after 20 s offline, and the "Metorite is updating" notice while
   offline. The third is the held send that lives in memory only.
 
+**The scope of RESUME-2c.** The `return None` of `_resume_from_row` on a live run becomes `_steer_from_row`. It goes on only when the row is parked, `run_liveness` is live, `get_run_actor` is the member, and `get_run_source` is empty or `chat`. The thread must not be in `threads_waiting_on_a_person`, and `is_inside_run_floor` must pass. It takes no cap. It calls `claim_stored_call` once. It calls `grant_from_offer(org, member, row_before_claim, 'APPROVE')` in place of `drop_offer`. It builds the note with `with_late_approve_note(card_resend(...))`, and it calls `send_steer(thread, member, note, typed=False)`. It is built after RESUME-2b, because both rewrite `_resume_from_row`.
+
 #### 4.12.8 Proposals for the owner
 
 **ACCEPTED, 2026-11-14.** The owner chose "Approve all 8 recommendations" on
@@ -2109,7 +2115,8 @@ None takes a D number in `work_plan.md` §3.
 | **D-RES-5** | May a member approve a waiting card on My Day, with no chat open? | Yes, with the same rules. Never from a push, because a push holds no content |
 | **D-RES-6** | Does a parked card look the same as a live wait? | Yes: "Waiting for your answer" for both. A park is a server detail |
 | **D-RES-7** | How long does the live stream of a parked run stay? | 24 hours. After that, an Approve shows the rest of the reply as a new reply directly below the parked one |
-| **D-RES-8** | Turn HRD-22 on now, as the stop-gap of rung 0? | Yes, after its own review. RESUME-8 retires it 7 days after RESUME is on for each org |
+| **D-RES-8** | Turn HRD-22 on now, as the stop-gap of rung 0? | Yes, after its own review. RESUME-8 retires the 409 resend and the client envelope 7 days after RESUME is on for each org. It keeps the grant code that case C needs (D-RES-10) |
+| **D-RES-10** | Case C (a late Approve while a run of the same member is live on the thread): how does the Approve act? | Steer the live run with an approval note and a one-use HRD-22 grant for that digest. An equal card (text and act keys) passes once with no card. A changed card shows a new card. Owner answer on task 3461, 2026-11-16. D-RES-9 is used by PR 2451, so this is the next free number |
 
 #### 4.12.9 Anchors, and where the evidence and the code differ
 
@@ -2285,6 +2292,13 @@ HELD_R8_REDIS_URL=redis://127.0.0.1:16401/0   uv run pytest tests/unit/test_late
 uv run pytest tests/unit/test_resume_stored_call_r8.py -rs
 uv run pytest tests/unit/test_pending_ask_store.py -rs
 uv run pytest tests/unit/test_wac_writes_r8.py -rs
+```
+
+For §4.12 RESUME-2c, from the repo root. The R8 files need a private Redis. A skip is not a pass.
+
+```bash
+uv run pytest tests/unit/test_resume_continuation.py tests/unit/test_late_approve_grant.py tests/unit/test_steer_routing.py tests/unit/test_steer_unsent_card.py tests/unit/test_card_closes_on_steer.py tests/unit/test_steer_follow_up.py -q
+HELD_R8_REDIS_URL=redis://127.0.0.1:<port>/0 uv run pytest tests/unit/test_resume_continuation_r8.py tests/unit/test_late_approve_grant_r8.py -rs
 ```
 
 ## 8. Waiting cards reach My Day (D171, 2026-11-03)
