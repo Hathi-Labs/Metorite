@@ -88,15 +88,52 @@ async def test_the_rule_path_keeps_the_sentinel_on_a_stream_timeout(monkeypatch)
     assert body == drafting.DRAFT_NO_DRAFT_SENTINEL
 
 
-async def test_any_other_interactive_failure_still_gives_the_template(monkeypatch) -> None:
-    """The timeout is the ONE failure that passes through. A model error keeps
-    the behaviour it had, so this slice changes nothing else."""
+def _out_of_credits() -> BaseException:
+    from acb_llm.routed import RoutedRefusal
+    return RoutedRefusal(402, "out of credits")
+
+
+def _router_down() -> BaseException:
+    from acb_auth.console_resolve import ConsoleRouterUnavailable
+    return ConsoleRouterUnavailable("unreachable")
+
+
+@pytest.mark.parametrize(("make", "status", "copy"), [
+    # Production, 2026-11-16: the vendor answered "Insufficient Balance".
+    (lambda: RuntimeError("DeepseekException - Insufficient Balance"), 503,
+     "DRAFT_FAILED_COPY"),
+    (_out_of_credits, 402, "OUT_OF_CREDITS"),
+    (_router_down, 503, "DRAFT_UNAVAILABLE_COPY"),
+], ids=["vendor_error", "out_of_credits", "router_down"])
+async def test_any_other_interactive_failure_raises_with_copy_never_the_template(
+    monkeypatch, make, status, copy,
+) -> None:
+    """Task 3541. A failed model is not a draft. Before 2026-11-16 this path
+    returned the stock "I'll review this and get back to you shortly" body, so
+    the member read a model with no balance as a bad draft."""
+    from acb_llm import routed
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("acb_llm.context.acompletion_stream_text", _raiser(make()))
+    with pytest.raises(HTTPException) as caught:
+        await drafting._llm_draft_reply(
+            _EMAIL, about="", signature="", interactive_fallback=True,
+            on_delta=_delta)
+    expected = getattr(routed, copy, None) or getattr(drafting, copy)
+    assert caught.value.status_code == status
+    assert caught.value.detail == expected
+    assert _TEMPLATE not in str(caught.value.detail)
+    # No copy names the vendor, a key or an account.
+    assert "Deepseek" not in str(caught.value.detail)
+
+
+async def test_the_rule_path_keeps_the_sentinel_on_a_model_error(monkeypatch) -> None:
     monkeypatch.setattr("acb_llm.context.acompletion_stream_text",
                         _raiser(RuntimeError("provider 500")))
     body = await drafting._llm_draft_reply(
-        _EMAIL, about="", signature="", interactive_fallback=True,
+        _EMAIL, about="", signature="", interactive_fallback=False,
         on_delta=_delta)
-    assert _TEMPLATE in body
+    assert body == drafting.DRAFT_NO_DRAFT_SENTINEL
 
 
 async def test_compose_assist_raises_the_stream_timeout(monkeypatch) -> None:
@@ -106,6 +143,28 @@ async def test_compose_assist_raises_the_stream_timeout(monkeypatch) -> None:
         await drafting._llm_compose_assist(
             about="", signature="", current_body="My own words", instruction="",
             mode="new", on_delta=_delta)
+
+
+@pytest.mark.parametrize(("make", "status", "copy"), [
+    (_out_of_credits, 402, "OUT_OF_CREDITS"),
+    (_router_down, 503, "DRAFT_UNAVAILABLE_COPY"),
+], ids=["out_of_credits", "router_down"])
+async def test_compose_assist_names_a_router_refusal_or_outage(
+    monkeypatch, make, status, copy,
+) -> None:
+    """Task 3541, review P2. Compose assist goes through the Router now, so a
+    402 can reach it. It must not read as "not confident enough"."""
+    from acb_llm import routed
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("acb_llm.context.acompletion_stream_text", _raiser(make()))
+    with pytest.raises(HTTPException) as caught:
+        await drafting._llm_compose_assist(
+            about="", signature="", current_body="", instruction="",
+            mode="new", on_delta=_delta)
+    expected = getattr(routed, copy, None) or getattr(drafting, copy)
+    assert caught.value.status_code == status
+    assert caught.value.detail == expected
 
 
 async def test_compose_assist_keeps_the_body_of_the_member_on_another_failure(
@@ -245,6 +304,29 @@ async def test_a_stream_timeout_reaches_the_route_as_an_error_with_a_reason(
     assert events[-1]["error"]
     assert not any(_TEMPLATE in json.dumps(e) for e in events), (
         "a stream timeout became the neutral template")
+
+
+async def test_a_model_error_reaches_the_route_as_an_error_with_copy(
+    monkeypatch,
+) -> None:
+    """Task 3541, end to end through the real ``_compose_assist_run``: a model
+    error ends the stream with an ``error`` that the member can read, and no
+    event holds the stock template."""
+    spy = _Spy()
+    _wire_real_run(monkeypatch, spy, AsyncMock(return_value="unused"))
+    ctx = dict(_EMAIL, thread_id="", self="me@a.test", self_label="")
+    monkeypatch.setattr(drafting, "_build_reply_context", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(drafting, "_orchestrate_draft", _only_draft)
+    monkeypatch.setattr(
+        "acb_llm.context.acompletion_stream_text",
+        _raiser(RuntimeError("DeepseekException - Insufficient Balance")))
+    resp = await drafting.compose_assist_stream(
+        _req(mode="reply", message_id="m-1"), _USER)
+    events = _events(await _drain(resp.body_iterator))
+    assert events[-1]["type"] == "error", events
+    assert events[-1]["error"] == drafting.DRAFT_FAILED_COPY
+    assert not any(_TEMPLATE in json.dumps(e) for e in events), (
+        "a model error became the stock template")
 
 
 async def _only_draft(email, about, signature, user_email, *, model="tier-fast",
