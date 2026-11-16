@@ -245,7 +245,7 @@ One call returns one JSON object. The code keeps these keys and nothing else:
 Today no mark tells a rename of the member from an automatic title:
 
 - The client sets the first title once, when the chat has none
-  (`src/lib/sessions.ts:754`). A rename (`renameSession`) and that first title
+  (`src/lib/sessions.ts:755`). A rename (`renameSession`) and that first title
   both go through `PATCH /chat/sessions/{id}`.
 - `_patch_session` (`routes/chat.py:435`) writes `title` with no condition.
 - The upsert keeps `COALESCE(EXCLUDED.title, chat_session.title)`
@@ -327,10 +327,12 @@ asks for no topic, and CO-1 writes no topic before CO-2 exists.
 1. One call returns the summary, the title, the topic and the records, under
    the caps of §5.3. The code drops an unknown key and a value over a cap
    (`test_chat_summary.py`).
-2. An R8 test asserts that the usage row of the call has `billed_credits` 0,
-   and that no `credit_ledger` row exists (§5.1).
+2. An R8 test asserts `billed_credits` 0 on the usage row of the call. It
+   asserts that no `credit_ledger` row exists (§5.1).
 3. A rename survives the pass. A client upsert after the pass keeps the AI
-   title (`test_chat_title_source_r8.py`).
+   title (`test_chat_title_source_r8.py`). An old cached client sends a rename
+   with no `renamed` field. The server stores it as `client`, so the pass may
+   replace it. The client and the route ship in one PR to keep this rare.
 4. Each clear of §10.2 removes the digest row and the AI title
    (`test_chat_summary_r8.py`, `test_chat_summary_routes_r8.py`).
 5. The prompt holds typed rows only. CO-1 adds its new names to the entry of
