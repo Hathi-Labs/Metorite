@@ -473,11 +473,11 @@ async function translateAndPersistStream(
         } else if (t === "STATE_DELTA") {
           out = { type: "state_delta", delta: ev.delta ?? [] };
         } else if (t === "CUSTOM" && ev.name === RUN_PHASE_EVENT) {
-          // CS-3a: the server's phase of the run (`acb_skills.run_phase`).
-          // No client draws it yet, so it is neither forwarded nor saved
-          // (`out` stays null). A forwarded event would move the run row off
-          // "Reading your message" (CS-1), and a tab with an older bundle
-          // would keep it on the message.
+          // CS-3b: the server's phase of the run (`acb_skills.run_phase`).
+          // It is forwarded as a custom event, and never saved: it does not
+          // join `customEvents`. The client draws a fixed word for a known
+          // name and ignores any other (`phaseWordOf`).
+          out = { type: "custom", name: RUN_PHASE_EVENT, value: ev.value ?? null };
         } else if (t === "CUSTOM") {
           const cev = { name: String(ev.name ?? ""), value: ev.value ?? null };
           // A dispatched browser action (H-164) is a side effect, not part
