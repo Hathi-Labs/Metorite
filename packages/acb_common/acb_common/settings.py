@@ -1440,6 +1440,19 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
 
+    # ── Pin a chat (chat_organization.md §18, WS-CO CO-11) ─────────────────
+    #
+    # `chat_pin_orgs` lists the organization ids where a member may pin a
+    # chat, or `*` for each one. Empty means off: the chat list sends no pin
+    # key, the shell read says `chat_pin: false`, and PUT and DELETE
+    # `/chat/sessions/{id}/pin` answer 404. The one reader is
+    # `gateway.chat_session_member.pin_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`). A value other than empty on a box is the gate
+    # `enforcement-flip`, after the owner preview.
+    # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
+    chat_pin_orgs: str = ""
+
     # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
     #
     # `chat_voice_orgs` lists the organization ids whose chat composer shows the

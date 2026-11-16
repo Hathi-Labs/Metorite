@@ -89,6 +89,8 @@ onClear(() => {
   setGuideAllowed(null);
   // A new member: Module Studio is off until their own read says so (STU-Q15a).
   setModuleRuns(false);
+  // A new member: the chat pin is off until their own read says so (CO-11).
+  setChatPin(false);
 });
 
 /** Tests only: start a new page. */
@@ -176,6 +178,55 @@ export function useModuleRunsOn(): boolean {
   );
 }
 
+// ── The chat pin (WS-CO CO-11, `chat_organization.md` §18) ─────────────────
+//
+// `chat_pin` is a fact of the server, as `module_runs` is: `CHAT_PIN_ORGS` on
+// the gateway holds the member's org. The chat list shows Pin, Unpin and the
+// Pinned group only when it is true. The shell read is the one writer. Before
+// the read answers, after a failed read and after a member change, it reads
+// as off.
+
+let chatPinHere = false;
+const chatPinListeners = new Set<() => void>();
+
+function setChatPin(on: boolean): void {
+  if (chatPinHere === on) return;
+  chatPinHere = on;
+  chatPinListeners.forEach((l) => l());
+}
+
+/**
+ * The chat pin switch in an answer: true only when the gateway says
+ * `chat_pin: true`. A missing field, as from an older gateway, is off.
+ */
+export function chatPinOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { chat_pin?: unknown }).chat_pin === true;
+}
+
+/** What the last shell read of this page said about the chat pin. */
+export function chatPinAllowed(): boolean {
+  return chatPinHere;
+}
+
+/** Live: whether the member may pin a chat (CO-11). */
+export function useChatPinOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      chatPinListeners.add(l);
+      return () => {
+        chatPinListeners.delete(l);
+      };
+    },
+    chatPinAllowed,
+    () => false,
+  );
+}
+
+/** Tests only: set what the shell read said about the chat pin. */
+export function __setChatPinForTests(on: boolean): void {
+  setChatPin(on);
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
@@ -191,6 +242,8 @@ export async function readShellPrefs(): Promise<StoredShell> {
   setGuideAllowed(guideOn(body));
   // And it tells `/studio` whether the Module Studio tab shows (STU-Q15a).
   setModuleRuns(moduleRunsOn(body));
+  // And it tells the chat list whether it shows Pin and the Pinned group (CO-11).
+  setChatPin(chatPinOn(body));
   return layout;
 }
 

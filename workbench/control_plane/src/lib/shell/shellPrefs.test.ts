@@ -31,6 +31,8 @@ import {
   __newShellPageForTests,
   asLayout,
   bodyFor,
+  chatPinAllowed,
+  chatPinOn,
   guideOn,
   markChatFirstMessage,
   markTourSeen,
@@ -252,7 +254,7 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   /** A gateway that merges a key-only write and stamps the tour with ITS time, as `me.py` does. */
-  const server = (layout: StoredShell & { guide?: boolean; module_runs?: boolean }) =>
+  const server = (layout: StoredShell & { guide?: boolean; module_runs?: boolean; chat_pin?: boolean }) =>
     vi.fn(async (_url: string, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -331,6 +333,28 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
 
   it("the switch is never part of the stored layout", () => {
     expect(asLayout({ ...NEVER, module_runs: true })).not.toHaveProperty("module_runs");
+  });
+
+  it("chatPinOn: only `chat_pin: true` is on, and a missing field is off (CO-11)", () => {
+    expect(chatPinOn({ ...NEVER, chat_pin: true })).toBe(true);
+    expect(chatPinOn({ ...NEVER, chat_pin: false })).toBe(false);
+    expect(chatPinOn({ ...NEVER })).toBe(false);
+    expect(chatPinOn({ ...NEVER, chat_pin: "true" })).toBe(false);
+    expect(chatPinOn(null)).toBe(false);
+  });
+
+  it("the read sets the chat pin switch, and a new member resets it to off (CO-11)", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_pin: true }));
+    await readShellPrefs();
+    expect(chatPinAllowed()).toBe(true);
+    clearAll();
+    expect(chatPinAllowed()).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_pin: true }));
+    await readShellPrefs();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(chatPinAllowed()).toBe(false);
+    expect(asLayout({ ...NEVER, chat_pin: true })).not.toHaveProperty("chat_pin");
   });
 
   it("the read passes the switch to the guide, and a new member resets it", async () => {

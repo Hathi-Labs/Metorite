@@ -1,7 +1,8 @@
 # Chat organization — topics, picking up a chat, condense, and one search
 
 **Status:** ACTIVE (D163, 2026-11-02). CO-0 is BUILT (PR 1607, 2026-11-02).
-The rest of D163 is not built.
+CO-11, the pin, is BUILT and dark behind `CHAT_PIN_ORGS` (task 3510,
+2026-11-16). Its chat tool is not built (§18). The rest of D163 is not built.
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions.
@@ -72,17 +73,18 @@ A gateway path is under `apps/services/gateway/gateway/`. A `src/` path is under
 | The typed mark | `chat_message.member_typed`, migration 337 (D-PZ-37) | Each summary and each note reads typed rows only |
 | The briefing (PZ-34). **BUILT** | `assistant_summaries.recent`, flag `ASSISTANT_BRIEFING_ORGS` | Rung 1 fills it. CO-18 loads the note beside it |
 | The job worker | `jobs/worker.py`. `job_queue` defaults to False (`packages/acb_common/acb_common/settings.py:525`) | CO-10 turns it on for HathiLabs |
-| The continue route (WT-1). **BUILT, dark** | `POST /chat/sessions/{id}/continue`, `continue_session`, `routes/chat.py:1417`. Flag `CHAT_CONTINUE_ORGS` | CO-15 adds a carry mode (§17.1) |
+| The continue route (WT-1). **BUILT, dark** | `POST /chat/sessions/{id}/continue`, `continue_session`, `routes/chat.py:1510`. Flag `CHAT_CONTINUE_ORGS` | CO-15 adds a carry mode (§17.1) |
 | The link of a continued chat | `chat_session.continued_from`, migration 345, `ON DELETE SET NULL`. Fence `test_continued_from_readers.py` | CO-5 and CO-13 read it. Only the WT-1 route writes it |
 | The pill of a held chat (WT-2). **BUILT, dark** | `src/lib/chatContinue.ts`, `src/components/ContinueOffer.tsx`, drawn in `AgentChat.tsx` | The one caller of the route today |
-| Grouping the chat list (CO-0) | `dateGroups:78`, `DATE_GROUPS:71`, `splitSessions:117`, `src/lib/shell/chatHistory.ts`. `src/lib/shell/SessionPicker.tsx` draws it | Pinned, then topics, then dates |
-| Client search of title and preview | `matchesQuery`, `chatHistory.ts:99` | Replaced by the server search (CO-3) |
-| Rename and archive | `PATCH /chat/sessions/{id}` (`routes/chat.py:1121`), `archived_at` (migration 254) | Pin joins these acts |
-| Delete | `DELETE /chat/sessions/{id}` (`routes/chat.py:1137`). The picker offers Delete on an archived chat only. The route has no such check | §16.5 clears a note |
-| The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:755`) | CO-1 writes a better title |
+| Grouping the chat list (CO-0) | `dateGroups:78`, `DATE_GROUPS:71`, `splitSessions:151`, `src/lib/shell/chatHistory.ts`. `src/lib/shell/SessionPicker.tsx` draws it | Pinned, then topics, then dates |
+| Client search of title and preview | `matchesQuery`, `chatHistory.ts:133` | Replaced by the server search (CO-3) |
+| Rename and archive | `PATCH /chat/sessions/{id}` (`routes/chat.py:1157`), `archived_at` (migration 254) | Pin sits beside these acts in the list |
+| The pin (CO-11). **BUILT, dark** | `chat_session_member` (migration 450), `gateway/chat_session_member.py`, `PUT` and `DELETE /chat/sessions/{id}/pin`. Flag `CHAT_PIN_ORGS` | CO-2 adds the topic to the same row |
+| Delete | `DELETE /chat/sessions/{id}` (`routes/chat.py:1230`). The picker offers Delete on an archived chat only. The route has no such check | §16.5 clears a note |
+| The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:762`) | CO-1 writes a better title |
 | The rule for bar words | `barMayJoin:768`, `startsFresh:751`, `STALE_CHAT_MS:743`, `src/lib/shell/assistant.ts` | §7 widens it, only on a confident match |
 | The solo test | `SOLO_ROOM_SQL`, `rooms.py:590` | The join filter |
-| Removing the last turn | `POST /chat/sessions/{id}/supersede`, `routes/chat.py:1301` | The undo of §7.3 |
+| Removing the last turn | `POST /chat/sessions/{id}/supersede`, `routes/chat.py:1394` | The undo of §7.3 |
 | Card outcomes (HRD-7) | `ask_tools.CARD_OUTCOMES`, `packages/acb_skills/acb_skills/ask_tools.py:1473` | CO-17 stores an approved card (§16.3) |
 | Records that name their chat | `artifacts.session_id` (migration 268), `reminders.source_session_id` (migration 307) | §16.2 links them |
 | The context ring | `src/components/ContextRing.tsx`. Its colour changes at 60 % | CO-14 puts the length cue beside it |
@@ -214,7 +216,11 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 - `chat_session_member`: `(session_id, member_email)` PK, `organization_id`,
   `topic_id` (nullable), `set_by` (`auto` or `member`), `pinned_at` (nullable).
   It is the per-member row of a chat: its topic (CO-2) and its pin (CO-11). The
-  D163 draft named it `chat_session_topic`. No code names either name.
+  D163 draft named it `chat_session_topic`. CO-11 built the table (migration
+  450) with `pinned_at` only. CO-2 adds `topic_id` and `set_by` as nullable
+  columns, in its own migration (an expand step, R6). `member_email` is the
+  address in lower case. `gateway/chat_session_member.py` is the one module
+  that runs SQL on it, and the member purge deletes the rows of a leaver.
 - `chat_session_digest`: `session_id` PK, `organization_id`, `content_hash`,
   `entities JSONB`, `embedding`, `digested_at`. §10.1 reconciles it with CX-4.
 - `chat_join_log`: the shadow record of CO-4: the session, the candidate, the
@@ -262,7 +268,7 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 | CO-8 | 3507 | Later | The Save to Knowledge suggestion | AGENT-SAFE, dark | The suggestion saves nothing by itself |
 | CO-9 | 3508 | Later | The gap count (§8.3) | AGENT-SAFE. The flag is `KNOWLEDGE_GAPS` | A gap under 5 askers does not show |
 | CO-10 | 3509 | 1 | Turn on the job worker and chat summaries for HathiLabs (§19 question 1) | **OWNER-GATE**. `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (D-PZ-35) | An idle chat on production has a stored summary, and the next new chat shows it |
-| CO-11 | 3510 | 2 | Pin (§18) | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
+| CO-11 | 3510 | 2 | Pin (§18). **BUILT, dark** (2026-11-16), flag `CHAT_PIN_ORGS`. Chat parity: a separate slice, needs cal-tasks | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
 | CO-12 | 3511 | 2 | First-run hints and the empty state (§17.2, §17.3) | AGENT-SAFE | Each hint shows once per member, and the empty state shows no private topic of a colleague |
 | CO-13 | 3512 | 3 | The continue mark (§17.5) | AGENT-SAFE | A continued chat shows its source, and `test_continued_from_readers.py` stays green |
 | CO-14 | 3513 | Later | The length cue (§17.4). It waits for HRD-19 (task 2998) | AGENT-SAFE | The cue shows at 60 % and not below, and a tap runs Start clean |
@@ -328,6 +334,18 @@ These fences exist on `main` and bind the new slices:
 - `tests/unit/test_continue_carry.py` (R8): the carry of WT-1. CO-15 adds the
   cases of its carry mode.
 
+CO-11 adds two fences:
+
+- `tests/unit/test_chat_pin.py`: only `gateway/chat_session_member.py` and
+  the member purge name `chat_session_member` in Python, and no file of the
+  control plane names it. The pin selects a chat that the member can read and
+  that is not archived. Each statement filters on the member. With the flag
+  off, the routes answer 404 before any SQL.
+- `tests/unit/test_chat_pin_r8.py` (R8) runs the cases on a real database.
+  They are a second device, a colleague in the same room, an archive and a
+  chat that the member cannot read. They are also two orgs, an unpin, a
+  Delete and the member purge.
+
 ## 14. Risks
 
 - **Context cost.** Each joined turn resends the window, so §7.2 bars a full chat.
@@ -369,7 +387,8 @@ and adds no second spec of the same topic.
 | Topics, the chip, join or carry, the idle pass, server search | SPEC ONLY | §5 to §7 |
 | Past chats as a search source (HRD-21, task 3225) | SPEC ONLY | `find_engine.md` D-FIND-5 |
 | Start clean (HRD-19, task 2998) | SPEC ONLY | `chat_failure_modes.md` E3 |
-| Pin, first-run hints, an offer with a preview, condense | ABSENT | §16 to §18 |
+| Pin (CO-11) | BUILT, dark (task 3510) | §18 |
+| First-run hints, an offer with a preview, condense | ABSENT | §16 and §17 |
 
 The audit of task 3491 read production on 2026-11-16. `ASSISTANT_BRIEFING_ORGS`
 is `*` there. `JOB_QUEUE` and `ASSISTANT_CHAT_SUMMARY_ORGS` are absent, so no job
@@ -530,7 +549,7 @@ goes.
 - **Carry** opens a new chat through the carry door, below.
 
 **The carry door (CO-15).** The WT-1 route (`continue_session`,
-`routes/chat.py:1417`) is built and dark. Its one caller today is the pill of a
+`routes/chat.py:1510`) is built and dark. Its one caller today is the pill of a
 held chat. The route does four things today (`one_assistant_context.md` §9.3):
 
 1. It answers 404 unless `CHAT_CONTINUE_ORGS` holds the org. That flip is
@@ -591,7 +610,7 @@ HRD-19 and adds no carry of its own.
 ### 17.5 The continue mark (CO-13)
 
 A chat that continues another one says so in its header: "Continued from
-<title>", with a link. The session list (`_get_sessions`, `routes/chat.py:126`)
+<title>", with a link. The session list (`_get_sessions`, `routes/chat.py:129`)
 returns the link. That function is on the allow list of
 `test_continued_from_readers.py` already, and no TypeScript file names the
 column. A source that the member cannot read shows "Continued from an earlier
@@ -616,6 +635,35 @@ item 6).
   in the same room sees no pin of the member.
 - An archive takes the chat out of Pinned.
 - Chat parity (task 1238): the same act works from chat.
+
+**Built (CO-11, task 3510, 2026-11-16), dark.** `CHAT_PIN_ORGS` lists the orgs,
+and the default is empty.
+
+- **The store.** `chat_session_member` (migration 450). A pin inserts the row
+  of the member, or sets `pinned_at` on it. A second pin keeps the first time.
+  An unpin sets `pinned_at` to NULL and keeps the row, so the topic of CO-2
+  can live in it.
+- **Who may pin.** Any member who can read the chat, a room guest too. The pin
+  selects the chat under the bound tenant and the visibility rule of
+  `gateway/rooms.py`. A chat that the member cannot read answers 404.
+- **The read.** `GET /chat/sessions` sends `pinned` and `pinnedAt` for the
+  caller only. A colleague in the same room reads no pin of the member. With
+  the flag off, the list sends no pin key.
+- **The archive.** The read leaves out an archived chat, and a pin of an
+  archived chat answers 409. So an archive of a room takes it out of Pinned
+  for each member at once. The archive writes no pin row, so a restore shows
+  the pin again (§19 question 8).
+- **The UI.** The chat list shows Pin and Unpin on a row, and a Pinned group
+  over the date groups, newest pin first. The list shows a pinned chat once. The
+  header of the dock shows Pin on a desktop. On a phone with the chat-first
+  flag, the chat's "…" control holds it. Without that flag, a phone has the
+  act on the row only. The shell read serves the flag as `chat_pin`.
+- **The purge.** The member purge deletes each row of the member in the
+  bound org (`chat_member_rows`). A Delete of the chat deletes its rows.
+- **Chat parity: not built.** No chat tool lists or opens chats today. The
+  chat tool of the pin is a separate slice of P-7. It can need a line in
+  `tool_packs.py`, which the cal-tasks session owns. The two acts are debt
+  rows of P-7 in `acb_skills/chat_parity.py`.
 
 ## 19. Owner questions
 
@@ -646,6 +694,10 @@ owner answers on task 3491 or on the slice.
 7. **Does an explicit pick override `off`?** A chat that is `off` (PZ-35) is
    out of the summaries. Recommend NO. Such a chat cannot be a source, and the
    picker does not show it. A yes would change what the switch means (§16.2).
+8. **Does a restore show the pin again?** CO-11 keeps the pin row through an
+   archive, so a restore shows the pin again. Recommend YES. The archive is
+   an act of the owner of the chat, and the pin is an act of each member. A no
+   needs one more statement: the archive clears the pin of each member.
 
 ## 20. Sources
 

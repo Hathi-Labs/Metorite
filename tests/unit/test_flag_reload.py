@@ -176,6 +176,22 @@ def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not door_ops_allowed("globex")
 
 
+def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11, chat_organization.md §18. The reload list holds the key,
+    and the one reader of the pin switch sees a change with no restart."""
+    from gateway.chat_session_member import pin_allowed
+
+    assert fr.reloadable("CHAT_PIN_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert pin_allowed("acme")
+    assert not pin_allowed("globex")
+    assert not pin_allowed(None)
+
+
 def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU E12a, ai_studio.md §14 E12a. The reload list holds the key, and
     the one reader of the core events switch sees a change with no restart."""
