@@ -7571,9 +7571,10 @@ The code is the fact. The build differs from §31.5 in these places.
 
 ## 32. Editable approval cards (task 2493)
 
-**Status (2026-11-16): planned, nothing built.** The audit of 2026-11-16 checked
-this contract on `origin/main`. Epic: Metorite task 2493. The first demo is on
-Rung 2 of the ladder (D211, task 2927, `orchestration_playbook.md` §6d).
+**Status (2026-11-16): EAC-1 built dark (task 3468). EAC-2 to EAC-8 stay in
+the plan.** The audit of 2026-11-16 checked this contract on `origin/main`. Epic:
+Metorite task 2493. The first demo is on Rung 2 of the ladder (D211, task 2927,
+`orchestration_playbook.md` §6d).
 
 ### 32.1 Scope
 
@@ -7693,7 +7694,7 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 
 | Slice | Task | Tier | Rung | Files | Fence and tests | Gate | Done when |
 |---|---|---|---|---|---|---|---|
-| **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). |
+| **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
 | **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `confirmationQueue.ts`, `lib/taskCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, a new `taskCard.test.ts` | AGENT-SAFE build, OWNER-GATE preview | A member edits the due date and one assignee on a `create_task` card, then presses Approve. |
 | **EAC-3** | 3470 | STANDARD for status, priority, start date and description. HIGH for project or subproject | 2 | `TaskCardForm.tsx`, `lib/taskCard.ts`, `task_card.py` | The tests of EAC-1 and EAC-2, extended | AGENT-SAFE | Each added field edits and writes. A project change passes the route grants. |
 | **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus a precondition test (§32.6) | AGENT-SAFE | An `update_task` card edits the changed fields. |
@@ -7701,6 +7702,13 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 | **EAC-6** | none | none | 2 | none | none | OWNER-GATE | The owner previews EAC-2 to EAC-5 on the local stack and approves or asks for a change. |
 | **EAC-7** | none | none | 2 | none | none | OWNER-GATE (`enforcement-flip`) | The owner, or a dated grant, flips `PROJECT_EDIT_CARD_ORGS`. The report names the flag and the box. |
 | **EAC-8** | 3473 | HIGH | 3 | its own spec row | Check D-CRM-9 and `_not_written` first | OWNER-GATE for scope | CRM cards get the same contract, or the owner declines. |
+
+**EAC-1 as built (2026-11-16).** The card event carries `edit`: `{kind,
+project_id, values}`, and `kind` is `create_task`. `values` holds each answer
+key. `status` is a lane name, or empty for the default. `important` is null for
+a task that nobody judged. The client sends all the keys back, and it never
+sends `project_id`. A repeating task keeps the card of before, because its rule
+reads the due date. The client draws the line about a late Approve (EAC-2).
 
 EAC-2 needs a Visual review: light mode, compact density, a changed accent, and
 390 px. `redraftCard.ts` keeps reading only the `NewMailEdits` branch of the

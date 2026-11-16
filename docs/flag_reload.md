@@ -120,6 +120,14 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
+edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
+`create_task` carries a form of its values, and the write takes the values
+that the member approved. `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
+gate ask it at each card, so a reload applies to the next card. A flip stays
+OWNER-GATE (`enforcement-flip`, EAC-7).
+
 `STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
 (`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
 install `needs_setup`, and the action door refuses each action with 409

@@ -233,13 +233,21 @@ async def _check_card(context: str) -> None:
 
 
 async def _confirm(
-    title: str, detail: str, context: str, rows: list[dict[str, Any]] | None = None
-) -> bool | frozenset[str]:
+    title: str, detail: str, context: str, rows: list[dict[str, Any]] | None = None,
+    edit: dict[str, Any] | None = None,
+) -> Any:
     """One door for every card. Imported inside so a test can stub the gate.
 
     With ``rows`` (WS-46 P13 one-card), the card draws one checkbox per row,
     and the answer is the ``frozenset`` of the ticked row ids: empty when the
     member did not approve. With no rows, the call is exactly as before.
+
+    With ``edit`` (EAC-1, ``projects_ai_chat.md`` §32), the card draws the
+    form of a new task (``acb_skills.task_card.create_task_form``). The card
+    binds the run's own member (``responder``), so only that member's answer
+    counts. The answer is ``True`` for a plain approve (the original values),
+    a ``task_card.TaskEdit`` for edited values, or falsy. With no form, the
+    call is exactly as before.
 
     Task 2494: a chat message of the member closes the card
     (``close_on_steer``). Then this raises :class:`CardClosedByChat` with the
@@ -259,7 +267,14 @@ async def _confirm(
     await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
-    if rows is None:
+    if edit is not None and rows is None:
+        from skill_projects.client import current_user_email
+
+        answer = await request_confirmation(
+            title=title, detail=detail, context=context, fenced=True, close_on_steer=True,
+            edit=edit, responder=current_user_email() or None,
+        )
+    elif rows is None:
         answer = await request_confirmation(
             title=title, detail=detail, context=context, fenced=True, close_on_steer=True
         )
@@ -1113,22 +1128,23 @@ async def create_task(
     chat_files = await _chat_files_for_new_task(files)
     if isinstance(chat_files, str):
         return chat_files
-    new = await _prepare_new_task(
-        pid,
-        name,
-        description=description,
-        status=status,
-        due_at=repeating.due_at(due),
-        flags=flags,
-        estimate_mins=estimate_mins,
-        tags=_split(tags),
-        start=start,
-        type_name=type,
-        fields=fields,
-        parent_task_id=parent_task_id,
-        assignees=_split(assignees),
-        source=source,
-    )
+    # The arguments of the one prepare step. EAC-1: an edited answer runs the
+    # step again AFTER the card, on these with the member's changes.
+    prep: dict[str, Any] = {
+        "description": description,
+        "status": status,
+        "due_at": repeating.due_at(due),
+        "flags": flags,
+        "estimate_mins": estimate_mins,
+        "tags": _split(tags),
+        "start": start,
+        "type_name": type,
+        "fields": fields,
+        "parent_task_id": parent_task_id,
+        "assignees": _split(assignees),
+        "source": source,
+    }
+    new = await _prepare_new_task(pid, name, **prep)
     card = _priority_card(new.payload)
     # The card names the type and each field by NAME (`extra.card`).
     card.pop("type_id", None)
@@ -1163,14 +1179,22 @@ async def create_task(
     # WS-47 WAC-4: a card that names the project by NAME must still bind the
     # project it resolved, and the people, for a Confirm on WhatsApp.
     _bind_card_facts(project_id=pid, assignees=sorted(new.who))
-    if not await _confirm(
+    # EAC-1 (projects_ai_chat.md §32): the form of the card that the member
+    # edits, or None. A held chat and a repeating task keep the card of before.
+    form = _new_task_form(pid, new, held=held, repeats=bool(repeating.rule))
+    answer = await _confirm(
         title=repeating.card_title,
         detail=f"{_brief(name)}{where} · status {new.status_label}"
         + (f" · {', '.join(new.who)}" if new.who else "")
         + repeating.detail(),
         context=_fields_block(card),
-    ):
+        edit=form,
+    )
+    if not answer:
         return _not_confirmed()
+    # The member's changes on the card, each checked again AFTER the answer.
+    edit = await _card_edit(pid, name, prep, new, form, answer)
+    new = edit.new
     task, saved, failed = await _create_new_task(new, repeating)
     status_label = new.status_label
     if "status_id" not in new.payload:
@@ -1178,7 +1202,8 @@ async def create_task(
         # created row, as `add_subtasks` does. The card was a forecast. The
         # read runs after every write, and `_lane_name` never raises.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
-    lines = [*_task_line(task, status_label), *level_note(priority, task)]
+    lines = [*_task_line(task, status_label), *level_note(edit.asked(priority), task),
+             *edit.lines()]
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
     receipt = repeating.receipt(task, lines, saved, failed, new.extra)
@@ -1414,6 +1439,152 @@ async def _prepare_new_task(
     new = _NewTask(pid, payload, status_label, who, extra)
     new.parent = parent
     return new
+
+
+# ── EAC-1: the card of a new task that the member edits ──────────────────────
+#
+# Spec: ``project-docs/specs/projects_ai_chat.md`` §32. ``acb_skills.task_card``
+# builds the form and parses the answer. These three helpers tie it to
+# ``create_task``: the form from the values resolved before the card, the
+# values that the member changed, and the arguments of the prepare step that
+# runs again on them. Fences: ``tests/unit/test_task_edit_card_answer.py``,
+# ``tests/unit/test_task_edit_card_r8.py`` (R8).
+
+
+def _new_task_form(
+    pid: str, new: _NewTask, *, held: bool, repeats: bool
+) -> dict[str, Any] | None:
+    """The form of the card of *new* that the member edits, or None for the
+    card of before.
+
+    A held chat (*held*) and a repeating task (*repeats*, whose rule reads the
+    due date) get no form. ``ask_tools.task_edit_card_channel_open`` decides
+    the rest: ``PROJECT_EDIT_CARD_ORGS`` for the run's org, a card channel,
+    and no WhatsApp run. A run whose member has no address gets no form. Each
+    value is what a plain Approve writes. A value outside the limits of the
+    form gives None (``create_task_form``)."""
+    if held or repeats:
+        return None
+    try:
+        from acb_skills.ask_tools import task_edit_card_channel_open
+        from acb_skills.task_card import create_task_form
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return None
+    from acb_common.priority import important_from_importance
+
+    from skill_projects.client import current_user_email
+
+    if "@" not in current_user_email() or not task_edit_card_channel_open():
+        return None
+    return create_task_form(
+        project_id=pid,
+        due=str(new.payload.get("due_at") or ""),
+        start=str(new.extra.payload.get("start_date") or ""),
+        # The lane by name, or "" for the default (a subtask: the parent's).
+        status=new.status_label if "status_id" in new.payload else "",
+        important=important_from_importance(new.payload.get("importance")),
+        leveraged=bool(new.payload.get("leveraged", False)),
+        description=str(new.payload.get("description") or ""),
+        assignees=list(new.who),
+    )
+
+
+class _CardEdit:
+    """What the member changed on the edit card of a new task (EAC-1).
+
+    ``new`` is the task that the write sends: the one the tool prepared, or
+    the one that the prepare step made again from the member's changes.
+    ``changes`` is empty for a plain approve. ``strangers`` names each
+    address of the changed people that the directory does not know (H-162)."""
+
+    def __init__(self, new: _NewTask, changes: dict[str, Any], strangers: list[str]) -> None:
+        self.new = new
+        self.changes = changes
+        self.strangers = strangers
+
+    def asked(self, priority: str) -> str:
+        """The level that the tool asked for, or ``""`` when the member set a
+        flag on the card: the level of the call no longer holds."""
+        return "" if {"important", "leveraged"} & set(self.changes) else priority
+
+    def lines(self) -> list[str]:
+        """The receipt's line of each stranger, in the words of the card line."""
+        if not self.strangers:
+            return []
+        return [f"  not in the directory: {', '.join(self.strangers)}"]
+
+
+async def _card_edit(
+    pid: str, name: str, prep: dict[str, Any], new: _NewTask,
+    form: dict[str, Any] | None, answer: Any,
+) -> _CardEdit:
+    """The task that the write sends after the card (EAC-1).
+
+    With no change, it is *new*, as the card showed it. With changes, every
+    name and date goes through the one prepare step again, AFTER the answer,
+    so each check of the tool applies: the status by name, each person
+    through ``_resolve_assignee``, the dates. The project stays the card's,
+    and no id of the answer is read. The write runs as the member, under the
+    grants of each route. A refusal raises, and nothing is written."""
+    changes = _card_changes(form, answer)
+    if not changes:
+        return _CardEdit(new, {}, [])
+    edited = await _prepare_new_task(pid, name, **_edited_prep(prep, changes))
+    strangers = await _unknown_addresses(edited.who) if "assignees" in changes else []
+    return _CardEdit(edited, changes, strangers)
+
+
+def _card_changes(form: dict[str, Any] | None, answer: Any) -> dict[str, Any]:
+    """The values that the member changed on the edit card, by key, or ``{}``.
+
+    Only an edited answer (``task_card.TaskEdit``) to a card that showed a
+    form changes a value. A plain approve (``True``) approves the original
+    values, and so does a late approve, which takes the card of the stored
+    call with no answer of its own. The form is the tool's own, never an
+    echo of the answer."""
+    if form is None or answer is True or not answer:
+        return {}
+    from acb_skills.task_card import TaskEdit, changed_values
+
+    if not isinstance(answer, TaskEdit):
+        return {}
+    return changed_values(form, answer)
+
+
+def _flag_fields(name: str, value: bool) -> dict[str, Any]:
+    """The stored field of one priority flag that the member set on the card,
+    through the one adapter (``priority_fields``)."""
+    fields = priority_fields(**{name: "true" if value else "false"})
+    if isinstance(fields, str):  # never for true or false, so fail closed
+        raise GatewayRefusal(fields)
+    return fields
+
+
+def _edited_prep(prep: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """The arguments of :func:`_prepare_new_task` with the member's changes.
+
+    Each changed value replaces the argument that it edits, and each other
+    argument stays as the tool resolved it. The prepare step then checks each
+    value as it checks the tool's own: a status by name, each person through
+    ``_resolve_assignee``, the start date. A due date that is not a date is
+    refused here. ``important`` of None takes the judgement away."""
+    out = dict(prep)
+    if "due" in changes:
+        out["due_at"] = _date_arg(changes["due"], "due")
+    for key, arg in (("start", "start"), ("status", "status"), ("description", "description")):
+        if key in changes:
+            out[arg] = changes[key]
+    if "assignees" in changes:
+        out["assignees"] = list(changes["assignees"])
+    flags = dict(out.get("flags") or {})
+    if "important" in changes:
+        flags.pop("importance", None)
+        if changes["important"] is not None:
+            flags.update(_flag_fields("important", changes["important"]))
+    if "leveraged" in changes:
+        flags.update(_flag_fields("leveraged", changes["leveraged"]))
+    out["flags"] = flags
+    return out
 
 
 async def _create_new_task(

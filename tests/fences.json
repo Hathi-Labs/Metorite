@@ -363,6 +363,7 @@
       "tests/unit/test_studio_tree_door_r8.py",
       "tests/unit/test_studio_workflow_write_r8.py",
       "tests/unit/test_task_check_r8.py",
+      "tests/unit/test_task_edit_card_r8.py",
       "tests/unit/test_team_scope_isolation_r8.py",
       "tests/unit/test_user_settings_per_org_r8.py",
       "tests/unit/test_workflows_author_gate_r8.py",
