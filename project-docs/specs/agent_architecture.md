@@ -1253,8 +1253,11 @@ block that the linter does not read:
       an authority from `_integration_authorizer`, in a run that is not a batch run. That is
       the web chat, a member's WhatsApp run, and a member's own `POST /agent/run` with a
       thread. A cron, webhook, Projects dispatch or headless run gets no MCP server, or no
-      member. A function whose server the gate cannot find keeps the fact false, because
-      the gate cannot read the "always confirm" of that server.
+      member. A run inside `no_person_scope` (AUTO-7a, D131 rule 4: a job, an unattended
+      workflow, a Studio run with no viewer) counts as a run with no member, also when it
+      names one (`_maf_mcp._person_present`, a listed reader in `test_no_person_present.py`).
+      A function whose server the gate cannot find keeps the fact false, because the gate
+      cannot read the "always confirm" of that server.
     - **What still asks the card.** A server that is set to always confirm (item 31). A chat
       that read an untrusted answer (step 3a of `decide()`, EM-G11d). A gate fault
       (`gate_error`). Item 32's order stays: step 3a, always confirm, the read-only key, the
@@ -1283,7 +1286,9 @@ block that the linter does not read:
       question). OA-7b. D-CSY-5. The read-only key switch and its one parse. No schema change.
     - **Fences.** `test_maf_mcp_confirm.py` (A12 to A22, A31, A35, A36 and A39),
       `test_maf_mcp_budget.py` (A25), `test_mcp_always_confirm_r8.py` (A32),
-      `test_mcp_read_only_key_r8.py` (A37), `alwaysConfirm.test.ts` and `mcpConnect.test.ts`.
+      `test_mcp_read_only_key_r8.py` (A37), `test_no_person_present.py` (the reader list),
+      `alwaysConfirm.test.ts`, `mcpConnect.test.ts`, and the golden trajectory
+      `evals/trajectories/test_permission_trajectory.py::test_the_mcp_rule_is_the_contract`.
 
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
 request to the address that the check resolved, with the host name as SNI. It allows `https` on
@@ -1346,7 +1351,7 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A36 | With both switches true on a row, every tool waits for the card. After an untrusted answer, a tool of a read-only-key server still waits for the card. The list loader shows `read_only` true for each tool of a read-only-key server. | `test_maf_mcp_confirm.py`, `test_maf_mcp_budget.py` |
 | A37 | `PATCH` sets the switch, keeps the headers, and writes one audit event. A body with both switches true gets 422, and so does a string value. `PATCH {"read_only_key": true}` on a row with `always_confirm` true gets 422, and so does a PATCH on an OAuth row. `PATCH {"always_confirm": true}` on a row with `read_only_key` true gets 422. On a row with both stored true, `PATCH {"always_confirm": false}` leaves the key off. A body with only `always_confirm` behaves as A33. A re-POST with no `read_only_key` turns it off, and its audit event records both flags. A member without `integrations:manage` gets 403. Another org's name is 404. A new server reads as false. R8, two orgs, the app role. | `test_mcp_read_only_key_r8.py` |
 | A38 | `GET /integrations/mcp` and the read model return the flag. The console tick sends `read_only_key`, and a tick of one switch clears the other. | `test_mcp_read_only_key_r8.py`, `alwaysConfirm.test.ts` |
-| A39 | Item 33. In a member's run, each MCP tool runs with no card, whatever its hints say. Only a real `True` member fact counts. Always confirm and an untrusted answer still ask the card. A function of no known server still asks. A run with no member still refuses a tool that does not say read-only. | `test_maf_mcp_confirm.py` |
+| A39 | Item 33. In a member's run, each MCP tool runs with no card, whatever its hints say. Only a real `True` member fact counts. Always confirm and an untrusted answer still ask the card. A function of no known server still asks. A run with no member, and a run inside `no_person_scope`, still refuses a tool that does not say read-only. | `test_maf_mcp_confirm.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.

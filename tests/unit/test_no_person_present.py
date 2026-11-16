@@ -923,6 +923,10 @@ _READERS = frozenset({
     # WS-STU B2c-2a: the Studio door refuses a delegated write of a marked run
     # before it opens a card or spends a request. Nobody sees that card.
     "apps/services/gateway/gateway/routes/studio/invoke.py",
+    # MCP-NC1 (task 3603): the MCP gate runs a member's tool with no card only
+    # when a person watches. A marked run counts as a run with no member, so
+    # the gate refuses a write there (`_maf_mcp._person_present`).
+    "apps/services/orchestrator/orchestrator/_maf_mcp.py",
 })
 
 

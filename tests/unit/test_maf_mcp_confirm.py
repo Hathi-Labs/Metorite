@@ -59,7 +59,7 @@ Only the model wire is scripted, and the card is answered the way
 
 Mutation table. Each mutation was made by hand, and the named test failed.
 Rows M1 to M48 were measured at their own slices, and their test names were
-updated for MCP-NC1. Rows M49 to M54 were measured on 2026-11-17.
+updated for MCP-NC1. Rows M11 and M49 to M55 were measured on 2026-11-17.
 
 | # | Mutation | Test that fails |
 |---|---|---|
@@ -138,6 +138,7 @@ R8 half is ``tests/unit/test_mcp_read_only_key_r8.py``.
 | M52 | the gate leaves ``mcp_member_run`` out of the codes that run | ``test_a_tool_that_can_change_data_runs_with_no_card_for_a_member`` |
 | M53 | the gate passes the member fact for a function of no known server | ``test_a_function_of_no_known_server_waits_for_the_card`` |
 | M54 | the gate passes ``mcp_member_present=True`` in every run | ``test_a_run_with_no_member_refuses_and_shows_no_card`` |
+| M55 | the attach ignores ``no_person_scope`` (AUTO-7a) | ``test_a_run_that_no_person_watches_counts_as_no_member[no-person]`` |
 """
 from __future__ import annotations
 
@@ -519,6 +520,45 @@ async def test_a_member_with_no_card_channel_runs_a_tool_that_needs_no_card() ->
     await _bounded(_gate(fn, None).process(ctx, ran))
     assert ran.count == 1
     assert ctx.result is None, ctx.result
+
+
+@pytest.mark.parametrize("marked", [False, True], ids=["person", "no-person"])
+async def test_a_run_that_no_person_watches_counts_as_no_member(monkeypatch, marked) -> None:
+    """A39 (MCP-NC1, AUTO-7a, D131 rule 4): a job, an unattended workflow and
+    a Studio run with no viewer run inside ``no_person_scope``. Such a run can
+    name a member, but nobody watches it. So the attach gives the gate no
+    member: a write is refused, and a read-only tool still runs."""
+    from acb_common.no_person import no_person_scope
+
+    from tests.unit._maf_mcp_fakes import install_offline, native_agent
+
+    install_offline(monkeypatch)
+    agent = native_agent()
+    opened: list[Any] = []
+    with no_person_scope() if marked else contextlib.nullcontext():
+        await _maf_mcp.attach_mcp_tools(agent, [
+            _maf_mcp.McpServer(name="srv", url="https://a.example.com/mcp")], opened,
+            member_present=True)
+    try:
+        (tool,) = agent.mcp_tools
+        write, read = _function(), _function("srv_echo", "echo")
+        tool._functions = [write, read]
+        tool.__dict__["_ws8c_tool_meta"] = {
+            "delete_record": _maf_mcp.ToolMeta(hints={"destructiveHint": True}, description="d"),
+            "echo": _maf_mcp.ToolMeta(hints={"readOnlyHint": True}, description="e")}
+        gate = next(m for m in agent.middleware if isinstance(m, _maf_mcp.McpPermissionGate))
+        ran, ctx = _Ran(), _ctx(write)
+        with _card_channel() as queue:
+            await _bounded(gate.process(ctx, ran))
+            await _bounded(gate.process(_ctx(read), ran))
+        assert queue.empty(), "a gate showed a card"
+        if marked:
+            assert ran.count == 1, "a run that no person watches ran a write"
+            assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
+        else:
+            assert ran.count == 2 and ctx.result is None
+    finally:
+        await _maf_mcp.close_mcp_tools(opened)
 
 
 async def test_a_no_member_run_still_runs_a_read_only_tool() -> None:

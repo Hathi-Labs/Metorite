@@ -629,18 +629,20 @@ contract test pins these names, so an upgrade of `mcp` fails loud.
 - **The console** shows "acts as <admin email> at <provider>" on the
   connection row and in its side panel. The admin email is `connected_by`.
 - **The Connect dialog** says, before the consent, that the agents of every
-  member use this connection as the admin. It also says that a read-only tool
-  runs with no card, so every member can read what the admin can read at the
-  provider.
+  member use this connection as the admin. It also says that each tool runs
+  with no card, so every member can read and change what the admin can read
+  and change at the provider (MCP-NC1, owner directive 2026-11-17).
 - **The card** (`agent_architecture.md` §12.2 WS-8c, item 14) shows "acts as
   <admin email> at <provider>" for each tool of an OAuth server. The line sits
   under the hint line, and the card escapes it as it escapes the names (item
   19).
-- **A read-only tool runs with no card** (H-299, WS-8c item 13). So a member
-  can read, through an agent, what the admin can read at that provider. The
+- **A tool of a member's run asks no card** (MCP-NC1, `agent_architecture.md`
+  §12.2 WS-8c item 33, which amends H-299). So a member can read and change,
+  through an agent, what the admin can read and change at that provider. The
   console says so, and this spec says so. The H-300 setting `always_confirm`
-  puts a card on every tool of one server, and a new server has it on
-  (`agent_architecture.md` §12.2 WS-8c, item 31).
+  puts a card on every tool of one server, and a new server has it off
+  (item 31 as item 33 amends it). D98.3 says "read" only, and item 33 widens
+  it.
 - The label names the Metorite admin, not the provider account. Metorite knows
   the admin. It does not know yet which provider account a token names
   (§3.6.2, not measured).

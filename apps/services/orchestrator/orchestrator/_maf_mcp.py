@@ -829,7 +829,8 @@ async def attach_mcp_tools(
     *member_present* says that a member started this run and can answer a
     card (H-299). It goes to the run's :class:`McpPermissionGate`. True runs
     a tool that does not say read-only with no card (MCP-NC1). False, the
-    default, refuses such a tool and each tool that needs a card.
+    default, refuses such a tool and each tool that needs a card. A run that
+    no person watches (:func:`_person_present`) counts as False.
 
     WS-8c items 23 to 30: the run attaches :data:`MAX_SERVERS` servers or
     fewer, in name order, and logs ``mcp.server_cap`` with the rest. The cap
@@ -941,13 +942,29 @@ async def attach_mcp_tools(
     middleware = [m for m in list(getattr(agent, "middleware", None) or [])
                   if not isinstance(m, McpPermissionGate)]
     agent.middleware = [*middleware, McpPermissionGate(
-        tools=list(agent.mcp_tools), member_present=member_present,
+        tools=list(agent.mcp_tools),
+        # MCP-NC1: a run that no person watches (AUTO-7a) is not a member's
+        # run, also when it names a member, so it asks no card it cannot show.
+        member_present=member_present and _person_present(),
     )]
     names = [t.name for t in tools]
     _log.info("mcp.attached", servers=names,
               always_confirm=[t.name for t in tools if server_always_confirms(t)],
               read_only_key=[t.name for t in tools if server_read_only_key(t)])
     return names
+
+
+def _person_present() -> bool:
+    """False inside ``acb_common.no_person.no_person_scope`` (AUTO-7a, D131
+    rule 4): a job, a workflow of an unattended trigger, or a Studio run with
+    no viewer. MCP-NC1 runs a member's tool with no card only when a person
+    watches the run. A fault reads as no person, so it fails closed."""
+    try:
+        from acb_common.no_person import no_person_present
+
+        return not no_person_present()
+    except Exception:
+        return False
 
 
 def _arguments(context: Any) -> dict[str, Any] | None:
