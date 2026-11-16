@@ -849,9 +849,10 @@ describe("the peek strip, a third size on a phone (CF-1, chat_first_surface.md Â
     expect(stripText({ phase: "waiting_for_you", statusText: "Waiting for your answer", lastPreview: "Old words." })).toBe(
       "Waiting for your answer",
     );
-    // A parked card still waits on the member, so the strip says so.
-    expect(stripText({ phase: "parked", statusText: "Paused. Answer the card to go on", lastPreview: "Old words." })).toBe(
-      "Paused. Answer the card to go on",
+    // A parked card still waits on the member, so the strip says so. D-RES-6:
+    // it reads as a live wait.
+    expect(stripText({ phase: "parked", statusText: "Waiting for your answer", lastPreview: "Old words." })).toBe(
+      "Waiting for your answer",
     );
     // A run with no status text yet falls back to the last reply.
     expect(stripText({ phase: "starting", statusText: "  ", lastPreview: "The due date is Friday." })).toBe(
