@@ -56,16 +56,24 @@ if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
   say "Disabled GRAPHITI (Neo4j) — saves ~500MB RAM; re-enable after VPS upgrade"
 fi
 # 2449 S1 (owner rule 2026-11-08, every AI call goes through the console): Mem0
-# and Graphiti call an embeddings vendor with their own key. A line with any
-# other value than false is written back as false on EVERY deploy. The new
-# content is built first and written INTO the same inode (a `sed -i` would
-# replace the inode of .env: tests/unit/test_env_inode.py).
+# and Graphiti call an embeddings vendor with their own key, and D132 item 4
+# keeps both off. A line with any value but false is written back as false, also
+# when an earlier line of the same key says false (the last line wins). The
+# release path is scripts/vps_apply.sh, which holds the same loop. This copy is
+# for a run by hand. The new content is built in a temp file and written INTO
+# the same inode (a `sed -i` would replace the inode of .env: test_env_inode.py).
+# The full copy stays when the write fails. Remove both loops in 2449 S2.
 # Fence: tests/unit/test_no_direct_ai_vendor_calls_web.py.
 for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
-  if grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null && ! grep -qE "^${_var}=false$" "$ENV_FILE" 2>/dev/null; then
-    _forced="$(sed "s/^${_var}=.*/${_var}=false/" "$ENV_FILE")"
-    printf '%s\n' "$_forced" > "$ENV_FILE"
-    printf "    = forced %s=false in .env\n" "$_var"
+  if [ "$(grep -cE "^${_var}=" "$ENV_FILE" 2>/dev/null)" != "$(grep -cxE "${_var}=false" "$ENV_FILE" 2>/dev/null)" ]; then
+    _tmp="$(mktemp "$(dirname "$ENV_FILE")/.env-edit.XXXXXX")"
+    sed "s/^${_var}=.*/${_var}=false/" "$ENV_FILE" > "$_tmp"
+    if cat "$_tmp" > "$ENV_FILE" && cmp -s "$_tmp" "$ENV_FILE"; then
+      rm -f "$_tmp"
+      printf "    = forced %s=false in .env\n" "$_var"
+    else
+      printf "    !! .env write failed, the full copy is at %s\n" "$_tmp"
+    fi
   fi
 done
 

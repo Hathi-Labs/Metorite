@@ -298,73 +298,114 @@ def test_a_new_web_file_is_off_the_baseline() -> None:
 
 
 # ── The memory flags of the deploy ────────────────────────────────────────
+#
+# The release path is ``scripts/vps_apply.sh`` (the deploy workflow and the box
+# poller run it). ``deploy/hostinger/deploy.sh`` is the runbook for a run by
+# hand. Both force the two memory flags off, so the fence reads both.
+
+_VPS_APPLY = _REPO / "scripts" / "vps_apply.sh"
+_FORCING_SCRIPTS = (_DEPLOY, _VPS_APPLY)
 
 
-def _memory_block() -> str:
-    text = _DEPLOY.read_text(encoding="utf-8")
-    start = text.index("Memory-layer")
-    end = text.index('say "Ensuring public-URL env vars"')
+def _forced_loop(script: Path) -> str:
+    """The loop that forces both flags to false, from its 2449 S1 comment to the
+    next section of the script."""
+    text = script.read_text(encoding="utf-8")
+    start = text.index("2449 S1 (owner rule")
+    start = text.index("for _var in", start)
+    end = text.index("\ndone\n", start) + len("\ndone\n")
     return text[start:end]
 
 
-def _forced_loop() -> str:
-    """The loop that forces both flags to false, from its 2449 S1 comment."""
-    block = _memory_block()
-    return block[block.index("for _var in", block.index("2449 S1")):]
+def _helpers() -> str:
+    """The ``env helpers`` block of vps_apply.sh (``env_edit_in_place``)."""
+    text = _VPS_APPLY.read_text(encoding="utf-8")
+    start = text.index("# >>> env helpers")
+    end = text.index("# <<< env helpers")
+    return text[start:end]
 
 
-def test_the_deploy_forces_the_memory_flags_off() -> None:
-    """A line with any value but false is written back as false, on each deploy.
-    Mutation: delete the forcing loop -> no ``printf`` into the file -> red."""
-    loop = _forced_loop()
+@pytest.mark.parametrize("script", _FORCING_SCRIPTS, ids=lambda p: p.name)
+def test_each_deploy_script_forces_the_memory_flags_off(script: Path) -> None:
+    """A line with any value but false is written back as false, on each run,
+    also when another line of the same key says false.
+    Mutation: delete the forcing loop -> the marker is gone -> red."""
+    loop = _forced_loop(script)
     assert "for _var in MEM0_ENABLED GRAPHITI_ENABLED; do" in loop
-    assert '! grep -qE "^${_var}=false$"' in loop
-    assert 'sed "s/^${_var}=.*/${_var}=false/" "$ENV_FILE"' in loop
-    assert "printf '%s\\n' \"$_forced\" > \"$ENV_FILE\"" in loop
+    assert 'grep -cE "^${_var}="' in loop
+    assert 'grep -cxE "${_var}=false"' in loop
+    assert 's/^${_var}=.*/${_var}=false/' in loop
 
 
-def test_the_forcing_loop_keeps_the_inode_of_env() -> None:
+@pytest.mark.parametrize("script", _FORCING_SCRIPTS, ids=lambda p: p.name)
+def test_the_forcing_loop_keeps_the_inode_of_env(script: Path) -> None:
     """The writer builds the content first and writes INTO the file. A
     ``sed -i`` or a ``mv`` replaces the inode, and the sandboxed gateway keeps a
     dead copy (``test_env_inode.py``). Mutation: put ``sed -i`` in the loop."""
-    loop = _forced_loop()
+    loop = _forced_loop(script)
     assert not re.search(r"sed\s+(-[A-Za-z]+\s+)*-[A-Za-z]*i", loop)
     assert not re.search(r"\bmv\b", loop)
+    assert "env_edit_in_place" in loop or "cmp -s" in loop, "no full-copy check"
 
 
-def test_the_missing_line_default_stays_false() -> None:
+def test_the_release_path_is_in_the_fence() -> None:
+    """The release runs vps_apply.sh. A force in deploy.sh alone is a no-op there.
+    Mutation: drop vps_apply.sh from ``_FORCING_SCRIPTS`` -> red."""
+    assert _VPS_APPLY in _FORCING_SCRIPTS
+    workflow = (_REPO / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    assert "vps_apply.sh" in workflow
+
+
+@pytest.mark.parametrize("script", _FORCING_SCRIPTS, ids=lambda p: p.name)
+def test_the_missing_line_default_stays_false(script: Path) -> None:
     """The old default for a missing line stays (``test_deploy_memory_default.py``)."""
-    block = _memory_block()
-    assert 'echo "MEM0_ENABLED=false" >> "$ENV_FILE"' in block
-    assert 'echo "GRAPHITI_ENABLED=false" >> "$ENV_FILE"' in block
+    text = script.read_text(encoding="utf-8")
+    assert 'echo "MEM0_ENABLED=false" >> "$ENV_FILE"' in text
+    assert 'echo "GRAPHITI_ENABLED=false" >> "$ENV_FILE"' in text
 
 
-def test_the_deploy_script_parses_in_bash() -> None:
+@pytest.mark.parametrize("script", _FORCING_SCRIPTS, ids=lambda p: p.name)
+def test_the_deploy_script_parses_in_bash(script: Path) -> None:
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("needs bash")
-    done = subprocess.run([bash, "-n", str(_DEPLOY)], capture_output=True, text=True)
+    done = subprocess.run([bash, "-n", str(script)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
 
 
-def test_the_forced_loop_overwrites_any_value_and_keeps_the_inode(tmp_path: Path) -> None:
-    """Run the forcing loop on a copy of an env file. A line with any other
-    value is rewritten, a line that says false stays, another key stays, and
-    the inode of the file does not change.
+@pytest.mark.parametrize("script", _FORCING_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("MEM0_ENABLED=enabled\nOTHER=kept\nGRAPHITI_ENABLED=false\n",
+         "MEM0_ENABLED=false\nOTHER=kept\nGRAPHITI_ENABLED=false\n"),
+        # The last line of a key wins in the env file: a second line must not hide.
+        ("MEM0_ENABLED=false\nOTHER=kept\nMEM0_ENABLED=yes\n",
+         "MEM0_ENABLED=false\nOTHER=kept\nMEM0_ENABLED=false\n"),
+        ("OTHER=kept\n", "OTHER=kept\n"),
+        ("MEM0_ENABLED=false\nGRAPHITI_ENABLED=false\n",
+         "MEM0_ENABLED=false\nGRAPHITI_ENABLED=false\n"),
+    ],
+    ids=["other-value", "duplicate-key", "no-memory-lines", "already-false"],
+)
+def test_the_forced_loop_rewrites_what_it_must_and_keeps_the_inode(
+    script: Path, before: str, after: str, tmp_path: Path
+) -> None:
+    """Run the forcing loop of each script on a copy of an env file. Any value
+    but false is rewritten, a file that says false stays byte for byte, and the
+    inode of the file does not change.
     Mutation: remove the loop -> the value stays -> red."""
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("needs bash")
     env_file = tmp_path / ".env"
-    env_file.write_text(
-        "MEM0_ENABLED=enabled\nOTHER=kept\nGRAPHITI_ENABLED=false\n", encoding="utf-8"
-    )
-    before = env_file.stat().st_ino
-    script = f'ENV_FILE="{env_file.as_posix()}"\n' + _forced_loop()
-    done = subprocess.run([bash, "-c", script], capture_output=True, text=True)
+    env_file.write_text(before, encoding="utf-8", newline="\n")
+    ino = env_file.stat().st_ino
+    prelude = _helpers() if script == _VPS_APPLY else ""
+    run = f'ENV_FILE="{env_file.as_posix()}"\n{prelude}\n{_forced_loop(script)}'
+    done = subprocess.run([bash, "-c", run], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    lines = set(env_file.read_text(encoding="utf-8").split())
-    assert {"MEM0_ENABLED=false", "GRAPHITI_ENABLED=false", "OTHER=kept"} <= lines
-    assert "MEM0_ENABLED=enabled" not in lines
-    if before:
-        assert env_file.stat().st_ino == before
+    assert env_file.read_bytes().decode("utf-8") == after
+    if ino:
+        assert env_file.stat().st_ino == ino
+    assert not list(tmp_path.glob(".env-edit.*")), "a temp copy is left behind"
