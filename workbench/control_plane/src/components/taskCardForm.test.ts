@@ -150,7 +150,7 @@ describe("the wiring (EAC-2)", () => {
   it("redraftCard-reads-no-form-edits: redraftCard.ts has no FormEdits reader and no task-card import", () => {
     // Mutation: import FormEdits or taskEditCard into redraftCard.ts, and this turns red.
     const src = read("lib/redraftCard.ts");
-    expect(src).not.toMatch(/FormEdits?|asTaskEdits|asNewMailEdits|taskEditCard|TaskCardEdits|confirmationQueue/);
+    expect(src).not.toMatch(/FormEdits?|asTaskEdits|asNewMailEdits|taskEditCard|TaskCardEdits|NewMailEdits/);
   });
 
   it("kept-edits-by-kind: one map holds both kinds, and the same values change nothing", () => {
