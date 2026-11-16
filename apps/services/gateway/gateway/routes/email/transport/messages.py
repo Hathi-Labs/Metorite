@@ -9,7 +9,7 @@ import time
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
-from acb_common import db_busy
+from acb_common import db_busy, member_actions
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
@@ -1182,6 +1182,21 @@ async def update_message(
                 {"id": message_id, "cats": cats},
             )
 
+        # WS-PZ MM-1: the member's own moves, in the act record. An archive and
+        # each added label are acts. A label name is a short word, never mail
+        # text. Dark behind MEMBER_ACTIONS_ORGS, and never a failure of the
+        # update (acb_common.member_actions.record_act).
+        if target is not None and str(folder or target).strip().lower() == "archive":
+            await member_actions.record_act(
+                db, org=user.organization_id or "", member=user.email or "",
+                app="email", act="archive", via="app", item_kind="email",
+                item_id=message_id)
+        for name in (updates.add_labels or [])[:5]:
+            await member_actions.record_act(
+                db, org=user.organization_id or "", member=user.email or "",
+                app="email", act="label", via="app", item_kind="email",
+                item_id=message_id, features={"triage_label": name})
+
         # The provider for the push. The build makes no network call. A failed
         # build keeps the push best-effort, as a failed push does.
         push_error: Exception | None = None
@@ -1301,6 +1316,11 @@ async def snooze_message(
             f"""UPDATE email_messages SET snoozed_until = :until, updated_at = now()
                 WHERE account_id = :acc AND {scope}"""
         ), params)
+        if until is not None:  # WS-PZ MM-1: a snooze is an act, an un-snooze is not
+            await member_actions.record_act(
+                db, org=user.organization_id or "", member=user.email or "",
+                app="email", act="snooze", via="app", item_kind="email",
+                item_id=message_id, mailbox_id=str(row.account_id))
         return {
             "ok": True,
             "message_id": message_id,

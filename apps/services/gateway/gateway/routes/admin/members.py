@@ -932,6 +932,12 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # `chat_pending_ask`.
     _PersonRows("chat_pending_asks", "chat_pending_ask",
                 f"lower(actor_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-PZ MM-1 (personalization.md §19.4): the acts of the member in THIS
+    # organization. The act record is the member's own, and a habit reads it,
+    # so it goes with the member. The clause names the bound org beside RLS,
+    # as `connection_asks` does. No table hangs off `member_action`.
+    _PersonRows("member_actions", "member_action",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
