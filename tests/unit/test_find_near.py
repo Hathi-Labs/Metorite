@@ -551,8 +551,11 @@ class TestTheNearLookup:
         answer = run("nuropeak")
         assert time.monotonic() - began < 1.5
         assert answer["skipped"] == []
+        # FIND-4 review round 3: the CRM never gave its names, so a name of
+        # the word itself may hide there. `held` is not known.
         assert answer["near"] == [
-            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": False}]
+            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": None}]
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
 
     def test_a_failed_reader_gives_no_name_and_no_skip(self, world, recency, find_on):  # noqa: F811
         recency(True)
@@ -560,8 +563,10 @@ class TestTheNearLookup:
         world.broken.add("email")
         answer = run("nuropeak")
         assert answer["skipped"] == []
+        # FIND-4 review round 3: Email gave no names, so `held` is not known.
         assert answer["near"] == [
-            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": False}]
+            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": None}]
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
 
     def test_no_near_name_no_near_key(self, world, recency, find_on):  # noqa: F811
         recency(True)
@@ -632,12 +637,17 @@ class TestThePrint:
         near = [{"word": "Sharath", "as": "Sharat", "hits": 1},
                 {"word": "Laxmi", "as": "Lakshmi", "hits": 1},
                 {"word": "Puja", "as": "Pooja", "hits": 1}]
-        found = {"crm": [hit("a", "Laxmi Rao", "exact"), hit("b", "Puja Shah", "near")]}
+        # A near hit shows the spelling «Pooja», not the word. A hit that shows
+        # «Puja» itself makes `held` unknown (FIND-4 review round 3,
+        # `test_find_honest_zero.py`).
+        found = {"crm": [hit("a", "Laxmi Rao", "exact"), hit("b", "Pooja Shah", "near")]}
         broadened = [{"word": "sharath", "hits": 2, "skipped": []},
                      {"word": "puja", "hits": 0, "skipped": []}]
+        # FIND-4 review round 3: the near lookup ran for each word, and gave no
+        # name of the word itself (`looked`).
         got = {e["word"]: e["held"] for e in find.near_report(
             near, found, broadened, query="Sharath Laxmi Puja", first_zero=False,
-            skipped=[])}
+            skipped=[], looked=dict.fromkeys(("sharath", "laxmi", "puja"), True))}
         # Sharath alone found 2. Laxmi is in a hit of its own words. Puja is
         # only in a near hit, and alone it found nothing in every app.
         assert got == {"Sharath": True, "Laxmi": True, "Puja": False}
@@ -652,7 +662,7 @@ class TestThePrint:
                  query: str = "Puja Shah", limited: bool = False) -> Any:
             (entry,) = find.near_report(near, {}, broadened, query=query,
                                         first_zero=first_zero, skipped=list(skipped),
-                                        limited=limited)
+                                        limited=limited, looked={"puja": True})
             return entry["held"]
 
         zero = [{"word": "puja", "hits": 0, "skipped": []}]
@@ -676,7 +686,7 @@ class TestThePrint:
                                         skipped=[])
             assert entry["held"] is None, query
         (entry,) = find.near_report(near, {}, None, query="Sharath", first_zero=True,
-                                    skipped=[])
+                                    skipped=[], looked={"sharath": True})
         assert entry["held"] is False
 
     def test_the_route_makes_no_claim_for_a_possessive(

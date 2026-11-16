@@ -286,13 +286,26 @@ tool prints the new lines only with that mark. The rest is as follows:
   alone in each app that answered, found nothing. The route skipped no app,
   and no date or verified filter applied. An app may answer nothing for a
   shorter word, with no error.
-- The member must type that word as it folds (`find.typed_alone`, the one
-  rule of `held` false and of `none_has_all`). "Müller" folds to "muller",
-  and "acme.com" folds to "acme" and "com". An app with no unaccent, or a
-  full text that keeps "acme.com" as one token, finds nothing for the fold.
-- The answer must also miss. When a hit or a related record shows every
-  word, no claim prints. People never searches a preferred name, so one word
-  alone can find nothing while a hit shows it.
+- `find.proves_absence` is the one rule of that word, for `held` false and
+  for `none_has_all`. Three parts must hold.
+- First, the member typed the word as it folds, in ASCII letters and digits
+  (`find.typed_alone`). "Müller" folds to "muller", "acme.com" folds to
+  "acme" and "com", and "Strauß" folds to "strauss". An app with no
+  unaccent, or a full text that keeps "acme.com" as one token, finds nothing
+  for the fold.
+- Second, no hit of any rung and no related record shows the word in its
+  title, hint or snippet. An app can print a field that its search does not
+  read: a preferred name in People, a chat name in WhatsApp.
+- Third, the near lookup ran for the word in each near source, and gave no
+  name that is the word itself. A sender address is such a field: "acme"
+  alone never matches inside «billing@acme.com». A lookup that did not run,
+  failed or ran out of time proves nothing.
+- The answer must also miss: no hit shows every word.
+- Two limits stay. The near lookup reads the newest 2000 names of a source,
+  and its scoring stops at 0.5 s with no error. A record that no word alone
+  finds can still hold a word in a printed field that no search reads. A
+  task hint shows the project name, and a WhatsApp hit shows the chat name.
+  A `proves_absence` declaration on each source would close these limits.
 - A first pass with no hit is no proof. People matches the whole query as
   one phrase, so a person who holds the words in another order is no hit. A
   low `covers` is no proof either. A hit can hold a word in its body that its

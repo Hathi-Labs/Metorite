@@ -122,9 +122,11 @@ a closed list of :mod:`gateway.retrieval.find`:
 * ``skipped_why`` names the reason of each app of ``skipped``: timed out,
   failed or refused. Its presence marks the answer of the flag for the tool;
 * ``none_has_all`` is true only with proof that no record holds all the words
-  (:func:`_none_has_all`): the answer misses, and one word that the member
-  typed as it folds found nothing alone. A low ``covers``, or a first pass
-  with no hit, is no proof;
+  (:func:`_none_has_all`): the answer misses, and one word found nothing
+  alone and passes ``find.proves_absence``. The member typed it as it folds,
+  no hit and no related record shows it, and the near lookup ran and gave no
+  name of the word itself. A low ``covers``, or a first pass with no hit, is
+  no proof;
 * a zero answer gets ``where_else``: at most 3 entries, the skipped apps, the
   past chats while ``CHAT_SEARCH_ORGS`` does not name the org, then the apps
   that are not open to the member. No entry names a record;
@@ -731,7 +733,7 @@ class NearAsk:
 
 async def _near_lookup(
     user: UserContext, words: list[str], keys: list[str], until: float,
-    notes: dict[str, dict[str, Any]] | None = None,
+    notes: dict[str, dict[str, Any]] | None = None, answered: set[str] | None = None,
 ) -> dict[str, dict[str, list[NearName]]]:
     """The names near *words*, from each source of *keys* that can ``near``.
 
@@ -740,7 +742,8 @@ async def _near_lookup(
     in ``skipped``, because its search still answered. The log line holds
     the source key and the error type, and no word. *notes* keeps the
     outcome and the time of each lookup, with no hit: a name is not a record
-    (FIND-4).
+    (FIND-4). *answered* gets the key of each source whose lookup answered in
+    time, with no error.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + min(NEAR_LOOKUP_S, until - loop.time())
@@ -769,6 +772,9 @@ async def _near_lookup(
         got = got if isinstance(got, dict) else {}
         # A name is no hit: the asks of the step decide `ok`.
         find.add_note(notes, key, "empty", ms=_ms_since(loop, started))
+        if answered is not None:
+            # FIND-4: this source's names are complete evidence for the proof.
+            answered.add(key)
         return key, got
 
     return {key: got for key, got in await asyncio.gather(*(one(key) for key in able)) if got}
@@ -893,6 +899,7 @@ async def _near_step(
     since: datetime | None, until: float, after_asks: int, miss: bool,
     notes: dict[str, dict[str, Any]] | None = None,
     weighed: list[dict[str, Any]] | None = None,
+    looked: dict[str, bool] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, list[Hit]]]]:
     """Rung 3 of the second pass (HRD-18b, ``find_engine.md`` §3.2).
 
@@ -911,6 +918,10 @@ async def _near_step(
 
     FIND-4: *notes* keeps what each source did in the lookup and the asks,
     and *weighed* gets the spellings of :func:`find.weighed`, for the trace.
+    *looked* gets one bool for each word of the lookup: true when each near
+    source of *order* answered, and no name is the word itself
+    (:func:`find.named_itself`). It holds no name, and no line logs it. A word
+    with no entry was not looked up, so it proves nothing.
     """
     loop = asyncio.get_running_loop()
     if (not words_of or not miss or bare_words(words) is None
@@ -921,9 +932,14 @@ async def _near_step(
     if after_asks:
         until = started + (until - started) * NEAR_SHARE
     chosen = find.near_words(words, words_of, find.held(found, words_of))
-    names = await _near_lookup(user, chosen, order, until, notes) if chosen else {}
+    answered: set[str] = set()
+    names = await _near_lookup(user, chosen, order, until, notes, answered) if chosen else {}
     if weighed is not None:
         weighed += find.weighed(chosen, names, words)
+    if looked is not None:
+        complete = {key for key in order if REGISTRY[key].near is not None} <= answered
+        looked.update({word: complete and not find.named_itself(word, names)
+                       for word in chosen})
     asks = near_asks(words_of, chosen, names, asked) if names else []
     lexical = {k: v for k, v in options.items() if k not in ("vectors", "budget_s")}
     passes: list[dict[str, list[Hit]]] = []
@@ -1137,6 +1153,9 @@ class _Ladder:
         default_factory=lambda: {rung: {} for rung in find.TRACE_RUNGS})
     ms: dict[str, int] = field(default_factory=lambda: dict.fromkeys(find.TRACE_RUNGS, 0))
     weighed: list[dict[str, Any]] = field(default_factory=list)
+    #: For each word of the near lookup: true when the lookup was complete
+    #: and gave no name of the word itself (review round 3). No name.
+    looked: dict[str, bool] = field(default_factory=dict)
 
     def skip_reasons(self, skipped: list[str]) -> dict[str, str]:
         """The reason of each app of the first pass's *skipped*."""
@@ -1149,6 +1168,7 @@ async def _find_tail(
     answer: dict[str, Any], user: UserContext, ladder: _Ladder, *, shown: list[Hit],
     found: dict[str, list[Hit]], words_of: list[str], skipped: list[str],
     answered: list[str], limited: bool, hybrid: bool, since: datetime | None, until: float,
+    near: list[dict[str, Any]], first_zero: bool,
 ) -> dict[str, Any]:
     """The end of an answer with ``FIND_ORGS`` on: rung 4 (FIND-3), then the
     log line, and the honest zero or the trace (FIND-4).
@@ -1158,6 +1178,10 @@ async def _find_tail(
     holds the hits, the ms of each rung, ``miss`` (the miss of D-FIND-4 on
     the hits of the final answer) and ``explain``, so the zero rate can leave
     out an explain call. It holds no word, no name and no id (§3.7).
+
+    ``held`` of *near* and ``none_has_all`` use one proof
+    (:func:`find.proves_absence`). It reads the text of every hit and every
+    related record, so both are set after rung 4 (FIND-4 review round 3).
     """
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -1173,10 +1197,16 @@ async def _find_tail(
     )
     if ladder.explain:
         return _explained(answer, user, skipped, why, hybrid, ladder)
+    shown_text = find.shown_texts(found, answer.get("related"))
+    if near:
+        answer["near"] = find.near_report(
+            near, found, answer.get("broadened"), query=answer["query"],
+            first_zero=first_zero, skipped=skipped, limited=limited,
+            related=answer.get("related"), looked=ladder.looked)
     answer["skipped_why"] = why
     answer["none_has_all"] = _none_has_all(
         user, answer["query"], answered, skipped, answer.get("broadened"), limited=limited,
-        miss=miss, related=answer.get("related"))
+        miss=miss, shown=shown_text, looked=ladder.looked)
     if not shown and not answer.get("related"):
         answer["where_else"] = find.where_else(
             skipped, why, chat_named=find.chat_search_named(user.organization_id),
@@ -1186,40 +1216,26 @@ async def _find_tail(
 
 def _none_has_all(user: UserContext, words: str, answered: list[str], skipped: list[str],
                   broadened: list[dict[str, Any]] | None, *, limited: bool, miss: bool,
-                  related: list[dict[str, Any]] | None) -> bool:
+                  shown: list[str], looked: dict[str, bool] | None) -> bool:
     """True only with proof that no record the member can open holds all the
     words (``find_engine.md`` §3.6, FIND-4).
 
-    The proof is :func:`find.word_absent`: one word that the member typed as
-    it folds, searched alone in each app that answered, found nothing, and
-    nothing was skipped or limited. An app that is open to the member must
-    have answered, and the query has no operator. A low ``covers`` is no
-    proof: the body of a hit can hold a word that its title, hint and snippet
-    do not show. A first pass with no hit is no proof either, because People
-    matches the whole query as one phrase.
+    The proof is :func:`find.word_absent`: one word, searched alone in each
+    app that answered, found nothing, nothing was skipped or limited, and the
+    word passes :func:`find.proves_absence`. That is, the member typed it as
+    it folds, no hit and no related record shows it (*shown*), and the near
+    lookup gave no name of the word itself (*looked*). An app that is open to
+    the member must have answered, and the query has no operator. A low
+    ``covers`` is no proof, and a first pass with no hit is no proof either,
+    because People matches the whole query as one phrase.
 
-    The answer must also *miss* (FIND-4 review, P1): no hit and no *related*
-    record shows every word. A record can hold every word while one word
-    alone finds nothing: People never searches a preferred name.
+    The answer must also *miss* (FIND-4 review, P1): no hit shows every word.
     """
     return bool(
-        miss and not _shows_every_word(related)
-        and bare_words(words) is not None
+        miss and bare_words(words) is not None
         and any(REGISTRY[key].reaches(user) for key in answered)
-        and find.word_absent(broadened, query=words, skipped=skipped, limited=limited)
-    )
-
-
-def _shows_every_word(related: list[dict[str, Any]] | None) -> bool:
-    """True when a related record of the answer shows every content word in
-    its title, hint or snippet: its ``covers`` equals ``of`` (FIND-4)."""
-    def count(value: Any) -> int | None:
-        return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-    return any(
-        isinstance(h, dict) and (covers := count(h.get("covers"))) is not None
-        and (of := count(h.get("of"))) is not None and 0 < of <= covers
-        for h in related or []
+        and find.word_absent(broadened, query=words, skipped=skipped, limited=limited,
+                             shown=shown, looked=looked)
     )
 
 
@@ -1381,7 +1397,7 @@ async def company_search(
     near, near_passes = await _near_step(
         user, words, words_of, order, found, per_app, options=options,
         since=since, until=until, after_asks=len(alone), miss=miss,
-        notes=ladder.notes["near"], weighed=ladder.weighed,
+        notes=ladder.notes["near"], weighed=ladder.weighed, looked=ladder.looked,
     )
     ladder.ms["near"] = _ms_since(loop, started)
     if alone and until - loop.time() >= BROADEN_FLOOR_S:
@@ -1413,13 +1429,14 @@ async def company_search(
         answer["broadened"] = broadened
     limited = since is not None or only_verified
     if near:
-        answer["near"] = find.near_report(
-            near, found, broadened, query=words, first_zero=first_zero, skipped=skipped,
-            limited=limited)
+        # The key keeps its place. `_find_tail` sets `held` after rung 4, so a
+        # related record that shows a word counts too (FIND-4 review round 3).
+        answer["near"] = near
     if words_of is None:
         return answer
     return await _find_tail(
         answer, user, ladder, shown=shown, found=found, words_of=words_of, skipped=skipped,
         answered=answered, limited=limited, hybrid=hybrid, since=since,
         until=min(loop.time() + RELATED_BUDGET_S, began + ANSWER_CAP_S),
+        near=near, first_zero=first_zero,
     )

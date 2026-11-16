@@ -17,10 +17,12 @@ The claims, each written so that a wrong build fails it:
   the rule of ``held`` false: one word of 4 letters or more, searched alone
   in each app that answered, found nothing, nothing was skipped, and no date
   or verified filter limited it. A first pass with no hit is no proof,
-  because People matches the query as one phrase. The member must type the
-  word as it folds (``find.typed_alone``), so "Müller" and "acme.com" prove
-  nothing. And the answer must miss: no hit and no related record shows
-  every word. A near spelling with ``held`` unknown claims nothing.
+  because People matches the query as one phrase. The word must pass
+  ``find.proves_absence``: typed as it folds, in ASCII, so "Müller",
+  "acme.com" and "Strauß" prove nothing; shown by no hit and no related
+  record; and named by no near name of the word itself, from a lookup that
+  ran. The answer must miss too. A near spelling with ``held`` unknown
+  claims nothing.
 * **No record that the member cannot open.** A "Where else" line names an
   app key, a reason or a fixed sentence, never a record.
 * **The explain mode.** It runs each rung with no early stop, and it answers
@@ -75,16 +77,25 @@ ROWS: dict[str, list[tuple[str, str, str, str]]] = {
         ("p-1", "person", "Neha Rao", "neha rao lead buyer"),
         ("p-2", "person", "Hans Müller", "hans müller"),
         ("p-3", "person", "Venky", "venkatesh engineering"),
+        # Review round 3: name «Venkatesh Rao», preferred name «Venky», title
+        # «Engineering Manager», department «Platform». The search reads the
+        # name, the title and the department. The hit prints the preferred
+        # name and the title, never the department.
+        ("p-4", "person", "Venky", "venkatesh rao engineering manager platform"),
     ],
+    # WhatsApp searches the message, and the hit prints the chat name.
+    "whatsapp": [("w-1", "whatsapp", "Zoravar Ops", "rollout plan")],
 }
 #: The hint of a hit, where it is not the kind. A person's hit names the
-#: department, as `_person_hit` does.
-HINTS = {"p-3": "Person · Engineering"}
-#: The names that each near reader can give, newest first.
+#: department or the title, as `_person_hit` does.
+HINTS = {"p-3": "Person · Engineering", "p-4": "Person · Engineering Manager"}
+#: The names that each near reader can give, newest first. People gives the
+#: preferred name and the name. Email gives the sender name and the address,
+#: so "billing@acme.com" gives the word "acme".
 NAMES = {
     "crm": ["Sharat Satyanarayana", "Neuropeak - Snowflake 3D printer"],
-    "email": ["Sharat Satyanarayana", "Sharad Rao"],
-    "people": ["Lakshmi Rao"],
+    "email": ["Sharat Satyanarayana", "Sharad Rao", "Billing", "billing@acme.com"],
+    "people": ["Lakshmi Rao", "Venky", "Venkatesh Rao"],
 }
 
 
@@ -96,6 +107,8 @@ class World:
         self.near_calls: list[tuple[str, list[str]]] = []
         #: ``key -> "slow" | "boom" | "refuse"``.
         self.fail: dict[str, str] = {}
+        #: The near readers that raise.
+        self.near_fail: set[str] = set()
 
     def reader(self, key: str):
         async def read(user: Any, q: str, k: int, **options: Any) -> list[Hit]:
@@ -124,6 +137,8 @@ class World:
     def near(self, key: str):
         async def look(user: Any, words: list[str], k: int) -> dict[str, list[Any]]:
             self.near_calls.append((key, list(words)))
+            if key in self.near_fail:
+                raise RuntimeError("the near read is down")
             return name_match.near_lookup(words, NAMES.get(key, []), k)
         return look
 
@@ -447,11 +462,18 @@ class TestMostOfTheWords:
         assert "No record holds all" not in text and cst.MOST_WORDS not in text
 
     def test_one_word_found_nowhere_is_the_proof(self):
-        # Each word is typed as it folds, so only the other rules are tested.
+        # Each word is typed as it folds, no hit shows it, and the near lookup
+        # ran for it with no name of the word itself. So only the rules of the
+        # words alone are tested here.
         typed = "alpha bravo xq 3d"
-        assert find.word_absent([{"word": "alpha", "hits": 2, "skipped": []},
-                                 {"word": "bravo", "hits": 0, "skipped": []}],
-                                query=typed, skipped=[], limited=False)
+        looked = dict.fromkeys(("alpha", "bravo", "xq", "3d"), True)
+
+        def absent(broadened: Any, skipped: Any = (), limited: bool = False) -> bool:
+            return find.word_absent(broadened, query=typed, skipped=list(skipped),
+                                    limited=limited, shown=[], looked=looked)
+
+        assert absent([{"word": "alpha", "hits": 2, "skipped": []},
+                       {"word": "bravo", "hits": 0, "skipped": []}])
         for broadened, skipped, limited in (
                 ([{"word": "bravo", "hits": 0, "skipped": ["email"]}], [], False),
                 ([{"word": "bravo", "hits": 0, "skipped": []}], ["email"], False),
@@ -463,8 +485,7 @@ class TestMostOfTheWords:
                 ([{"word": "3d", "hits": 0, "skipped": []}], [], False),
                 ([{"hits": 0, "skipped": []}], [], False),
                 (None, [], False)):
-            assert not find.word_absent(broadened, query=typed, skipped=skipped,
-                                        limited=limited)
+            assert not absent(broadened, skipped, limited)
 
     def test_a_short_word_found_nowhere_proves_nothing(self, on):
         body = run("Snowflake xq")
@@ -524,8 +545,9 @@ class TestTheTypedWord:
         so "venky" alone finds nothing, and the member typed it as it folds.
         "engineering" finds the person, whose hit shows both words."""
         body = run("Venky engineering")
-        assert [h["id"] for h in body["hits"]] == ["p-3"]
-        assert body["hits"][0]["covers"] == 2
+        # p-4 holds "engineering" too, in its title.
+        hits = {h["id"]: h for h in body["hits"]}
+        assert set(hits) == {"p-3", "p-4"} and hits["p-3"]["covers"] == 2
         assert {"word": "venky", "hits": 0, "skipped": []} in body["broadened"]
         assert body["none_has_all"] is False and not _claims(body)
 
@@ -549,20 +571,21 @@ class TestTheTypedWord:
         assert {"word": "resume", "hits": 0, "skipped": []} in body["broadened"]
         assert body["none_has_all"] is False and not _claims(body)
 
-    def test_a_related_record_that_shows_every_word_blocks_the_claim(self, on):
-        assert company._shows_every_word([{"covers": 1, "of": 2}, {"covers": 2, "of": 2}])
-        for related in (None, [], [{"covers": 1, "of": 2}], [{"covers": 0, "of": 0}],
-                        [{"covers": True, "of": 1}], ["not a dict"]):
-            assert not company._shows_every_word(related), related
+    def test_the_proof_needs_a_miss_and_no_shown_word(self, on):
         zero = [{"word": "zqvortex", "hits": 0, "skipped": []}]
 
-        def proven(*, miss: bool, related: Any) -> bool:
-            return company._none_has_all(member(*ALL), f"Snowflake {MARKER}", ["crm"], [],
-                                         zero, limited=False, miss=miss, related=related)
+        def proven(*, miss: bool = True, shown: Any = (), looked: Any = None) -> bool:
+            return company._none_has_all(
+                member(*ALL), f"Snowflake {MARKER}", ["crm"], [], zero, limited=False,
+                miss=miss, shown=list(shown),
+                looked={"zqvortex": True} if looked is None else looked)
 
-        assert proven(miss=True, related=None)
-        assert not proven(miss=True, related=[{"covers": 2, "of": 2}])
-        assert not proven(miss=False, related=None)
+        assert proven()
+        assert not proven(miss=False)
+        # A related record, or a hit of any rung, that shows the word.
+        assert not proven(shown=["Deal · Zqvortex Labs"])
+        assert not proven(looked={"zqvortex": False})
+        assert not proven(looked={})
 
     def test_a_plain_word_found_nowhere_still_proves_absence(self, on):
         body = run(f"Snowflake {MARKER}")
@@ -576,12 +599,18 @@ class TestTheTypedWord:
         for query, word in (("Müller Hans", "muller"), ("acme.com invoice", "acme"),
                             ("acme.com invoice", "com"), ("Sharath's order", "sharath"),
                             ("Sharath\u2019s order", "sharath"), ("Résumé", "resume"),
-                            ("x-ray", "ray"), ("a@b.example", "example"), ("Hans", "")):
+                            ("x-ray", "ray"), ("a@b.example", "example"), ("Hans", ""),
+                            # Review round 3, P3: casefold gives "ss", and no app does.
+                            ("Strauß Zqvortex", "strauss"), ("Weiß", "weiss"),
+                            ("WEISS", "weiß")):
             assert not find.typed_alone(query, word), (query, word)
+        looked = {"muller": True, "zqvortex": True}
         assert find.word_absent([{"word": "muller", "hits": 0, "skipped": []}],
-                                query="Müller Hans", skipped=[], limited=False) is False
+                                query="Müller Hans", skipped=[], limited=False,
+                                shown=[], looked=looked) is False
         assert find.word_absent([{"word": "zqvortex", "hits": 0, "skipped": []}],
-                                query="Müller Zqvortex", skipped=[], limited=False) is True
+                                query="Müller Zqvortex", skipped=[], limited=False,
+                                shown=[], looked=looked) is True
 
     def test_held_of_an_accented_word_is_not_known(self):
         """The same rule in ``near_report`` (HRD-18b), so the near line does
@@ -589,15 +618,116 @@ class TestTheTypedWord:
         near = [{"word": "Müller", "as": "Mueller", "hits": 1}]
         zero = [{"word": "muller", "hits": 0, "skipped": []}]
         (entry,) = find.near_report(near, {}, zero, query="Müller Zqvortex",
-                                    first_zero=True, skipped=[])
+                                    first_zero=True, skipped=[], looked={"muller": True})
         assert entry["held"] is None
         body = {"query": "Müller Zqvortex", "hits": [], "skipped": [], "near": [entry]}
         assert "No record holds «" not in cst.format_answer(body, dated=True)
         # The unchanged positive case: a word typed as it folds.
         (plain,) = find.near_report([{"word": "Puja", "as": "Pooja", "hits": 1}], {},
                                     [{"word": "puja", "hits": 0, "skipped": []}],
-                                    query="Puja Shah", first_zero=True, skipped=[])
+                                    query="Puja Shah", first_zero=True, skipped=[],
+                                    looked={"puja": True})
         assert plain["held"] is False
+
+
+# ── A word that some record shows, or that a name holds (review round 3) ────
+
+class TestTheWordSomewhere:
+    """Review round 3 of 2026-11-16. An app may print a field that its search
+    does not read: a person's preferred name, a mail's address, a WhatsApp
+    chat name. So one word alone can find nothing while a record holds it. A
+    word proves absence only when, beside the typed rule:
+
+    * (ii) no hit of any rung and no related record shows it in its title,
+      hint or snippet, as ``find.coverage`` counts it;
+    * (iii) the near lookup ran for it in each near source, and no name it
+      gave is the word itself (``name_match.same_word``). A lookup that did
+      not run, failed or ran out of time proves nothing.
+    """
+
+    def test_a_preferred_name_that_a_hit_shows_proves_nothing(self, on):
+        """Repro 1: «Venkatesh Rao», preferred name «Venky», department
+        «Platform». "platform" finds him by the department, and his hit prints
+        «Venky» and the title, not the department: 1 of 2 words."""
+        body = run("Venky platform")
+        assert [h["id"] for h in body["hits"]] == ["p-4"]
+        assert (body["hits"][0]["covers"], body["hits"][0]["of"]) == (1, 2)
+        assert {"word": "venky", "hits": 0, "skipped": []} in body["broadened"]
+        assert body["none_has_all"] is False and not _claims(body)
+
+    def test_a_word_of_a_sender_address_proves_nothing(self, on):
+        """Repro 2, rule (iii) alone. Full text keeps "acme.com" as one token,
+        so "acme" alone finds nothing. No hit shows "acme", and the member
+        typed it as it folds. The sender «billing@acme.com» gives the word
+        itself to the near lookup."""
+        body = run("acme invoice")
+        assert "m-9" in [h["id"] for h in body["hits"]]
+        assert {"word": "acme", "hits": 0, "skipped": []} in body["broadened"]
+        texts = [f"{h['title']} {h['hint']} {h['snippet']}" for h in body["hits"]]
+        assert not any(find.coverage(["acme"], t) for t in texts)
+        assert body["none_has_all"] is False and not _claims(body)
+
+    def test_a_chat_name_that_a_hit_shows_proves_nothing(self, on):
+        """Rule (ii) alone. WhatsApp searches the message, and the hit prints
+        the chat name «Zoravar Ops». No name holds "zoravar"."""
+        body = run("Zoravar rollout")
+        assert [h["id"] for h in body["hits"]] == ["w-1"]
+        assert body["hits"][0]["covers"] == 1
+        assert {"word": "zoravar", "hits": 0, "skipped": []} in body["broadened"]
+        assert body["none_has_all"] is False and not _claims(body)
+
+    def test_a_failed_near_lookup_proves_nothing(self, on):
+        on.near_fail = {"email"}
+        body = run(f"Snowflake {MARKER}")
+        assert body["hits"] and body["none_has_all"] is False and not _claims(body)
+
+    def test_a_near_lookup_with_no_time_proves_nothing(self, on, monkeypatch):
+        monkeypatch.setattr(company, "NEAR_LOOKUP_S", 0.0)
+        body = run(f"Snowflake {MARKER}")
+        assert body["hits"] and body["none_has_all"] is False and not _claims(body)
+
+    def test_the_positive_control_still_claims(self, on):
+        """A plain word, typed as it folds, with zero hits, no skip, no shown
+        hit that holds it and no near name of the word itself."""
+        body = run(f"Snowflake {MARKER}")
+        assert body["none_has_all"] is True
+        lines = cst.format_answer(body, dated=True).splitlines()
+        assert lines[1] == cst.MOST_WORDS
+        assert run(f"{MARKER} Quasar")["none_has_all"] is True
+
+    def test_the_one_helper_of_both_proofs(self):
+        def proves(word: str = "puja", *, shown: Any = (), looked: Any = None,
+                   query: str = "Puja Shah") -> bool:
+            return find.proves_absence(word, query=query, shown=list(shown),
+                                       looked={"puja": True} if looked is None else looked)
+
+        assert proves()
+        assert not proves(query="Pujaa Shah")
+        assert not proves(shown=["Puja Shah · Person"])
+        assert not proves(shown=["Pujas list"])  # the stem of the word
+        assert not proves(looked={"puja": False})
+        assert not proves(looked={})
+
+    def test_held_needs_the_same_proof(self):
+        """``near_report`` (HRD-18b) uses the one helper: a hit of ANY rung
+        or a related record that shows the word, and a near name of the word
+        itself, each make ``held`` unknown."""
+        near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
+        zero = [{"word": "puja", "hits": 0, "skipped": []}]
+
+        def held(found: Any = None, related: Any = None, looked: Any = None) -> Any:
+            (entry,) = find.near_report(
+                near, found or {}, zero, query="Puja Shah", first_zero=True, skipped=[],
+                related=related, looked={"puja": True} if looked is None else looked)
+            return entry["held"]
+
+        assert held() is False
+        near_hit = Hit(app="crm", kind="deal", id="d", title="Puja Shah", hint="",
+                       href="/x", matched_by="near")
+        assert held(found={"crm": [near_hit]}) is None
+        assert held(related=[{"title": "Mail to Puja", "hint": "", "snippet": ""}]) is None
+        assert held(looked={"puja": False}) is None
+        assert held(looked={}) is None
 
 
 # ── The explain mode (§3.7) ─────────────────────────────────────────────────
