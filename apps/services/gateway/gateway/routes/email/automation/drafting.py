@@ -1031,6 +1031,43 @@ def _files_prompt(files: Any, frame: UntrustedFrame) -> tuple[str, list[tuple[st
     return block, list(files.images)
 
 
+#: The copy of a draft that the model could not write (task 3541). Each line
+#: says what happened and what the member does next.
+DRAFT_FAILED_COPY = (
+    "The AI could not write this draft. Your text is kept. Try Draft again "
+    "in a minute. If it fails again, tell your admin."
+)
+DRAFT_UNAVAILABLE_COPY = (
+    "The AI service did not answer, so no draft was written. Your text is "
+    "kept. Try Draft again in a minute."
+)
+
+
+def draft_failure(exc: BaseException) -> tuple[int, str]:
+    """The status and the member's copy for a draft that failed (task 3541).
+
+    Out of credits keeps the Router's own copy, because the member's next
+    step is different: an admin adds credits. An outage and any other
+    failure say to try again. No copy holds the error text, because it can
+    name a vendor, a key or an account.
+    """
+    try:
+        from acb_llm.routed import OUT_OF_CREDITS, RoutedRefusal  # noqa: PLC0415
+    except ImportError:  # pragma: no cover — acb_llm ships with the gateway
+        return 503, DRAFT_FAILED_COPY
+    if isinstance(exc, RoutedRefusal) and exc.status == 402:
+        return 402, OUT_OF_CREDITS
+    try:
+        from acb_auth.console_resolve import (  # noqa: PLC0415
+            ConsoleRouterUnavailable,
+        )
+    except ImportError:  # pragma: no cover
+        ConsoleRouterUnavailable = ()  # type: ignore[assignment]
+    if ConsoleRouterUnavailable and isinstance(exc, ConsoleRouterUnavailable):
+        return 503, DRAFT_UNAVAILABLE_COPY
+    return 503, DRAFT_FAILED_COPY
+
+
 async def _llm_draft_reply(
     email: dict[str, str], about: str, signature: str,
     instructions: str = "", context: str = "", user_email: str = "",
@@ -1054,9 +1091,12 @@ async def _llm_draft_reply(
         rule DRAFT_EMAIL action / follow-up nudge simply skips. An outage must
         NOT auto-file a generic "I'll get back to you" draft into the mailbox
         and then feed that boilerplate into the edit-learning loop.
-      * True (interactive paths — the compose box's "Draft with AI"): return a
-        neutral human-editable template so the user who clicked the button has a
-        starting point rather than a silent no-op.
+      * True (interactive paths — the compose box's "Draft with AI"): raise an
+        error that names the cause (task 3541). A stream bound raises its
+        ``StreamTimeout``, and every other failure raises an ``HTTPException``
+        with copy for the member. Before 2026-11-16 this path returned a
+        stock "I'll review this and get back to you shortly" body as if the
+        model wrote it, so a model with no balance looked like a bad draft.
     """
     try:
         from acb_llm.context import acompletion_with_fallback  # noqa: PLC0415
@@ -1330,12 +1370,15 @@ async def _llm_draft_reply(
         if interactive_fallback and isinstance(exc, StreamTimeout):
             # EM-T17 PR-A (§17.3.7): a stalled model is not a draft. The
             # member waits at the composer, so the route sends an `error`
-            # with the reason, never the template below. The rule path keeps
-            # the sentinel.
+            # with the reason. The rule path keeps the sentinel.
             raise
         if interactive_fallback:
-            body = ("Hi,\n\nThanks for your email — I'll review this and get "
-                    "back to you shortly.")
+            # Task 3541: a failed model is not a draft either. The member
+            # sees why, and the composer keeps the member's own text. The
+            # SSE route sends `exc.detail` as its `error`, and the JSON route
+            # answers with it.
+            status, detail = draft_failure(exc)
+            raise HTTPException(status_code=status, detail=detail) from exc
         else:
             # Automation path: the sentinel makes the caller skip. Never file a
             # boilerplate draft the user didn't write (and never teach the

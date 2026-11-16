@@ -578,6 +578,64 @@ async def _close_stream(response: Any) -> None:
         await asyncio.wait_for(close(), timeout=1.0)
 
 
+async def _routed_text(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    on_delta: Any,
+    source: str | None,
+    extra: dict[str, Any],
+    total_s: float | None,
+    job: str | None,
+) -> tuple[str, str]:
+    """The streaming arm when routing is on: ONE answer from our Router.
+
+    The Router cannot stream yet (CP-4b answers 501), so this asks for the
+    whole answer and hands it to ``on_delta`` as one delta: the reasoning
+    first, if the model sent any, then the content. The total bound still
+    holds. An answer past it raises :class:`StreamTotalTimeout`, as a stream
+    past it does. The first-chunk and idle bounds do not apply, because a
+    whole answer has no chunks.
+
+    ⚠️ D57.7: a routed call that fails, FAILS. ``RoutedRefusal`` and
+    ``ConsoleRouterUnavailable`` propagate, and nothing falls back to litellm.
+    """
+    from acb_llm.routed import completion_on_router
+
+    whole_s = STREAM_TOTAL_S if total_s is None else total_s
+    fitted, _ = fit_messages_to_context(messages, model, max_output_tokens=max_tokens)
+    started = asyncio.get_running_loop().time()
+    try:
+        resp, used = await asyncio.wait_for(
+            completion_on_router(
+                tier=model, messages=fitted, max_tokens=max_tokens,
+                temperature=temperature, source=source, extra=extra, job=job,
+            ),
+            timeout=whole_s,
+        )
+    except TimeoutError:
+        raise _stream_timed_out(
+            StreamTotalTimeout, whole_s, model=model, chunks=0,
+            started=started) from None
+    try:
+        message = resp.choices[0].message
+    except (AttributeError, IndexError, TypeError):
+        message = None
+    reasoning = getattr(message, "reasoning_content", None) if message is not None else None
+    text = str(getattr(message, "content", None) or "") if message is not None else ""
+    if on_delta is not None:
+        for kind, piece in (("reasoning", reasoning), ("content", text)):
+            if not piece:
+                continue
+            try:
+                await on_delta(kind, str(piece))
+            except Exception:  # noqa: BLE001 — progress is best-effort
+                pass
+    return text, used
+
+
 async def _stream_text(
     *,
     model: str,
@@ -619,6 +677,26 @@ async def _stream_text(
     # Task 1128: the job sets thinking and the cap floor, before the fit.
     max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
     messages = ensure_json_word(messages, extra.get("response_format"))
+
+    # ── Task 3541: the streaming arm goes through our Router too ─────────
+    #
+    # 🔴 Production, 2026-11-16 07:20 UTC: the email draft, the one caller that
+    # streams, called DeepSeek directly with the gateway's own key. That
+    # account had no balance, so each draft failed. The Router, which serves
+    # every other call and bills it (H-171), had moved off DeepSeek, so chat
+    # still worked. This arm was one of the bypasses of task 2449.
+    #
+    # ⚠️ The same switch as :func:`_complete_with_fallback`. With routing off,
+    # the stream below runs as before.
+    from acb_llm.routed import routing_is_on
+
+    if routing_is_on():
+        return await _routed_text(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, on_delta=on_delta, source=_source,
+            extra=extra, total_s=total_s, job=job,
+        )
+
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()
