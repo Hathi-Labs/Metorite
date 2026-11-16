@@ -70,6 +70,7 @@ from typing import Any
 
 import httpx
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from fastapi import Depends, HTTPException
 from gateway.routes.email.core import (
     _log,
@@ -316,6 +317,7 @@ async def forward_email(
                 total = sum(int(f.size_bytes or 0) for f in chosen)
                 _log.info("email.forwarded", account_id=account_id, message_id=mid,
                           attachments=len(sent_names), bytes=total, native=True)
+                await _record_forward(db, user, row, req)
                 return {"id": sent_id, "ok": True, "subject": subject,
                         "attachments": sent_names, "bytes": total}
             # Graph's forward carries every file or none of them, so a subset
@@ -347,6 +349,7 @@ async def forward_email(
                     attachments=attachments or None,
                     thread_id=None,
                 )
+            await _record_forward(db, user, row, req)
 
     _log.info(
         "email.forwarded", account_id=account_id, message_id=mid,
@@ -359,6 +362,20 @@ async def forward_email(
         "attachments": [a["filename"] for a in attachments],
         "bytes": total,
     }
+
+
+async def _record_forward(
+    db: Any, user: UserContext, row: Any, req: ForwardEmailRequest,
+) -> None:
+    """WS-PZ MM-1: one row in the act record for the forward that just went.
+    The row holds the sender domain and the recipients, never a subject or a
+    body. Dark behind MEMBER_ACTIONS_ORGS, and it never fails the forward."""
+    await member_actions.record_act(
+        db, org=user.organization_id or "", member=user.email or "",
+        app="email", act="forward", via="app", item_kind="email",
+        item_id=str(row.id), mailbox_id=str(row.account_id),
+        features={"sender_domain": member_actions.domain_of(row.from_address)},
+        targets=[a for a in req.to if a and a.strip()])
 
 
 async def _fetch_files(

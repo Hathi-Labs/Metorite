@@ -549,6 +549,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "chat_topics": 0,
         # Task 3435: the fake holds no chat card that asked the member.
         "chat_pending_asks": 0,
+        # WS-PZ MM-1: the fake holds no act of the member.
+        "member_actions": 0,
         "member_record": 1,
     }
     assert out.kept == {
@@ -995,6 +997,24 @@ def test_the_private_topics_of_this_org_go_and_the_company_topics_stay() -> None
     assert keys.index("chat_topics") < keys.index("member_record")
     assert "chat_topic" not in {r.table for r in _PURGE_KEEPS}
     assert cascade_closure("chat_topic") == set()
+
+
+def test_the_acts_of_the_member_in_this_org_go_and_no_other() -> None:
+    """WS-PZ MM-1 (``personalization.md`` §19.4): the purge deletes the
+    member's act record in the bound org. The clause names the bound org beside
+    RLS, so the same address in another org keeps its rows. No table hangs off
+    ``member_action``."""
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "member_action"]
+    assert rows.key == "member_actions"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("member_actions") < keys.index("member_record")
+    assert cascade_closure("member_action") == set()
 
 
 def test_the_chat_cards_that_asked_the_member_in_this_org_go_and_no_other() -> None:

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.core import (
     _tenant_session,
@@ -312,6 +313,16 @@ async def send_email(
         # §21.15 review P1: the recipients that the mail server refused. Only
         # the SMTP path can tell. A caller reports a person as sent only when
         # the server did not refuse that person.
+        # WS-PZ MM-1: one row in the act record, with the recipients and no text.
+        # Dark behind MEMBER_ACTIONS_ORGS, and it never fails the send.
+        await member_actions.record_act(
+            db, org=user.organization_id or "", member=user.email or "",
+            app="email", act="reply" if req.reply_to_message_id else "send",
+            via="app", item_kind="email", item_id=str(msg_id or "sent"),
+            mailbox_id=req.account_id,
+            features={"is_reply": bool(req.reply_to_message_id),
+                      "new_thread": not req.reply_to_message_id},
+            targets=[a for a in req.to if a and "@" in a])
         refused = sorted(getattr(sess.provider, "last_refused", None) or ())
         return {"id": msg_id, "ok": True, **({"refused": refused} if refused else {})}
 
