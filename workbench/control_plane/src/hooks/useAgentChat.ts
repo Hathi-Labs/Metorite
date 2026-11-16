@@ -40,7 +40,7 @@ import {
 import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
-import { planReplay, rejectFor } from "@/lib/runReplay";
+import { planReplay, rejectFor, replayIdOf } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
@@ -559,6 +559,8 @@ export function useAgentChat({
       // gateway steered the words into a run already going.
       let streamRead = false;
       let sawDone = false;
+      // The `done` was a park (RESUME-3a): the run waits on its card.
+      let sawPark = false;
       let runFailed = false;
       let steeredLive = false;
       // The server answered with anything but the run cap, so the chat may
@@ -805,6 +807,14 @@ export function useAgentChat({
                 sawDone = true;
                 clearCardLog(threadId);
                 upd((m) => applyStreamEvent(m, evt, fold));
+                // RESUME-3a: a park settles the reply, and its card stays on
+                // screen. A remount takes the card from the pending asks only.
+                // A slot of a redraft still ends (C3).
+                if (evt.parked === true) {
+                  sawPark = true;
+                  emitAgentEvent("onRunRested", { threadId });
+                  break;
+                }
                 emitAgentEvent("onRunFinalized", { runId: String(evt.run_id ?? ""), threadId });
                 break;
               case "state":
@@ -1022,7 +1032,7 @@ export function useAgentChat({
           // while it ran. `finishing` asks the server (`lib/runStatus.ts`).
           const at = Date.now();
           if (runFailed) dispatchRun(threadId, { type: "failed", at });
-          else if (sawDone) dispatchRun(threadId, { type: "stream_end", at, terminal: true });
+          else if (sawDone) dispatchRun(threadId, { type: "stream_end", at, terminal: true, ...(sawPark ? { parked: true } : {}) });
           else if (streamRead || steeredLive) dispatchRun(threadId, { type: "stream_end", at, terminal: false });
           else dispatchRun(threadId, { type: "abandon", at });
         }
@@ -1186,7 +1196,9 @@ export function useAgentChat({
       dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
       return;
     }
-    const lastId = target?.id ?? nanoid();
+    // RESUME-3a (C2): a continuation whose reply row the server named replays
+    // into that row, so the fold at its end draws no second bubble.
+    const lastId = replayIdOf(target, st0.run.resumedAt > 0 ? st0.run.messageId : null, nanoid);
     const lastContent = target?.content || "";
     const placeholder = !target;
     // No thinking flag yet: the status row says the run works, and the
@@ -1212,6 +1224,8 @@ export function useAgentChat({
 
     let reconToken: string | null = null;
     let terminal = false;
+    // The last `done` was a park (RESUME-3a).
+    let parkedEnd = false;
     let streamed = false;
     try {
       const curState = getSessionState(threadId);
@@ -1412,6 +1426,10 @@ export function useAgentChat({
                 // on a tool call) and mark the message settled — the shared
                 // reducer does the un-fold + streaming:false in one update.
                 updLast((m) => applyStreamEvent(m, evt, fold));
+                // RESUME-3a: a park, as in the live loop. The card stays, and
+                // a slot of a redraft ends (C3).
+                parkedEnd = evt.parked === true;
+                if (parkedEnd) emitAgentEvent("onRunRested", { threadId });
                 break;
               case "error":
                 // The agent emitted an error during its run (e.g. Copilot
@@ -1471,7 +1489,7 @@ export function useAgentChat({
         // the server answers whether the run goes on.
         // No stream: the next attach waits longer (`attach_failed`), so a run
         // that cannot replay is never asked in a loop.
-        if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal });
+        if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal, ...(terminal && parkedEnd ? { parked: true } : {}) });
         else dispatchRun(threadId, { type: "attach_failed", at: Date.now() });
       }
     }

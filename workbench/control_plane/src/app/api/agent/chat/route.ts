@@ -560,6 +560,10 @@ async function translateAndPersistStream(
             }
           }
           out = { type: "done", run_id: ev.runId || ev.run_id };
+          // RESUME-3a: a park ends the run, and its card still waits. The
+          // chat then shows no "Done" (§4.12.4 item 5). Every other frame is
+          // as before.
+          if (ev.parked === true) out.parked = true;
         } else if (t === "RUN_ERROR") {
           // The server names the failure (`acb_llm.run_errors`). Pass its
           // code and ref through, and never derive one from the text here.
