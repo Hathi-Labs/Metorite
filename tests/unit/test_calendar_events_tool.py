@@ -101,11 +101,15 @@ def _block(out: str) -> list[str]:
 async def test_no_entries_key_gives_the_one_line_and_one_request(monkeypatch) -> None:
     """With ``CALENDAR_EVENTS`` off or no ``feature:tasks`` the body has rows
     only. The tool answers the fixed line after ONE request, and no task row
-    shows. Mutation: read ``rows`` as events, or ask the route again -> red."""
+    shows. The pack is on in production while the flag is off, so the line
+    names what still shows (review round 2, P2-2). Mutation: read ``rows`` as
+    events, ask the route again, or say "not on for this account" -> red."""
     gw = _gateway(monkeypatch, {"rows": [{"id": "t-1", "title": "A task block"}], "total": 1})
     out = await core.my_tasks_list_events(FROM, TO)
-    assert out == core.EVENTS_OFF
-    assert "not on" in out and "A task block" not in out
+    assert out == core.EVENTS_OFF == (
+        "Synced calendar events are not available here. Only the task blocks of "
+        "my_tasks_list_schedule show.")
+    assert "A task block" not in out
     assert gw.calls == [("GET", "/projects/my/calendar",
                          {"start": FROM, "end": TO, "include_done": "true"})]
 
@@ -149,6 +153,73 @@ async def test_a_long_all_day_entry_names_its_last_day(monkeypatch, fixed_token)
     _gateway(monkeypatch, {"entries": [entry]})
     out = await core.my_tasks_list_events(FROM, TO)
     assert "| 2026-11-20 to 2026-11-22, all day |" in _block(out)[0]
+
+
+def _all_day(title: str, first: str, end: str) -> dict[str, Any]:
+    """An all-day entry. *end* is EXCLUSIVE, as migration 331 stores it."""
+    return _entry(title=title, location=None, all_day=True, starts_at=None,
+                  ends_at=None, start_date=first, end_date=end)
+
+
+#: What the route can send for a window on 2026-11-16 in any zone. It reads
+#: all-day entries on the UTC dates of the window with one day of slack on
+#: each side (``tasks/entries.py``, ``_ALL_DAY_SQL``), so the days before and
+#: after come too. The timed entry is in the window.
+SLACK = [
+    _all_day("Day 14", "2026-11-14", "2026-11-15"),
+    _all_day("Day 15", "2026-11-15", "2026-11-16"),
+    _all_day("Span 15-16", "2026-11-15", "2026-11-17"),
+    _all_day("Day 16", "2026-11-16", "2026-11-17"),
+    _all_day("Span 16-18", "2026-11-16", "2026-11-19"),
+    _all_day("Day 17", "2026-11-17", "2026-11-18"),
+    _entry(title="Timed", starts_at="2026-11-16T05:00:00+00:00",
+           ends_at="2026-11-16T06:00:00+00:00"),
+]
+ON_16 = ["Span 15-16", "Day 16", "Span 16-18", "Timed"]
+
+
+def _titles(out: str) -> list[str]:
+    return [line.split("Title: ", 1)[1].split(" | ")[0] for line in _block(out)]
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2026-11-16T00:00:00+05:30", "2026-11-17T00:00:00+05:30"),  # IST
+    ("2026-11-16T00:00:00Z", "2026-11-17T00:00:00Z"),  # UTC
+    ("2026-11-16T00:00:00", "2026-11-17T00:00:00"),  # no offset: UTC
+    ("2026-11-16T00:00:00-08:00", "2026-11-17T00:00:00-08:00"),  # Pacific
+    ("2026-11-16T09:00:00+05:30", "2026-11-16T18:00:00+05:30"),  # a working day
+])
+async def test_the_slack_of_the_route_leaves_before_the_count(
+        monkeypatch, fixed_token, start: str, end: str) -> None:
+    """Review round 2, P1-1. A window on 2026-11-16 lists only the all-day
+    entries that touch 2026-11-16 in the window's own offset, and the count
+    names only what it lists. Mutation: drop the filter (Day 15 shows), read
+    the window in UTC and not in its own offset (the IST window shows Day 15,
+    the Pacific window shows Day 17), read ``to_iso`` with no microsecond back
+    (Day 17 shows), or count before the filter (7, not 4) -> red."""
+    gw = _gateway(monkeypatch, {"entries": SLACK})
+    out = await core.my_tasks_list_events(start, end)
+    assert _titles(out) == ON_16
+    assert out.splitlines()[0].startswith("Calendar events (4 in the window).")
+    assert "Showing" not in out and len(gw.calls) == 1
+
+
+async def test_a_two_day_window_keeps_its_second_day(monkeypatch, fixed_token) -> None:
+    """2026-11-16 and 2026-11-17 in UTC. Mutation: compare the exclusive end
+    as inclusive (Day 15 shows), or drop the second day -> red."""
+    _gateway(monkeypatch, {"entries": SLACK})
+    out = await core.my_tasks_list_events("2026-11-16T00:00:00Z", "2026-11-18T00:00:00Z")
+    assert _titles(out) == ["Span 15-16", "Day 16", "Span 16-18", "Day 17", "Timed"]
+    assert out.splitlines()[0].startswith("Calendar events (5 in the window).")
+
+
+async def test_only_slack_rows_read_as_an_empty_window(monkeypatch) -> None:
+    """The route sent only the days around the window. Mutation: count or
+    frame the slack rows -> red."""
+    _gateway(monkeypatch, {"entries": [SLACK[0], SLACK[1], SLACK[5]]})
+    out = await core.my_tasks_list_events("2026-11-16T00:00:00+05:30",
+                                          "2026-11-17T00:00:00+05:30")
+    assert out == "No calendar events are in that window."
 
 
 # ── (c) The frame ─────────────────────────────────────────────────────────────
@@ -308,14 +379,24 @@ def as_run():
     release_tenant(token)
 
 
-def test_the_proposed_ruling_is_the_default() -> None:
-    """Task 3463: the owner has not ruled, so the default is the proposed
-    ruling (no mark). Mutation: ship True by accident -> red."""
-    assert core.EVENTS_MARK_UNTRUSTED is False
+def test_the_safe_default_is_the_mark() -> None:
+    """Task 3463: the owner has not ruled, so the default is the safe one, the
+    mark (review round 2, P1-2). Mutation: ship False before the owner
+    rules -> red."""
+    assert core.EVENTS_MARK_UNTRUSTED is True
+
+
+async def test_the_default_marks_the_chat(monkeypatch, as_run) -> None:
+    """The shipped value, with no patch of the switch. Mutation: set the
+    default to False, or skip ``_mark_events_read`` -> red."""
+    _gateway(monkeypatch, {"entries": FOUR})
+    await core.my_tasks_list_events(FROM, TO)
+    assert as_run in egress._MARKED_SESSIONS
 
 
 async def test_ruling_false_does_not_mark_the_chat(monkeypatch, as_run) -> None:
-    """Mutation: call the mark with the switch False -> red."""
+    """The other ruling is the one line ``EVENTS_MARK_UNTRUSTED = False``.
+    Mutation: call the mark with the switch False -> red."""
     monkeypatch.setattr(core, "EVENTS_MARK_UNTRUSTED", False)
     _gateway(monkeypatch, {"entries": FOUR})
     await core.my_tasks_list_events(FROM, TO)
@@ -324,9 +405,9 @@ async def test_ruling_false_does_not_mark_the_chat(monkeypatch, as_run) -> None:
 
 
 async def test_ruling_true_marks_the_chat(monkeypatch, as_run) -> None:
-    """The other ruling is the one line ``EVENTS_MARK_UNTRUSTED = True``. Then a
-    read that shows an event marks the session of the run. Mutation: read
-    the switch nowhere, or mark another key -> red."""
+    """With ``EVENTS_MARK_UNTRUSTED = True``, a read that shows an event marks
+    the session of the run. Mutation: read the switch nowhere, or mark
+    another key -> red."""
     monkeypatch.setattr(core, "EVENTS_MARK_UNTRUSTED", True)
     _gateway(monkeypatch, {"entries": FOUR})
     await core.my_tasks_list_events(FROM, TO)
@@ -342,6 +423,10 @@ async def test_ruling_true_marks_nothing_when_no_event_shows(monkeypatch, as_run
     assert await core.my_tasks_list_events(FROM, TO) == core.EVENTS_OFF
     _gateway(monkeypatch, {"entries": []})
     await core.my_tasks_list_events(FROM, TO)
+    # P1-1: the slack rows of the route leave before the mark, so a window
+    # with no event of its own marks nothing.
+    _gateway(monkeypatch, {"entries": [SLACK[0], SLACK[5]]})
+    await core.my_tasks_list_events("2026-11-16T00:00:00Z", "2026-11-17T00:00:00Z")
     assert as_run not in egress._MARKED_SESSIONS
 
 

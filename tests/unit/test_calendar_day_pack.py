@@ -110,10 +110,13 @@ def test_the_rules_carry_each_planner_rule() -> None:
     assert "apply=True only after the member agrees" in flat
     for name in SEVENTEEN:
         assert name in flat, name
-    # CE-15: one short line names the event read, and pairs it with the
-    # schedule read for a plan.
-    assert ("my_tasks_list_events reads the member's events from their other "
-            "calendars. To plan a day, read it with my_tasks_list_schedule.") in flat
+    # CE-15: one short line names the event read. The planner reads no event,
+    # so the line tells the model to check each proposed block before apply
+    # (review round 2, P2-1). Mutation: say that the read plans around
+    # meetings, or drop the check before apply -> red.
+    assert ("my_tasks_list_events reads the member's calendar events. The planner "
+            "does not see them, so check each proposed block against them before "
+            "apply=True.") in flat
     assert "No Projects agent exists to hand a task to." in rules
     assert "Never name a tool to the member." in rules
 

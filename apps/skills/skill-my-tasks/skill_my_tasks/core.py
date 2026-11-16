@@ -1635,19 +1635,31 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str, offset: int = 0,
 # tool adds no SQL, no route and no flag. Fence:
 # ``tests/unit/test_calendar_events_tool.py``.
 
-#: THE ruling of task 3463, PROPOSED: the owner decides. True makes each read
-#: that shows an event mark the chat as one that holds untrusted input
-#: (``acb_skills.egress.mark_untrusted_answer``). A mark holds off the twelve
-#: writes of the ``calendar-day`` pack in that chat for up to 400 days. False
-#: is the proposed ruling. The other ruling is this one line, and a change to
-#: True makes the slice HIGH tier.
-EVENTS_MARK_UNTRUSTED = False
+#: THE switch of the open ruling of task 3463. The owner has not ruled. Until
+#: the owner rules, the code uses the safe default, True.
+#:
+#: True: each read that shows an event marks the chat as one that holds
+#: untrusted input (``acb_skills.egress.mark_untrusted_answer``). In a marked
+#: chat, each egress tool (``fetch_page`` and each other tool that sends data
+#: out) asks for the member's card, for up to 400 days. With no card channel
+#: it is refused. The twelve writes of the ``calendar-day`` pack leave that
+#: chat ONLY where ``HELD_CARD_WRITES_ORGS`` names the org
+#: (``egress.is_held_off_pack_write``). That list is empty by default, so
+#: today no write leaves.
+#:
+#: False: no mark. After a read of a hostile title, ``fetch_page`` runs with
+#: no card.
+#:
+#: In both cases, none of the twelve writes asks for a card. The other ruling
+#: is this one line, and ``test_calendar_events_tool.py`` tests both values.
+EVENTS_MARK_UNTRUSTED = True
 
 #: The one line when the body has no ``entries`` key: ``CALENDAR_EVENTS`` is
-#: off, or the member does not hold ``feature:tasks`` (§3.4).
+#: off, or the member does not hold ``feature:tasks`` (§3.4). The pack is on
+#: in production while the flag is off, so the line says what still shows.
 EVENTS_OFF = (
-    "Calendar events are not on for this account. Only the task blocks of the "
-    "schedule show."
+    "Synced calendar events are not available here. Only the task blocks of "
+    "my_tasks_list_schedule show."
 )
 #: The widest window of one read, in days. A month.
 EVENTS_WINDOW_MAX_DAYS = 31
@@ -1697,6 +1709,37 @@ def _events_window_refusal(from_iso: str, to_iso: str) -> str | None:
                 f"was read. Read {EVENTS_WINDOW_MAX_DAYS} days or less in one call, "
                 "and read a longer time in parts.")
     return None
+
+
+def _window_days(from_iso: str, to_iso: str) -> tuple[date, date]:
+    """The first and the last calendar date of the window ``[from, to)``.
+
+    Each end reads in ITS OWN offset, and an end with no offset counts as
+    UTC. The last date is the date of ``to`` less one microsecond, so a
+    window that ends at midnight does not reach the next day. Call it only
+    after :func:`_events_window_refusal` passed."""
+    first = _aware(from_iso).date()
+    last = (_aware(to_iso) - timedelta(microseconds=1)).date()
+    return first, last
+
+
+def _in_window_days(entry: dict[str, Any], first: date, last: date) -> bool:
+    """False for an all-day entry that does not touch a date of the window.
+
+    The route reads all-day entries on the UTC dates of the window with one
+    day of slack on each side (``tasks/entries.py``, ``_ALL_DAY_SQL``), because
+    only the client knows the zone. So the body can hold an entry of the day
+    before or the day after. An all-day entry covers ``[start_date,
+    end_date)``, because ``end_date`` is EXCLUSIVE (migration 331). A timed
+    entry, and an entry whose dates do not read, stay as the route sent them."""
+    if not (entry.get("all_day") or entry.get("start_date")):
+        return True
+    try:
+        start = date.fromisoformat(str(entry.get("start_date")))
+        end = date.fromisoformat(str(entry.get("end_date")))
+    except (TypeError, ValueError):
+        return True
+    return start <= last and end > first
 
 
 def _stranger_text(value: Any, limit: int) -> str:
@@ -1773,8 +1816,9 @@ async def my_tasks_list_events(from_iso: str, to_iso: str, offset: int = 0,
     """List the events of the member's calendars in a window. They are the
     synced Google and Outlook events and the member's own events. Read only.
     Each event names its calendar, its time, its status, its title and its
-    place. Use it with my_tasks_list_schedule, which reads the task blocks, to
-    plan around meetings. The window is half-open, [from, to), at most 31 days.
+    place. The day planner does not read these events. Check each block that
+    it proposes against them before you apply the plan. The window is
+    half-open, [from, to), at most 31 days.
 
     Args:
         from_iso: ISO 8601 start of the window (inclusive).
@@ -1790,6 +1834,9 @@ async def my_tasks_list_events(from_iso: str, to_iso: str, offset: int = 0,
         params={"start": from_iso, "end": to_iso, "include_done": "true"}))
     if entries is None:
         return EVENTS_OFF
+    # The route's all-day slack, out before the count and the page (P1-1).
+    first, last = _window_days(from_iso, to_iso)
+    entries = [e for e in entries if _in_window_days(e, first, last)]
     if not entries:
         return "No calendar events are in that window."
     # The route sends the window in the order of the day, the start, the

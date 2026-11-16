@@ -51,8 +51,19 @@
   **CE-15 (the chat reads the events) is BUILT, 2026-11-16, dark.** The read
   tool `my_tasks_list_events` is in the `calendar-day` pack (task 3463). It
   reads the `entries` key, so it shows events only where `CALENDAR_EVENTS` is
-  on. The untrusted-text ruling waits for the owner. The code holds the
-  proposed ruling: the read does not mark the chat.
+  on. The planner reads no event, so the pack rules tell the model to check
+  each proposed block against the events.
+
+  **The mark of CE-15 waits for the owner (task 3463).** Until the owner
+  rules, the code uses the safe default `EVENTS_MARK_UNTRUSTED = True`: a read
+  that shows an event marks the chat. In a marked chat, each egress tool,
+  such as `fetch_page`, asks for the member's card, for up to 400 days. The
+  twelve `calendar-day` writes leave that chat only where
+  `HELD_CARD_WRITES_ORGS` names the org, and that list is empty by default.
+
+  With the mark off, `fetch_page` runs with no card after the chat reads a
+  hostile title. In both cases, none of the twelve writes asks for a card.
+
   **RX-3 (a reminder looks and acts like a reminder in My Day) and RX-4
   (the push has buttons) are BUILT, 2026-11-02**, under epic task 1402. They
   are not dark. They draw wherever `CALENDAR_REMINDERS` and the My Day feed
