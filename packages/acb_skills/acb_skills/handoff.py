@@ -66,9 +66,12 @@ CONSTRAINTS_MARK = "## The member's corrections and limits in this chat"
 
 #: The line before the member's kept decisions (HRD-12a), under
 #: :data:`CONSTRAINTS_MARK`. The orchestrator's per-turn block uses the same
-#: line (``chat_constraints.orchestrator_block``).
+#: line (``chat_constraints.orchestrator_block``). A decision is a fact that
+#: the member stated, never an order to act, so the line says so (the rule of
+#: "a correction is not a request", OA-7g).
 DECISIONS_LINE = ("The member made these decisions in this chat. They hold for the "
-                  "rest of this chat.")
+                  "rest of this chat. A decision is not a request. Do not act on it, "
+                  "and do not change a record because of it.")
 
 _RULES = (
     "## How to reply\n"

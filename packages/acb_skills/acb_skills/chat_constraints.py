@@ -44,10 +44,11 @@ decision of the member, such as "TEDx is done."). ``keep_correction`` takes
 the kind as an argument, default :data:`LIMIT`, so an old call keeps a
 limit. A decision passes the same guard as a limit, and the card drop
 removes it the same way. The two kinds share the one cap of
-:data:`MAX_ITEMS`. The store keeps ``{"kind", "text"}`` for each item. A
-stored plain string, the shape before HRD-12a, reads as a :data:`LIMIT`. An
-old reader (before HRD-12a) drops each item of the new shape and reads an
-empty list: it never raises. The per-turn block and a task's head show the
+:data:`MAX_ITEMS`. EXPAND ONLY: the store keeps a limit as a plain string,
+the shape before HRD-12a, and only a decision as ``{"kind", "text"}``
+(:func:`_stored`). :func:`clean` reads both shapes. So a reader from before
+HRD-12a, after a flip and a roll back, keeps each limit and skips only the
+decisions, and it never raises. The per-turn block and a task's head show the
 decisions after the limits, under their own line, in the same frame. With
 no decision kept, each text is the OA-4 text, byte for byte.
 
@@ -212,9 +213,19 @@ def clean(items: Any) -> list[dict[str, str]]:
     return out[-MAX_ITEMS:]
 
 
-def texts(items: Any, kind: str) -> list[str]:
-    """The texts of the items of *kind*, in the order of :func:`clean`."""
-    return [i["text"] for i in clean(items) if i["kind"] == kind]
+def texts(items: Any, kind: str | None = None) -> list[str]:
+    """The texts of the items of *kind*, or of both kinds when *kind* is
+    None, in the order of :func:`clean`."""
+    return [i["text"] for i in clean(items) if kind is None or i["kind"] == kind]
+
+
+def _stored(items: list[dict[str, str]]) -> list[Any]:
+    """*items* in the JSON shape of the store (HRD-12a, expand only).
+
+    A limit stays a plain string, the shape before HRD-12a, so a reader of
+    that release keeps every limit. Only a decision is ``{"kind", "text"}``,
+    and that reader skips it."""
+    return [i["text"] if i["kind"] == LIMIT else dict(i) for i in items]
 
 
 #: Common abbreviations, folded. A dot after one of them ends no sentence, so
@@ -436,7 +447,8 @@ async def save_constraints(
     """Keep *items* for this frame's chat. Returns False when nothing was kept
     in Redis (no slot, a batch session, or a fault). Never raises. The process
     cache always takes the new list, so the rest of the turn reads it. Redis
-    keeps a JSON list of ``{"kind", "text"}`` (HRD-12a)."""
+    keeps one JSON list: a limit as a plain string and a decision as
+    ``{"kind", "text"}`` (:func:`_stored`, HRD-12a)."""
     slot = _slot(ctx)
     if slot is None:
         return False
@@ -452,7 +464,7 @@ async def save_constraints(
             await asyncio.wait_for(
                 get_tenant_redis().setex(
                     key(NAMESPACE, session, _member_part(member)), TTL_S,
-                    json.dumps(data, ensure_ascii=False)),
+                    json.dumps(_stored(data), ensure_ascii=False)),
                 timeout=REDIS_TIMEOUT_S,
             )
     except Exception as exc:
@@ -512,11 +524,6 @@ def orchestrator_block(items: Any) -> str:
 
 def _listed(items: list[str]) -> str:
     return "\n".join(f'- "{item}"' for item in items)
-
-
-def _texts_of(items: list[dict[str, str]]) -> list[str]:
-    """The texts of *items*, of both kinds, in their order."""
-    return [i["text"] for i in items]
 
 
 # ── The two tools ───────────────────────────────────────────────────────────
@@ -646,10 +653,10 @@ async def drop_correction(text: str) -> str:
     if not hits:
         hits = [i for i in items if want and want in _folded(i["text"])]
     if not hits:
-        return (f"{DROP_NO_MATCH}\n{_listed(_texts_of(items))}\n"
+        return (f"{DROP_NO_MATCH}\n{_listed(texts(items))}\n"
                 "Ask the member which one to drop.")
     if len(hits) > 1:
-        return f"{DROP_MANY}\n{_listed(_texts_of(hits))}"
+        return f"{DROP_MANY}\n{_listed(texts(hits))}"
     gone = hits[0]["text"]
     lead = DROP_CARD_LEAD_DECISION if hits[0]["kind"] == DECISION else DROP_CARD_LEAD
     # Fix round 2: no word of a message proves that the member withdrew
