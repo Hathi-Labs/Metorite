@@ -178,20 +178,23 @@ existed on the board. Tasks 3427 to 3432 replace them.
   packs, then `find_tools` (D222). The chat loads a skill as it loads a
   code pack. This adds no loader.
 
-### Two merges, PROPOSED
+### Two merges, DECIDED (D225)
 
-The owner decides both on task 3394. No builder starts on either finder
-before the answer.
+The owner approved both on task 3394 on 2026-11-15. `work_plan.md` D225
+records them.
 
-1. **One finder.** D187 plans `find_tool` (§6.1). D222 plans `find_tools`
-   (`one_assistant_context.md` §4.2.9). The proposal is one tool,
-   `find_tools`. On no match, it writes the `tool_gaps` row of SBX-1 and runs
-   the compose check. Then it says if a chain can do the job, or if a new
-   tool is necessary. SBX-1 then builds no second finder.
+1. **One finder.** D187 planned `find_tool` (§6.1). D222 plans `find_tools`
+   (`one_assistant_context.md` §4.2.9). The chat has one tool, `find_tools`.
+   On no match, it does the rest of §6.1: the library check, the compose
+   check, the one decide question and the `tool_gaps` row. Then it says if a
+   chain can do the job, or if a new tool is necessary. SBX-1 builds no
+   second finder. The guards SBX-F7, SBX-F18 and SBX-F23 bind the no-match
+   path, and the SBX-1 audit decides how it keeps the `tool_scope` gate.
 2. **One failure store.** Task 1793 (the tool failure log) and IR-4 (issue
-   reports, epic 475) each plan to group errors by fingerprint into one
-   task. The proposal is one store and one fingerprint, and both write to
-   it. TOF-2a (task 3416) writes it with IR-0 (task 555).
+   reports, epic 475) each planned to group errors by fingerprint into one
+   task. They have one store and one fingerprint, and both write to it.
+   TOF-2a (task 3416) writes its spec with IR-0 (task 555). D126 and SBX-Q8
+   bind its consent rules.
 
 ### Out of scope
 
@@ -708,6 +711,11 @@ radius. Only the card stops a write the member did not mean.
 > The build, smoke test and run steps run on the coding harness of `maf_coding_engine.md` §18 (CA-14).
 
 ### 6.1 Gap detection and reuse (#234, #240)
+
+> **D225 (2026-11-15).** The finder is the no-match path of `find_tools`
+> (D222), not a second tool. Where this section, §7.4 and §12.1 say
+> `find_tool`, read that path. SBX-1 rewrites the text when it is
+> dispatched. §0b holds the decision.
 
 **The rule.** The assistant may build a tool only when two things hold. One
 `find_tool` call in the same run answered `no_match`. The member approved
@@ -1407,7 +1415,7 @@ the A2 model.
 |---|---|---|---|
 | **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
 | **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
-| **SBX-1** | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
+| **SBX-1** | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
 | **SBX-2** | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
 | **SBX-4** | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
