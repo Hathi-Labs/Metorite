@@ -1089,6 +1089,31 @@ def _card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     return card_call(fn, args, kwargs, keyless=is_delegation_tool(fn))
 
 
+def _forget_card_title() -> None:
+    """``acb_skills.ask_tools.forget_card_title`` (task 3595). A fault is
+    no act, so it records nothing later either."""
+    try:
+        from acb_skills.ask_tools import forget_card_title
+    except Exception:
+        return
+    forget_card_title()
+
+
+def _note_approved_act(result: Any) -> None:
+    """``acb_skills.ask_tools.note_approved_act`` for one call that returned
+    (task 3595, PARK-LINE). It records the act of the call's card when the
+    member approved it and the result does not say "not done". A park then
+    names it. A delegation tool records nothing itself: each tool of its
+    child run records its own act into the parent's record. It never
+    raises, so the tool's result always reaches the model."""
+    try:
+        from acb_skills.ask_tools import note_approved_act
+
+        note_approved_act(result)
+    except Exception:  # a line is never worth a lost result
+        _log.debug("park_line.note_failed", exc_info=True)
+
+
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
     facts: dict[str, Any] | None = None,
@@ -1223,7 +1248,13 @@ def _gate_injected_tool(fn: Any) -> Any:
             # outside a WhatsApp run with writes on. Task 3130: the act key
             # of each card that this call draws.
             with _whatsapp_tool_call(fn, args, kwargs), _card_call(fn, args, kwargs):
-                return await fn(*args, **kwargs)
+                _forget_card_title()
+                result = await fn(*args, **kwargs)
+            # Task 3595: an approved card whose tool returned is an act that
+            # ran in this reply. A raise never reaches this line.
+            if not is_delegation_tool(fn):
+                _note_approved_act(result)
+            return result
         return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)

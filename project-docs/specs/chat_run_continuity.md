@@ -31,6 +31,7 @@ release keeps the work.
 | §4.12 — the retention of a waiting card's row (task 3435) | **BUILT** 2026-11-16, branch `stu-pa-prune`, no new flag and no migration. A prune hook of the job worker clears the stored call of each expired row and deletes a row 7 days after it expires. The member purge deletes the rows that asked a leaver. The prune runs only with `JOB_QUEUE` on, and `JOB_QUEUE` is off on production (§4.12.6, step 1a) |
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words and the quiet end of a park show where `CHAT_DURABLE_ASKS` is on. Only the resume route (`_resume_from_row`, with both resume flags on) sends the 429 cap reason. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
+| §4.12.7 PARK-LINE — a parked reply names the approved acts that it ran (task 3595, slice 3595-a) | **BUILT** 2026-11-17, branch `stu-park-line`. No flag and no migration, so it is live at the merge. Slice 3595-b is not built |
 | §4.12 RESUME-4a-1 — a continuation marks the stored native session stale (task 3478) | **BUILT** 2026-11-16, branch `stu-resume4a`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `MAF_NATIVE_SESSIONS` on. No migration and no new flag. RESUME-4a-2 (the late decline) waits for D-RES-9. RESUME-4b (task 3479) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -2183,6 +2184,33 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 | RESUME-7 (task 3268) | 3 | Approve and Not now on the My Day card | An Approve on My Day resumes the card with no chat open. It follows each consent rule of §4.12.4 | `tests/unit/test_my_day_card_approve.py` | HIGH (consent) | RESUME-2, WAIT-1 (1550), WAIT-2 (1551) |
 | RESUME-8 (task 3269) | 3 | Retire the HRD-22 grant and the old words | No code path writes the HRD-22 grant or shows "The assistant restarted" | `tests/unit/test_resume_retired_paths.py` | STANDARD | RESUME-D1, and 7 days with RESUME on for each org |
 | RESUME-D3 (task 3270) | 3 | Chat · Rung 3 demo · Approve tomorrow, from My Day | The owner runs the script below | none | demo | RESUME-7, WAIT-1, WAIT-2, H-289 |
+| PARK-LINE (task 3595, slice 3595-a) | 0 | A parked reply says what it ran. **BUILT** 2026-11-17, no flag | See the rule below the table | `tests/unit/test_park_made_line.py` | HIGH (the run loop). AGENT-SAFE to build. No flag, so it is live at the merge | none |
+
+**PARK-LINE (task 3595, slice 3595-a).** In run dd49a886, a reply made a
+project, a child project, three tasks and a reminder on five approved cards.
+Then it stopped at a card that nobody answered, and the run parked. The
+member never heard what the reply had made. So these rules hold:
+
+- The server sends one line at the park, not the model. The line is "Approved
+  and run in this reply: «a» and «b». This reply stopped at the card «c» to
+  wait for your answer." Three acts or more read "«a», «b», and «c»".
+- The words tell history, so they stay true after a late Approve. They have
+  no word "done", no link and no id. Each act is inert text (`card_act`).
+- An act ran when the member approved its card, and its tool returned with
+  no raise. Its result must not start with a lead of a card that did nothing,
+  or with "Error". It must not hold a mark of a write that failed in part,
+  such as "NOT saved" (`ask_tools.result_says_not_run`).
+- The gate wrapper `_tool_injection._agated` records the act after a normal
+  return. A tool that delegates records nothing itself.
+- Only a run that is not delegated opens the record
+  (`executor._open_approved_acts`). So a child run writes into its parent's
+  record, and one line names both.
+- `pending_ask.park` sends the line after the "Not done" line of task 3130,
+  and before `RUN_FINISHED` with `parked`. With no act, the park sends the
+  bytes of before.
+- Slice 3595-b keeps the steps of an open hand-off at a park, and it is not
+  built. The timeout path that is not durable is out, and so are the words
+  of the 7-day expiry (RESUME-3c).
 
 **The demo scripts.**
 
@@ -2334,6 +2362,7 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `workbench/control_plane/src/components/RunStatusRow.tsx` | The status row and `useSteadyRunView` (§4.10) |
 | `workbench/control_plane/src/lib/chatResume.ts` | The line of an Approve from another device, and the stale card set (§4.12 RESUME-3a). Fence: `chatResume.test.ts` |
 | `workbench/control_plane/src/lib/respondInput.ts` | The answer POST: `resumedOf` and the cap reason (§4.12 RESUME-3a) |
+| `packages/acb_skills/acb_skills/ask_tools.py` | `ApprovedActs`, `note_approved_act`, `result_says_not_run` and `park_line` (§4.12.7 PARK-LINE) |
 
 ---
 
@@ -2435,6 +2464,18 @@ uv run pytest tests/unit/test_resume_native_stale_r8.py -rs
 uv run pytest tests/unit/test_native_session_persistence.py -rs -k r8
 docker run -d --rm --name resume4-r8-redis -p 127.0.0.1:16406:6379 redis:7-alpine
 HELD_R8_REDIS_URL=redis://127.0.0.1:16406/0 uv run pytest tests/unit/test_resume_continuation_r8.py -rs
+```
+
+For §4.12.7 PARK-LINE, from the repo root. The R8 file needs a private
+database. A skip is not a pass.
+
+```bash
+uv run pytest tests/unit/test_park_made_line.py tests/unit/test_steer_unsent_card.py \
+  tests/unit/test_pending_ask_flow.py tests/unit/test_card_outcome_vocabulary.py
+uv run pytest tests/unit/test_late_approve_grant.py tests/unit/test_resume_continuation.py \
+  tests/unit/test_fence_lists.py tests/unit/test_flag_doc_sorted.py tests/unit/test_index_union.py
+uv run pytest evals/trajectories/test_chat_fold_trajectory.py evals/trajectories/test_hitl_trajectory.py -q
+uv run pytest tests/unit/test_pending_ask_store.py -rs
 ```
 
 ## 8. Waiting cards reach My Day (D171, 2026-11-03)
