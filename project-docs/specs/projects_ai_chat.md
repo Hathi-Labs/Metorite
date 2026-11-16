@@ -7707,8 +7707,10 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 project_id, values}`, and `kind` is `create_task`. `values` holds each answer
 key. `status` is a lane name, or empty for the default. `important` is null for
 a task that nobody judged. The client sends all the keys back, and it never
-sends `project_id`. A repeating task keeps the card of before, because its rule
-reads the due date. The client draws the line about a late Approve (EAC-2).
+sends `project_id`.
+
+A repeating task keeps the card of before, because its rule reads the due
+date. The client draws the line about a late Approve (EAC-2).
 
 EAC-2 needs a Visual review: light mode, compact density, a changed accent, and
 390 px. `redraftCard.ts` keeps reading only the `NewMailEdits` branch of the
