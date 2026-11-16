@@ -7675,7 +7675,7 @@ shows one line that says the edits were not used. PR 2434 (RESUME-2a) changes
   `AssigneeChips`, `ProjectSelect.tsx` over `ProjectPicker.tsx` (a `PickRule`
   limits it to the projects of the member), `components/ui/StatusMenu.tsx`,
   the `PriorityChip` in `components/TaskMeta.tsx`, and `components/ui/Input.tsx`.
-- Priority is two flags, Important and the next one in `PriorityChip` (D78). A due date sets Urgent.
+- Priority is two flags, `important` and `leveraged` (D78, `PriorityChip`). A due date sets Urgent.
   The form has no Urgent control.
 - No shared date picker exists. Use `ui/Input` with `type=date`, or open a small
   task for the ui seam. Do not hand-roll a picker.
