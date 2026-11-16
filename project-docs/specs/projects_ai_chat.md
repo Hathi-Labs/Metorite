@@ -7568,3 +7568,183 @@ The code is the fact. The build differs from §31.5 in these places.
   production, each with its `usage_event` row.
 - The first live run of VOX-5 (task 2265). It costs about USD 0.25.
 - Two small fixes to the vendor text of the VOX-4 tries (task 2428).
+
+## 32. Editable approval cards (task 2493)
+
+**Status (2026-11-16): planned, nothing built.** The audit of 2026-11-16 checked
+this contract on `origin/main`. Epic: Metorite task 2493. The first demo is on
+Rung 2 of the ladder (D211, task 2927, `orchestration_playbook.md` §6d).
+
+### 32.1 Scope
+
+A Projects card for `create_task` and `update_task` shows its values as a form.
+The member edits the values, then presses Approve. The write uses the edited
+values. The email cards already work this way (`email_app_master_plan.md`
+§18.10). This section brings the same idea to Projects.
+
+### 32.2 Non-goals
+
+- The chat writes no grants (D-PM-40). An edit card is never a door to a grant.
+- This section holds no persona text and no tool text. Cal-tasks owns both.
+- CRM cards are slice EAC-8, with its own row.
+- Email cards stay in `email_app_master_plan.md` §18.10 and §18.11. HRD-8 and
+  HRD-8b of `chat_failure_modes.md` keep their held-card rules.
+- A WhatsApp chat and a held chat get no edit card.
+
+### 32.3 What exists
+
+- A Projects card answer is plain `APPROVE` or `APPROVE {"rows":[...]}`.
+  `ask_tools.ticked_rows` refuses other shapes. `writes._confirm` returns a bool
+  or a set of row ids.
+- An email card carries edits as `APPROVE {"reply":{...}}`. `lib/replyCard.ts`
+  builds it. `reply_card.parse_new_mail_answer` parses it strictly.
+  `lib/respondInput.ts` sends it to `/agent/respond-input`.
+- The edits survive a tab change and a replay. `FormEdits`
+  (`confirmationQueue.ts`) and the thread store (`chatStore.ts`, task 1893) keep them.
+- `create_task` builds its card from values that `_prepare_new_task`
+  (`writes.py`) made before the card. `_create_new_task` writes after Approve.
+- `egress.HELD_REFUSED_PARAMS` refuses `files` on `create_task` in a held chat.
+- `_write_assignees` (`routes/projects/tasks.py`) refuses no person for a member
+  caller. `set_assignees` returns `not_notified` for a person outside the grant
+  closure of the project. The picker `GET /projects/assignees` lists every active
+  person of the org.
+
+### 32.4 The contract
+
+**Answer shape.**
+
+- The new answer key is `edit`. It never reuses `reply`.
+- A new strict parser, `parse_task_edit_answer`, lives in the new module
+  `packages/acb_skills/acb_skills/task_card.py`. It holds a whitelist of keys.
+- An extra key reads as no answer. The parser trims nothing. The responder comes
+  from the session, never from the answer.
+- It never calls `parse_new_mail_answer`.
+- `request_confirmation` (`ask_tools.py`) gets a new `edit=` argument.
+- Plain `APPROVE` on an edit card approves the original values.
+
+**The write.**
+
+- The edit path runs `_prepare_new_task` again on the edited values, AFTER the
+  answer. It never trusts an id from the card.
+- The write goes through the gateway routes under the session of the member.
+  Route grants apply to every field.
+- The edit card refuses `files` in a held chat.
+
+**The flag.** `PROJECT_EDIT_CARD_ORGS` is new. The default is empty, and it fails
+closed. A value is `*` or a list of org ids. The code reads it on each call. A
+SIGHUP reloads it. It sits in `acb_common/env_guard.py` after
+`EMAIL_EDIT_CARD_ORGS`, and in `docs/flag_reload.md` and the settings.
+
+**The assignee.** Today a member may assign any person that the picker lists.
+The rule "refuse an assignee that the member cannot see" is NEW and HIGH. The
+owner decides it (§32.9, Q1). Until then the form lists the org directory.
+
+**Late Approve.** A late Approve after a chat resume replays the stored original
+values (`chat_pending_ask.stored_call`, RESUME-1a, migration 448, dark). The card
+shows one line that says the edits were not used. PR 2434 (RESUME-2a) changes
+`ask_tools.py`, so the second PR to merge takes `main` first.
+
+**Receipts and declines.**
+
+- The receipt after an approved edit card is the receipt of the write itself.
+  It comes from `ask_tools.CARD_OUTCOMES` and `lib/cardOutcomes.ts` (HRD-7).
+- A declined edit card shows "You said no, so nothing was changed." through
+  `memberLineOf`. This section adds NO new decline string.
+- When the member types in the chat while an edit card is open, the card closes
+  by message. The model text is `card_outcome_text(CARD_CLOSED_BY_MESSAGE)`. The
+  unsent edit values stay OUT of the model text. They are not facts until the
+  member approves.
+
+**Held-card record (agreed with stu-r3, 2026-11-16).**
+
+- The held-card record keeps an act kind.
+- A check can compare the act kind and the To and Cc fields of a card with the
+  card that it replaces (HRD-8b, task 3459).
+- HRD-10a (task 2989, flag `CHAT_CARD_PRECONDITION_ORGS`, `update_task` only)
+  compares against what the member SAW before the edit. It never compares
+  against the edited values.
+- Neither lane touches the tool text of the other.
+
+**Client.**
+
+- `FormEdits` (`confirmationQueue.ts`) is `ReadonlyMap<string, NewMailEdits>`.
+  It becomes the union `NewMailEdits | TaskCardEdits`, in one small PR.
+- Two fences assert source text: `src/lib/cardEditsKept.test.ts` and
+  `src/components/redraftCard.test.ts`.
+- Reuse these parts: `app/projects/components/AssigneePicker.tsx` with
+  `AssigneeChips`, `ProjectSelect.tsx` over `ProjectPicker.tsx` (a `PickRule`
+  limits it to the projects of the member), `components/ui/StatusMenu.tsx`,
+  the `PriorityChip` in `components/TaskMeta.tsx`, and `components/ui/Input.tsx`.
+- Priority is two flags, `important` and `leveraged` (D78, `PriorityChip`). A due date sets Urgent.
+  The form has no Urgent control.
+- No shared date picker exists. Use `ui/Input` with `type=date`, or open a small
+  task for the ui seam. Do not hand-roll a picker.
+
+**Ownership.** Any new Projects tool argument or tool text belongs to cal-tasks.
+This section does not edit `agent-crm/instructions.md`,
+`agent-email-assistant/instructions.md`, `agent-projects/instructions.md`,
+`tool_packs.py`, `orchestrator/agents.py` or the docstrings of `create_task` and
+`update_task`. Ask cal-tasks to add one line about the edit card after EAC-1 lands.
+
+### 32.5 Slices
+
+Every task is a Metorite task under task 2493. All slices ship dark behind
+`PROJECT_EDIT_CARD_ORGS`.
+
+| Slice | Task | Tier | Rung | Files | Fence and tests | Gate | Done when |
+|---|---|---|---|---|---|---|---|
+| **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). |
+| **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `confirmationQueue.ts`, `lib/taskCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, a new `taskCard.test.ts` | AGENT-SAFE build, OWNER-GATE preview | A member edits the due date and one assignee on a `create_task` card, then presses Approve. |
+| **EAC-3** | 3470 | STANDARD for status, priority, start date and description. HIGH for project or subproject | 2 | `TaskCardForm.tsx`, `lib/taskCard.ts`, `task_card.py` | The tests of EAC-1 and EAC-2, extended | AGENT-SAFE | Each added field edits and writes. A project change passes the route grants. |
+| **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus a precondition test (§32.6) | AGENT-SAFE | An `update_task` card edits the changed fields. |
+| **EAC-5** | 3472 | HIGH, last | 2 | `TaskCardForm.tsx`, `task_card.py`, `egress.py` | A held-chat test for `files` | AGENT-SAFE | A member edits the files of a `create_task` card. A held chat refuses them. |
+| **EAC-6** | none | none | 2 | none | none | OWNER-GATE | The owner previews EAC-2 to EAC-5 on the local stack and approves or asks for a change. |
+| **EAC-7** | none | none | 2 | none | none | OWNER-GATE (`enforcement-flip`) | The owner, or a dated grant, flips `PROJECT_EDIT_CARD_ORGS`. The report names the flag and the box. |
+| **EAC-8** | 3473 | HIGH | 3 | its own spec row | Check D-CRM-9 and `_not_written` first | OWNER-GATE for scope | CRM cards get the same contract, or the owner declines. |
+
+EAC-2 needs a Visual review: light mode, compact density, a changed accent, and
+390 px. `redraftCard.ts` keeps reading only the `NewMailEdits` branch of the
+union. It uses a type guard and not a cast (HRD-8b needs this).
+
+### 32.6 Acceptance
+
+- **EAC-1.** `parse_task_edit_answer` accepts a whitelisted `edit` object. An
+  extra key reads as no answer. A value is not trimmed. A plain `APPROVE` writes
+  the original values. An edited value goes through `_prepare_new_task` again.
+  An id on the card has no effect. An R8 test shows that route grants refuse a
+  field that the member may not write.
+- **EAC-2.** The card shows a form for `create_task` when the flag is on for the
+  org. The edits survive a tab change and a replay. The receipt is the receipt of
+  the write. A decline shows the standard decline line.
+- **EAC-3.** Each field writes through its route. A project that the member
+  cannot open is not on the list.
+- **EAC-4.** An edit that changes `due`, then a change by a teammate between the
+  card and Approve, gives "changed since the card" and does not overwrite. The
+  `If-Match` check of HRD-10a compares against the `updated_at` that the member
+  SAW before the edit. A named test covers this case.
+- **EAC-5.** A held chat refuses `files` on the edit card.
+- **EAC-6 and EAC-7.** The owner answers in Metorite on the task.
+
+### 32.7 Verify
+
+- `uv run pytest tests/unit/test_task_edit_card_answer.py tests/unit/test_task_edit_card_r8.py`
+  (the R8 file needs a database: `bash scripts/dev_db.sh` first)
+- `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/cardEditsKept.test.ts src/components/redraftCard.test.ts`
+- `uv run python scripts/affected_tests.py --run`
+- `bash scripts/dev_up.sh`, then the demo of task 2927 on the local stack.
+
+### 32.8 Rules this section keeps
+
+R5 (tenant-ready), R6 (no migration is planned), R7 (each fence is named above)
+and R8 (a real database for the write path).
+
+### 32.9 Open owner questions
+
+1. **Who may a member assign on an edit card?** The org directory first (the
+   recommendation, no new rule), or only people who can open the project. The
+   second choice is a new HIGH server rule and changes the form too. Asked on
+   task 2493, 2026-11-16.
+2. **A late Approve after a chat resume.** The default is to replay the stored
+   original values and show a line that the edits were not used. The owner may
+   choose a different rule.
+3. **Plain Approve.** The default is to approve the original values.
