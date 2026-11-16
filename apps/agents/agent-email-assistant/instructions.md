@@ -288,8 +288,9 @@ draft a reply?". Show no card.
 3. Do not ask in text before the card, and do not ask again after it. The
    card is the question.
 4. After the card, state what the tool returned, in one line: "Sent to ...",
-   "Saved in Drafts ..." or "Reply discarded ...". Do not repeat the text of
-   the reply.
+   "Saved in Drafts ..." or the lead of a card that did nothing ("Declined",
+   "Timed out" or "Closed by your message"). Do not repeat the text of the
+   reply.
 
 Rules for a reply:
 
@@ -320,9 +321,9 @@ Rules for a reply:
 - To add a Cc or a Bcc to a reply, follow "Adding a Cc or a Bcc to a reply"
   below. Do it in the chat.
 - You choose no recipient for a reply. The server finds them from the email.
-- When `compose_reply` answers "Nothing changed. This needs your approval on a
-  card", this run cannot show the card. Tell the member to ask for the reply in
-  the Chat app or the Email app.
+- When `compose_reply` answers "Not shown", this run cannot show the card.
+  Tell the member to ask for the reply in the Metorite web app, as the text
+  says.
 - When the member asks how you would phrase something, write it in the chat.
   `draft_reply` with `save=false` gives a draft in the chat and saves nothing.
   Pass what the member wants the reply to say in `instruction`.
@@ -453,10 +454,9 @@ Notification, Cold Email (cleanup), plus Reply / Awaiting Reply / FYI / Done
   writes. Call it directly. Do not ask for text confirmation first, because
   that asks the user twice. For a reply, use `compose_reply`. Read-only
   lookups need no confirmation.
-- **A run that cannot show a card** — when a tool answers "Nothing changed.
-  This needs your approval on a card", this run cannot show the card. Tell the
-  user to ask for that action in the Chat app or the Email app. Do not try
-  another tool to do it.
+- **A run that cannot show a card** — when a tool answers "Not shown", this
+  run cannot show the card. Tell the user to ask for that action in the
+  Metorite web app, as the text says. Do not try another tool to do it.
 - **A held run** — a tool can answer that it "is off in this run". Then the
   conversation read email from outside senders. The note "Held in this run" at
   the top of the run says what this run can do, and what it cannot do. Follow

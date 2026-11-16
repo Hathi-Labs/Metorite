@@ -61,6 +61,15 @@ Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
 it at each card, and the injection asks it at the start of each run. So a
 reload applies to the next card, and the call id applies from the next run.
 
+`CHAT_RUN_PHASE_ORGS` turns on the phase of a streamed run
+(`chat_failure_modes.md` §6 row CS-3, CS-3a). For each listed org, a
+streamed run sends the CUSTOM event `run_phase`: `gathering` when its setup
+starts, and `asking` when the model request of a native run opens. No client
+draws it yet, and no saved message keeps it. `*` lists every org, and the
+default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
+executor asks it once, right after `RUN_STARTED`, so a reload applies to the
+next run. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
@@ -68,6 +77,17 @@ default is empty. Its one reader is `gateway.core_events.core_events_allowed`,
 and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
+`FIND_ORGS` turns on the new shape of a `search_company` hit
+(`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says
+how it matched (`matched_by`, `covers`, `of`), and the hit with the most of the
+query's words comes first. `*` lists every org, and the default is empty. Empty
+gives the answer of KR-ZERO, byte for byte. It acts only with `CONTEXT_RECENCY`
+on.
+
+Its one reader is `gateway.retrieval.find.find_allowed`, and each search
+asks it. A reload applies a change. The flip is AGENT-SAFE under the
+`enforcement-flip` grant, after the FIND-1 eval.
 
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a

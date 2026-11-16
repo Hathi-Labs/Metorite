@@ -204,6 +204,20 @@ def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> 
     assert search_allowed("acme")
     assert not search_allowed("globex")
 
+def test_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-FIND FIND-2, find_engine.md section 8. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from gateway.retrieval.find import find_allowed
+
+    assert fr.reloadable("FIND_ORGS")
+    monkeypatch.setenv("FIND_ORGS", "")
+    get_settings.cache_clear()
+    assert not find_allowed("acme")
+    env(**{**_START, "FIND_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("FIND_ORGS",)
+    assert find_allowed("acme")
+    assert not find_allowed("globex")
+
 def test_studio_chat_tools_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-TOF TOF-1a, ai_studio.md §14 TOF-1a. The reload list holds the key,
     and the one reader of the chat tool source sees a change with no restart."""

@@ -471,7 +471,8 @@ class TestTheAnswer:
     def test_a_named_app_goes_first(self, apps):
         hits = run(member(*ALL), apps="crm, email")["hits"]
         assert [h["app"] for h in hits[:3]] == ["crm", "email", "tasks"]
-        assert apps.called()[:3] == ["crm_access", "crm", "email"]
+        # HRD-4: the sources start together, so only the start order is fixed.
+        assert apps.called()[:2] == ["crm_access", "email"]
 
     def test_an_unknown_app_is_a_422(self, apps):
         with pytest.raises(HTTPException) as e:
@@ -491,9 +492,10 @@ class TestTheAnswer:
         assert len(hits) == 7
         assert [kw.get("limit") for n, _, kw in apps.calls if n == "tasks"] == [1]
 
-    def test_the_sources_never_overlap(self, apps):
+    def test_the_sources_overlap_but_four_at_most(self, apps):
+        # HRD-4 (D-FIND-6): the sources run at once, and a fifth waits.
         run(member(*ALL))
-        assert apps.max_active == 1
+        assert 1 < apps.max_active <= company.FIND_SESSIONS
 
     @pytest.mark.parametrize("error", [HTTPException(status_code=422, detail="too short"),
                                        RuntimeError("db down"), TimeoutError()])

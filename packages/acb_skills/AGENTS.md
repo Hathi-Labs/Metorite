@@ -192,6 +192,10 @@ not write a second copy of that seam. A bare test file name is under
    - On WhatsApp, `bot_run` awaits `settle_channel` before the answer, so an early message never follows it.
    - `progress_notice_on` is the ONE reader of the flag. `orchestrator._tool_injection._apply_progress_notice` is the one seam, and it runs right before the number check.
    - Fence: `test_progress_notice.py`.
+5l-1c. run_phase.py -- the phase of a streamed chat run (CS-3a, task 3438, spec `chat_failure_modes.md` §6 row CS-3). Dark behind `CHAT_RUN_PHASE_ORGS`.
+   - `PHASES` is the closed set (`gathering`, `asking`). `phase_event` is the ONE builder of the CUSTOM `run_phase` event, and its value holds `phase` only. It refuses a name outside the set. Do not reuse the free-text `progress` event for a phase.
+   - `run_phase_on` is the ONE reader of the flag, and it fails closed. `orchestrator.executor._RunPhases` is the one caller, and the executor yields each line itself (orchestrator contract 22c).
+   - Fence: `test_run_phase_event.py`.
 5l-2. org_facts_tools.py -- `org_facts(app, query)` and the CRM facts block (spec `crm_platform.md` §18.14.4). It loads with the `crm` skill family only.
    - `crm_answer_question` sends a pick only when this run showed that card and the member clicked it. Fences: `test_org_facts.py`, `test_org_facts_r8.py`, `test_crm_answer_first.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).

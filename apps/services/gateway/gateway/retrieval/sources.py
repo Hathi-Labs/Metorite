@@ -92,8 +92,16 @@ class Hit:
     flag: str | None = None
     #: The review date of a flagged page, as ISO text.
     review_at: str | None = None
+    #: How the hit matched, from the closed list of ``retrieval.find.RUNGS``
+    #: (FIND-2). ``None`` unless ``FIND_ORGS`` names the org.
+    matched_by: str | None = None
+    #: The content words that the hit holds, and how many the query has.
+    covers: int | None = None
+    of: int | None = None
+    #: The one word that a ``word`` hit matched alone.
+    word: str | None = None
 
-    def as_dict(self, *, stamp: bool = False) -> dict[str, Any]:
+    def as_dict(self, *, stamp: bool = False, find: bool = False) -> dict[str, Any]:
         """The hit for a consumer. *stamp* adds ``stamp`` as the ninth key.
 
         A hit with a ``flag`` (KB-AI-4) also adds ``flag`` and ``review_at``.
@@ -112,6 +120,13 @@ class Hit:
         if self.flag is not None:
             out["flag"] = self.flag
             out["review_at"] = self.review_at
+        if find and self.matched_by is not None:
+            # FIND-2. Off, no key is added, so the dict is the one of KR-ZERO.
+            out["matched_by"] = self.matched_by
+            out["covers"] = self.covers
+            out["of"] = self.of
+            if self.word is not None:
+                out["word"] = self.word
         return out
 
 

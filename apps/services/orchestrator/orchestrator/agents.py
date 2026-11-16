@@ -69,8 +69,8 @@ EMAIL_DELEGATION_BULLETS = """\
 - Two parts of an email_assistant reply ARE the answer, so keep them. When
   it describes an email, give that in a few lines: who sent it, what it asks
   of the member, and by when. When it reports a reply card ("Sent to ...",
-  "Saved in Drafts ...", "Reply discarded ..."), say that result as it said
-  it. The card already showed in the chat, so never ask the same question
+  "Saved in Drafts ...", or a lead such as "Declined" or "Timed out"), say
+  that result as it said it. The card already showed in the chat, so never ask the same question
   again in text.
 - A third part of an email_assistant reply is the answer too: the TEXT of a
   draft. Give it whole, word for word, so the member can read and change it.
