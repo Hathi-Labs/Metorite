@@ -8,8 +8,13 @@ project "Personalization & Memory System".
 hold in the code. It ships dark behind `MY_DAY_LEARN_ORGS`, default empty.
 `my_day_feed.md` records it under MD-9. Every other slice of §10 is not built.
 
-The owner decides LOOP-Q1 to LOOP-Q10 (§12). The defaults hold until the owner
+The owner decides LOOP-Q1 to LOOP-Q13 (§12). The defaults hold until the owner
 answers. This spec takes no D-number.
+
+**Look before acting (§4.9, added 2026-11-16, task 3570).** The loop also
+runs when a member asks for a write. It shows what the member may not know on
+the card that the write already has. Slices LOOP-17 to LOOP-27, rungs W1 to
+W4.
 
 **What it owns.** It owns the loop across the stages, and the learning. It owns
 the fields of a finding, which fill the `nudges` and `insights` points of
@@ -28,6 +33,7 @@ each owner and copies none of its rules.
 | Watches and headless turns | `proactive_agent.md` (D161) | Nothing. A detector on a schedule runs on their engine |
 | The manifest envelope | `package_host.md` (HX-0, task 2762) | The fields of a finding and of a kind (§6) |
 | Connected MCP servers | `chat_connected_systems.md` (WS-CSY) | The poll of a connected system (§4.1, rung 6) |
+| The confirmation card and the mail draft | `chat_failure_modes.md` (HRD), `email_app_master_plan.md` | A finding at the moment of a write, on the card that exists (§4.9) |
 
 **Not the WS-LL loop.** `orchestration_playbook.md` §6c owns the learning loop
 of the agent harness, behind `LEARNING_ORGS`. This spec is about what Metorite
@@ -408,6 +414,150 @@ item. An open or a seen counts for nothing.
 
 §7 holds the rules.
 
+### 4.9 At the moment of a write: look before acting
+
+**Owner ask, 2026-11-16, task 3570.** The owner showed the reply composer with
+its AI draft. The words are the owner's, so they sit in a block that the linter
+does not read.
+
+```text
+"when a user is asking to do something say, in an email or a project or
+something, but at the same time, he might not have a certain amount of
+information needed to make a good decision. Or he does not have the latest
+context himself ... Say, for example, telling a colleague, reminding a
+colleague, or emailing to send out an NDA when that other NDA colleague has
+already sent out the NDA. We should intimate the user that the NDA has already
+been sent out, but do you still want to send a follow-up? ... Instead of
+blindly following what the user wants, we get more context and are able to
+give better insights to the user so that he can make the best decision
+possible. And even add supplementary information as needed. And then do the
+action that has been specified."
+```
+
+**What this section adds.** The loop gets a second trigger. A background
+detector finds a fact on its own. This trigger runs when a member asks for a
+write.
+
+The trigger reads the same kind of finding (§6.1) through the same judge
+(§4.4). It shows the finding on the card that the write already has. It adds
+no engine, store, card kind or model writer (§3.2).
+
+#### 4.9.1 What exists, and what Metorite lacks
+
+| Part | State on `main` (`085c21f99`) |
+|---|---|
+| A read before the card | Built. "Reads may precede the card. Writes may not" (`skill_projects/writes.py` rule 1) |
+| The one place that sees each chat tool call | Built. `_agated` (`orchestrator/_tool_injection.py:1192`) runs `decide`, then `card_call` |
+| A card that tells the member a fact | Built. HRD-9a (task 2988), the reach line on a shared change. stu-r3 plans HRD-9b (task 3465) and HRD-10 "changed since" (task 2989) |
+| Lines on a mail card | Built. A reply or new-mail form takes up to four `notices` (`acb_skills/ask_tools.py:949`) |
+| A check beside the draft | Built. `_orchestrate_draft` gathers memory and the consult plan side by side (`routes/email/automation/drafting.py:2231`) |
+| A newer reply on the thread | Built and dark: the recent-reply warning of the held card (`EMAIL_HELD_CARD_SEND`), and the 409 of `reply_card.py` when a reply landed first |
+| "You may already have this" | Built for an email capture only (`routes/tasks/capture_email.py`) |
+| Mail that a colleague sent | Absent by design. A mailbox is private (D-EM-4, D-EM-17, D-EM-18). `email_send_log` has no writer and holds no recipients. A send writes no CRM activity: `record_activity` (`routes/crm/core.py:3525`) has one caller, `pipeline.py:183` |
+| A trace of a record that the member cannot open | Forbidden. "A record that the member cannot open leaves no trace" (`find_engine.md`, `knowledge_graph.md`, `crm_conversational.md` §14) |
+| A search of sent mail by recipient or by file name | In part. `/email/search` takes `to_addr`. The chat tools take no recipient, and no index holds attachment names |
+| A choice of another act on the card | Absent. A plain card answers Approve or Reject. Only the reply card offers Send, Save or Discard |
+
+**So the owner's NDA example has no data path today.** The member's own mail
+gives the first rung. A colleague's send needs a new record, and the owner
+decides it (LOOP-Q11).
+
+#### 4.9.2 The flow
+
+1. **The intent.** The write's own typed arguments give it. They name the act,
+   the recipients and the object, such as a thread, a task or a project. They
+   also give the topic words: a subject, file names or a task title. No model
+   call reads the intent.
+2. **The detectors.** Rules in code (§4.2 type 1) read as the member, each with
+   a time bound. They start beside the card build or the draft. They never run
+   before a hand-off to a specialist, because that cost about 8.7 s (KR-2).
+   They never gate a capture.
+3. **The finding.** The fields of §6.1. A finding with no evidence drops. Its
+   `visibility_scope` is the member who asked.
+4. **The judge.** At most two findings show on one card. A finding that comes
+   back after the budget drops, and the card does not wait for it.
+5. **The display.** The card that the write already has shows each finding as
+   one line from a template (§6.4 rule 4). The copy says "may", and never
+   "wrong". The member's own act stays the main button.
+
+**Mail text never reaches the model.** A finding about mail goes to the card
+only. The model gets typed facts at most: the kind, the date, a label and a
+link. So a check does not mark the chat (EM-G11d). A shared agent also gets no
+direct read tool of a mailbox (D91 item 4).
+
+**The label is a template word or text that the member wrote.** It may use
+the subject of a new mail that the member wrote. It never uses the subject of
+a reply or a forward, because that subject comes from the other sender. A
+label never holds a subject, a file name or a name from mail that another
+sender wrote. The stop list drops Re and Fwd for a match only, and never makes
+a label.
+
+For `write_thread_moved`, the label is the template "a new message on
+this thread". The card can show more, because the card is not the model.
+
+**Mira's sentence is not a nudge.** The card line stays the template
+(§6.4 rule 4). Mira's reply only refers to the typed facts, and it adds no
+claim beyond them. A golden case fails when her sentence states a date, a
+person or an object that the typed facts do not hold (LOOP-22).
+
+**Another act is a new card.** "Send a follow-up instead" changes the payload.
+So it opens a new card with the new payload, and the first card closes.
+
+#### 4.9.3 The kinds
+
+| Kind | It fires when | Evidence | It never fires on |
+|---|---|---|---|
+| `write_already_sent` | The member's own mailboxes sent mail to the same address in 30 days, with a matching subject word or file name | The sent message | The current thread. A reply in a long thread is not a resend |
+| `write_thread_moved` | The thread got a new message after the draft began | The new message | A message from the member |
+| `write_task_settled` | A nudge, a reminder or an assign meets a task that is done, assigned to that person already, or nudged in the last 24 hours | The task, and its last nudge | A task that the member cannot open |
+| `write_duplicate_task` | A new task matches an open task of the same project by title | The open task | A task in another project |
+| `write_teammate_contacted` | A send record says that another member mailed the same contact or company in 30 days, with a matching subject word or file name | The send record | A send record that the member cannot open. Blocked by LOOP-Q11 |
+| `write_context` | The customer card holds a fact for this recipient: an open deal, an overdue invoice, an open ticket | The record | Rung W4 |
+| `write_rule_conflict` | The project checker finds that the write contradicts a rule | The rule and the quote | Rung W4, with ALN-6 (task 1380) and LOOP-8 (task 3448) |
+
+**What counts as a match.** A subject word counts only after a stop list
+drops it. The list holds Re, Fwd, Fw, hi, hello, update, follow, up, the
+names of days and months, and each number. A file name counts without its
+extension and without a date stamp.
+
+Each kind ships in shadow first (§7.6) with its two fixtures (§6.5). The
+negative fixtures include a reply in a long thread, a weekly report to the same
+address, and a resend that the member asked for.
+
+#### 4.9.4 Where it runs
+
+- **A chat write.** `_agated` starts the check from the tool name and its
+  arguments, beside `card_call`. `request_confirmation`
+  (`ask_tools.py:2374`) shows the findings in its `context` in rung W1. Rung W3
+  adds typed `facts` and `alternatives` to the card event.
+- **The composer and the chat reply card.** The gather of `_orchestrate_draft`
+  runs the check beside memory and the consult plan, so it adds no wait. The
+  findings return as `notices`, and the composer shows a banner in the place of
+  the From banner (`FromRow.tsx`). A Refine round runs the check too.
+- **A send from the app.** `/email/send` and `/email/drafts/send` read
+  `write_thread_moved` again at the send, as the 409 of `reply_card.py` does.
+- **A write that acts at once** (D-CF-5). A finding makes it show its card,
+  through `egress.write_must_show_card` (`egress.py:1771`). LOOP-Q12 asks the
+  owner.
+
+#### 4.9.5 Budget and cost
+
+Rungs W1 to W3 use rules in code only. They cost no credits. A check has a
+budget of 800 ms at the 95th percentile, beside the work that the write does
+already. A topic match by a model (`decide`, about 0.029 credits and 1.3 s for
+each request) waits for rung W4 and LOOP-Q13.
+
+#### 4.9.6 The owners
+
+| Part | Owner |
+|---|---|
+| The chat cards | stu-r3 (HRD-9a, HRD-9b, HRD-10), lane-ui (EAC-1, EAC-2 in PR 2466) |
+| The mail draft card and the composer | metorite-a3, which fixes the AI draft path now (task 3541) |
+| The rule text of Mira | cal-tasks |
+| "Mail to and from an address" | FIND-3 `related` (built, behind `FIND_ORGS`), FIND-4 (task 3241), FIND-7 (task 3244) |
+| "Send anyway" on a shared mailbox | SM-4 of `shared_mailbox.md` |
+| The customer card | CRM-SIG-1 (task 2435), and the hint of CRM-M6 (task 1434) |
+
 ---
 
 ## 5. The member model (an extension of `personalization.md` §19)
@@ -754,6 +904,16 @@ The demo tasks do not exist yet. LOOP-0 makes them with the title
 | **5. Company signals** | An odd week in the CRM totals shows as one card, with its driver as evidence | NUM rows of `number_sense.md`, LOOP-10, LOOP-11 |
 | **6. Connectors join** | A change in a connected system becomes one nudge | CSY-R0, CSY-1, CSY-2, LOOP-12, LOOP-13 |
 
+**The write track (§4.9).** It runs beside rungs 1 to 6, because it reads
+the member's own data first and needs no detector of the background loop.
+
+| Rung | What the owner sees on production | Slices |
+|---|---|---|
+| **W1. It looks before I send** (demo task 3581) | A reply to Mahesh with the NDA shows "You sent 'NDA - Hathilabs' to mahesh@dewin.in on 12 Nov." In chat, the card shows the same line. A nudge on a done task says that the task is done | LOOP-18 to LOOP-22 |
+| **W2. It knows what my team did** (demo task 3582) | The owner's NDA example: the card says that a colleague sent the NDA to Acme on 12 Nov | LOOP-23, LOOP-24. Blocked by LOOP-Q11 |
+| **W3. I pick another act** (demo task 3583) | "Send a follow-up instead" on the card opens a new card with the follow-up | LOOP-25, LOOP-26 |
+| **W4. It adds what I should know** (demo task 3584) | An open deal, an overdue invoice or a project rule shows on the card | LOOP-27 |
+
 **Rung 4 depends on LOOP-Q6.** The checker of `project_alignment.md` reads
 tasks only. If the owner answers no, the demo shows a task edit that
 contradicts a rule.
@@ -798,6 +958,18 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-15** (task 3455) | Later | The focus boost in the find ranking ([a3-1]) | This spec. `company_context.md` (CX-1) owns the score | LOOP-6 | The two fences of [a3-1] pass | STANDARD · AGENT-SAFE |
 | **LOOP-16** (task 3456) | Later | Tool gaps and tool failures as inputs ([a3-3]) | `agent_sandbox.md` | SBX-1, and the one failure store (D225, TOF-2a task 3416) | Its row | STANDARD · AGENT-SAFE |
 
+| **LOOP-17** (task 3570) | W1 | §4.9 of this spec, and its board tasks | This spec | None | The doc tests of §11.2 pass, and each row has a task | LOW · AGENT-SAFE |
+| **LOOP-18** (task 3571) | W1 | The write check: the intent from the typed arguments, four own-data kinds, a budget of 800 ms, shadow first | This spec §4.9 | None | Each kind passes its positive and negative fixtures. The check stays in its budget | STANDARD, Opus review · AGENT-SAFE |
+| **LOOP-19** (task 3572) | W1 | An index of attachment names, and a recipient filter on the chat mail tools | `email_app_master_plan.md` | None | R8: the member finds their own sent mail by recipient and by file name, and never another member's mail | HIGH (migration) · AGENT-SAFE |
+| **LOOP-20** (task 3573) | W1 | `_agated` starts the check. `request_confirmation` shows its lines in `context`. The tool result holds typed facts only | `chat_failure_modes.md` | LOOP-18 | With `WRITE_CHECK_ORGS` on, the card shows one line. Off, the card is byte-identical | STANDARD · AGENT-SAFE, dark |
+| **LOOP-21** (task 3574) | W1 | The check beside the draft: `notices`, the composer banner, Refine, and the read again at the send | `email_app_master_plan.md` | LOOP-18 | The composer shows one banner line with a link. Visual review | STANDARD UI · owner preview |
+| **LOOP-22** (task 3575) | W1 | Mira says a heads-up in one sentence, from typed facts, and adds no claim | The persona (cal-tasks) | LOOP-20 | The persona goldens. A golden case fails when her sentence states a fact that the typed facts do not hold | LOW · AGENT-SAFE |
+| **LOOP-23** (task 3576) | W2 | The send record: mail to a CRM contact writes one CRM activity, with no body | `crm_conversational.md` | LOOP-Q11 | R8: one activity, no body, nothing for a non-contact or "Do not log" | HIGH (privacy) · OWNER-GATE until LOOP-Q11 |
+| **LOOP-24** (task 3577) | W2 | `write_teammate_contacted` from the send record | This spec §4.9.3 | LOOP-23 | R8: a colleague's send shows, and a member without access sees nothing | STANDARD · AGENT-SAFE |
+| **LOOP-25** (task 3578) | W3 | Typed `facts` and `alternatives` on the card event: the same card kind, with a bigger payload (§3.2 rule 6). Another act opens a new card | `chat_failure_modes.md`, with stu-r3 and lane-ui | LOOP-20 | Its row | STANDARD UI · owner preview |
+| **LOOP-26** (task 3579) | W3 | A finding makes a write that acts at once show its card | `chat_first_surface.md` (D-CF-5) | LOOP-18, LOOP-Q12 | Its row | STANDARD · AGENT-SAFE |
+| **LOOP-27** (task 3580) | W4 | `write_context` from the customer card, and `write_rule_conflict` | `crm_conversational.md` §14, `project_alignment.md` | CRM-SIG-1 (2435), ALN-6 (1380), LOOP-8, LOOP-Q13 | Its row | STANDARD · AGENT-SAFE |
+
 The rows of rungs 4 to 6 and Later say "Its row". The plan after the rung 3
 demo writes each "done when" in full, before its slice starts.
 
@@ -822,6 +994,10 @@ Each fence is advisory until its slice builds it.
 | A recipient outside `visibility_scope` gets nothing | An R8 test of LOOP-7, with the `_DB_GATE` |
 | Only the member reads the model | The privacy fence of PZ-9 and the fences of `personalization.md` §19.10 |
 | No model writes the words of a nudge | PZ-48's planned fence on the send path (`personalization.md` §17.9) |
+| A write check never fires on the current thread, and stays in its budget | `tests/unit/test_write_check.py` (LOOP-18, new) |
+| Mail text from a write check never reaches the model, and a label never holds another sender's text (the `write_thread_moved` case, and a reply whose inherited subject holds an instruction) | `tests/unit/test_write_check_card.py` (LOOP-20, new) |
+| Mira's sentence about a heads-up states no fact beyond the typed facts | A golden case of LOOP-22 in the persona goldens |
+| A colleague's send shows only to a member who can open its record | An R8 test of LOOP-24, `tests/unit/test_write_check_teammate_r8.py` (new) |
 
 ### 11.2 Verification commands
 
@@ -856,6 +1032,9 @@ Each later slice names its own test files in its row.
 | **LOOP-Q8** | May a small holdout group get no nudges of one kind, to measure what the nudges add? | **Not before rung 5.** Then 5% of members at most, for `insights` kinds only, never for a needs kind | A holdout hides real work from a real member |
 | **LOOP-Q9** | When KG-11 removes the Mem0 client, does `save_memory` leave with it? | **Yes.** `profile_remember` stays the one write of a fact about the member | D132 item 1 puts what Mira knows about a member in the profile. `personalization.md` §5.5 sends a kept fact there already |
 | **LOOP-Q10** | The poll of a connected server (§4.1.1) follows three rules of this spec. A poll needs the admin's read-only key, and a hint is not enough. Its result is untrusted data. Its signal reaches only the admin who connected the server, for OAuth and for a static key. Agreed? | **Yes** | A poll runs on a schedule with no person to see a card. A wider audience needs a statement by the admin |
+| **LOOP-Q11** | Your NDA example needs a record of a colleague's send. A mailbox is private (D-EM-4, D-EM-17, D-EM-18), and a record that a member cannot open leaves no trace. May mail to a CRM contact write one CRM activity: the sender, the date, the subject and the file names, never the body? | **Yes, with limits.** An org switch, off by default. Only mail to a CRM contact. A "Do not log" toggle on each mail. No backfill. The activity has the visibility of the contact | Without a record outside the mailbox, no check can see a colleague's send. A record with no body tells the team who spoke to the customer and keeps the words private |
+| **LOOP-Q12** | D-CF-5 lets a reversible write on the member's own work act at once with Undo. May a heads-up make such a write show its card? | **Yes.** Only when the check finds a fact. With no finding, the write acts at once | A heads-up that shows after the act is too late. The card shows only in the rare case |
+| **LOOP-Q13** | Rungs W1 to W3 match topics by rules in code and cost nothing. May rung W4 add a model match, such as "NDA" and "non-disclosure agreement", at about 0.029 credits for each write that the rules do not settle? | **Later.** Decide after a week of shadow data from rung W1 | The shadow data shows how often the rules miss |
 
 ---
 
