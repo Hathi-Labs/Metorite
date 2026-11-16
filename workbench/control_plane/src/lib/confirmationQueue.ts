@@ -204,19 +204,26 @@ export type FormEdits = ReadonlyMap<string, NewMailEdits>;
 
 export const NO_EDITS: FormEdits = new Map();
 
+/** The keys of the cards that the queue holds: a card on screen, a slot, or a card whose answer is in flight. */
+export function heldKeys(state: Pick<ConfirmationQueueState, "cards" | "answering">): ReadonlySet<string> {
+  return new Set([...state.cards.map((c) => c.key), ...state.answering]);
+}
+
 /**
- * The kept edits of the cards that the queue still holds: a card on screen,
- * a slot, or a card whose answer is in flight. Any other entry goes: an
- * answered card, a slot that a draft took or that ended, and each card of a
- * chat that the member left (`reset`). The same map comes back when
- * nothing goes. Fix round 5: the chat holds the map, because the queue
- * mounts again on each new message.
+ * The kept edits without those of the cards that LEFT the queue between two states: an answered card,
+ * a slot that a draft took or that ended, a `reset`. The same map comes back when no card left.
+ *
+ * Task 1893. This was `liveEdits`, which dropped each entry whose card was not in the queue NOW. A chat
+ * switch resets the queue, so it dropped every edit, and the card then came back from the card log with
+ * the server's form: an untick came back ticked. A card that was never in the queue before (the redraw of
+ * a switch) has no `before` entry, so it never counts as having left. The CHAT must not call this for
+ * the reset of a switch: it holds the edits of each thread in `chatStore`, and a switch only changes
+ * which thread's map it reads.
  */
-export function liveEdits(edits: FormEdits, state: Pick<ConfirmationQueueState, "cards" | "answering">): FormEdits {
-  const keep = new Set([...state.cards.map((c) => c.key), ...state.answering]);
+export function closedEdits(edits: FormEdits, before: ReadonlySet<string>, now: ReadonlySet<string>): FormEdits {
   let out: Map<string, NewMailEdits> | null = null;
   for (const key of edits.keys()) {
-    if (keep.has(key)) continue;
+    if (!before.has(key) || now.has(key)) continue;
     out ??= new Map(edits);
     out.delete(key);
   }

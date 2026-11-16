@@ -49,7 +49,7 @@ import {
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
-import { takeHandoff } from "@/lib/chatStream";
+import { RUN_PHASE_EVENT, takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
@@ -472,6 +472,12 @@ async function translateAndPersistStream(
           out = { type: "state", snapshot: ev.snapshot ?? {} };
         } else if (t === "STATE_DELTA") {
           out = { type: "state_delta", delta: ev.delta ?? [] };
+        } else if (t === "CUSTOM" && ev.name === RUN_PHASE_EVENT) {
+          // CS-3a: the server's phase of the run (`acb_skills.run_phase`).
+          // No client draws it yet, so it is neither forwarded nor saved
+          // (`out` stays null). A forwarded event would move the run row off
+          // "Reading your message" (CS-1), and a tab with an older bundle
+          // would keep it on the message.
         } else if (t === "CUSTOM") {
           const cev = { name: String(ev.name ?? ""), value: ev.value ?? null };
           // A dispatched browser action (H-164) is a side effect, not part

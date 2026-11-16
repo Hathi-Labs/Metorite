@@ -744,6 +744,14 @@ class Settings(BaseSettings):
     # `gateway.routes.studio.flags.search_allowed`. A SIGHUP reload applies a
     # change (docs/flag_reload.md). Spec: ai_studio.md section 14 C5.
     studio_search_orgs: str = ""
+    # WS-FIND FIND-2: FIND_ORGS lists the org ids where each hit of
+    # `search_company` says how it matched (`matched_by`, `covers`, `of`), and
+    # the hit with the most words comes first. `*` opens every org. Empty
+    # opens none, and the answer is the one of KR-ZERO, byte for byte. It acts
+    # only with CONTEXT_RECENCY on. Reader: `gateway.retrieval.find.
+    # find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # Spec: find_engine.md section 8.
+    find_orgs: str = ""
     # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
     # door runs a first-party logic module (`logic:<name>`). `*` opens every
     # org. Empty opens none. Reader: `gateway.routes.studio.flags.
@@ -1043,6 +1051,18 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). It calls no model.
     # Fence: tests/unit/test_progress_notice.py.
     chat_progress_notice_orgs: str = ""
+
+    # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
+    #
+    # CHAT_RUN_PHASE_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and each run sends the bytes that it sent before. On,
+    # a streamed run sends the CUSTOM event `run_phase` twice at most:
+    # `gathering` when its setup starts, and `asking` when the model request
+    # of a native run opens. No client draws it yet. The one reader is
+    # `acb_skills.run_phase.run_phase_on`. A SIGHUP reload applies a change
+    # (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_run_phase_event.py.
+    chat_run_phase_orgs: str = ""
 
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
