@@ -49,6 +49,13 @@ export interface ChatSession {
    * archived chat stays, and the assistant lists it under "Archived".
    */
   archivedAt?: string | null;
+  /**
+   * CO-13: the chat that this one continues, from the server's list. Null
+   * says it continues nothing. A null `id` says the member cannot read the
+   * source: the header then says "an earlier chat", with no title and no
+   * link. Only the merge below sets it, so a browser never invents it.
+   */
+  continuedFrom?: { id: string | null; title: string | null } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -884,6 +891,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       participantCount?: number;
       hasUserMessage?: boolean;
       archivedAt?: string | null;
+      continuedFrom?: ChatSession["continuedFrom"];
     }>;
 
     const local = readList(key);
@@ -906,6 +914,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
       s.archivedAt = r.archivedAt ?? null;
+      // CO-13: the server's answer wins. A chat made here a moment ago holds
+      // no mark until this list says what it continues.
+      s.continuedFrom = r.continuedFrom ?? null;
       if (r.title && shellChatOn()) s.title = r.title;
     }
 
@@ -937,6 +948,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           participantCount: r.participantCount,
           hasUserMessage: r.hasUserMessage,
           archivedAt: r.archivedAt ?? null,
+          continuedFrom: r.continuedFrom ?? null,
         });
       }
     }

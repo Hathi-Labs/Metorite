@@ -172,6 +172,7 @@ import {
 import { surfaceOfPane } from "./surface";
 import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
+import { ContinuedMark } from "./ContinuedMark";
 import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { useOptionalSidebarFold } from "@/components/SidebarFold";
 import { LAYER_CLASS } from "@/lib/layers";
@@ -1322,6 +1323,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           onClick={() => morphAskBox("into-bar", closeAssistant)}
         />
       </header>
+      {/* CO-13: which chat this one continues. A row of its own, under the header. */}
+      <ContinuedMark mark={active?.continuedFrom} onOpen={pickerProps.onSelect} />
 
       <div className="relative flex min-h-0 flex-1">
         {columnForm && listOpen ? (
