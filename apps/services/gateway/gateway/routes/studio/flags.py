@@ -20,7 +20,10 @@ first-party module. :func:`logic_allowed` is its one reader.
 ``STUDIO_CHAT_TOOLS_ORGS`` (TOF-1a) has the same grammar and the same
 default. It opens the catalog source ``tool``: one ``tool:<name>`` row for
 each chat tool of the CRM, Email, Projects and Calendar packs.
-:func:`chat_tools_allowed` is its one reader.
+:func:`chat_tools_allowed` is its one reader. TOF-1b: it also gates the
+skill load. ``orchestrator._tool_injection._chat_tools_open`` asks it once a
+turn, and for an org that it leaves out, each skill with a ``tool:`` action
+fails to load with ``chat_tools_off``.
 """
 
 from __future__ import annotations

@@ -205,7 +205,8 @@ def _row(case: dict[str, Any]) -> dict[str, Any]:
         surface=str(case.get("surface", "studio")),
         skills=tuple(case.get("skills", ())),
     )
-    choice = tp.choose(turn, allowed=allow, base_tools=BASE, specialists=SPECIALISTS)
+    choice = tp.choose(turn, allowed=allow, base_tools=BASE, specialists=SPECIALISTS,
+                       skill_packs=case.get("skill_packs"))
     skills = [str(s.slug) for s in choice.skills]
     named = {name for s in choice.skills for name in s.tools}
     needs = [slug for slug in choice.slugs if named & set(sf.SKILL_FAMILIES[slug]["tools"])]
@@ -236,8 +237,9 @@ def _row(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def matrix() -> dict[str, dict[str, Any]]:
-    """Each case under each value of ``HELD_CARD_WRITES_ORGS``."""
+def matrix(cases: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    """Each case of *cases* (:data:`CASES` when None) under each value of
+    ``HELD_CARD_WRITES_ORGS``."""
     from acb_common import get_settings
 
     settings = get_settings()
@@ -246,7 +248,7 @@ def matrix() -> dict[str, dict[str, Any]]:
     try:
         for held, value in HELD.items():
             settings.held_card_writes_orgs = value
-            for name, case in CASES.items():
+            for name, case in (CASES if cases is None else cases).items():
                 out[f"{name}|held={held}"] = _row(case)
     finally:
         settings.held_card_writes_orgs = before
@@ -445,6 +447,72 @@ def test_studio_workflows_stays_out_of_follows_and_out_of_the_matrix() -> None:
         case = key.split("|", 1)[0]
         if "studio-workflows" in row["packs"]:
             assert case in WORKFLOW_WORD_CASES and CASES[case].get("workflows"), key
+
+
+# -- TOF-1b: the layer "skill" has its own rows, outside the golden -----------
+
+#: TOF-1b. A skill that brings the pack of its chat tool
+#: (``ai_studio_rows/TOF-1b.md``). These cases are NOT in :data:`CASES`, so
+#: the golden file and its rows do not change. Each keeps its row inline
+#: (:data:`SKILL_LAYER_ROWS`).
+SKILL_LAYER_CASES: dict[str, dict[str, Any]] = {
+    # No surface and no pack word: the skill brings crm-records, which takes
+    # its place last with the layer "skill". 57 + 13 - 1 = 69 tools.
+    "a_skill_brings_crm_records": {
+        "surface": "",
+        "words": "run my lead digest",
+        "skills": (_skill("skill-lead-digest", "create_lead"),),
+        "skill_packs": {"skill-lead-digest": ("crm-records",)},
+    },
+    # The Studio surface loads both Studio packs, so the skill and its pack need
+    # 4 places. The skill is refused with "pack_cap", and the code packs stay.
+    "studio_with_a_skill_that_brings_a_pack": {
+        "words": "make the form blue and run my lead digest",
+        "skills": (_skill("skill-lead-digest", "create_lead"),),
+        "skill_packs": {"skill-lead-digest": ("crm-records",)},
+    },
+}
+
+#: The pinned fields of each row of :data:`SKILL_LAYER_CASES`, the same for
+#: each value of ``HELD_CARD_WRITES_ORGS``. The loader offer is not pinned, so
+#: a new pack elsewhere does not move these rows.
+SKILL_LAYER_ROWS: dict[str, dict[str, Any]] = {
+    "a_skill_brings_crm_records": {
+        "packs": ["crm-records"], "layers": {"crm-records": "skill"}, "skipped": [],
+        "evicted": [], "skills": ["skill-lead-digest"], "skills_skipped": [], "tools": 69,
+    },
+    "studio_with_a_skill_that_brings_a_pack": {
+        "packs": ["studio", "studio-more"],
+        "layers": {"studio": "surface", "studio-more": "surface"}, "skipped": [],
+        "evicted": [], "skills": [], "skills_skipped": [], "tools": 80,
+    },
+}
+
+
+def test_a_skill_pack_has_its_own_layer_outside_the_golden() -> None:
+    """TOF-1b, decisions 3 to 5. A pack that a skill brings has the layer
+    "skill" and comes last. Where the places are full, the code packs of the
+    turn stay as the matrix gives them with no map. The golden rows do not
+    move, because these cases are not in :data:`CASES`. Mutation: give the
+    brought pack the layer "words", or move a Studio pack out for it -> red."""
+    got = matrix(SKILL_LAYER_CASES)
+    assert not set(SKILL_LAYER_CASES) & set(CASES)
+    assert sorted(got) == sorted(f"{n}|held={h}" for n in SKILL_LAYER_CASES for h in HELD)
+    for key, row in got.items():
+        want = SKILL_LAYER_ROWS[key.split("|", 1)[0]]
+        assert {field: row[field] for field in want} == want, key
+    for held in HELD:
+        assert "crm-records" not in got[f"a_skill_brings_crm_records|held={held}"]["offered"]
+    # The refused skill: the same row as with no map, and one "pack_cap".
+    studio = SKILL_LAYER_CASES["studio_with_a_skill_that_brings_a_pack"]
+    plain = _row({key: value for key, value in studio.items() if key != "skill_packs"})
+    assert plain["packs"] == got["studio_with_a_skill_that_brings_a_pack|held=off"]["packs"]
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), TURN, (), str(studio["words"]),
+                       True, surface="studio", skills=tuple(studio["skills"]))
+    choice = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS,
+                       skill_packs=studio["skill_packs"])
+    assert [(s.slug, why, packs) for s, why, packs in choice.skills_refused] == [
+        ("skill-lead-digest", "pack_cap", ("crm-records",))]
 
 
 # -- The sticky state of a chat from before the split (item 7) ---------------

@@ -1651,10 +1651,12 @@ class PackTurn:
 
 @dataclass(frozen=True)
 class Choice:
-    """The packs of one turn, in load order: the sticky packs, then the new."""
+    """The packs of one turn, in load order: the sticky packs, then the new,
+    then the packs that a skill of the turn brings (TOF-1b)."""
 
     slugs: tuple[str, ...]
-    #: The layer that chose each pack: "sticky", "reference" or "words".
+    #: The layer that chose each pack: "sticky", "surface", "reference",
+    #: "words", or "skill" (TOF-1b) for a pack that a skill of the turn brings.
     layers: Mapping[str, str]
     #: The first load of each pack, for the sticky state.
     first: Mapping[str, tuple[int, int]]
@@ -1667,6 +1669,11 @@ class Choice:
     skills: tuple[Any, ...] = ()
     #: WS-STU F3. The slugs of the skill packs that the cap left out.
     skills_skipped: tuple[str, ...] = ()
+    #: TOF-1b. The skills that could not bring their packs, in the order of
+    #: the slug. Each is ``(skill, reason, packs)``: the
+    #: ``skill_packs.SkillPack``, "pack_cap" or "pack_off", and the slugs of
+    #: the packs that it lacked. Such a skill is not in :attr:`skills_skipped`.
+    skills_refused: tuple[tuple[Any, str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2324,6 +2331,7 @@ def _main_order_victim(
 def choose(
     turn: PackTurn, *, allowed: Iterable[str], base_tools: int,
     specialists: Mapping[str, int] | None = None,
+    skill_packs: Mapping[str, Sequence[str]] | None = None,
 ) -> Choice:
     """The packs of this turn: layer (a), with no model call (§4.2.2).
 
@@ -2357,6 +2365,10 @@ def choose(
        round 3 applies: an unnamed sticky pack, the core pack, then the last
        named or new pack. A pack that the last turn used never steps aside.
        The steps stay only when they reach the owner (:func:`_step_aside`).
+    6. The skills (WS-STU F3) and, TOF-1b, the packs that a skill brings
+       (:func:`_skills_of`). They come last, in the room that steps 4 and 5
+       left, and they never move a pack out. Such a pack has the layer
+       "skill". With *skill_packs* None or empty, this step is as in F3.
 
     *allowed* is :func:`packs_on` of the bound tenant less the families that
     an admin turned off. A slug that is no pack is dropped, and so is a pack
@@ -2367,6 +2379,9 @@ def choose(
     are in the *base_tools* count. A chosen pack that replaces its owner's
     specialist (:func:`_specialist_leaves`) takes those tools out of the sum,
     because the run does not send them. With none given, the sum is as it was.
+
+    TOF-1b: *skill_packs* maps the slug of a skill to the code packs that it
+    brings (``skill_packs.pack_needs``). It reads no flag.
     """
     allow = frozenset(allowed) & frozenset(
         slug for slug in PACKS if is_pack(slug) and _tool_count(slug) <= MAX_PACK_TOOLS)
@@ -2465,35 +2480,124 @@ def choose(
         order.remove(victim)
         layers.pop(victim, None)
         (evicted if victim in sticky else skipped).append(victim)
+    # TOF-1b: the packs that a skill brings join last, in the room that is left.
+    # A brought pack that left the sticky state at steps 1 to 5 is held again,
+    # so it leaves ``evicted``, and ``drop_sticky`` keeps its state. The apply
+    # puts it back when the run then holds none of its tools.
+    skills, skills_skipped, brought, refused = _skills_of(
+        turn, order=order, allow=allow, total=_total, skill_packs=skill_packs,
+        stays=stays, spare=spare)
+    layers.update(dict.fromkeys(brought, "skill"))
+    order.extend(brought)
     first = {slug: sticky[slug].first if slug in sticky else (now, place)
              for place, slug in enumerate(order)}
-    skills, skills_skipped = _skills_of(turn, room=MAX_PACKS - len(order))
     return Choice(slugs=tuple(order), layers=layers, first=first,
-                  evicted=tuple(evicted), skipped=tuple(skipped),
-                  skills=skills, skills_skipped=skills_skipped)
+                  evicted=tuple(s for s in evicted if s not in brought),
+                  skipped=tuple(skipped),
+                  skills=skills, skills_skipped=skills_skipped,
+                  skills_refused=refused)
 
 
-def _skills_of(turn: PackTurn, *, room: int) -> tuple[tuple[Any, ...], tuple[str, ...]]:
-    """The skill packs of *turn* that fit in *room* places, and the slugs of
-    the rest (WS-STU F3, ``ai_studio.md`` §7 and §11.1).
+def _skills_of(
+    turn: PackTurn, *, order: Sequence[str], allow: frozenset[str],
+    total: Callable[[Sequence[str]], int],
+    skill_packs: Mapping[str, Sequence[str]] | None = None,
+    stays: Mapping[str, int] | None = None, spare: Mapping[str, int] | None = None,
+) -> tuple[tuple[Any, ...], tuple[str, ...], tuple[str, ...],
+           tuple[tuple[Any, str, tuple[str, ...]], ...]]:
+    """The skill packs of *turn* that fit after the code packs of *order*
+    (WS-STU F3, ``ai_studio.md`` §7 and §11.1), and the packs that they bring
+    (TOF-1b).
+
+    It gives four parts: the skills that fit, the slugs of the skills that
+    the cap left out, the packs that the skills bring, and the refused
+    skills, each as ``(skill, reason, packs)``.
 
     The order is fixed: the code packs first, then the skills in the order of
     the skill id, so one set of packs gives one persona. A skill pack takes a
-    place of :data:`MAX_PACKS`. It adds no tool to the request, because its
-    tools are tools that the run holds already, so :data:`MAX_REQUEST_TOOLS`
-    does not move. A skill of more than :data:`MAX_PACK_TOOLS` tools, or one
-    slug twice, never loads."""
+    place of :data:`MAX_PACKS`. A skill pack adds no tool of its own. A
+    skill of more than :data:`MAX_PACK_TOOLS` tools, or one slug twice,
+    never loads.
+
+    TOF-1b: *skill_packs* maps the slug of a skill to the code packs that it
+    brings. A brought pack that the turn does not hold yet is missing. A
+    skill with no missing pack keeps the F3 rule: it fits while a place is
+    free. A skill with a missing pack gets all of them or none. A missing
+    pack outside *allow* refuses the skill with "pack_off", and that test
+    comes first. Else the skill fits when the packs, the missing packs, the
+    skills that fit and the skill itself take at most :data:`MAX_PACKS`
+    places, and *total* of the packs stays at or below
+    :data:`MAX_REQUEST_TOOLS`. Else it is refused with "pack_cap". *total*
+    is the count of ``choose``, which takes out the specialist tools that
+    the packs replace. A refused skill is not in the second part.
+
+    The reach (TOF-1b review, P1): the packs of a skill never make the loader
+    lose an owner of :data:`SPECIALIST_STAYS_UNTIL_REACHED`. When
+    :func:`plan_loader` reaches the owner before the skill, it must reach it
+    with the missing packs and the place of the skill too. Else the skill is
+    refused with "pack_cap", so the step-aside of step 5 (PJP-2) holds. The
+    test is the one of :func:`_step_aside`: with *stays*, and with or without
+    the packs of *spare* that no skill needs, because a pack that a skill
+    needs never leaves for a load (``PackRun.needs``). The skill places count
+    as held places. Once a skill brought a pack, a later skill with no
+    missing pack takes the test too, and it is left out (the second part)
+    when its place loses the owner. With no brought pack, such a skill keeps
+    the F3 rule, so a turn with no map is as before."""
+    stays_by, free_by = dict(stays or {}), dict(spare or {})
+
+    def _reached(packs: Sequence[str], places: Sequence[str], owner: str,
+                 needed: frozenset[str]) -> bool:
+        free = {s: n for s, n in free_by.items() if s in packs and s not in needed}
+        return any(owner in plan_loader(allow, [*packs, *places], current=total(packs),
+                                        removable={owner: stays_by.get(owner, 0)},
+                                        spare=pick).via_loader
+                   for pick in (None, free))
+
+    def _loses_reach(held: Sequence[str], missing: Sequence[str], fit: Sequence[Any],
+                     slug: str) -> bool:
+        places = [str(s.slug) for s in fit]
+        need = frozenset(p for s in fit for p in needs.get(str(s.slug), ()))
+        need_too = need | frozenset(needs.get(slug, ()))
+        return any(_reached(held, places, owner, need)
+                   and not _reached([*held, *missing], [*places, slug], owner, need_too)
+                   for owner in SPECIALIST_STAYS_UNTIL_REACHED)
+
     seen: set[str] = set()
-    fit: list[Any] = []
+    valid: list[Any] = []
     for found in sorted(turn.skills, key=lambda s: str(getattr(s, "slug", ""))):
         slug = str(getattr(found, "slug", ""))
         tools = tuple(getattr(found, "tools", ()) or ())
         if not slug or slug in seen or len(tools) > MAX_PACK_TOOLS:
             continue
         seen.add(slug)
-        fit.append(found)
-    room = max(int(room), 0)
-    return tuple(fit[:room]), tuple(str(s.slug) for s in fit[room:])
+        valid.append(found)
+    needs = skill_packs or {}
+    held = list(order)
+    fit: list[Any] = []
+    skipped: list[str] = []
+    brought: list[str] = []
+    refused: list[tuple[Any, str, tuple[str, ...]]] = []
+    for found in valid:
+        slug = str(found.slug)
+        missing = tuple(dict.fromkeys(
+            str(p) for p in needs.get(slug, ()) if str(p) not in held))
+        if not missing:
+            if len(held) + len(fit) < MAX_PACKS and not (
+                    brought and _loses_reach(held, (), fit, slug)):
+                fit.append(found)
+            else:
+                skipped.append(slug)
+        elif any(p not in allow for p in missing):
+            refused.append((found, "pack_off", missing))
+        elif (len(held) + len(missing) + len(fit) + 1 <= MAX_PACKS
+              and total([*held, *missing]) <= MAX_REQUEST_TOOLS
+              and not _loses_reach(held, missing, fit, slug)):
+            held.extend(missing)
+            brought.extend(missing)
+            fit.append(found)
+        else:
+            refused.append((found, "pack_cap", missing))
+    return tuple(fit), tuple(skipped), tuple(brought), tuple(refused)
 
 
 # ── The sticky state in tenant Redis ────────────────────────────────────────

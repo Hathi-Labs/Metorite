@@ -235,7 +235,7 @@ An action is one typed capability: an id, a title, an input schema, an output sc
 
 The rule of the class fails closed. Class C holds a send, a destructive tool, an open world tool and a tool with an unknown annotation. Class A holds only an explicit read, and class B holds each other tool.
 
-A skill can name a `tool:` row. The `uses` grammar has no `tool:` form, so a package cannot name the row, and the door never runs it. The row runs nothing itself: the skill loads only in a run that holds the tool. The row of the slice holds the decisions (`ai_studio_rows/TOF-1a.md`).
+A skill can name a `tool:` row. The `uses` grammar has no `tool:` form, so a package cannot name the row, and the door never runs it. The row runs nothing itself. TOF-1b: when the run does not hold the tool, the skill brings the pack of the tool, within the cap of 3 packs. That needs `STUDIO_CHAT_TOOLS_ORGS` too. The rows of the slices hold the decisions (`ai_studio_rows/TOF-1a.md` and `ai_studio_rows/TOF-1b.md`).
 
 **The class of an object action (B2a).** A list and a get are class A. A create and an update are class B, because the app can undo them. A delete is class C. `acb_common/studio_manifest.py::OBJECT_OP_CLASSES` is the one source of these classes, and a test holds its verbs equal to the `uses` grammar of A2. The B1 catalog (`catalog_rows`) gives the class of each other source. The door reads no class from anywhere else.
 
@@ -987,6 +987,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **B17** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B17.md) |
 | **B18** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B18.md) |
 | **TOF-1a** | 🔨 BUILT, dark (2026-11-16, task 3404) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-1a.md) |
+| **TOF-1b** | 🔨 BUILT, dark (2026-11-16, task 3411) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-1b.md) |
 
 ### Group C — Objects
 
@@ -1560,7 +1561,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | Only `delete_package` deletes a package from `apps`, and the versions go by the cascade | New with A5c-1: `test_only_delete_package_deletes_a_package` and `test_the_versions_go_by_the_cascade_and_no_statement_names_them` in `tests/unit/test_studio_package_delete.py` |
 | The sandbox rules for each org, each person and each version (D202) | §19.10 names one fence for each rule |
 | A skill loads only in the state `published`, and only when the member owns it or the org shares it. Org B's skill never loads for org A | New with F3: `tests/unit/test_skill_packs_r8.py` (R8) |
-| A skill pack takes a place of the 3 packs, loads in a fixed order, and fails to load with an unresolved variable, an action with no chat tool or a tool that the run does not hold | New with F3: `tests/unit/test_skill_packs.py` |
+| A skill pack takes a place of the 3 packs, loads in a fixed order, and fails to load with an unresolved variable, an action with no chat tool or a tool that the run does not hold. TOF-1b: a `tool:` action brings its pack last, in the room that is left. Else the skill fails with `pack_cap`, `pack_off` or `chat_tools_off` | New with F3 and TOF-1b: `tests/unit/test_skill_packs.py` |
 | A record and its lines are one batch of at most 50 writes, and a line names a parent of its own package and org only | New with C13: `tests/unit/test_studio_lines.py` and `tests/unit/test_studio_lines_r8.py` (R8) |
 | Each call of the six record functions, of `read_tree` (D18-2a) and of `aggregate_records` (C2d-a) passes a `viewer`. Each takes it as a required keyword. The test lists each reader path | New with C8a: `test_each_call_of_the_six_passes_a_viewer` and `test_the_six_take_viewer_as_a_required_keyword` in `tests/unit/test_studio_row_rules.py` |
 | A viewer reads only the rows of its grants, and a hidden key leaves each answer. A change or a delete of a record that the viewer cannot read answers not found | New with C8a: `tests/unit/test_studio_row_rules_r8.py` (R8) |
