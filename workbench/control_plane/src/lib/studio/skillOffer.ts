@@ -14,18 +14,23 @@
  *    typed its prompt. The typed mark is the one of `lib/typedMark.ts`. The
  *    chat keeps it on the live message only, so a reloaded turn gets no
  *    offer. The dock reads no room, so the dock gets no offer.
- * 3. The turn has `MIN_CALLS` or more calls. Each call finished, and its
- *    result holds the success mark of its tool at its fixed place
- *    (`SUCCESS_MARKS`). That is
- *    positive evidence: a refusal that a tool answers as plain text ("The
- *    member declined. Nothing was filed.") holds no mark, so it gives no
- *    offer. A tool with no mark in the list gives no offer either.
+ * 3. The turn has `MIN_CALLS` or more calls. Each call finished, and it
+ *    counts in one of two ways. A tool of `SUCCESS_MARKS` counts when its
+ *    result holds its mark at its fixed place. That is positive evidence: a
+ *    refusal that a tool answers as plain text ("The member declined.
+ *    Nothing was filed.") holds no mark, so it gives no offer. Any other tool
+ *    counts only as a READ of the chat tool source (TOF-1d): see
+ *    `readAnswered`, a weaker rule, which `onlyReadRows` holds to the rows of
+ *    class A of the source `tool`. A write or a send of that source never
+ *    counts, because its plain-text refusals ("A task needs a title.",
+ *    "Nothing was changed.") have no common mark.
  * 4. Each call maps to one row of the catalog through the `tool` of the row
  *    (`skill_packs.action_tool` on the gateway, the one map). A tool that no
  *    row names, or that two rows name, maps no call. A workflow row maps a
  *    call only through the workflow id in its arguments. One call that maps
  *    to no row stops the offer for the whole turn: a mail tool and a CRM tool
- *    have no catalog action, so their turn gets no offer (fail closed).
+ *    map a row only while the org is on `STUDIO_CHAT_TOOLS_ORGS`, so a turn of
+ *    an org with no `tool:` row gets no offer (fail closed).
  * 5. The viewer did not answer an offer on this message in this page.
  *
  * ⚠️ **No tool argument and no tool result goes into the draft.** A model or
@@ -146,6 +151,61 @@ export const SUCCESS_MARKS: Readonly<Record<string, SuccessMarks>> = {
     test: workflowSucceeded,
   },
 };
+
+/**
+ * Rule 3, the weaker tier (TOF-1d): the plain-text answers of a READ tool that
+ * are no answer. ⚠️ A chat tool of the CRM, Email and Projects packs answers a
+ * failure as plain text in some cases, with no common mark: a gateway refusal
+ * starts with `Refused:` (`acb_common.tool_refusals.REFUSED`, and
+ * `refusedText` drops it), but the rest do not. So a read counts when it
+ * finished, it is no refusal, its answer is not empty, and its answer starts
+ * with none of these words. The list names the plain-text non-answers that
+ * were found in the three packs. A new one joins this list, with its source
+ * file. `skillOffer.test.ts` reads each file to hold each text real.
+ *
+ * Weaker than a mark: a failure text that no entry names counts as an answer.
+ * It then gives an offer for a turn that did not work. The cost is one card
+ * that the member can close, because a draft holds no argument and no result,
+ * and Save makes a private draft only (D127.2).
+ */
+export const NON_ANSWER_HEADS: readonly { source: string; text: string }[] = [
+  { source: "packages/acb_skills/acb_skills/crm_tools.py", text: "The CRM is off for this organization" },
+  { source: "packages/acb_skills/acb_skills/crm_tools.py", text: "The CRM is not open to you" },
+  { source: "apps/agents/agent-email-assistant/agents.py", text: "I cannot see that mailbox or message" },
+  { source: "apps/agents/agent-email-assistant/agents.py", text: "This tool has no data for this organization" },
+];
+
+/** The openings of a failure that a framework writes, and a short "not found" line. */
+const FAILURE_OPENING = /^(error\b|unknown tool\b|i (cannot|could not)\b)/i;
+const NOT_FOUND_LINE = /\bnot found\.?$/i;
+/** A "not found" line is a short line. A long answer that ends so is an answer. */
+const NOT_FOUND_MAX = 160;
+
+/**
+ * The weaker tier of rule 3 for one call: it finished, it is no refusal, its
+ * answer is not empty, and its answer is no plain-text non-answer
+ * (`NON_ANSWER_HEADS`). It says nothing of the tool: `onlyReadRows` asks the
+ * catalog for that.
+ */
+export function readAnswered(call: OfferCallLike): boolean {
+  if (call.status !== "done") return false;
+  const result = typeof call.result === "string" ? call.result : "";
+  if (refusedText(result) || refusedResult(result)) return false;
+  const text = result.trim();
+  if (!text) return false;
+  const head = text.toLowerCase();
+  if (NON_ANSWER_HEADS.some((h) => head.startsWith(h.text.toLowerCase()))) return false;
+  if (FAILURE_OPENING.test(text)) return false;
+  return !(text.length <= NOT_FOUND_MAX && NOT_FOUND_LINE.test(text));
+}
+
+/**
+ * A call that may count as a read: its tool has no success mark (a tool with
+ * a mark counts by its mark alone), and `readAnswered` says yes.
+ */
+export function readCandidate(call: OfferCallLike): boolean {
+  return !Object.hasOwn(SUCCESS_MARKS, bareToolName(call.name)) && readAnswered(call);
+}
 
 /** A tool event as the chat holds it. */
 export interface OfferCallLike {
@@ -294,7 +354,28 @@ export function offerAsks(turn: OfferTurn, answered: boolean): boolean {
   const prompt = turn.prompt;
   if (!prompt || !prompt.typed || !prompt.byViewer || !prompt.words) return false;
   const calls = turn.calls ?? [];
-  return calls.length >= MIN_CALLS && calls.every(succeededCall);
+  // A call with no mark may still count as a read: the catalog decides (`onlyReadRows`).
+  return calls.length >= MIN_CALLS && calls.every((c) => succeededCall(c) || readCandidate(c));
+}
+
+/**
+ * Rule 3, the second half: each call with no success mark must be a READ of
+ * the chat tool source. Its row is of the source `tool` and of class A, so the
+ * tool says on its own annotation that it reads only (`chat_tool_class`).
+ * False when a call has no row, which also fails closed in `mapCalls`.
+ */
+export function onlyReadRows(calls: readonly OfferCallLike[], catalog: readonly CatalogAction[]): boolean {
+  const reads = new Map<string, CatalogAction[]>();
+  for (const row of pickableActions(catalog)) {
+    const tool = typeof row.tool === "string" ? row.tool.trim().toLowerCase() : "";
+    if (tool) reads.set(tool, [...(reads.get(tool) ?? []), row]);
+  }
+  return calls.every((call) => {
+    if (succeededCall(call)) return true;
+    if (!readCandidate(call)) return false;
+    const found = reads.get(bareToolName(call.name)) ?? [];
+    return found.length === 1 && found[0].source === "tool" && String(found[0].class) === "A";
+  });
 }
 
 /** The workflow id that a call names in its arguments, or "". */
@@ -358,6 +439,7 @@ export function skillOffer(
   answered: boolean,
 ): SkillOffer | null {
   if (!offerAsks(turn, answered) || !catalog || !turn.prompt) return null;
+  if (!onlyReadRows(turn.calls ?? [], catalog)) return null;
   const actions = mapCalls(turn.calls ?? [], catalog);
   if (!actions) return null;
   const draft = offerDraft(turn.prompt.words, actions);
