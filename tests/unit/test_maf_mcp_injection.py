@@ -612,3 +612,49 @@ def test_an_unreachable_server_does_not_fail_the_run_end_to_end(monkeypatch, cap
     assert built[0].mcp_tools == []
     assert [e for e in logs if e["event"] == "mcp.unreachable"]
     assert SENTINEL not in logged_text(logs, caplog)
+
+
+# ── CSY-10: the step keeps the server's label ────────────────────────────────
+#
+# Fence (R7): delete the ``_note_mcp_labels(...)`` call in
+# ``_inject_mcp_servers`` and the first test goes red.
+
+
+async def test_an_attached_server_gets_a_label_and_a_refused_one_never_does(monkeypatch, offline):
+    import types
+
+    from orchestrator import event_translator as et
+
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("srv-a", org=ORG_A), row("srv-x", org=ORG_A)]).install(monkeypatch)
+    agent = native_agent()
+    await _inject_mcp_servers(
+        agent, _AGENT, organization_id=ORG_A, opened=[],
+        is_authorized=lambda service: service != "mcp-srv-x",
+    )
+    assert _names(agent) == ["srv-a"]
+    assert dict(et.MCP_LABELS.get()) == {"srv-a": "srv-a"}
+
+    def _start(name: str) -> dict[str, Any]:
+        call = types.SimpleNamespace(type="function_call", call_id="c1", name=name, arguments="{}")
+        return et.function_call_events(call, et.ToolCallStreamState("r"))[0]
+
+    assert _start("srv-a_read")["mcp"] == {"server": "srv-a", "label": "srv-a"}
+    assert "mcp" not in _start("srv-x_read"), "a refused server got a label"
+
+
+async def test_a_second_run_never_sees_the_labels_of_the_first(monkeypatch, offline):
+    from orchestrator import event_translator as et
+
+    set_flag(monkeypatch, ORG_A)
+    RegistrySpy([row("srv-a", org=ORG_A)]).install(monkeypatch)
+    await _inject_mcp_servers(native_agent(), _AGENT, organization_id=ORG_A, opened=[])
+    assert set(et.MCP_LABELS.get()) == {"srv-a"}
+
+    RegistrySpy([row("srv-c", org=ORG_A)]).install(monkeypatch)
+    await _inject_mcp_servers(native_agent(), _AGENT, organization_id=ORG_A, opened=[])
+    assert set(et.MCP_LABELS.get()) == {"srv-c"}
+
+    set_flag(monkeypatch, "")  # a run that attaches nothing keeps no label
+    await _inject_mcp_servers(native_agent(), _AGENT, organization_id=ORG_A, opened=[])
+    assert dict(et.MCP_LABELS.get()) == {}

@@ -411,7 +411,14 @@ async function translateAndPersistStream(
           progressLines.push(name);
           if (progressLines.length > 20) progressLines.shift();
           enqueue({ type: "progress", name });
-          out = { type: "tool_start", id: ev.toolCallId, name, args: {} };
+          // CSY-10: the server's own stamp of an MCP tool (name and label, never
+          // an argument), passed on as it came.
+          const mcp = ev.mcp as { server?: unknown; label?: unknown } | undefined;
+          out = {
+            type: "tool_start", id: ev.toolCallId, name, args: {},
+            ...(mcp && typeof mcp.server === "string" && typeof mcp.label === "string"
+              ? { mcp: { server: mcp.server, label: mcp.label } } : {}),
+          };
         } else if (t === "TOOL_CALL_ARGS") {
           const id = String(ev.toolCallId ?? "");
           toolArgs[id] = (toolArgs[id] ?? "") + String(ev.delta ?? "");
