@@ -180,6 +180,9 @@ RESUMED_APPROVED = "approved"
 RESUMED_CHANGED = "changed"
 RESUMED_NOT_RUN = "not_run"
 RESUMED_SPENT = "spent"
+#: The claim of the act could not tell if it ran (no scope, a Redis fault).
+#: The note must not say that the change ran (RESUME-2a follow-up, P2-3).
+RESUMED_UNKNOWN = "unknown"
 
 
 def _quoted(text: str, limit: int) -> str:
@@ -197,7 +200,8 @@ def compose_resumed_call_note(title: str | None, result: str | None, outcome: st
 
     *outcome* is :data:`RESUMED_APPROVED` (the equal card took the yes, and
     the tool ran), :data:`RESUMED_SPENT` (the act ran already, so a new card
-    showed), :data:`RESUMED_CHANGED` (the tool drew a new card in
+    showed), :data:`RESUMED_UNKNOWN` (nobody could tell if the act ran, so a
+    new card showed), :data:`RESUMED_CHANGED` (the tool drew a new card in
     place of the approved one) or :data:`RESUMED_NOT_RUN` (nothing ran). The
     title and the result go in as inert text, as :func:`compose_card_answer`
     puts a question (prompt injection)."""
@@ -214,6 +218,13 @@ def compose_resumed_call_note(title: str | None, result: str | None, outcome: st
             f"[Metorite] The member approved the card «{name}». This change "
             "already ran in this chat, so the tool showed a new card in its "
             "place and did not write it again."
+        )
+    elif outcome == RESUMED_UNKNOWN:
+        head = (
+            f"[Metorite] The member approved the card «{name}». Metorite could "
+            "not tell if this change ran already in this chat. It may have run "
+            "already. So the tool showed a new card in its place and did not "
+            "write the approved values."
         )
     elif outcome == RESUMED_CHANGED:
         head = (
