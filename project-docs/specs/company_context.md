@@ -499,7 +499,8 @@ derived from one: chunks, digests and judgments.
 ### 8.1 The session digest
 
 **PROPOSED, task 3500 (2026-11-16).** metorite-a3, the owner of the FIND and
-CX side, confirms it. `chat_organization.md` §10.1 holds the reasons.
+CX side, must confirm it before CX-4 builds. `chat_organization.md` §10.1
+holds the reasons.
 
 - **One table: `chat_session_digest`.** It holds one row for each chat.
   `chat_organization.md` §10.2 owns its columns. CX-4 adds no second table. It

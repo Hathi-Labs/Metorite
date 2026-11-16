@@ -454,14 +454,14 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
   (built), CO-1 (§5) and CX-4 (`company_context.md` §8.1). CO-1 extends the
   PZ-33b job and is the one pass. CX-4 reads its row and adds no second pass.
 - **One digest table: `chat_session_digest`.** PROPOSED (task 3500).
-  metorite-a3, the owner of the FIND and CX side, confirms it. The name takes
+  metorite-a3, the owner of the FIND and CX side, must confirm it. The name takes
   the singular form of each chat table: `chat_session`, `chat_message` and
   `chat_session_participant`. This spec owns its columns (§10.2), because
   `work_plan.md` §4 gives the digest table of each app to the spec of that
   app. `company_context.md` §8.1 links here. CX-4 adds no second table. It adds
   its segments and atoms (`company_context.md` §5.1) as columns of this row, in
   its own expand migration.
-- **One source rule.** PROPOSED (task 3500), and metorite-a3 confirms it. The
+- **One source rule.** PROPOSED (task 3500), and metorite-a3 must confirm it. The
   digest reads the member's own typed rows only (D-PZ-37). It covers a chat
   that passes `ELIGIBLE_SQL`, after the idle rule of PZ-33: 30 minutes idle,
   and 2 typed rows of the member. It reads no assistant turn, no tool output
