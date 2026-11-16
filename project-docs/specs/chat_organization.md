@@ -79,7 +79,7 @@ A gateway path is under `apps/services/gateway/gateway/`. A `src/` path is under
 | Client search of title and preview | `matchesQuery`, `chatHistory.ts:99` | Replaced by the server search (CO-3) |
 | Rename and archive | `PATCH /chat/sessions/{id}` (`routes/chat.py:1121`), `archived_at` (migration 254) | Pin joins these acts |
 | Delete | `DELETE /chat/sessions/{id}` (`routes/chat.py:1137`). The picker offers Delete on an archived chat only. The route has no such check | §16.5 clears a note |
-| The title | The first typed message, cut to 60 characters, on the client (`src/lib/sessions.ts:753`) | CO-1 writes a better title |
+| The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:753`) | CO-1 writes a better title |
 | The rule for bar words | `barMayJoin:768`, `startsFresh:751`, `STALE_CHAT_MS:743`, `src/lib/shell/assistant.ts` | §7 widens it, only on a confident match |
 | The solo test | `SOLO_ROOM_SQL`, `rooms.py:590` | The join filter |
 | Removing the last turn | `POST /chat/sessions/{id}/supersede`, `routes/chat.py:1301` | The undo of §7.3 |
@@ -94,6 +94,8 @@ A gateway path is under `apps/services/gateway/gateway/`. A `src/` path is under
 ## 4. The decisions (D163)
 
 `work_plan.md` §3 records these. The owner accepted the agent's proposal.
+`work_plan.md` numbers D163 in 9 items, and this list groups them in 8. So a
+reference "D163.n" in this spec means item n in `work_plan.md`.
 
 1. **Company list, private contents.** One short list for the organization,
    seeded from its teams. Which chats sit in a topic is private to whoever can
@@ -317,7 +319,8 @@ These fences exist on `main` and bind the new slices:
   it. CO-5 adds its row. CO-13 reads through the session list.
 - `tests/unit/test_chat_summary_private.py`: only `assistant_summaries.py` names
   `member_summary`, and only the modules on its `IMPORTERS` list import that
-  module. CO-1, CO-16 and CO-18 add their entries there, in review.
+  module. CO-1, CO-15, CO-16 and CO-18 add their entries there, in review.
+  `routes/chat.py` never joins the list.
 - `tests/unit/test_continue_carry.py` (R8): the carry of WT-1. CO-15 adds the
   cases of its carry mode.
 
@@ -409,9 +412,10 @@ This rule binds CO-16 and CO-18. A note reads three sources and nothing else:
 Later, the decisions store of HRD-12 (task 2991) joins as a fourth source.
 
 A note **never** reads the assistant's free text, a tool output, or text that a
-third party wrote. The evidence is PZ-33b. It held for 5 rounds while a pasted
-mail, restated in a reply, reached stored summaries. A note over many chats
-keeps the rule of one summary.
+third party wrote. The evidence is PZ-33b. Its reviews held the slice for 5
+rounds, because stranger text could reach a stored summary. One case was a
+pasted mail that a reply restated. A note over many chats keeps the rule of one
+summary.
 
 The SQL that reads the source rows lives in `assistant_summaries.py`, beside
 `read_job_chat`. So no second reader of chat rows starts. HRD-21 is search, not
@@ -501,6 +505,10 @@ the owner of `one_assistant_context.md` §9 agrees it first:
   member's new words stay in the composer.
 - The old summary goes across once, at the carry, through
   `assistant_summaries.py`. It goes only from a source that is not held.
+- The copy does not live in `routes/chat.py`. `test_chat_summary_private.py`
+  fails when that module imports `assistant_summaries`, because it serves the
+  chat list. CO-15 puts the copy in its own module and adds that module to
+  `IMPORTERS`, in review.
 - No context builder reads the old chat through the link after the carry.
 - The flag of the mode is open: the CO-5 flag, or `CHAT_CONTINUE_ORGS`.
 
@@ -516,6 +524,10 @@ the app chapter of its §4.6. No second hint store starts.
 
 1. One chat for one outcome: start a new chat for a new piece of work.
 2. A topic for work that goes on over weeks.
+
+The first-visit chip of an app chapter is GD-10 (`assistant_guide.md` §6), and
+it is not built. Task 1464 (GD-10c) holds the chat chapter. CO-12 builds that
+chapter for the chat, or waits for GD-10.
 
 The words are product copy, so the user-facing copy rules bind them, not STE
 (`docs/style_ste.md` §1). The slice sets the final words.
