@@ -850,6 +850,18 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
 
             harness._mp.setattr(
                 nss, "read_state", lambda *a, **k: nss.LoadState(chat_exists=False))
+            # The member's access read is the second database reach. With no
+            # database it fails closed (``is_active=False``), and CI runs that
+            # way. On a PC with a stale dev database it waited for the turn
+            # timeout instead. The pin answers what CI answers.
+            import acb_auth
+            from acb_auth import access as access_mod
+
+            async def _no_access(*a: Any, **k: Any) -> Any:
+                return access_mod.EffectiveAccess(is_active=False)
+
+            harness._mp.setattr(acb_auth, "resolve_access", _no_access)
+            harness._mp.setattr(access_mod, "resolve_access", _no_access)
         member = Member()
         history = [dict(h) for h in sc.history]
         thread: str | None = None

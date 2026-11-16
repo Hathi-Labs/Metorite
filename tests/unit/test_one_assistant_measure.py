@@ -626,23 +626,36 @@ def test_a_merge_keeps_the_sha_of_each_chunk(tmp_path) -> None:
     assert [r["sha"] for r in data["rows"]] == ["1111111", "2222222"]
 
 
-def test_a_scripted_chat_never_reads_the_session_from_a_database(
+def test_a_scripted_chat_reaches_no_database_for_the_session_or_the_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """TS-ORD. A scripted run reaches no database. A PC with a stale dev database
-    on a port stalled each turn at the session load until the turn timeout.
-    Mutation: drop the ``read_state`` pin in ``run_chat`` -> the spy sees the
-    call -> red."""
-    from acb_graph import tenant_session as real
+    """TS-ORD. A scripted run reaches no database for the session load or for the
+    member's access. A PC with a stale dev database on a port stalled each turn
+    until the turn timeout. Mutation: drop a pin in ``run_chat`` -> the spy sees
+    the call -> red."""
     import acb_graph
+    from acb_auth import access as access_mod
 
     reached: list[str] = []
+    real_graph = acb_graph.tenant_session
+    real_factory = access_mod._get_session_factory
+    real_tenant = access_mod.tenant_session
 
-    def spy(*args: Any, **kwargs: Any) -> Any:
-        reached.append("tenant_session")
-        return real(*args, **kwargs)
+    def spy_graph(*args: Any, **kwargs: Any) -> Any:
+        reached.append("acb_graph.tenant_session")
+        return real_graph(*args, **kwargs)
 
-    monkeypatch.setattr(acb_graph, "tenant_session", spy)
+    def spy_factory(*args: Any, **kwargs: Any) -> Any:
+        reached.append("acb_auth.access session factory")
+        return real_factory(*args, **kwargs)
+
+    def spy_tenant(*args: Any, **kwargs: Any) -> Any:
+        reached.append("acb_auth.access.tenant_session")
+        return real_tenant(*args, **kwargs)
+
+    monkeypatch.setattr(acb_graph, "tenant_session", spy_graph)
+    monkeypatch.setattr(access_mod, "_get_session_factory", spy_factory)
+    monkeypatch.setattr(access_mod, "tenant_session", spy_tenant)
     rows = run.run_chat(scenario("five_turns"), "pack")
     assert rows and rows[0]["model_calls"], rows[0]["error"]
     assert reached == []
