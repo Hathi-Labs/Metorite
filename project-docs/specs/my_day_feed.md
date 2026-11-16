@@ -73,7 +73,8 @@ OFF. PK-2 (email) and PK-3 (reminders) are not built.
 **MD-9 part 1 is BUILT, 2026-11-16** (LOOP-4a, task 3444, no migration). The
 feed reads the kind mutes (§6.6) and the affinity of each kind (§7). It is
 dark behind `MY_DAY_LEARN_ORGS`, default empty, so the answer keeps its
-bytes. `proactive_loop.md` §7.2 holds the pins. The rest of MD-9 is not
+bytes. The reach loop and the briefs read the same feed, so a mute reaches
+them too. `proactive_loop.md` §7.2 holds the pins. The rest of MD-9 is not
 built.
 
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-4,
@@ -4157,6 +4158,12 @@ that the learner lowers. This spec stays the owner of the feed parts.
 before the order, and a needs card goes to Later at worst. The join adds the
 affinity of the main kind. `feed_decide._habits` is the one count read.
 "Why am I seeing this" is LOOP-4b, and it waits for a spec edit.
+
+The affinity of a needs card never goes below 0 in the score, so the
+per-app cut cannot drop it. The reach loop, the briefs and the chat brief read
+the same learned join. So a kind that the member mutes leaves them too. A
+muted needs card in Later is no interrupt, and it is in no brief. LOOP-5 owns
+the rest of the effect on reach (`proactive_loop.md` §7.3).
 
 ### MD-10 · Nudges outside the app — OWNER-GATE
 

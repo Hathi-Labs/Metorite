@@ -137,9 +137,15 @@ the member, and it adds the affinity of each kind to the score. A needs card
 goes to Later at worst, and the bell does not change. `*` lists every org, and
 the default is empty. Empty gives the answer of before, byte for byte.
 
+The reach loop, the briefs and the chat brief read the same learned feed. So
+a kind that the member mutes leaves them too. A muted needs card in Later is
+no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect on
+reach.
+
 Its one reader is `gateway.routes.shell.state.learn_allowed`, and each feed
-read asks it. A reload applies a change. The flip is `enforcement-flip`, and
-it waits for the owner preview (D218).
+read asks it. The read cache keys on the flag, so a flip misses at once. A
+reload applies a change. The flip is `enforcement-flip`, and it waits for the
+owner preview (D218).
 
 `PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
 also selects the orgs where the daily expiry tick may delete installs

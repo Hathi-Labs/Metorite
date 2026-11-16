@@ -45,14 +45,24 @@ join then reads two things, in :func:`learned`:
   to Later, and its own Dismiss, Snooze and "Not useful" still hide it (P3).
 * **The affinity of each kind** (§7), from the one count read
   (``feed_decide._habits``) and the formula (``feed_rank.affinity``). The
-  join adds it beside fatigue. The day value stays in Redis under
+  join adds it beside fatigue. The affinity of a needs card never goes below
+  0 in the score, so the per-app cut of ``feed_rank.order`` cannot drop it
+  (P3). The day value stays in Redis under
   ``key("my_day", "affinity", <member>, <feed day>)`` for 26 hours, so the
   first read of the member's day computes it (P6).
 
 With the org off, the join reads nothing more and the answer keeps its bytes
 (P5). A failed prefs read or count read gives no mute and no affinity, and a
-Redis fault gives the affinity 0, as a failed state read keeps the feed. The
+Redis fault gives the affinity 0, as a failed state read keeps the feed. A
+learned fault sets ``Applied.cacheable`` False and never ``Applied.ok``. The
 member comes from the session, and the org from the bound session (R5).
+
+**Who reads the learned join.** ``feed.feed_cards`` is the one compute, so
+the reach loop, the briefs and the chat brief read the same join as My Day
+(``reach.loop.snapshot``). A muted kind leaves them too. A muted needs card in
+Later is no interrupt and is in no brief. LOOP-5 owns the rest of the reach
+effect (``proactive_loop.md`` §7.3). The read cache keys on the flag
+(``cache.features_hash``).
 
 Fences: ``tests/unit/test_my_day_state.py`` (each rule, their order, the
 POST contract, the learned join) and ``tests/unit/test_my_day_state_r8.py``
@@ -425,7 +435,9 @@ class Learned:
 
     ``mutes`` are the kinds the member muted (§6.6). ``affinity`` holds the
     term of each kind that is not 0 (§7). ``ok`` is False when a read of the
-    learned path failed, so the read cache keeps nothing (as ``Applied.ok``).
+    learned path failed. Then ``Applied.cacheable`` is False, so the read
+    cache keeps nothing. ``Applied.ok`` stays the state read's own bit, so a
+    learned fault never makes the snapshot of reach or a brief incomplete.
     """
 
     mutes: frozenset[str] = frozenset()
@@ -444,7 +456,10 @@ def join(cards: list[dict[str, Any]], rows: dict[str, dict[str, Any]],
     leaves here too, before the order (P4). A needs card never leaves for a
     mute. It goes to Later, unless its own Dismiss, Snooze or "Not useful"
     hides it (P3). Each card that stays gains the affinity of its main kind.
-    With no ``taught``, the join is the join of before, to the byte (P5)."""
+    The affinity of a needs card never goes below 0 in the score, so the
+    per-app cut of ``feed_rank.order`` cannot drop it under a kind of lower
+    base (P3). With no ``taught``, the join is the join of before, to the
+    byte (P5)."""
     is_needs: Callable[[Mapping[str, Any]], bool] | None = None
     mutes: frozenset[str] = frozenset()
     affinity: Mapping[str, int] = {}
@@ -468,13 +483,16 @@ def join(cards: list[dict[str, Any]], rows: dict[str, dict[str, Any]],
         if not outcome.visible:
             continue
         acted = row is not None and row.get("state") == "acted"
+        term = int(affinity.get(str(card.get("kind")), 0))
+        if term < 0 and is_needs is not None and is_needs(card):
+            term = 0  # P3: a needs card never sinks under the per-app cut
         card.update({
             "state": outcome.state,
             "updated": outcome.updated,
             "still_open": outcome.still_open,
             "visits": outcome.visits,
             "score": int(card["score"]) - (0 if acted else feed_rank.fatigue(outcome.visits))
-            + int(affinity.get(str(card.get("kind")), 0)),
+            + term,
         })
         if outcome.group is not None:
             card["group"] = outcome.group
@@ -726,13 +744,20 @@ class Applied:
     ``snoozed_until`` of a time snooze that hides a card now: the instant
     that card comes back. ``day`` is the member's day as the join read it.
     ``ok`` is False when the read failed, so the read cache does not keep an
-    answer in which every card reads as new.
+    answer in which every card reads as new. The snapshot of reach and of
+    the briefs reads ``ok`` too (``reach.loop.snapshot``).
+
+    ``cacheable`` is False when the read cache must not keep the answer for
+    another reason: a fault of the learned path (LOOP-4a). It never changes
+    ``ok``, so a learned fault never makes a snapshot incomplete. The read
+    cache stores an answer only when both are True (``feed.feed_answer``).
     """
 
     cards: list[dict[str, Any]]
     snooze_edge: datetime | None = None
     day: Day | None = None
     ok: bool = True
+    cacheable: bool = True
 
 
 def snooze_edge(rows: dict[str, dict[str, Any]], now: datetime) -> datetime | None:
@@ -870,8 +895,9 @@ async def learned(user: UserContext, now: datetime, day: Day) -> Learned | None:
 
     Fail open, as the state read does (P5). A failed or slow prefs read or
     count read gives no mute and no affinity. A Redis fault gives the
-    affinity 0 and keeps the mutes (P6). Each sets ``ok`` False, so the read
-    cache keeps nothing, and the next read tries again.
+    affinity 0 and keeps the mutes (P6). Each sets ``ok`` False here, and
+    the state join then sets ``Applied.cacheable`` False. So the read cache
+    keeps nothing, and the next read tries again. ``Applied.ok`` stays True.
     """
     if not learn_allowed(getattr(user, "organization_id", None)):
         return None
@@ -892,7 +918,9 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
     cache then keeps nothing, so it stays one poll.
 
     For an org in ``MY_DAY_LEARN_ORGS``, the join also takes what the feed
-    learned (:func:`learned`). A failed state read learns nothing.
+    learned (:func:`learned`). A failed state read learns nothing. A failed
+    learned read sets ``cacheable`` False and leaves ``ok`` True, because the
+    state read itself succeeded.
     """
     member = user.email or ""
     ids = [c["signal_id"] for c in cards]
@@ -914,7 +942,7 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
     if taught is None:  # the org is off MY_DAY_LEARN_ORGS: the join of before
         return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day)
     return Applied(join(cards, rows, Context(now, day), taught), snooze_edge(rows, now), day,
-                   ok=taught.ok)
+                   cacheable=taught.ok)
 
 
 async def write_state(user: UserContext, items: list[StateItem], now: datetime) -> int:

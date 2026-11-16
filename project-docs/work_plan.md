@@ -6603,6 +6603,11 @@ and one thing that cannot be written until a second person exists.
 > it: the owner approves the preview before the flip.
 > `specs/proactive_loop.md` §7.2 is the authority.
 >
+> The reach loop, the briefs and the chat brief read the same learned feed.
+> So a kind that the member mutes leaves them too. A muted needs card in Later
+> is no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect
+> on reach, so the preview must show the brief too.
+>
 > **WS-53 — the CRM note labels.** *(Registered 2026-10-16 with CRM-Q26.)* To
 > build CRM-Q26 is AGENT-SAFE, and it ships dark. A mode other than `off` for
 > `crm.note_labels` in `DECIDE_FEATURE_MODES` is an owner flip, because each

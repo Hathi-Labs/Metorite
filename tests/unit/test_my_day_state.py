@@ -1034,7 +1034,64 @@ class TestTheAffinityInTheJoin:
     def test_a_negative_term_never_takes_a_needs_card_out(self):
         (out,) = state.join([_card("overdue", group="needs_you")], {}, CTX,
                             _learned(affinity={"overdue": -20}))
-        assert (out["group"], out["score"]) == ("needs_you", 80)
+        assert (out["group"], out["score"]) == ("needs_you", 100)
+
+
+class TestTheNeedsFloorAtTheOrder:
+    """LOOP-4a, review finding F3, P3 of ``proactive_loop.md`` §7.2.
+    ``feed_rank.order`` cuts each app to ``PER_APP`` cards by score, before
+    the group. So the affinity of a needs card never goes below 0 in the
+    score, by its main or its folded kind. A positive term still lifts it,
+    and a card that is not a needs card still goes down.
+
+    Mutations, each killed here: the floor left out (the cut drops the
+    ``due_today`` card), the floor on the main kind only (the folded case
+    scores 80), and the floor on every card (the ``stale_next`` card keeps
+    its score)."""
+
+    @pytest.mark.parametrize("term", [-20, -1, 0])
+    def test_a_needs_card_scores_as_at_0(self, term):
+        (out,) = state.join([_card("due_today")], {}, CTX,
+                            _learned(affinity={"due_today": term}))
+        assert out["score"] == 100
+
+    def test_a_folded_needs_kind_floors_the_term_too(self):
+        c = _card("block_soon", group="now", folded=("overdue",))
+        (out,) = state.join([c], {}, CTX, _learned(affinity={"block_soon": -20}))
+        assert out["score"] == 100
+
+    def test_a_positive_term_still_lifts_a_needs_card(self):
+        (out,) = state.join([_card("due_today")], {}, CTX,
+                            _learned(affinity={"due_today": 7}))
+        assert out["score"] == 107
+
+    def test_a_card_that_is_not_a_needs_card_still_goes_down(self):
+        (out,) = state.join([_card("stale_next", group="fyi")], {}, CTX,
+                            _learned(affinity={"stale_next": -20}))
+        assert out["score"] == 80
+
+    @staticmethod
+    def _twenty(kind: str) -> list[dict]:
+        """One card of *kind* at 55 (the base of ``due_today``) and 19
+        ``unblocked`` cards at 40 (base 38 and a little weight), all of one
+        app. The cut keeps 15."""
+        cards = [{**_card("unblocked", sid=f"tasks:u{i:02d}", group="ready"), "score": 40}
+                 for i in range(19)]
+        return [{**_card(kind, sid="tasks:x", group="needs_you"), "score": 55}, *cards]
+
+    def test_the_cut_keeps_a_needs_card_at_minus_20(self):
+        out = state.join(self._twenty("due_today"), {}, CTX,
+                         _learned(affinity={"due_today": -20}))
+        kept = feed_rank.order(out, feed.DEFAULT_FEED_LIMIT)
+        assert len(out) == 20 and len(kept) == needs.PER_APP
+        assert "tasks:x" in [c["signal_id"] for c in kept]
+
+    def test_the_cut_drops_a_card_that_is_not_a_needs_card(self):
+        # Non-vacuity: the same twenty with a kind that is not a needs kind.
+        out = state.join(self._twenty("stale_next"), {}, CTX,
+                         _learned(affinity={"stale_next": -20}))
+        kept = feed_rank.order(out, feed.DEFAULT_FEED_LIMIT)
+        assert "tasks:x" not in [c["signal_id"] for c in kept]
 
     def test_an_empty_learned_is_the_join_of_before(self):
         cards = [_card("overdue"), _card("stale_next", sid="tasks:q", group="fyi")]
@@ -1133,8 +1190,10 @@ def _day_id(fakes) -> str:  # noqa: F811
     return f"calendar:{fakes._today().isoformat()}"
 
 
-def _joined_ok(user: UserContext) -> bool:
-    return _bound(lambda: feed.feed_cards(user)).joined.ok
+def _joined(user: UserContext) -> tuple[bool, bool]:
+    """``(Applied.ok, Applied.cacheable)`` of one compute of the feed."""
+    joined = _bound(lambda: feed.feed_cards(user)).joined
+    return joined.ok, joined.cacheable
 
 
 class TestTheFeedLearns:
@@ -1216,11 +1275,14 @@ class TestTheFeedLearns:
 class TestTheLearnedPathFailsOpen:
     """P5 and P6 of ``proactive_loop.md`` §7.2. A failed prefs read or count
     read gives no mute and no affinity, as a failed state read keeps the
-    feed. A Redis fault gives the affinity 0 and keeps the mutes. Each sets
-    ``Applied.ok`` False, so the read cache keeps nothing. Mutations, each
-    killed here: a fault that raises out of the feed, a fault that keeps the
-    mutes of a failed read, a Redis fault that still counts, and ``ok`` left
-    True."""
+    feed. A Redis fault gives the affinity 0 and keeps the mutes. Review
+    finding F2: each sets ``Applied.cacheable`` False, so the read cache
+    keeps nothing, and leaves ``Applied.ok`` True, so the snapshot of reach
+    and the briefs stays complete.
+
+    Mutations, each killed here: a fault that raises out of the feed, a fault
+    that keeps the mutes of a failed read, a Redis fault that still counts,
+    ``cacheable`` left True, and a learned fault that sets ``ok`` False."""
 
     @pytest.mark.parametrize("fault", ["prefs", "counts"])
     def test_a_failed_read_learns_nothing_and_keeps_the_feed(
@@ -1234,10 +1296,10 @@ class TestTheLearnedPathFailsOpen:
         taught.counts[ME] = {"stale_next": {"shown": 5, "acted": 0, "not_useful": 5}}
         taught.fail[fault] = RuntimeError("the database is down")
         assert json.dumps(run_feed(user), default=str) == json.dumps(off, default=str)
-        assert _joined_ok(user) is False
+        assert _joined(user) == (True, False)
         taught.fail.clear()  # non-vacuity: the same store changes the answer
         assert _of(run_feed(user), _day_id(fakes)) is None
-        assert _joined_ok(user) is True
+        assert _joined(user) == (True, True)
 
     def test_a_slow_read_learns_nothing(self, fakes, taught, monkeypatch):  # noqa: F811
         user = _in_org(*FULL)
@@ -1250,7 +1312,7 @@ class TestTheLearnedPathFailsOpen:
         monkeypatch.setattr(prefs, "_read", slow)
         monkeypatch.setattr(state, "LEARN_TIMEOUT_S", 0.05)
         assert card(run_feed(user), "tasks:t-late")["group"] != "later"
-        assert _joined_ok(user) is False
+        assert _joined(user) == (True, False)
 
     def test_a_redis_fault_gives_affinity_0_and_keeps_the_mutes(
             self, fakes, taught, monkeypatch):  # noqa: F811
@@ -1259,11 +1321,31 @@ class TestTheLearnedPathFailsOpen:
         _flag(monkeypatch, "")
         off = run_feed(user)
         _flag(monkeypatch, ORG)
-        taught.prefs[ME] = {"mutes": ["day_overbooked"]}
-        taught.counts[ME] = {"overdue": {"shown": 5, "acted": 0, "not_useful": 5}}
+        taught.prefs[ME] = {"mutes": ["overdue"]}
+        taught.counts[ME] = {"day_overbooked": {"shown": 5, "acted": 0, "not_useful": 5}}
         taught.redis.fail = ConnectionError("redis is down")
         got = run_feed(user)
-        assert _of(got, _day_id(fakes)) is None  # the mute holds
-        assert card(got, "tasks:t-late")["score"] == card(off, "tasks:t-late")["score"]
+        assert card(got, "tasks:t-late")["group"] == "later"  # the mute holds
+        assert card(got, _day_id(fakes))["score"] == card(off, _day_id(fakes))["score"]
         assert taught.made("counts") == []  # a fault computes nothing
-        assert _joined_ok(user) is False
+        assert _joined(user) == (True, False)
+        # Non-vacuity: with Redis back, the same counts lower the day card by 20.
+        taught.redis.fail = None
+        assert card(run_feed(user), _day_id(fakes))["score"] == \
+            card(off, _day_id(fakes))["score"] - 20
+
+    def test_a_learned_fault_keeps_the_snapshot_of_reach_complete(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        from gateway.reach import loop
+
+        user = _in_org(*FULL)
+        taught.fail["prefs"] = RuntimeError("the database is down")
+        snap = _bound(lambda: loop.snapshot(ORG, user))
+        assert snap.complete is True and snap.cards
+
+        # Non-vacuity: a failed state read still makes it incomplete.
+        async def broken(*a, **k):
+            raise RuntimeError("pool away")
+
+        monkeypatch.setattr(state, "_read_rows", broken)
+        assert _bound(lambda: loop.snapshot(ORG, user)).complete is False

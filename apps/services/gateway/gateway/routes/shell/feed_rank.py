@@ -21,7 +21,9 @@ The order is a score. Code owns time, and ``decide`` owns judgment::
   5 times in 30 days. :func:`affinity` is the formula. The counts come from
   the one count read (``feed_decide._habits``), so only the state join adds
   the term (``state.join``), beside fatigue, and only for an org in
-  ``MY_DAY_LEARN_ORGS``. With the org off, the term is 0.
+  ``MY_DAY_LEARN_ORGS``. With the org off, the term is 0. The join holds the
+  term of a needs card at 0 or more (P3), because :func:`order` cuts each app
+  by score before the group.
 * ``fatigue`` is -8 for each visit of the day with no act, to -24 at most
   (MD-2a). Only the state knows the visits, so the state join subtracts it
   (``state.join``), after the fold and before the order.
