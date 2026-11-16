@@ -140,6 +140,14 @@ describe("the flag (STUDIO_SKILL_OFFER_ORGS, served as skill_offer)", () => {
     expect(sent).toEqual([]);
   });
 
+  it("the card reads the catalog only when the flag is on (source fence)", () => {
+    // A server render runs no effect, so the test above cannot see a catalog read.
+    // This fence reads the gate in the source: `asks` must carry the flag.
+    const src = code(read("components/studio/SkillOfferCard.tsx"));
+    expect(src).toMatch(/const asks = on && offerAsks\(/);
+    expect(src).toMatch(/useCachedResource\(asks \? OFFER_CATALOG_KEY : null/);
+  });
+
   it("the flag on draws the card", () => {
     expect(draw()).toContain(OFFER_TITLE);
   });
