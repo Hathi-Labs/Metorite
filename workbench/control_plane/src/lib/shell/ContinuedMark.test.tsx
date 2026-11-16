@@ -33,8 +33,29 @@ describe("ContinuedMark", () => {
 
   it("keeps a link for a readable source with no title", () => {
     expect(continuedMarkLine({ id: "s1", title: null })).toEqual({
-      lead: "Continued from", title: "an earlier chat", id: "s1",
+      lead: "Continued from", title: "an earlier chat", fullTitle: null, id: "s1",
     });
+  });
+
+  it("clips a long title with an ellipsis and gives the full title as the tooltip", () => {
+    const html = draw({ id: "s1", title: "A very long title about the pricing deck" });
+    expect(html).toContain('<span class="min-w-0 truncate">A very long title about the pricing deck</span>');
+    expect(html).toContain('title="Open A very long title about the pricing deck"');
+    expect(draw({ id: "s1", title: null })).toContain('title="Open the earlier chat"');
+  });
+
+  it("merges the server list after a continue, so the line shows at once", () => {
+    const dock = readFileSync(new URL("./AssistantDock.tsx", import.meta.url), "utf8");
+    const body = dock.slice(dock.indexOf("openContinued: (opened"), dock.indexOf("select: (id: string)"));
+    expect(body).toMatch(/refresh\(\);[^]*fetchAndMergeSessionsFromDb\(\)[^]*setSessions\(merged\)[^]*\.catch\(\(\) => \{\}\)/);
+  });
+
+  it("uses continuedFrom in the dock once, and never to load the old chat", () => {
+    const dock = readFileSync(new URL("./AssistantDock.tsx", import.meta.url), "utf8");
+    expect(
+      dock.match(/continuedFrom/g)?.length,
+      "a new use of continuedFrom in the dock must be reviewed: it must never load the old chat into a run context",
+    ).toBe(1);
   });
 
   it("sits in the dock under the header row, in a row of its own", () => {

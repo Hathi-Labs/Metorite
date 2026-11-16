@@ -601,6 +601,15 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       setRecoveredInput(opened.text);
       setAssistantSession(opened.sessionId);
       refresh();
+      // CO-13: the row made above holds no link. The server's list does, so
+      // merge it now and the "Continued from" line shows at once. A failed
+      // fetch stays silent, as in the effect above.
+      void fetchAndMergeSessionsFromDb()
+        .then((merged) => {
+          madeHere.current.note(merged);
+          setSessions(merged);
+        })
+        .catch(() => {});
     },
     /** Open a chat the member chose: a refusal of it is an error they see. */
     select: (id: string) => {

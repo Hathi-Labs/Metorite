@@ -20,10 +20,11 @@ export const CONTINUED_UNREADABLE = "Continued from an earlier chat";
 /** What the line says, or null for no line. `id` is null when it is plain text. */
 export function continuedMarkLine(
   mark: ChatSession["continuedFrom"],
-): { lead: string; title: string | null; id: string | null } | null {
+): { lead: string; title: string | null; fullTitle: string | null; id: string | null } | null {
   if (!mark) return null;
-  if (!mark.id) return { lead: CONTINUED_UNREADABLE, title: null, id: null };
-  return { lead: "Continued from", title: mark.title?.trim() || "an earlier chat", id: mark.id };
+  if (!mark.id) return { lead: CONTINUED_UNREADABLE, title: null, fullTitle: null, id: null };
+  const full = mark.title?.trim() || null;
+  return { lead: "Continued from", title: full || "an earlier chat", fullTitle: full, id: mark.id };
 }
 
 export function ContinuedMark({
@@ -45,12 +46,12 @@ export function ContinuedMark({
         <Button
           variant="text"
           size="none"
-          layout="inline-flex min-w-0"
-          title="Open the earlier chat"
+          layout="inline-flex min-w-0 items-center"
+          title={line.fullTitle ? `Open ${line.fullTitle}` : "Open the earlier chat"}
           onClick={() => onOpen(line.id as string)}
-          className="min-w-0 truncate text-xs underline-offset-2 hover:underline"
+          className="min-w-0 text-xs underline-offset-2 hover:underline"
         >
-          {line.title}
+          <span className="min-w-0 truncate">{line.title}</span>
         </Button>
       ) : null}
     </p>

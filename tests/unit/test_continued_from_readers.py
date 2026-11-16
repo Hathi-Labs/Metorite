@@ -23,9 +23,11 @@ function here.
 
 The web shell never names the column. It reads the ``continuedFrom`` key of
 the session list, and only the files of :data:`CAMEL_OK` may name that key.
-No context builder reads the old chat through the link: the scan above is
-the pin, because a builder that names the column is a place that ALLOWED does
-not list. The list gives the title of a source that the member can read, and
+What these scans pin: no Python file names the column outside ALLOWED, no
+Python file outside ``routes/chat.py`` names the ``continuedFrom`` key, and
+the dock names that key in one place. They do not prove that no context
+builder reads the old chat by another path. A new use in the dock needs a
+review. The list gives the title of a source that the member can read, and
 only to the member's own browser.
 
 Mutation: add ``continued_from`` to a string in another function -> red.
@@ -164,7 +166,7 @@ def _ts_files() -> list[Path]:
 
 
 def test_the_web_shell_never_names_the_column() -> None:
-    pattern = re.compile(r"continued_from")
+    pattern = re.compile(r"\bcontinued_from\b")
     bad = [
         p.relative_to(REPO).as_posix() for p in _ts_files()
         if pattern.search(p.read_text(encoding="utf-8"))
@@ -174,13 +176,34 @@ def test_the_web_shell_never_names_the_column() -> None:
 
 def test_only_the_listed_web_files_name_the_list_key() -> None:
     """CO-13: the camel key of the list is read by the merge and the header."""
-    pattern = re.compile(r"continuedFrom")
+    pattern = re.compile(r"\bcontinuedFrom\b")
     bad = [
         rel for p in _ts_files()
         if pattern.search(p.read_text(encoding="utf-8"))
         and (rel := p.relative_to(REPO).as_posix()) not in CAMEL_OK
     ]
     assert not bad, f"these web files name continuedFrom, add them to CAMEL_OK: {bad}"
+
+
+def test_the_dock_uses_continued_from_once() -> None:
+    dock = REPO / "workbench/control_plane/src/lib/shell/AssistantDock.tsx"
+    count = len(re.findall(r"continuedFrom", dock.read_text(encoding="utf-8")))
+    assert count == 1, (
+        f"the dock names continuedFrom {count} times, and 1 was reviewed. "
+        "A new use of continuedFrom in the dock must be reviewed: it must "
+        "never load the old chat into a run context."
+    )
+
+
+def test_no_python_file_outside_the_list_names_the_list_key() -> None:
+    """The ``continuedFrom`` key is made in ``routes/chat.py`` and read nowhere in Python."""
+    own = "apps/services/gateway/gateway/routes/chat.py"
+    bad = [
+        rel for path in _python_files()
+        if (rel := path.relative_to(REPO).as_posix()) != own
+        and "continuedFrom" in path.read_text(encoding="utf-8")
+    ]
+    assert not bad, f"these Python files name the continuedFrom key: {bad}"
 
 
 def test_the_co5_chip_is_still_pending_or_listed() -> None:
