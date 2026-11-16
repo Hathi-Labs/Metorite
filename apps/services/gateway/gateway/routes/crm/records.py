@@ -27,11 +27,13 @@ functions below, so there is exactly one implementation of each rule.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import name_match
 from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
@@ -704,6 +706,47 @@ async def search_records(
     # so a tie keeps the order of `SEARCH_KINDS`.
     found.sort(key=lambda pair: _activity_instant(pair[1]), reverse=True)
     return found[:limit]
+
+
+#: The names that the near lookup of the company search reads (HRD-18b,
+#: ``find_engine.md`` §4.3): each person, company and deal name, newest
+#: activity first, at most ``name_match.NEAR_VOCABULARY`` rows of each table.
+#: A converted lead is in: its deal still matches its name (``DEALS``
+#: ``related_search``). Every text is a constant of this module.
+NEAR_NAME_SQL: tuple[str, ...] = tuple(
+    f"SELECT {name} AS name FROM {table} "
+    "ORDER BY last_activity_at DESC NULLS LAST, id LIMIT :cap"
+    for table, name in (
+        ("crm_leads", "lead_name"),
+        ("crm_contacts", "concat_ws(' ', first_name, last_name)"),
+        ("crm_companies", "name"),
+        ("crm_deals", "name"),
+    )
+)
+
+
+async def near_names(
+    user: UserContext, words: list[str], k: int,
+) -> dict[str, list[name_match.NearName]]:
+    """The CRM names near each of *words*, for the company search (HRD-18b).
+
+    No route: ``retrieval/sources.py`` calls it after the CRM router's kill
+    switch and access rule, as it calls :func:`search_records`. The reads
+    share one ``_tenant_session()``, so row level security keeps them in the
+    caller's tenant. ``acb_common.name_match`` scores every word of every
+    name in Python, off the event loop. No raw SQL floor stands before it, so
+    Laxmi finds «Lakshmi» (F1 of task 3226).
+    """
+    refuse_nul([("q", " ".join(words))])
+    names: list[str] = []
+    async with _tenant_session() as db:
+        for sql in NEAR_NAME_SQL:
+            rows = (await db.execute(
+                text(sql), {"cap": name_match.NEAR_VOCABULARY},
+            )).fetchall()
+            names += [str(r.name) for r in rows if r.name]
+    return await asyncio.to_thread(
+        name_match.near_lookup, words, names, k, deadline=name_match.scoring_deadline())
 
 
 def _activity_instant(row: dict[str, Any]) -> datetime:

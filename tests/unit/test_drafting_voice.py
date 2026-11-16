@@ -120,6 +120,8 @@ MACHINE_SITES: dict[str, str] = {
     "packages/acb_llm/acb_llm/client.py::_routed_text": "transport to the Router",
     "packages/acb_llm/acb_llm/context.py::_complete_with_fallback": "transport",
     "packages/acb_llm/acb_llm/context.py::_stream_text": "transport",
+    # Task 3541: the routed arm of `_stream_text`, one answer from the Router.
+    "packages/acb_llm/acb_llm/context.py::_routed_text": "transport to the Router",
     # Embeddings.
     "apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py::_embed_batch": "embedding",
     GW + "tasks/capability.py::_embed": "embedding",
