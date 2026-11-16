@@ -252,7 +252,10 @@ window that I own or attend, each with `kind`. The entries never go into
 `rows`, because the client maps each row to a task, and the chat pages
 `rows`. With the flag off, the read runs no entry query, and the body has no
 `entries` key. It is the body of today. The client draws by `kind`. No lens
-other than the Calendar reads `calendar_entries`.
+other than the Calendar reads `calendar_entries` by SQL.
+
+The chat reads the same `entries` key through this one read. Its tool (CE-15,
+§6.7) adds no query.
 
 The read returns a cancelled entry with its `status`, and CE-8 hides it.
 It compares an all-day entry by date, on the UTC window with one day of
@@ -1614,6 +1617,36 @@ One assistant (D99), and one tool for each act:
 | `create_event` | Makes an event, with people and links | A web card. On WhatsApp, the WAC-4 buttons |
 | `update_event` | Moves, renames or changes the people of an event I own | Same |
 | `set_reminder` | Makes a `reminders` row (§5.8). A lead time on an event is `update_event` | §5.8: acts at once, with Undo |
+| `my_tasks_list_events` (CE-15) | Reads the events of my calendars in a window: the synced Google and Outlook events and my own events. Read only | None |
+
+**The read tool of CE-15 (task 3463).** `my_tasks_list_events(from_iso, to_iso,
+offset, limit)` sits in `skill_my_tasks` beside `my_tasks_list_schedule`. It
+joins the `calendar-day` pack. It calls `GET /projects/my/calendar` and reads
+the `entries` key. It adds no SQL, no route and no flag.
+
+The member comes from the run binding. The tool takes no member, org or email
+argument (R5).
+
+With no `entries` key, the tool answers with one fixed line. The key is absent
+when `CALENDAR_EVENTS` is off or the member lacks `feature:tasks`. The line
+says that calendar events are not on.
+
+The tool pages with `paged()`, and it refuses a window above the cap. Each
+entry names its provider and its `status`. A cancelled entry shows as
+cancelled. An all-day entry shows on its one day. A free entry shows as free.
+
+**The text of a stranger (CE-15).** Anyone can send an invite, and the sync
+copies its title, place and notes. So the tool returns the title and the
+place only, each cut to a set length, inside one `UntrustedFrame` block with
+its note first. It never returns notes, the join link or the provider link. A
+line that looks like the end of the block inside a title cannot close it. The
+tool is `read_only`, `idempotent` and not `open_world`.
+
+**Ruling PROPOSED, the owner decides (task 3463):** the read does NOT mark the
+chat as one that holds untrusted input (`egress.mark_untrusted_answer`). A
+mark would remove the twelve `calendar-day` writes for up to 400 days in that
+chat. The choice sits in one constant, so the other ruling is a one-line
+change, and then the slice is HIGH tier.
 
 `create_personal_task` (with `block_start` and `block_end`) and
 `set_my_overlay` stay the tools for a task block. The new tools go into
@@ -1830,6 +1863,7 @@ needs no decision change.
 | **CE-14** The setup guide | AGENT-SAFE | `docs/calendar_connect.md` (§8.1a point 10) | A member can connect each of the four account types from the text alone | `ste-lint` on the file |
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
+| **CE-15** The chat reads the events (task 3463, CHAT-REACH-1) | AGENT-SAFE to build, dark. The live effect needs `CALENDAR_EVENTS` and `feature:tasks`, an enforcement-flip, and D218 adds the owner preview. The untrusted-text ruling waits for the owner | §6.7: one read tool `my_tasks_list_events` in `skill_my_tasks`, in the `calendar-day` pack. It reads the `entries` key of `GET /projects/my/calendar`. No SQL, no route, no flag | "What is on my calendar" lists the synced Google and Outlook events with the provider of each. With no `entries` key the tool gives one fixed line and sends one request. The titles and places sit in one `UntrustedFrame` block, and notes and links never show. The tool has no identity argument. A window above the cap is refused. The pack holds 17 tools | `tests/unit/test_calendar_day_pack.py`, `test_calendar_day_held.py`, `test_pack_requests.py`, `test_studio_split_matrix.py`, `test_connector_chat_reach.py`, `test_read_tool_paging.py`, and a new `tests/unit/test_calendar_events_tool.py` |
 
 **The order.** CE-1 and CE-3 now. CE-0 is decided (D138). Then CE-4, CE-5,
 CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11 together, for Google
