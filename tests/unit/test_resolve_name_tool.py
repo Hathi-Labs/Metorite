@@ -383,6 +383,76 @@ class TestEachFormOnItsOwn:
         assert ask("Gitanjali Rao")["verdict"] == "one"
 
 
+def _person(full: str, preferred: str) -> Named:
+    """A person as the People reader builds it (`sources.person_forms`)."""
+    return Named("person", "p", preferred or full, "/people/p",
+                 forms=sources.person_forms(full, preferred))
+
+
+class TestAnInitialReadsTheFullNameOnly:
+    """Round 4, P1. The preferred-name form puts the preferred name in place of
+    the FIRST word. When the full name starts with an initial, a title or a
+    surname, that form holds two spellings of one given name, and an initial
+    took the second spelling: «K Sharath Kumar», preferred «Sharath», held
+    "Sharath S". The rule: an ask with an initial reads the full name only.
+    So no initial is ever met by the second spelling of a given name."""
+
+    @pytest.mark.parametrize(("full", "preferred", "asked", "exact"), [
+        ("K Sharath Kumar", "Sharath", "Sharath S", False),
+        ("K Sharath Kumar", "Sharath", "Sharath Kumar", True),
+        ("K Sharath Kumar", "Sharath", "Sharath K", True),
+        ("Dr. Gitanjali Rao", "Gita", "Gitanjali G", False),
+        ("Dr. Gitanjali Rao", "Gita", "Gita G", False),
+        ("Dr. Gitanjali Rao", "Gita", "Gita Rao", True),
+        ("Dr. Gitanjali Rao", "Gita", "Gitanjali Rao", True),
+        ("Rao Gitanjali", "Gita", "Gitanjali G", False),
+        ("Rao Gitanjali", "Gita", "Gita", True),
+        ("Konidela Chiranjeevi", "Chiru", "Chiranjeevi C", False),
+        ("Konidela Chiranjeevi", "Chiru", "Chiranjeevi K", True),
+        ("Konidela Chiranjeevi", "Chiru", "Chiru", True),
+        # The accepted loss of recall: "Gita R" reads «Gitanjali Rao» only.
+        ("Gitanjali Rao", "Gita", "Gita R", False),
+        ("Gitanjali Rao", "Gita", "Gitanjali R", True),
+    ])
+    def test_the_rule(self, full, preferred, asked, exact):
+        assert names.holds_name(_person(full, preferred), names.name_words(asked)) is exact
+
+    @pytest.mark.parametrize(("full", "preferred"), [
+        ("K Sharath Kumar", "Sharath"), ("Dr. Gitanjali Rao", "Gita"),
+        ("Rao Gitanjali", "Gita"), ("Konidela Chiranjeevi", "Chiru"),
+        ("Gitanjali Rao", "Gita"), ("Sharath Kumar", "Sharu"), ("S K Ramesh", "Ramesh"),
+    ])
+    def test_the_invariant_an_initial_never_reads_a_second_spelling(self, full, preferred):
+        """The fence of the invariant: for each ask that holds an initial, the
+        answer is the answer of the full name alone."""
+        record = _person(full, preferred)
+        alone = names.name_words(full)
+        words = sorted({*alone, *names.name_words(preferred)})
+        for first in words:
+            for letter in "abcdeghkmrsv":
+                for asked in ([first, letter], [letter, first]):
+                    assert names.holds_name(record, asked) == names.holds(alone, asked), asked
+
+    def test_a_sender_with_an_initial_reads_the_display_name_only(self):
+        sender = Named("sender", "sharath.kumar@x.test", "S Kumar", "/email?email=m",
+                       forms=("S Kumar", "sharath.kumar"))
+        assert not names.holds_name(sender, names.name_words("Sharath K"))
+        assert names.holds_name(sender, names.name_words("Sharath Kumar"))
+        assert names.holds_name(sender, names.name_words("S Kumar"))
+
+    def test_k_sharath_kumar_is_no_sure_match_in_the_route(self, apps):
+        apps.records["people"].append((_person("K Sharath Kumar", "Sharath"), ""))
+        answer = ask("Sharath S")
+        assert ("people", "person", "p", "exact") not in _rows(answer)
+        assert answer["verdict"] != "one"
+
+    def test_the_reader_builds_the_forms_with_the_helper(self):
+        assert sources.person_forms("Gitanjali Rao", "Gita") == ("Gitanjali Rao", "Gita Rao")
+        assert sources.person_forms("Gitanjali Rao", "") == ()
+        assert sources.person_forms("Gitanjali Rao", "Gitanjali Rao") == ()
+        assert sources.person_forms("", "Gita") == ()
+
+
 class TestTheApostrophe:
     """Round 3, P3-e: an apostrophe between two letters joins them. So
     "O'Brien" is one word, never the initial "o" and "brien"."""
@@ -639,6 +709,13 @@ class TestTheSkippedApps:
     def test_another_database_error_still_reads_failed(self, apps):
         apps.fail["email"] = _Wrapped(_OtherSqlstate("deadlock"))
         assert ask("Sharat")["skipped"] == [{"app": "email", "reason": "failed"}]
+
+    @pytest.mark.parametrize("orig", ["not an exception", 57014, object()])
+    def test_an_orig_that_is_no_exception_reads_failed(self, apps, orig):
+        """Round 4, P3: the walk reads `__cause__` only on an exception."""
+        apps.fail["email"] = _Wrapped(orig)  # type: ignore[arg-type]
+        assert ask("Sharat")["skipped"] == [{"app": "email", "reason": "failed"}]
+        assert names.reason_of(_Wrapped(orig)) == "failed"  # type: ignore[arg-type]
 
     def test_a_refused_crm_leaves_no_trace_of_a_record(self, apps):
         apps.fail["crm"] = HTTPException(status_code=403, detail="no")

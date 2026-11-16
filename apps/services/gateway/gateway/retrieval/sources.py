@@ -970,13 +970,26 @@ async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Name
     for p in rows[:k]:
         full = " ".join(str(p.get("name") or "").split())
         preferred = " ".join(str(p.get("preferred_name") or "").split())
-        forms: tuple[str, ...] = ()
-        if full and preferred and preferred != full:
-            forms = (full, " ".join([preferred, *full.split()[1:]]))
         out.append(Named("person", str(p["id"]), _title(preferred or full),
-                         f"/people/{quote(str(p['id']))}", forms=forms,
+                         f"/people/{quote(str(p['id']))}",
+                         forms=person_forms(full, preferred),
                          state=str(p.get("status") or "")))
     return out, len(rows) > k
+
+
+def person_forms(full: str, preferred: str) -> tuple[str, ...]:
+    """The forms of a person's name (FIND-5 round 3, P1): the full name FIRST,
+    then the full name with its first word replaced by the preferred name.
+    No preferred name, or one equal to the full name: no form, so the name
+    itself is the one form. Pure.
+
+    ⚠️ The second form guesses that the first word is the given name. When the
+    full name starts with an initial, a title or a surname («K Sharath
+    Kumar»), it holds two spellings of one given name. So the name test reads
+    it only for an ask with no initial (``names.holds_name``, round 4)."""
+    if not full or not preferred or preferred == full:
+        return ()
+    return (full, " ".join([preferred, *full.split()[1:]]))
 
 
 def sender_address(value: Any) -> str:

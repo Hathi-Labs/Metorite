@@ -724,6 +724,28 @@ async def test_a_preferred_name_is_one_form_and_never_mixes_with_the_full_name(
     assert mixed["verdict"] != "one"
 
 
+async def test_a_full_name_that_starts_with_an_initial_never_lends_an_initial(
+        world, flags, roomy_names) -> None:
+    """Round 4, P1: «K Venkatesh Prabhu», preferred «Venkatesh». The
+    preferred-name form holds two spellings of one given name, so an ask with
+    an initial reads the full name only. "Venkatesh V" is no exact match."""
+    p = world["p"]
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (name, preferred_name, department, source, organization_id) "
+            "VALUES ('K Venkatesh Prabhu', 'Venkatesh', 'Ops', :s, CAST(:o AS uuid))"),
+            {"s": f"near-{TAG}", "o": p.org_a})
+    person = _person(p, p.org_a, "K Venkatesh Prabhu")
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    for asked in ("Venkatesh Prabhu", "Venkatesh K", "K Venkatesh Prabhu"):
+        got = await _resolve(p, me, asked)
+        assert _rows(got) == {("people", "person", person, "exact")}, asked
+    wrong = await _resolve(p, me, "Venkatesh V")
+    assert ("people", "person", person, "exact") not in _rows(wrong)
+    assert wrong["verdict"] != "one"
+
+
 async def test_a_sender_alone_is_no_sure_match(world, flags, roomy_names) -> None:
     """Fix round, P2-c: a sender writes its own display name."""
     p = world["p"]

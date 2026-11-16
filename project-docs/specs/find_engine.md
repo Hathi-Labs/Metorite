@@ -462,7 +462,16 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
   replaced by the preferred name. So «Gitanjali Rao», preferred «Gita», holds
   "Gitanjali Rao", "Gita Rao" and "Gita". It does not hold "Gitanjali G". A
   sender has two forms: the display name, and the part of the address before
-  the `@`.
+  the `@`. `sources.person_forms` builds the forms of a person.
+- **An initial reads the first form only (round 4).** The invariant: no
+  initial is met by the second spelling of one given name. The second form of
+  a person guesses that the first word of the full name is the given name.
+  A full name can start with an initial, a title or a surname. Then that form
+  holds two spellings of one given name: «K Sharath Kumar», preferred
+  «Sharath», gives "Sharath Sharath Kumar". So an ask that holds a word of one
+  letter reads the full name only, and a sender's display name only. "Sharath
+  S" is then no exact match for «K Sharath Kumar». An ask with no initial
+  reads each form. The fence is `test_resolve_name_tool.py`.
 - **An apostrophe joins.** An apostrophe between two letters joins them into
   one word, in the name and in each form. So "O'Brien" is one word, and
   «Oscar Brien» does not hold it.
@@ -532,6 +541,15 @@ person.
   row either, because the check refuses each character of category C.
 - An apostrophe joins, so "D'Souza" does not hold «D Souza», written with no
   apostrophe.
+- **An initial loses some recall, by choice (round 4).** "Gita R" does not
+  hold «Gitanjali Rao», preferred «Gita», because an ask with an initial
+  reads the full name only. "Gitanjali R" holds it. A sender loses the same
+  way: "Sharath K" does not hold «S Kumar» <sharath.kumar@…>. No answer
+  claims a wrong match for it. The answer can only miss a record.
+- **A display name that is the address itself.** Some mail gives the address
+  as the display name. Then the first form of the sender holds the words of
+  the domain too, so a word of the domain can match the sender exactly. A
+  sender alone never gives `one`.
 - **The cap of a request.** The pack cap counts the orchestrator's own tools.
   For an org of `FIND_ORGS`, a Studio turn with the email words drops the pack
   `studio-more`, and keeps email and studio. Nothing fails. FIND-6 gives the

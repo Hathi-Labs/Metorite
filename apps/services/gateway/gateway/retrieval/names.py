@@ -176,8 +176,18 @@ def holds_name(record: Named, asked: list[str]) -> bool:
     """True when ONE form of the record's name holds each asked word, one to
     one (:func:`holds`). Never the union of two forms: then «Gita» and
     «Gitanjali Rao» would hold "Gitanjali G", the ``g`` taking «Gita»
-    (round 3, P1). Pure."""
-    return any(holds(words, asked) for words in name_forms(record))
+    (round 3, P1). Pure.
+
+    ⚠️ An ask that holds an initial (a word of one letter) reads the FIRST
+    form only: a person's full name, or a sender's display name (round 4,
+    P1). A later form can hold two spellings of one given name: «K Sharath
+    Kumar», preferred «Sharath», gives "Sharath Sharath Kumar". So no initial
+    is ever met by the second spelling of a given name. The cost: "Gita R"
+    does not hold «Gitanjali Rao», preferred «Gita»."""
+    forms = name_forms(record)
+    if any(len(word) == 1 for word in asked):
+        forms = forms[:1]
+    return any(holds(words, asked) for words in forms)
 
 
 def holds(words: list[str], asked: list[str]) -> bool:
@@ -261,10 +271,11 @@ def _cancelled(exc: BaseException) -> bool:
     ``QueryCanceled`` (psycopg) or ``QueryCanceledError`` (asyncpg). This
     package imports no database module, so it reads the attributes only."""
     seen: list[BaseException] = []
-    todo: list[BaseException | None] = [exc]
+    todo: list[Any] = [exc]
     while todo:
         item = todo.pop()
-        if item is None or any(item is s for s in seen) or len(seen) > 8:
+        # An `orig` can be any value. Only an exception has a cause to read.
+        if not isinstance(item, BaseException) or any(item is s for s in seen) or len(seen) > 8:
             continue
         seen.append(item)
         if (type(item).__name__ in ("QueryCanceled", "QueryCanceledError")
