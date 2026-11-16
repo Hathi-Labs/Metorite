@@ -205,6 +205,7 @@ def test_a_plain_late_approve_reads_as_before(edit_on, ask_db, liveness, no_pers
 _BODY = json.dumps({"edit": FORM_VALUES})
 _ESCAPED = _BODY.replace('"edit"', '"ed\\u0069t"', 1)
 _PRETTY = json.dumps({"edit": FORM_VALUES}, indent="\t")
+_TWICE = '{"edit": ' + json.dumps(FORM_VALUES) + ', "edit": ' + json.dumps(FORM_VALUES) + "}"
 _DEEP = '{"edit": ' + "[" * 100_000 + "]" * 100_000 + "}"
 _LONG = json.dumps({"edit": {**FORM_VALUES, "description": "d" * tc.MAX_TASK_EDIT_ANSWER}})
 
@@ -242,7 +243,7 @@ def test_an_answer_that_the_shape_test_refuses_is_refused_by_the_live_parser() -
     long, too deep, a key twice, NaN, trailing text): the live parser refuses
     each one too, so none of them is an edit answer anywhere."""
     for body in ('{"edit": {"due": "2026', _DEEP, _LONG, _BODY + " and more",
-                 '{"edit": %s, "edit": %s}' % (json.dumps(FORM_VALUES), json.dumps(FORM_VALUES)),
+                 _TWICE,
                  _BODY.replace("false", "NaN")):
         answer = "APPROVE " + body
         assert not tc.is_task_edit_answer(answer)
@@ -256,7 +257,7 @@ _BODIES = (
     json.dumps({"edit": {**FORM_VALUES, "description": "caf" + chr(0xE9) + " " + chr(0x2028) + " line"}}),
     json.dumps({"edit": {**FORM_VALUES, "description": "caf" + chr(0xE9)}}, ensure_ascii=False),
     _BODY + "   ", _BODY + "\n", _BODY + " x", "\t" + _BODY,
-    '{"edit": %s, "edit": %s}' % (json.dumps(FORM_VALUES), json.dumps(FORM_VALUES)),
+    _TWICE,
     _BODY.replace("false", "NaN"),
     '{"edit": ' + "[" * 5000 + "]" * 5000 + "}",
     '{"\\u0065dit": ' + json.dumps(FORM_VALUES) + "}",
