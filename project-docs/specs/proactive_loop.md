@@ -626,7 +626,7 @@ Redis key through `acb_common.tenant_redis` (R5).
   needs card out of the feed. A needs card is `feed_decide.is_needs_card`, by
   its main kind or its folded kind. At worst a muted needs card goes to Later.
   Dismiss, Snooze and "Not useful" on one card still hide that card. The
-  affinity of a needs card never goes below 0 in the score, so the per-app cut
+  affinity of a needs card never goes below 0 in the score. So the per-app cut
   of `feed_rank.order` cannot drop it under a kind of lower base.
 - **P4, the mute key.** A mute keys on the main kind of the card.
 - **P5, the flag off.** With the flag off, the feed answers the same bytes,
@@ -638,9 +638,9 @@ Redis key through `acb_common.tenant_redis` (R5).
   gives 0.
 
 **Who reads the learned feed (found by the review of LOOP-4a).** The learned
-join also feeds the reach loop, the briefs and the chat brief, because they all
-call `feed.feed_cards`. A muted kind leaves those too, and a muted needs card in
-Later is no interrupt and is in no brief. This is intended for a mute, and LOOP-5
+join also feeds the reach loop, the briefs and the chat brief. The reach loop
+calls `feed.feed_cards`, and the briefs call it through `loop.snapshot`. A muted kind leaves those too, and a muted needs card in
+Later is no interrupt and is in no brief. A mute is meant to do this. LOOP-5
 (§7.3) owns the rest of the reach effect. The flag paragraphs must say it.
 
 The count read must add the bound-org predicate to `_HABITS_SQL`
