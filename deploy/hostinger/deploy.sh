@@ -35,26 +35,22 @@ acb_compose() {
 say "Pulling images"
 acb_compose pull
 
-# ── Memory-layer: disabled by default on 4GB VPS to save ~500MB RAM ──
-# MEM0 (episodic) still works via Postgres+pgvector without Neo4j.
-# Re-enable GRAPHITI_ENABLED=true + --profile memory after upgrading VPS.
-say "Ensuring memory-layer env vars (Neo4j disabled for low-memory VPS)"
+# ── Memory-layer: OFF on every deploy (2449 S1, owner rule 2026-11-08) ──
+# Mem0 and Graphiti call an embeddings vendor with their own key. Every AI
+# call goes through the operator console, so both stay off until 2449 S2 moves
+# their embeddings to the console. The deploy FORCES the value on each run: a
+# line that says true is written back as false. A missing line is added as
+# false. Fence: tests/unit/test_no_direct_ai_vendor_calls_web.py.
+say "Forcing the memory-layer flags off (MEM0_ENABLED, GRAPHITI_ENABLED)"
 ENV_FILE="/opt/acb/app/.env"
 for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
-  if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
-    case "$_var" in
-      # WS-17 EM-G11f3: a missing line means OFF. Mem0 on is an owner act (WS-7).
-      MEM0_ENABLED)       echo "MEM0_ENABLED=false" >> "$ENV_FILE" ;;
-      GRAPHITI_ENABLED)   echo "GRAPHITI_ENABLED=false" >> "$ENV_FILE" ;;
-    esac
-    printf "    + added %s to .env\n" "$_var"
+  if grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i "s/^${_var}=.*/${_var}=false/" "$ENV_FILE"
+  else
+    echo "${_var}=false" >> "$ENV_FILE"
   fi
+  printf "    = %s=false in .env\n" "$_var"
 done
-# Ensure GRAPHITI stays off for this VPS size (idempotent)
-if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
-  sed -i 's/^GRAPHITI_ENABLED=true/GRAPHITI_ENABLED=false/' "$ENV_FILE"
-  say "Disabled GRAPHITI (Neo4j) — saves ~500MB RAM; re-enable after VPS upgrade"
-fi
 
 say "Ensuring public-URL env vars"
 # H-13(a). This block used to also seed MICROSOFT_TENANT_ID /
