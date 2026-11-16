@@ -3,8 +3,8 @@
 Spec: ``project-docs/specs/chat_run_continuity.md`` S2 item 8, and
 ``chat_failure_modes.md`` row C6 and slice HRD-22 (task 3231). D-HRD-7 is the
 rule, and it is PROPOSED. Dark behind ``CHAT_LATE_APPROVE_ORGS`` (empty, off).
-Off, nothing here reads or writes Redis, so each card and each message is as
-before.
+With it and ``CHAT_RESUME_ORGS`` both off, nothing here reads or writes Redis,
+so each card and each message is as before.
 
 **The failure (production, 2026-11-14).** A member approved a parked card ten
 minutes late. The answer started a new run, which planned again, called the
@@ -39,10 +39,19 @@ card with another act never reads, uses or removes it (:func:`act_of`).
 the act as SPENT on its offer key, and removes its grant (:func:`note_approved`).
 So a stale twin card of the same act, parked earlier, never acts on a late
 approve after the act ran. A decline, a REJECT and the park race drop the offer
-(:func:`drop_offer`). The mark is ONE ``SET … GET``, so of two approves at the
-same moment one only takes the act. It lives as long as a row
+(:func:`drop_offer`). The drop is ONE compare-and-delete that keeps a SPENT
+mark (RESUME-2a follow-up, P2-1). The mark is ONE ``SET … GET``, so of two
+approves at the same moment one only takes the act. It lives as long as a row
 (:func:`spent_ttl_s`). The stored-call yes of RESUME-2a takes the act with
-:func:`claim_act`, which fails closed.
+:func:`claim_act`, which fails closed and tells a SPENT act from an unknown
+one (P2-3).
+
+**Who writes the mark** (P2-2). A live approve and a claim write the SPENT
+mark when ``CHAT_LATE_APPROVE_ORGS`` OR ``CHAT_RESUME_ORGS`` names the org
+(:func:`_run_scope` with ``spend=True``). So a live approve while only RESUME
+is on still marks the act, and an org that joins the late-approve list later
+finds the mark. The offer and the grant stay behind ``CHAT_LATE_APPROVE_ORGS``
+alone.
 
 **The cards that take a grant.** A plain confirmation card only: no rows, no
 reply form and no held send id (the gate checks these). The card is not cut:
@@ -95,6 +104,14 @@ _OP_TIMEOUT_S = 2.0
 _VERSION = 1
 #: The value of an offer key whose act ran. It reads as no offer.
 _SPENT = json.dumps({"v": _VERSION, "spent": True}, separators=(",", ":"))
+
+#: What :func:`claim_act` gives (RESUME-2a follow-up, P2-3). TAKEN: this call
+#: took the act, and only then may the tool write. SPENT: another approve took
+#: the act already. UNKNOWN: no scope, no act or a Redis fault, so nobody can
+#: say if the act ran. Each answer but TAKEN shows the card (fail closed).
+CLAIM_TAKEN = "taken"
+CLAIM_SPENT = "spent"
+CLAIM_UNKNOWN = "unknown"
 
 #: The module of an agent that the loader imports for ONE run
 #: (``acb_skills.loader``: ``_agent_<run id>_agents``). The name changes with
@@ -452,7 +469,12 @@ async def drop_offer(org: str, member: str, thread_id: str, request_id: str) -> 
     """Drop the offer of the card *request_id*: its row left ``parked`` with
     no approve (a decline, a REJECT, an answer during the park). A twin card
     of the same act loses the offer too, so it shows its card: the safe side.
-    A SPENT mark stays. Off, it does nothing. Never raises."""
+    A SPENT mark stays. Off, it does nothing. Never raises.
+
+    The test and the delete are ONE step (``TenantRedis.delete_unless``, a
+    fixed Lua script). A GET and then a DELETE let a twin's ``claim_act``
+    write SPENT between the two, and the DELETE then removed the mark, so
+    the next twin wrote the act again (RESUME-2a follow-up, P2-1)."""
     try:
         who = str(member or "").strip().lower()
         if not org or "@" not in who or not thread_id or not late_approve_on(org):
@@ -464,9 +486,8 @@ async def drop_offer(org: str, member: str, thread_id: str, request_id: str) -> 
             digest = _text(await _call(redis.getdel(
                 key(ASK_NAMESPACE, who, thread_id, request_id))))
             if digest:
-                okey = key(OFFER_NAMESPACE, who, thread_id, digest)
-                if not _is_spent(await _call(redis.get(okey))):
-                    await _call(redis.delete(okey))
+                await _call(redis.delete_unless(
+                    key(OFFER_NAMESPACE, who, thread_id, digest), _SPENT))
     except Exception as exc:
         _log.warning("late_approve.drop_failed", request_id=_short(request_id),
                      error_type=type(exc).__name__)
@@ -537,10 +558,29 @@ async def grant_from_offer(org: str, member: str, row: Mapping[str, Any], answer
 
 # ── Step 3: the use (the card gate, before the card goes out) ────────────────
 
-def _run_scope() -> tuple[str, str, str] | None:
-    """``(org, member, thread)`` of this run with the flag on, or None."""
+def _resume_on(org: str) -> bool:
+    """True when ``CHAT_RESUME_ORGS`` names *org*: the one reader
+    (``stored_call.chat_resume_on``), never a copy. A fault reads False."""
+    try:
+        from acb_skills.stored_call import chat_resume_on
+
+        return bool(chat_resume_on(org))
+    except Exception:
+        return False
+
+
+def _run_scope(*, spend: bool = False) -> tuple[str, str, str] | None:
+    """``(org, member, thread)`` of this run with the flag on, or None.
+
+    *spend* is True only for a writer of the SPENT mark (:func:`claim_act`,
+    :func:`note_approved`). Then ``CHAT_RESUME_ORGS`` opens the scope too
+    (RESUME-2a follow-up, P2-2). A live approve while only RESUME is on
+    still marks the act, so a later flip of ``CHAT_LATE_APPROVE_ORGS`` never
+    lets an old twin card write again. The grant (:func:`take_grant`) keeps
+    ``CHAT_LATE_APPROVE_ORGS`` alone, so the members that get a grant do not
+    change."""
     org = _run_org()
-    if not org or not late_approve_on(org):
+    if not org or not (late_approve_on(org) or (spend and _resume_on(org))):
         return None
     member, thread = _run_member(), _run_thread()
     if "@" not in member or not thread:
@@ -592,42 +632,49 @@ async def take_grant(card: Any) -> bool:
     return True
 
 
-async def claim_act(card: Any) -> bool:
-    """True when THIS call takes the act of *card*: it marks the act SPENT,
-    and the act was not SPENT before (RESUME-2a). The stored-call yes
-    (``stored_call.resume_answer``) is the one caller. It writes only on True.
+async def claim_act(card: Any) -> str:
+    """Take the act of *card* for THIS call (RESUME-2a). It marks the act
+    SPENT, and gives :data:`CLAIM_TAKEN` only when the act was not SPENT
+    before. The stored-call yes (``stored_call.resume_answer``) is the one
+    caller. It writes only on :data:`CLAIM_TAKEN`.
 
     The mark and the test are ONE ``SET … GET`` (:func:`_spend`). So the
     stored calls of two twin rows that the member approves at the same moment
     take the act once, and a twin row that waits longer than the mark finds
-    it still there (:func:`spent_ttl_s`). It fails CLOSED: a run with no scope
-    (the flag off, no verified member or no thread), a card with no act, and a
-    fault each give False, and the card shows. Never raises."""
+    it still there (:func:`spent_ttl_s`).
+
+    Three answers (follow-up P2-3). :data:`CLAIM_SPENT`: the act was SPENT
+    already. :data:`CLAIM_UNKNOWN`: a run with no scope (both flags off, no
+    verified member or no thread), a card with no act, or a fault. Nobody
+    can then say if the act ran, so the note must not say that it ran. Each
+    answer but :data:`CLAIM_TAKEN` shows the card (fail closed). Never
+    raises."""
     try:
-        scope = _run_scope()
+        scope = _run_scope(spend=True)
         if scope is None:
-            return False
+            return CLAIM_UNKNOWN
         org, member, thread = scope
         act = act_of(card, _run_agent())
         if act is None:
-            return False
+            return CLAIM_UNKNOWN
         from acb_common.tenant_redis import organization_scope
 
         with organization_scope(org):
             spent = await _spend(_redis(), member, thread, act.digest)
     except Exception as exc:
         _log.warning("late_approve.claim_act_failed", error_type=type(exc).__name__)
-        return False
-    return not spent
+        return CLAIM_UNKNOWN
+    return CLAIM_SPENT if spent else CLAIM_TAKEN
 
 
 async def note_approved(card: Any) -> None:
     """The member approved *card* live: its act runs now. Mark the act SPENT
     and remove its grant, so no stale twin card of it, parked earlier, acts on
-    a late approve (review of HRD-22, P1). Off, it does nothing. Never
-    raises."""
+    a late approve (review of HRD-22, P1). It writes when either flag names
+    the org (:func:`_run_scope` with ``spend=True``, P2-2). With both off it
+    does nothing. Never raises."""
     try:
-        scope = _run_scope()
+        scope = _run_scope(spend=True)
         if scope is None:
             return
         org, member, thread = scope
@@ -645,6 +692,9 @@ async def note_approved(card: Any) -> None:
 __all__ = [
     "APPROVE",
     "ASK_NAMESPACE",
+    "CLAIM_SPENT",
+    "CLAIM_TAKEN",
+    "CLAIM_UNKNOWN",
     "GRANT_NAMESPACE",
     "GRANT_TTL_S",
     "OFFER_NAMESPACE",
