@@ -1051,19 +1051,17 @@ def draft_failure(exc: BaseException) -> tuple[int, str]:
     failure say to try again. No copy holds the error text, because it can
     name a vendor, a key or an account.
     """
-    try:
-        from acb_llm.routed import OUT_OF_CREDITS, RoutedRefusal  # noqa: PLC0415
-    except ImportError:  # pragma: no cover — acb_llm ships with the gateway
-        return 503, DRAFT_FAILED_COPY
+    # `acb_llm.routed`, never `acb_auth.console_resolve`: that module has a
+    # fixed set of callers (`test_console_dependency_boundary.py`).
+    from acb_llm.routed import (  # noqa: PLC0415
+        OUT_OF_CREDITS,
+        RoutedRefusal,
+        is_router_outage,
+    )
+
     if isinstance(exc, RoutedRefusal) and exc.status == 402:
         return 402, OUT_OF_CREDITS
-    try:
-        from acb_auth.console_resolve import (  # noqa: PLC0415
-            ConsoleRouterUnavailable,
-        )
-    except ImportError:  # pragma: no cover
-        ConsoleRouterUnavailable = ()  # type: ignore[assignment]
-    if ConsoleRouterUnavailable and isinstance(exc, ConsoleRouterUnavailable):
+    if is_router_outage(exc):
         return 503, DRAFT_UNAVAILABLE_COPY
     return 503, DRAFT_FAILED_COPY
 

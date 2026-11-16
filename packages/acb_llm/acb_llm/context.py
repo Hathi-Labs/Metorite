@@ -592,9 +592,11 @@ async def _routed_text(
 ) -> tuple[str, str]:
     """The streaming arm when routing is on: ONE answer from our Router.
 
-    The Router cannot stream yet (CP-4b answers 501), so this asks for the
-    whole answer and hands it to ``on_delta`` as one delta: the reasoning
-    first, if the model sent any, then the content. The total bound still
+    The Router streams (CP-4b), but ``acb_llm`` has no client that parses its
+    frames yet (``stream_completion_on_console`` feeds only the ``/v1``
+    relay). So this asks for the whole answer and hands it to ``on_delta`` as
+    one delta: the reasoning first, if the model sent any, then the content.
+    Task 3542 makes it stream. The total bound still
     holds. An answer past it raises :class:`StreamTotalTimeout`, as a stream
     past it does. The first-chunk and idle bounds do not apply, because a
     whole answer has no chunks.
