@@ -174,6 +174,18 @@ describe("the words of a row", () => {
     expect(rowDetail(blocked)).toBe(
       "Blocked by #9 Design the bracket for under an hour. It is in the backlog, and nobody holds it.",
     );
+    const many = row({
+      ...blocked,
+      blockers: [
+        { id: "b1", number: 9, title: "Design the bracket" },
+        { id: "b2", number: 10, title: "Order steel" },
+      ],
+      blocker_count: 2,
+    });
+    const text = rowDetail(many);
+    expect(text).toContain("Blocked by 2 tasks");
+    expect(text).toContain("Design the bracket");
+    expect(text).toContain("Order steel");
   });
 
   it("names the owner, the caller as You, and no owner", () => {
@@ -315,7 +327,7 @@ describe("the page wires the lens", () => {
   });
 
   it("selects no view mode while the lens is on, on both switches", () => {
-    expect(src).toMatch(/const shownMode: ViewMode \| null = attentionLens \? null : mode;/);
+    expect(src).toMatch(/const shownMode: ViewMode \| null = attentionLens \|\| agentsLens \? null : mode;/);
     expect(src.match(/mode=\{shownMode\}/g)?.length).toBe(2);
     const html = renderToStaticMarkup(
       createElement(ModeSwitch<"board" | "list">, {

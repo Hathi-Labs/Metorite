@@ -345,8 +345,12 @@ async def test_the_aggregate_with_no_group_prints_one_line(monkeypatch) -> None:
         field_filters={"Invoice_Date.from": "2026-10-01", "Invoice_Date.to": "2026-10-31"},
     )
     # WS-53 §18.16 part 7: the total, then each filter that it read.
+    # CRM-Q25e part 4: a total of a lakh and more gets its display value
+    # in the number system of the run (indian outside a run).
     assert out == ("Invoices, sum of Total_Invoice_Amount: INR 123,456 across 42 matching "
-                   "records.\nFilters: Invoice_Date from 2026-10-01 to 2026-10-31.")
+                   "records.\nDisplay: ₹1,23,456 (₹1.23\xa0L). Quote this display value for "
+                   "the total, as written.\n"
+                   "Filters: Invoice_Date from 2026-10-01 to 2026-10-31.")
     sent = next(c["params"] for c in calls if c["path"] == "/crm/aggregate")
     assert "group_by" not in sent and "group_field" not in sent
     assert sent["field.Invoice_Date.from"] == "2026-10-01"
@@ -483,12 +487,12 @@ def test_the_translator_marks_a_refusal_failed_and_keeps_its_text() -> None:
 
 
 def test_the_tier2_shim_asks_the_same_function_before_the_steer() -> None:
-    """The shim of ``executor.py`` marks a refusal failed, and it asks before
-    the steer text joins the result (that text could come first)."""
+    """The shim of ``executor.py`` marks a refusal failed. Since task 2494 no
+    steer text joins a tool result, so the shim asks on the tool's own text."""
     source = (REPO / "apps" / "services" / "orchestrator" / "orchestrator"
               / "executor.py").read_text(encoding="utf-8")
-    at = source.index("refused = is_refusal(result)")
-    assert at < source.index("result = decorate_tool_result(result, thread_id)", at)
+    assert "refused = is_refusal(result)" in source
+    assert "decorate_tool_result" not in source
     assert '"success": not refused,' in source
     assert '"success": not _is_refusal(result),' in source
 

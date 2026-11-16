@@ -40,6 +40,14 @@ from acb_common.tool_refusals import (
 # WS-17 EM-G11d (UMCC): each text that a sender wrote reaches the model inside
 # the ONE frame of ``acb_skills.untrusted``. No tool builds a marker itself.
 # Fence: ``tests/unit/test_untrusted_frame.py``.
+from acb_skills.ask_tools import (
+    CARD_NOT_SHOWN,
+    CARD_OTHER_MEMBER,
+    CLOSED_BY_YOUR_MESSAGE,
+    card_not_done_text,
+    card_outcome_head,
+    card_outcome_text,
+)
 from acb_skills.untrusted import UntrustedFrame
 
 # H-236: every tool states ``open_world``, and a tool that omits it counts as
@@ -152,16 +160,13 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> bo
 #: when no card can show. A scheduled run, a batch run and a WhatsApp run
 #: with writes off have no card channel, so the card answers "no" at once.
 #: A WhatsApp run with writes on has a reply path: the card of an email act
-#: parks for the member's reply code (H-391, :func:`_wa_parked`). The member refused
-#: nothing, so the answer is never "Cancelled". It sends the member to the
-#: Chat app or the Email app, which both show the card (EM-G11c1b,
-#: §12.3.13.6b). It never names a chat as a place with no card.
-#: It starts "Nothing changed.", which ``noActionOf`` in
-#: ``EmailToolCards.tsx`` draws as an act that did not happen.
-_NO_CARD_CHANNEL = (
-    "Nothing changed. This needs your approval on a card, and a card cannot "
-    "show here. Ask for it in the Chat app or the Email app."
-)
+#: parks for the member's reply code (H-391, :func:`_wa_parked`). The member
+#: refused nothing, so the answer is never a decline. It sends the member to
+#: the web app, which shows the card (EM-G11c1b, §12.3.13.6b). It never names
+#: a chat as a place with no card. HRD-7: the words are
+#: ``ask_tools.CARD_NOT_SHOWN`` of the one table of card outcomes, and
+#: ``noActionOf`` in ``EmailToolCards.tsx`` draws its lead as "Nothing changed".
+_NO_CARD_CHANNEL = card_outcome_text(CARD_NOT_SHOWN)
 
 
 def _card_channel_open() -> bool:
@@ -186,25 +191,37 @@ def _wa_parked() -> str | None:
 
 
 async def _card_refusal(
-    title: str, detail: str, cancelled: str, context: str = "",
+    title: str, detail: str, act: str, context: str = "",
 ) -> str | None:
     """None when the member approves the card. Else the answer of the tool.
 
-    The one gate of EM-G11c1. A "no" in a live chat answers *cancelled*. A run
-    with no card channel answers ``_NO_CARD_CHANNEL``. ``request_confirmation``
-    fails closed in both, so the tool writes nothing. A card that waits for
-    the member's code on WhatsApp answers that it waits (H-391)."""
+    The one gate of EM-G11c1. A card in a live chat that did nothing answers
+    :func:`_not_done` with *act*, the sentence that names what did not happen.
+    A run with no card channel answers ``_NO_CARD_CHANNEL``.
+    ``request_confirmation`` fails closed in both, so the tool writes nothing.
+    A card that waits for the member's code on WhatsApp answers that it waits
+    (H-391)."""
     if await _confirm_destructive(title=title, detail=detail, context=context):
         return None
-    return _unapproved_line() or cancelled
+    return _unapproved_line() or _not_done(act)
+
+
+def _not_done(act: str = "") -> str:
+    """The answer of a card in a live chat that did nothing (HRD-7).
+
+    The words come from the one table of card outcomes, for the outcome of the
+    last card (``ask_tools.card_not_done_text``): declined, timed out, or
+    another member answered. *act* names what did not happen, such as "The
+    rule was not deleted." So a timeout never reads as the member's no."""
+    return card_not_done_text(act)
 
 
 def _unapproved_line() -> str | None:
     """The answer of a tool whose card got no approval, or None for a "no".
 
     A card that waits for the member's code on WhatsApp says so (H-391). A
-    run with no card channel answers ``_NO_CARD_CHANNEL``. A "no" of a
-    member in a live chat is None, and the tool says what it cancelled."""
+    run with no card channel answers ``_NO_CARD_CHANNEL``. A card in a live
+    chat that did nothing is None, and the tool answers :func:`_not_done`."""
     return _wa_parked() or (None if _card_channel_open() else _NO_CARD_CHANNEL)
 
 
@@ -335,8 +352,11 @@ class GatewayError(GatewayRefusal):
         fields: tuple[str, ...] = (),
         route: str = "",
         reason: str = "",
+        code: str = "",
     ) -> None:
-        super().__init__(message, status=status, detail=detail, fields=fields, route=route)
+        super().__init__(
+            message, status=status, detail=detail, fields=fields, route=route,
+            code=code)
         self.reason = reason
 
 
@@ -363,9 +383,11 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         return
     detail = ""
     reason = ""
+    code = ""
     try:
         body = resp.json()
         if isinstance(body, dict):
+            code = str(body.get("code") or "")[:64]
             detail = str(body.get("detail") or body.get("error") or "")
             raw = body.get("detail")
             if isinstance(raw, dict):
@@ -383,6 +405,7 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         fields=fields,
         route=route_template(path),
         reason=reason,
+        code=code,
     )
 
 
@@ -921,7 +944,7 @@ async def update_account(
             "It removes the mailbox and all its synced mail, rules and settings from "
             "Metorite. The mail at the provider stays. To use it again, connect it "
             "again in the Email app.",
-            "Cancelled — the mailbox stays connected.",
+            "The mailbox stays connected.",
         )
         if refusal:
             return refusal
@@ -950,7 +973,7 @@ async def update_account(
     refusal = await _card_refusal(
         f"Change the mailbox {where}?",
         "Each change is in the list below. It changes nothing at the provider.",
-        "Cancelled — the mailbox was not changed.",
+        "The mailbox was not changed.",
         "\n".join(lines),
     )
     if refusal:
@@ -1648,6 +1671,25 @@ async def get_account_overview(account_id: str, days: int = 30) -> str:
     return "\n".join(lines)
 
 
+def _near_sender_line(near: Any, *, found: bool) -> str:
+    """The line of a sender filter that the route answered with its near
+    spelling (HRD-18b), or ``""``. The route sends ``near`` only with
+    ``FIND_ORGS`` on, so with it off the answer does not change. A sender
+    chooses the name, so each value stays on one line, with no guillemet."""
+    if not isinstance(near, dict):
+        return ""
+    word = _one_line(near.get("word"), 80).replace("«", "").replace("»", "")
+    spelt = _one_line(near.get("as"), 80).replace("«", "").replace("»", "")
+    if not word or not spelt:
+        return ""
+    if found:
+        return f"No mail from «{word}». Mail from the near spelling «{spelt}»:"
+    # The near sender may have mail that the other filters leave out, so the
+    # line claims only what the read shows.
+    return (f"No mail from «{word}». No mail from the near spelling «{spelt}» "
+            "matches these filters.")
+
+
 @_annotate_risk(open_world=False)
 async def query_inbox(
     account_id: str | None = None,
@@ -1700,6 +1742,9 @@ async def query_inbox(
         params["sender_category"] = sender_category
     if from_email:
         params["from_email"] = from_email
+        # HRD-18b: a sender that finds no mail tries its near spelling. Only
+        # this tool asks for it, and the route also needs FIND_ORGS on.
+        params["near_sender"] = "true"
     if unread_only:
         params["is_read"] = "false"
     if starred_only:
@@ -1711,13 +1756,18 @@ async def query_inbox(
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
     total = data.get("total", 0)
+    # The total, not the page: a page past the end holds no row of a total
+    # that is not zero (review of 2026-11-16).
+    near = _near_sender_line(data.get("near"), found=bool(total))
     if not emails:
-        return page_line(total, start, 0) or "No emails matched those filters."
+        empty = page_line(total, start, 0) or "No emails matched those filters."
+        return f"{near}\n{empty}" if near else empty
     shown = emails
     labels = {} if account_id else await _account_labels()
     multi = len(labels) > 1
     where = " in All inboxes" if multi else ""
-    lines = [f"Found {total} emails{where} ({query or 'filtered'}); showing {len(shown)}:"]
+    lines = [near] if near else []
+    lines.append(f"Found {total} emails{where} ({query or 'filtered'}); showing {len(shown)}:")
     for e in shown:
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
@@ -2133,16 +2183,16 @@ async def _inbox_card(
     noun = "message" if n == 1 else "messages"
     mailbox, where, context = await _inbox_card_parts(message_ids)
     in_box = f" in {mailbox}" if mailbox else ""
-    cancelled = "Cancelled — nothing changed in the mailbox."
+    unchanged = "Nothing changed in the mailbox."
     if action == "trash":
         # The trash card of before EM-G11c1, with the mailbox and the list.
         title = f"Move {n} {noun} to Trash?"
         detail = f"They leave the inbox and go to the Trash folder. {where}"
-        cancelled = "Cancelled — nothing was moved to Trash."
+        unchanged = "Nothing was moved to Trash."
     elif action == "spam":
         title = f"Move {n} {noun}{in_box} to Spam?"
         detail = f"They leave the folder they are in now and go to Junk. {where}"
-        cancelled = "Cancelled — nothing was moved to Spam."
+        unchanged = "Nothing was moved to Spam."
     elif action == "move":
         title = f"Move {n} {noun}{in_box} to the folder '{_card_name(folder)}'?"
         detail = f"They leave the folder they are in now. {where}"
@@ -2157,7 +2207,7 @@ async def _inbox_card(
     else:
         title = f"Apply '{_card_name(action)}' to {n} {noun}{in_box}?"
         detail = where
-    return await _card_refusal(title, detail, cancelled, context)
+    return await _card_refusal(title, detail, unchanged, context)
 
 
 @_annotate_risk(destructive=True, open_world=False)
@@ -2348,9 +2398,11 @@ async def draft_reply(
 # parameter makes it an egress tool again. Fence:
 # ``tests/unit/test_email_chat_reply.py``.
 
-#: The answer of a reply card that the member discarded. The member's click
-#: also trashes the draft that the card wrote, unless the member edited it.
-_REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent."
+#: What a reply card that closed with no Send and no Save did not do. The
+#: words before it come from the one table of card outcomes (HRD-7): Discard
+#: is a decline, and its click also trashes the draft that the card wrote,
+#: unless the member edited it. A timeout keeps the draft.
+_REPLY_NOT_SENT = "The reply was not sent."
 
 #: The answer of a reply card that closed with no answer, when the card's
 #: draft is no longer in Drafts (owner report, 2026-11-03). The tool cannot
@@ -2450,9 +2502,10 @@ async def _card_draft_gone(draft_id: str) -> bool:
 async def _closed_card_line(form: dict[str, Any], kept: str) -> str:
     """The answer of a reply card that closed with no Send and no Save.
 
-    Discard and a timeout look the same here, so the tool trashes nothing.
-    The member's Discard click posts its own trash of the card's draft
-    (``ReplyCardForm``), and a timeout keeps the draft. 2026-11-03: a card
+    HRD-7: the outcome of the card tells Discard (a decline) from a timeout,
+    and the words come from the one table of card outcomes. The tool trashes
+    nothing. The member's Discard click posts its own trash of the card's
+    draft (``ReplyCardForm``), and a timeout keeps the draft. 2026-11-03: a card
     whose draft left Drafts closes this way too. The member can have sent
     that draft from the Email app, so the tool then says neither
     "discarded" nor "nothing was sent". A state that cannot be read, and a
@@ -2463,11 +2516,11 @@ async def _closed_card_line(form: dict[str, Any], kept: str) -> str:
     if form.get("draft_unsaved") is True:
         return _REPLY_CLOSED_UNSAVED + kept
     draft_id = str(form.get("draft_id") or "")
-    if not draft_id:
-        return _REPLY_DISCARDED + kept
-    lines = {"in": _REPLY_DISCARDED, "gone": _REPLY_CLOSED_DRAFT_GONE,
-             "unknown": _REPLY_CLOSED_STATE_UNKNOWN}
-    return lines[await _card_draft_state(draft_id)] + kept
+    state = await _card_draft_state(draft_id) if draft_id else "in"
+    if state == "in":
+        return _not_done(_REPLY_NOT_SENT + kept)
+    lines = {"gone": _REPLY_CLOSED_DRAFT_GONE, "unknown": _REPLY_CLOSED_STATE_UNKNOWN}
+    return lines[state] + kept
 
 
 #: Added to the answer when the member's own draft of the email stays in
@@ -2475,33 +2528,110 @@ async def _closed_card_line(form: dict[str, Any], kept: str) -> str:
 _KEPT_DRAFT = (" Your earlier draft of this email stays in Drafts as it was, and "
                "the new text is a second draft beside it.")
 
-#: The answer of a send card that the member wrote over in the chat
-#: (``ask_tools.REVISED``). Their words follow this result.
-_CARD_REVISED = (
-    "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent. The draft of this reply in Drafts holds the "
-    "text of the card, and a new card updates it. Read the member's words below. If "
-    "they change this mail, change it, keep every part they did not ask to "
-    "change, and show a new card with the new text. If they ask about "
-    "something else, answer that first, then ask whether to show the card "
-    "again. If they ask to copy people, find each person with find_contact, "
-    "and ask with ask_questions when names clash. Then call compose_reply "
-    "again with ALL the people in cc, in ONE call, so ONE card shows them. "
-    "The card keeps every person of the email, the Cc of the email "
-    "included, so never drop one. \"X and Y\" means one mail to both. For a "
-    "Bcc, call compose_reply again with the person in bcc, or add it to the "
-    "draft with edit_draft and offer send_draft. "
-    "Never send the member to the Email app for it.")
+# ── HRD-8a: a card that a chat message closed keeps its act ─────────────────
+#
+# Task 2987 (``chat_failure_modes.md`` C2). On 2026-11-11 the owner asked to
+# forward a mail with a note, and wrote in the chat while the card was open.
+# The forward answered with the text of a reply card, which said "call
+# compose_reply again". The redraft became a NEW mail. So each email card
+# answers with the text of its own act, and the text names the one tool that
+# does that act again. Only ``compose_reply`` answers with the reply text.
+# Fence: ``tests/unit/test_redraft_keeps_act.py``.
+
+#: The steps of each act of an email card, after the head of the one table
+#: of card outcomes (HRD-7). Each text names its act and its tool, and no
+#: other send tool. ``_held_card`` maps each kind of held card to its act.
+_CLOSED_STEPS: dict[str, str] = {
+    "reply": (
+        "This card was a reply. Its tool is compose_reply. The draft of this "
+        "reply in Drafts holds the text of the card, and a new card updates "
+        "it. The member's words come next, as their own chat message. If they "
+        "change this mail, change it. Keep every part that they did not ask to "
+        "change. Then call compose_reply again with the new text, so a new card "
+        "shows. If they ask about something else, answer that first, then ask "
+        "whether to show the card again. If they ask to copy people, find each "
+        "person with find_contact, and ask with ask_questions when names clash. "
+        "Then call compose_reply again with ALL the people in cc, in ONE call, "
+        "so ONE card shows them. The card keeps every person of the email, the "
+        "Cc of the email included, so never drop one. \"X and Y\" means one "
+        "mail to both. For a Bcc, call compose_reply again with the person in "
+        "bcc. Or add the Bcc to the draft with edit_draft, and offer "
+        "send_draft. Never send the member to the Email app for it."),
+    "new_mail": (
+        "This card was a new email. Its tool is send_email. The member's words "
+        "come next, as their own chat message. If they change this mail, "
+        "change it. Keep every part that they did not ask to change. Then call "
+        "send_email again with the new text, so a new card shows. If they ask "
+        "to add a person, find the address with find_contact first. If they "
+        "ask about something else, answer that first."),
+    "send": (
+        "This card was an email to send now. Its tool is send_email. The "
+        "member's words come next, as their own chat message. If they change "
+        "this mail, change it. Keep every part that they did not ask to "
+        "change. Then call send_email again with the new text, so a new card "
+        "shows. If the card was a reply, keep the same reply_to_email_id. If "
+        "they ask to add a person, find the address with find_contact first. "
+        "If they ask about something else, answer that first."),
+    "forward": (
+        "This card was a forward of an email. Its tool is forward_email. The "
+        "member's words come next, as their own chat message. Keep it a "
+        "forward of the same email. Do not make it a new email or a reply. If "
+        "they change it, call forward_email again with the same email_id, so a "
+        "new card shows. Send it to the people that the member names. Keep the "
+        "note, the files and each person that they do not change. If they ask "
+        "to add a person, find the address with find_contact first. If they "
+        "ask about something else, answer that first."),
+    "scheduled_send": (
+        "This card was a send of a draft at a later time. Its tool is "
+        "schedule_send. Nothing was scheduled, and the draft stays in Drafts. "
+        "The member's words come next, as their own chat message. If they "
+        "change the time, call schedule_send again with the same draft_id and "
+        "the new send_at. If they change the text or the people, change the "
+        "draft with edit_draft first. Then call schedule_send again, so a new "
+        "card shows. If they ask about something else, answer that first."),
+    "send_draft": (
+        "This card was a send of a draft. Its tool is send_draft. The draft "
+        "stays in Drafts. The member's words come next, as their own chat "
+        "message. If they change the text or the people, change the draft "
+        "with edit_draft first. Then call send_draft again with the same "
+        "draft_id, so a new card shows. If they ask about something else, "
+        "answer that first."),
+    "unsubscribe": (
+        "This card was an unsubscribe from a sender. Its tool is "
+        "unsubscribe_sender. No sender was unsubscribed. The member's words "
+        "come next, as their own chat message. If they change the senders, "
+        "call unsubscribe_sender again, so a new card shows. If they ask about "
+        "something else, answer that first."),
+}
+
+
+def _closed_by_message(act: str) -> str:
+    """The answer of an email card of *act* that a chat message closed
+    (``ask_tools.REVISED``), HRD-8a.
+
+    The head comes from the one table of card outcomes (HRD-7), so the chat
+    draws the receipt "Draft being changed" (``noActionOf``) and the member
+    line of the outcome (``memberLineOf``). The steps of *act* follow, and
+    they name the tool of the act. A ``KeyError`` names an act that is not in
+    :data:`_CLOSED_STEPS`."""
+    return (f"{card_outcome_head(CLOSED_BY_YOUR_MESSAGE, 'Nothing was sent.')} "
+            f"{_CLOSED_STEPS[act]}")
+
+
+#: The answer of a reply card that the member wrote over in the chat
+#: (``ask_tools.REVISED``). Their words follow this result. Only
+#: ``compose_reply`` gives it (HRD-8a).
+_CARD_REVISED = _closed_by_message("reply")
 
 #: The answer of a card that the member wrote over, when the card's draft is
 #: no longer in Drafts (task 1526, fix round 1, item 6). The tool hands the
 #: model no draft id of a draft that is gone, and claims no send.
 _CARD_REVISED_DRAFT_GONE = (
-    "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent from the card. The card's draft is no longer in "
+    card_outcome_head(CLOSED_BY_YOUR_MESSAGE, "Nothing was sent from the card.")
+    + " The card's draft is no longer in "
     "Drafts. It was sent, deleted or replaced outside this card, so it has no "
     "draft_id to use. Do not say that the reply was sent. Read the member's "
-    "words below, and ask what they want before you show a new card.")
+    "next chat message, and ask what they want before you show a new card.")
 
 
 async def _revised_line(form: dict[str, Any], kept: str, prep: dict[str, Any]) -> str:
@@ -2837,8 +2967,7 @@ async def compose_reply(
         return await _closed_card_line(form, kept)
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
-        return ("Nothing was sent. Another member answered this card, "
-                "and only the member who asked can send this reply.")
+        return card_outcome_text(CARD_OTHER_MEMBER, _REPLY_NOT_SENT)
     # H-393: the text that the member posted is checked again, because the
     # member can edit it on the card. A held run sends no look-alike word.
     choice = getattr(answer, "choice", None)
@@ -2942,7 +3071,7 @@ async def auto_categorize_inbox(
             "uncategorized emails. The sweep chooses them again when it runs, "
             "from the same 500, so new email can change the set. It labels "
             f"them from the patterns already learned. Mailbox: {box}.",
-            "Cancelled — no label was applied.",
+            "No label was applied.",
         )
         if refusal:
             return refusal
@@ -3008,7 +3137,7 @@ async def _cleaner(account_id: str, mode: str, since_date: str | None) -> str:
             f"Read the labels of {box} again from the provider?",
             "It repairs the labels that went missing here, from the labels that the "
             f"provider holds. It changes nothing at the provider. Mailbox: {box}.",
-            "Cancelled — no label was restored.",
+            "No label was restored.",
         )
         if refusal:
             return refusal
@@ -3029,7 +3158,7 @@ async def _cleaner(account_id: str, mode: str, since_date: str | None) -> str:
         f"It downloads the mail {back} from the provider, keeps it away from the AI, "
         "and labels it from the patterns already learned. No AI call, and nothing is "
         f"sent. Mailbox: {box}.",
-        "Cancelled — nothing was downloaded.",
+        "Nothing was downloaded.",
     )
     if refusal:
         return refusal
@@ -3430,15 +3559,16 @@ async def _target_refusal(
 
 
 async def _outward_rule_refusal(
-    title: str, rules: list[dict[str, Any]], cancelled: str,
+    title: str, rules: list[dict[str, Any]], act: str,
     *, known_urls: frozenset[str] = frozenset(),
 ) -> str | None:
     """None when the save may go on. Else the text that the tool answers.
 
     No outward action: None, with no card. A bad address or URL, or a list too
-    long for the card: a refusal with no card. Else the card asks. A refusal
-    answers ``cancelled``, and a run with no live chat answers
-    ``_NO_CARD_CHANNEL``. ``request_confirmation`` fails closed in both.
+    long for the card: a refusal with no card. Else the card asks. A card
+    that did nothing answers :func:`_not_done` with *act*, and a run with no
+    live chat answers ``_NO_CARD_CHANNEL``. ``request_confirmation`` fails
+    closed in both.
 
     The audit of 2026-10-19: a held run (:func:`_egress_held`) keeps the rule
     tools for the rules that stay in the mailbox. It refuses each rule with an
@@ -3473,7 +3603,7 @@ async def _outward_rule_refusal(
     if await _confirm_destructive(title=title, detail=detail, context=context):
         return None
     from acb_skills.ask_tools import confirmation_channel_open
-    return cancelled if confirmation_channel_open() else _NO_CARD_CHANNEL
+    return _not_done(act) if confirmation_channel_open() else _NO_CARD_CHANNEL
 
 
 # EM-G11c1 (§12.3.13.6): a rule that sends nothing out also asks a card
@@ -3577,7 +3707,7 @@ def _rule_card_fits(listing: str) -> bool:
 
 
 async def _inward_rule_card(
-    title: str, detail: str, cancelled: str, rules: list[dict[str, Any]],
+    title: str, detail: str, act: str, rules: list[dict[str, Any]],
     *, widens: bool = False, changes: list[str] | None = None,
 ) -> str | None:
     """The card of a rule that sends nothing out, with each rule listed whole
@@ -3595,7 +3725,7 @@ async def _inward_rule_card(
         listing = "The changes to the actions:\n" + "\n".join(changes) + "\n\n" + listing
     if not _rule_card_fits(listing):
         return _RULE_CARD_TOO_LONG
-    return await _card_refusal(title, detail, cancelled, listing)
+    return await _card_refusal(title, detail, act, listing)
 
 
 def _pause_asks_no_card(enabled: bool | None, widens: bool) -> bool:
@@ -3915,9 +4045,9 @@ async def create_rule(
         "body_pattern": body_pattern,
         "actions": actions,
     }
-    cancelled = f"Cancelled — the rule '{name}' was not created."
+    unchanged = f"The rule '{name}' was not created."
     refusal = await _outward_rule_refusal(
-        "Create a rule that sends mail out of the mailbox?", [rule], cancelled,
+        "Create a rule that sends mail out of the mailbox?", [rule], unchanged,
     )
     if refusal:
         return refusal
@@ -3926,7 +4056,7 @@ async def create_rule(
         refusal = await _inward_rule_card(
             f'Save the rule "{_card_name(name)}" that {_rule_acts(actions)}?',
             f"Mailbox: {box}. The rule acts on each new email that matches.",
-            cancelled, [rule],
+            unchanged, [rule],
         )
         if refusal:
             return refusal
@@ -3949,7 +4079,7 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
         f'Delete the rule "{shown}"?',
         f"Mailbox: {await _named(account_id)}. A delete cannot be undone. To "
         "stop the rule for a time, turn it off instead.",
-        "Cancelled — the rule was not deleted.",
+        "The rule was not deleted.",
         _rule_lines([rule]) if rule else "",
     )
     if refusal:
@@ -4081,7 +4211,7 @@ async def run_rules(
             "Each rule that matches acts now: it labels, moves, drafts, and "
             "sends what the rule says to send. Each rule that is on is in the "
             f"list below. Mailbox: {box}.",
-            "Cancelled — no rule ran.",
+            "No rule ran.",
             listing,
         )
         if refusal:
@@ -4188,7 +4318,7 @@ async def _run_rules_on_one(account_id: str, email_id: str | None, dry_run: bool
         f"Apply the rules to {what} in {box}?",
         "The rule that matches acts now: it labels, moves, drafts, and sends what "
         f"the rule says to send. Each rule that is on is in the list below. Mailbox: {box}.",
-        "Cancelled — no rule ran.",
+        "No rule ran.",
         listing,
     )
     if refusal:
@@ -4211,7 +4341,7 @@ async def _retry_failed_runs(account_id: str) -> str:
         "It applies again the label and the move of each rule run that the mail "
         "server refused. It never drafts, sends, forwards or calls a webhook, and "
         f"it skips mail in Trash or Spam. Mailbox: {box}.",
-        "Cancelled — no rule run was retried.",
+        "No rule run was retried.",
     )
     if refusal:
         return refusal
@@ -4367,13 +4497,13 @@ async def update_rule(
     # P2: in a held run a pause asks the card too, because a mail can ask the
     # model to pause a rule that warns the member (a NOTIFY_ME alert).
     pause_only = _pause_asks_no_card(enabled, widens)
-    cancelled = f"Cancelled — the rule '{rule.get('name')}' was not changed."
+    unchanged = f"The rule '{rule.get('name')}' was not changed."
     carded = False
     # A change that removes the last outward action asks the inward card,
     # because the outward card asks nothing for a rule that sends nothing.
     if now_outward and (added_outward or (was_outward and widens)):
         refusal = await _outward_rule_refusal(
-            "Change a rule that sends mail out of the mailbox?", [rule], cancelled,
+            "Change a rule that sends mail out of the mailbox?", [rule], unchanged,
             known_urls=_rule_urls(old_actions),
         )
         if refusal:
@@ -4385,7 +4515,7 @@ async def update_rule(
             f"Mailbox: {await _named(account_id)}. After the change the rule "
             f"{_rule_acts(rule.get('actions'))}"
             + (", and it is on." if rule.get("enabled") else ", and it is off."),
-            cancelled, [rule], widens=widens,
+            unchanged, [rule], widens=widens,
             changes=_action_changes(old_actions, list(rule.get("actions") or [])),
         )
         if refusal:
@@ -4469,7 +4599,7 @@ async def learn_rule_pattern(
         f'Teach the rule "{shown}" a pattern in {box}?',
         f"Emails {_card_text(signal, 200)} will {verb} the rule \"{shown}\". "
         "The matcher uses the pattern from now on, with no AI.",
-        "Cancelled — no pattern was learned.",
+        "No pattern was learned.",
     )
     if refusal:
         return refusal
@@ -4839,7 +4969,7 @@ async def update_assistant_settings(
         refusal = await _card_refusal(
             f"Change {' and '.join(names)} in {box}?",
             f"Mailbox: {box}. Each change is in the list below.",
-            "Cancelled — the settings were not changed.",
+            "The settings were not changed.",
             "\n".join(f"- {line}" for _name, line in turned_on),
         )
         if refusal:
@@ -4999,7 +5129,7 @@ async def apply_settings_to_mailboxes(
         f"Change settings in {len(chosen)} mailbox(es)?",
         "The same change applies to each mailbox in the list. Every other "
         "setting of each mailbox stays as it is.",
-        "Cancelled — the settings were not changed.",
+        "The settings were not changed.",
         f"Mailboxes:\n{names}\nChanges:\n{shown}",
     )
     if refusal:
@@ -5078,7 +5208,7 @@ async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
     refusal = await _card_refusal(
         f"Change {len(values)} setting(s) of {box}?",
         f"Mailbox: {box}. Each change is in the list below, with its old and new value.",
-        "Cancelled — the settings were not changed.",
+        "The settings were not changed.",
         "\n".join(lines),
     )
     if refusal:
@@ -5150,7 +5280,7 @@ async def save_knowledge(
         f'{verb} the knowledge entry "{_card_name(title)}" in {box}?',
         "The assistant uses it when it drafts replies, also replies to people "
         f"outside. Mailbox: {box}.",
-        "Cancelled — the knowledge was not saved.",
+        "The knowledge was not saved.",
         _card_text(content, 3000),
     )
     if refusal:
@@ -5187,7 +5317,7 @@ async def generate_writing_style(account_id: str | None = None) -> str:
         "The assistant reads your recent sent email and saves a style guide "
         "that it follows when it drafts replies. It replaces the style that is "
         f"saved now. Mailbox: {box}.",
-        "Cancelled — the writing style was not changed.",
+        "The writing style was not changed.",
     )
     if refusal:
         return refusal
@@ -5309,7 +5439,7 @@ async def voice_profile(
             "drafter follows it in each later reply."
             + (" It also suggests knowledge entries, which wait for your approval."
                if extract_knowledge else "") + f" Mailbox: {box}.",
-            "Cancelled — the voice profile was not changed.",
+            "The voice profile was not changed.",
         )
         if refusal:
             return refusal
@@ -5341,7 +5471,7 @@ async def voice_profile(
         refusal = await _card_refusal(
             f"Change the voice profile of {box}?",
             f"The drafter follows the profile in each later reply. Mailbox: {box}.",
-            "Cancelled — the voice profile was not changed.",
+            "The voice profile was not changed.",
             "\n".join(lines),
         )
         if refusal:
@@ -5353,7 +5483,7 @@ async def voice_profile(
             f"Delete the voice profile of {box}?",
             "The drafter stops using it, and each knowledge suggestion that you did "
             f"not approve goes too. Approved entries stay. Mailbox: {box}.",
-            "Cancelled — the voice profile was kept.",
+            "The voice profile was kept.",
         )
         if refusal:
             return refusal
@@ -5377,7 +5507,7 @@ async def voice_profile(
             f'Approve the knowledge entry "{_card_name(entry.get("title"))}" in {box}?',
             "The assistant then uses it when it drafts replies, also replies to people "
             f"outside. Mailbox: {box}.",
-            "Cancelled — the knowledge entry was not approved.",
+            "The knowledge entry was not approved.",
             _card_text(entry.get("content") or "", 3000),
         )
         if refusal:
@@ -5501,7 +5631,7 @@ async def install_default_rules(
             f"Mailbox: {where}. Every existing rule of this mailbox "
             "(including ones you customised) is deleted first, then these "
             f"{len(presets)} default rules are installed fresh.",
-            "Cancelled — your rules were left unchanged.",
+            "No rule was changed.",
             _rule_lines(presets),
         )
         if refusal:
@@ -5527,7 +5657,7 @@ async def install_default_rules(
         f"Install {len(adds)} default rule(s) in {where}?",
         f"Mailbox: {where}. Each rule acts on each new email that matches. "
         "Each rule and each action is in the list below.",
-        "Cancelled — no rule was installed.",
+        "No rule was installed.",
         _rule_lines(adds),
     )
     if refusal:
@@ -5565,10 +5695,10 @@ async def copy_rules(from_account_id: str, to_account_id: str) -> str:
         return f"Nothing to copy: {names[src]} has no rule that is on."
     first_read = [_rule_fingerprint(r) for r in rules]
     title = f"Copy {len(rules)} rule(s) from {names[src]} to {names[dst]}?"
-    cancelled = "Cancelled — no rule was copied."
+    unchanged = "No rule was copied."
     # The audit of 2026-10-19: a held run refuses a rule that sends out, as
     # it refuses a new one. A copy that sends out shows each target.
-    refusal = await _outward_rule_refusal(title, rules, cancelled)
+    refusal = await _outward_rule_refusal(title, rules, unchanged)
     if refusal:
         return refusal
     if not any(_has_outward_action(r.get("actions")) for r in rules):
@@ -5577,7 +5707,7 @@ async def copy_rules(from_account_id: str, to_account_id: str) -> str:
             f"From: {names[src]}. To: {names[dst]}. Each rule acts on each new email "
             "that matches in the target. The server leaves out a rule that cannot "
             "work there, and the answer names it.",
-            cancelled, rules)
+            unchanged, rules)
         if refusal:
             return refusal
     # The card can wait. Copy nothing when the rules changed meanwhile, because
@@ -5684,7 +5814,7 @@ async def rule_guidance(
             f"Teach the rule classifier in {box}?",
             f"The classifier reads this guidance for {scope} on each new email. "
             f"Mailbox: {box}.",
-            "Cancelled — no guidance was saved.",
+            "No guidance was saved.",
             _card_text(text, _CARD_CONTEXT_LIMIT),
         )
         if refusal:
@@ -5703,7 +5833,7 @@ async def rule_guidance(
     refusal = await _card_refusal(
         f"Delete this rule guidance in {box}?",
         f"The classifier stops reading it. Mailbox: {box}.",
-        "Cancelled — the guidance was kept.",
+        "The guidance was kept.",
         _card_text(row.get("guidance") or "", _CARD_CONTEXT_LIMIT),
     )
     if refusal:
@@ -5748,7 +5878,7 @@ async def find_follow_ups(account_id: str) -> str:
         'It labels each thread that waits past your reminder windows "Follow-up". '
         "When follow-up drafts are on, it also saves a nudge draft for each. "
         f"Nothing is sent. Mailbox: {box}.",
-        "Cancelled — no thread was labelled.",
+        "No thread was labelled.",
     )
     if refusal:
         return refusal
@@ -5846,7 +5976,7 @@ async def create_label(account_id: str, name: str, color: str | None = None) -> 
         "It makes a label or a folder in the mailbox at the provider. A label "
         f"with this name that exists is used again. Mailbox: {box}."
         + (f" Its colour becomes {color}." if color else ""),
-        "Cancelled — no label was created.",
+        "No label was created.",
     )
     if refusal:
         return refusal
@@ -5887,6 +6017,107 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
         else:
             refs.append({"path": s})
     return refs
+
+
+# ── A file of a send resolves before its card (task 2491) ───────────────────
+#
+# Defect of 2026-11-09: a chat upload went to send_email, the member approved
+# the card, and only then did ``POST /email/send`` refuse the file (422). The
+# model sent the mail again with no file, under a second card. So each file
+# now resolves before any card, the way the send resolves it, and a file that
+# does not resolve shows no card.
+
+#: The most files of one check (``metorite_files.MAX_METORITE_FILES``).
+_FILE_CHECK_BATCH = 20
+#: The next step after a file that cannot go. ``Not sent.`` comes first.
+_FILE_NEXT_STEP = (
+    "No card was shown. Tell the member that this file cannot go with the "
+    "email, and ask whether to send it without the file or to attach the "
+    "file in Email first. Do not send without the file before the member "
+    "answers.")
+#: The answer when the gateway did not check the files.
+_FILES_UNCHECKED = (
+    "Not sent. The files of this email could not be checked, so no card was "
+    "shown. Try again in a moment.")
+
+
+def _file_name_only(path: str) -> str:
+    """The last part of *path*, as a card shows a name: no folder is named."""
+    last = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return _card_file_name(last or "file")
+
+
+def _not_attachable(paths: list[str], why: str = "") -> str:
+    """The answer when a file of a send does not resolve (task 2491): what
+    happened, each file by its name, and the next step. *why* is the reason
+    that the resolver gave, when it gave one."""
+    names = [f'"{_file_name_only(p)}"' for p in paths]
+    if len(names) == 1:
+        head = f"The file {names[0]} is not one this mail can attach."
+        why = why or "It is not a file in your own workspace."
+    else:
+        listed = f"{', '.join(names[:-1])} and {names[-1]}"
+        head = f"The files {listed} are not ones this mail can attach."
+        why = why or "They are not files in your own workspace."
+    return f"Not sent. {head} {why} {_FILE_NEXT_STEP}"
+
+
+async def _unattachable_files(refs: list[dict[str, Any]]) -> str | None:
+    """None when each workspace file of a send resolves. Else the answer that
+    names each file that does not, and no card shows (task 2491).
+
+    The gateway checks each file with ``send.refused_artifacts``, the
+    resolver that ``POST /email/send`` runs (``/email/metorite-files/resolve``
+    with ``artifacts``). It reads no bytes and sends nothing. An answer with
+    no ``refused`` list fails closed."""
+    refused: list[str] = []
+    for i in range(0, len(refs), _FILE_CHECK_BATCH):
+        chunk = refs[i:i + _FILE_CHECK_BATCH]
+        try:
+            res = await _post("/email/metorite-files/resolve",
+                              {"refs": [], "artifacts": chunk})
+        except GatewayError as exc:
+            if 400 <= exc.status < 500:
+                return _FILES_UNCHECKED
+            raise
+        got = res.get("refused") if isinstance(res, dict) else None
+        if not isinstance(got, list):
+            return _FILES_UNCHECKED
+        for path in got:
+            # The gateway gives the path. The answer names the text that the
+            # model gave, so "Shot 10:00.png" is not named "00.png".
+            ref = next((r for r in chunk if str(r.get("path")) == str(path)), None)
+            refused.append(_ref_text(ref) if ref else str(path))
+    return _not_attachable(refused) if refused else None
+
+
+def _ref_text(ref: dict[str, Any]) -> str:
+    """A ref of :func:`_attachment_refs` as the model wrote it."""
+    agent, path = str(ref.get("agent") or ""), str(ref.get("path") or "")
+    return f"{agent}:{path}" if agent else path
+
+
+def _held_unparsed_files(files: list[str]) -> str | None:
+    """None when each file of a held send has a form that the held card can
+    resolve. Else the answer that names each file that has none (task 2491).
+
+    The held card resolves each file before its card. Its first step is
+    ``acb_skills.held_card.parse_file_ref``, the parse of both of its
+    resolvers, and a bare workspace path fails it. This calls the same
+    parse, so the answer can name the file."""
+    try:
+        from acb_skills.held_card import parse_file_ref
+    except ImportError:  # an older platform: the held card refuses it
+        return None
+    bad: list[str] = []
+    why = ""
+    for ref in files:
+        try:
+            parse_file_ref(ref)
+        except ValueError as exc:
+            bad.append(ref)
+            why = why or str(exc)
+    return _not_attachable(bad, why) if bad else None
 
 
 #: The most addresses of one list that a send card names one by one. A longer
@@ -6218,6 +6449,14 @@ async def send_email(
         return refusal
     if warning:
         reply_notices.insert(0, warning)
+    # Task 2491: each workspace file resolves BEFORE either card, through the
+    # resolver of the send. A file that the send would refuse shows no card,
+    # so it costs the member no approval. A Metorite file resolves before
+    # each card too: below for this card, and in ``POST /email/new-card``.
+    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
+    unattachable = await _unattachable_files(refs) if refs else None
+    if unattachable:
+        return unattachable
     if not reply_to_email_id and _edit_card_open():
         # §18.10 (owner, 2026-11-03): a new mail shows the ONE email card that
         # the member edits. The gateway records it, and its act sends only the
@@ -6240,7 +6479,6 @@ async def send_email(
     if reply_to_email_id:
         payload["reply_to_message_id"] = reply_to_email_id
     metorite = [str(a) for a in (attachments or []) if _is_metorite_ref(a)]
-    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
     if refs:
         payload["artifacts"] = refs
     shared: list[dict[str, Any]] = []
@@ -6266,7 +6504,7 @@ async def send_email(
     # Confirm-before-send: park on a HITL card so the user approves the actual
     # send (outward-facing + irreversible). Fails CLOSED when there's no
     # interactive stream to deliver the card (HH-2) — automated callers get
-    # "Send cancelled" instead of a silent send.
+    # the words of a card that did nothing (HRD-7) instead of a silent send.
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     verb = "reply" if reply_to_email_id else "email"
     approved = await request_confirmation(
@@ -6293,11 +6531,12 @@ async def send_email(
     )
     if not approved:
         if _revised(approved):
-            return _CARD_REVISED
+            # HRD-8a: the act of this card is a send_email, never a reply card.
+            return _closed_by_message("send")
         line = _unapproved_line()
         if line:
             return line
-        return f"Send cancelled — the {verb} was not sent."
+        return _not_done(f"The {verb} was not sent.")
     res = await _post("/email/send", payload)
     count = len(refs) + len(shared)
     note = f" with {count} attachment(s)" if count else ""
@@ -6310,18 +6549,13 @@ async def send_email(
 # ── The one email card of a new mail (§18.10, owner 2026-11-03) ──────────────
 
 #: The answer when the member wrote in the chat while a new-mail card was open.
-_NEW_MAIL_REVISED = (
-    "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent. Read the member's words below. If they change "
-    "this mail, change it, keep every part they did not ask to change, and "
-    "call send_email again with the new text, so a new card shows. If they ask "
-    "to add a person, find the address with find_contact first. If they ask "
-    "about something else, answer that first.")
+#: A held new mail gives it too (``_held_card``, HRD-8a).
+_NEW_MAIL_REVISED = _closed_by_message("new_mail")
 #: §18.11 step 5: the line after the member's own version of the card. The
 #: version itself is the gateway's neutral data block (``compose_card_draft``).
 _START_FROM_THE_MEMBER = (
     "Start from the member's own version above, not from your first text. "
-    "Keep each part of it that their words below do not ask to change.")
+    "Keep each part of it that their next message does not ask to change.")
 #: The longest data block of the member's version that the tool passes on
 #: (``chat_recovery.CARD_DRAFT_MAX``).
 _MEMBER_VERSION_MAX = 24_000
@@ -6348,8 +6582,9 @@ _REVISE_GAVE_UP = (
     "not sent, and that their edits on the card were lost. Ask them to try "
     "again in a moment, and to check the people that are ticked on the next "
     "card before they press Send.")
-#: The answer when the member pressed Discard, or the card closed with no answer.
-_NEW_MAIL_DISCARDED = "Send cancelled — the email was not sent."
+#: What a new-mail card that sent nothing did not do. The words before it
+#: come from the one table of card outcomes (HRD-7): Discard is a decline.
+_NEW_MAIL_NOT_SENT = "The email was not sent."
 #: The notice of a held card with a new address (§21): it starts unticked.
 _NEW_MAIL_NEW_UNTICKED = (
     "An address that you do not know is on this email. It is marked, and it "
@@ -6543,11 +6778,10 @@ async def _ask_new_mail_card(form: dict[str, Any], card_id: str) -> Any:
     if _revised(answer):
         return ask_tools.REVISED
     if not isinstance(answer, ask_tools.ReplyAnswer):
-        return _unapproved_line() or _NEW_MAIL_DISCARDED
+        return _unapproved_line() or _not_done(_NEW_MAIL_NOT_SENT)
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
-        return ("Nothing was sent. Another member answered this card, and only the "
-                "member who asked can send this email.")
+        return card_outcome_text(CARD_OTHER_MEMBER, _NEW_MAIL_NOT_SENT)
     return answer
 
 
@@ -6711,11 +6945,17 @@ async def _held_new_mail(
         account_id, ask = await _new_mail_mailbox(to[0])
         if ask:
             return ask
+    wanted = [str(a) for a in (attachments or []) if str(a).strip()]
+    # Task 2491: a file that the held card cannot resolve shows no card, and
+    # the answer names it. The held card resolves every file before its card.
+    unparsed = _held_unparsed_files(wanted)
+    if unparsed:
+        return unparsed
     res = await _held_card({
         "kind": "new", "account_id": account_id, "to": to, "cc": list(cc or []),
         "bcc": list(bcc or []), "subject": subject or "", "note": body,
-        "files": [str(a) for a in (attachments or []) if str(a).strip()],
-    }, "Not sent", "Send cancelled — the email was not sent.", form=True)
+        "files": wanted,
+    }, "Not sent", _NEW_MAIL_NOT_SENT, form=True)
     if isinstance(res, str):
         return res
     files = int(res.get("files") or 0)
@@ -6824,7 +7064,7 @@ async def _held_forward(
         "bcc": [str(a) for a in (bcc or [])], "note": note or "",
         "files": [str(f) for f in (files or [])],
         "include_attachments": bool(include_attachments),
-    }, "Not forwarded", "Forward cancelled. The email was not forwarded.")
+    }, "Not forwarded", "The email was not forwarded.")
     if isinstance(res, str):
         return res
     n = int(res.get("files") or 0)
@@ -6929,11 +7169,12 @@ async def forward_email(
     )
     if not approved:
         if _revised(approved):
-            return _CARD_REVISED
+            # HRD-8a: the redraft stays a forward of this email (task 2987).
+            return _closed_by_message("forward")
         line = _unapproved_line()
         if line:
             return line
-        return "Forward cancelled. The email was not forwarded."
+        return _not_done("The email was not forwarded.")
     payload: dict[str, Any] = {
         "message_id": mid,
         "to": to,
@@ -7099,27 +7340,38 @@ def _with_draft_text(
 # only the ticked rows that it recorded. The tool names no recipient, no
 # class and no file of its own.
 
-#: The answer when the member wrote in the chat while a held card was open.
-_HELD_CARD_REVISED = (
-    "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent. Read the member's words below. If they change "
-    "this mail, change it, and show a new card. If they ask about something "
-    "else, answer that first.")
+#: The act of each kind of held card, for the answer when the member wrote in
+#: the chat while the card was open (HRD-8a). The text names the tool of that
+#: act, so a held forward stays a forward. Each kind that a tool sends to
+#: ``POST /email/held-card`` is here. Fence: ``tests/unit/test_redraft_keeps_act.py``.
+_HELD_KIND_ACTS: dict[str, str] = {
+    "new": "new_mail",
+    "forward": "forward",
+    "draft": "send_draft",
+    "schedule": "scheduled_send",
+    "unsubscribe": "unsubscribe",
+}
 
 
 async def _held_card(
-    body: dict[str, Any], lead: str, cancelled: str, *, form: bool = False,
+    body: dict[str, Any], lead: str, act: str, *, form: bool = False,
 ) -> dict[str, Any] | str:
     """Show the gateway's held card for *body*, and act on the answer.
 
     Returns the act's answer, or the text of the tool when nothing was sent:
     a run with no card channel (a WhatsApp, batch or scheduled run sends
-    nothing, open question 9), a refusal of the gateway, a "no" on the card,
-    or a card that the member's words closed.
+    nothing, open question 9), a refusal of the gateway, a card that did
+    nothing (:func:`_not_done` with *act*), or a card that the member's words
+    closed.
 
     *form* (§18.10): a new mail draws the gateway's form of the same record,
     the ONE email card that the member edits, where a run can draw it. A
-    WhatsApp run and an older gateway keep the rows card."""
+    WhatsApp run and an older gateway keep the rows card.
+
+    HRD-8a: a card that the member's words closed answers with the text of
+    the act of its kind (:data:`_HELD_KIND_ACTS`). A kind with no act raises
+    before any card shows."""
+    closed = _closed_by_message(_HELD_KIND_ACTS[str(body.get("kind") or "")])
     try:
         from acb_skills import ask_tools
     except ImportError:  # an older platform with no card
@@ -7138,7 +7390,7 @@ async def _held_card(
             return _held_refusal(exc, lead)
         raise
     if edit and isinstance(prep.get("form"), dict):
-        return await _held_form_card(prep, lead, cancelled, thread)
+        return await _held_form_card(prep, lead, act, thread, closed=closed)
     answer = await ask_tools.request_confirmation(
         title=str(prep.get("title") or "Send this mail?"),
         detail=str(prep.get("detail") or ""),
@@ -7149,13 +7401,12 @@ async def _held_card(
         close_on_steer=True,
     )
     if _revised(answer):
-        return _HELD_CARD_REVISED
+        return closed
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
-        return _unapproved_line() or cancelled
+        return _unapproved_line() or _not_done(act)
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
-        return (f"{lead}. Another member answered this card, and only the member "
-                "who asked can send it.")
+        return card_outcome_text(CARD_OTHER_MEMBER, act)
     try:
         return await _post("/email/held-card/act", {
             "card_id": answer.request_id,
@@ -7169,7 +7420,7 @@ async def _held_card(
 
 
 async def _held_form_card(
-    prep: dict[str, Any], lead: str, cancelled: str, thread: str = "",
+    prep: dict[str, Any], lead: str, act: str, thread: str = "", *, closed: str,
 ) -> dict[str, Any] | str:
     """The held new mail as the one email card (§18.10), on the gateway's
     record. The gateway's form keeps each §21 rule: the classes, and a new
@@ -7178,24 +7429,26 @@ async def _held_form_card(
     A chat message that closes it (§18.11) spends the record through the
     same revise route as a plain card. The next held card works out its
     classes and its ticks again, so the member's version never ticks a new
-    address. A revise that did not run shows the same card again."""
+    address. A revise that did not run shows the same card again. *closed*
+    is the text of the card's act that the model then reads (HRD-8a)."""
     form = dict(prep["form"])
     form["notices"] = list(form.get("notices") or [])
     if any(c == "new" for c in (form.get("classes") or {}).values()):
         _form_notice(form, _NEW_MAIL_NEW_UNTICKED)
     card_id = str(prep.get("card_id") or "")
     answer, revised, came_back = await _ask_until_revised(
-        form, card_id, thread, _HELD_CARD_REVISED)
+        form, card_id, thread, closed)
     if revised is not None:
         return revised
-    return _noted(await _held_form_answered(answer, lead, cancelled), came_back)
+    return _noted(await _held_form_answered(answer, lead), came_back)
 
 
-async def _held_form_answered(answer: Any, lead: str, cancelled: str) -> dict[str, Any] | str:
+async def _held_form_answered(answer: Any, lead: str) -> dict[str, Any] | str:
     """The end of a held new-mail card that the member answered: the act of
-    the answer, or the words of a card that sends nothing (§18.10)."""
+    the answer, or the words of a card that sends nothing (§18.10). Those
+    words come from the one table of card outcomes (HRD-7)."""
     if isinstance(answer, str):
-        return cancelled if answer == _NEW_MAIL_DISCARDED else answer
+        return answer
     try:
         return await _post("/email/held-card/act", {
             "card_id": answer.request_id,
@@ -7370,7 +7623,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     if _held_card_mode():
         res = await _held_card(
             {"kind": "draft", "account_id": account_id, "draft_id": draft_id},
-            "Not sent", "Send cancelled — the draft was not sent.")
+            "Not sent", "The draft was not sent.")
         return res if isinstance(res, str) else _held_sent_text(res, "Draft sent")
     sender = await _mailbox_name(account_id)
     if sender is None:
@@ -7415,7 +7668,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     if not await request_confirmation(
         title="Send this draft?", detail=detail, context=context,
     ):
-        return _unapproved_line() or "Send cancelled — the draft was not sent."
+        return _unapproved_line() or _not_done("The draft was not sent.")
     try:
         await _post(
             "/email/drafts/send",
@@ -7608,7 +7861,7 @@ async def edit_draft(
     refusal = await _card_refusal(
         "Save these changes to the draft?",
         detail + " · Nothing is sent.",
-        "Cancelled. The draft did not change.",
+        "The draft did not change.",
         context,
     )
     if refusal:
@@ -7696,7 +7949,7 @@ async def _new_draft(
     refusal = await _card_refusal(
         "Save this new email in Drafts?",
         detail + " · Nothing is sent.",
-        "Cancelled. No draft was saved.",
+        "No draft was saved.",
         _with_draft_text(context, body),
     )
     if refusal:
@@ -7817,7 +8070,7 @@ async def snooze_email(email_id: str, until: str = "") -> str:
             f"“{what}” comes back to the inbox now.")
         body = {"until": None}
         done = f"“{what}” is back in the inbox."
-    refusal = await _card_refusal(title, detail, "Cancelled. Nothing changed.")
+    refusal = await _card_refusal(title, detail, "")
     if refusal:
         return refusal
     await _post(f"/email/messages/{mid}/snooze", body)
@@ -8016,7 +8269,7 @@ async def bulk_manage_inbox(
         f"{_BULK_VERBS[action]} about {n} emails?",
         f"Each email {', '.join(where)}{box}. The count can change if new mail "
         "comes before the act runs.",
-        "Cancelled. Nothing changed.",
+        "",
     )
     if refusal:
         return refusal
@@ -8066,7 +8319,7 @@ async def _bulk_by_senders(
         f"{_BULK_VERBS[action]} about {total} emails from {len(todo)} senders?",
         f"Each email from a sender below{''.join(where)}{box}. The count can "
         "change if new mail comes before the act runs.",
-        "Cancelled. Nothing changed.",
+        "",
         "\n".join(lines),
     )
     if refusal:
@@ -8107,7 +8360,7 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
             {"kind": "schedule", "account_id": account_id, "draft_id": draft_id,
              "send_at": when.isoformat()},
             "Not scheduled",
-            "Cancelled — nothing was scheduled. The draft stays in Drafts.")
+            "Nothing was scheduled. The draft stays in Drafts.")
         if isinstance(res, str):
             return res
         stamp = when.strftime("%a %d %b %Y, %H:%M (%z)")
@@ -8137,11 +8390,12 @@ async def schedule_send(account_id: str, draft_id: str, send_at: str) -> str:
     )
     if not approved:
         if _revised(approved):
-            return _CARD_REVISED
+            # HRD-8a: the redraft stays a send later of this draft.
+            return _closed_by_message("scheduled_send")
         line = _unapproved_line()
         if line:
             return line
-        return "Cancelled — nothing was scheduled. The draft stays in Drafts."
+        return _not_done("Nothing was scheduled. The draft stays in Drafts.")
     try:
         res = await _post("/email/drafts/schedule", {
             "account_id": account_id, "draft_id": draft_id,
@@ -8192,7 +8446,7 @@ async def cancel_scheduled_send(schedule_id: str) -> str:
     refusal = await _card_refusal(
         "Cancel this scheduled send?",
         "The draft is not sent at its time, and it stays in Drafts.",
-        "Cancelled — nothing changed. The draft is still scheduled.",
+        "Nothing changed. The draft is still scheduled.",
     )
     if refusal:
         return refusal
@@ -8222,7 +8476,7 @@ async def delete_knowledge(account_id: str, knowledge_id: str) -> str:
         f'Delete the knowledge entry "{shown}"?',
         f"Mailbox: {await _named(account_id)}. The assistant stops using it "
         "when it drafts replies.",
-        "Cancelled — the knowledge entry was not deleted.",
+        "The knowledge entry was not deleted.",
     )
     if refusal:
         return refusal
@@ -8394,7 +8648,7 @@ async def _unsubscribe_many(account_id: str, emails: list[str], name: str | None
         context=context,
     ):
         if _channel_open():
-            return f"Cancelled — still subscribed to all {len(targets)} senders."
+            return _not_done(f"No sender of the {len(targets)} was unsubscribed.")
         return _NO_CARD_CHANNEL
     done: list[str] = []
     for email, target in targets:
@@ -8418,7 +8672,7 @@ async def _held_unsubscribe_many(account_id: str, emails: list[str]) -> str:
     each sender, the host of its stored link and the hash of the link."""
     res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
                             "emails": emails},
-                           "Nothing changed", "Cancelled — still subscribed to each sender.")
+                           "Nothing changed", "No sender was unsubscribed.")
     if isinstance(res, str):
         return res
     lines = []
@@ -8473,7 +8727,7 @@ async def unsubscribe_sender(
     if _held_card_mode():
         res = await _held_card({"kind": "unsubscribe", "account_id": account_id,
                                 "email": email},
-                               "Nothing changed", f"Cancelled — still subscribed to {shown}.")
+                               "Nothing changed", f"{shown} was not unsubscribed.")
         if isinstance(res, str):
             return res
         archived = int(res.get("archived") or 0)
@@ -8506,7 +8760,7 @@ async def unsubscribe_sender(
         title=f"Unsubscribe from {shown}?", detail=detail, context=context,
     ):
         if _channel_open():
-            return f"Cancelled — still subscribed to {shown}."
+            return _not_done(f"{shown} was not unsubscribed.")
         return _NO_CARD_CHANNEL
     if target.get("kind") == "block":
         # No link to use. ``POST /unsubscribe`` with no link reads the stored
@@ -8669,8 +8923,8 @@ async def set_sender_status(
         title.format(who=who, box=box),
         detail.replace("this sender", "each sender").replace("the sender", "each sender")
         if many else detail,
-        "Cancelled — the sender was not changed." if not many
-        else "Cancelled — no sender was changed.",
+        "The sender was not changed." if not many
+        else "No sender was changed.",
         listing,
     )
     if refusal:
@@ -8697,25 +8951,64 @@ async def set_sender_status(
 
 # ── Reply Zero ───────────────────────────────────────────────────────────────
 
-@_annotate_risk(open_world=False)
-async def mark_thread_done(
-    account_id: str, thread_id: str, done: bool = True
-) -> str:
-    """Mark a Reply-Zero thread done (handled) or reopen it (done=false).
-    It shows the user a card first."""
-    # Fix round 1 (P2-b): the card names the thread, so read it first. The
-    # list read changes no read state.
+async def _thread_of_email(email_id: str) -> tuple[str, str]:
+    """The thread id and the mailbox of one email, or two empty strings.
+
+    The email decides the thread and the mailbox, as in ``read_thread``
+    (EM-T8e-2). The gateway answers only an email that the member may read.
+    """
     try:
-        rows = (await _get("/email/messages", {
+        head = await _get(f"/email/messages/{email_id}") or {}
+    except Exception:
+        return "", ""
+    return (str(head.get("thread_id") or "").strip(),
+            str(head.get("account_id") or "").strip())
+
+
+async def _thread_rows(account_id: str, thread_id: str) -> list[dict[str, Any]]:
+    """One email of the thread in the mailbox, so the card can name it. The
+    list read changes no read state (fix round 1, P2-b)."""
+    try:
+        return (await _get("/email/messages", {
             "thread_id": thread_id, "account_id": account_id, "page_size": "1",
         })).get("emails", [])
-    except Exception:  # the card then names the id
-        rows = []
+    except Exception:
+        return []
+
+
+@_annotate_risk(open_world=False)
+async def mark_thread_done(
+    account_id: str, thread_id: str = "", done: bool = True, email_id: str = "",
+) -> str:
+    """Mark a Reply-Zero thread done (handled) or reopen it (done=false).
+    Give the email_id that find_priority, query_inbox, read_email or
+    read_thread showed: the email decides its thread and its mailbox. A
+    thread_id works too. It shows the user a card first."""
+    tid = (thread_id or "").strip()
+    acct = (account_id or "").strip()
+    eid = (email_id or "").strip()
+    if eid:
+        tid, box = await _thread_of_email(eid)
+        acct = box or acct
+    if not tid:
+        return ("Nothing changed. Give the email_id of an email in the thread, "
+                "as find_priority or query_inbox shows it.")
+    rows = await _thread_rows(acct, tid)
+    if not rows and not eid:
+        # Task 2873 (2026-11-11): every read tool shows EMAIL ids, so the chat
+        # passed one as the thread id, twice, and the member was sent to the
+        # Email app. A thread id that names no thread is tried once as an email.
+        as_thread, box = await _thread_of_email(tid)
+        if as_thread:
+            tid, acct = as_thread, box or acct
+            rows = await _thread_rows(acct, tid)
     if not rows:
         return (
-            f"Nothing changed. No email of {await _named(account_id)} is in the "
-            f"thread {thread_id}. Read the thread id again with find_priority."
+            f"Nothing changed. No email of {await _named(acct)} is in that "
+            f"thread. Call mark_thread_done again with the email_id that "
+            f"find_priority or query_inbox shows for the email."
         )
+    account_id, thread_id = acct, tid
     subject = _card_text(rows[0].get("subject") or "(no subject)", 120)
     box = await _named(account_id)
     refusal = await _card_refusal(
@@ -8725,7 +9018,7 @@ async def mark_thread_done(
         "Done also closes each open task that was captured from this thread."
         if done else
         "Reply Zero shows the thread again as Needs Reply or Awaiting Reply.",
-        "Cancelled — the thread was not changed.",
+        "The thread was not changed.",
     )
     if refusal:
         return refusal
@@ -8745,7 +9038,7 @@ async def reclassify_reply_zero(account_id: str) -> str:
         f"Rebuild Reply Zero in {box}?",
         "It sorts each thread again into To Reply, Awaiting and FYI with the "
         f"rules of now, and it changes their labels. Mailbox: {box}.",
-        "Cancelled — Reply Zero was not changed.",
+        "Reply Zero was not changed.",
     )
     if refusal:
         return refusal
@@ -8861,7 +9154,7 @@ async def resolve_execution(execution_id: str, decision: str) -> str:
         title,
         f'{detail}{hook_line} Rule: "{_card_name(row.get("rule_name") or "?")}". '
         f"Mailbox: {box}.",
-        "Cancelled — the rule run was not changed.",
+        "The rule run was not changed.",
         "\n".join([
             f"- email: {_card_text(row.get('subject') or '(no subject)', 200)}",
             f"- from: {_card_text(_sender_text(row.get('from')), 200)}",
@@ -8933,7 +9226,7 @@ async def digest(account_id: str, period: str = "day", send: bool = False) -> st
         refusal = await _card_refusal(
             "Email the digest now?",
             f"Sends the {period} inbox digest to your own mailbox.",
-            "Cancelled — the digest was not sent.",
+            "The digest was not sent.",
         )
         if refusal:
             return refusal
@@ -8968,7 +9261,7 @@ async def sync_account(
             "Deletes all locally-stored mail for the account first, then "
             "re-fetches it from the provider. Use only for stale/corrupt "
             "local data.",
-            "Cancelled — nothing was purged.",
+            "Nothing was purged.",
         )
         if refusal:
             return refusal
@@ -9109,7 +9402,7 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
         "Forget this learned pattern?",
         f"The assistant stops using the learned {'rule' if is_rule else 'draft'} "
         f"pattern {shown}. It cannot be brought back. Mailbox: {box}.",
-        "Cancelled — the pattern was kept.",
+        "The pattern was kept.",
     )
     if refusal:
         return refusal
@@ -9224,9 +9517,9 @@ async def create_rules_from_prompt(
             f"{res.get('error', 'try rephrasing the description.')}"
         )
     box = await _named(account_id)
-    cancelled = f"Cancelled — no rule was created in {box}."
+    unchanged = f"No rule was created in {box}."
     refusal = await _outward_rule_refusal(
-        "Create rules that send mail out of the mailbox?", specs, cancelled,
+        "Create rules that send mail out of the mailbox?", specs, unchanged,
     )
     if refusal:
         return refusal
@@ -9243,7 +9536,7 @@ async def create_rules_from_prompt(
             f"Save {n} rule{'s' if n != 1 else ''} in {box}?",
             f"Mailbox: {box}. Each rule acts on each new email that matches. "
             "Each rule is in the list below.",
-            cancelled, listing,
+            unchanged, listing,
         )
         if refusal:
             return refusal

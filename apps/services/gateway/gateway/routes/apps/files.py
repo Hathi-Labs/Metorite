@@ -13,6 +13,7 @@ from ``app_files``) and writes mirror the file back into that store.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,19 @@ from pydantic import BaseModel
 # already-vendored dep cache is a few seconds; generous headroom for a
 # loaded box without leaving a runaway process to hang the request forever.
 BUILD_TIMEOUT_SECONDS = 60.0
+
+#: The answer of the host build route while CUSTOM_APPS_HOST_BUILD is off
+#: (task 2464). It names no flag, and it tells the member what to do next.
+HOST_BUILD_OFF_MESSAGE = (
+    "This app builds in its sandbox. Ask the builder to build it, or ask Metorite support."
+)
+
+#: The answer of the host build route while a container on the app dir is over
+#: its quota (task 2464 round 5). The build writes dist/, so it is refused.
+HOST_BUILD_OVER_QUOTA_MESSAGE = (
+    "The app dir is over its quota, so the build did not run. "
+    "Delete files to free space, then build again."
+)
 
 
 class AppFileEntry(BaseModel):
@@ -230,15 +244,28 @@ def _is_buildable_manifest(manifest: dict[str, Any] | None) -> bool:
     return entry.startswith("dist/")
 
 
-def _agent_app_builder_dir() -> Path | None:
-    """The on-disk clone of the ``agent-app-builder`` agent, which owns
-    ``build/build_t2.mjs`` — the SAME script the app-builder's own Copilot
-    session invokes mid-chat (agent-app-builder/agents.py's
-    ``__T2_BUILD_SCRIPT__`` substitution). Reuses the loader's own
-    clone-cache resolution so this never drifts from where the agent
-    actually finds it."""
-    from gateway.routes.workspace import _agent_workspace_dir
-    return _agent_workspace_dir("agent-app-builder")
+def _t2_build_script() -> Path | None:
+    """The ``build_t2.mjs`` of the deployed source tree, or ``None`` (task 2464).
+
+    The host route runs the script that ships with the gateway. It is the
+    same source that the sandbox broker copies into a container
+    (``sandbox_broker.app_builder_build_source``), found from code, never
+    from input. It is never the agent clone cache
+    (``{agents_clone_dir}/repos/...``): the clone refreshes only when the
+    agent loads, so a fix to the script did not reach the copy that this
+    route ran.
+    """
+    try:
+        from orchestrator.sandbox_broker import (
+            APP_BUILDER_BUILD_SOURCES,
+            app_builder_build_source,
+        )
+    except ImportError:
+        return None
+    root = app_builder_build_source()
+    if root is None:
+        return None
+    return root / APP_BUILDER_BUILD_SOURCES["build_t2.mjs"]
 
 
 def host_build_refusal(workspace: Path) -> str | None:
@@ -272,6 +299,26 @@ def host_build_refusal(workspace: Path) -> str | None:
     return None
 
 
+async def _stop_build(proc: Any) -> None:
+    """Kill a build that did not finish, and wait for it (task 2464 review P2).
+
+    ``wait_for`` cancels only the wait. Without this, node and esbuild ran on
+    after the route answered, so a slow build could hold the box.
+    """
+    kill = getattr(proc, "kill", None)
+    if kill is None:
+        return
+    try:
+        kill()
+    except ProcessLookupError:
+        return
+    wait = getattr(proc, "wait", None)
+    if wait is not None:
+        # The kill is sent. A late reap is not an error.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(wait(), timeout=5)
+
+
 async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
     """Run ``node build_t2.mjs`` against *workspace*. Returns (ok, output) —
     ``output`` is stdout on success, stderr on failure. Never raises: a
@@ -289,14 +336,56 @@ async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
             cwd=str(workspace), env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
+    except Exception as exc:  # missing node, etc.
+        return False, str(exc)
+    try:
         out, err = await asyncio.wait_for(
             proc.communicate(), timeout=BUILD_TIMEOUT_SECONDS,
         )
-    except Exception as exc:  # timeout, missing node, etc.
+    except TimeoutError:
+        await _stop_build(proc)
+        return False, (
+            f"The build ran for more than {BUILD_TIMEOUT_SECONDS:.0f} s, so it was "
+            "stopped. Make the app smaller, then build again."
+        )
+    except Exception as exc:
+        await _stop_build(proc)
         return False, str(exc)
     if proc.returncode != 0:
         return False, err.decode(errors="replace")[-2000:]
     return True, out.decode(errors="replace")[-2000:]
+
+
+async def _build_under_dir_lock(workspace: Path, script: Path) -> tuple[bool, str]:
+    """``host_build_refusal`` and the build, under the broker's dir lock.
+
+    Task 2464 review P2. Each real-path check of ``build_t2.mjs`` comes before
+    its read or write. Without the lock, a container that mounted the dir
+    during a slow build could put a link at ``dist/`` between the check and
+    the write. ``delivery_guard`` holds off every container exec on the dir,
+    as ``durability._git_under_dir_lock`` does. With no broker in this
+    process, no container can mount the dir.
+    """
+    try:
+        from orchestrator.sandbox_broker import delivery_guard
+    except ImportError:
+        delivery_guard = None
+    loop = asyncio.get_event_loop()
+
+    async def checked_build() -> tuple[bool, str]:
+        refusal = await loop.run_in_executor(None, host_build_refusal, workspace)
+        if refusal:
+            return False, refusal
+        return await _run_build_t2(workspace, script)
+
+    if delivery_guard is None:
+        return await checked_build()
+    async with delivery_guard(workspace) as over_quota:
+        # A container on the dir is over its quota (§7.1 rule 10). The build
+        # writes dist/, so it is refused, as each delegated write is.
+        if over_quota:
+            return False, HOST_BUILD_OVER_QUOTA_MESSAGE
+        return await checked_build()
 
 
 @router.post("/{slug}/build")
@@ -318,24 +407,18 @@ async def build_app(
     manifest = read_workspace_manifest(workspace)
     if not _is_buildable_manifest(manifest):
         return {"built": False, "reason": "not a build-based (T2) app"}
+    # Task 2464: the host build ships dark. Off, no node process starts.
+    if not getattr(get_settings(), "custom_apps_host_build", False):
+        return {"built": False, "error": HOST_BUILD_OFF_MESSAGE}
 
-    app_builder_dir = await asyncio.get_event_loop().run_in_executor(
-        None, _agent_app_builder_dir,
-    )
-    if app_builder_dir is None:
+    script = await asyncio.get_event_loop().run_in_executor(None, _t2_build_script)
+    if script is None:
         return {
             "built": False,
-            "error": "T2 build tooling unavailable (agent-app-builder not cloned)",
+            "error": "T2 build tooling unavailable (no agent-app-builder build dir in the source)",
         }
-    script = app_builder_dir / "build" / "build_t2.mjs"
-    if not script.is_file():
+    if script.is_symlink() or not script.is_file():
         return {"built": False, "error": f"build script missing: {script}"}
-    refusal = await asyncio.get_event_loop().run_in_executor(
-        None, host_build_refusal, workspace,
-    )
-    if refusal:
-        return {"built": False, "error": refusal}
-
-    ok, output = await _run_build_t2(workspace, script)
+    ok, output = await _build_under_dir_lock(workspace, script)
     _log.info("apps.build_triggered", slug=slug, ok=ok)
     return {"built": ok, **({"output": output} if ok else {"error": output})}

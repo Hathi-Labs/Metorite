@@ -38,9 +38,14 @@ export default function SkillsGallery() {
   const rows = view?.kind === "ok" ? view.skills : [];
 
   return (
-    <section aria-label="Skills" className="flex flex-col">
+    <section aria-label="Your skills" className="flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-3 border-b border-border">
-        <h2 className="text-sm font-bold text-foreground">Skills</h2>
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-3">
+          <h2 className="text-sm font-bold text-foreground">Your skills</h2>
+          <Link href="/integrations?view=skills" className="text-xs text-primary hover:underline">
+            Built-in skills
+          </Link>
+        </div>
         {on && rows.length > 0 && (
           <Button size="md" href="/studio/skills/new" icon="Plus">
             New skill

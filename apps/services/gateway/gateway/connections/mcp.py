@@ -938,10 +938,13 @@ async def set_always_confirm(org: str, name: str, value: bool) -> StoredServer |
 async def set_switches(
     org: str, name: str, *,
     always_confirm: bool | None = None, read_only_key: bool | None = None,
+    description: str | None = None,
 ) -> StoredServer | None:
-    """Set the H-300 switch, the MCP-C2 switch, or both, of the server *name*
-    of *org*. ``None`` when *org* holds no such server. A switch that is
-    ``None`` stays as it is, and at least one must be named.
+    """Set the H-300 switch, the MCP-C2 switch, the description (CSY-7), or
+    any of them, of the server *name* of *org*. ``None`` when *org* holds no
+    such server. A field that is ``None`` stays as it is, and at least one
+    must be named. The description goes into ``provider_meta.description``,
+    where the register puts it.
 
     It changes the two switch keys in ``provider_meta`` and nothing else: the
     headers, the status and the other fields stay. A disabled server can
@@ -964,12 +967,14 @@ async def set_switches(
     stored row then matches what the gate reads, and only a change that
     names the key can turn it on.
     """
-    if always_confirm is None and read_only_key is None:
-        raise ValueError("name always_confirm, read_only_key, or both")
+    if always_confirm is None and read_only_key is None and description is None:
+        raise ValueError("name always_confirm, read_only_key, description, or any of them")
     if not NAME_RE.match(name or ""):
         return None
     org = _org(org)
-    change: dict[str, bool] = {}
+    change: dict[str, Any] = {}
+    if description is not None:
+        change["description"] = description
     if always_confirm is not None:
         change["always_confirm"] = bool(always_confirm)
     if read_only_key is not None:
@@ -981,11 +986,13 @@ async def set_switches(
             return None
         meta = locked[0].provider_meta or {}
         oauth = _is_oauth(locked[0])
-        # An unnamed switch keeps the state that the one parse reads now.
-        change.setdefault("always_confirm", _always_confirm(meta))
-        change.setdefault("read_only_key", _read_only_key(meta, oauth=oauth))
-        _check_switches(always_confirm=change["always_confirm"],
-                        read_only_key=change["read_only_key"], oauth=oauth)
+        # A description-only change leaves both switches as stored (CSY-7).
+        if always_confirm is not None or read_only_key is not None:
+            # An unnamed switch keeps the state that the one parse reads now.
+            change.setdefault("always_confirm", _always_confirm(meta))
+            change.setdefault("read_only_key", _read_only_key(meta, oauth=oauth))
+            _check_switches(always_confirm=change["always_confirm"],
+                            read_only_key=change["read_only_key"], oauth=oauth)
         conn = await store.merge_meta_by_key(
             db, org, provider_for(name), OWNING_APP, change,
         )

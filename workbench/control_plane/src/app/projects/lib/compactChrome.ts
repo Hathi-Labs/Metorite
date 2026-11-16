@@ -57,6 +57,7 @@ export interface ActiveChip {
   clear:
     | { kind: "filters"; patch: Partial<Filters> }
     | { kind: "waitingOnMe" }
+    | { kind: "epic" }
     | { kind: "agentWork" };
 }
 
@@ -64,6 +65,8 @@ export interface ChipInput {
   filters: Filters;
   waitingOnMe: boolean;
   agentWork: boolean;
+  /** SP-2a — the epic the board is narrowed to, when one is chosen. */
+  epic?: { id: string; label: string };
   me: string;
   /** Turns an address into the name a member reads. */
   labelOf?: (address: string) => string;
@@ -77,6 +80,7 @@ export function activeChips({
   filters,
   waitingOnMe,
   agentWork,
+  epic,
   me,
   labelOf = (address) => address,
 }: ChipInput): ActiveChip[] {
@@ -111,6 +115,9 @@ export function activeChips({
   }
   if (waitingOnMe) {
     chips.push({ key: "waiting", label: "Waiting on me", clear: { kind: "waitingOnMe" } });
+  }
+  if (epic) {
+    chips.push({ key: "epic", label: epic.label, clear: { kind: "epic" } });
   }
   if (agentWork) {
     chips.push({ key: "agent", label: "Agent work", clear: { kind: "agentWork" } });

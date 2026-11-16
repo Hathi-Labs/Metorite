@@ -197,6 +197,10 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/registry/usage/activity": "billing_read",
     "/registry/usage/apps": "billing_read",
     "/registry/usage/members": "billing_read",
+    # AUTO-8b-2d — the spend of ONE run, read by the headless turn's meter.
+    # The same capability as the other spend reads: it is a read of the
+    # member's own org, and it writes nothing.
+    "/registry/usage/run": "billing_read",
     # The checkout half, on the SEVENTH capability.
     "/registry/billing/orders": "billing_purchase",
     "/registry/billing/orders/{order_id}": "billing_purchase",

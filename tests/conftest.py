@@ -80,6 +80,29 @@ def _isolate_write_artifact_context():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_the_run_binding():
+    """Start every test with NO run binding, and restore it after.
+
+    The run binding (``acb_common.bind_run_context``: the member, its
+    ``member_verified`` flag, the run and the agent) lives in structlog's
+    ContextVars. A synchronous test that binds it binds it on the main
+    thread's context, which every later test shares. Since MCP-C3 the
+    integration filter of a run that names nobody reads that binding
+    (``executor._bound_run_member``). So a member that one test left bound
+    would filter the credentials of a later test that expects none, and the
+    failure would depend on the order of the tests.
+    """
+    try:
+        from acb_common import clear_run_context, run_context_scope
+    except ImportError:  # acb_common unavailable — nothing to isolate
+        yield
+        return
+    with run_context_scope():
+        clear_run_context()
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_the_egress_mark(monkeypatch):
     """Keep the upward-egress mark (WS-17 EM-G11d) in memory under test.
 

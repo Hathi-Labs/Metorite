@@ -34,6 +34,8 @@ from typing import Any
 
 from acb_auth import agent_oauth
 
+from agent_edge import playbook_prompts
+
 #: The one prompt of the edge.
 PROMPT_NAME = "work_on_task"
 
@@ -89,6 +91,19 @@ ANSWER_RULE = (
     " Before you act on an answer, post a thought that names the answer id,"
     " because the member may withdraw it until you post."
 )
+#: SW-43c. The same step while the flag is off, so the work steps carry it by
+#: default. It holds no reason, because with the flag off no member takes an
+#: answer back. The flag turns it into :data:`ANSWER_RULE`
+#: (:func:`answer_thought_rule`). Fence: ``test_mcp_edge_agent_runs.py``
+#: ``TestTheAnswerChangeAtTheEdge``.
+ANSWER_THOUGHT_RULE = (
+    "Before you act on an answer, post a thought that names the answer id.")
+
+
+def answer_thought_rule() -> str:
+    """The step of the thought before an act on an answer, by the flag of
+    SW-43. The step shows with the runs flag alone (SW-43c)."""
+    return ANSWER_RULE.strip() if agent_oauth.answer_change_enabled() else ANSWER_THOUGHT_RULE
 
 #: The same words as ``tools._UNTRUSTED_NOTE``, the note of each tool.
 _UNTRUSTED = (
@@ -114,8 +129,23 @@ def offered(scopes: Iterable[str]) -> bool:
     return agent_oauth.writes_enabled() and agent_oauth.PROJECTS_WRITE in set(scopes)
 
 
-def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
-    """The ``prompts/list`` entries. Empty, never an error, when hidden."""
+def listed(scopes: Iterable[str], organization_id: object = None) -> list[dict[str, Any]]:
+    """The ``prompts/list`` entries. Empty, never an error, when hidden.
+
+    PB-2: the playbook prompts follow ``work_on_task``, for an organization on
+    ``playbook_orgs``. They need only ``projects:read``.
+    """
+    held = set(scopes)
+    return _work_on_task_entry(held) + playbook_prompts.listed(held, organization_id)
+
+
+def logged_name(params: object) -> str:
+    """The prompt name for the log: a known name, never client text."""
+    name = params.get("name") if isinstance(params, dict) else None
+    return name if name == PROMPT_NAME or name in playbook_prompts.PROMPTS else "unknown"
+
+
+def _work_on_task_entry(scopes: set[str]) -> list[dict[str, Any]]:
     if not offered(scopes):
         return []
     runs = agent_oauth.runs_enabled()
@@ -132,12 +162,34 @@ def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
     }]
 
 
-def get(scopes: Iterable[str], params: dict[str, Any]) -> dict[str, Any]:
+def get(scopes: Iterable[str], params: dict[str, Any],
+        organization_id: object = None) -> dict[str, Any]:
     """The ``prompts/get`` result, or raise :class:`PromptRefused`.
 
     No gateway request. The text is fixed text and the validated argument.
     """
     name = params.get("name")
+    if isinstance(name, str) and name in playbook_prompts.PROMPTS:
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not playbook_prompts.offered(name, scopes, organization_id):
+            raise PromptRefused(TEXT_UNKNOWN)
+        if not isinstance(arguments, dict):
+            raise PromptRefused(
+                playbook_prompts.TEXT_BAD_ARGUMENT.format(
+                    name=playbook_prompts.PROMPTS[name].argument or "arguments"))
+        try:
+            result = playbook_prompts.get(name, scopes, organization_id, arguments)
+        except ValueError as refused:
+            raise PromptRefused(str(refused)) from None
+        if result is None:
+            raise PromptRefused(TEXT_UNKNOWN)
+        description, text = result
+        return {
+            "description": description,
+            "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+        }
     if name != PROMPT_NAME or not offered(scopes):
         raise PromptRefused(TEXT_UNKNOWN)
     arguments = params.get("arguments")
@@ -344,6 +396,21 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
     return _numbered(steps)
 
 
+#: Task 1045a (``agent_coordination.md`` 1045a item 7). The step of the
+#: waiting line. It shows only with the runs flag, as the tool does.
+#: Fence: ``test_mcp_edge_prompts.py`` ``TestTheWaitingRule``.
+WAITING_RULE = (
+    "While your own sub-agents work, you work too. Continue to post a short"
+    " thought at least once a minute, and the run stays working. Post a"
+    " waiting line only before a wait of more than 2 minutes on CI, a deploy,"
+    " a review or a person, or another agent that is not yours: a thought"
+    " with post_agent_activity and waiting {on, until_minutes, note}. on is"
+    " ci, review, deploy, member or agent, and until_minutes is 1 to 120."
+    " The task then shows the run as waiting, not idle. Your next activity"
+    " ends the wait. A wait on a person for longer than 120 minutes is a"
+    " question: call ask_on_task.")
+
+
 def _work_steps(*, runs: bool) -> list[str]:
     """The steps after the context: the work, the progress, the links, the
     review, the done, and the end with one disposition."""
@@ -358,8 +425,9 @@ def _work_steps(*, runs: bool) -> list[str]:
             " When you asked me with ask_on_task and I answer outside Metorite,"
             " such as in this chat, call record_outside_decision at once. The"
             " question then closes, and the task stops waiting on me.")
-        if agent_oauth.answer_change_enabled():
-            steps.append(ANSWER_RULE.strip())
+        steps.append(WAITING_RULE)
+        # SW-43c: on by default, so an agent posts the thought before the flip.
+        steps.append(answer_thought_rule())
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -399,6 +467,7 @@ def _rules() -> str:
 
 __all__ = [
     "ANSWER_RULE",
+    "ANSWER_THOUGHT_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
     "IMAGE_RULE",
@@ -409,8 +478,11 @@ __all__ = [
     "TEXT_EXTRA",
     "TEXT_NO_TASK",
     "TEXT_UNKNOWN",
+    "WAITING_RULE",
     "PromptRefused",
+    "answer_thought_rule",
     "get",
     "listed",
+    "logged_name",
     "offered",
 ]

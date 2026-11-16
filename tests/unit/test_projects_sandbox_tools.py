@@ -1263,9 +1263,9 @@ def test_ws43u_the_sandbox_rules_reach_the_model_only_with_run_command(
 
 
 def test_a_steer_during_a_file_tools_only_turn_reaches_the_model(sandbox, monkeypatch) -> None:  # noqa: F811
-    """Review P2: the steer drain runs at the file tools too, as PR #585 did
-    for an agent's own tools. The note rides the result of the file tool
-    into the next request."""
+    """Review P2: a steer during a turn of file tools only reaches the next
+    request. Since task 2494 it is a USER turn there, right after the file
+    tool's result, and the tool result keeps its own text."""
     from orchestrator import steer
 
     from tests.unit._native_maf_harness import text_turn, tool_turn
@@ -1281,4 +1281,7 @@ def test_a_steer_during_a_file_tools_only_turn_reaches_the_model(sandbox, monkey
         text_turn("done"),
     ], on_request=on_request)
     results = _tool_results(model.bodies[1])
-    assert results and "USE BAR CHARTS" in results[0], results
+    assert results and "USE BAR CHARTS" not in results[0], results
+    messages = model.bodies[1]["messages"]
+    assert messages[-1].get("role") == "user", messages[-1]
+    assert "USE BAR CHARTS" in str(messages[-1].get("content")), messages[-1]

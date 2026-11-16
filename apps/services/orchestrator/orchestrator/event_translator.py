@@ -38,8 +38,12 @@ parity: identical updates must translate identically on every path.
 """
 from __future__ import annotations
 
+import contextvars
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -52,6 +56,60 @@ _log = get_logger("orchestrator.event_translator")
 RESULT_CAP = 2000       # chars of tool result forwarded to the stream
 PARTIAL_CAP = 2000      # chars of live partial tool output per frame
 PROGRESS_CAP = 200      # chars of a progress header line
+
+
+#: Bidi marks and zero-width characters never reach a label.
+_INVISIBLE_RE = re.compile("[​-‏‪-‮⁠-⁤﻿]")
+
+#: CSY-10 (``chat_connected_systems.md`` §3.8): the registry labels of the
+#: servers that THIS run attached, ``{server name: label}``. The injection
+#: replaces it in each run (:func:`set_mcp_labels`), from the rows it already
+#: read and only for a server that attached, so no label of an older run stays.
+MCP_LABELS: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
+    "acb_mcp_labels", default=MappingProxyType({}),
+)
+#: The names of first-party tools of the run. A tool of this set is never an MCP
+#: tool, whatever server name prefixes it.
+MCP_RESERVED: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "acb_mcp_reserved", default=frozenset(),
+)
+
+
+def set_mcp_labels(labels: Mapping[str, str], reserved: frozenset[str] | set[str] = frozenset()) -> None:
+    """Replace the labels of this run. A server whose ``<name>_`` prefix starts
+    a name of *reserved* (a first-party tool) is dropped, so it never relabels
+    a platform tool such as ``web_search`` or ``call_agent``."""
+    kept = {
+        str(name): str(label) for name, label in labels.items()
+        if name and label and not any(r.startswith(f"{name}_") for r in reserved)
+    }
+    MCP_LABELS.set(MappingProxyType(kept))
+    MCP_RESERVED.set(frozenset(reserved))
+
+
+def mcp_server_of(
+    name: Any, labels: Mapping[str, str] | None, reserved: frozenset[str] | set[str] = frozenset(),
+) -> tuple[str, str, str] | None:
+    """``(server, label, tool words)`` for an MCP tool NAME, else None.
+
+    The wire name is exactly ``<server.name>_<tool>``. MAF builds it from
+    ``tool_name_prefix=server.name`` (``_maf_mcp.attach_mcp_tools``), and a
+    registry name holds only ``a-z``, ``0-9`` and ``-``, which MAF keeps. So
+    the full name is matched against the exact server names, with no change of
+    case, ``-`` or a lead ``mcp_``. The longest server name wins. A name in
+    *reserved* is first-party and never matches. Only the NAME is read.
+    """
+    if not labels or not isinstance(name, str) or name in reserved:
+        return None
+    best: str | None = None
+    for server in labels:
+        longer = best is None or len(server) > len(best)
+        if server and longer and name.startswith(f"{server}_") and len(name) > len(server) + 1:
+            best = server
+    if best is None:
+        return None
+    words = " ".join(p for p in re.split(r"[_.:-]+", name[len(best) + 1:]) if p)
+    return (best, labels[best], words) if words else None
 
 
 @dataclass
@@ -183,6 +241,12 @@ def function_call_events(
         "type": "TOOL_CALL_START",
         "toolCallId": cid, "toolCallName": name, "args": delta,
     }]
+    # CSY-10: an MCP tool names its server. The stamp holds the registry name
+    # and label only, never an argument or a result.
+    found = mcp_server_of(name, MCP_LABELS.get(), MCP_RESERVED.get())
+    if found:
+        label = _INVISIBLE_RE.sub("", str(found[1]))[:80]
+        out[0]["mcp"] = {"server": found[0], "label": label}
     if delta:
         out.append({"type": "TOOL_CALL_ARGS", "toolCallId": cid, "delta": delta})
     return out

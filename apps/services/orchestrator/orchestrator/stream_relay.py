@@ -812,13 +812,15 @@ LAST_STEP_MAX_CHARS = 60
 LAST_STEP_SCAN = 12
 
 _TAG_RE = re.compile(r"<[^>]*>")
+#: Bidi marks and zero-width characters: a label must not hide or reorder text.
+_INVISIBLE_RE = re.compile("[​-‏‪-‮⁠-⁤﻿]")
 
 
 def plain_step(text: Any, limit: int = LAST_STEP_MAX_CHARS) -> str | None:
     """*text* as one short line of plain text, or None when nothing is left."""
     if not isinstance(text, str):
         return None
-    s = _TAG_RE.sub(" ", text)
+    s = _INVISIBLE_RE.sub("", _TAG_RE.sub(" ", text))
     s = "".join(" " if (ord(c) < 32 or ord(c) == 127 or c in "<>") else c for c in s)
     s = " ".join(s.split())
     if not s:
@@ -856,20 +858,54 @@ def tool_step(name: Any) -> str | None:
     return plain_step(words[:1].upper() + words[1:])
 
 
+#: CSY-10 (``chat_connected_systems.md`` §3.8): the most characters of a server
+#: label in a step. The whole step still caps at ``LAST_STEP_MAX_CHARS``.
+SERVER_LABEL_MAX_CHARS = 24
+
+
+def mcp_tool_step(ev: dict[str, Any]) -> str | None:
+    """``<server label>: <tool in words>`` for a tool start that the server
+    stamped with ``mcp`` (``event_translator.function_call_events``).
+
+    The label is the registry row's label, and the words come from the tool
+    NAME. The stamp holds no argument and no result, and this reads none. The
+    name must still start with the stamped server, so a wrong stamp is no step.
+    None gives the caller the plain :func:`tool_step`.
+    """
+    from orchestrator.event_translator import mcp_server_of
+
+    stamp = ev.get("mcp")
+    name = ev.get("toolCallName")
+    if not isinstance(stamp, dict) or not isinstance(name, str):
+        return None
+    server, label = stamp.get("server"), stamp.get("label")
+    if not isinstance(server, str) or not isinstance(label, str):
+        return None
+    name = name.strip()
+    if not _TOOL_NAME_RE.match(name) or name == "tool":
+        return None
+    found = mcp_server_of(name, {server: label})
+    shown = plain_step(label, SERVER_LABEL_MAX_CHARS)
+    if not found or not shown:
+        return None
+    return plain_step(f"{shown}: {found[2]}")
+
+
 def step_from_events(events: list[dict[str, Any]]) -> str | None:
     """The latest step in *events*, which are NEWEST FIRST.
 
     The first event that names a step wins. A tool start gives its tool name
-    as a label, a text delta gives "Writing a reply" and a thinking delta gives
-    "Thinking". A progress update, a result, an argument and every other event
-    are skipped, because their TEXT can be tool output.
+    as a label (an MCP tool also gives its server's label, CSY-10), a text
+    delta gives "Writing a reply" and a thinking delta gives "Thinking". A
+    progress update, a result, an argument and every other event are skipped,
+    because their TEXT can be tool output.
     """
     for ev in events:
         if not isinstance(ev, dict):
             continue
         kind = ev.get("type")
         if kind in ("TOOL_CALL_START", "SUB_AGENT_TOOL_CALL_START"):
-            step = tool_step(ev.get("toolCallName"))
+            step = mcp_tool_step(ev) or tool_step(ev.get("toolCallName"))
             if step:
                 return step
         elif kind in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"):
@@ -1281,6 +1317,44 @@ async def run_detached(
     """Run *gen* (an SSE-line async generator) in a DETACHED background task
     and yield its events from the Redis stream.
 
+    :func:`start_detached` starts the task, and this generator then reads the
+    stream, as a reconnecting client does. The arguments are the arguments of
+    :func:`start_detached`.
+
+    Yields:
+        Parsed event dicts with ``_stream_id`` (Redis entry ID) attached.
+    """
+    await start_detached(
+        thread_id, gen, tee=tee, on_complete=on_complete, actor=actor,
+        source=source, floor=floor, organization_id=organization_id,
+        record=record,
+    )
+    # Serve events from Redis — the SAME path a reconnecting client uses.
+    async for evt in subscribe_events(thread_id, since_id="0"):
+        yield evt
+
+
+async def start_detached(  # noqa: C901 — the body of run_detached before RESUME-2a
+    thread_id: str,
+    gen: AsyncIterator[str],
+    *,
+    tee: bool = False,
+    on_complete: Any = None,
+    actor: str | None = None,
+    source: str | None = None,
+    floor: list[str] | None = None,
+    organization_id: str | None = None,
+    record: dict[str, Any] | None = None,
+    exclusive: bool = False,
+) -> asyncio.Task[None]:
+    """Start *gen* (an SSE-line async generator) in a DETACHED background
+    task, and return the task. It needs no HTTP reader.
+
+    The ONE starter of a detached run. :func:`run_detached` calls it for a
+    request that reads the stream. RESUME-2a calls it through the gateway's
+    run route for a continuation run, which no request reads
+    (``chat_run_continuity.md`` §4.12.4 item 2).
+
     This decouples agent execution from the HTTP response: if the client
     disconnects, uvicorn cancels THIS generator (the subscriber) but the
     background task keeps draining the agent and pushing events to Redis.
@@ -1318,14 +1392,16 @@ async def run_detached(
         record:    What the restart sweep needs to persist this run if its
                    process dies (``orchestrator.run_liveness``): the message
                    row id, the agent, the run id. Server-side facts only.
+        exclusive: RESUME-2a review, P2. True for a continuation run: it
+                   refuses while ANY run is in flight on this thread, of any
+                   party, and when the check fails. A continuation is no
+                   member turn, so it never supersedes a run.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
             thread.  Starting would delete a transcript this caller does not
-            own, so it does not start.
-
-    Yields:
-        Parsed event dicts with ``_stream_id`` (Redis entry ID) attached.
+            own, so it does not start. With *exclusive*, when any run is in
+            flight. It raises before any state changes.
     """
     # ── §5.2, the inner layer: the destructive reset is UNREACHABLE by anyone
     # but a legitimate superseder. ────────────────────────────────────────────
@@ -1351,6 +1427,18 @@ async def run_detached(
                 owner=_owner[:20], actor=actor[:20],
             )
             raise SupersedeRefused(thread_id, _owner, actor)
+    if exclusive:
+        try:
+            _busy = await is_active(thread_id)
+        except Exception:  # fail closed: start nothing
+            _busy = True
+        # Read the task AFTER the await, so a run that registered during the
+        # await refuses too (RESUME-2a follow-up). No await follows before
+        # the cancel below, so nothing can register between the two.
+        _prev = _DETACHED_TASKS.get(thread_id)
+        if _busy or (_prev is not None and not _prev.done()):
+            _log.info("stream_relay.exclusive_refused", thread_id=thread_id[:12])
+            raise SupersedeRefused(thread_id, "a run in flight", actor or "")
 
     # One run per thread: cancel any stale run still attached to this thread.
     prev = _DETACHED_TASKS.get(thread_id)
@@ -1536,7 +1624,7 @@ async def run_detached(
     # "A new applier, not new infrastructure": the bus already relays a command
     # from any worker to the one that owns the run and confirms it applied. All
     # steer adds is what to DO on arrival — buffer the note for the run's next
-    # tool boundary, and tell everyone watching that the run was redirected and
+    # model call (a user turn, task 2494), and tell everyone watching that the run was redirected and
     # by whom.
     #
     # Returning True is the applied-ack, and it is honest here: the note is in
@@ -1576,17 +1664,14 @@ async def run_detached(
         #     run-event type is a two-sided change. A steer is a room fact, not
         #     a turn fact — §4.4 puts ``STEER_INJECTED`` on the room stream for
         #     exactly this reason.
-        # The durable copy stays until a tool result carries the note to
-        # the model (``steer._forget_durable``, round 2 of the review of
-        # #920). A note in this buffer must survive this process dying.
+        # The durable copy stays until a model call reads the note as a
+        # user turn (``steer.take_steer_turns``, task 2494). A note in this
+        # buffer must survive this process dying.
         return True
 
     register_control_command(thread_id, "steer", _steer_apply)
     _start_control_listener(thread_id)
-
-    # Serve events from Redis — the SAME path a reconnecting client uses.
-    async for evt in subscribe_events(thread_id, since_id="0"):
-        yield evt
+    return task
 
 
 async def cancel_run(thread_id: str) -> bool:

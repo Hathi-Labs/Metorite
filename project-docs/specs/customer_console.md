@@ -1,5 +1,7 @@
 # Customer Console — the subscription, seat and AI-metering engine (WS-31)
 
+> **Dated 2026-11-11, Aroh (D143 and D204.11).** Aroh is not a separate app. Task 2611 removes the Aroh seat kind from the Console. Read the Aroh text in this spec (lines 37 to 40 and 1994 to 2100) as history.
+
 *(Authored 2026-08-12 as the "Platform Control Plane"; renamed **Customer
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*

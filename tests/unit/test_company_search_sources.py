@@ -172,6 +172,13 @@ class Apps:
              "chat_name": None, "body_text": "", "transcript_text": "voice words"},
         ]
 
+    async def studio(self, user, q, k):
+        # C5a: the studio flags stay OFF in this fixture, so this reader is never
+        # reached and each old test sees the answer of before C5a. The tests of the
+        # source with the flag on are in test_studio_search.py.
+        await self._enter("studio", user, {"q": q, "limit": k})
+        return []
+
     async def knowledge(self, **kw):
         await self._enter("knowledge", kw["user"], kw)
         return {"query": kw["q"], "degraded": True, "hits": [
@@ -199,6 +206,7 @@ def apps(monkeypatch) -> Apps:
     import gateway.routes.people.directory as directory
     import gateway.routes.projects.search as projects_search
     import gateway.routes.whatsapp.transport.messages as wa_messages
+    import gateway.studio.search as studio_search
     from acb_common import get_settings
     from gateway.routes.crm import access, records
 
@@ -212,6 +220,7 @@ def apps(monkeypatch) -> Apps:
     monkeypatch.setattr(registry, "enabled", lambda: True)
     monkeypatch.setattr(wa_messages, "search_messages", f.whatsapp)
     monkeypatch.setattr(kb_search, "search_knowledge", f.knowledge)
+    monkeypatch.setattr(studio_search, "search_records", f.studio)
     settings = get_settings()
     monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
     monkeypatch.setattr(settings, "crm_orgs", ORG, raising=False)
@@ -231,9 +240,12 @@ def run(user: UserContext, q: str = "acme", apps: str | None = None, k: int = 5)
 # ── The registry ────────────────────────────────────────────────────────────
 
 class TestTheRegistry:
-    def test_seven_sources_each_with_its_routers_feature(self):
-        assert {k: s.feature for k, s in sources.REGISTRY.items()} == FEATURES
-        assert list(sources.REGISTRY) == list(FEATURES)
+    def test_eight_sources_each_with_its_routers_feature(self):
+        # The seven apps of before C5a, then `studio` LAST (C5a). FEATURES stays the
+        # seven, so each old test sees the answer of before C5a.
+        assert {k: s.feature for k, s in sources.REGISTRY.items()} == {
+            **FEATURES, "studio": "studio"}
+        assert list(sources.REGISTRY) == [*FEATURES, "studio"]
         for key, source in sources.REGISTRY.items():
             assert source.key == key and source.label
 
@@ -459,7 +471,8 @@ class TestTheAnswer:
     def test_a_named_app_goes_first(self, apps):
         hits = run(member(*ALL), apps="crm, email")["hits"]
         assert [h["app"] for h in hits[:3]] == ["crm", "email", "tasks"]
-        assert apps.called()[:3] == ["crm_access", "crm", "email"]
+        # HRD-4: the sources start together, so only the start order is fixed.
+        assert apps.called()[:2] == ["crm_access", "email"]
 
     def test_an_unknown_app_is_a_422(self, apps):
         with pytest.raises(HTTPException) as e:
@@ -479,9 +492,10 @@ class TestTheAnswer:
         assert len(hits) == 7
         assert [kw.get("limit") for n, _, kw in apps.calls if n == "tasks"] == [1]
 
-    def test_the_sources_never_overlap(self, apps):
+    def test_the_sources_overlap_but_four_at_most(self, apps):
+        # HRD-4 (D-FIND-6): the sources run at once, and a fifth waits.
         run(member(*ALL))
-        assert apps.max_active == 1
+        assert 1 < apps.max_active <= company.FIND_SESSIONS
 
     @pytest.mark.parametrize("error", [HTTPException(status_code=422, detail="too short"),
                                        RuntimeError("db down"), TimeoutError()])

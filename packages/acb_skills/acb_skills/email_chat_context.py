@@ -43,6 +43,8 @@ from typing import Any
 
 import structlog
 
+from acb_skills.ask_tools import CARD_APPROVED, CARD_OUTCOMES, CLOSED_BY_YOUR_MESSAGE
+
 _log = structlog.get_logger(__name__)
 
 #: The agent whose sub-runs write and read the working set.
@@ -94,9 +96,15 @@ _MAILBOX_LINE = re.compile(r"^Mailbox: .* \(account_id ([^)\s]+)\)$")
 #: The answer of ``send_draft`` when the draft went (``_held_sent_text``).
 _DRAFT_SENT = re.compile(r"^\s*Draft sent\b")
 #: The first words of a result that did not act. Its arguments name nothing
-#: that the run worked on.
+#: that the run worked on. HRD-7: the lead of each card outcome that did
+#: nothing comes from the one table (``ask_tools.CARD_OUTCOMES``). A card
+#: that a chat message closed is not in it: its result names the card's draft,
+#: and the member's next words act on that draft. "Send cancelled" stays for a
+#: result of before HRD-7.
 _NO_ACT = ("Refused", "Not sent", "Nothing changed", "Error", "Could not",
-           "Send cancelled", "Which mailbox", "Send from which mailbox")
+           "Send cancelled", "Which mailbox", "Send from which mailbox",
+           *(f"{o.lead}:" for k, o in CARD_OUTCOMES.items()
+             if k not in (CARD_APPROVED, CLOSED_BY_YOUR_MESSAGE)))
 
 #: The bound of each process cache.
 _CACHE_MAX = 4096

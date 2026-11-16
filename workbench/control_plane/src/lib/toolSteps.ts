@@ -98,6 +98,8 @@ const V = {
   save: ["Saving", "Saved"],
   set: ["Setting", "Set"],
   add: ["Adding", "Added"],
+  startOf: ["Starting", "Started"],
+  closeOf: ["Closing", "Closed"],
   check: ["Checking", "Checked"],
   plan: ["Planning", "Planned"],
   capture: ["Capturing", "Captured"],
@@ -166,12 +168,16 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   project_access: { kind: "read", verb: V.read, object: "who may see a project" },
   project_authorities: { kind: "read", verb: V.read, object: "the authority pages of a project" },
   list_project_updates: { kind: "read", verb: V.read, object: "the updates of a project" },
+  list_cycles: { kind: "read", verb: V.read, object: "the cycles of a project" },
+  cycle_detail: { kind: "read", verb: V.read, object: "a cycle" },
   // WS-39 TPL-1a: the templates of the organization.
   list_templates: { kind: "read", verb: V.read, object: "the project templates" },
   // WS-39 TPL-1a repair (P2-e): the generic label read "Saved an as template".
   save_as_template: { kind: "edit", verb: V.save, object: "a project as a template" },
   create_project_from_template: { kind: "edit", verb: V.create, object: "a project from a template" },
   my_decisions: { kind: "read", verb: V.read, object: "the decisions that wait for you" },
+  // SW-43c: the derived words would read "Changed an agent answer".
+  change_agent_answer: { kind: "edit", verb: V.change, object: "your answer to an agent" },
   project_views: { kind: "read", verb: V.read, object: "the saved views" },
   recurrence: { kind: "read", verb: V.read, object: "a repeat rule" },
   team_capacity: { kind: "read", verb: V.read, object: "the team's capacity" },
@@ -202,6 +208,8 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   link_tasks_batch: { kind: "edit", verb: V.link, object: "tasks" },
   // WS-PJP PJP-4: several edits, a different change for each task, one card.
   update_tasks: { kind: "edit", verb: V.update, object: "tasks" },
+  // SP-8a: the contract of an epic, one card.
+  set_epic_contract: { kind: "edit", verb: V.save, object: "an epic contract" },
   mark_notifications_read: { kind: "edit", verb: V.mark, object: "notifications read" },
   set_my_overlay: { kind: "edit", verb: V.update, object: "your view of a task" },
   set_status_set: { kind: "edit", verb: V.update, object: "the statuses" },
@@ -215,10 +223,17 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   comment: { kind: "edit", verb: V.comment, object: "a task" },
   post_project_update: { kind: "edit", verb: V.wrote, object: "a project update" },
   delete_project_update: { kind: "edit", verb: V.delete, object: "a project update" },
+  create_cycle: { kind: "edit", verb: V.create, object: "a cycle" },
+  plan_cycle: { kind: "edit", verb: V.edit, object: "the tasks of a cycle" },
+  start_cycle: { kind: "edit", verb: V.startOf, object: "a cycle" },
+  close_cycle: { kind: "edit", verb: V.closeOf, object: "a cycle" },
   assign: { kind: "edit", verb: V.assign, object: "a task" },
   complete: { kind: "edit", verb: V.complete, object: "a task" },
   defer: { kind: "edit", verb: V.defer, object: "a task" },
   watch: { kind: "edit", verb: V.watch, object: "a task" },
+  // ── AI Studio (the `studio` pack) ─────────────────────────────────────────
+  // STB-6a and STU-E4b: a noun-first name. The derived words would read "Used studio workflow read".
+  studio_workflow_read: { kind: "read", verb: V.read, object: "a workflow" },
 };
 
 /** First word of a verb-first name → its verb and its step kind. */
@@ -386,12 +401,19 @@ export function splitAgentLabel(step: ToolStep): { lead: string; agent: string }
   return { lead: step.label.slice(0, -step.agent.length).trimEnd(), agent: step.agent };
 }
 
+/** True when a tool result is a server refusal: its text starts with
+ *  "Refused:" (`acb_common.tool_refusals.REFUSED`). The trail and the skill
+ *  offer (`lib/studio/skillOffer.ts`) read this one rule. */
+export function refusedText(result: string | undefined): boolean {
+  return /^\s*Refused:/.test(result ?? "");
+}
+
 function statusOf(event: Pick<ToolEvent, "status" | "result">): StepStatus {
   if (event.status === "error") return "failed";
   // A server refusal ("Refused: ...", `acb_common.tool_refusals`) is no done
   // act, even if it reached us as "done": a refused CRM write, which has no
   // card of its own, must not read "Created lead" (review of #1126).
-  if (event.status === "done" && /^\s*Refused:/.test(event.result ?? "")) return "failed";
+  if (event.status === "done" && refusedText(event.result)) return "failed";
   return event.status === "running" ? "running" : "done";
 }
 
@@ -460,6 +482,43 @@ function phrase(verb: Verb, status: StepStatus, object: string): string {
   return object ? `${v} ${object}` : v;
 }
 
+/** The longest server label in a step (CSY-10). The server caps it the same. */
+export const SERVER_LABEL_CAP = 24;
+
+/** A label as one short line: no control character, no angle bracket. */
+function cleanLabel(raw: string): string {
+  const flat = raw
+    .replace(/<[^>]*>/g, " ")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f<>]/g, " ")
+    // Bidi marks and zero-width characters must not hide or reorder a label.
+    .replace(/[​-‏‪-‮⁠-⁤﻿]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > SERVER_LABEL_CAP ? `${flat.slice(0, SERVER_LABEL_CAP - 1).trimEnd()}…` : flat;
+}
+
+/**
+ * The step of an MCP tool: "<server label>: <tool in words>" (CSY-10,
+ * `chat_connected_systems.md` §3.8). The label is the registry row's label and
+ * the words come from the tool NAME. The arguments and the result are never
+ * read. Null when the tool names no server, or the name does not start with it.
+ */
+export function mcpStepLabel(
+  event: Pick<ToolEvent, "name" | "mcp">,
+): string | null {
+  const mcp = event.mcp;
+  if (!mcp || typeof mcp.label !== "string" || typeof mcp.server !== "string") return null;
+  const label = cleanLabel(mcp.label);
+  if (!label) return null;
+  // The wire name is exactly `<server>_<tool>`: no change of case, dash or
+  // lead. The browser trusts the server's stamp and never guesses a server.
+  const key = mcp.server;
+  if (!key || !event.name.startsWith(`${key}_`)) return null;
+  const words = event.name.slice(key.length + 1).split(/[_.:\s-]+/).filter(Boolean).join(" ");
+  return words ? `${label}: ${words}` : null;
+}
+
 /**
  * One step, in words. Pure: the same event always gives the same line.
  *
@@ -468,11 +527,15 @@ function phrase(verb: Verb, status: StepStatus, object: string): string {
  * name, then a regex guess at the kind, and last "Used <name>".
  */
 export function describeToolStep(
-  event: Pick<ToolEvent, "name" | "args" | "status" | "subAgentName" | "result">,
+  event: Pick<ToolEvent, "name" | "args" | "status" | "subAgentName" | "result" | "mcp">,
 ): ToolStep {
   const status = statusOf(event);
   const bare = bareToolName(event.name);
   const args = event.args ?? {};
+
+  // ── A tool of a connected MCP server (CSY-10) ─────────────────────────────
+  const mcpLabel = mcpStepLabel(event);
+  if (mcpLabel !== null) return { kind: "other", status, label: mcpLabel };
 
   // ── A profile tool that changed nothing (WS-63 PZ-32) ─────────────────────
   // The result is "done" on the wire, so the name alone would read "Saved to

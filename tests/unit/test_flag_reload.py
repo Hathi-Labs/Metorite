@@ -89,6 +89,22 @@ def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not agent_questions_allowed("globex")
 
 
+def test_tool_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-67 TS-2a, one_assistant_context.md §4.2.9. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from acb_skills.tool_packs import tool_search_on
+
+    assert fr.reloadable("TOOL_SEARCH_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("TOOL_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not tool_search_on("acme")
+    env(**{**_START, "TOOL_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("TOOL_SEARCH_ORGS",)
+    assert tool_search_on("acme")
+    assert not tool_search_on("globex")
+
+
 def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
     the one reader sees a change with no restart."""
@@ -103,6 +119,22 @@ def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert fr.reload_flags().applied == ("WAITING_ORGS",)
     assert waiting_allowed("acme")
     assert not waiting_allowed("globex")
+
+
+def test_my_day_learn_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-58 LOOP-4a, proactive_loop.md §7.2. The reload list holds the key,
+    and the one reader sees a change with no restart."""
+    from gateway.routes.shell.state import learn_allowed
+
+    assert fr.reloadable("MY_DAY_LEARN_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("MY_DAY_LEARN_ORGS", "")
+    get_settings.cache_clear()
+    assert not learn_allowed("acme")
+    env(**{**_START, "MY_DAY_LEARN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("MY_DAY_LEARN_ORGS",)
+    assert learn_allowed("acme")
+    assert not learn_allowed("globex")
 
 
 def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
@@ -126,6 +158,203 @@ def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> Non
     assert not github_app_org_allowed("globex")
     monkeypatch.setattr(get_settings(), "github_app_enabled", False)
     assert not github_app_org_allowed("acme"), "the master off is off for all"
+
+
+def test_workflow_studio_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU J1-3, ai_studio.md §14 J1-3. The reload list holds the key, and
+    the one reader of the authoring gate sees a change with no restart."""
+    from gateway.routes.workflows.core import author_gate_on
+
+    assert fr.reloadable("WORKFLOW_STUDIO_GATE_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("WORKFLOW_STUDIO_GATE_ORGS", "")
+    get_settings.cache_clear()
+    assert not author_gate_on("acme")
+    env(**{**_START, "WORKFLOW_STUDIO_GATE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("WORKFLOW_STUDIO_GATE_ORGS",)
+    assert author_gate_on("acme")
+    assert not author_gate_on("globex")
+
+
+def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU B2b-2b, ai_studio.md §14 B2b-2. The reload list holds the key, and
+    the one reader of the door op switch sees a change with no restart."""
+    from gateway.routes.studio.flags import door_ops_allowed
+
+    assert fr.reloadable("STUDIO_DOOR_OPS_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("STUDIO_DOOR_OPS_ORGS", "")
+    get_settings.cache_clear()
+    assert not door_ops_allowed("acme")
+    env(**{**_START, "STUDIO_DOOR_OPS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_DOOR_OPS_ORGS",)
+    assert door_ops_allowed("acme")
+    assert not door_ops_allowed("globex")
+
+
+def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11, chat_organization.md §18. The reload list holds the key,
+    and the one reader of the pin switch sees a change with no restart."""
+    from gateway.chat_session_member import pin_allowed
+
+    assert fr.reloadable("CHAT_PIN_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert pin_allowed("acme")
+    assert not pin_allowed("globex")
+    assert not pin_allowed(None)
+
+
+def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU E12a, ai_studio.md §14 E12a. The reload list holds the key, and
+    the one reader of the core events switch sees a change with no restart."""
+    from gateway.core_events import core_events_allowed
+
+    assert fr.reloadable("CORE_EVENTS_ORGS")
+    monkeypatch.setenv("CORE_EVENTS_ORGS", "")
+    get_settings.cache_clear()
+    assert not core_events_allowed("acme")
+    env(**{**_START, "CORE_EVENTS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CORE_EVENTS_ORGS",)
+    assert core_events_allowed("acme")
+    assert not core_events_allowed("globex")
+
+def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU C5a, ai_studio.md §14 C5a. The reload list holds the key, and
+    the one reader of the search switch sees a change with no restart."""
+    from gateway.routes.studio.flags import search_allowed
+
+    assert fr.reloadable("STUDIO_SEARCH_ORGS")
+    monkeypatch.setenv("STUDIO_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not search_allowed("acme")
+    env(**{**_START, "STUDIO_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SEARCH_ORGS",)
+    assert search_allowed("acme")
+    assert not search_allowed("globex")
+
+def test_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-FIND FIND-2, find_engine.md section 8. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from gateway.retrieval.find import find_allowed
+
+    assert fr.reloadable("FIND_ORGS")
+    monkeypatch.setenv("FIND_ORGS", "")
+    get_settings.cache_clear()
+    assert not find_allowed("acme")
+    env(**{**_START, "FIND_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("FIND_ORGS",)
+    assert find_allowed("acme")
+    assert not find_allowed("globex")
+
+def test_studio_chat_tools_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-1a, ai_studio.md §14 TOF-1a. The reload list holds the key,
+    and the one reader of the chat tool source sees a change with no restart."""
+    from gateway.routes.studio.flags import chat_tools_allowed
+
+    assert fr.reloadable("STUDIO_CHAT_TOOLS_ORGS")
+    monkeypatch.setenv("STUDIO_CHAT_TOOLS_ORGS", "")
+    get_settings.cache_clear()
+    assert not chat_tools_allowed("acme")
+    env(**{**_START, "STUDIO_CHAT_TOOLS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_CHAT_TOOLS_ORGS",)
+    assert chat_tools_allowed("acme")
+    assert not chat_tools_allowed("globex")
+
+def test_studio_skill_offer_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-1d, ai_studio.md §14 TOF-1d. The reload list holds the key,
+    and the one reader of the skill offer sees a change with no restart."""
+    from gateway.routes.studio.flags import skill_offer_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_OFFER_ORGS")
+    monkeypatch.setenv("STUDIO_SKILL_OFFER_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_offer_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_OFFER_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_OFFER_ORGS",)
+    assert skill_offer_allowed("acme")
+    assert not skill_offer_allowed("globex")
+    assert not skill_offer_allowed(None)
+
+def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
+    the one reader of the logic module switch sees a change with no restart."""
+    from gateway.routes.studio.flags import logic_allowed
+
+    assert fr.reloadable("STUDIO_LOGIC_ORGS")
+    monkeypatch.setenv("STUDIO_LOGIC_ORGS", "")
+    get_settings.cache_clear()
+    assert not logic_allowed("acme")
+    env(**{**_START, "STUDIO_LOGIC_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_LOGIC_ORGS",)
+    assert logic_allowed("acme")
+    assert not logic_allowed("globex")
+
+
+def test_studio_num_f8_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU C2c, ai_studio.md §14 C2c. The reload list holds the key, and
+    the one reader of the float8 switch sees a change with no restart."""
+    from acb_common.studio_flags import num_f8_allowed
+
+    assert fr.reloadable("STUDIO_NUM_F8_ORGS")
+    monkeypatch.setenv("STUDIO_NUM_F8_ORGS", "")
+    get_settings.cache_clear()
+    assert not num_f8_allowed("acme")
+    env(**{**_START, "STUDIO_NUM_F8_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_NUM_F8_ORGS",)
+    assert num_f8_allowed("acme")
+    assert not num_f8_allowed("globex")
+
+
+def test_studio_connection_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU I1a, ai_studio.md §14 I1a. The reload list holds the key, and the
+    one reader of the connection gate sees a change with no restart."""
+    from acb_common.studio_flags import connection_gate_on
+
+    assert fr.reloadable("STUDIO_CONNECTION_GATE_ORGS")
+    monkeypatch.setenv("STUDIO_CONNECTION_GATE_ORGS", "")
+    get_settings.cache_clear()
+    assert not connection_gate_on("acme")
+    assert not connection_gate_on(None)
+    env(**{**_START, "STUDIO_CONNECTION_GATE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_CONNECTION_GATE_ORGS",)
+    assert connection_gate_on("ACME ")
+    assert not connection_gate_on("globex")
+
+
+def test_studio_live_preview_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU I11a, ai_studio.md §14 I11a. The reload list holds the key, and the
+    one reader of the live preview sees a change with no restart."""
+    from acb_common.studio_flags import live_preview_on
+
+    assert fr.reloadable("STUDIO_LIVE_PREVIEW_ORGS")
+    monkeypatch.setenv("STUDIO_LIVE_PREVIEW_ORGS", "")
+    get_settings.cache_clear()
+    assert not live_preview_on("acme")
+    assert not live_preview_on(None)
+    env(**{**_START, "STUDIO_LIVE_PREVIEW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_LIVE_PREVIEW_ORGS",)
+    assert live_preview_on("ACME ")
+    assert not live_preview_on("globex")
+
+
+def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-2a, chat_organization.md §6. The reload list holds the key, and
+    the one reader of the topic switch sees a change with no restart."""
+    from gateway.chat_topic import topics_allowed
+
+    assert fr.reloadable("CHAT_TOPICS_ORGS")
+    monkeypatch.setenv("CHAT_TOPICS_ORGS", "")
+    get_settings.cache_clear()
+    assert not topics_allowed("acme")
+    env(**{**_START, "CHAT_TOPICS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_TOPICS_ORGS",)
+    assert topics_allowed("ACME ")
+    assert not topics_allowed("globex")
+    assert not topics_allowed(None)
 
 
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
@@ -188,7 +417,7 @@ def test_a_key_the_file_gains_stays_out_of_the_settings(env) -> None:
 
 def test_settings_that_do_not_validate_change_nothing(env, monkeypatch) -> None:
     class _Refuses(Settings):
-        def __init__(self, **_kw):  # noqa: D107
+        def __init__(self, **_kw):
             raise ValueError("no")
 
     before = get_settings()

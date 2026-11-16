@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import nextConfig, { STUDIO_REDIRECTS } from "../../next.config";
 
 describe("the Studio redirects", () => {
-  it("holds the four rules, all permanent", async () => {
+  it("holds the five rules, all permanent", async () => {
     expect(await nextConfig.redirects?.()).toEqual(STUDIO_REDIRECTS);
     expect(
       STUDIO_REDIRECTS.map((r) => [r.source, r.destination, r.permanent]),
@@ -16,6 +16,7 @@ describe("the Studio redirects", () => {
       ["/workflows/:id", "/studio/workflows/:id", true],
       ["/build/apps", "/studio", true],
       ["/build/agents", "/studio", true],
+      ["/apis", "/integrations", true],
     ]);
   });
 
@@ -23,6 +24,7 @@ describe("the Studio redirects", () => {
     const sources = STUDIO_REDIRECTS.map((r) => r.source);
     expect(sources).not.toContain("/build/apps/:path*");
     expect(sources).not.toContain("/build/apps/:slug");
-    expect(sources.some((s) => s.startsWith("/api"))).toBe(false);
+    // `/apis` is the old connector page and redirects. `/api/...` stays alone.
+    expect(sources.some((s) => s.startsWith("/api/"))).toBe(false);
   });
 });

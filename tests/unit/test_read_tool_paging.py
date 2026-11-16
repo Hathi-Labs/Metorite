@@ -271,8 +271,6 @@ ALLOWED: dict[str, str] = {
         "Text, not rows: the cut shortens one string.",
     "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::title[:1]":
         "Text: the first letter of a name, upper-cased. Not rows.",
-    "packages/acb_skills/acb_skills/studio_tools.py::_slug::re.sub('^[^a-z]+', '', words)[:40]":
-        "Text, not rows: the cut shortens one string.",
     "packages/acb_skills/acb_skills/studio_tools.py::_shown_diff::diff[:MAX_DIFF_LINES]":
         "The cut list ends with one line that counts the rest ('... N more'). Each patch call returns the diff again.",
     "packages/acb_skills/acb_skills/studio_tools.py::_shown_errors::errors[:MAX_ERRORS]":
@@ -289,6 +287,12 @@ ALLOWED: dict[str, str] = {
         "Text, not rows: one object name cut so that the action id fits the 48-character limit of the manifest (STU-BETA-2).",
     "packages/acb_skills/acb_skills/studio_tools.py::with_record_actions::base[:48 - len(str(n))]":
         "Text, not rows: one action id cut so that it fits the limit with its number (STU-BETA-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::_delete_rows::tables[:MAX_DELETE_CARD_TABLES]":
+        "No row is lost: the delete card names ten tables, counts the other tables in 'and N more "
+        "tables', and the totals row counts every table. The delete takes every table (STU-A5c-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::_frame_lines::names[:MAX_OUTLINE_PAGES_SHOWN]":
+        "No page is lost: the Pages line of the outline names four pages, says 'and N more', and "
+        "gives the total in the same line. The manifest keeps every page (STU-AF-8a).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -313,8 +317,11 @@ ALLOWED: dict[str, str] = {
 #: and says 'and N more', and two cuts keep a made action id in 48 characters (84).
 #: STU-B2c-2b added two: a refusal names at most two field keys, and it writes
 #: nothing, so the next call names the rest (86). CAL-4 added one: the error text
-#: of a failed day-flow step, cut to 120 characters (87).
-ALLOWED_CEILING = 87
+#: of a failed day-flow step, cut to 120 characters (87). STU-A5c-2 added one: the
+#: delete card names ten tables and counts the rest, and the delete takes every
+#: table (88). STU-AF-8a added one: the outline's Pages line names four pages and
+#: says 'and N more' (89).
+ALLOWED_CEILING = 88
 
 
 def _stringy(node: ast.AST) -> bool:

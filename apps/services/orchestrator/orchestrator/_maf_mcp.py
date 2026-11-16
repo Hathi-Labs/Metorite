@@ -106,6 +106,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger, get_settings
+from acb_common.secret_shapes import REDACTION_SHAPES
+from acb_skills.permission_policy import MCP_HINT_NAMES
 
 if TYPE_CHECKING:
     from agent_framework import FunctionInvocationContext
@@ -148,7 +150,8 @@ LOADER_ACTIONS = ("list", "load", "unload")
 #: The longest reason that a log line carries.
 _REASON_CHARS = 80
 #: The MCP hint names, from the ``annotations`` of one tool (MCP 2025-03-26).
-HINT_NAMES = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+#: ``acb_skills.permission_policy`` holds the one copy (STU-B1b-1).
+HINT_NAMES = MCP_HINT_NAMES
 #: The longest server description that a card carries.
 _DESCRIPTION_CHARS = 1000
 #: Seconds for ``on_unauthorized`` to mark ONE row (rule 9). The run waits
@@ -708,7 +711,23 @@ def _names_held(agent: Any) -> set[str]:
     for tool in getattr(agent, "mcp_tools", None) or []:
         held |= {tool_name(f) for f in getattr(tool, "functions", None) or []}
         held |= {tool_name(f) for f in getattr(tool, "_functions", None) or []}
+    held |= _finder_names(agent)
     return {n for n in held if n}
+
+
+def _finder_names(agent: Any) -> set[str]:
+    """WS-67 TS-2a: the name of ``find_tools`` when a ``FindToolsProvider`` of
+    the run is on *agent*. That provider adds the tool in ``before_run``, so
+    ``default_options`` never holds it, and a server tool of the same name
+    would fail the turn. Only a run with ``TOOL_SEARCH_ORGS`` on holds the
+    provider, so a run with the flag off reads nothing new here."""
+    try:
+        from acb_skills.tool_guard import tool_name
+        from acb_skills.tool_packs import FindToolsProvider
+    except ImportError:  # pragma: no cover - acb_skills ships with the platform
+        return set()
+    return {tool_name(p.finder.tool) for p in getattr(agent, "context_providers", None) or []
+            if isinstance(p, FindToolsProvider)}
 
 
 def _choose_disclosure(tool: Any) -> None:
@@ -1014,23 +1033,9 @@ _WHOLE_SCHEMES = (
     re.compile(r"bearer\s+[A-Za-z0-9._~+/=\-]+", re.IGNORECASE),
     re.compile(r"basic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE),
 )
-#: Keys with a known prefix, hidden wherever they stand in a value: OpenAI,
-#: Stripe and GitHub (review of PR #897).
-_KEY_PREFIXES = (
-    re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_\-]{6,}"),
-    re.compile(r"(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"),
-    re.compile(r"(?<![A-Za-z0-9_])pk_live_[A-Za-z0-9]{16,}"),
-    re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{20,}"),
-)
-#: Tokens with a known shape, hidden wherever they stand in a value: Slack,
-#: AWS, Google and a JWT (three base64url segments).
-_TOKEN_SHAPES = (
-    re.compile(r"(?<![A-Za-z0-9_])xox[abprs]-[A-Za-z0-9\-]{10,}"),
-    re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
-    re.compile(r"(?<![A-Za-z0-9_])AIza[0-9A-Za-z_\-]{30,}"),
-    re.compile(r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]+"),
-)
+#: Keys and tokens with a known shape, hidden wherever they stand in a value.
+#: The list lives in ``acb_common.secret_shapes`` (task 1272).
+_KEY_SHAPES = REDACTION_SHAPES
 #: A PEM private key, from its BEGIN line through its END line (or to the
 #: end of the value, when the END line is missing).
 _PEM_KEY = re.compile(
@@ -1089,7 +1094,7 @@ def _secret_value(text: str) -> bool:
     """True when the WHOLE value is a credential."""
     stripped = text.strip()
     return any(p.fullmatch(stripped) for p in (
-        *_WHOLE_SCHEMES, *_KEY_PREFIXES, *_TOKEN_SHAPES, _PEM_KEY))
+        *_WHOLE_SCHEMES, *_KEY_SHAPES, _PEM_KEY))
 
 
 def _key_value(match: re.Match[str]) -> str:
@@ -1105,7 +1110,7 @@ def _mask_secrets(text: str) -> str:
     text = _PEM_KEY.sub(REDACTED, text)
     text = _URL_PASSWORD.sub(lambda m: m.group("head") + REDACTED, text)
     text = _KEY_VALUE.sub(_key_value, text)
-    for pattern in (*_KEY_PREFIXES, *_TOKEN_SHAPES):
+    for pattern in _KEY_SHAPES:
         text = pattern.sub(REDACTED, text)
     return text
 

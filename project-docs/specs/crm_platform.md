@@ -1,5 +1,7 @@
 # CRM — the Metorite port, two modes, and the Zoho mirror
 
+> **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 792 and 1236.
+
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
@@ -73,6 +75,11 @@
 >
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
+>
+> **Built later, not merged:** CRM-Q25e, large reads (2026-11-13, branch
+> `mt-51634ef0-crm-large-reads`, no migration). Parts 1 to 4 are live when
+> it merges. The long read of part 5 is dark behind `CRM_LONG_READ_ORGS`.
+> See §18.11.
 >
 > **Built later, merged (#1111, `d72f92184`):** Batch I, from the branch
 > `crm-batch-i` (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the
@@ -3870,6 +3877,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q28 | A weekly digest on the powerful tier | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q25b | One time zone for each month bucket of the aggregate | AGENT-SAFE | S | CRM-Q25 |
 | CRM-Q25c | A NUL byte in a list query answers 422 | AGENT-SAFE | S | — |
+| CRM-Q25e | Large reads: one read of each record, a split in one statement, a lookup by a Metorite id, a note when one day holds most records, and the long read (tasks 3127, 3128, 3129, 2985 HRD-6) | AGENT-SAFE. Parts 1 to 4 go live at merge. Only part 5, the long read, is dark behind `CRM_LONG_READ_ORGS` | M | CRM-Q25, CRM-Q25c |
 | CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
 | CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
@@ -4181,6 +4189,127 @@ null. A group with no value beside groups with values still gives 0 for
 and `weighted`, because they read no field. The fence is
 `test_a_field_that_every_row_leaves_empty_has_no_total` in
 `test_crm_aggregate_fields_r8.py`.
+
+**CRM-Q25e · Large reads (2026-11-13, tasks 3127, 3128, 3129 and 2985
+HRD-6).** The production evidence is from DEWiN, a Zoho Mirror org, on
+2026-11-13. The module `Invoices` holds 31,590 records, and `fields` holds
+about 3 KB of TOASTed jsonb for each record. A member asked the chat for
+sales totals. `crm_aggregate` answered 503 `aggregate_timeout` 24 times and
+422 6 times. The run then spent its `AGGREGATE_BUDGET` of 8, and the chat
+stopped. Done when:
+
+1. **Each record is read once.** Postgres decompresses the jsonb again for
+   each `fields -> key` on the stored row. A total read it up to 17 times a
+   row. Every field expression of a module statement now reads the one
+   detoasted copy of `field_sql.DETOAST_JOIN`: the measure, the group key,
+   the date bucket and each filter. The value read of a text filter
+   (`value_counts`) reads each row once too. A core entity keeps its
+   `custom` column and its SQL of before, because that column is small.
+2. **A split in one statement.** `fields=a,b,c` names 2 to 5 number
+   fields. ONE statement gives the total of each. The answer carries
+   `split`, one `{field, label, type, total, values}` for each field. Each
+   group carries `split`, each field with its value. `field` and `total`
+   are those of the first field. A call gives `field` or `fields`, not both.
+   A core entity with an overlay refuses a split with 422, and names its
+   module.
+   The tool takes `fields` as a list, and its text tells the model to ask
+   for a split in one call.
+3. **A lookup filter by a Metorite id.** The chat finds a record with
+   `crm_list_module_records`, and it sends the Metorite id of that record.
+   The stored lookup holds the Zoho id, so the filter matched no record.
+   Now, when the value has the shape of a uuid, one read by primary key
+   finds the `ext_id` of that record. The module of that read comes from
+   `lookup_module` of the field definition, and the org from the session.
+   The filter then matches that Zoho id too. A Zoho id and a name match as
+   before. A uuid of another module or another org matches nothing.
+4. **A note when one day holds most records, and a display value.** The
+   rule lives in `acb_common/number_sense.py`, which is pure. Other apps
+   can use it for their own checks. A bucket concentrates the answer when
+   all of these hold:
+   - At least 4 OTHER buckets hold records (`CONCENTRATION_MIN_OTHERS`).
+   - The bucket holds 20 or more records (`CONCENTRATION_MIN_RECORDS`).
+   - It holds 30 % or more of the records (`CONCENTRATION_SHARE`).
+   - It holds more than 5 times the median records of the other buckets
+     (`CONCENTRATION_RATIO`).
+   - A day is not the first or the last day of its month
+     (`MONTH_EDGE_IS_NORMAL`), because rent bills on the first day and a
+     month, a quarter or a year closes on the last day.
+
+   So 95 rent invoices on 2026-10-01, a year-end batch of 400 of 550 on
+   2026-03-31, a year of 3 records beside a year of 60, and last month
+   beside the second day of this month give NO finding. DEWiN's 13,222 of
+   14,313 October records on 2026-10-17 give one. The check reads the
+   20,000 largest buckets at most (`CONCENTRATION_MAX_BUCKETS`), with one
+   sort, so 10,000 buckets take less than 50 ms on the event loop.
+
+   The route reads the days of one date field in the SAME scan, as a second
+   grouping set, and only when the statement reads the detoasted copy
+   already. A plain count, a count by owner and a fixed month read no field,
+   so they get no day set and no detoast. The date field is the field of
+   the group, else the field of the first date range filter, else `@date`.
+   An answer by a date bucket or a month also checks its own groups, and
+   its sentence names a bucket ("fall in 2026-10, one month of Invoice
+   Date"), never a day. Each finding carries `kind`, `key`, `records`,
+   `share`, `value_share` and one `sentence`. The tool puts each finding
+   first, as a line that starts with "FIRST".
+
+   The tool also adds a `Display` line to a total of one lakh (or one
+   million) and more. That line formats the total in the number system of
+   the run, through `acb_common.number_system`. Money is in whole rupees. A
+   total in two or more currencies gives one entry for each currency, and
+   the line says never to add them. The values of a split, and its "Other"
+   line, also follow the number system of the run, and each names its field.
+5. **The long read, dark.** For an org on `CRM_LONG_READ_ORGS`, the 503 of
+   a total past 10 s carries `long_read: true`. The tool then calls ONCE
+   more with `long_read=true`. Its httpx limit is 200 s. The route runs that
+   read with ONE deadline of up to 180 s for all its statements. Before each
+   heavy statement, the LOCAL `statement_timeout` takes the time left. A
+   guard holds one long read for each org, and 2 in the gateway process. A
+   second long read waits inside its own budget of 180 s, before it opens a
+   session. A wait past the budget, or a wait that leaves less than 30 s
+   (`LONG_READ_MIN_SECONDS`), answers 503 `aggregate_busy`. The pool of one
+   process is `db_pool_size` 7 and `db_max_overflow` 2, so 9 connections.
+   Background work may hold 4 of them. 2 long reads leave 3 connections for
+   pages.
+
+   Each call of a CRM read tool has ONE deadline of 260 s
+   (`TOOL_CALL_SECONDS`), under the tool limit of 300 s of the orchestrator.
+   Every read of the call ends by it. A call takes at most ONE long read,
+   only when 200 s or more are left, and never in a headless turn (the
+   holder of `acb_llm.attribution.run_ceiling_scope`). A WhatsApp or text
+   run takes none too, because its whole-run cap of 240 s (or 420 s) cannot
+   hold a read of 180 s and the model calls around it. A long read that runs
+   out of time keeps its count of `AGGREGATE_BUDGET`, and its text asks for
+   a shorter range, never for the same read again. A 10 s read that ran out
+   of time, in a call that took no long read and read nothing, spends no
+   count of `AGGREGATE_BUDGET`. Each read still counts against
+   `READ_BUDGET`. With the list empty, no 503 offers the long read, and the
+   tool calls once and counts as before. `CRM_LONG_READ_ORGS` is an `*_ORGS`
+   key, so a SIGHUP reload applies a flip (`docs/flag_reload.md`). A name in
+   the list spends nothing, so its flip is gate `enforcement-flip`.
+
+Not in scope: a typed key column or any migration (a later HIGH slice).
+The generic "please wait" notice of the chat is another slice of task 2985.
+
+Fences: `tests/unit/test_crm_large_reads.py`, `tests/unit/test_number_sense.py`,
+the large-read tests of `tests/unit/test_crm_aggregate_fields_r8.py` (R8),
+and `test_every_module_field_reads_the_detoasted_row_once` in
+`tests/unit/test_crm_aggregate.py`.
+
+**Built as (2026-11-13).** No migration. Measured on a private scratch
+database through the route, the best of three runs. The module held 31,000
+records of 3.1 KB each, and 40 % of them on one Invoice_Date.
+
+| Read | Before | After |
+|---|---|---|
+| A six-month total by month | 1.96 s | 0.65 s |
+| A one-month total | 1.26 s | 0.60 s |
+| A split of 4 fields | 5.11 s in 4 calls | 0.62 s in 1 call |
+
+The check of one day is in the "After" column. It cost 0.05 s on the
+six-month total and 0.14 s on the one-month total. Each total of "After" is
+the total of "Before", to the paisa. Each statement that reads a field
+joins the detoasted copy once.
 
 **CRM-Q27 · Search of note text by meaning.**
 
@@ -8614,6 +8743,65 @@ pure rule is now in `lib/filterBar.ts` (`searchBoxSync`). On Leads, "Last
 touched" sits before the converted badge. Two findings stay open. The search
 box makes the Closing range wrap at 1440, and a `blue` stage follows the accent
 until CRM-U3.
+
+**HRD-18a: names as people say them (✅ built 2026-11-14, task 2997).** The
+spec is `chat_failure_modes.md` F1. Production showed the gap on 2026-11-14. A
+member asked for the order of "Sharath", and the deal named its contact
+«Sharat Satyanarayana». `search_crm("Sharath")` did not find that deal.
+
+- `core.search_where` splits `?q=` into words. Each word must match one search
+  column or one related name. The words join by AND, and the columns by OR.
+  The phone digits of the whole query stay one more alternative.
+- A deal also matches the names of its contacts and of its source lead. The
+  source lead converted into the deal, or the deal names it in `lead_id`.
+  `Entity.search_sql` is now `Entity.related_search`.
+- `core.related_hits` reads the companies, the contacts and the leads once
+  for a request, before the list query. The predicate then holds the hits as
+  bound `= ANY` values and no sub-select. The count, the page and each lane
+  of the board share that one read.
+- A `?q=` over 200 characters is a 422 on each reader of the predicate.
+- `?near=true` adds a near pass to a list read. The pass runs only when the
+  exact read finds no row, on page 1, for 1 to 3 words. It answers 20 rows at
+  most, nearest first, and `total` is 20 at most.
+- In that pass, a word of 4 to 40 letters can also match nearly. SQL only
+  finds candidates: `pg_trgm` `strict_word_similarity` at 0.3, 200 rows of
+  each table at most. Then `acb_common.name_match` judges each name, and a
+  near name scores 0.6 or more.
+- So the CRM search never calls near a name that the people lookups call
+  far. «Bharath Shah» is not near "Sharath", and «Sougata Maji» is near
+  "Swagata".
+- The reverse is not true yet. The CRM pass finds candidates by raw trigrams
+  first. So a pair whose raw letters differ a lot (Laxmi and Lakshmi) is near
+  in the people lookups and not yet in the CRM search. HRD-18b (task 3226)
+  closes that gap, and the cap of 200 candidates in the `also` mode too.
+- The command bar and the company search take a query of 300 characters.
+  `search_records` cuts it at a word bound to 200 (`core.clip_query`), so
+  the CRM is still searched. The 422 of the list routes stays.
+- Each row of the near pass carries `near: true`. When no row matches,
+  the answer of `search_crm` opens with "No record holds «…». Near spellings:".
+- `?near=also` does the same, and it also reads near rows when the exact read
+  finds rows. It adds 5 near rows at most that no exact arm holds. `total`
+  counts the exact rows only. Only `search_crm` asks for `also`.
+- A wrong exact hit must not hide the record that the member means. The
+  production case had two exact Sharaths and no «Sharat». So `search_crm`
+  lists the exact rows, then the section "Near spellings (may be the person
+  you mean):" with each id. A last line tells the model to ask the member
+  when the exact rows do not fit.
+- Cost: each `search_crm` call of a name runs one more near pass for each
+  record type. The seed of the verifier had 2,001 companies, 8,001 contacts,
+  5,001 deals and 4,000 leads. On it, the deal pass of `also` took 140 to
+  290 ms, against 2.7 to 8.7 s before repair round 2. The plans stay under
+  the JIT cost.
+- An exact deal read now reads three more tables, once each. On that seed it
+  took 40 to 90 ms, against 20 to 28 ms on `origin/main`. The lead and the
+  contact reads stay within 20% of `origin/main`.
+- The list screen, the export, the aggregate and the board stay exact, and
+  they get the word rule too. The command bar and the company search get no
+  near pass (HRD-18b). They now match a deal by the names of its contacts
+  and of its source lead, as the list does.
+
+Fences: `tests/unit/test_crm_near_search_r8.py` (R8),
+`tests/unit/test_crm_near_plan.py` and `tests/unit/test_name_variants.py`.
 
 ### 19.6 CRM-X2: The CRM joins the shell (✅ built 2026-10-12)
 

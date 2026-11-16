@@ -48,6 +48,20 @@ export function planReplay(
 }
 
 /**
+ * The id that a re-attach replays into (RESUME-3a, C2). The target's own id,
+ * else the reply row that the server named for a continuation (`resumeId`),
+ * else a new placeholder id. A replay into the server's own row id makes the
+ * fold at the run's end write that same row, so one bubble shows.
+ */
+export function replayIdOf(
+  target: Pick<ChatMessage, "id"> | null | undefined,
+  resumeId: string | null | undefined,
+  mint: () => string,
+): string {
+  return target?.id ?? (resumeId || mint());
+}
+
+/**
  * The replies a re-attach must never take: the reply of the run that ended
  * in this chat (`doneId`) and, when the server named a run with ANOTHER
  * identity (`stale`), every reply this chat holds. They are all an old

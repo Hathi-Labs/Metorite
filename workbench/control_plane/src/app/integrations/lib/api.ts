@@ -88,6 +88,21 @@ export async function setMcpSwitches(name: string, switches: McpSwitches): Promi
 }
 
 /**
+ * CSY-7: save the description of one MCP server. The chat reads it. It
+ * answers the text that the gateway stored (trimmed).
+ */
+export async function setMcpDescription(name: string, description: string): Promise<string> {
+  const res = await fetch(`/api/integrations/mcp/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+  });
+  if (!res.ok) return fail(res);
+  const body = (await res.json().catch(() => ({}))) as { description?: unknown };
+  return typeof body.description === "string" ? body.description : description.trim();
+}
+
+/**
  * WS-54 IN-8c: start the OAuth consent of one MCP server, and get the
  * provider's sign-in URL. The browser sends no body: the gateway signs the
  * state and builds the URL, and the BFF passes on an https URL only. The

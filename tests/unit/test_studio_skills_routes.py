@@ -26,7 +26,7 @@ This file proves:
 **The mutations (R7).**
 
 * In ``skills._check_body``, comment out the catalog check (the
-  ``_catalog_problem`` call). ``test_an_unknown_action_is_422_with_its_path``
+  ``_catalog_check`` call). ``test_an_unknown_action_is_422_with_its_path``
   goes red, and so does the R8 test of an unknown action.
 * In ``skills.set_skill_state``, drop ``for_update=True``.
   ``test_a_move_reads_the_skill_with_its_row_lock`` goes red, and so does the
@@ -166,6 +166,13 @@ class _FakeDB:
                         and v["version"] == want:
                     return _Result([_version_row(v)])
             return _Result()
+        if sql == store._LIST_VERSIONS_SQL:
+            row = self._mine(p["m"], p["id"])
+            found = [v for v in t.versions
+                     if row and v["org"] == self.org and v["skill_id"] == row["id"]]
+            found.sort(key=lambda v: v["version"], reverse=True)
+            return _Result([(v["skill_id"], v["version"], v["content_hash"], v["created_by"],
+                             v["created_at"]) for v in found])
         raise AssertionError(f"an unexpected statement: {sql[:80]}")
 
 
@@ -271,6 +278,15 @@ def _six(c: TestClient, sid: str) -> list[Any]:
     ]
 
 
+def _eight(c: TestClient, sid: str) -> list[Any]:
+    """The six routes, and the history and the undo of F7a."""
+    return [
+        *_six(c, sid),
+        c.get(f"/studio/skills/{sid}/versions"),
+        c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 1}),
+    ]
+
+
 # ── The switch ─────────────────────────────────────────────────────────────
 
 
@@ -280,8 +296,8 @@ class TestTheSwitch:
         world.log.clear()
         world.store_calls.clear()
         _open(monkeypatch, OTHER)
-        answers = _six(_client(world), sid)
-        assert [r.status_code for r in answers] == [404] * 6
+        answers = _eight(_client(world), sid)
+        assert [r.status_code for r in answers] == [404] * 8
         assert all(r.json() == NOT_FOUND for r in answers)
         # The switch runs first: no session, no catalog read.
         assert world.log == [] and world.store_calls == []
@@ -306,7 +322,9 @@ class TestTheSwitch:
                 ("GET", "/studio/skills/{skill_id}"),
                 ("GET", "/studio/skills/{skill_id}/versions/{version}"),
                 ("POST", "/studio/skills/{skill_id}/versions"),
-                ("PATCH", "/studio/skills/{skill_id}/state")} <= paths
+                ("PATCH", "/studio/skills/{skill_id}/state"),
+                ("GET", "/studio/skills/{skill_id}/versions"),
+                ("POST", "/studio/skills/{skill_id}/undo")} <= paths
         assert skills.router is actions.router
         from pathlib import Path
 
@@ -355,8 +373,10 @@ class TestTheOrgAndTheMember:
             c.get(f"/studio/skills/{theirs}/versions/1"),
             c.post(f"/studio/skills/{theirs}/versions", json={"body": _body()}),
             c.patch(f"/studio/skills/{theirs}/state", json={"state": "archived"}),
+            c.get(f"/studio/skills/{theirs}/versions"),
+            c.post(f"/studio/skills/{theirs}/undo", json={"expected_version": 1}),
         ]
-        assert [r.status_code for r in answers] == [404] * 4
+        assert [r.status_code for r in answers] == [404] * 6
         assert all(r.json() == NOT_FOUND for r in answers)
         assert c.get("/studio/skills").json()["skills"] == []
         assert world.tables.skills[theirs] == before
@@ -819,3 +839,119 @@ class TestTheHiddenCharacters:
                        json={"state": "published"}).status_code == 200
         read = c.get(f"/studio/skills/{sid}").json()
         assert read["skill"]["name"] == name and read["version"]["body"] == body
+
+
+# ── History and one-step undo (STU-F7a) ────────────────────────────────────
+#
+# **The mutations (R7).**
+#
+# * F1. In ``skills.undo_skill_version``,
+#   drop ``for_update=True`` from the first read.
+#   ``test_an_undo_reads_the_skill_with_its_row_lock`` goes red, and so does
+#   the R8 test of two undos at once.
+# * F2. In ``skills.undo_skill_version``, drop the ``_precheck`` call or the
+#   ``_catalog_check`` call. ``test_an_undo_to_a_refused_version_is_422_and_writes_nothing``
+#   goes red.
+# * F3. In ``skills.undo_skill_version``, write the row by any other path than
+#   ``store.add_version``. ``test_the_undo_route_writes_only_through_add_version``
+#   goes red.
+# * F4. In ``skills._history_out``, add ``body``.
+#   ``test_the_history_holds_no_body`` goes red.
+
+
+def _two(c: TestClient) -> str:
+    sid = _create(c, body=_body([A1]))["skill"]["id"]
+    assert c.post(f"/studio/skills/{sid}/versions", json={"body": _body([A2])}).status_code == 201
+    return sid
+
+
+class TestHistoryAndUndo:
+    def test_the_history_lists_newest_first_with_no_body(self, world):
+        c = _client(world)
+        sid = _two(c)
+        r = c.get(f"/studio/skills/{sid}/versions")
+        assert r.status_code == 200
+        rows = r.json()["versions"]
+        assert [v["version"] for v in rows] == [2, 1]
+        assert all(set(v) == {"version", "created_by", "created_at", "content_hash"}
+                   for v in rows)
+        assert [v["created_by"] for v in rows] == [ANA, ANA]
+
+    def test_the_history_holds_no_body(self):
+        src = Path(skills.__file__).read_text(encoding="utf-8")
+        start = src.index("def _history_out")
+        assert "body" not in src[start: src.index("def _version_out")].split('"""')[2]
+
+    def test_an_undo_writes_a_copy_of_the_version_before(self, world):
+        c = _client(world)
+        sid = _two(c)
+        r = c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 2})
+        assert r.status_code == 201, r.text
+        got = r.json()
+        assert got["skill"]["current_version"] == 3 and got["version"]["version"] == 3
+        v = {x["version"]: x for x in world.tables.versions}
+        assert v[3]["body"] == v[1]["body"] and v[3]["content_hash"] == v[1]["content_hash"]
+        assert v[2]["body"]["actions"] == [A2] and v[1]["body"]["actions"] == [A1]
+        # A second undo is a plain undo of the newest version: back to v2.
+        r = c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 3})
+        assert r.status_code == 201 and r.json()["version"]["version"] == 4
+        assert {x["version"]: x for x in world.tables.versions}[4]["body"]["actions"] == [A2]
+
+    def test_a_stale_expected_version_is_409_and_writes_nothing(self, world):
+        c = _client(world)
+        sid = _two(c)
+        r = c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 1})
+        assert r.status_code == 409 and r.json() == {"detail": skills.CHANGED}
+        assert len(world.tables.versions) == 2
+
+    @pytest.mark.parametrize("make", ["none", "one"])
+    def test_nothing_to_undo_is_409(self, world, make):
+        c = _client(world)
+        if make == "none":
+            sid = _create(c)["skill"]["id"]
+            want = {"expected_version": 0}
+        else:
+            sid = _create(c, body=_body())["skill"]["id"]
+            want = {"expected_version": 1}
+        r = c.post(f"/studio/skills/{sid}/undo", json=want)
+        assert r.status_code == 409 and r.json() == {"detail": "Nothing to undo"}
+
+    def test_an_undo_of_a_published_skill_leaves_it_a_draft(self, world):
+        c = _client(world)
+        sid = _two(c)
+        assert c.patch(f"/studio/skills/{sid}/state",
+                       json={"state": "published"}).status_code == 200
+        r = c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 2})
+        assert r.status_code == 201 and r.json()["skill"]["state"] == "draft"
+
+    def test_an_undo_to_a_refused_version_is_422_and_writes_nothing(self, world):
+        c = _client(world)
+        sid = _two(c)
+        world.tables.versions[0]["body"]["actions"] = ["nope.op"]
+        r = c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 2})
+        assert r.status_code == 422
+        assert len(world.tables.versions) == 2
+        assert world.tables.skills[sid]["current_version"] == 2
+
+    def test_an_undo_reads_the_skill_with_its_row_lock(self, world):
+        c = _client(world)
+        sid = _two(c)
+        world.tables.locks.clear()
+        c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 2})
+        assert world.tables.locks == [sid]
+
+    def test_an_undo_names_the_caller_as_the_maker(self, world):
+        c = _client(world)
+        sid = _two(c)
+        c.post(f"/studio/skills/{sid}/undo",
+               json={"expected_version": 2, "created_by": BEN, "organization_id": OTHER})
+        assert world.tables.versions[-1]["created_by"] == ANA
+        assert world.tables.versions[-1]["org"] == ORG
+
+    def test_the_undo_route_writes_only_through_add_version(self):
+        src = Path(skills.__file__).read_text(encoding="utf-8")
+        start = src.index("async def undo_skill_version")
+        body = src[start: src.index('@router.patch("/skills/{skill_id}/state")')]
+        assert "store.add_version(" in body
+        for banned in ("INSERT", "UPDATE", "text(", "execute(", "create_skill"):
+            assert banned not in body

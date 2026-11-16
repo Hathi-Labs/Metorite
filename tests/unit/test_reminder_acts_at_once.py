@@ -345,7 +345,7 @@ async def test_a_denied_card_in_a_held_run_writes_nothing(monkeypatch, _bind) ->
     calls = fake_gateway(monkeypatch, Gateway())
     _bind(held=True)
     out = await skill_projects.set_reminder(title="Get a haircut", at="2099-10-30 17:00")
-    assert "Cancelled" in out and writes(calls) == []
+    assert out.startswith("Declined:") and writes(calls) == []  # HRD-7: the one table
 
 
 async def test_the_gate_still_refuses_before_any_write(monkeypatch, _bind) -> None:
