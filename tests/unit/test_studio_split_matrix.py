@@ -22,6 +22,11 @@ after the split. The test holds
 the code to ``split``, and it holds the difference of the two columns to the
 changes that the audit named (:data:`NAMED_CHANGES`).
 
+CE-15 (task 3463) added one tool, ``my_tasks_list_events``, to the pack
+``calendar-day``. Each row of BOTH columns that holds that pack gained the
+name and one tool, so its count is one more than the audit's count. No
+other field of a row changed.
+
 The sticky state of a chat from before the split has its own tests at the end.
 
 The test is pure: no database, no Redis and no model. Run this file as a
@@ -279,7 +284,7 @@ def _both(case: str, *fields: str) -> dict[str, frozenset[str]]:
 #: the fields of :func:`_view` that differ between ``main`` and ``split``. Every
 #: other case and field is the same. The values are in the golden file.
 NAMED_CHANGES: dict[str, frozenset[str]] = {
-    # 108 becomes 95: the turn loses studio-more, the last pack that came by
+    # 109 becomes 96: the turn loses studio-more, the last pack that came by
     # the surface alone (``choose``, task 1573).
     **_both("studio_with_crm_records_and_calendar_day", "tools", "names"),
     # 99 becomes 109: the core now fits. With the switch off, the three packs
@@ -301,11 +306,11 @@ NAMED_CHANGES: dict[str, frozenset[str]] = {
     # crm-records, which left, is on offer in its place.
     "studio_with_two_sticky_packs|held=on": frozenset({"tools", "names", "evicted", "offered"}),
     # Review P2-a: both Studio packs are sticky and tie. The follow pack leaves
-    # (``_follower_first``), so the core stays: 108 becomes 95. On main the chat
+    # (``_follower_first``), so the core stays: 109 becomes 96. On main the chat
     # had no studio-more, so nothing left.
     **_both("studio_with_a_sticky_pair_and_two_word_packs", "tools", "names", "evicted"),
     # Review round 2: the same pair, but studio-more was used later. No tie, so
-    # the core leaves as the least recently used: 108 becomes 98. The rule of
+    # the core leaves as the least recently used: 109 becomes 99. The rule of
     # the twin applies to a tie only.
     **_both("studio_with_a_sticky_pair_the_follower_used_later", "tools", "names", "evicted"),
     # The three cases on another surface (OTHER_SURFACE_CASES) are not here:
@@ -372,11 +377,11 @@ def test_the_core_stays_and_comes_first() -> None:
     [
         ("studio_alone", 80, 80),
         ("studio_with_email", 110, 110),
-        ("studio_with_crm_records_and_calendar_day", 108, 95),
+        ("studio_with_crm_records_and_calendar_day", 109, 96),
         ("studio_with_email_and_crm_records", 99, 109),
         ("studio_with_projects_reminders", 99, 99),
         ("studio_with_two_sticky_packs", 98, 86),
-        ("studio_with_a_sticky_pair_and_two_word_packs", 108, 95),
+        ("studio_with_a_sticky_pair_and_two_word_packs", 109, 96),
     ],
 )
 def test_the_tool_counts_of_the_audit(case: str, before: int, after: int) -> None:
@@ -393,13 +398,13 @@ def test_a_sticky_pair_keeps_the_core_and_moves_studio_more_out() -> None:
     """Review P2-a. Both Studio packs are sticky, with the same use and the
     same answer to "named now". Only the first load differs, and the core was
     loaded first. The cap must move studio-more out, not the core. Before the
-    fix the core left: 98 tools with studio-more, crm-records and calendar-day.
+    fix the core left: 99 tools with studio-more, crm-records and calendar-day.
     Mutation: drop ``_follower_first`` from the cap of ``choose`` -> red."""
     for held in HELD:
         row = _golden()["split"][f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
         assert row == matrix()[f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
         assert row["packs"] == ["studio", "crm-records", "calendar-day"], held
-        assert row["evicted"] == ["studio-more"] and row["tools"] == 95, held
+        assert row["evicted"] == ["studio-more"] and row["tools"] == 96, held
 
 
 def test_the_twin_rule_does_not_fire_without_a_tie() -> None:
@@ -412,7 +417,7 @@ def test_the_twin_rule_does_not_fire_without_a_tie() -> None:
         row = matrix()[key]
         assert row == _golden()["split"][key]
         assert row["packs"] == ["studio-more", "crm-records", "calendar-day"], held
-        assert row["evicted"] == ["studio"] and row["tools"] == 98, held
+        assert row["evicted"] == ["studio"] and row["tools"] == 99, held
 
 
 def test_the_other_follow_packs_keep_the_order_of_main() -> None:

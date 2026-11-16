@@ -20,6 +20,7 @@ from skill_my_tasks.core import (
     my_tasks_inbox_insights,
     my_tasks_list,
     my_tasks_list_day_rules,
+    my_tasks_list_events,
     my_tasks_list_projects,
     my_tasks_list_schedule,
     my_tasks_move,
@@ -40,7 +41,8 @@ from skill_my_tasks.core import (
     my_tasks_update_calendar_settings,
 )
 
-#: Tools that only the main chat's `calendar-day` pack holds (CAL-2 to CAL-4).
+#: Tools that only the main chat's `calendar-day` pack holds (CAL-2 to CAL-4,
+#: and CE-15).
 #: They are in ``__all__`` so the pack builder, the card routing and the parity
 #: fences see them. A declarative agent (``orchestrator.declarative``) skips them,
 #: so the Tasks assistant keeps the tools that it has on main. Fence:
@@ -54,6 +56,8 @@ PACK_ONLY_TOOLS = (
     "my_tasks_delete_day_rule",
     "my_tasks_start_my_day",
     "my_tasks_close_my_day",
+    # CE-15 (task 3463): the read of the synced events.
+    "my_tasks_list_events",
 )
 
 __all__ = [
@@ -76,6 +80,7 @@ __all__ = [
     "my_tasks_inbox_insights",
     "my_tasks_list",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_projects",
     "my_tasks_list_schedule",
     "my_tasks_move",
