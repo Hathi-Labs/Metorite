@@ -37,6 +37,13 @@ carries ``stamp``, the date its record last changed, from the app's own row.
 stamp. ``Hit.as_dict`` emits ``stamp`` only when the consumer asks, so with
 ``CONTEXT_RECENCY`` off the route's hit keeps its eight keys.
 
+**Two more abilities, ``related`` and ``open``** (WS-FIND FIND-3,
+``find_engine.md`` §4.3, ``knowledge_graph.md`` §6). The CRM, People and Email
+sources declare them. ``related`` gives triples of ids, edges and keys (an
+address, a web domain), never text. ``open`` gives the hits of the refs that
+the member can open, and checks the app's gates itself. Each calls a function
+of its app's own module, as ``find`` does, with ids checked as UUIDs first.
+
 **Two more options of ``find``** (CX-1, §4.2 and §4.5), each for a source
 that declares it, like ``meaning``. A source with ``dated=True`` takes
 ``after`` and filters in its app's own SQL. A source with ``reviewed=True``
@@ -50,6 +57,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -58,6 +66,7 @@ from urllib.parse import quote
 
 from acb_auth import UserContext
 from acb_common.name_match import NearName
+from fastapi import HTTPException
 
 #: The most characters of matched text a hit carries (§20.3).
 SNIPPET_CHARS = 400
@@ -106,6 +115,22 @@ class Hit:
     #: (HRD-18b): one token of letters and digits, from a name that the member
     #: can open. The dict names it ``as``.
     as_: str | None = None
+    #: The hit of the answer that a ``related`` hit came from, as its ref
+    #: ``<kind>:<id>`` (FIND-3, ``find_engine.md`` §3.5). The dict names it
+    #: ``from``.
+    from_: str | None = None
+    #: The edge of a ``related`` hit, from the closed list ``find.EDGES``. It
+    #: holds no text of either record.
+    edge: str | None = None
+    #: The record edge that led to the key of a related mail, from the same
+    #: closed list, or ``None``. So "mail from the lead of deal:…" is
+    #: ``edge`` ``mail_from`` and ``via`` ``lead_of``.
+    via: str | None = None
+    #: The conversation of a mail that Email's ``open`` gives: its thread id,
+    #: or its own id when it has none (FIND-3 fix round, P2-1). Internal: the
+    #: related step takes one place for each thread. :meth:`as_dict` never
+    #: emits it, so no answer and no text holds it.
+    thread: str | None = None
 
     def as_dict(self, *, stamp: bool = False, find: bool = False) -> dict[str, Any]:
         """The hit for a consumer. *stamp* adds ``stamp`` as the ninth key.
@@ -135,6 +160,13 @@ class Hit:
                 out["word"] = self.word
             if self.as_ is not None:
                 out["as"] = self.as_
+            # FIND-3. Only a related hit carries them, so no other hit changes.
+            if self.from_ is not None:
+                out["from"] = self.from_
+            if self.edge is not None:
+                out["edge"] = self.edge
+            if self.via is not None:
+                out["via"] = self.via
         return out
 
 
@@ -147,6 +179,38 @@ Reader = Callable[..., Awaitable[list[Hit]]]
 #: at most *k* ``name_match.NearName`` from rows that the member can open. One
 #: call reads the app's names once for every word of the lookup.
 NearReader = Callable[..., Awaitable[dict[str, list[NearName]]]]
+
+#: ``related(user, refs)`` (FIND-3, ``find_engine.md`` §4.3): triples of a ref,
+#: an edge of ``find.EDGES`` or a key of ``find.KEYS``, and a linked ref, from
+#: stored ids and addresses only. No text of a record.
+RelatedReader = Callable[..., Awaitable[list[tuple[str, str, str]]]]
+
+#: ``open(user, refs)`` (FIND-3, ``knowledge_graph.md`` §6): the hits of the
+#: refs that the member can open, and nothing for any other ref.
+OpenReader = Callable[..., Awaitable[list[Hit]]]
+
+#: The kinds of record of the CRM source, as a ref names them.
+CRM_REF_KINDS: tuple[str, ...] = ("deal", "lead", "contact", "company")
+
+
+def _ids_of(refs: list[str], kinds: tuple[str, ...]) -> dict[str, list[str]]:
+    """The ids of each kind of *kinds* in *refs*, each a UUID, in order.
+
+    A ref of another kind, or an id that is no UUID, is left out before any
+    SQL, so the app's read never sees one."""
+    out: dict[str, list[str]] = {}
+    for ref in refs:
+        kind, _sep, ident = str(ref).partition(":")
+        if kind not in kinds:
+            continue
+        try:
+            clean = str(uuid.UUID(ident))
+        except ValueError:
+            continue
+        mine = out.setdefault(kind, [])
+        if clean not in mine:
+            mine.append(clean)
+    return out
 
 
 def holds(user: UserContext, feature: str) -> bool:
@@ -185,6 +249,19 @@ class Source:
     #: True when the app's reader takes ``sender=``: only the mail from a
     #: sender whose name or address holds it (HRD-18b). Only Email.
     senders: bool = False
+    #: The related ability of ``find_engine.md`` §4.3 (FIND-3), or ``None``.
+    #: :meth:`related_refs` calls it with the refs of the kinds of
+    #: :attr:`takes`.
+    related: RelatedReader | None = None
+    #: The kinds of ref that :attr:`related` takes: record kinds, or the keys
+    #: ``address`` and ``domain`` (Email).
+    takes: tuple[str, ...] = ()
+    #: The open ability of ``knowledge_graph.md`` §6 (FIND-3), or ``None``.
+    #: It checks the app's gates itself, so a caller that skips
+    #: :meth:`open_refs` still gets nothing that the member cannot open.
+    open: OpenReader | None = None
+    #: The kinds of ref that :attr:`open` opens: the kinds of hit it gives.
+    kinds: tuple[str, ...] = ()
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -202,6 +279,24 @@ class Source:
         if self.near is None or not words or not self.reaches(user):
             return {}
         return await self.near(user, list(words), k)
+
+    async def related_refs(self, user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
+        """The triples of the refs of :attr:`takes` in *refs*, as *user*
+        (FIND-3). No ability, no such ref, no feature or a closed switch: no
+        call and no triple."""
+        mine = [r for r in refs if str(r).partition(":")[0] in self.takes]
+        if self.related is None or not mine or not self.reaches(user):
+            return []
+        return list(await self.related(user, mine))
+
+    async def open_refs(self, user: UserContext, refs: list[str]) -> list[Hit]:
+        """The hits of the refs of :attr:`kinds` in *refs* that *user* can
+        open (FIND-3). A hit of a ref that was not asked is dropped."""
+        mine = [r for r in refs if str(r).partition(":")[0] in self.kinds]
+        if self.open is None or not mine or not self.reaches(user):
+            return []
+        asked = set(mine)
+        return [h for h in await self.open(user, mine) if f"{h.kind}:{h.id}" in asked]
 
     async def find(
         self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
@@ -341,7 +436,9 @@ def email_meaning_on() -> bool:
         return False
 
 
-def _email_hit(m: Any) -> Hit:
+def _email_hit(m: Any, *, thread: bool = False) -> Hit:
+    """One mail as a hit. *thread* (``open``, FIND-3) also sets
+    :attr:`Hit.thread`. The search leaves it unset, so its hits are as before."""
     row = _as_dict(m)
     sender = row.get("from_address") or {}
     who = sender.get("name") or sender.get("email") or "someone"
@@ -352,6 +449,7 @@ def _email_hit(m: Any) -> Hit:
         hint=f"Email · from {who}", href=f"/email?email={quote(str(row['id']))}",
         snippet=_clip(text), when=_when(row.get("received_at")),
         stamp=_when(row.get("received_at")),
+        thread=str(row.get("thread_id") or row["id"]) if thread else None,
     )
 
 
@@ -455,17 +553,20 @@ async def _people(user: UserContext, q: str, k: int) -> list[Hit]:
         user=user, q=q, department=None, team=None, status=None, skill=None,
         has_capacity=False,
     )
-    out = []
-    for p in (answer.rows or [])[:k]:
-        what = p.get("title") or p.get("role") or p.get("department") or "Colleague"
-        # The bio only. The resume and the skills are HR data (§20.3).
-        out.append(Hit(
-            app="people", kind="person", id=str(p["id"]),
-            title=_title(p.get("preferred_name") or p.get("name")),
-            hint=f"Person · {what}", href=f"/people/{quote(str(p['id']))}",
-            snippet=_clip(p.get("bio")),
-        ))
-    return out
+    return [_person_hit(p) for p in (answer.rows or [])[:k]]
+
+
+def _person_hit(p: dict[str, Any]) -> Hit:
+    """One person of the directory as a hit. The search and ``open`` both
+    build it here, so the two give one shape."""
+    what = p.get("title") or p.get("role") or p.get("department") or "Colleague"
+    # The bio only. The resume and the skills are HR data (§20.3).
+    return Hit(
+        app="people", kind="person", id=str(p["id"]),
+        title=_title(p.get("preferred_name") or p.get("name")),
+        hint=f"Person · {what}", href=f"/people/{quote(str(p['id']))}",
+        snippet=_clip(p.get("bio")),
+    )
 
 
 # ── crm ─────────────────────────────────────────────────────────────────────
@@ -531,18 +632,20 @@ async def _crm(user: UserContext, q: str, k: int) -> list[Hit]:
     if not flags.crm_org_allowed(user.organization_id):
         return []
     await access.require_crm_access(user)
-    out = []
-    for kind, row in await records.search_records(user, q, k):
-        noun, fields, _tab, _param = CRM_KINDS[kind]
-        extra = next((str(row[f]).strip() for f in fields if str(row.get(f) or "").strip()), "")
-        out.append(Hit(
-            app="crm", kind=kind, id=str(row["id"]), title=_title(_crm_title(kind, row)),
-            hint=f"{noun} · {extra}" if extra else noun,
-            href=crm_href(kind, row["id"]),
-            snippet=_clip(extra), when=_when(row.get("last_activity_at")),
-            stamp=_when(row.get("last_activity_at")),
-        ))
-    return out
+    return [_crm_hit(kind, row) for kind, row in await records.search_records(user, q, k)]
+
+
+def _crm_hit(kind: str, row: dict[str, Any]) -> Hit:
+    """One CRM record as a hit. The search and ``open`` both build it here."""
+    noun, fields, _tab, _param = CRM_KINDS[kind]
+    extra = next((str(row[f]).strip() for f in fields if str(row.get(f) or "").strip()), "")
+    return Hit(
+        app="crm", kind=kind, id=str(row["id"]), title=_title(_crm_title(kind, row)),
+        hint=f"{noun} · {extra}" if extra else noun,
+        href=crm_href(kind, row["id"]),
+        snippet=_clip(extra), when=_when(row.get("last_activity_at")),
+        stamp=_when(row.get("last_activity_at")),
+    )
 
 
 # ── artifacts ───────────────────────────────────────────────────────────────
@@ -764,15 +867,111 @@ async def _crm_near(user: UserContext, words: list[str], k: int) -> dict[str, li
     return await records.near_names(user, words, k)
 
 
+# ── related and open (FIND-3, ``find_engine.md`` §4.3 and §6) ───────────────
+# Each calls its app's own function, which reads ids and addresses as the
+# member, in the bound tenant. Each ``open`` checks the app's gates itself
+# first, as ``find`` does, so a ref that the member cannot open gives nothing:
+# no hit, no count and no error text.
+
+#: The most links of one edge that a related read gives for one ref, and the
+#: most mails (one for each thread) of one key and one edge.
+RELATED_PER_EDGE = 3
+
+
+async def _crm_gates(user: UserContext) -> bool:
+    """True when the CRM router would let *user* in: ``feature:crm``, the
+    kill switch, then the access rule, in the order of the router. A refusal
+    is ``False``, never an error that names the CRM."""
+    if not holds(user, "crm"):
+        return False
+    flags = await _module("gateway.routes.crm.flags")
+    if not flags.crm_org_allowed(user.organization_id):
+        return False
+    access = await _module("gateway.routes.crm.access")
+    try:
+        await access.require_crm_access(user)
+    except HTTPException:
+        return False
+    return True
+
+
+async def _crm_related(user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
+    """The links of CRM records, after the CRM gates: the contacts, the lead
+    and the company of a deal, the deals of a company, the address of a lead
+    or a contact, and the web domain of a company (``records.related_links``)."""
+    ids = _ids_of(refs, CRM_REF_KINDS)
+    if not ids or not await _crm_gates(user):
+        return []
+    records = await _module("gateway.routes.crm.records")
+    return await records.related_links(user, ids, RELATED_PER_EDGE)
+
+
+async def _crm_opened(user: UserContext, refs: list[str]) -> list[Hit]:
+    """The CRM records of *refs*, after the CRM gates, read by the CRM's own
+    list contract (``records.open_records``)."""
+    ids = _ids_of(refs, CRM_REF_KINDS)
+    if not ids or not await _crm_gates(user):
+        return []
+    records = await _module("gateway.routes.crm.records")
+    return [_crm_hit(kind, row) for kind, row in await records.open_records(user, ids)]
+
+
+async def _people_related(user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
+    """The work address of each person (``people.email``, a directory field),
+    for a member who holds ``feature:people``."""
+    ids = _ids_of(refs, ("person",)).get("person", [])
+    if not ids or not holds(user, "people"):
+        return []
+    directory = await _module("gateway.routes.people.directory")
+    return await directory.related_addresses(user, ids)
+
+
+async def _people_opened(user: UserContext, refs: list[str]) -> list[Hit]:
+    """The people of *refs*, as the directory shows them to the member."""
+    ids = _ids_of(refs, ("person",)).get("person", [])
+    if not ids or not holds(user, "people"):
+        return []
+    directory = await _module("gateway.routes.people.directory")
+    return [_person_hit(p) for p in await directory.open_people(user, ids)]
+
+
+async def _email_related(user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
+    """The mail from and to each address, and from each web domain, in the
+    mailboxes that the member can read (``search.related_mail``). One mail for
+    each thread. A free-mail domain gives no mail."""
+    if not holds(user, "email"):
+        return []
+    addresses = [r.partition(":")[2] for r in refs if r.startswith("address:")]
+    domains = [r.partition(":")[2] for r in refs if r.startswith("domain:")]
+    if not addresses and not domains:
+        return []
+    search = await _module("gateway.routes.email.transport.search")
+    return await search.related_mail(user, addresses, domains, RELATED_PER_EDGE)
+
+
+async def _email_opened(user: UserContext, refs: list[str]) -> list[Hit]:
+    """The mails of *refs* in the mailboxes that the member can read."""
+    ids = _ids_of(refs, ("email",)).get("email", [])
+    if not ids or not holds(user, "email"):
+        return []
+    search = await _module("gateway.routes.email.transport.search")
+    return [_email_hit(m, thread=True) for m in await search.open_mail(user, ids)]
+
+
 #: Every source, in the order the command bar and the route ask them.
 REGISTRY: dict[str, Source] = {
     s.key: s
     for s in (
         Source("tasks", "projects", "Tasks", _tasks),
         Source("email", "email", "Email", _email, dated=True, vectors=True,
-               near=_email_near, senders=True),
-        Source("people", "people", "People", _people, near=_people_near),
-        Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near),
+               near=_email_near, senders=True, related=_email_related,
+               takes=("address", "domain"), open=_email_opened, kinds=("email",)),
+        Source("people", "people", "People", _people, near=_people_near,
+               related=_people_related, takes=("person",), open=_people_opened,
+               kinds=("person",)),
+        Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near,
+               related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
+               kinds=CRM_REF_KINDS),
         Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
