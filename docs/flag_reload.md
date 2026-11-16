@@ -167,8 +167,15 @@ org, and the default is empty. Its one reader is
 `gateway.routes.studio.flags.chat_tools_allowed`, and each catalog read asks
 it. The catalog also needs `STUDIO_ORGS`.
 
-A row runs nothing: a skill still loads only in a run that holds the tool. A
-reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+The flag also gates the skill load (TOF-1b). The run reads it once a turn,
+through `_tool_injection._chat_tools_open`. For an org that the flag leaves
+out, each skill with a `tool:` action fails to load with `chat_tools_off`. So
+an operator who removes an org stops every such skill of that org at the next
+turn. For a listed org, the skill brings the code pack of each such tool that
+the run base does not hold.
+
+A row runs nothing itself. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
 (`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
