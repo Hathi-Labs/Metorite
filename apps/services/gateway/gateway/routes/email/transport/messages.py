@@ -16,6 +16,7 @@ from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import canonical_folder, local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email import act_features
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
@@ -1190,17 +1191,20 @@ async def update_message(
         # update (acb_common.member_actions.record_act).
         # The test reads the NAME the member sent. The stored folder of a Gmail
         # move to a user label is also "archive" (O-GM-1), so it cannot tell.
+        acted_features: dict[str, Any] | None = None
+        if (target is not None and canonical_folder(target) == "archive") or updates.add_labels:
+            acted_features = await act_features.of_message(db, message_id)
         if target is not None and canonical_folder(target) == "archive":
             await member_actions.record_act(
                 db, org=user.organization_id or "", member=user.email or "",
                 app="email", act="archive", via="app", item_kind="email",
-                item_id=message_id, mailbox_id=acted_mailbox)
+                item_id=message_id, mailbox_id=acted_mailbox, features=acted_features)
         for name in (updates.add_labels or [])[:5]:
             await member_actions.record_act(
                 db, org=user.organization_id or "", member=user.email or "",
                 app="email", act="label", via="app", item_kind="email",
                 item_id=message_id, mailbox_id=acted_mailbox,
-                features={"triage_label": name})
+                features={**(acted_features or {}), "triage_label": name})
 
         # The provider for the push. The build makes no network call. A failed
         # build keeps the push best-effort, as a failed push does.
@@ -1325,7 +1329,8 @@ async def snooze_message(
             await member_actions.record_act(
                 db, org=user.organization_id or "", member=user.email or "",
                 app="email", act="snooze", via="app", item_kind="email",
-                item_id=message_id, mailbox_id=str(row.account_id))
+                item_id=message_id, mailbox_id=str(row.account_id),
+                features=await act_features.of_message(db, message_id))
         return {
             "ok": True,
             "message_id": message_id,

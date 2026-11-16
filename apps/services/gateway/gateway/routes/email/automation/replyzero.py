@@ -15,6 +15,7 @@ from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
+from gateway.routes.email import act_features
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
@@ -3059,7 +3060,8 @@ async def resolve_thread(
             await member_actions.record_act(
                 db, org=user.organization_id or "", member=user.email or "",
                 app="email", act="mark_done", via="app", item_kind="thread",
-                item_id=req.thread_id, mailbox_id=req.account_id)
+                item_id=req.thread_id, mailbox_id=req.account_id,
+                features=await act_features.of_thread(db, req.account_id, req.thread_id))
         else:
             # Reopen: re-derive from the latest message's folder. Resolve the
             # latest message directly (don't rely on last_message_id, which may
