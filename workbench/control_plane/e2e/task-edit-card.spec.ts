@@ -218,6 +218,17 @@ test.describe("the edit card of a new task", () => {
     expect((await approve(page)).answer).toBe("APPROVE");
   });
 
+  test("a change of ONLY the leveraged flag sends an edit answer, not the plain APPROVE (EAC-3a)", async ({ page }) => {
+    await openCard(page);
+    await page.getByRole("switch", { name: "Leveraged" }).click();
+    await expect(page.locator("[data-task-edit-card]")).toHaveAttribute("data-task-edit-state", "edited");
+    const sent = await approve(page);
+    expect(sent.answer).toBe(`APPROVE ${JSON.stringify({ edit: {
+      due: "2026-12-01", start: "", status: "Doing", important: null, leveraged: true,
+      description: DESCRIPTION, assignees: [ANN, BOB],
+    } })}`);
+  });
+
   test("a card that nobody changed sends the plain APPROVE", async ({ page }) => {
     await openCard(page);
     const sent = await approve(page);

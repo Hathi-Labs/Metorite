@@ -7794,6 +7794,10 @@ them, and for the computed `priority` line, and it keeps the project row.
   `_date_arg` check each date alone, and `forms.py` refuses the pair only for a
   plan of many tasks.
 
+For a subtask, the empty status still reads "Default lane" on the form. The
+server then uses the lane of the parent. The card event carries no parent flag,
+so the form cannot say it. A later slice may add the flag.
+
 The limits sit in `lib/taskEditCard.ts` only, and `taskEditCard.test.ts` reads
 `task_card.py` to hold them equal. Fences: `taskEditCard.test.ts`,
 `taskCardForm.test.ts` and `e2e/task-edit-card.spec.ts`. EAC-3a needs the same

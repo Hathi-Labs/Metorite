@@ -16,6 +16,7 @@
 //   * `warn-before-approve`: an address that the directory does not know is named, and a known one is not.
 //     Mutation: drop the `known` test → red.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -423,5 +424,79 @@ describe("the fields of EAC-3a", () => {
   it("the card hides its own rows for the six fields, and keeps the project", () => {
     const rows = ["project", "due_at", "start_date", "status", "important", "leveraged", "priority", "description", "assignees"].map((key) => ({ key }));
     expect(withoutFormRows(rows).map((r) => r.key)).toEqual(["project"]);
+  });
+});
+
+describe("a change of ONE value is a change (EAC-3a verifier P2)", () => {
+  // Mutation: remove any one clause of `isUnchanged`, and its row below turns red.
+  const ONE: [string, Partial<TaskCardEdits>, Partial<TaskCardEdits>?][] = [
+    ["leveraged", { leveraged: true }],
+    ["important null to false", { important: false }],
+    ["important false to null", { important: null }, { important: false }],
+    ["important true to null", { important: null }, { important: true }],
+    ["important null to true", { important: true }],
+    ["status", { status: "Done" }],
+    ["status to the default", { status: "" }],
+    ["start", { start: "2026-11-20" }],
+    ["description", { description: "Ship the pack." }],
+    ["description by a space", { description: ORIGINAL.description + " " }],
+    ["due", { due: "2026-12-02" }],
+    ["due cleared", { due: "" }],
+    ["assignees order", { assignees: ["bob@acme.test", "ann@acme.test"] }],
+    ["assignees added at the end", { assignees: ["ann@acme.test", "bob@acme.test", "cat@acme.test"] }],
+    ["assignees removed", { assignees: ["ann@acme.test"] }],
+  ];
+  for (const [name, change, base] of ONE) {
+    it(`${name}`, () => {
+      const was = { ...ORIGINAL, ...(base ?? {}) };
+      const now = { ...was, ...change };
+      expect(isUnchanged(was, now)).toBe(false);
+      const answer = taskApproval(was, now);
+      expect(answer).not.toBe("APPROVE");
+      expect(answer.startsWith('APPROVE {"edit":')).toBe(true);
+      expect(isUnchanged(was, { ...was, assignees: [...was.assignees] })).toBe(true);
+    });
+  }
+});
+
+describe("the date is a date the server takes (EAC-3a verifier P3)", () => {
+  it("refuses year 0000 and every year under 1000, as the date field does", () => {
+    for (const bad of ["0000-01-01", "0999-12-31", "0001-01-01"]) expect(isIsoDate(bad), bad).toBe(false);
+    for (const ok of ["1000-01-01", "2026-12-01", "9999-12-31", ""]) expect(isIsoDate(ok), ok).toBe(true);
+  });
+
+  it("date-parity: the real parser of the server refuses what the client refuses", () => {
+    // `task_card._is_date` calls `date.fromisoformat`. The client must refuse each date that it refuses.
+    expect(PY).toContain("date.fromisoformat(value)");
+    const probe = ["0000-01-01", "0001-01-01", "1000-01-01", "2026-02-30", "2026-12-01", "9999-12-31"];
+    const code = `import sys\nfrom datetime import date\nfor v in sys.argv[1:]:\n    try:\n        date.fromisoformat(v); print(v, 1)\n    except ValueError:\n        print(v, 0)`;
+    let out = "";
+    for (const exe of ["python", "python3"]) {
+      try { out = execFileSync(exe, ["-I", "-c", code, ...probe], { encoding: "utf8" }); break; } catch { /* try the next name */ }
+    }
+    expect(out, "python must run for the parity probe").not.toBe("");
+    for (const line of out.trim().split(/\r?\n/)) {
+      const [v, ok] = line.split(" ");
+      // The client may be stricter than the server below year 1000 (the field takes no such year), never looser.
+      if (ok === "0") expect(isIsoDate(v), v).toBe(false);
+    }
+  });
+});
+
+describe("a kept entry is read whole (EAC-3a verifier P3)", () => {
+  it("isTaskCardEdits needs all seven keys with their types", () => {
+    expect(isTaskCardEdits(ORIGINAL)).toBe(true);
+    // The old check read three keys, so a partial entry passed and `problemOf` could throw on it.
+    expect(isTaskCardEdits({ assignees: [], due: "", leveraged: false })).toBe(false);
+    for (const key of TASK_EDIT_KEYS) {
+      const { [key]: _gone, ...rest } = ORIGINAL as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars
+      expect(isTaskCardEdits(rest), `no ${key}`).toBe(false);
+    }
+    expect(isTaskCardEdits({ ...ORIGINAL, description: 5 })).toBe(false);
+    expect(isTaskCardEdits({ ...ORIGINAL, status: null })).toBe(false);
+    expect(isTaskCardEdits({ ...ORIGINAL, important: "yes" })).toBe(false);
+    expect(isTaskCardEdits({ ...ORIGINAL, start: 3 })).toBe(false);
+    expect(isTaskCardEdits({ ...ORIGINAL, assignees: [3] })).toBe(false);
+    expect(isTaskCardEdits({ ...ORIGINAL, subject: "x" })).toBe(false);
   });
 });

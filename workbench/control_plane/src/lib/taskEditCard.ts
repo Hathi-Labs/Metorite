@@ -83,11 +83,13 @@ export type TaskEditApproval = `APPROVE {"edit":${string}`;
 
 const DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
 
-/** True for "" or a real calendar date written `YYYY-MM-DD` in ASCII digits. */
+/** True for "" or a real calendar date written `YYYY-MM-DD` in ASCII digits, from year 1000 on. */
 export function isIsoDate(value: unknown): value is string {
   if (typeof value !== "string") return false;
   if (value === "") return true;
   if (!DATE.test(value)) return false;
+  // Year 0000 is no date for Python (`date.fromisoformat`), and the date field starts at 1000.
+  if (value < "1000-01-01") return false;
   const d = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
 }
@@ -168,9 +170,14 @@ export function taskEditFromEvent(raw: unknown): TaskEditForm | null {
 
 /** True for the edits of a task card, and false for those of a new mail. */
 export function isTaskCardEdits(x: unknown): x is TaskCardEdits {
-  if (!x || typeof x !== "object") return false;
+  if (!x || typeof x !== "object" || "subject" in x) return false;
   const v = x as Record<string, unknown>;
-  return Array.isArray(v.assignees) && typeof v.due === "string" && typeof v.leveraged === "boolean" && !("subject" in v);
+  return (
+    Array.isArray(v.assignees) && v.assignees.every((a) => typeof a === "string") &&
+    typeof v.due === "string" && typeof v.start === "string" && typeof v.status === "string" &&
+    typeof v.description === "string" && typeof v.leveraged === "boolean" &&
+    (v.important === null || typeof v.important === "boolean")
+  );
 }
 
 /**
