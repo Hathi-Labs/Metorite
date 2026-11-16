@@ -93,6 +93,21 @@ query's words comes first. `*` lists every org, and the default is empty. Empty
 gives the answer of KR-ZERO, byte for byte. It acts only with `CONTEXT_RECENCY`
 on.
 
+The flag also opens the near spelling step of HRD-18b (`find_engine.md` §3.1
+rung 3). On a miss, the best hit holds fewer than all the words (§3.3). Then
+the search tries each word alone, and the near spelling of up to 3 words. The
+near names come from rows that the member can open.
+
+The flag also opens the related records of FIND-3 (`find_engine.md` §3.1
+rung 4). The search follows the links of its first 5 hits that are a deal,
+lead, contact, person or company. It shows at most 3 records for each hit,
+in the answer key `related`. Each record is one that the member can open.
+
+The flag also opens the sender near spelling of `GET /email/messages`, for a
+caller that sends `near_sender`. Only `query_inbox` sends it. When
+`from_email` finds no mail, the tool tries the near spelling of the sender and
+names it. That part needs no `CONTEXT_RECENCY`.
+
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
 `enforcement-flip` grant, after the FIND-1 eval.
@@ -136,8 +151,15 @@ org, and the default is empty. Its one reader is
 `gateway.routes.studio.flags.chat_tools_allowed`, and each catalog read asks
 it. The catalog also needs `STUDIO_ORGS`.
 
-A row runs nothing: a skill still loads only in a run that holds the tool. A
-reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+The flag also gates the skill load (TOF-1b). The run reads it once a turn,
+through `_tool_injection._chat_tools_open`. For an org that the flag leaves
+out, each skill with a `tool:` action fails to load with `chat_tools_off`. So
+an operator who removes an org stops every such skill of that org at the next
+turn. For a listed org, the skill brings the code pack of each such tool that
+the run base does not hold.
+
+A row runs nothing itself. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
 (`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
@@ -195,6 +217,18 @@ member owns or has installed. `*` lists every org, and the default is empty.
 Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
 asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
 the flip stays OWNER-GATE (`enforcement-flip`).
+
+`STUDIO_SKILL_OFFER_ORGS` opens the card "Save this as a skill?" in the chat
+(`ai_studio.md` §14 TOF-1d). For each listed org, a finished turn that passes
+the rule of the offer draws the card, and Save makes a private draft skill. `*`
+lists every org, and the default is empty. Empty means the chat draws no card
+and reads no catalog for it. Its one reader is
+`gateway.routes.studio.flags.skill_offer_allowed`, and each shell read asks it.
+`GET /auth/me/shell` serves the answer to the chat as `skill_offer`. The offer
+also needs `STUDIO_ORGS`, and it maps a chat tool to a catalog row only for an
+org on `STUDIO_CHAT_TOOLS_ORGS`. A reload applies a change, and a tab shows it
+at its next shell read. The flip stays OWNER-GATE (`enforcement-flip`), after
+the owner preview.
 
 `TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
 (`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`

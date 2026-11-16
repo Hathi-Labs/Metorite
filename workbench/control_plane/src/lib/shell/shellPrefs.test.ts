@@ -40,6 +40,8 @@ import {
   nudgeShows,
   readShellPrefs,
   saveShellPrefs,
+  skillOfferAllowed,
+  skillOfferOn,
 } from "./shellPrefs";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -252,7 +254,7 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   /** A gateway that merges a key-only write and stamps the tour with ITS time, as `me.py` does. */
-  const server = (layout: StoredShell & { guide?: boolean; module_runs?: boolean }) =>
+  const server = (layout: StoredShell & { guide?: boolean; module_runs?: boolean; skill_offer?: boolean }) =>
     vi.fn(async (_url: string, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -327,6 +329,31 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
     vi.stubGlobal("fetch", server({ ...NEVER }));
     await readShellPrefs();
     expect(moduleRunsAllowed()).toBe(false);
+  });
+
+  it("skillOfferOn: only `skill_offer: true` is on, and a missing field is off (TOF-1d)", () => {
+    expect(skillOfferOn({ ...NEVER, skill_offer: true })).toBe(true);
+    expect(skillOfferOn({ ...NEVER, skill_offer: false })).toBe(false);
+    expect(skillOfferOn({ ...NEVER })).toBe(false);
+    expect(skillOfferOn({ ...NEVER, skill_offer: "true" })).toBe(false);
+    expect(skillOfferOn(null)).toBe(false);
+  });
+
+  it("the read sets the skill offer switch, and a new member resets it to off", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, skill_offer: true }));
+    await readShellPrefs();
+    expect(skillOfferAllowed()).toBe(true);
+    clearAll();
+    expect(skillOfferAllowed()).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, skill_offer: true }));
+    await readShellPrefs();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(skillOfferAllowed()).toBe(false);
+  });
+
+  it("the skill offer switch is never part of the stored layout", () => {
+    expect(asLayout({ ...NEVER, skill_offer: true })).not.toHaveProperty("skill_offer");
   });
 
   it("the switch is never part of the stored layout", () => {

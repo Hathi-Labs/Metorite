@@ -1671,6 +1671,25 @@ async def get_account_overview(account_id: str, days: int = 30) -> str:
     return "\n".join(lines)
 
 
+def _near_sender_line(near: Any, *, found: bool) -> str:
+    """The line of a sender filter that the route answered with its near
+    spelling (HRD-18b), or ``""``. The route sends ``near`` only with
+    ``FIND_ORGS`` on, so with it off the answer does not change. A sender
+    chooses the name, so each value stays on one line, with no guillemet."""
+    if not isinstance(near, dict):
+        return ""
+    word = _one_line(near.get("word"), 80).replace("«", "").replace("»", "")
+    spelt = _one_line(near.get("as"), 80).replace("«", "").replace("»", "")
+    if not word or not spelt:
+        return ""
+    if found:
+        return f"No mail from «{word}». Mail from the near spelling «{spelt}»:"
+    # The near sender may have mail that the other filters leave out, so the
+    # line claims only what the read shows.
+    return (f"No mail from «{word}». No mail from the near spelling «{spelt}» "
+            "matches these filters.")
+
+
 @_annotate_risk(open_world=False)
 async def query_inbox(
     account_id: str | None = None,
@@ -1723,6 +1742,9 @@ async def query_inbox(
         params["sender_category"] = sender_category
     if from_email:
         params["from_email"] = from_email
+        # HRD-18b: a sender that finds no mail tries its near spelling. Only
+        # this tool asks for it, and the route also needs FIND_ORGS on.
+        params["near_sender"] = "true"
     if unread_only:
         params["is_read"] = "false"
     if starred_only:
@@ -1734,13 +1756,18 @@ async def query_inbox(
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
     total = data.get("total", 0)
+    # The total, not the page: a page past the end holds no row of a total
+    # that is not zero (review of 2026-11-16).
+    near = _near_sender_line(data.get("near"), found=bool(total))
     if not emails:
-        return page_line(total, start, 0) or "No emails matched those filters."
+        empty = page_line(total, start, 0) or "No emails matched those filters."
+        return f"{near}\n{empty}" if near else empty
     shown = emails
     labels = {} if account_id else await _account_labels()
     multi = len(labels) > 1
     where = " in All inboxes" if multi else ""
-    lines = [f"Found {total} emails{where} ({query or 'filtered'}); showing {len(shown)}:"]
+    lines = [near] if near else []
+    lines.append(f"Found {total} emails{where} ({query or 'filtered'}); showing {len(shown)}:")
     for e in shown:
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""

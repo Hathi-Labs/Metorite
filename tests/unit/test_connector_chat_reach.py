@@ -30,8 +30,9 @@ REACH: dict[str, tuple[str, str]] = {
     "whatsapp": ("retrieval", "search_company source whatsapp, and the whatsapp-assistant specialist"),
     "zoho": ("pack", "crm-records"),
     "github": ("tool", "github_search and github_repo_search, injected at _tool_injection.py"),
-    "google_calendar": ("gap", "task 3463: calendar-day tools read Metorite task blocks, not synced events"),
-    "outlook_calendar": ("gap", "task 3463: calendar-day tools read Metorite task blocks, not synced events"),
+    # CE-15 (task 3463): my_tasks_list_events reads the synced events.
+    "google_calendar": ("pack", "calendar-day"),
+    "outlook_calendar": ("pack", "calendar-day"),
     "google_drive": ("retrieval", "search_company source knowledge, read_page"),
     "apollo": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "google_maps": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
