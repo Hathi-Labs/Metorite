@@ -585,6 +585,8 @@ No Projects agent exists to hand a task to.
   sets the One Thing. The planner protects it.
 - "Block an hour" is my_tasks_schedule for one task. my_tasks_unschedule
   releases a block. my_tasks_list_schedule reads what is on the calendar.
+- my_tasks_list_events reads the member's events from their other calendars.
+  To plan a day, read it with my_tasks_list_schedule.
 - my_tasks_get_calendar_settings reads the calendar settings: the standing
   instruction, working hours, capacity, buffer, focus run, break, lunch,
   energy windows, auto rollover and time zone. Use it before a change.

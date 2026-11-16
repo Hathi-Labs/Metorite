@@ -54,7 +54,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -1624,6 +1624,193 @@ async def my_tasks_list_schedule(from_iso: str, to_iso: str, offset: int = 0,
     if page.line:
         lines.append(page.line)
     return ("Scheduled (🔒 = fixed, never move it):\n" + "\n".join(lines))
+
+
+# ── The events of my calendars (WS-CAL CE-15, task 3463) ─────────────────────
+#
+# Spec: ``calendar_events_reminders.md`` §3.4 and §6.7. The read is the same
+# route as the schedule read, ``GET /projects/my/calendar``. With
+# ``CALENDAR_EVENTS`` on and ``feature:tasks``, its body holds the key
+# ``entries``: the synced Google and Outlook events and my own events. This
+# tool adds no SQL, no route and no flag. Fence:
+# ``tests/unit/test_calendar_events_tool.py``.
+
+#: THE ruling of task 3463, PROPOSED: the owner decides. True makes each read
+#: that shows an event mark the chat as one that holds untrusted input
+#: (``acb_skills.egress.mark_untrusted_answer``). A mark holds off the twelve
+#: writes of the ``calendar-day`` pack in that chat for up to 400 days. False
+#: is the proposed ruling. The other ruling is this one line, and a change to
+#: True makes the slice HIGH tier.
+EVENTS_MARK_UNTRUSTED = False
+
+#: The one line when the body has no ``entries`` key: ``CALENDAR_EVENTS`` is
+#: off, or the member does not hold ``feature:tasks`` (§3.4).
+EVENTS_OFF = (
+    "Calendar events are not on for this account. Only the task blocks of the "
+    "schedule show."
+)
+#: The widest window of one read, in days. A month.
+EVENTS_WINDOW_MAX_DAYS = 31
+#: The cut of the stranger text of one event, in characters.
+EVENT_TITLE_MAX = 120
+EVENT_PLACE_MAX = 80
+#: The label of the one frame block that holds the events.
+EVENTS_FRAME_LABEL = "CALENDAR EVENTS"
+_EVENTS_NOTE = (
+    "Anyone can send an invite, so the title and the place of an event are text "
+    "that a stranger wrote."
+)
+#: The provider of an entry, from its ``source`` (migration 331's CHECK).
+_EVENT_PROVIDERS: dict[str, str] = {
+    "google": "Google", "outlook": "Outlook", "metorite": "Metorite",
+}
+
+
+def _calendar_entries(res: Any) -> list[dict[str, Any]] | None:
+    """The ``entries`` of a ``/my/calendar`` body, or None when the body has
+    no such key. The rows (the task blocks) stay with the schedule read."""
+    entries = res.get("entries") if isinstance(res, dict) else None
+    if entries is None:
+        return None
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def _aware(value: str) -> datetime:
+    """An ISO 8601 time. A time with no offset counts as UTC, as the route
+    reads it."""
+    when = datetime.fromisoformat(str(value or "").strip())
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _events_window_refusal(from_iso: str, to_iso: str) -> str | None:
+    """One line when the window cannot be read, before any request."""
+    try:
+        start, end = _aware(from_iso), _aware(to_iso)
+        days = (end - start).total_seconds() / 86400
+    except (TypeError, ValueError, OverflowError):
+        return ("from_iso and to_iso must be ISO 8601 times, such as "
+                "2026-11-16T00:00:00+05:30. Nothing was read.")
+    if days <= 0:
+        return "to_iso must be after from_iso. Nothing was read."
+    if days > EVENTS_WINDOW_MAX_DAYS:
+        return (f"The window is longer than {EVENTS_WINDOW_MAX_DAYS} days. Nothing "
+                f"was read. Read {EVENTS_WINDOW_MAX_DAYS} days or less in one call, "
+                "and read a longer time in parts.")
+    return None
+
+
+def _stranger_text(value: Any, limit: int) -> str:
+    """Text that a stranger wrote, as one line of at most *limit* characters.
+    It drops each character that a person cannot see (``untrusted.is_invisible``,
+    the one rule). The frame makes the rest data."""
+    from acb_skills.untrusted import is_invisible
+
+    text = " ".join(
+        "".join(ch for ch in str(value or "") if not is_invisible(ch)).split())
+    if len(text) <= limit:
+        return text
+    return str(text)[: limit - 1].rstrip() + "…"
+
+
+def _utc_minute(value: Any) -> datetime | None:
+    try:
+        return _aware(str(value)).astimezone(UTC)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _event_when(entry: dict[str, Any]) -> str:
+    """The time of an entry. A timed entry gives its start and end in UTC. An
+    all-day entry gives its days: ``end_date`` is EXCLUSIVE (migration 331),
+    so a one-day entry shows its one date."""
+    if entry.get("all_day") or entry.get("start_date"):
+        first = str(entry.get("start_date") or "?")
+        try:
+            last = (date.fromisoformat(str(entry.get("end_date")))
+                    - timedelta(days=1)).isoformat()
+        except (TypeError, ValueError, OverflowError):
+            last = first
+        return f"{first}, all day" if last <= first else f"{first} to {last}, all day"
+    start, end = _utc_minute(entry.get("starts_at")), _utc_minute(entry.get("ends_at"))
+    if start is None:
+        return "no time"
+    head = start.strftime("%Y-%m-%d %H:%M")
+    if end is None or end == start:
+        return f"{head} UTC"
+    if end.date() == start.date():
+        return f"{head}-{end.strftime('%H:%M')} UTC"
+    return f"{head} to {end.strftime('%Y-%m-%d %H:%M')} UTC"
+
+
+def _event_line(entry: dict[str, Any]) -> str:
+    """One entry: the provider, the time, the status, then the title and the
+    place. Never the notes, the join link or the provider link."""
+    source = str(entry.get("source") or "")
+    provider = _EVENT_PROVIDERS.get(source, "Other calendar")
+    state = str(entry.get("status") or "confirmed")
+    if entry.get("busy") is False:
+        state += ", free"
+    title = _stranger_text(entry.get("title"), EVENT_TITLE_MAX) or "(no title)"
+    line = f"- {provider} | {_event_when(entry)} | {state} | Title: {title}"
+    place = _stranger_text(entry.get("location"), EVENT_PLACE_MAX)
+    return f"{line} | Place: {place}" if place else line
+
+
+async def _mark_events_read() -> None:
+    """The ruling of :data:`EVENTS_MARK_UNTRUSTED`, in this one place. True
+    marks the chat of the run on this frame, as ``tool_result_spill`` does.
+    The tenant and the session come from the run binding only."""
+    if not EVENTS_MARK_UNTRUSTED:
+        return
+    from acb_skills.egress import mark_untrusted_answer
+
+    await mark_untrusted_answer()
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_events(from_iso: str, to_iso: str, offset: int = 0,
+                               limit: int = 50) -> str:
+    """List the events of the member's calendars in a window. They are the
+    synced Google and Outlook events and the member's own events. Read only.
+    Each event names its calendar, its time, its status, its title and its
+    place. Use it with my_tasks_list_schedule, which reads the task blocks, to
+    plan around meetings. The window is half-open, [from, to), at most 31 days.
+
+    Args:
+        from_iso: ISO 8601 start of the window (inclusive).
+        to_iso: ISO 8601 end of the window (exclusive).
+        offset: Where the page starts. 0 is the first event.
+        limit: Events per page, 50 by default and 100 at most.
+    """
+    refusal = _events_window_refusal(from_iso, to_iso)
+    if refusal:
+        return refusal
+    entries = _calendar_entries(await _request(
+        "GET", _MY_CALENDAR,
+        params={"start": from_iso, "end": to_iso, "include_done": "true"}))
+    if entries is None:
+        return EVENTS_OFF
+    if not entries:
+        return "No calendar events are in that window."
+    # The route sends the window in the order of the day, the start, the
+    # creation and the id, so a page cut here is the same on every call.
+    page = paged(entries, offset, limit, default=50, noun="events")
+    if not page.items:
+        return page.line
+    from acb_skills.untrusted import UntrustedFrame
+
+    await _mark_events_read()
+    frame = UntrustedFrame.new()
+    body = "\n".join(_event_line(e) for e in page.items)
+    out = [
+        f"Calendar events ({page.total} in the window). Times are UTC. A free "
+        "event does not block the time.",
+        frame.note(_EVENTS_NOTE),
+        frame.wrap(EVENTS_FRAME_LABEL, body),
+    ]
+    if page.line:
+        out.append(page.line)
+    return "\n".join(out)
 
 
 # ── AI day planning (the planner, callable by chat) ──────────────────────────
