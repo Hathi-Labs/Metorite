@@ -424,7 +424,7 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
 `GET /search/names` asks each source that can `near`, with the lookups of rung
 3. So a near name is the same in the ladder and in the tool.
 
-**As built (FIND-5, task 3242, 2026-11-16, with its fix round).**
+**As built (FIND-5, task 3242, 2026-11-16, with its two fix rounds).**
 
 - **The route.** `gateway/retrieval/names.py` holds it. An org off
   `FIND_ORGS` gets 404 before any check of the input. The route takes `name`
@@ -432,6 +432,11 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
 - **The name.** One name of 2 to 60 characters and at most 3 words. `kinds` is
   a comma list from the closed list person, contact, lead, company and sender.
   An unknown kind gets a 422 with fixed text.
+- **A word that the matcher reads.** The name must hold one word of 2 letters
+  or more in the letters a to z or the digits 0 to 9. Else the route answers
+  a 422 with its own fixed sentence, before any read. Initials alone ("A B")
+  and a name in another script get it. The tool tells the model to ask the
+  member for the name in those letters.
 - **The sources.** The CRM gives contact, lead and company. People gives
   person. Email gives sender. No source gives a member yet, so `resolve_person`
   keeps the members until FIND-6.
@@ -441,31 +446,40 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
   replaced by its best near spelling.
 - **One word for People and Email.** Their own search matches its text as one
   phrase, and the directory never reads the preferred name. So the route asks
-  them with one word: the longest word of the name, or the longest near
-  spelling. The name test checks the other words. The CRM matches word by
-  word, so it gets the whole name. "Kumar Sharath" finds «Sharath Kumar» in
-  each app.
-- **The name test is code.** A record is `exact` when its stored name holds
-  each word of the name, and `near` when it holds each word of the near
-  spelling. Each asked word takes its own stored word, once. A word of one
-  letter takes a stored word that starts with it, after the full words take
-  theirs. So "Sharath S" is no exact match for «Sharath». An ask of initials
-  only, such as "S K", holds nothing. A record that matched by another field
-  gives no row.
+  them with one word: the longest word of the name. The near read asks the
+  longest word of the respelled name. When that word is the word of the name
+  read, the app gets no second read, and the near test reads the same page.
+  The CRM matches word by word, so it gets the whole name. "Kumar Sharath"
+  finds «Sharath Kumar» in each app.
+- **The name test is code.** A record is `exact` when one form of its name
+  holds each word of the name. It is `near` when one form holds each word of
+  the near spelling. Each form counts on its own, never the union of two
+  forms. Each asked word takes its own stored word of that form, once. A word
+  of one letter takes a stored word that starts with it, after the full words
+  take theirs. A record that matched by another field gives no row.
+- **The forms of a name.** A CRM record has its name. A person with a preferred
+  name has two forms: the full name, and the full name with its first word
+  replaced by the preferred name. So «Gitanjali Rao», preferred «Gita», holds
+  "Gitanjali Rao", "Gita Rao" and "Gita". It does not hold "Gitanjali G". A
+  sender has two forms: the display name, and the part of the address before
+  the `@`.
+- **An apostrophe joins.** An apostrophe between two letters joins them into
+  one word, in the name and in each form. So "O'Brien" is one word, and
+  «Oscar Brien» does not hold it.
 - **A sender row.** The Email app's own read `search.named_mail` gives it. The
   read uses the mailbox scope of the search, drops the outbound mail (sent,
   drafts, outbox) and sets a LOCAL `statement_timeout` of 1.5 s first. A `%`
   or a `_` in the word is plain text. The id of the row is the address, and
   its link opens the newest mail of the sender. An address that holds a
-  hidden character gives no row, and a joiner counts as one. The name test
-  reads the name and the part of the address before the `@`, not the domain.
+  hidden character gives no row, and a joiner counts as one.
 - **A person row** says the status of the person (active, contractor, alumni
   or invited), because the directory shows each status.
 - **The time.** One deadline of 1 s for every read, and each read takes a
   slot of `FIND_SESSIONS`.
 - **A failed read.** A failed name read gives no row, and `skipped` names the
   app with `timed_out`, `failed` or `refused`. `refused` is a 401 or a 403 of
-  the app only. A failed near read keeps the exact rows, and `near_skipped`
+  the app only. A statement that Postgres cancelled (SQLSTATE 57014) reads
+  `timed_out`. A failed near read keeps the exact rows, and `near_skipped`
   names the app. `full` names each app whose name read or near read gave a
   full page of 20. A none answer does not count such an app as one where no
   name matched.
@@ -494,16 +508,30 @@ person.
 | `near` | Near rows only, or one exact mail sender alone | "Ask the member to confirm one, and never act on it without a yes." |
 | `none` | No row | "Ask the member for the full name or the address." |
 
-**Limits of FIND-5.**
+**Limits of FIND-5.** Each limit below is known, and no test hides it.
 
-- A word of the name must hold the letters a to z or the digits 0 to 9,
-  because `name_match.words` keeps only those. So a name in another script
-  gets the 422.
-- The directory search never reads the preferred name. A person whose
-  preferred name is not in the full name gives no row for it.
+- **A preferred name that the full name does not hold.** The People read asks
+  the longest word of the name, and the directory matches it in the full
+  name only. When that word is a preferred name that the full name does not
+  hold, the read misses the person. "Sharu Kumar" asks "Sharu" (the first of
+  two words of 5 letters), and «Sharath Kumar», preferred «Sharu», gives no
+  row. The search does not know that it missed. So a `one` from another app
+  can then be wrong. When the full name holds the longest word, the read
+  finds the person, and the forms test the name.
+- **The page of Email holds the newest 20 mails, not 20 senders.** Twenty
+  newer mails from other senders that hold the word can hide a sender. Then
+  `full` names Email, and the answer is no `one`.
+- **The page of People holds the first 20 rows of the directory read**, in
+  the order of the department, before the name test. A full page reads in
+  `full` too.
 - A sender with 20 mails or more fills the page of Email, so the answer reads
   `partial` and not `one`.
 - A sender that is only in the sender rollup, with no mail, gives no row.
+- An address with an apostrophe gives no row, because the address check
+  refuses quote marks. An address with a joiner of an Indian script gives no
+  row either, because the check refuses each character of category C.
+- An apostrophe joins, so "D'Souza" does not hold «D Souza», written with no
+  apostrophe.
 - **The cap of a request.** The pack cap counts the orchestrator's own tools.
   For an org of `FIND_ORGS`, a Studio turn with the email words drops the pack
   `studio-more`, and keeps email and studio. Nothing fails. FIND-6 gives the

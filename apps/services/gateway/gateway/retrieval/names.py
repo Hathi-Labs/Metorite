@@ -102,11 +102,21 @@ PERSON_STATUSES: tuple[str, ...] = ("active", "contractor", "alumni", "invited")
 #: The 422 of a name out of bounds. Fixed text: it never holds the input.
 NAME_RULE = (f"Give one name of {NAME_MIN} to {NAME_MAX} characters and at most "
              f"{name_match.NEAR_MAX_WORDS} words.")
+#: The 422 of a name with no word of 2 letters or more that the matcher reads:
+#: initials only, or a name in another script (round 3, P3-b and P3-c).
+NAME_LETTERS = ("Give a name with a word of 2 letters or more in the letters a to z "
+                "or the digits 0 to 9.")
 #: The 422 of an unknown kind. Fixed text: it never holds the input.
 KINDS_RULE = f"The kinds are {', '.join(KINDS[:-1])} and {KINDS[-1]}."
 
 #: One token of a name: letters and digits.
 _TOKEN = re.compile(r"[^\W_]+")
+#: An apostrophe between two letters: it joins them into one word (round 3,
+#: P3-e). So "O'Brien" is ``obrien``, never the initial ``o`` and ``brien``.
+_JOINER = re.compile(r"(?<=[^\W\d_])['\u2019\u02bc](?=[^\W\d_])")
+#: The SQLSTATE of a statement that Postgres cancelled, such as one past its
+#: ``statement_timeout`` (``search.named_mail``).
+_CANCELLED = "57014"
 
 
 def find_allowed(user: UserContext) -> bool:
@@ -120,12 +130,18 @@ def typed_name(raw: Any) -> str:
 
     One name: :data:`NAME_MIN` to :data:`NAME_MAX` characters, no control
     character, and 1 to ``name_match.NEAR_MAX_WORDS`` words of at most
-    ``name_match.NEAR_MAX_CHARS`` characters each. Pure."""
+    ``name_match.NEAR_MAX_CHARS`` characters each. One word of 2 letters or
+    more in a to z or 0 to 9 at least, or the 422 of :data:`NAME_LETTERS`,
+    before any read: initials alone never hold a name, and the matcher reads
+    no other script. Pure."""
     words = " ".join(str(raw or "").split())
-    asked = name_match.words(words)
     if (not NAME_MIN <= len(words) <= NAME_MAX
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in words)
-            or not 1 <= len(asked) <= name_match.NEAR_MAX_WORDS
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in words)):
+        raise HTTPException(status_code=422, detail=NAME_RULE)
+    asked = name_words(words)
+    if not any(len(w) > 1 for w in asked):
+        raise HTTPException(status_code=422, detail=NAME_LETTERS)
+    if (len(asked) > name_match.NEAR_MAX_WORDS
             or any(len(w) > name_match.NEAR_MAX_CHARS for w in asked)):
         raise HTTPException(status_code=422, detail=NAME_RULE)
     return words
@@ -141,12 +157,27 @@ def wanted_kinds(raw: str | None) -> tuple[str, ...]:
     return tuple(k for k in KINDS if k in named) if named else KINDS
 
 
-def record_words(record: Named) -> list[str]:
-    """The words of a record's stored name, then each word of its
-    :attr:`Named.also` that the name does not hold already. So a sender
-    «Sharath» <sharath@…> has ONE word ``sharath``, never two."""
-    words = name_match.words(record.name)
-    return [*words, *(w for w in name_match.words(record.also) if w not in words)]
+def name_words(text: Any) -> list[str]:
+    """The words of a name for the name test: ``name_match.words``, after an
+    apostrophe between two letters joins them (round 3, P3-e). So "O'Brien"
+    is ``obrien``, and «Oscar Brien» never holds it by the initial ``o``.
+    Pure."""
+    return name_match.words(_JOINER.sub("", str(text or "")))
+
+
+def name_forms(record: Named) -> list[list[str]]:
+    """The words of each form of a record's name (:attr:`Named.forms`, or the
+    name alone), each form on its own (round 3, P1). Pure."""
+    texts = record.forms or (record.name,)
+    return [words for words in (name_words(text) for text in texts) if words]
+
+
+def holds_name(record: Named, asked: list[str]) -> bool:
+    """True when ONE form of the record's name holds each asked word, one to
+    one (:func:`holds`). Never the union of two forms: then «Gita» and
+    «Gitanjali Rao» would hold "Gitanjali G", the ``g`` taking «Gita»
+    (round 3, P1). Pure."""
+    return any(holds(words, asked) for words in name_forms(record))
 
 
 def holds(words: list[str], asked: list[str]) -> bool:
@@ -206,7 +237,7 @@ def stored_name(value: Any) -> str:
 def spelled_as(record: Named, spellings: dict[str, str]) -> str:
     """The near spellings that *record* holds, each as the record spells it:
     tokens of letters and digits, with one space between them."""
-    text = f"{record.name} {record.also}"
+    text = " ".join((record.name, *record.forms))
     out: list[str] = []
     for spelling in spellings.values():
         word = name_match.words(spelling)
@@ -224,12 +255,33 @@ def longest_token(texts: list[str]) -> str:
     return max(tokens, key=len) if tokens else ""
 
 
+def _cancelled(exc: BaseException) -> bool:
+    """True when *exc*, its driver error (``orig``) or its cause is a
+    statement that Postgres cancelled: SQLSTATE 57014, or the class
+    ``QueryCanceled`` (psycopg) or ``QueryCanceledError`` (asyncpg). This
+    package imports no database module, so it reads the attributes only."""
+    seen: list[BaseException] = []
+    todo: list[BaseException | None] = [exc]
+    while todo:
+        item = todo.pop()
+        if item is None or any(item is s for s in seen) or len(seen) > 8:
+            continue
+        seen.append(item)
+        if (type(item).__name__ in ("QueryCanceled", "QueryCanceledError")
+                or str(getattr(item, "sqlstate", "") or getattr(item, "pgcode", "") or "")
+                == _CANCELLED):
+            return True
+        todo += [getattr(item, "orig", None), item.__cause__, item.__context__]
+    return False
+
+
 def reason_of(exc: BaseException) -> str:
     """The closed reason of a failed read: the app's refusal of the member,
-    the deadline or any other fault."""
+    the deadline or any other fault. A statement past its own
+    ``statement_timeout`` ran out of time too (round 3, P3-d)."""
     if isinstance(exc, HTTPException) and exc.status_code in REFUSED_STATUSES:
         return "refused"
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, TimeoutError) or _cancelled(exc):
         return "timed_out"
     return "failed"
 
@@ -276,11 +328,13 @@ async def ask_source(user: UserContext, key: str, typed: str, deadline: float) -
 
     An app that matches its text as ONE phrase (``Source.names_word``: People
     and Email) gets one word: the longest word of the name, and for the near
-    read the longest near spelling. :func:`holds` then checks every word. So
-    "Kumar Sharath" finds «Sharath Kumar» there too (fix round, P2-a). The
+    read the longest word of the respelled name (round 3, P3-a). When that is
+    the word of the name read, the near test reads the same page again, and
+    the app gets no second read. :func:`holds_name` then checks every word.
+    So "Kumar Sharath" finds «Sharath Kumar» there too (fix round, P2-a). The
     CRM matches word by word, so it gets the whole name."""
     source = sources.REGISTRY[key]
-    asked = name_match.words(typed)
+    asked = name_words(typed)
     eligible = [w for w in asked if name_match.near_eligible(w)]
     exact_query = longest_token([typed]) if source.names_word else typed
 
@@ -302,7 +356,7 @@ async def ask_source(user: UserContext, key: str, typed: str, deadline: float) -
         _note(key, "name", first)
         return SourceAnswer(key, skipped=reason_of(first))
     records, more = first
-    answer = SourceAnswer(key, exact=[r for r in records if holds(record_words(r), asked)],
+    answer = SourceAnswer(key, exact=[r for r in records if holds_name(r, asked)],
                           more=bool(more))
     if isinstance(names, BaseException):
         _note(key, "near", names)
@@ -313,21 +367,24 @@ async def ask_source(user: UserContext, key: str, typed: str, deadline: float) -
     if not spellings or query == typed:
         return answer
     if source.names_word:
-        query = longest_token(list(spellings.values()))
+        query = longest_token([query])
     spelled = [name_match.words(spellings[w])[0] if w in spellings else w for w in asked]
-    try:
-        again, near_more = await _timed(
-            lambda: source.named_records(user, query, NAMES_POOL), deadline)
-    except Exception as exc:
-        _note(key, "near", exc)
-        answer.near_skipped = reason_of(exc)
-        return answer
+    if query == exact_query:
+        # The same read: its page holds each record of the near read too.
+        again, near_more = records, more
+    else:
+        try:
+            again, near_more = await _timed(
+                lambda: source.named_records(user, query, NAMES_POOL), deadline)
+        except Exception as exc:
+            _note(key, "near", exc)
+            answer.near_skipped = reason_of(exc)
+            return answer
     # A full page of the near read may hide a near record too, so the app
     # reads as "full", and one exact record is no sure `one`.
     answer.more = answer.more or bool(near_more)
     for record in again:
-        held = record_words(record)
-        if holds(held, spelled) and not holds(held, asked):
+        if holds_name(record, spelled) and not holds_name(record, asked):
             answer.near.append((record, spelled_as(record, spellings)))
     return answer
 

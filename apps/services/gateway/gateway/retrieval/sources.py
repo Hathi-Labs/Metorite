@@ -204,18 +204,21 @@ class Named:
     """One record that an app's own search found for a name (FIND-5).
 
     *name* is the name as the record holds it, and *href* is the link that
-    code built. *also* is a second stored text that the name test reads too:
-    the full name of a person with a preferred name, or the part of a sender's
-    address before the ``@``. The route never puts *also* in an answer.
-    *state* is the record's state, such as a person's status. The route puts
-    it in the row only from a closed list.
+    code built. *forms* are the stored forms of the name that the name test
+    reads, EACH ON ITS OWN (FIND-5 round 3, P1). Empty means one form,
+    *name*. A person with a preferred name has two: the full name, and the
+    full name with its first word replaced by the preferred name. A sender
+    has the display name and the part of its address before the ``@``. The
+    route never puts a form in an answer. *state* is the record's state, such
+    as a person's status. The route puts it in the row only from a closed
+    list.
     """
 
     kind: str
     id: str
     name: str
     href: str
-    also: str = ""
+    forms: tuple[str, ...] = ()
     state: str = ""
 
 
@@ -950,11 +953,12 @@ async def _crm_named(user: UserContext, name: str, k: int) -> tuple[list[Named],
 
 async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Named], bool]:
     """The people of *name*, through the directory's own read. The row names
-    the person as the directory does. :attr:`Named.also` is the full name when
-    the person has a preferred name, and :attr:`Named.state` is the status.
-    The directory matches *name* as one phrase in the full name (never the
-    preferred name), so ``resolve_name`` asks it with one word
-    (:attr:`Source.names_word`)."""
+    the person as the directory does, and :attr:`Named.state` is the status.
+    A person with a preferred name has two :attr:`Named.forms`: the full
+    name, and the full name with its first word replaced by the preferred
+    name ("Gitanjali Rao" and "Gita Rao"). The directory matches *name* as one
+    phrase in the full name (never the preferred name), so ``resolve_name``
+    asks it with one word (:attr:`Source.names_word`)."""
     from gateway.routes.people.directory import list_directory
 
     answer = await list_directory(
@@ -964,10 +968,13 @@ async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Name
     rows = list(answer.rows or [])
     out = []
     for p in rows[:k]:
-        shown = _title(p.get("preferred_name") or p.get("name"))
-        full = str(p.get("name") or "")
-        out.append(Named("person", str(p["id"]), shown, f"/people/{quote(str(p['id']))}",
-                         also=full if full.strip() != shown else "",
+        full = " ".join(str(p.get("name") or "").split())
+        preferred = " ".join(str(p.get("preferred_name") or "").split())
+        forms: tuple[str, ...] = ()
+        if full and preferred and preferred != full:
+            forms = (full, " ".join([preferred, *full.split()[1:]]))
+        out.append(Named("person", str(p["id"]), _title(preferred or full),
+                         f"/people/{quote(str(p['id']))}", forms=forms,
                          state=str(p.get("status") or "")))
     return out, len(rows) > k
 
@@ -1010,9 +1017,12 @@ async def _email_named(user: UserContext, name: str, k: int) -> tuple[list[Named
             continue
         seen.add(address)
         who = str(mail.get("name") or "").strip()
+        local = address.partition("@")[0]
+        # Two forms, each tested on its own: the display name and the part
+        # of the address before the `@` (round 3, P1). Never the domain.
         out.append(Named("sender", address, who or address,
                          f"/email?email={quote(str(mail['id']))}",
-                         also=address.partition("@")[0]))
+                         forms=(who, local) if who else (local,)))
     return out, len(mails) >= k
 
 

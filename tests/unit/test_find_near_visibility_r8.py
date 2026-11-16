@@ -701,6 +701,29 @@ async def test_a_name_in_another_order_finds_each_app(world, lead, flags, roomy_
         ("email", "sender", NEUROPEEK, "exact")}
 
 
+async def test_a_preferred_name_is_one_form_and_never_mixes_with_the_full_name(
+        world, flags, roomy_names) -> None:
+    """Round 3, P1: «Nalu» is the preferred name of «Nalini Ramaswamy». Each
+    form holds its own words: "Nalini Ramaswamy" and "Nalu Ramaswamy" are
+    exact, and "Nalini N" is not, because no form holds both words."""
+    p = world["p"]
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (name, preferred_name, department, source, organization_id) "
+            "VALUES ('Nalini Ramaswamy', 'Nalu', 'Ops', :s, CAST(:o AS uuid))"),
+            {"s": f"near-{TAG}", "o": p.org_a})
+    person = _person(p, p.org_a, "Nalini Ramaswamy")
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    for asked in ("Nalini Ramaswamy", "Nalu Ramaswamy", "Ramaswamy"):
+        got = await _resolve(p, me, asked)
+        assert _rows(got) == {("people", "person", person, "exact")}, asked
+        assert got["rows"][0]["name"] == "Nalu"
+    mixed = await _resolve(p, me, "Nalini N")
+    assert ("people", "person", person, "exact") not in _rows(mixed)
+    assert mixed["verdict"] != "one"
+
+
 async def test_a_sender_alone_is_no_sure_match(world, flags, roomy_names) -> None:
     """Fix round, P2-c: a sender writes its own display name."""
     p = world["p"]

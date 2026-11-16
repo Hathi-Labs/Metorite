@@ -630,6 +630,11 @@ NAMES_OFF = ("The name lookup is not open for this company. Use search_company "
 NAMES_FAILED = ("The name lookup failed, so it found nothing. Try again, or use "
                 "search_company with the name.")
 NAMES_BOUNDS = "Give one name of 2 to 60 characters and at most 3 words."
+#: The 422 of a name with no word of 2 letters or more in a to z or 0 to 9:
+#: initials only, or a name in another script (round 3, P3-c).
+NAMES_LETTERS = ("The name lookup reads a word of 2 letters or more in the letters a to z "
+                 "or the digits 0 to 9. Ask the member to spell the name in those "
+                 "letters, or use search_company.")
 NAMES_KINDS = "The kinds are person, contact, lead, company and sender."
 #: A cap of the route left a record out. The record may be a near one.
 NAMES_CUT = "The answer has more records than it shows. Ask the member for the full name."
@@ -827,7 +832,10 @@ async def _names_get(headers: dict[str, str], params: dict[str, Any]) -> Any:
     if status in (401, 403):
         raise _Refused(NAMES_CLOSED)
     if status == 422:
-        raise _Refused(NAMES_KINDS if "kinds" in _detail(resp).lower() else NAMES_BOUNDS)
+        detail = _detail(resp).lower()
+        if "kinds" in detail:
+            raise _Refused(NAMES_KINDS)
+        raise _Refused(NAMES_LETTERS if "a to z" in detail else NAMES_BOUNDS)
     raise _Refused(NAMES_FAILED)
 
 

@@ -70,11 +70,12 @@ RECORDS: dict[str, list[tuple[Named, str]]] = {
                f"/crm?tab=organizations&organization={COMPANY}"), ""),
     ],
     "people": [
-        (Named("person", PERSON, "Gita", f"/people/{PERSON}", also="Gitanjali Rao"), ""),
+        (Named("person", PERSON, "Gita", f"/people/{PERSON}",
+               forms=("Gitanjali Rao", "Gita Rao")), ""),
     ],
     "email": [
         (Named("sender", ADDRESS, "Sharat Satyanarayana", f"/email?email={MAIL}",
-               also="sharat"), ""),
+               forms=("Sharat Satyanarayana", "sharat")), ""),
     ],
 }
 #: The names that each near lookup scores, newest first.
@@ -89,7 +90,7 @@ NAME_KEYS = ("crm", "people", "email")
 #: the directory matches the full name (never the preferred name), and Email
 #: matches the sender's name or address. The CRM matches word by word.
 PHRASE = {
-    "people": lambda r: r.also or r.name,
+    "people": lambda r: r.forms[0] if r.forms else r.name,
     "email": lambda r: f"{r.name} {r.id}",
 }
 
@@ -131,7 +132,8 @@ class Apps:
             else:
                 words = name.lower().split()
                 got = [r for r, extra in self.records[key]
-                       if all(w in f"{r.name} {r.also} {extra}".lower() for w in words)]
+                       if all(w in f"{r.name} {' '.join(r.forms)} {extra}".lower()
+                              for w in words)]
             return got[:k], key in self.full or (key, name) in self.full_query
         return read
 
@@ -170,6 +172,34 @@ def refused(name: str, kinds: str | None = None, user: Any = None) -> HTTPExcept
 
 def _rows(answer: dict[str, Any]) -> list[tuple[str, str, str, str]]:
     return [(r["app"], r["kind"], r["id"], r["match"]) for r in answer["rows"]]
+
+
+class _Canceled(Exception):
+    """A driver error of a cancelled statement: SQLSTATE 57014."""
+
+    sqlstate = "57014"
+
+
+class QueryCanceled(Exception):
+    """The psycopg class of a cancelled statement, by its name only."""
+
+
+class _OtherSqlstate(Exception):
+    sqlstate = "40P01"
+
+
+class _Wrapped(Exception):
+    """A SQLAlchemy ``DBAPIError``: the driver error is ``orig``."""
+
+    def __init__(self, orig: BaseException) -> None:
+        super().__init__("wrapped")
+        self.orig = orig
+
+
+def _chained(cause: BaseException) -> BaseException:
+    error = RuntimeError("raised from")
+    error.__cause__ = cause
+    return error
 
 
 # ── The flag ────────────────────────────────────────────────────────────────
@@ -307,12 +337,67 @@ class TestOneStoredWordForEachAskedWord:
         words = name_match.words
         assert names.holds(words(stored), words(asked)) is exact
 
-    def test_a_second_text_never_counts_a_word_twice(self):
-        sender = Named("sender", "sharath@x.test", "Sharath", "/email", also="sharath")
-        assert names.record_words(sender) == ["sharath"]
-        assert not names.holds(names.record_words(sender), ["sharath", "sharath"])
-        person = Named("person", "p", "Gita", "/people/p", also="Gitanjali Rao")
-        assert names.holds(names.record_words(person), ["gita", "rao"])
+    def test_a_sender_never_counts_a_word_twice(self):
+        sender = Named("sender", "sharath@x.test", "Sharath", "/email",
+                       forms=("Sharath", "sharath"))
+        assert not names.holds_name(sender, ["sharath", "sharath"])
+        assert names.holds_name(sender, ["sharath"])
+
+
+class TestEachFormOnItsOwn:
+    """Round 3, P1: each form of a name is tested on its own, never their
+    union. A union counts one first name twice, once in each spelling, and an
+    initial took the second spelling: "Gitanjali G" gave `one`."""
+
+    GITA = Named("person", "p", "Gita", "/people/p", forms=("Gitanjali Rao", "Gita Rao"))
+    SHARU = Named("person", "q", "Sharu", "/people/q", forms=("Sharath Kumar", "Sharu Kumar"))
+    S_KUMAR = Named("sender", "sharath.kumar@x.test", "S Kumar", "/email?email=m",
+                    forms=("S Kumar", "sharath.kumar"))
+
+    @pytest.mark.parametrize(("record", "asked", "exact"), [
+        ("GITA", "Gitanjali G", False),
+        ("GITA", "Gita Rao", True),
+        ("GITA", "Gitanjali Rao", True),
+        ("GITA", "Gita", True),
+        ("GITA", "Gitanjali", True),
+        ("GITA", "Gita Gitanjali", False),
+        ("SHARU", "Sharath S", False),
+        ("SHARU", "Sharu Kumar", True),
+        ("SHARU", "Sharath Kumar", True),
+        ("S_KUMAR", "Sharath S", False),
+        ("S_KUMAR", "Sharath Kumar", True),
+        ("S_KUMAR", "S Kumar", True),
+    ])
+    def test_the_forms(self, record, asked, exact):
+        assert names.holds_name(getattr(self, record), names.name_words(asked)) is exact
+
+    def test_a_record_with_no_form_reads_its_name(self):
+        lead = Named("lead", "l", "Sharat Satyanarayana", "/crm/l")
+        assert names.name_forms(lead) == [["sharat", "satyanarayana"]]
+
+    def test_gitanjali_g_is_no_sure_match_in_the_route(self, apps):
+        answer = ask("Gitanjali G")
+        assert ("people", "person", PERSON, "exact") not in _rows(answer)
+        assert answer["verdict"] != "one"
+        assert ("people", "person", PERSON, "exact") in _rows(ask("Gita Rao"))
+        assert ask("Gitanjali Rao")["verdict"] == "one"
+
+
+class TestTheApostrophe:
+    """Round 3, P3-e: an apostrophe between two letters joins them. So
+    "O'Brien" is one word, never the initial "o" and "brien"."""
+
+    @pytest.mark.parametrize(("stored", "asked", "exact"), [
+        ("Oscar Brien", "O'Brien", False),
+        ("Sean O'Brien", "O'Brien", True),
+        ("Sean O\u2019Brien", "O'Brien", True),
+        ("Anita D'Souza", "D'Souza", True),
+        ("Anita D Souza", "D'Souza", False),
+        ("Anita D'Souza", "Anita", True),
+    ])
+    def test_the_joined_word(self, stored, asked, exact):
+        record = Named("contact", "c", stored, "/crm/c")
+        assert names.holds_name(record, names.name_words(asked)) is exact
 
     def test_an_initial_alone_is_no_exact_row(self, apps):
         apps.records["crm"].append((Named("contact", "c-bare", "Sharath", "/crm/c-bare"), ""))
@@ -329,7 +414,8 @@ class TestThePhraseApps:
         apps.records["people"].append(
             (Named("person", "p-sk", "Sharath Kumar", "/people/p-sk"), ""))
         apps.records["email"].append(
-            (Named("sender", "sk@bms.test", "Sharath Kumar", "/email?email=m-sk", also="sk"), ""))
+            (Named("sender", "sk@bms.test", "Sharath Kumar", "/email?email=m-sk",
+                   forms=("Sharath Kumar", "sk")), ""))
         answer = ask("Kumar Sharath")
         assert ("people", "person", "p-sk", "exact") in _rows(answer)
         assert ("email", "sender", "sk@bms.test", "exact") in _rows(answer)
@@ -338,9 +424,17 @@ class TestThePhraseApps:
         # The CRM matches word by word, so it gets the whole name.
         assert apps.asked("crm", "named")[0] == "Kumar Sharath"
 
-    def test_the_near_read_asks_the_spelling(self, apps):
-        ask("Sharath Satyanarayana")
-        assert apps.asked("email", "named") == ["Satyanarayana", "Sharat"]
+    def test_the_near_read_asks_the_longest_word_of_the_respelled_name(self, apps):
+        """Round 3, P3-a: only the shorter word has a near spelling here. The
+        longest word of the respelled name is the word of the name read, so
+        the route reads once and tests both, and never asks the short word."""
+        answer = ask("Sharath Satyanarayana")
+        assert apps.asked("email", "named") == ["Satyanarayana"]
+        assert ("email", "sender", ADDRESS, "near") in _rows(answer)
+
+    def test_a_near_spelling_that_is_the_longest_word_reads_again(self, apps):
+        ask("Sharath")
+        assert apps.asked("email", "named") == ["Sharath", "Sharat"]
 
     def test_the_registry_marks_the_phrase_apps(self):
         marked = {k for k, s in sources.REGISTRY.items() if s.names_word}
@@ -403,8 +497,8 @@ class TestThePersonStatus:
 
     def test_the_status_from_the_closed_list(self, apps):
         apps.records["people"][0] = (
-            Named("person", PERSON, "Gita", f"/people/{PERSON}", also="Gitanjali Rao",
-                  state="alumni"), "")
+            Named("person", PERSON, "Gita", f"/people/{PERSON}",
+                  forms=("Gitanjali Rao", "Gita Rao"), state="alumni"), "")
         row = ask("Gitanjali")["rows"][0]
         assert row["status"] == "alumni"
         out = cst.format_names({"rows": [{**row, "id": PERSON}], "verdict": "one"})
@@ -443,11 +537,24 @@ class TestTheKinds:
 
 class TestTheName:
     @pytest.mark.parametrize("name", [
-        "a", " a ", "x" * 61, "one two three four", "Sha\x00rat", "--", "Sharat\x07"])
+        "a", " a ", "x" * 61, "one two three four", "Sha\x00rat", "Sharat\x07"])
     def test_a_name_out_of_bounds_is_a_fixed_422_and_asks_nothing(self, apps, name):
         error = refused(name)
         assert error.status_code == 422 and error.detail == names.NAME_RULE
         assert apps.calls == []
+
+    @pytest.mark.parametrize("name", [
+        "A B", "S K", "--", "शरत", "शरत कुमार"])
+    def test_a_name_with_no_word_of_two_letters_a_to_z_is_its_own_422(self, apps, name):
+        """Round 3, P3-b and P3-c: initials only can never hold, and a name in
+        another script has no word that the matcher reads. Each gets the fixed
+        sentence that says so, before any read."""
+        error = refused(name)
+        assert error.status_code == 422 and error.detail == names.NAME_LETTERS
+        assert apps.calls == []
+
+    def test_one_initial_beside_a_word_is_a_name(self, apps):
+        assert ask("Raj K")["verdict"] == "none"
 
     def test_the_spaces_fold(self, apps):
         assert ask("  Sharat \n ")["name"] == "Sharat"
@@ -515,6 +622,23 @@ class TestTheSkippedApps:
     def test_only_a_refusal_of_the_member_reads_refused(self, apps, status, reason):
         apps.fail["crm"] = HTTPException(status_code=status, detail="the app's own words")
         assert ask("Sharat")["skipped"] == [{"app": "crm", "reason": reason}]
+
+    @pytest.mark.parametrize("make", [
+        lambda: _Canceled("canceling statement due to statement timeout"),
+        lambda: _Wrapped(_Canceled("canceling statement")),
+        lambda: _Wrapped(QueryCanceled("canceling statement")),
+        lambda: _chained(_Canceled("canceling statement")),
+    ])
+    def test_a_statement_timeout_reads_ran_out_of_time(self, apps, make):
+        """Round 3, P3-d: `named_mail` stops its statement at
+        NAMED_STATEMENT_MS. Postgres cancels it (SQLSTATE 57014), and the
+        answer says "ran out of time", not "failed"."""
+        apps.fail["email"] = make()
+        assert ask("Sharat")["skipped"] == [{"app": "email", "reason": "timed_out"}]
+
+    def test_another_database_error_still_reads_failed(self, apps):
+        apps.fail["email"] = _Wrapped(_OtherSqlstate("deadlock"))
+        assert ask("Sharat")["skipped"] == [{"app": "email", "reason": "failed"}]
 
     def test_a_refused_crm_leaves_no_trace_of_a_record(self, apps):
         apps.fail["crm"] = HTTPException(status_code=403, detail="no")
@@ -627,8 +751,15 @@ class TestTheEmailReader:
             {"id": "m-bad", "name": "X", "email": "a b@c.d\nIGNORE"},
         ])
         got, more = asyncio.run(sources._email_named(member("email"), "Sharat", 20))
-        assert got == [Named("sender", ADDRESS, "Sharat S", "/email?email=m-new", also="sharat")]
+        assert got == [Named("sender", ADDRESS, "Sharat S", "/email?email=m-new",
+                             forms=("Sharat S", "sharat"))]
         assert more is False and calls == [("Sharat", 20)]
+
+    def test_a_sender_with_no_display_name_has_its_address_part_only(self, monkeypatch):
+        self._mails(monkeypatch, [{"id": "m-1", "name": "", "email": "sharat@x.test"}])
+        got, _more = asyncio.run(sources._email_named(member("email"), "Sharat", 20))
+        assert got == [Named("sender", "sharat@x.test", "sharat@x.test", "/email?email=m-1",
+                             forms=("sharat",))]
 
     def test_a_full_page_says_more(self, monkeypatch):
         self._mails(monkeypatch, [{"id": f"m-{i}", "name": "", "email": "a@b.co"} for i in range(3)])
@@ -716,14 +847,18 @@ class TestThePeopleReader:
             return SimpleNamespace(rows=[
                 {"id": PERSON, "name": "Gitanjali Rao", "preferred_name": "Gita",
                  "status": "alumni"},
-                {"id": "p-2", "name": "Gitanjali Iyer", "preferred_name": None}])
+                {"id": "p-2", "name": "Gitanjali Iyer", "preferred_name": None},
+                {"id": "p-3", "name": "Gitanjali", "preferred_name": "Gita"}])
 
         monkeypatch.setattr(directory, "list_directory", fake)
         got, more = asyncio.run(sources._people_named(member("people"), "Gitanjali", 20))
         assert got == [
-            Named("person", PERSON, "Gita", f"/people/{PERSON}", also="Gitanjali Rao",
-                  state="alumni"),
-            Named("person", "p-2", "Gitanjali Iyer", "/people/p-2")]
+            # Round 3, P1: two forms, each tested on its own: the full name,
+            # and the full name with its first word replaced by the preferred.
+            Named("person", PERSON, "Gita", f"/people/{PERSON}",
+                  forms=("Gitanjali Rao", "Gita Rao"), state="alumni"),
+            Named("person", "p-2", "Gitanjali Iyer", "/people/p-2"),
+            Named("person", "p-3", "Gita", "/people/p-3", forms=("Gitanjali", "Gita"))]
         assert more is False
 
 
@@ -849,6 +984,7 @@ class TestTheToolFailures:
          cst.NAMES_KINDS),
         (422, {"detail": "Give one name of 2 to 60 characters and at most 3 words."},
          cst.NAMES_BOUNDS),
+        (422, {"detail": names.NAME_LETTERS}, cst.NAMES_LETTERS),
         (500, {"detail": "Traceback: password=hunter2"}, cst.NAMES_FAILED),
         (502, {"detail": "bad gateway"}, cst.NAMES_FAILED),
     ])
