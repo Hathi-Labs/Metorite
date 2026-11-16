@@ -165,7 +165,8 @@ def test_the_migration_is_found_by_content() -> None:
     assert len(found) == 1, found
     body = texts[found[0]]
     assert "ADD COLUMN IF NOT EXISTS attachment_names text;" in body  # nullable, no default
-    assert "GENERATED ALWAYS" not in body and "NOT NULL" not in body
+    assert "GENERATED ALWAYS" not in body and "attachment_names text NOT NULL" not in body
+    assert "attachment_names text DEFAULT" not in body
 
 
 @pytest.mark.asyncio
@@ -200,25 +201,43 @@ async def test_r8_never_the_mail_of_another_member_or_another_org(world) -> None
     assert _both(await _found(w, w.zed, w.p.org_a, attachment_name="nda")) == set()
 
 
+def _stored(w: Any, mid: str) -> str | None:
+    with w.p.admin_engine.connect() as c:
+        return c.execute(text("SELECT attachment_names FROM email_messages "
+                              "WHERE id = CAST(:m AS uuid)"), {"m": mid}).scalar_one()
+
+
 @pytest.mark.asyncio
-async def test_r8_the_trigger_follows_insert_rename_and_delete(world) -> None:
+async def test_r8_the_trigger_follows_insert_rename_move_and_delete(world) -> None:
+    """Each step reads the STORED column, so a trigger that never writes fails
+    here. The search alone would not: its fallback gives the same ids."""
     w = world
-    p, mid = w.p, w.ids["plain"]
+    p, mid, other_mid = w.p, w.ids["plain"], w.ids["pct"]
     assert _both(await _found(w, w.me, p.org_a, attachment_name="contract")) == set()
+    assert _stored(w, mid) is None
     with p.admin_engine.begin() as c:
         c.execute(text("INSERT INTO email_attachments (message_id, filename, "
                        "provider_attachment_id, organization_id) VALUES "
                        "(CAST(:m AS uuid), 'Contract.docx', 'x1', CAST(:o AS uuid))"),
                   {"m": mid, "o": p.org_a})
+    assert _stored(w, mid) == "Contract.docx"
     assert _both(await _found(w, w.me, p.org_a, attachment_name="contract")) == {mid}
     with p.admin_engine.begin() as c:
         c.execute(text("UPDATE email_attachments SET filename = 'Lease.docx' "
                        "WHERE message_id = CAST(:m AS uuid)"), {"m": mid})
+    assert _stored(w, mid) == "Lease.docx"
     assert _both(await _found(w, w.me, p.org_a, attachment_name="contract")) == set()
     assert _both(await _found(w, w.me, p.org_a, attachment_name="lease")) == {mid}
+    # A move to another message refreshes the old message and the new one.
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE email_attachments SET message_id = CAST(:n AS uuid) "
+                       "WHERE message_id = CAST(:m AS uuid)"), {"m": mid, "n": other_mid})
+    assert _stored(w, mid) is None
+    assert _stored(w, other_mid) == "Lease.docx rates_100%.xlsx"
     with p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM email_attachments WHERE message_id = CAST(:m AS uuid)"),
-                  {"m": mid})
+                  {"m": other_mid})
+    assert _stored(w, other_mid) is None
     assert _both(await _found(w, w.me, p.org_a, attachment_name="lease")) == set()
 
 

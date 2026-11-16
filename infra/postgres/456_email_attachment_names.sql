@@ -34,19 +34,26 @@ ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS attachment_names text;
 CREATE OR REPLACE FUNCTION email_attachment_names_fill() RETURNS trigger
 LANGUAGE plpgsql AS $fn$
 DECLARE
-    mid uuid := COALESCE(NEW.message_id, OLD.message_id);
+    mid uuid;
 BEGIN
-    UPDATE email_messages em
-       SET attachment_names = (
-            SELECT string_agg(ea.filename, ' ' ORDER BY ea.filename)
-              FROM email_attachments ea WHERE ea.message_id = mid)
-     WHERE em.id = mid;
+    -- The message of the new row, and the message of the old row when an
+    -- attachment moved or went away. Each gets its names recomputed once.
+    FOR mid IN
+        SELECT DISTINCT m FROM (VALUES (NEW.message_id), (OLD.message_id)) v(m)
+        WHERE m IS NOT NULL
+    LOOP
+        UPDATE email_messages em
+           SET attachment_names = (
+                SELECT string_agg(ea.filename, ' ' ORDER BY ea.filename)
+                  FROM email_attachments ea WHERE ea.message_id = mid)
+         WHERE em.id = mid;
+    END LOOP;
     RETURN NULL;
 END
 $fn$;
 
 DROP TRIGGER IF EXISTS email_attachment_names_fill ON email_attachments;
 CREATE TRIGGER email_attachment_names_fill
-    AFTER INSERT OR DELETE OR UPDATE OF filename
+    AFTER INSERT OR DELETE OR UPDATE OF filename, message_id
     ON email_attachments
     FOR EACH ROW EXECUTE FUNCTION email_attachment_names_fill();
