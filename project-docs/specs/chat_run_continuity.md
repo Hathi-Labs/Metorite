@@ -28,6 +28,7 @@ release keeps the work.
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
 | §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). RESUME-1a and RESUME-2a are built (the rows below) |
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 — the retention of a waiting card's row (task 3435) | **BUILT** 2026-11-16, branch `stu-pa-prune`, no new flag and no migration. A prune hook of the job worker clears the stored call of each expired row and deletes a row 7 days after it expires. The member purge deletes the rows that asked a leaver. The prune runs only with `JOB_QUEUE` on, and `JOB_QUEUE` is off on production (§4.12.6, step 1a) |
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. Do not flip it before RESUME-3. No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -1729,6 +1730,39 @@ out. So `GET /chat/pending-asks`, `GET /chat/active-sessions`, the My Day
 chat card and the waiting list never return it. `pending_ask.read_stored_call`
 is the one reader, and no route calls it in RESUME-1a.
 
+**The retention of a row (task 3435, BUILT 2026-11-16).** Before this, no code
+deleted a row. No move changes a row after it expires, so its payload and its
+stored call stayed for ever. Four cases kept them: a crash with a card open, a
+parked card that expired, and a chat deleted while `CHAT_DURABLE_ASKS` was off.
+The fourth is a member who left. Now these rules hold:
+
+- **The prune.** `pending_ask.prune` runs in the daily prune job of each org,
+  as the hook `pending_ask.prune_hook` of `gateway.jobs.worker.prune_hooks`. It
+  is one statement in the org's session, and it names the bound org beside
+  RLS. The hook never raises, and its log names the error class only.
+- **An expired row loses its stored call** at the next prune, in each state.
+  The arguments of a call never outlive the card.
+- **A row 7 days past `expires_at` goes** (`PENDING_ASK_KEEP_DAYS`), with its
+  payload and its answer, in each state. No reader takes an expired row, so
+  the 7 days only let a person who looks into a fault read the card.
+- **A row that has not expired never changes**, in each state. So a card that
+  waits, and a call that a claim can still take, stay as they are. A move to
+  `answered` or `closed` already sets the stored call to NULL.
+- **A bound.** One prune changes at most 1000 rows of each kind in one org
+  (`PENDING_ASK_PRUNE_BATCH`). A larger backlog goes on the next days.
+- **The member purge** deletes the rows that asked the leaver in the bound
+  org (`chat_pending_asks` in `routes/admin/members.py`).
+- **A deleted chat.** The prune does not look for rows whose chat is gone. A
+  run can start before its chat row exists (migration 237), so such a test
+  could take the row of a live card. The expiry bounds such a row: its stored
+  call goes at `expires_at`, and the row goes 7 days later.
+
+The prune needs no migration. The primary key starts with the org, so the
+prune reads the rows of one org only. After the first runs, the table holds
+about 14 days of rows. Fences: `tests/unit/test_pending_ask_prune.py`,
+`tests/unit/test_pending_ask_prune_r8.py` (R8) and
+`tests/unit/test_admin_member_purge.py`.
+
 Only a call that can resume stores one (D-RES-2):
 
 - A plain confirmation card: no rows, no reply form and no held send. Then
@@ -2041,6 +2075,10 @@ model to check that write before it acts again.
    lists of org ids, or `*`. Each is empty by default. A SIGHUP reload
    applies a change (`docs/flag_reload.md`). Each needs `CHAT_DURABLE_ASKS`.
    Off, each run, row and message is byte for byte as before.
+1a. Turn on `JOB_QUEUE` on production before `CHAT_RESUME_ORGS` names an
+   org (gate `enforcement-flip`). The prune of task 3435 runs only in the job
+   worker. With `JOB_QUEUE` off, the stored call of an expired row stays on the
+   row.
 2. Show the owner the rung demo on this PC (D145).
 3. Turn the flag on for one pilot org on production (gate
    `enforcement-flip`). Run the demo there.
@@ -2203,7 +2241,7 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2), the grant write of a late approve (S2 item 8), and `_resume_from_row` (RESUME-2a) |
 | `packages/acb_skills/acb_skills/late_approve.py` | A late approve acts once: the flag, the offer, the grant and its one use (S2 item 8) |
 | `packages/acb_skills/acb_skills/stored_call.py` | A card stores its call: the flag, the shape and the call id (§4.12 RESUME-1a), and the stored-call yes (RESUME-2a) |
-| `apps/services/orchestrator/orchestrator/pending_ask.py` | The row of a waiting card, and its stored call: `bind_call`, `read_stored_call` (S2, §4.12 RESUME-1a), `claim_stored_call` (RESUME-2a) |
+| `apps/services/orchestrator/orchestrator/pending_ask.py` | The row of a waiting card, and its stored call: `bind_call`, `read_stored_call` (S2, §4.12 RESUME-1a), `claim_stored_call` (RESUME-2a), and the retention `prune` and `prune_hook` (task 3435) |
 | `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2), `_resume_prologue` (RESUME-2a) |
 | `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `start_detached` (RESUME-2a), `list_live_runs`, `drop_run_slot` |
 | `apps/services/orchestrator/orchestrator/run_cap.py` | The run cap: the count, the lock and the reservation (D-3) |
