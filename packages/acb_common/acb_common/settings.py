@@ -769,6 +769,15 @@ class Settings(BaseSettings):
     # applies a change (docs/flag_reload.md). A flip in production is the
     # gate `enforcement-flip`. Spec: ai_studio.md section 14 TOF-1a, TOF-1b.
     studio_chat_tools_orgs: str = ""
+    # TOF-1d: STUDIO_SKILL_OFFER_ORGS lists the org ids where the chat draws
+    # the card "Save this as a skill?" after a finished turn (STU-F6a). `*`
+    # opens every org. Empty opens none: the chat draws no card and reads no
+    # catalog for it. Reader: `gateway.routes.studio.flags.skill_offer_allowed`.
+    # `GET /auth/me/shell` serves it as `skill_offer`, and it also needs
+    # STUDIO_ORGS. A SIGHUP reload applies a change (docs/flag_reload.md). A
+    # flip in production is the gate `enforcement-flip`, after the owner
+    # preview. Spec: ai_studio.md section 14 TOF-1d.
+    studio_skill_offer_orgs: str = ""
     # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
     # `connections` of a Studio manifest bind. A missing connection then makes
     # the install `needs_setup`, and the action door refuses each action with

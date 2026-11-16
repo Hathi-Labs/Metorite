@@ -105,6 +105,20 @@ class RoutedRefusal(Exception):
         self.detail = detail
 
 
+def is_router_outage(exc: BaseException) -> bool:
+    """True when the Router produced no answer (``ConsoleRouterUnavailable``).
+
+    Task 3541: the email draft names an outage to the member. It asks here,
+    because ``console_resolve`` has a fixed set of callers
+    (``test_console_dependency_boundary.py``), and this module is one of them.
+    """
+    try:
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+    except Exception:  # noqa: BLE001 — no auth package, so no Router outage
+        return False
+    return isinstance(exc, ConsoleRouterUnavailable)
+
+
 def routing_is_on() -> bool:
     """Whether an in-product completion should go through the Console.
 
