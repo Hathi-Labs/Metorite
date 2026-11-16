@@ -189,6 +189,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
+    # new task as a form that the member edits. It changes what a card writes,
+    # so only the operator writes it.
+    "PROJECT_EDIT_CARD_ORGS",
     # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
     # what Microsoft sends to the box, so only the operator writes it.
     "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",

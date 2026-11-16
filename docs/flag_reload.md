@@ -143,6 +143,14 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
+edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
+`create_task` carries a form of its values, and the write takes the values
+that the member approved. `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
+gate ask it at each card, so a reload applies to the next card. A flip stays
+OWNER-GATE (`enforcement-flip`, EAC-7).
+
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
 one `tool:<name>` row for each chat tool of the CRM, Email, Projects and
@@ -151,8 +159,15 @@ org, and the default is empty. Its one reader is
 `gateway.routes.studio.flags.chat_tools_allowed`, and each catalog read asks
 it. The catalog also needs `STUDIO_ORGS`.
 
-A row runs nothing: a skill still loads only in a run that holds the tool. A
-reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+The flag also gates the skill load (TOF-1b). The run reads it once a turn,
+through `_tool_injection._chat_tools_open`. For an org that the flag leaves
+out, each skill with a `tool:` action fails to load with `chat_tools_off`. So
+an operator who removes an org stops every such skill of that org at the next
+turn. For a listed org, the skill brings the code pack of each such tool that
+the run base does not hold.
+
+A row runs nothing itself. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
 (`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the

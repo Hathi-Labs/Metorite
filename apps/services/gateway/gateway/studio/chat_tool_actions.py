@@ -8,11 +8,13 @@ put a tool that the chat used into a skill (F6a), and the skill loads it.
 
 **What a row does not do.** The ``uses`` grammar of
 ``acb_common.studio_manifest`` has no ``tool:`` form, so no package names one,
-and the action door never runs one. A skill pack adds rules, not tools: the
-run must hold the tool (``orchestrator._tool_injection._skills_present``), and
-the tool keeps its own card and guard. The pack switch of the org stays where
-it is: the load refuses a skill whose tool the run does not hold
-(``tool_absent``). This module never reads that switch.
+and the action door never runs one. A skill pack adds no tool of its own,
+and the tool keeps its own card and guard. TOF-1b: when the run base does not
+hold the tool of a ``tool:`` action, the skill brings the code pack of that
+tool (``skill_packs.pack_needs``, ``tool_packs.choose``). The pack switch of
+the org stays where it is: ``choose`` refuses a skill whose pack the allow
+list of the run does not hold (``pack_off``). This module never reads that
+switch.
 
 **The one class rule (fail closed)** (:func:`chat_tool_class`). No row shows
 a class lower than the real gate of its tool:
