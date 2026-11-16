@@ -4205,7 +4205,10 @@ async def respond_user_input(
 
         if await was_answered(_org_id, req.thread_id, req.request_id):
             _log.info("agent.user_input_repeat", request_id=req.request_id[:12])
-            return {"ok": True, "declined": True} if req.declined else {"ok": True}
+            # The plain 409, so the second device reads "not applied: someone
+            # answered it" and never a false success (chat_run_continuity.md
+            # scenario 6). It skips the restart path, so nothing acts twice.
+            raise _plain_409()
     if not delivered:
         # ── A card answer across a restart (incident 2026-10-09) ─────────────
         # The run that asked may have died with its process. Then a bare 409

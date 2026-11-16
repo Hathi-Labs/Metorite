@@ -98,3 +98,9 @@ def test_route_checks_the_mark_before_the_restart_path():
     j = src.index("_resume_from_row(req, user)")
     assert i < j
     assert "mark_answered(_org_id" in src
+
+
+def test_repeat_answer_is_a_409_not_a_false_success():
+    src = pathlib.Path("apps/services/gateway/gateway/routes/agent.py").read_text(encoding="utf-8")
+    i = src.index("was_answered(_org_id")
+    assert "raise _plain_409()" in src[i:i + 900]
