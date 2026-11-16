@@ -37,7 +37,7 @@
     (`maf_coding_engine.md`),
   - the package store and its versions (`ai_studio.md` A3 and A4, D187),
   - installs, scopes and promotion (`package_host.md`, D187),
-  - the tool failure log (Metorite task 1793, no spec yet, D187),
+  - the tool failure log (Metorite task 1793, `tool_failure_log.md`, D187),
   - the confirmation card (`projects_ai_chat.md` §5),
   - branch 0 and the route allowlists (`external_agent_access.md` §10.1),
   - credit prices (`credit_pricing.md`),
@@ -164,6 +164,9 @@ read at `539221a29` on 2026-11-15. Re-verify it at dispatch.
 
 §12 named tasks 1980 to 1985 for SBX-12 to SBX-17. Those tasks never
 existed on the board. Tasks 3427 to 3432 replace them.
+
+The spec of the failure store of rung 2 is `tool_failure_log.md` (TOF-2a,
+task 3416).
 
 ### Persistence and loading
 
@@ -946,8 +949,8 @@ version row names that member in `published_by`. The `live_version` of the
 owner and each install keep their version. This path is the one exception to
 D180.2, and one function of the store holds it.
 
-**Level (c), the report.** Metorite task 1793 owns the tool failure log, and
-it has no spec yet. SBX-14 waits for that spec. A report holds:
+**Level (c), the report.** Metorite task 1793 owns the tool failure log.
+The spec of the failure store is `tool_failure_log.md`. A report holds:
 
 - The name of the built-in tool, the error class and the run id.
 - The gap category, and whether a workaround worked.
