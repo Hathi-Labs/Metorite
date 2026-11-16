@@ -2102,6 +2102,8 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
     A switch needs this result AND the owner. The owner may change any number.
 13. **The place of `find_tools`. "Always, in the base set" (2026-11-14, task 3190).** The run offers it on every turn where the flag is on for the org, and it counts against the base tools. At the cap of 110 tools, the base count can push out the last pack. The owner accepted that trade.
 
+**The skill description match (TOF-1c, `ai_studio_rows/TOF-1c.md`).** `tool_search.match_skill_descriptions` reads a separate corpus: the head descriptions of the Studio skills that the member may load. It uses that text for scores only, so decision 6 still holds for the index. The owner accepted this corpus on 2026-11-16 (task 3412). `rank`, `build_index` and `default_index` never read the text, and only a skill id and a hit count leave the function. Its one caller is `_tool_injection._turn_with_skills`, when no skill name matches and `STUDIO_CHAT_TOOLS_ORGS` names the org. `TOOL_SEARCH_ORGS` does not gate it, and `find_tools` never sees the text.
+
 ### 4.3 OA-8: every other app
 
 #### 4.3.1 Each specialist: a pack or a sub-agent
