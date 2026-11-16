@@ -303,6 +303,7 @@
       "tests/unit/test_projects_status_set_read_r8.py",
       "tests/unit/test_projects_status_slot_r8.py",
       "tests/unit/test_provider_keys.py",
+      "tests/unit/test_resume_continuation_r8.py",
       "tests/unit/test_resume_stored_call_r8.py",
       "tests/unit/test_seat_admin_proxy_route.py",
       "tests/unit/test_shell_layout_r8.py",

@@ -39,13 +39,22 @@ question card is RESUME-1b, and a generative UI stores none.
 The org is the run's own (``executor._current_run_org``), never request
 input (R5, R11).
 
-Fences (R7): ``tests/unit/test_resume_stored_call.py`` and
-``tests/unit/test_resume_stored_call_r8.py`` (R8).
+**The yes** (RESUME-2a). :func:`resuming` opens the scope of ONE stored
+call in the continuation run, and :func:`resume_answer` is its one test. Only
+the first card of the scope asks, and only an equal card (the card text and
+the act keys) takes the yes.
+
+Fences (R7): ``tests/unit/test_resume_stored_call.py``,
+``tests/unit/test_resume_stored_call_r8.py`` (R8),
+``tests/unit/test_resume_continuation.py`` and
+``tests/unit/test_resume_continuation_r8.py`` (R8).
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from acb_common import get_logger
@@ -169,6 +178,99 @@ def _module_of(tool: Any, agent: str) -> str:
     return module
 
 
+# ── The stored-call yes (RESUME-2a) ──────────────────────────────────────────
+
+@dataclass
+class Resuming:
+    """The state of ONE stored-call yes (:func:`resuming`).
+
+    *stored* is the stored call that the member approved. *taken* is True
+    once a card of the scope asked :func:`resume_answer`, so only the FIRST
+    card takes the yes. *outcome* says what that card did: ``approved`` (the
+    equal card, no card shows), ``changed`` (a card that is not equal, which
+    shows as normal) or ``""`` (no card asked). *card_shown* is True when a
+    card of the scope goes on to the member."""
+
+    stored: dict[str, Any]
+    taken: bool = False
+    outcome: str = ""
+    card_shown: bool = False
+
+
+#: The yes of the stored call that runs on this frame. ⚠️ The default is
+#: None, never a mutable object.
+_RESUMING: contextvars.ContextVar[Resuming | None] = contextvars.ContextVar(
+    "acb_resuming", default=None)
+
+
+@contextlib.contextmanager
+def resuming(stored: Mapping[str, Any]) -> Iterator[Resuming]:
+    """The scope of ONE stored-call yes (RESUME-2a).
+
+    ``orchestrator.executor`` opens it around the one call of the stored
+    tool in the continuation run. Inside it, the first card of the call asks
+    :func:`resume_answer`. Outside it, no card ever takes the yes."""
+    state = Resuming(dict(stored))
+    token = _RESUMING.set(state)
+    try:
+        yield state
+    finally:
+        try:
+            _RESUMING.reset(token)
+        except ValueError:
+            _RESUMING.set(None)
+
+
+async def resume_answer(card: Any) -> bool:
+    """True when *card* is the card that the member approved, so it shows
+    no card and its tool writes (RESUME-2a). ``ask_tools.request_confirmation``
+    calls it just before the late-approve grant.
+
+    Only the FIRST card in the scope of :func:`resuming` asks. A card that is
+    not plain (*card* None) takes no yes. A plain card takes it only when
+    ``late_approve.act_of(card, agent)`` gives the stored ``card_text`` and the
+    stored ``act_keys``, and the tool has the stored name. So a changed record
+    gives another card text, and the card shows (D-RES-3). A raw call of the
+    tool function opens no ``card_call``, so its card has no act keys and
+    never takes the yes. The yes takes the act with ONE ``SET … GET``
+    (``late_approve.claim_act``): an act that is SPENT already (a twin row,
+    or a twin approved at the same moment) takes no yes, so it never writes
+    twice. A run with no late-approve scope takes no yes either (fail
+    closed). Never raises, and a fault shows the card."""
+    state = _RESUMING.get()
+    if state is None or state.taken:
+        return False
+    state.taken = True
+    state.card_shown = True
+    state.outcome = "changed"
+    try:
+        from acb_skills.late_approve import _run_agent, act_of, claim_act
+
+        if card is None:
+            return False
+        stored = state.stored
+        act = act_of(card, _run_agent())
+        if act is None:
+            return False
+        if tool_name(getattr(card, "tool", None)) != str(stored.get("tool") or ""):
+            return False
+        if act.text != stored.get("card_text") or list(act.keys) != list(
+                stored.get("act_keys") or []):
+            _log.info("stored_call.card_changed", tool=str(stored.get("tool") or "")[:60])
+            return False
+        # The LAST test: it marks the act SPENT, so nothing may refuse after it.
+        if not await claim_act(card):
+            state.outcome = "spent"
+            _log.info("stored_call.act_spent", tool=str(stored.get("tool") or "")[:60])
+            return False
+    except Exception as exc:
+        _log.warning("stored_call.resume_check_failed", error_type=type(exc).__name__)
+        return False
+    state.outcome = "approved"
+    state.card_shown = False
+    return True
+
+
 def stored_call_of(card: Any, arguments: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """The stored call of the plain card *card* (``ask_tools.PlainCard``), or
     None when it stores none.
@@ -223,7 +325,10 @@ __all__ = [
     "VERSION",
     "CallIdMiddleware",
     "CallIdProvider",
+    "Resuming",
     "chat_resume_on",
     "current_call_id",
+    "resume_answer",
+    "resuming",
     "stored_call_of",
 ]

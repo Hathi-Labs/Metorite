@@ -1768,6 +1768,19 @@ async def _late_approved(card: PlainCard) -> bool:
         return False
 
 
+async def _resume_yes(card: PlainCard | None) -> bool:
+    """True when this card is the card of a stored call that the member
+    approved late (RESUME-2a, ``acb_skills.stored_call.resume_answer``).
+    Outside the scope of one stored call it is False at once. A fault gives
+    False, and the card shows as before."""
+    try:
+        from acb_skills.stored_call import resume_answer
+
+        return await resume_answer(card)
+    except Exception:  # fail closed: the card shows
+        return False
+
+
 def _take_card_facts() -> dict[str, Any] | None:
     """The facts that the tool bound for this card
     (``whatsapp_acts.take_card_facts``), or None. A fault gives None."""
@@ -2532,7 +2545,10 @@ async def request_confirmation(
     _card = PlainCard(
         _title, _detail, _context, _facts, _CARD_CALL.get(), _CARD_TOOL.get(),
         _clipped or _body_cut(context)) if _plain else None
-    if _card is not None and await _late_approved(_card):
+    # RESUME-2a (chat_run_continuity.md §4.12.4 item 2): inside the one call
+    # of a stored call, the first card asks the stored-call yes. Only the
+    # card that the member approved takes it. Any other card shows.
+    if await _resume_yes(_card) or (_card is not None and await _late_approved(_card)):
         # The member approved this very card late, in this thread. The grant
         # is gone, so this is its one use. It shows no card, and it takes the
         # place of a closed card with the same act (task 3130).
