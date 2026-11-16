@@ -625,7 +625,9 @@ Redis key through `acb_common.tenant_redis` (R5).
 - **P3, the needs card.** A kind mute or a negative affinity never takes a
   needs card out of the feed. A needs card is `feed_decide.is_needs_card`, by
   its main kind or its folded kind. At worst a muted needs card goes to Later.
-  Dismiss, Snooze and "Not useful" on one card still hide that card.
+  Dismiss, Snooze and "Not useful" on one card still hide that card. The
+  affinity of a needs card never goes below 0 in the score, so the per-app cut
+  of `feed_rank.order` cannot drop it under a kind of lower base.
 - **P4, the mute key.** A mute keys on the main kind of the card.
 - **P5, the flag off.** With the flag off, the feed answers the same bytes,
   also when the member has stored mutes. If the prefs read or the count read
@@ -634,6 +636,12 @@ Redis key through `acb_common.tenant_redis` (R5).
   `tenant_redis.key("my_day", "affinity", <member>, <feed day>)`, with a TTL of
   26 hours. The first read of the member's day computes it. A Redis fault
   gives 0.
+
+**Who reads the learned feed (found by the review of LOOP-4a).** The learned
+join also feeds the reach loop, the briefs and the chat brief, because they all
+call `feed.feed_cards`. A muted kind leaves those too, and a muted needs card in
+Later is no interrupt and is in no brief. This is intended for a mute, and LOOP-5
+(§7.3) owns the rest of the reach effect. The flag paragraphs must say it.
 
 The count read must add the bound-org predicate to `_HABITS_SQL`
 (`state.py` requires it in each statement on `my_day_card_state`). The seat of
