@@ -29,7 +29,7 @@ What one skill can bring:
 - In an org where the loader does not reach the Projects owner before the skill, a skill brings at most 2 packs. That is an org whose allow list does not hold each Projects pack.
 - In an org that allows every pack, the loader reaches the owner, and the reach test lowers the limit. Two brought packs and the skill place fill the 3 places, and a brought pack is never spare. So the skill brings at most 1 pack.
 - In that org, the one pack fits only in a turn with no code pack, or where each code pack is spare. A spare pack needs `HELD_CARD_WRITES_ORGS` on, and it is a pack of the words or an old sticky pack that no skill needs.
-- In that org, the turn must match exactly one skill. A second matched skill of rules only, with a lower slug, takes a place first, and the skill that brings the pack then gets `pack_cap`. The `rules_first` case of `test_a_later_skill_never_takes_the_reach_after_a_brought_pack` pins this.
+- In that org, the turn must not match a second skill with a lower slug. Such a second skill, of rules only, takes a place first, and the skill that brings the pack then gets `pack_cap`. The `rules_first` case of `test_a_later_skill_never_takes_the_reach_after_a_brought_pack` pins this.
 
 The fence `test_on_a_full_org_a_skill_brings_one_pack_at_most` pins this limit. "Before the flip" holds the decision.
 
@@ -89,7 +89,7 @@ Items 1, 2, 3 and 5 of "Before the flip" of TOF-1a still block the flip of `STUD
 
 **The full-org limit (review P1, an owner decision).** In an org that allows every pack, a skill brings at most 1 pack. It brings it only in a turn with no code pack, or where each code pack is spare (decision 4). A skill with `tool:create_lead` and `tool:send_email` gets `pack_cap` there. This blocks the rung 1 demo (task 3414) in a full org.
 
-The demo also needs exactly one matched skill in the turn. A second matched skill of rules only, with a lower slug, takes a place first. The skill with the pack then gets `pack_cap`. The `rules_first` case of `test_a_later_skill_never_takes_the_reach_after_a_brought_pack` pins this.
+The demo also needs that no second skill with a lower slug matches in the turn. Such a second skill, of rules only, takes a place first. The skill with the pack then gets `pack_cap`. The `rules_first` case of `test_a_later_skill_never_takes_the_reach_after_a_brought_pack` pins this.
 
 The owner picks one option:
 
