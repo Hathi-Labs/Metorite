@@ -223,6 +223,57 @@ async def near_names(
         name_match.near_lookup, words, names, k, deadline=name_match.scoring_deadline())
 
 
+#: The bound tenant, beside row level security, so an unbound GUC matches no
+#: row (as :data:`NEAR_NAME_SQL`).
+_BOUND = "organization_id = CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+#: The work address of each person: ``people.email``, a directory field. No
+#: private field (``tasks.people.PRIVATE_FIELDS``) is read.
+RELATED_ADDRESS_SQL = (
+    "SELECT id, lower(btrim(email)) AS email FROM people "
+    f"WHERE id = ANY(CAST(:ids AS uuid[])) AND {_BOUND} ORDER BY id"
+)
+
+#: The people of a set of ids, as the directory reads them.
+OPEN_PEOPLE_SQL = (
+    f"SELECT * FROM people WHERE id = ANY(CAST(:ids AS uuid[])) AND {_BOUND} ORDER BY name"
+)
+
+
+async def related_addresses(user: UserContext, ids: list[str]) -> list[tuple[str, str, str]]:
+    """The work address of each person of *ids*, as the key ``address`` of
+    the related step of the company search (FIND-3, ``find_engine.md`` §4.3).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:people``, with ids that it checked as UUIDs. An id and an
+    address only.
+    """
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(RELATED_ADDRESS_SQL), {"ids": ids})).fetchall()
+    out: list[tuple[str, str, str]] = []
+    for row in rows:
+        email = str(row.email or "")
+        local, at, host = email.partition("@")
+        if at and local and "." in host and "@" not in host and " " not in email:
+            out.append((f"person:{row.id}", "address", f"address:{email}"))
+    return out
+
+
+async def open_people(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
+    """The people of *ids* that the member can open, for the company search
+    (FIND-3, ``knowledge_graph.md`` §6).
+
+    The directory and ``GET /people/{id}`` open every person of the tenant
+    for a holder of ``feature:people``, so this reads every person too. The
+    HR half follows the caller's grant, as in :func:`list_directory`, and no
+    private field comes back.
+    """
+    hr = can_read_hr_fields(user)
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(OPEN_PEOPLE_SQL), {"ids": ids})).fetchall()
+    return [_row_to_person(r, include_hr=hr).model_dump() for r in rows]
+
+
 @router.get("/facets")
 async def list_facets(user: UserContext = Depends(get_current_user)) -> dict:
     """The filter vocabulary, derived from the rows rather than configured.

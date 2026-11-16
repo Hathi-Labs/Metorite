@@ -103,6 +103,18 @@ for a query with no operator:
   has a hit of its own (:func:`find.near_report`). The log line is
   ``search.company.near``, with no word.
 
+**Related records, behind ``FIND_ORGS``** (FIND-3, task 3240,
+``find_engine.md`` §3.1 rung 4, §3.5, §4.3 and §6). After every other pass,
+:func:`_related_step` follows the links of the first 5 hits that are a deal,
+lead, contact, person or company. The sources' ``related`` give ids and keys
+(an address, a web domain), and their ``open`` gives the hits that the member
+can open. Each related hit says ``matched_by`` ``related``, with ``from``
+(the hit it came from), ``edge`` and ``via`` from the closed list
+``find.EDGES``. They go to the answer key ``related``, never to ``hits``: at
+most 3 for each hit, 15 in all, inside :data:`RELATED_BUDGET_S`. A record that
+the member cannot open leaves no trace. The log line is
+``search.company.related``, with counts only.
+
 **A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
 §8.4 door 3). When Knowledge answered with zero hits, the route hands the
 words to ``routes/knowledge/gaps.schedule_gap``. That function checks the
@@ -171,6 +183,23 @@ NEAR_NAMES_K = 5
 #: The most of the second pass that the near step takes, lookup and asks,
 #: when the words alone follow it. They keep the rest (HRD-18b review, P2-a).
 NEAR_SHARE = 1 / 3
+#: Seconds for rung 4, the related records (FIND-3, ``find_engine.md`` §3.1
+#: and §3.2). The step starts after the merge, and it also stops at
+#: ANSWER_CAP_S. What finished by then answers. A late read gives nothing,
+#: and it is not named in ``skipped``.
+RELATED_BUDGET_S = 1.0
+#: The hits whose links rung 4 follows: the first of the answer that are a
+#: deal, lead, contact, person or company.
+RELATED_HITS = 5
+#: The most related records of one hit, and of one answer.
+RELATED_PER_HIT = 3
+RELATED_MAX = 15
+#: The tokens of the related block (``knowledge_graph.md`` §7.1). The count is
+#: the characters of the printed lines divided by 4. No tokenizer runs.
+RELATED_TOKENS = 1500
+#: The characters that a printed line adds to the fields of a related hit:
+#: the marks, the date words, the bracket of §3.5 and ``full_id``.
+RELATED_LINE_CHARS = 120
 #: The English stop words of Postgres (``english.stop``). The full-text half
 #: of each app drops them, so a stop word alone finds nothing useful.
 _STOP_TEXT = (
@@ -851,6 +880,153 @@ async def _near_step(
     return report, passes
 
 
+# ── Rung 4: related records (FIND-3) ────────────────────────────────────────
+
+async def _ask_sources(
+    user: UserContext, refs: list[str], until: float, *, opening: bool,
+) -> list[Any]:
+    """Ask each source that can ``related`` (or ``open``, with *opening*)
+    for its refs of *refs*, at once, before *until* (FIND-3).
+
+    Each read holds one session, so it takes a slot of FIND_SESSIONS, as a
+    source does (HRD-4). A source that fails, refuses or runs late gives
+    nothing. It is not named in ``skipped``, and the log line holds its key
+    and the error type only: no id, no address and no word.
+    """
+    loop = asyncio.get_running_loop()
+    able = [
+        key for key, source in REGISTRY.items()
+        if (source.open if opening else source.related) is not None
+        and any(find.kind_of(r) in (source.kinds if opening else source.takes) for r in refs)
+    ]
+    if not able or until - loop.time() <= 0.05:
+        return []
+
+    async def one(key: str) -> list[Any]:
+        async with _slots():
+            left = until - loop.time()
+            if left <= 0.05:
+                return []
+            source = REGISTRY[key]
+            try:
+                return list(await asyncio.wait_for(
+                    source.open_refs(user, refs) if opening else source.related_refs(user, refs),
+                    left,
+                ))
+            except Exception as exc:
+                logger.info("search.company related skipped",
+                            extra={"source": key, "error": type(exc).__name__})
+                return []
+
+    return [item for got in await asyncio.gather(*(one(key) for key in able)) for item in got]
+
+
+def _printed_chars(hit: Hit) -> int:
+    """The characters that the tool prints for one related hit (§7.1)."""
+    return (len(hit.title) + len(hit.hint) + len(hit.href) + len(hit.snippet)
+            + len(hit.kind) + len(hit.id) + RELATED_LINE_CHARS)
+
+
+def _within_budget(
+    chosen: list[str], picked: dict[str, list[tuple[Hit, str, str | None]]],
+    words_of: list[str],
+) -> list[Hit]:
+    """The related hits that fit :data:`RELATED_MAX` and
+    :data:`RELATED_TOKENS`, each stamped with ``from``, ``edge`` and ``via``.
+
+    The budget takes the first record of each hit, then the second, so each
+    hit keeps a place. It stops at the first record that does not fit. The
+    list keeps the order of the hits, then of the picks. Pure.
+    """
+    kept: set[tuple[str, int]] = set()
+    chars = 0
+    for rank in range(RELATED_PER_HIT):
+        for ref in chosen:
+            mine = picked.get(ref, [])
+            if rank >= len(mine):
+                continue
+            cost = _printed_chars(mine[rank][0])
+            if len(kept) >= RELATED_MAX or chars + cost > RELATED_TOKENS * 4:
+                return _stamp_related(chosen, picked, kept, words_of)
+            kept.add((ref, rank))
+            chars += cost
+    return _stamp_related(chosen, picked, kept, words_of)
+
+
+def _stamp_related(
+    chosen: list[str], picked: dict[str, list[tuple[Hit, str, str | None]]],
+    kept: set[tuple[str, int]], words_of: list[str],
+) -> list[Hit]:
+    """The kept picks in the order of the hits, each matched by ``related``."""
+    return [
+        find.stamped(hit, words_of, "related", from_=ref, edge=edge, via=via)
+        for ref in chosen
+        for rank, (hit, edge, via) in enumerate(picked.get(ref, []))
+        if (ref, rank) in kept
+    ]
+
+
+async def _related_step(
+    user: UserContext, shown: list[Hit], words_of: list[str], *,
+    since: datetime | None, until: float,
+) -> list[Hit]:
+    """Rung 4 (FIND-3, ``find_engine.md`` §3.1, §3.2, §4.3 and §6).
+
+    It follows the links of the first :data:`RELATED_HITS` hits of the
+    answer (*shown*) that are a deal, lead, contact, person or company:
+
+    1. each source that can ``related`` gives the record links and the keys
+       (an address, a web domain) of those hits, from stored ids;
+    2. each source opens the linked records. A link to a record that no
+       ``open`` returns is dropped, with its keys;
+    3. Email gives the mail of the keys that are left, in the mailboxes that
+       the member can read, and opens the mails;
+    4. each hit keeps at most :data:`RELATED_PER_HIT` records that are not a
+       hit of the answer, the answer at most :data:`RELATED_MAX` and
+       :data:`RELATED_TOKENS`. A record stamped before ``after`` is dropped.
+
+    A ref that no ``open`` returns is dropped before the cut, so it leaves no
+    trace (``knowledge_graph.md`` §6). Each read stops at *until*. What
+    finished answers, with no error and no claim. It never changes the hits,
+    ``near`` or ``broadened``. The log line holds counts and a time only.
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    chosen = find.related_chosen(shown, RELATED_HITS)
+    if not chosen or until - started < BROADEN_FLOOR_S:
+        return []
+    links, keys = find.sort_links(
+        chosen, await _ask_sources(user, chosen, until, opening=False))
+    linked = list(dict.fromkeys(ref for owner in chosen for _e, ref in links[owner]))
+    records = await _ask_sources(user, linked, until, opening=True)
+    links, keys = find.only_opened(chosen, links, keys, {find.ref_of(h) for h in records})
+    asked_keys = find.key_refs(chosen, links, keys)
+    mail = find.sort_mail(asked_keys, await _ask_sources(user, asked_keys, until, opening=False))
+    mails = list(dict.fromkeys(ref for key in asked_keys for _e, ref in mail.get(key, [])))
+    opened = {find.ref_of(h): h for h in [
+        *records, *await _ask_sources(user, mails, until, opening=True)]}
+    picked = find.pick_related(
+        chosen, {ref: find.lanes(ref, links, keys, mail) for ref in chosen}, opened,
+        {find.ref_of(h) for h in shown}, RELATED_PER_HIT,
+        lambda hit: since is None or _kept(hit, since),
+    )
+    related = _within_budget(chosen, picked, words_of)
+    _events.info("search.company.related", hits=len(chosen), related=len(related),
+                 ms=round((loop.time() - started) * 1000))
+    return related
+
+
+async def _add_related(
+    answer: dict[str, Any], user: UserContext, shown: list[Hit], words_of: list[str], *,
+    since: datetime | None, until: float,
+) -> None:
+    """Put the hits of :func:`_related_step` in ``answer["related"]``. With
+    none, the answer gets no ``related`` key (FIND-3)."""
+    related = await _related_step(user, shown, words_of, since=since, until=until)
+    if related:
+        answer["related"] = [h.as_dict(stamp=True, find=True) for h in related]
+
+
 @router.get("/company")
 async def company_search(
     q: str = Query(..., min_length=MIN_CHARS, max_length=MAX_CHARS),
@@ -962,10 +1138,10 @@ async def company_search(
         )
     found = _merge_near(found, near_passes, order, per_app)
     now = datetime.now(UTC)
+    shown = by_fusion(order, found, now, covered=words_of is not None)
     answer: dict[str, Any] = {
         "query": words,
-        "hits": [h.as_dict(stamp=True, find=words_of is not None)
-                 for h in by_fusion(order, found, now, covered=words_of is not None)],
+        "hits": [h.as_dict(stamp=True, find=words_of is not None) for h in shown],
         "searched": [key for key in order if key in found and REGISTRY[key].reaches(user)],
         "skipped": skipped,
         "meaning": meaning,
@@ -976,4 +1152,9 @@ async def company_search(
         answer["near"] = find.near_report(
             near, found, broadened, query=words, first_zero=first_zero, skipped=skipped,
             limited=since is not None or only_verified)
+    if words_of is not None:
+        # FIND-3: rung 4, after every other pass, so a related record never
+        # counts in the hits, the coverage, `near` or `broadened`.
+        await _add_related(answer, user, shown, words_of, since=since,
+                           until=min(loop.time() + RELATED_BUDGET_S, began + ANSWER_CAP_S))
     return answer
