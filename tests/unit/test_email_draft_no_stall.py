@@ -145,6 +145,28 @@ async def test_compose_assist_raises_the_stream_timeout(monkeypatch) -> None:
             mode="new", on_delta=_delta)
 
 
+@pytest.mark.parametrize(("make", "status", "copy"), [
+    (_out_of_credits, 402, "OUT_OF_CREDITS"),
+    (_router_down, 503, "DRAFT_UNAVAILABLE_COPY"),
+], ids=["out_of_credits", "router_down"])
+async def test_compose_assist_names_a_router_refusal_or_outage(
+    monkeypatch, make, status, copy,
+) -> None:
+    """Task 3541, review P2. Compose assist goes through the Router now, so a
+    402 can reach it. It must not read as "not confident enough"."""
+    from acb_llm import routed
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("acb_llm.context.acompletion_stream_text", _raiser(make()))
+    with pytest.raises(HTTPException) as caught:
+        await drafting._llm_compose_assist(
+            about="", signature="", current_body="", instruction="",
+            mode="new", on_delta=_delta)
+    expected = getattr(routed, copy, None) or getattr(drafting, copy)
+    assert caught.value.status_code == status
+    assert caught.value.detail == expected
+
+
 async def test_compose_assist_keeps_the_body_of_the_member_on_another_failure(
     monkeypatch,
 ) -> None:

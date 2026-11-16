@@ -682,8 +682,9 @@ async def _stream_text(
 
     # ── Task 3541: the streaming arm goes through our Router too ─────────
     #
-    # 🔴 Production, 2026-11-16 07:20 UTC: the email draft, the one caller that
-    # streams, called DeepSeek directly with the gateway's own key. That
+    # 🔴 Production, 2026-11-16 07:20 UTC: the email reply draft, one of the
+    # two callers that stream (with compose assist), called DeepSeek directly
+    # with the gateway's own key. That
     # account had no balance, so each draft failed. The Router, which serves
     # every other call and bills it (H-171), had moved off DeepSeek, so chat
     # still worked. This arm was one of the bypasses of task 2449.

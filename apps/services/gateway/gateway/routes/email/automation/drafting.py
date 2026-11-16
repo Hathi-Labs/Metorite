@@ -1677,6 +1677,14 @@ async def _llm_compose_assist(
             # watches in the composer, raises it. The route sends an `error`
             # with the reason, and the composer keeps the member's own text.
             raise
+        # Task 3541, review P2. The Router serves this call now, so a refusal
+        # (402: out of credits) or a Router outage can reach it. Each one
+        # names its cause. It never reads as "not confident enough".
+        from acb_llm.routed import RoutedRefusal, is_router_outage  # noqa: PLC0415
+
+        if isinstance(exc, RoutedRefusal) or is_router_outage(exc):
+            status, detail = draft_failure(exc)
+            raise HTTPException(status_code=status, detail=detail) from exc
         # Fall back to the owner's own text (improve) or a neutral opener (draft).
         return (current_body or "").strip() or DRAFT_NO_DRAFT_SENTINEL
     if _is_no_draft(body):
@@ -2605,12 +2613,21 @@ async def draft_reply_smart(
         # timeout (one specialist agent, short timeout). Interactive → the
         # COMPOSE tier, not the background one. Our code chooses it, and no
         # stored choice changes it (D-EM-61).
-        draft = await _agent_draft_reply(
-            email, about, signature, user.email or "",
-            max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
-            model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
-            interactive_fallback=True, extra_instructions=req.instruction,
-        )
+        try:
+            draft = await _agent_draft_reply(
+                email, about, signature, user.email or "",
+                max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
+                model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
+                interactive_fallback=True, extra_instructions=req.instruction,
+            )
+        except HTTPException:
+            # Task 3541, review P1. A failed model raises here, inside this
+            # session. The body fetch above can rotate an Outlook refresh
+            # token in this same session, and the session rolls back on an
+            # exception. Microsoft revokes the old token on use, so a rollback
+            # would cut the mailbox off. So the session commits first.
+            await db.commit()
+            raise
 
         # Confidence gate (defense-in-depth): if the drafter declined, never
         # persist or surface a literal "NO_DRAFT" body. (Sync requests default to
