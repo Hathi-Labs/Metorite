@@ -536,6 +536,10 @@ class WorkGateway:
             return self._summary(parts[1])
         if tail in (["types"], ["tags"], ["fields"]):
             return {"rows": []}
+        if tail == ["vocabulary", "reach"]:
+            # HRD-9a: one root space, and one project in it. N of 1 gives no reach
+            # line on a card, so no scripted answer changes.
+            return {"root_id": NODE_SPACE, "root_name": _SPACE_NAME, "projects": 1}
         if tail == ["cycles"]:
             # WS-39 SP-5a: no cycle is planned in the fake.
             return {"project_id": parts[1], "cycles": []}

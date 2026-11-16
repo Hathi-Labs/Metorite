@@ -26,7 +26,13 @@ from acb_auth import UserContext, get_current_user
 from acb_common import name_match
 from fastapi import Depends, HTTPException, Query
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.core import _account_scope, _log, _tenant_session, router
+from gateway.routes.email.core import (
+    _account_scope,
+    _log,
+    _owned_accounts_sql,
+    _tenant_session,
+    router,
+)
 from gateway.routes.email.mailbox_access import (
     mailbox_ids_sql,
     mailbox_predicate,
@@ -879,3 +885,80 @@ def _source(row: Any) -> str:
     the weakest, so a fault never makes a stranger look like a colleague."""
     src = getattr(row, "source", None)
     return src if src in ("org", "sent", "seen") else "seen"
+
+
+# ── Near senders (HRD-18b) ────────────────────────────────────────────────────
+
+#: The newest mails whose senders the near lookup reads.
+NEAR_MAIL_SCAN = 5000
+
+
+def _sender_rows_sql(account_id: str | None, params: dict[str, Any]) -> str:
+    """The senders of the mailboxes that ``:uid`` may read, newest first.
+
+    The mailboxes are the ones of the search: All inboxes, or the one
+    mailbox that *account_id* names (``_owned_accounts_sql``, EM-T8g-1). The
+    senders come from the newest :data:`NEAR_MAIL_SCAN` mails of them and
+    from the sender rollup. The member's own mailbox addresses leave the
+    list. The mailbox of another member never gives a row.
+    """
+    accounts = _owned_accounts_sql(account_id, params, pooled_only=True, level="read")
+    return f"""
+        WITH accts AS ({accounts}),
+        recent AS (
+            SELECT em.from_address AS f, em.received_at AS at
+              FROM email_messages em
+             WHERE em.account_id IN (SELECT id FROM accts)
+             ORDER BY em.received_at DESC NULLS LAST
+             LIMIT :scan
+        ),
+        cands (email, name, at) AS (
+            SELECT LOWER(f->>'email'), NULLIF(TRIM(f->>'name'), ''), at FROM recent
+            UNION ALL
+            SELECT LOWER(es.email), NULLIF(TRIM(es.name), ''), es.updated_at
+              FROM email_senders es
+             WHERE es.account_id IN (SELECT id FROM accts)
+        )
+        SELECT c.email, MAX(c.name) AS name
+          FROM cands c
+         WHERE c.email IS NOT NULL AND POSITION('@' IN c.email) > 1
+           AND c.email NOT IN (SELECT LOWER(email_address) FROM email_accounts
+                                WHERE id IN (SELECT id FROM accts))
+         GROUP BY c.email
+         ORDER BY MAX(c.at) DESC NULLS LAST, c.email
+         LIMIT :cap
+    """
+
+
+async def sender_rows(db: Any, uid: str, account_id: str | None = None) -> list[tuple[str, str]]:
+    """``(name, address)`` of each sender that the member may read, in the
+    session *db* (HRD-18b). The name is ``""`` when no mail gave one."""
+    params: dict[str, Any] = {
+        "uid": uid, "scan": NEAR_MAIL_SCAN, "cap": name_match.NEAR_VOCABULARY,
+    }
+    rows = (await db.execute(text(_sender_rows_sql(account_id, params)), params)).fetchall()
+    return [(str(r.name or ""), str(r.email)) for r in rows]
+
+
+def sender_names(rows: list[tuple[str, str]]) -> list[str]:
+    """The names that a near lookup scores for each sender: the name it signs
+    with, then its address. "sharat@neuropeek.com" gives the words "sharat",
+    "neuropeek" and "com", so a near domain finds its sender."""
+    return [value for name, address in rows for value in (name, address) if value]
+
+
+async def near_senders(
+    user: UserContext, words: list[str], k: int,
+) -> dict[str, list[name_match.NearName]]:
+    """The senders near each of *words*, for the company search (HRD-18b).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:email``. The member comes from the session, and the mailboxes
+    from the read level of the search (``find_engine.md`` §6). The names are
+    scored with ``acb_common.name_match``, off the event loop.
+    """
+    async with _tenant_session() as db:
+        rows = await sender_rows(db, user.email or "anonymous")
+    return await asyncio.to_thread(
+        name_match.near_lookup, words, sender_names(rows), k,
+        deadline=name_match.scoring_deadline())
