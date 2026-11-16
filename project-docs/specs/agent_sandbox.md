@@ -185,14 +185,16 @@ records them.
 
 1. **One finder.** D187 planned `find_tool` (§6.1). D222 plans `find_tools`
    (`one_assistant_context.md` §4.2.9). The chat has one tool, `find_tools`.
-   On no match, it does the rest of §6.1: the library check, the compose
-   check, the one decide question and the `tool_gaps` row. Then it says if a
-   chain can do the job, or if a new tool is necessary. SBX-1 builds no
-   second finder. The guards SBX-F7, SBX-F18 and SBX-F23 bind the no-match
-   path, and the SBX-1 audit decides how it keeps the `tool_scope` gate.
+   On no match, it does the rest of §6.1. It checks the library and the
+   catalog actions, and asks the one decide question. Then it writes the
+   `tool_gaps` row. It says if a chain can do the job, or if a new tool is
+   necessary. SBX-1 builds no second finder. The guards SBX-F7, SBX-F18 and
+   SBX-F23 bind the no-match path. The SBX-1 audit decides how the path keeps
+   the `tool_scope` gate.
 2. **One failure store.** Task 1793 (the tool failure log) and IR-4 (issue
-   reports, epic 475) each planned to group errors by fingerprint into one
-   task. They have one store and one fingerprint, and both write to it.
+   reports, epic 475) each planned a store. Each grouped errors by
+   fingerprint into one task. They have one store and one fingerprint now,
+   and both write to it.
    TOF-2a (task 3416) writes its spec with IR-0 (task 555). D126 and SBX-Q8
    bind its consent rules.
 

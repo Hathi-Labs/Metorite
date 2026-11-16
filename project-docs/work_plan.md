@@ -6330,9 +6330,9 @@ Fence: none new, so this entry is advisory. `tests/unit/test_decision_ids.py` fa
 The owner approved both merges of `agent_sandbox.md` §0b on task 3394, at 19:23 UTC on 2026-11-15 (answer `466cf40c`). D224 item 5 proposed them.
 
 1. **One finder.** The chat has one tool finder, `find_tools` (D222). D187 planned a second one, `find_tool` (`agent_sandbox.md` §6.1). SBX-1 does not build it.
-2. **The no-match path.** When `find_tools` finds no tool, it does the rest of §6.1. It checks the library and the catalog actions (the compose check), asks the one decide question, and writes the `tool_gaps` row. Its answer then says if a chain of existing actions can do the job, or if a new tool is necessary.
+2. **The no-match path.** When `find_tools` finds no tool, it does the rest of §6.1. It checks the library and the catalog actions, and asks the one decide question. Then it writes the `tool_gaps` row. Its answer says if existing actions can do the job as a chain, or if a new tool is necessary.
 3. **The guards of §6.1 stay.** The no-match path keeps SBX-F7, SBX-F18 and SBX-F23. `find_tools` rides in every turn of a listed org, but `find_tool` needed a `tool_scope`. The SBX-1 audit decides how the path keeps that gate.
-4. **One failure store.** Tool failures (task 1793) and issue reports (IR-4, epic 475) write to one store, with one fingerprint, and group into one task for each cause. TOF-2a (task 3416) writes its spec together with IR-0 (task 555).
+4. **One failure store.** Tool failures (task 1793) and issue reports (IR-4, epic 475) write to one store, with one fingerprint. The store groups them into one task for each cause. TOF-2a (task 3416) writes its spec together with IR-0 (task 555).
 5. **The consent rules stay.** D126 and SBX-Q8 bind the store. Error text and a chat reach the Metorite team only with the member's consent, one report at a time. Without that consent, a report holds the counts, the tool name and the error class only.
 
 Fence: none new, so this entry is advisory until SBX-1 and TOF-2a name their tests. `tests/unit/test_decision_ids.py` fails when two D225 entries merge. **Re-check this number at merge.** On 2026-11-16, main held D224 at most, and no open PR held D225.
