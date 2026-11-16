@@ -3,7 +3,8 @@
 <!-- ste-tier: strict -->
 
 **Status: PROPOSED, 2026-11-16. Verified against the code on 2026-11-16 at
-`origin/main` `20ef30cfb`. Audit round 2 applied on 2026-11-16.** Nothing is
+`origin/main` `20ef30cfb`. Audit rounds 1 and 2, the delta audit and the
+changed-lines audit are applied, 2026-11-16. A new audit is pending.** Nothing is
 built. The owner activates this spec after an Opus spec audit gives GO.
 
 No build slice starts before the owner activates this spec. The defaults of
@@ -86,6 +87,7 @@ Re-verify each anchor at dispatch. Line numbers move.
 |---|---|---|
 | The pack tool guard (HRD-3) | `packages/acb_skills/acb_skills/pack_tool_guard.py`, `guard` lines 374 to 402, `failure_text` line 132 | Turns an exception into "The tool failed (KeyError)". The log line holds the tool and the class only |
 | The pack call wrapper | `apps/services/orchestrator/orchestrator/_tool_injection.py`, `_pack_call` line 3696, the one `guard` call at line 3804 | Puts the HRD-3 guard on the outside of every pack tool |
+| The CRM read tools and the package | `packages/acb_skills/acb_skills/crm_tools.py`, `_read_tool`, its wrap at line 591. `packages/acb_skills/acb_skills/__init__.py`. `executor.py` line 45 | `refusals_as_text` wraps each injected CRM read tool, and no guard does. The orchestrator imports `acb_skills` at start |
 | The pack owners | `_tool_injection.py` lines 3365 to 3378 | Loads `apps/agents/<owner>/agents.py` as the module `_tool_pack_owner_<owner>` |
 | A Projects pack tool | `apps/skills/skill-projects/skill_projects/writes.py`, `create_task` line 1024 | A pack tool under `apps/skills` |
 | The unknown tool answer (HRD-1) | `packages/acb_skills/acb_skills/unknown_tool.py`, `UnknownToolAnswer._rewrite` lines 265 to 296 | Rewrites the MAF text `Requested function "x" not found`. No function middleware runs for such a call |
@@ -179,7 +181,11 @@ member.
      and no cycle can form.
    - `pack_tool_guard.py` and `unknown_tool.py` import `builtin_tools` at
      their top. The guard wraps every pack tool, so the set is in place before
-     C1, C2 or C4 runs. The C4 wrapper runs inside a guarded pack tool.
+     C1 or C2 runs.
+   - C4 also runs in the injected CRM read tools (`crm_tools._read_tool`),
+     which no guard wraps. So `acb_skills/__init__.py` also imports
+     `builtin_tools`. The orchestrator imports `acb_skills` at the top of
+     `executor.py` (line 45), so the set is in place at start.
    - The fence: `test_failure_fingerprint.py` asserts that
      `failure_fingerprint.py` and `failure_log.py` import no `acb_skills`
      module.
@@ -213,7 +219,8 @@ member.
    | `mcp_timeout`, `mcp_unreachable`, `mcp_refused`, `mcp_too_large`, `mcp_tool_error` | An outside MCP server failed, or our guard refused it (§4.3) | No | - |
 
 3. **The exception type.** Walk the causes and the groups to the deepest
-   exception, as `_maf_mcp._reason` does. Keep `type.__module__` and
+   exception. This walk does not follow `__context__`, unlike
+   `_maf_mcp._reason`. Rule 4 uses the same walk. Keep `type.__module__` and
    `type.__qualname__` only when all three hold:
    - the root of the module is in the allow list: `sys.stdlib_module_names`,
      our roots (`acb_*`, `gateway`, `orchestrator`, `agent_edge`,
@@ -261,7 +268,7 @@ message out. **This spec keeps the message out.**
 
 ### 3.4 Worked examples
 
-`tool_failure_log_examples.md` holds 10 golden rows, each with its real hash.
+`tool_failure_log_examples.md` holds 12 golden rows, each with its real hash.
 Two of them show the main rule. `KeyError("Amount for Ravi Kumar")` in org A
 and `KeyError("Amount for Acme Pvt Ltd")` in org B, both in `crm_get_record`,
 give one fingerprint, `00bc2542a73b3967`. A timeout of the server
@@ -375,17 +382,19 @@ exception. The map reads classes, numbers and frames only.
 | `outbound_guard.OutboundRefused` | `mcp_refused` | No |
 | `OSError`, `httpx.TransportError`, `httpx.HTTPStatusError`, `anyio.ClosedResourceError`, `anyio.BrokenResourceError`, or an `McpError` whose code is `CONNECTION_CLOSED` (-32000) | `mcp_unreachable` | No |
 | `ToolExecutionException` with no cause (the server's `isError`), an `McpError` with any other code, or a `ListFailed(REASON_TOOL_ERROR)` of `shape_result` | `mcp_tool_error` | No |
-| The deepest `Exception`: the last frame of its traceback is in one of the four trees of §3.2 rule 4, or its class has one of our roots of §3.2 rule 3 | `mcp_exception`, with the type and the site kept | Yes |
+| The deepest `Exception`: the last frame of its traceback is in one of the four trees of §3.2 rule 4, or its class has one of our roots of §3.2 rule 3 | `mcp_exception`, with the type and the site kept. The type and the site come from §3.2 rules 3 and 4 | Yes |
 | The deepest `Exception`, of any other class | `mcp_unreachable` | No |
 
 So a `KeyError` that our `_maf_mcp.py` or `mcp_tools.py` raises is
 `mcp_exception`, not an outage. A server that lists too many tools is not
 ours to fix, so `McpListTooLong` gives `mcp_too_large`, even with our root.
 
-**An edge that we accept.** A fault of ours inside a handler for a transport
-error has that error in its context. So it sorts as `mcp_unreachable`. The
-outage rows need the context walk for the errors that the SDK wraps, so this
-spec keeps the walk and accepts the edge.
+**An edge that we accept.** A fault of ours inside a handler for an outside
+error has that error in its context. So it sorts as the row of that error.
+The edge is wider than one row. Inside a handler of a library error that no
+row names, our fault sorts as `mcp_unreachable` by the last row. The outage
+rows need the context walk for the errors that the SDK wraps, so this spec
+keeps the walk and accepts the edge.
 
 So a customer server that is down gives codes that we do not own. It makes no
 task at once (§7.2). Only a fault in our own client makes a task at once.
@@ -585,9 +594,17 @@ an exact number, because a crash loses the queue.
   `register` and the fence `test_job_effects_fence.py`. It imports the module in
   `gateway/main.py` beside the other seed consumers. It adds a consumer line
   to `docs/job_queue.md` §5c.
+- **Why a second try is safe.** For each fingerprint, the job makes or moves
+  the task and calls `failure_set` in one transaction of
+  `tenant_session(TOOL_FAILURE_ORG_ID)`. So a second try reads the task id
+  and makes no second task. This is the reason that `register` asks for
+  `idempotent=True`.
 - **The prune.** The tenant prune of §5.4 is a `worker.prune_hooks` hook
   (`docs/job_queue.md` §5b). The daily `jobs.prune` runs it in the session of
-  each org.
+  each org. The hook runs its deletes in a savepoint
+  (`db.begin_nested()`), and it logs and swallows a failure. A hook that
+  raises would fail the whole prune of that org. It would also roll back the
+  delete of the `jobs` rows (`worker.py` lines 414 to 418).
 - **The principal.** The job binds the internal org with
   `tenant_session(TOOL_FAILURE_ORG_ID)`. It makes a task through
   `check_task_values` and `create_task_in`, as the member
@@ -729,7 +746,7 @@ holds.
 | # | Rule | Fence (R7) |
 |---|---|---|
 | P1 | A platform row holds no organization id and no tenant text | `tests/unit/test_failure_no_tenant_text.py`, new. A fixture failure carries marker strings in its message, its arguments, its tool name, its MCP server name, its org id and a path parameter of its route. After record and sync, no marker is in a platform column or in the task |
-| P2 | The normaliser admits only closed or code values | `tests/unit/test_failure_fingerprint.py`, new. Adversarial inputs: emails, ids, URLs, paths, numbers, quoted names, long free text, Unicode, a class off the allow list, a class whose module lies, a `<string>` frame, a concrete route path, a query string. Plus the golden rows of `tool_failure_log_examples.md` |
+| P2 | The normaliser admits only closed or code values | `tests/unit/test_failure_fingerprint.py`, new. Adversarial inputs: emails, ids, URLs, paths, numbers, quoted names, long free text, Unicode, a class off the allow list, a class whose module lies, a `<string>` frame, a concrete route path, a query string. Plus the golden rows of `tool_failure_log_examples.md`, with the two chain rows 11 and 12. A fresh interpreter that imports only `acb_skills.crm_tools` has the set in `failure_log` |
 | P3 | The DB refuses a bad shape, a made-up fingerprint and a call with no tenant | `tests/unit/test_failure_store_r8.py`, new. R8, FORCE RLS, as a role that is not the owner, not a superuser and not BYPASSRLS |
 | P4 | An org sees only its own tenant rows. `acb_app` cannot read a platform table. Only the internal org runs the job functions | `test_failure_store_r8.py` |
 | P5 | The band shows `<3` for 1 or 2 organizations | `test_failure_store_r8.py` |
@@ -821,10 +838,10 @@ The planner made each task in Backlog under epic 3393 (2026-11-16) and wrote its
 | Slice | Task | Rung | What | Done when | Fence (R7) | Tier · gate | Depends on |
 |---|---|---|---|---|---|---|---|
 | **TOF-2a** | 3416 | 2 | This spec, its INDEX row, the pointers in `agent_sandbox.md`, and the board rows of `work_plan.md` §2.1 | The lint passes. INDEX names the spec. An Opus audit gives GO | `test_index_completeness.py`, `test_doc_names_resolve.py`, ste-lint | HIGH, docs · AGENT-SAFE | none |
-| **TOF-2b** | 3543 | 2 | The normaliser (§3), the migration of §5, `record_tool_failure` (§6), the EXEMPT entries, the generated tenant set, `builtin_tool_names()`, and the private project with its four statuses (§7.1). Files: `acb_common/failure_fingerprint.py`, `acb_common/failure_log.py`, `acb_skills/builtin_tools.py` (new), `infra/postgres/<next>_failure_store.sql`, `scripts/gen_tenant_migration.py`, `infra/postgres/generated/`, `settings.py`, `.env.example` | The 10 golden cases pass. A fixture call writes one event row and one count. A call with no tenant, a bad field or a made-up fingerprint gets a refusal. Another org gets a refusal from the job functions | P2, P3, P4, P5, P7, P8 | HIGH · AGENT-SAFE dark. The apply is OWNER-GATE | The owner activates this spec and answers TOF-Q2, because the code site is an input of the v1 hash |
+| **TOF-2b** | 3543 | 2 | The normaliser (§3), the migration of §5, `record_tool_failure` (§6), the EXEMPT entries, the generated tenant set, `builtin_tool_names()`, and the private project with its four statuses (§7.1). Files: `acb_common/failure_fingerprint.py`, `acb_common/failure_log.py`, `acb_skills/builtin_tools.py` (new), `acb_skills/__init__.py`, `infra/postgres/<next>_failure_store.sql`, `scripts/gen_tenant_migration.py`, `infra/postgres/generated/`, `settings.py`, `.env.example` | The 12 golden cases pass. A fixture call writes one event row and one count. A call with no tenant, a bad field or a made-up fingerprint gets a refusal. Another org gets a refusal from the job functions | P2, P3, P4, P5, P7, P8 | HIGH · AGENT-SAFE dark. The apply is OWNER-GATE | The owner activates this spec and answers TOF-Q2, because the code site is an input of the v1 hash |
 | **TOF-2c** | 3544 | 2 | The chat sites C1 to C4, the C1 skip rule, the `channel` key, and the two status errors to convert (`skill_my_tasks._GatewayError`, and agent-crm `_MirrorBlocked`, a 409). Out of scope: `knowledge_tools.py`, whose tools are core tools. Files: `acb_skills/pack_tool_guard.py`, `acb_skills/unknown_tool.py`, `acb_common/tool_refusals.py`, `skill_my_tasks/core.py`, `apps/agents/agent-crm/agents.py`, `orchestrator/executor.py` | Each site writes one record for one failure. A refusal of §4.1 writes none. A gateway 5xx seen in the chat writes none. A 401 from an outside host writes none. A 401 from the gateway writes `auth_401`. A connect error to an outside host writes `outside_unreachable` | `test_failure_capture_sites.py`, new. `test_every_pack_tool_answers_text.py`, `test_unknown_tool_answer.py`, `test_tool_argument_shapes.py` | STANDARD, Opus review: a shared seam · AGENT-SAFE dark | TOF-2b |
 | **TOF-2d** | 3545 | 2 | The door sites D1 and D2, the route set of §3.2 rule 1, and the MCP sites C5 to C7 with the map of §4.3. Files: `gateway/main.py`, `orchestrator/_maf_mcp.py`, `gateway/connections/mcp_tools.py` | A route that raises writes one `unhandled_500` with the tenant of the request. A route that answers 500 writes one `route_500`. A `db_busy` 503 writes none. A concrete path writes `route:other`. An MCP timeout writes `mcp_timeout`, with the server in `tool_name` only. An `isError` answer writes `mcp_tool_error`, in the chat and in `shape_result`. A refused connect writes `mcp_unreachable`. A Studio live read that times out writes one `mcp_timeout` and no `route_upstream`. A `KeyError` raised in our MCP client code writes `mcp_exception` with its site. A server that lists too many tools writes `mcp_too_large` | `test_failure_capture_sites.py`, `test_db_busy.py`, `test_maf_mcp_confirm.py`, `test_studio_mcp_tools.py` | HIGH: the tenant seam · AGENT-SAFE dark | TOF-2b |
-| **TOF-2e** | 3546 | 2 | `failure.sync` as a seed hook (§7.1), the task text, the states of §7.4, `build_committed_at`, the prune of §5.4 under `TOOL_FAILURE_TASKS`, the GH-6 skip and the `next-ticket.md` line. Files: `gateway/failures/sync.py` (new), `gateway/main.py`, `docs/job_queue.md` §5c, `gateway/build_info.py`, `routes/projects/github_merge.py`, `github_integration.md` §12.3, `.claude/commands/next-ticket.md` | On a real database: one task for each fingerprint. A repeat updates the counts. A merge, a live build and 7 clean days close it. A repeat of a release that holds the fix reopens it, and a repeat of an old release does not. A move to Done goes back to Review. GH-6 skips the project. After the prune, in each org and as the app role, `failure_events` rows older than 30 days and `failure_org_days` rows older than 90 days are gone. `failure_daily` rows older than 400 days are gone | `tests/unit/test_tool_failure_tasks_r8.py`, new. P1, P9. `test_github_merge_r8.py` | HIGH: writes into the internal org · AGENT-SAFE dark | TOF-2b |
+| **TOF-2e** | 3546 | 2 | `failure.sync` as a seed hook (§7.1), the task text, the states of §7.4, `build_committed_at`, the prune of §5.4 under `TOOL_FAILURE_TASKS`, the GH-6 skip and the `next-ticket.md` line. Files: `gateway/failures/sync.py` (new), `gateway/main.py`, `docs/job_queue.md` §5c, `gateway/build_info.py`, `routes/projects/github_merge.py`, `github_integration.md` §12.3, `.claude/commands/next-ticket.md` | On a real database: one task for each fingerprint. A repeat updates the counts. A merge, a live build and 7 clean days close it. A repeat of a release that holds the fix reopens it, and a repeat of an old release does not. A move to Done goes back to Review. A second try of the same job, after a try that failed, makes no second task. A failing prune hook leaves the `jobs` rows of the prune deleted. GH-6 skips the project. After the prune, in each org and as the app role, `failure_events` rows older than 30 days and `failure_org_days` rows older than 90 days are gone. `failure_daily` rows older than 400 days are gone | `tests/unit/test_tool_failure_tasks_r8.py`, new. P1, P9. `test_github_merge_r8.py` | HIGH: writes into the internal org · AGENT-SAFE dark | TOF-2b |
 | **TOF-2f** | 3547 | 2 | Turn it on: the `failure_config` row, the ids, the grant of the TOF-Q3 group on the project, `JOB_QUEUE` if it is off, then `TOOL_FAILURE_LOG_ORGS` and `TOOL_FAILURE_TASKS` together, for the internal org first | One real failure on production makes one task. Evidence: the ledger line, the deployed SHA, the `failure_log` line and the task | none: an act | OWNER-GATE | TOF-2c, TOF-2d, TOF-2e, TOF-Q2, TOF-Q3 |
 | **TOF-2g** | 3548 | Later | The consent card, `failure_reports` and its two deletes (§8.1) | Narrowed out, not dispatchable until an owner-activated amendment. It then names its files | P10 | HIGH | TOF-2b, TOF-Q4 |
 | **TOF-2h** | 3549 | Later | The audited read (§8.2) | Narrowed out, as TOF-2g | `tests/unit/test_failure_report_read_r8.py`, new | HIGH | TOF-2g |
