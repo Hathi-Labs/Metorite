@@ -92,6 +92,40 @@ export function dateGroups<T extends Pick<ChatSession, "updatedAt">>(
   return out.filter((g) => g.items.length > 0);
 }
 
+/** The group of the chats that the member pinned (CO-11). */
+export const PINNED_GROUP = "Pinned" as const;
+
+/** A group of the chat list: Pinned, or a day group. */
+export type ChatGroupLabel = typeof PINNED_GROUP | (typeof DATE_GROUPS)[number];
+
+/**
+ * True when the member pinned the chat and it is not archived (CO-11). An
+ * archive takes a chat out of Pinned. The server says the same thing, and the
+ * list keeps the rule too, for a mark that this page wrote first.
+ */
+export function isPinned(s: Pick<ChatSession, "pinnedAt" | "archivedAt">): boolean {
+  return Boolean(s.pinnedAt) && !s.archivedAt;
+}
+
+/**
+ * The chat list's groups (CO-11, `chat_organization.md` §18). With the pin
+ * switch on, the pinned chats come first, newest pin first, and each other
+ * chat goes to its day group. A pinned chat shows once, in Pinned. With the
+ * switch off this is `dateGroups`, so the list draws as before.
+ */
+export function chatGroups<T extends Pick<ChatSession, "updatedAt" | "pinnedAt" | "archivedAt">>(
+  sessions: readonly T[],
+  now: number,
+  pinsOn: boolean,
+): { label: ChatGroupLabel; items: T[] }[] {
+  if (!pinsOn) return dateGroups(sessions, now);
+  const at = (s: T) => Date.parse(s.pinnedAt ?? "") || 0;
+  const pinned = sessions.filter(isPinned).sort((a, b) => at(b) - at(a));
+  const rest = sessions.filter((s) => !isPinned(s));
+  const groups: { label: ChatGroupLabel; items: T[] }[] = dateGroups(rest, now);
+  return pinned.length > 0 ? [{ label: PINNED_GROUP, items: pinned }, ...groups] : groups;
+}
+
 /**
  * The words a search matches: the name and the last preview, folded. A
  * blank query keeps every chat.

@@ -4,6 +4,10 @@
 the code on 2026-11-16, at `origin/main` `320b04375`. Metorite task 3439, in the
 project "Personalization & Memory System".
 
+**LOOP-4a is BUILT, 2026-11-16** (task 3444, no migration). The pins of §7.2
+hold in the code. It ships dark behind `MY_DAY_LEARN_ORGS`, default empty.
+`my_day_feed.md` records it under MD-9. Every other slice of §10 is not built.
+
 The owner decides LOOP-Q1 to LOOP-Q10 (§12). The defaults hold until the owner
 answers. This spec takes no D-number.
 
