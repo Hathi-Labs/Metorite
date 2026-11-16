@@ -7572,7 +7572,9 @@ The code is the fact. The build differs from §31.5 in these places.
 ## 32. Editable approval cards (task 2493)
 
 **Status (2026-11-16): EAC-1 built dark (task 3468). EAC-2 built dark (task
-3469, the client half: due date and people). EAC-3 to EAC-8 stay in the plan.** The audit of 2026-11-16 checked this contract on `origin/main`. Epic:
+3469, the client half: due date and people). EAC-3a built dark (task 3470, the
+client half: start date, status, priority flags and description). EAC-3b and
+EAC-4 to EAC-8 stay in the plan.** The audit of 2026-11-16 checked this contract on `origin/main`. Epic:
 Metorite task 2493. The first demo is on Rung 2 of the ladder (D211, task 2927,
 `orchestration_playbook.md` §6d).
 
@@ -7729,7 +7731,8 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 |---|---|---|---|---|---|---|---|
 | **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `gateway/chat_recovery.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_late.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
 | **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `ConfirmationQueue.tsx`, `confirmationQueue.ts`, `lib/taskEditCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, `cardAnswer.test.ts`, `taskEditCard.test.ts`, `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** A member edits the due date and one assignee on a `create_task` card, then presses Approve. The form shows "not in the directory" for an edited address BEFORE the Approve (H-162). A person or a lane that the member types by name must match a name exactly. |
-| **EAC-3** | 3470 | STANDARD for status, priority, start date and description. HIGH for project or subproject | 2 | `TaskCardForm.tsx`, `lib/taskCard.ts`, `task_card.py` | The tests of EAC-1 and EAC-2, extended | AGENT-SAFE | Each added field edits and writes. A project change passes the route grants. |
+| **EAC-3a** | 3470 | STANDARD, dark, client only | 2 | `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `taskEditCard.test.ts` (the parity of the status and description rules with `task_card.py`), `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** The form edits the start date, the status (a lane of the project, by exact name), the `important` and `leveraged` flags and the description. The answer keeps the seven keys. A start date after the due date warns and does not hold Approve. |
+| **EAC-3b** | none yet | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | Route-grant tests, as `test_task_edit_card_r8.py` | AGENT-SAFE | **Not built.** A member picks a project or a subproject on the card. A project that the member cannot open is not on the list. The answer needs a new key, so the server half comes first. |
 | **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus `tests/unit/test_task_edit_card_precondition.py` (needs HRD-10) | AGENT-SAFE | An `update_task` card edits the changed fields. |
 | **EAC-5** | 3472 | HIGH, last | 2 | `TaskCardForm.tsx`, `task_card.py`, `egress.py` | A held-chat test for `files` | AGENT-SAFE | A member edits the files of a `create_task` card. A held chat refuses them. |
 | **EAC-6** | none | none | 2 | none | none | OWNER-GATE | The owner previews EAC-2 to EAC-5 on the local stack and approves or asks for a change. |
@@ -7749,7 +7752,7 @@ date. The client draws the line about a late Approve (EAC-2).
 `lib/taskCard.ts` is the task chip vocabulary of the boards. The form edits the
 due date and the people. The card still shows start, status, priority and the
 description as read-only rows. The answer sends them back as the card showed
-them, and EAC-3 edits them.
+them, and EAC-3a edits them.
 
 The card hides its own `due_at`, `assignees` and `not in the directory` rows,
 because the form draws them. No change sends a plain `APPROVE`. A change sends
@@ -7771,6 +7774,32 @@ task card. The test `redraftCard-reads-no-form-edits` in `taskCardForm.test.ts`
 pins this. The queue gives the mail form only the kept edits that pass
 `asNewMailEdits`, a type guard and not a cast (HRD-8b needs this).
 
+**EAC-3a as built (2026-11-16).** The form edits the start date, the status,
+the two priority flags and the description. The card hides its own rows for
+them, and for the computed `priority` line, and it keeps the project row.
+
+- The status is the shared `SelectButton`. It lists the lanes of the project of
+  the card (`projectsApi.statuses`), and the answer holds the exact lane name,
+  or "" for the default lane. A name that two lanes share is off the list,
+  because the server refuses it (`_one_named`). When the lanes do not load, the
+  status shows as text with a line that says so.
+- Important has three picks: not judged (null), important and not important.
+  `leveraged` is the shared `Switch`. The server writes `importance` 2 or 0 and
+  keeps null as not judged.
+- The description is the shared `Textarea`. The form trims nothing. A control
+  character other than a line break or a tab, or more than 20000 characters,
+  holds Approve with a reason, as `task_card._text` reads such a value as no
+  answer.
+- A start date after the due date warns and holds nothing. The create route and
+  `_date_arg` check each date alone, and `forms.py` refuses the pair only for a
+  plan of many tasks.
+
+The limits sit in `lib/taskEditCard.ts` only, and `taskEditCard.test.ts` reads
+`task_card.py` to hold them equal. Fences: `taskEditCard.test.ts`,
+`taskCardForm.test.ts` and `e2e/task-edit-card.spec.ts`. EAC-3a needs the same
+Visual review as EAC-2. The touch targets of the shared controls at 390 px
+belong to task 3559.
+
 ### 32.6 Acceptance
 
 - **EAC-1.** `parse_task_edit_answer` accepts a whitelisted `edit` object. An
@@ -7786,8 +7815,10 @@ pins this. The queue gives the mail form only the kept edits that pass
   edited address that the directory does not know, before the Approve (H-162).
   A name typed into the form matches a person or a lane exactly, or the form
   asks for another.
-- **EAC-3.** Each field writes through its route. A project that the member
-  cannot open is not on the list.
+- **EAC-3a.** Each of the four fields edits and writes through the answer of
+  EAC-1. A change reaches the server as the exact lane name, a flag, a date or
+  the text byte for byte.
+- **EAC-3b.** A project that the member cannot open is not on the list.
 - **EAC-4.** An edit that changes `due`, then a change by a teammate between the
   card and Approve, gives "changed since the card" and does not overwrite. The
   `If-Match` check of HRD-10 (task 2989, not built) compares against the

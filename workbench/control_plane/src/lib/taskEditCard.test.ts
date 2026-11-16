@@ -31,6 +31,13 @@ import {
   assigneeChanges,
   assigneeProblem,
   changedSummary,
+  dateOrderLine,
+  descriptionProblem,
+  importantFromPick,
+  importantPick,
+  laneOptions,
+  statusProblem,
+  withoutFormRows,
   fullLine,
   isIsoDate,
   isTaskCardEdits,
@@ -211,7 +218,7 @@ describe("a person the server would read as no answer (EAC-2 verifier P2)", () =
   it("person-chars-match-the-server: the refused categories are those of task_card._one_line", () => {
     // Mutation: drop Zp from the client class, and the U+2029 case turns red.
     expect(PY).toMatch(/unicodedata\.category\(ch\) in \("Cc", "Zl", "Zp"\)/);
-    for (const bad of ["a\tb@x.test", "a\u0085b@x.test", "a b@x.test", "a b@x.test", "a\u0000b@x.test", "a\nb@x.test"]) {
+    for (const bad of ["a\tb@x.test", "a\u0085b@x.test", "a\u2028b@x.test", "a\u2029b@x.test", "a\u0000b@x.test", "a\nb@x.test"]) {
       expect(assigneeProblem(bad), JSON.stringify(bad)).toBe("control");
       expect(matchTyped(bad, [])).toEqual({ kind: "bad", typed: bad, why: "control" });
       expect(addAssignee(["ann@acme.test"], bad)).toEqual(["ann@acme.test"]);
@@ -226,6 +233,23 @@ describe("a person the server would read as no answer (EAC-2 verifier P2)", () =
     expect(matchTyped(long, [])).toEqual({ kind: "bad", typed: long, why: "long" });
     expect(typedLine({ kind: "bad", typed: long, why: "long" })).toMatch(/at most 320/);
     expect(typedLine({ kind: "bad", typed: "a\tb", why: "control" })).toMatch(/tab or line break/);
+  });
+
+  it("assignee-limit-boundary: exactly ASSIGNEE_MAX characters pass, one more is refused, counted in code points", () => {
+    // Mutation: turn `>` into `>=` in assigneeProblem, or count UTF-16 units, and this turns red.
+    expect(PY).toMatch(/len\(value\) > limit/);
+    const at = "a".repeat(ASSIGNEE_MAX - 7) + "@x.test";
+    expect(at.length).toBe(ASSIGNEE_MAX);
+    expect(assigneeProblem(at)).toBeNull();
+    expect(assigneeProblem(at + "a")).toBe("long");
+    expect(matchTyped(at, [])).toEqual({ kind: "add", assignee: at });
+    expect(addAssignee([], at)).toEqual([at]);
+    expect(addAssignee([], at + "a")).toEqual([]);
+    // 160 emoji are 320 code points and 320 UTF-16 pairs (640 units): the server counts code points.
+    expect(assigneeProblem("😀".repeat(ASSIGNEE_MAX))).toBeNull();
+    expect(assigneeProblem("😀".repeat(ASSIGNEE_MAX + 1))).toBe("long");
+    expect(valuesOk({ ...ORIGINAL, assignees: ["😀".repeat(ASSIGNEE_MAX)] })).toBe(true);
+    expect(valuesOk({ ...ORIGINAL, assignees: ["😀".repeat(ASSIGNEE_MAX + 1)] })).toBe(false);
   });
 
   it("a person that the directory returns is checked by the same rule", () => {
@@ -319,5 +343,85 @@ describe("the people (EAC-2)", () => {
   it("a person typed but not added holds Approve, and says why", () => {
     expect(pendingLine("  Kim ")).toBe("Press Enter to add “Kim”, or clear the field.");
     expect(pendingLine("   ")).toBe("");
+  });
+});
+
+describe("the fields of EAC-3a", () => {
+  it("description-rule-matches-the-server: a line break and a tab pass, other control characters do not", () => {
+    // Mutation: refuse a tab in descriptionProblem, or allow NUL, and this turns red.
+    expect(PY).toContain('_TEXT_CONTROLS = frozenset("\\n\\r\\t")');
+    expect(PY).toMatch(/unicodedata\.category\(ch\) == "Cc" and ch not in _TEXT_CONTROLS/);
+    expect(descriptionProblem("a\nb\r\nc\td  ")).toBeNull();
+    for (const bad of ["a\u0000b", "a\u0007b", "a\u0085b", "a\u001bb"]) expect(descriptionProblem(bad), JSON.stringify(bad)).toBe("control");
+    // Zl and Zp are legal in a description (only Cc is refused), as on the server.
+    expect(descriptionProblem("a\u2028b")).toBeNull();
+  });
+
+  it("description-limit: at most DESCRIPTION_MAX characters, counted as Python counts them", () => {
+    expect(descriptionProblem("x".repeat(DESCRIPTION_MAX))).toBeNull();
+    expect(descriptionProblem("x".repeat(DESCRIPTION_MAX + 1))).toBe("long");
+    // One astral character is one character for the server, two units for JavaScript.
+    expect(descriptionProblem("😀".repeat(DESCRIPTION_MAX))).toBeNull();
+    expect(valuesOk({ ...ORIGINAL, description: "a\u0000" })).toBe(false);
+  });
+
+  it("status-rule-matches-the-server: one line, at most STATUS_MAX, empty is legal and spaces alone are not", () => {
+    expect(PY).toMatch(/_one_line\(values\["status"\], STATUS_MAX, empty=True\)/);
+    expect(statusProblem("")).toBeNull();
+    expect(statusProblem("In review")).toBeNull();
+    expect(statusProblem("   ")).toBe("blank");
+    expect(statusProblem("a\tb")).toBe("control");
+    expect(statusProblem("a".repeat(STATUS_MAX + 1))).toBe("long");
+    expect(problemOf({ ...ORIGINAL, status: "a\nb" })).toMatch(/not a lane name/);
+  });
+
+  it("no-trim: a description with spaces and line breaks goes out byte for byte", () => {
+    const text = "  one\n\ttwo  \n";
+    const edits = { ...ORIGINAL, description: text };
+    expect((body(taskEditAnswer(edits)).edit as Record<string, unknown>).description).toBe(text);
+    expect(taskApproval(ORIGINAL, edits)).not.toBe("APPROVE");
+  });
+
+  it("the start date is checked like the due date, and a start after the due date only warns", () => {
+    expect(problemOf({ ...ORIGINAL, start: "12345-01-01" })).toMatch(/start date/);
+    const late = { ...ORIGINAL, start: "2026-12-09", due: "2026-12-01" };
+    expect(dateOrderLine(late)).toMatch(/start date is after the due date/);
+    expect(problemOf(late)).toBe("");
+    expect(dateOrderLine({ ...late, start: "2026-12-01" })).toBe("");
+    expect(dateOrderLine({ ...late, start: "" })).toBe("");
+    expect(dateOrderLine({ ...late, due: "" })).toBe("");
+  });
+
+  it("important-has-three-states: null stays null, and a pick never judges by accident", () => {
+    expect(importantPick(null)).toBe("unjudged");
+    expect(importantPick(true)).toBe("yes");
+    expect(importantPick(false)).toBe("no");
+    expect(importantFromPick("unjudged")).toBeNull();
+    expect(importantFromPick("yes")).toBe(true);
+    expect(importantFromPick("no")).toBe(false);
+    expect(importantFromPick("junk")).toBeNull();
+    expect((body(taskEditAnswer({ ...ORIGINAL, important: false })).edit as Record<string, unknown>).important).toBe(false);
+    expect((body(taskEditAnswer({ ...ORIGINAL, important: null })).edit as Record<string, unknown>).important).toBeNull();
+  });
+
+  it("lane-options: the default lane first, exact names, a shared name is disabled, a card name stays", () => {
+    const o = laneOptions(["Todo", "Doing", "doing", "Done"], "Doing");
+    expect(o[0]).toEqual({ value: "", label: "Default lane" });
+    expect(o.filter((x) => x.disabled).map((x) => x.value)).toEqual(["Doing", "doing"]);
+    expect(o.find((x) => x.value === "Todo")?.disabled).toBeFalsy();
+    expect(laneOptions(["Todo"], "Gone").map((x) => x.value)).toEqual(["", "Todo", "Gone"]);
+    expect(laneOptions(["Todo"], "").map((x) => x.value)).toEqual(["", "Todo"]);
+  });
+
+  it("the summary names each new change in plain words", () => {
+    const edits = { ...ORIGINAL, start: "2026-11-20", status: "Done", important: true, leveraged: true, description: "New" };
+    expect(changedSummary(ORIGINAL, edits)).toBe("Edited: start 2026-11-20 · status Done · important · leveraged · new description.");
+    expect(changedSummary(ORIGINAL, { ...ORIGINAL, status: "", important: false })).toBe("Edited: default lane · not important.");
+    expect(changedSummary({ ...ORIGINAL, start: "2026-11-20" }, { ...ORIGINAL, start: "" })).toBe("Edited: no start date.");
+  });
+
+  it("the card hides its own rows for the six fields, and keeps the project", () => {
+    const rows = ["project", "due_at", "start_date", "status", "important", "leveraged", "priority", "description", "assignees"].map((key) => ({ key }));
+    expect(withoutFormRows(rows).map((r) => r.key)).toEqual(["project"]);
   });
 });

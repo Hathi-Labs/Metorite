@@ -48,19 +48,17 @@ export const STATUS_MAX = 200;
 export const ASSIGNEE_MAX = 320;
 export const MAX_ASSIGNEES = 50;
 
-/** The seven values of the card. The server's `TASK_EDIT_KEYS`, in the order of the card. */
+/** The seven values of the card. The server's `TASK_EDIT_KEYS`, in the order of the card. EAC-3a edits all of them. */
 export interface TaskCardEdits {
   /** `YYYY-MM-DD`, or "". */
   due: string;
-  /** `YYYY-MM-DD`, or "". Shown read-only in EAC-2. */
+  /** `YYYY-MM-DD`, or "". */
   start: string;
-  /** The name of a lane, or "" for the default. Shown read-only in EAC-2. */
+  /** The name of a lane, or "" for the default. */
   status: string;
-  /** True, false, or null when nobody judged the task. Read-only in EAC-2. */
+  /** True, false, or null when nobody judged the task. */
   important: boolean | null;
-  /** Read-only in EAC-2. */
   leveraged: boolean;
-  /** Read-only in EAC-2. */
   description: string;
   /** Emails or `agent:<name>`, in the order of the card. */
   assignees: string[];
@@ -94,6 +92,37 @@ export function isIsoDate(value: unknown): value is string {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
 }
 
+/** The length as the server counts it: Python `len`, in code points, not UTF-16 units. */
+function chars(text: string): number {
+  return Array.from(text).length;
+}
+
+/**
+ * Why the server would refuse this lane name, or null. The rule of
+ * `task_card._one_line(status, STATUS_MAX, empty=True)`: at most `STATUS_MAX`
+ * characters, no character of category Cc, Zl or Zp, and "" is legal but a
+ * text of spaces only is not. `taskEditCard.test.ts` reads `task_card.py`.
+ */
+export function statusProblem(value: string): "control" | "long" | "blank" | null {
+  if (chars(value) > STATUS_MAX) return "long";
+  if (value === "") return null;
+  if (!value.trim()) return "blank";
+  return /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value) ? "control" : null;
+}
+
+/**
+ * Why the server would refuse this description, or null. The rule of
+ * `task_card._text`: at most `DESCRIPTION_MAX` characters and no control
+ * character (category Cc) but a line break and a tab. A value that fails reads
+ * as NO ANSWER there, so the form refuses it first. The server trims the
+ * description when it WRITES it (`_edited_task`). The form trims nothing, and
+ * sends the text byte for byte.
+ */
+export function descriptionProblem(value: string): "control" | "long" | null {
+  if (/\p{Cc}/u.test(value.replace(/[\n\r\t]/g, ""))) return "control";
+  return chars(value) > DESCRIPTION_MAX ? "long" : null;
+}
+
 /** True for a value of the card that the server would take. */
 export function valuesOk(values: unknown): values is TaskCardEdits {
   if (!values || typeof values !== "object" || Array.isArray(values)) return false;
@@ -102,16 +131,16 @@ export function valuesOk(values: unknown): values is TaskCardEdits {
   if (keys.length !== TASK_EDIT_KEYS.length || !TASK_EDIT_KEYS.every((k) => k in v)) return false;
   const who = v.assignees;
   if (!Array.isArray(who) || who.length > MAX_ASSIGNEES) return false;
-  if (!who.every((a) => typeof a === "string" && a.trim() !== "" && a.length <= ASSIGNEE_MAX)) return false;
+  if (!who.every((a) => typeof a === "string" && a.trim() !== "" && chars(a) <= ASSIGNEE_MAX)) return false;
   const folded = (who as string[]).map((a) => a.trim().toLowerCase());
   if (new Set(folded).size !== folded.length) return false;
   return (
     isIsoDate(v.due) &&
     isIsoDate(v.start) &&
-    typeof v.status === "string" && v.status.length <= STATUS_MAX &&
+    typeof v.status === "string" && statusProblem(v.status) === null &&
     (v.important === null || typeof v.important === "boolean") &&
     typeof v.leveraged === "boolean" &&
-    typeof v.description === "string" && v.description.length <= DESCRIPTION_MAX
+    typeof v.description === "string" && descriptionProblem(v.description) === null
   );
 }
 
@@ -220,15 +249,15 @@ export type TypedPerson =
 
 /**
  * Why the server would refuse this person, or null. The same rule as
- * `task_card._one_line` for an assignee: at most `ASSIGNEE_MAX` characters and
- * no character of category Cc, Zl or Zp (a tab, a line break, U+0085, U+2028,
+ * `task_card._one_line` for an assignee: at most `ASSIGNEE_MAX` code points
+ * (Python `len`, so `chars` and not UTF-16 units) and no character of category Cc, Zl or Zp (a tab, a line break, U+0085, U+2028,
  * U+2029). A value that fails reads as NO ANSWER there, and the card would
  * fail with no word, so the form refuses it first. `taskEditCard.test.ts`
  * reads the category list from `task_card.py`.
  */
 export function assigneeProblem(value: string): "control" | "long" | null {
   if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)) return "control";
-  return value.length > ASSIGNEE_MAX ? "long" : null;
+  return chars(value) > ASSIGNEE_MAX ? "long" : null;
 }
 
 /** The refusal of a typed person that is not added, as `{kind: "bad"}`, or null. */
@@ -316,18 +345,89 @@ export function newStrangers(original: TaskCardEdits, edits: TaskCardEdits, know
 /** The reason that Approve is off, or "". The form shows it beside the field. */
 export function problemOf(edits: TaskCardEdits): string {
   if (!isIsoDate(edits.due)) return "Pick a due date as day, month and year, or clear it.";
+  if (!isIsoDate(edits.start)) return "Pick a start date as day, month and year, or clear it.";
   if (edits.assignees.length > MAX_ASSIGNEES) return fullLine(MAX_ASSIGNEES);
+  if (statusProblem(edits.status)) return "The status is not a lane name that Metorite can read. Pick a lane from the list.";
+  const text = descriptionProblem(edits.description);
+  if (text === "long") return `The description is too long. A task takes at most ${DESCRIPTION_MAX.toLocaleString("en-US")} characters.`;
+  if (text === "control") return "The description holds a character that Metorite cannot save. Remove it.";
   return "";
+}
+
+/**
+ * The line under the dates when the start comes after the due date, or "".
+ * It only warns. The write path does not refuse such a pair (the create route
+ * and `_date_arg` check each date alone), so Approve stays on.
+ */
+export function dateOrderLine(edits: TaskCardEdits): string {
+  if (!edits.start || !edits.due || !isIsoDate(edits.start) || !isIsoDate(edits.due)) return "";
+  return edits.start > edits.due ? "The start date is after the due date. Metorite saves both dates as you set them." : "";
+}
+
+// -- The lanes and the priority -----------------------------------------------
+
+/** One option of a pick list. */
+export interface PickOption {
+  value: string;
+  label: string;
+  disabled?: boolean;
+}
+
+/** The label of the empty lane name: the default lane of the project. */
+export const DEFAULT_LANE_LABEL = "Default lane";
+
+/**
+ * The lanes of the status pick. The first option is "" (the default lane, as
+ * the card sends it for no choice). Each lane follows by its exact name.
+ * The server takes a name only when ONE lane has it, case aside
+ * (`_one_named`), so a name that two lanes share is disabled. A current value
+ * that no lane has (the text of the card) stays as an option, so the pick
+ * never shows a value that the member did not choose.
+ */
+export function laneOptions(lanes: readonly string[], current: string): PickOption[] {
+  const count = new Map<string, number>();
+  for (const name of lanes) count.set(norm(name), (count.get(norm(name)) ?? 0) + 1);
+  const seen = new Set<string>();
+  const out: PickOption[] = [{ value: "", label: DEFAULT_LANE_LABEL }];
+  for (const name of lanes) {
+    if (!name.trim() || seen.has(name) || statusProblem(name)) continue;
+    seen.add(name);
+    const twice = (count.get(norm(name)) ?? 0) > 1;
+    out.push({ value: name, label: twice ? `${name} (two lanes have this name)` : name, disabled: twice });
+  }
+  if (current && !seen.has(current)) out.push({ value: current, label: current });
+  return out;
+}
+
+/** The pick of the Important flag. The server writes importance 2 or 0, and keeps null as "not judged". */
+export const IMPORTANT_OPTIONS: readonly PickOption[] = [
+  { value: "unjudged", label: "Not judged" },
+  { value: "yes", label: "Important" },
+  { value: "no", label: "Not important" },
+];
+
+/** The pick value of an Important flag. */
+export function importantPick(important: boolean | null): "unjudged" | "yes" | "no" {
+  return important === null ? "unjudged" : important ? "yes" : "no";
+}
+
+/** The flag of a pick value. An unknown value keeps "not judged", so no pick judges by accident. */
+export function importantFromPick(pick: string): boolean | null {
+  return pick === "yes" ? true : pick === "no" ? false : null;
 }
 
 /**
  * The rows of the card's body that the form draws itself, by their key on the
  * card (`writes.py`: `_priority_card`, `_assignee_card_lines`). The card hides
- * them when it draws the form, so no stale value stays beside the new one. The
- * other rows (project, status, start, priority, description) stay: they are the
- * values that this slice does not edit.
+ * them when it draws the form, so no stale value stays beside the new one.
+ * EAC-3a adds the start date, the status, the two flags and the description.
+ * It adds the computed `priority` line too, because that line reads the old
+ * flags. The project row stays: the project is not editable (EAC-3b).
  */
-export const TASK_FORM_ROWS: ReadonlySet<string> = new Set(["due_at", "due", "assignees", "not in the directory"]);
+export const TASK_FORM_ROWS: ReadonlySet<string> = new Set([
+  "due_at", "due", "assignees", "not in the directory",
+  "start_date", "start", "status", "important", "leveraged", "priority", "description",
+]);
 
 /** The fields of a card's body, less the rows that the form draws itself. */
 export function withoutFormRows<T extends { key: string }>(fields: readonly T[]): T[] {
@@ -351,6 +451,13 @@ export function pendingLine(typed: string): string {
 export function changedSummary(original: TaskCardEdits, edits: TaskCardEdits): string {
   const parts: string[] = [];
   if (original.due !== edits.due) parts.push(edits.due ? `due ${edits.due}` : "no due date");
+  if (original.start !== edits.start) parts.push(edits.start ? `start ${edits.start}` : "no start date");
+  if (original.status !== edits.status) parts.push(edits.status ? `status ${edits.status}` : "default lane");
+  if (original.important !== edits.important) {
+    parts.push(edits.important === null ? "important not judged" : edits.important ? "important" : "not important");
+  }
+  if (original.leveraged !== edits.leveraged) parts.push(edits.leveraged ? "leveraged" : "not leveraged");
+  if (original.description !== edits.description) parts.push("new description");
   const { added, removed } = assigneeChanges(original, edits);
   if (added.length) parts.push(`added ${added.join(", ")}`);
   if (removed.length) parts.push(`removed ${removed.join(", ")}`);
