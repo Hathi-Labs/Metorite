@@ -57,6 +57,7 @@ from typing import Any
 from urllib.parse import quote
 
 from acb_auth import UserContext
+from acb_common.name_match import NearName
 
 #: The most characters of matched text a hit carries (§20.3).
 SNIPPET_CHARS = 400
@@ -98,8 +99,13 @@ class Hit:
     #: The content words that the hit holds, and how many the query has.
     covers: int | None = None
     of: int | None = None
-    #: The one word that a ``word`` hit matched alone.
+    #: The one word that a ``word`` hit matched alone, or the asked word of a
+    #: ``near`` hit.
     word: str | None = None
+    #: The near spelling that a ``near`` hit matched in place of ``word``
+    #: (HRD-18b): one token of letters and digits, from a name that the member
+    #: can open. The dict names it ``as``.
+    as_: str | None = None
 
     def as_dict(self, *, stamp: bool = False, find: bool = False) -> dict[str, Any]:
         """The hit for a consumer. *stamp* adds ``stamp`` as the ninth key.
@@ -127,6 +133,8 @@ class Hit:
             out["of"] = self.of
             if self.word is not None:
                 out["word"] = self.word
+            if self.as_ is not None:
+                out["as"] = self.as_
         return out
 
 
@@ -134,6 +142,11 @@ class Hit:
 #: ``hybrid=`` by name, one with ``dated=True`` takes ``after=`` and one with
 #: ``reviewed=True`` takes ``reviewed=``.
 Reader = Callable[..., Awaitable[list[Hit]]]
+
+#: ``near(user, words, k)`` (HRD-18b, ``find_engine.md`` §4.3): for each word,
+#: at most *k* ``name_match.NearName`` from rows that the member can open. One
+#: call reads the app's names once for every word of the lookup.
+NearReader = Callable[..., Awaitable[dict[str, list[NearName]]]]
 
 
 def holds(user: UserContext, feature: str) -> bool:
@@ -165,16 +178,36 @@ class Source:
     #: True when the app's reader takes ``vectors=``: it fuses a vector half
     #: with its lexical half (KG-3b). The route sets it with ``CONTEXT_RECENCY``.
     vectors: bool = False
+    #: The near ability of ``find_engine.md`` §4.3 (HRD-18b), or ``None``. The
+    #: app's own function reads the names of rows that the member can open,
+    #: and ``acb_common.name_match`` scores them. :meth:`near_names` calls it.
+    near: NearReader | None = None
+    #: True when the app's reader takes ``sender=``: only the mail from a
+    #: sender whose name or address holds it (HRD-18b). Only Email.
+    senders: bool = False
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
         return holds(user, self.feature) and (self.gate is None or self.gate(user))
 
+    async def near_names(
+        self, user: UserContext, words: list[str], k: int,
+    ) -> dict[str, list[NearName]]:
+        """The names near each of *words*, as *user* (HRD-18b).
+
+        No near ability, no feature or a closed switch: no call and no name.
+        The function checks the rest of the app's gates itself, as the reader
+        does.
+        """
+        if self.near is None or not words or not self.reaches(user):
+            return {}
+        return await self.near(user, list(words), k)
+
     async def find(
         self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
         after: datetime | None = None, reviewed: bool = False,
         verified_only: bool = False, vectors: bool = False,
-        budget_s: float | None = None,
+        budget_s: float | None = None, sender: str | None = None,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
@@ -184,7 +217,9 @@ class Source:
         it. *reviewed* asks a source with ``reviewed`` for the review factor
         of §4.2. *verified_only* (KB-AI-4) asks such a source for pages with an
         owner and a review date in the future. A source ignores each option it does not declare, and the
-        reader gets an option only when the consumer sets it.
+        reader gets an option only when the consumer sets it. *sender*
+        (HRD-18b) asks a source with ``senders`` for the mail from a near
+        sender only.
         """
         if not holds(user, self.feature):
             return []
@@ -193,6 +228,8 @@ class Source:
             options["hybrid"] = hybrid
         if self.dated and after is not None:
             options["after"] = after
+        if self.senders and sender:
+            options["sender"] = sender
         if self.vectors and vectors:
             options["vectors"] = True
             # The time the route really left this source (KG-3b). Set only with
@@ -316,8 +353,12 @@ def _email_hit(m: Any) -> Hit:
 
 async def _email(
     user: UserContext, q: str, k: int, *, after: datetime | None = None,
-    vectors: bool = False, budget_s: float | None = None,
+    vectors: bool = False, budget_s: float | None = None, sender: str | None = None,
 ) -> list[Hit]:
+    """The member's mail. *sender* (HRD-18b) keeps the mail from a sender
+    whose name or address holds it, through the route's own ``from_addr``
+    filter. A full-text word never matches inside an address, so "neuropeek"
+    finds the mail from ``neuropeek.com`` only this way."""
     from gateway.routes.email.transport.search import search_messages
 
     started = time.monotonic()
@@ -330,7 +371,7 @@ async def _email(
     # list needs no count, and the count doubled the time (WS-KG KG-3a).
     answer = await search_messages(
         q=q, account_id=None, folder="all", label=None, labels=None,
-        uncategorized=False, from_addr=None, to_addr=None,
+        uncategorized=False, from_addr=sender or None, to_addr=None,
         received_after=after.isoformat() if after is not None else None,
         received_before=None, is_read=None,
         is_starred=None, has_attachments=None, sender_category=None,
@@ -669,14 +710,62 @@ async def _studio(user: UserContext, q: str, k: int) -> list[Hit]:
     return out
 
 
+# ── near (HRD-18b, ``find_engine.md`` §4.3 and §6) ──────────────────────────
+# Each calls its app's own function, which reads the names of rows that the
+# member can open and scores them with ``acb_common.name_match``.
+
+async def _module(name: str) -> Any:
+    """The app module *name*, read when the lookup runs, as each reader does.
+
+    A first import runs in a thread, so the event loop and the time limit of
+    the near lookup keep running. The gateway imports each router when it
+    starts, so in production this is a read of ``sys.modules``.
+    """
+    import importlib
+    import sys
+
+    loaded = sys.modules.get(name)
+    if loaded is not None:
+        return loaded
+    return await asyncio.to_thread(importlib.import_module, name)
+
+
+async def _email_near(user: UserContext, words: list[str], k: int) -> dict[str, list[NearName]]:
+    """The senders of the mailboxes that the member can read: each name and
+    each address. The mailbox of another member never gives a name."""
+    contacts = await _module("gateway.routes.email.transport.contacts")
+    return await contacts.near_senders(user, words, k)
+
+
+async def _people_near(user: UserContext, words: list[str], k: int) -> dict[str, list[NearName]]:
+    """The names of the People directory. ``Source.near_names`` checks
+    ``feature:people`` first."""
+    directory = await _module("gateway.routes.people.directory")
+    return await directory.near_names(user, words, k)
+
+
+async def _crm_near(user: UserContext, words: list[str], k: int) -> dict[str, list[NearName]]:
+    """The names of the CRM's records, after the CRM router's gates in their
+    order, as :func:`_crm` applies them: the kill switch, then the access
+    rule. Its 403 reaches the caller, which reads it as no name."""
+    flags = await _module("gateway.routes.crm.flags")
+    if not flags.crm_org_allowed(user.organization_id):
+        return {}
+    access = await _module("gateway.routes.crm.access")
+    await access.require_crm_access(user)
+    records = await _module("gateway.routes.crm.records")
+    return await records.near_names(user, words, k)
+
+
 #: Every source, in the order the command bar and the route ask them.
 REGISTRY: dict[str, Source] = {
     s.key: s
     for s in (
         Source("tasks", "projects", "Tasks", _tasks),
-        Source("email", "email", "Email", _email, dated=True, vectors=True),
-        Source("people", "people", "People", _people),
-        Source("crm", "crm", "CRM", _crm, gate=_crm_open),
+        Source("email", "email", "Email", _email, dated=True, vectors=True,
+               near=_email_near, senders=True),
+        Source("people", "people", "People", _people, near=_people_near),
+        Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near),
         Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,

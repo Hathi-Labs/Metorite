@@ -1,0 +1,349 @@
+"""R8 — HRD-18b (task 3226): a near name comes from rows the member can open.
+
+``find_engine.md`` §6: "CRM names come after the CRM gates. People names need
+``feature:people``. Mail senders come from the mailboxes that the member can
+read, by the email app's account filter. A name from the mailbox of another
+member never shows, as a hit, a count or a "Do you mean"."
+
+Against a REAL Postgres, as the non-privileged role of the phase-4 rehearsal
+(no superuser, no BYPASSRLS), through the real near readers, the real
+``/email/messages`` route function and the real ``GET /search/company``:
+
+* **Email.** Member A's near senders hold A's senders only. A sender of
+  member B's mailbox, in the mail or in the sender rollup, never reaches A.
+  A sender of org B never reaches anyone in org A.
+* **CRM.** The F1 pairs of task 3226 (Laxmi and «Lakshmi», Puja and
+  «Pooja», Sarath and «Sharat», Deepa and «Dipa», Geeta and «Gita», Phani and
+  «Fani») come back near: no raw SQL floor stands before the matcher. Org
+  B's names never reach org A. A member whom the CRM access rule refuses
+  gets the 403, and no name.
+* **People.** Org B's directory never reaches org A.
+* **query_inbox.** ``from_email="Sharath"`` finds no mail, then the near
+  spelling «Sharat», and says so. ``nuropeak`` finds the mail from
+  ``neuropeek``. Flag off: nothing changes.
+* **The ladder.** "Sharath 3D printer" finds the deal of «Sharat
+  Satyanarayana» and his mail in one call, and "nuropeak" finds both.
+
+⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+
+pytest.importorskip("sqlalchemy")
+
+from acb_auth import UserContext, UserRole, build_access
+from acb_common import get_settings, name_match
+from fastapi import HTTPException
+from sqlalchemy import text
+
+from tests.unit.test_crm_find_and_page_r8 import _make, _native, ns  # noqa: F401
+from tests.unit.test_email_keep_separate import _account, _as_member, _assert_non_priv
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+from tests.unit.test_read_tool_paging_r8 import _direct
+
+pytestmark = _DB_GATE
+
+TAG = uuid.uuid4().hex[:8]
+A = f"near-a-{TAG}@near-r8.test"
+B = f"near-b-{TAG}@near-r8.test"
+C = f"near-c-{TAG}@near-r8.test"
+NEUROPEEK = f"sharat@neuropeek.n{TAG}.test"
+
+#: The CRM names of org A whose near spellings F1 asked about.
+F1_PAIRS = (("laxmi", "Lakshmi"), ("puja", "Pooja"), ("sarath", "Sharat"),
+            ("deepa", "Dipa"), ("geeta", "Gita"), ("phani", "Fani"))
+
+
+def _member(email: str, org: str, *perms: str) -> UserContext:
+    return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=org,
+                       access=build_access(list(perms)))
+
+
+#: Every app of the ladder, and the CRM admin's right, so the access rule passes.
+ALL = ("feature:email", "feature:crm", "feature:people", "admin:access:manage")
+
+
+def _mail(admin: Any, *, org: str, account: str, name: str, address: str,
+          subject: str, body: str) -> str:
+    with admin.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO email_messages (account_id, provider_message_id, thread_id, "
+            "folder, from_address, to_addresses, subject, body_text, received_at, "
+            "is_read, organization_id) VALUES (CAST(:a AS uuid), :p, :t, 'inbox', "
+            "CAST(:f AS jsonb), CAST('[]' AS jsonb), :s, :b, :r, false, "
+            "CAST(:o AS uuid)) RETURNING id"),
+            {"a": account, "p": f"pm-{uuid.uuid4().hex[:10]}", "t": f"t-{uuid.uuid4().hex[:8]}",
+             "f": json.dumps({"name": name, "email": address}), "s": subject, "b": body,
+             "r": datetime.now(UTC) - timedelta(minutes=5), "o": org}).scalar_one())
+
+
+@pytest.fixture
+async def world(ns, app_engine, monkeypatch):  # noqa: F811
+    """Two members of org A, each with a private mailbox, a member of org B,
+    the CRM of each org, and a People row of each."""
+    _assert_non_priv(app_engine)
+    p = ns
+    await _native(p, p.org_a)
+    await _native(p, p.org_b)
+    company = await _make(p, p.org_a, "/crm/organizations", {"name": "Bitnib Technologies"})
+    sharat = await _make(p, p.org_a, "/crm/contacts", {
+        "first_name": "Sharat", "last_name": "Satyanarayana", "company_id": company})
+    deal = await _make(p, p.org_a, "/crm/deals", {
+        "name": "Neuropeak - Snowflake 3D printer", "company_id": company})
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_deal_contacts (organization_id, deal_id, contact_id, is_primary) "
+            "VALUES (CAST(:o AS uuid), CAST(:d AS uuid), CAST(:c AS uuid), true)"),
+            {"o": p.org_a, "d": deal, "c": sharat})
+    for _asked, name in F1_PAIRS:
+        if name != "Sharat":
+            await _make(p, p.org_a, "/crm/contacts", {"first_name": name, "last_name": "Fracktal"})
+    # Org B's own names, which org A must never see.
+    await _make(p, p.org_b, "/crm/contacts", {"first_name": "Shobhana", "last_name": "Rival"})
+
+    box_a = _account(p.admin_engine, org=p.org_a, owner=A)
+    box_b = _account(p.admin_engine, org=p.org_a, owner=B)
+    box_c = _account(p.admin_engine, org=p.org_b, owner=C)
+    mail_a = _mail(p.admin_engine, org=p.org_a, account=box_a, name="Sharat Satyanarayana",
+                   address=NEUROPEEK, subject="Snowflake 3D printer order",
+                   body="Please ship the 3D printer this week.")
+    mail_b = _mail(p.admin_engine, org=p.org_a, account=box_b, name="Secretname Hidden",
+                   address=f"secret@hidden-{TAG}.test", subject="Private", body="for B only")
+    _mail(p.admin_engine, org=p.org_b, account=box_c, name="Rivalname Orgb",
+          address=f"rival@orgb-{TAG}.test", subject="Other org", body="org B")
+    with p.admin_engine.begin() as c:
+        # A sender of B's rollup only, with no mail.
+        c.execute(text(
+            "INSERT INTO email_senders (account_id, email, name, organization_id) "
+            "VALUES (CAST(:a AS uuid), :e, 'Rollupname Hidden', CAST(:o AS uuid))"),
+            {"a": box_b, "e": f"rollup@hidden-{TAG}.test", "o": p.org_a})
+        for org, name in ((p.org_a, "Gitanjali Peoplea"), (p.org_b, "Bhaskar Rival")):
+            c.execute(text(
+                "INSERT INTO people (name, department, source, organization_id) "
+                "VALUES (:n, 'Ops', :s, CAST(:o AS uuid))"),
+                {"n": name, "s": f"near-{TAG}", "o": org})
+    yield {"p": p, "deal": deal, "mail_a": mail_a, "mail_b": mail_b}
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM email_accounts WHERE user_id IN (:a, :b, :c)"),
+                  {"a": A, "b": B, "c": C})
+        c.execute(text("DELETE FROM people WHERE source = :s"), {"s": f"near-{TAG}"})
+
+
+@pytest.fixture
+def flags(monkeypatch):
+    """``FIND_ORGS`` and ``CONTEXT_RECENCY`` on the cached settings."""
+    settings = get_settings()
+
+    def _set(find: str, recency: bool = True) -> None:
+        monkeypatch.setattr(settings, "find_orgs", find, raising=False)
+        monkeypatch.setattr(settings, "context_recency", recency, raising=False)
+
+    _set("")
+    return _set
+
+
+async def _near(p: Any, user: UserContext, key: str, words: list[str]) -> dict[str, Any]:
+    from gateway.retrieval import sources
+
+    async with _as_member(p, user.organization_id):
+        found = await sources.REGISTRY[key].near_names(user, words, 5)
+    return {w: name_match.best_spelling(w, names) for w, names in found.items()}
+
+
+def _spelt(found: dict[str, Any], word: str) -> str | None:
+    best = found.get(word)
+    return best.spelling if best is not None else None
+
+
+# ── Email ───────────────────────────────────────────────────────────────────
+
+async def test_near_senders_come_from_the_members_own_mailboxes(world) -> None:
+    p = world["p"]
+    words = ["sharath", "secretnam", "rollupnam", "rivalnam", "nuropeak"]
+    got_a = await _near(p, _member(A, p.org_a, *ALL), "email", words)
+    assert _spelt(got_a, "sharath") == "Sharat"
+    assert _spelt(got_a, "nuropeak") == "neuropeek"
+    # B's mail, B's rollup and org B's mail give A no name.
+    for word in ("secretnam", "rollupnam", "rivalnam"):
+        assert _spelt(got_a, word) is None, word
+    got_b = await _near(p, _member(B, p.org_a, *ALL), "email", words)
+    # Non-vacuity: B sees B's own senders, and never A's.
+    assert _spelt(got_b, "secretnam") == "Secretname"
+    assert _spelt(got_b, "rollupnam") == "Rollupname"
+    assert _spelt(got_b, "sharath") is None and _spelt(got_b, "nuropeak") is None
+    got_c = await _near(p, _member(C, p.org_b, *ALL), "email", words)
+    assert _spelt(got_c, "rivalnam") == "Rivalname"
+    assert _spelt(got_c, "sharath") is None and _spelt(got_c, "secretnam") is None
+
+
+async def test_a_member_without_email_gets_no_sender(world) -> None:
+    p = world["p"]
+    got = await _near(p, _member(A, p.org_a, "feature:crm"), "email", ["sharath"])
+    assert got == {}
+
+
+# ── CRM ─────────────────────────────────────────────────────────────────────
+
+async def test_the_f1_pairs_reach_the_judge(world) -> None:
+    p = world["p"]
+    got = await _near(p, _member(A, p.org_a, *ALL), "crm", [w for w, _n in F1_PAIRS])
+    for asked, name in F1_PAIRS:
+        assert _spelt(got, asked) == name, asked
+
+
+async def test_crm_names_stay_in_their_org(world) -> None:
+    p = world["p"]
+    got_a = await _near(p, _member(A, p.org_a, *ALL), "crm", ["sobhana", "nuropeak"])
+    assert _spelt(got_a, "sobhana") is None
+    assert _spelt(got_a, "nuropeak") == "Neuropeak"
+    got_c = await _near(p, _member(C, p.org_b, *ALL), "crm", ["sobhana", "nuropeak"])
+    assert _spelt(got_c, "sobhana") == "Shobhana"
+    assert _spelt(got_c, "nuropeak") is None
+
+
+async def test_a_member_the_crm_refuses_gets_no_name(world) -> None:
+    p = world["p"]
+    with pytest.raises(HTTPException) as refused:
+        await _near(p, _member(B, p.org_a, "feature:crm"), "crm", ["laxmi"])
+    assert refused.value.status_code == 403
+
+
+# ── People ──────────────────────────────────────────────────────────────────
+
+async def test_people_names_stay_in_their_org(world) -> None:
+    p = world["p"]
+    got_a = await _near(p, _member(A, p.org_a, *ALL), "people", ["gitanjaly", "baskar"])
+    assert _spelt(got_a, "gitanjaly") == "Gitanjali"
+    assert _spelt(got_a, "baskar") is None
+    got_c = await _near(p, _member(C, p.org_b, *ALL), "people", ["gitanjaly", "baskar"])
+    assert _spelt(got_c, "baskar") == "Bhaskar" and _spelt(got_c, "gitanjaly") is None
+    got_none = await _near(p, _member(A, p.org_a, "feature:email"), "people", ["gitanjaly"])
+    assert got_none == {}
+
+
+# ── query_inbox: the sender filter of /email/messages ───────────────────────
+
+async def _inbox(p: Any, user: UserContext, sender: str) -> dict[str, Any]:
+    from gateway.routes.email.transport import messages
+
+    async with _as_member(p, user.organization_id):
+        return await _direct(messages.list_messages, folder="all", from_email=sender, user=user)
+
+
+async def test_a_sender_filter_tries_the_near_spelling(world, flags) -> None:
+    p = world["p"]
+    me = _member(A, p.org_a, "feature:email")
+    off = await _inbox(p, me, "Sharath")
+    assert off["total"] == 0 and "near" not in off
+    flags("*")
+    on = await _inbox(p, me, "Sharath")
+    assert on["near"] == {"word": "Sharath", "as": "Sharat"}
+    assert [str(e["id"]) for e in on["emails"]] == [world["mail_a"]] and on["total"] == 1
+    domain = await _inbox(p, me, "nuropeak")
+    assert domain["near"] == {"word": "nuropeak", "as": "neuropeek"}
+    assert [str(e["id"]) for e in domain["emails"]] == [world["mail_a"]]
+    # An exact filter keeps its answer and gets no near key.
+    exact = await _inbox(p, me, "neuropeek")
+    assert exact["total"] == 1 and "near" not in exact
+    # Page 2 counts the same near senders, so the pages agree.
+    from gateway.routes.email.transport import messages
+
+    async with _as_member(p, p.org_a):
+        second = await _direct(messages.list_messages, folder="all", from_email="Sharath",
+                               page=2, page_size=1, user=me)
+    assert second["total"] == 1 and second["emails"] == []
+    assert second["near"] == {"word": "Sharath", "as": "Sharat"}
+
+
+async def test_a_sender_of_another_mailbox_never_answers(world, flags) -> None:
+    p = world["p"]
+    flags("*")
+    hidden = await _inbox(p, _member(A, p.org_a, "feature:email"), "Secretnam")
+    assert hidden["total"] == 0 and "near" not in hidden
+    assert "Secretname" not in json.dumps(hidden, default=str)
+    # Non-vacuity: B, who owns the mailbox, gets the near spelling.
+    own = await _inbox(p, _member(B, p.org_a, "feature:email"), "Secretnam")
+    assert own["near"] == {"word": "Secretnam", "as": "Secretname"}
+    assert [str(e["id"]) for e in own["emails"]] == [world["mail_b"]]
+
+
+# ── The ladder: GET /search/company ─────────────────────────────────────────
+
+@pytest.fixture
+def roomy(monkeypatch):
+    """A cold scratch database is slower than the route's budget, and a
+    source or a lookup cut off by its deadline gives nothing. Room here."""
+    from gateway.retrieval import company
+
+    monkeypatch.setattr(company, "SOURCE_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(company, "TOTAL_BUDGET_S", 60.0)
+    monkeypatch.setattr(company, "NEAR_LOOKUP_S", 30.0)
+    monkeypatch.setattr(company, "BROADEN_BUDGET_S", 120.0)
+    monkeypatch.setattr(company, "ANSWER_CAP_S", 240.0)
+
+
+async def _ask(p: Any, user: UserContext, q: str) -> dict[str, Any]:
+    from tests.unit.test_company_search_r8 import _ask as ask
+
+    return await ask(p, user, {"q": q, "apps": "crm,email"})
+
+
+async def test_sharath_3d_printer_finds_the_deal_and_the_mail_in_one_call(
+        world, flags, roomy, caplog) -> None:
+    p = world["p"]
+    flags("*")
+    with caplog.at_level(logging.INFO, logger="gateway.retrieval.company"):
+        answer = await _ask(p, _member(A, p.org_a, *ALL), "Sharath 3D printer")
+    assert answer["skipped"] == []
+    assert not [r for r in caplog.records if "near lookup skipped" in r.getMessage()]
+    near = answer["near"][0]
+    assert (near["word"], near["as"]) == ("Sharath", "Sharat") and near["hits"] >= 2
+    hits = {h["id"]: h for h in answer["hits"]}
+    assert world["deal"] in hits and world["mail_a"] in hits
+    # "3D" alone found both too, and the lower rung wins (§3.5). The near tag
+    # of a hit is proved by "nuropeak" below.
+    assert hits[world["mail_a"]]["matched_by"] == "word"
+    # B's mail never reaches A, as a hit or a word.
+    assert world["mail_b"] not in str(answer) and "Secretname" not in str(answer)
+
+
+async def test_nuropeak_finds_the_deal_and_the_mail_from_its_domain(
+        world, flags, roomy) -> None:
+    p = world["p"]
+    flags("*")
+    answer = await _ask(p, _member(A, p.org_a, *ALL), "nuropeak")
+    spellings = {e["as"] for e in answer["near"]}
+    assert spellings == {"Neuropeak", "neuropeek"}
+    hits = {h["id"]: h for h in answer["hits"]}
+    assert world["deal"] in hits and world["mail_a"] in hits
+    deal, mail = hits[world["deal"]], hits[world["mail_a"]]
+    assert (deal["matched_by"], deal["word"], deal["as"]) == ("near", "nuropeak", "Neuropeak")
+    assert (mail["matched_by"], mail["word"], mail["as"]) == ("near", "nuropeak", "neuropeek")
+
+
+async def test_member_b_gets_the_deal_and_never_the_mail_of_a(world, flags, roomy) -> None:
+    p = world["p"]
+    flags("*")
+    answer = await _ask(p, _member(B, p.org_a, *ALL), "Sharath 3D printer")
+    ids = {h["id"] for h in answer["hits"]}
+    assert world["deal"] in ids
+    assert world["mail_a"] not in ids and NEUROPEEK not in str(answer)
+
+
+async def test_flag_off_the_ladder_tries_no_near_spelling(world, flags, roomy) -> None:
+    p = world["p"]
+    flags("")
+    answer = await _ask(p, _member(A, p.org_a, *ALL), "nuropeak")
+    assert "near" not in answer and answer["hits"] == []

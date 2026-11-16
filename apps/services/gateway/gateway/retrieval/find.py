@@ -8,6 +8,8 @@ the answer of KR-ZERO, byte for byte.
 * :func:`coverage` counts the content words that a hit holds in its title,
   hint or snippet.
 * :func:`rung_of` gives each ``matched_by`` its place in the ladder of §3.1.
+* :func:`near_words` picks the words of the near lookup of rung 3 (HRD-18b,
+  §3.3), and :func:`asked_form` gives a word as the member typed it.
 """
 
 from __future__ import annotations
@@ -46,6 +48,8 @@ _STOP = frozenset(
 )
 
 _PLURAL = re.compile(r"(?<=[a-z0-9]{3})s$")
+#: One token of the query as the member typed it: letters and digits only.
+_TOKEN = re.compile(r"[^\W_]+")
 
 
 def find_allowed(organization_id: str | None) -> bool:
@@ -91,15 +95,56 @@ def rung_of(matched_by: str | None) -> int:
     return RUNGS.get(matched_by or "", len(RUNGS) + 1)
 
 
+def spelled(words: list[str], word: str, spelling: str) -> list[str]:
+    """*words* with *word* replaced by *spelling*, both folded as
+    :func:`content_words` folds them (HRD-18b). Pure."""
+    asked = name_match.words(word)
+    near = name_match.words(spelling)
+    if len(asked) != 1 or len(near) != 1:
+        return list(words)
+    return [near[0] if w == asked[0] else w for w in words]
+
+
 def stamped(hit: Any, words: list[str], matched_by: str, **extra: Any) -> Any:
     """*hit* with ``matched_by``, ``covers`` and ``of`` set (§3.5).
 
     A hit that already says how it matched keeps its lower rung. Pure: the
-    hit is frozen, so this gives a new one.
+    hit is frozen, so this gives a new one. A ``near`` hit counts its
+    spelling ``as_`` for its ``word`` (§3.4, HRD-18b).
     """
     if getattr(hit, "matched_by", None) and rung_of(hit.matched_by) <= rung_of(matched_by):
         matched_by, extra = hit.matched_by, {}
-    covers = coverage(words, f"{hit.title} {hit.hint} {hit.snippet}")
+    counted = words
+    if matched_by == "near" and extra.get("word") and extra.get("as_"):
+        counted = spelled(words, extra["word"], extra["as_"])
+    covers = coverage(counted, f"{hit.title} {hit.hint} {hit.snippet}")
     return dataclasses.replace(
         hit, matched_by=matched_by, covers=covers, of=len(words), **extra,
     )
+
+
+def asked_form(query: str, word: str) -> str:
+    """*word*, a content word of *query*, as the member typed it: "Sharath"
+    for ``sharath`` in "Sharath's printer". Pure."""
+    for token in _TOKEN.findall(query or ""):
+        if name_match.words(token) == [word]:
+            return token[:name_match.NEAR_MAX_CHARS]
+    return word
+
+
+def near_words(query: str, words: list[str], held: set[str]) -> list[str]:
+    """The words of the near lookup of rung 3, in order (§3.3, HRD-18b).
+
+    First the words that no hit holds, then the words that the member wrote
+    with a capital letter, then the longest. Each word passes
+    ``name_match.near_eligible``, so it has 4 letters or more. At most
+    ``name_match.NEAR_MAX_WORDS``. Pure.
+    """
+    capital = {
+        w for token in _TOKEN.findall(query or "") if token[:1].isupper()
+        for w in name_match.words(token)
+    }
+    eligible = [w for w in words if name_match.near_eligible(w)]
+    # `sorted` is stable, so a tie keeps the order of the query.
+    ranked = sorted(eligible, key=lambda w: (w in held, w not in capital, -len(w)))
+    return ranked[:name_match.NEAR_MAX_WORDS]

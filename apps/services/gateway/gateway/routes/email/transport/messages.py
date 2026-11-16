@@ -3,6 +3,7 @@ hydration, and the full-body endpoint."""
 
 from __future__ import annotations
 
+import functools
 import json
 import time
 from typing import Any, Literal
@@ -330,7 +331,9 @@ async def list_messages(
         if importance:
             where_clauses.append("LOWER(em.importance) = LOWER(:importance)")
             params["importance"] = importance
+        from_at: int | None = None
         if from_email:
+            from_at = len(where_clauses)
             where_clauses.append(
                 "LOWER(em.from_address->>'email') LIKE :from_email")
             params["from_email"] = f"%{from_email.strip().lower()}%"
@@ -373,19 +376,16 @@ async def list_messages(
             order_sql, order_plain = "em.received_at DESC, em.id DESC", "received_at DESC, id DESC"
 
         # Count total — conversations when collapsing, else messages.
-        count_sql = (
-            f"""SELECT COUNT(DISTINCT {conv_key})
-                FROM email_messages em
-                JOIN email_accounts ea ON em.account_id = ea.id
-                WHERE {where_sql}"""
-            if do_collapse else
-            f"""SELECT COUNT(*)
-                FROM email_messages em
-                JOIN email_accounts ea ON em.account_id = ea.id
-                WHERE {where_sql}"""
-        )
-        count_result = await db.execute(text(count_sql), params)
+        count_sql = functools.partial(_count_sql, conv_key=conv_key, collapse=do_collapse)
+        count_result = await db.execute(text(count_sql(where_sql)), params)
         total = count_result.scalar() or 0
+        # HRD-18b: a sender filter that found no mail tries the near spelling
+        # of the sender, with FIND_ORGS on. The answer names the spelling.
+        where_sql, total, near = await _near_sender_retry(
+            db, user, from_email, account_id, clauses=where_clauses, at=from_at,
+            params=params, where_sql=where_sql, total=total, count_sql=count_sql,
+            listing=not thread_id,
+        )
         _counted = time.monotonic()
 
         _COLS = """em.id, em.provider_message_id, em.thread_id,
@@ -488,7 +488,93 @@ async def list_messages(
             "total": total,
             "page": page,
             "page_size": page_size,
+            **near,
         }
+
+
+def _count_sql(where_sql: str, *, conv_key: str, collapse: bool) -> str:
+    """The COUNT of :func:`list_messages`: conversations when it collapses,
+    else messages."""
+    if collapse:
+        return f"""SELECT COUNT(DISTINCT {conv_key})
+                FROM email_messages em
+                JOIN email_accounts ea ON em.account_id = ea.id
+                WHERE {where_sql}"""
+    return f"""SELECT COUNT(*)
+                FROM email_messages em
+                JOIN email_accounts ea ON em.account_id = ea.id
+                WHERE {where_sql}"""
+
+
+#: The names that the near retry of ``from_email`` weighs, and the most
+#: sender addresses that it reads (HRD-18b).
+NEAR_FROM_NAMES = 5
+NEAR_FROM_MAX = 20
+
+
+async def _near_sender_retry(
+    db: Any, user: UserContext, from_email: str | None, account_id: str | None, *,
+    clauses: list[str], at: int | None, params: dict[str, Any], where_sql: str,
+    total: int, count_sql: Any, listing: bool,
+) -> tuple[str, int, dict[str, Any]]:
+    """The list's WHERE and total after the near retry of a sender filter.
+
+    It runs only for a list (*listing*, no thread load) with a sender filter
+    that found no mail. An exact total of 0 is 0 on each page, so each page
+    retries, and the pages agree. With a near spelling (:func:`_near_from`),
+    the filter's clause becomes the addresses of the near senders, and the
+    count runs again. The third value is ``{"near": ...}`` for the answer,
+    else ``{}``: a closed shape of the filter as the member gave it and one
+    token of a sender that the member may read.
+    """
+    if total or at is None or not listing:
+        return where_sql, total, {}
+    found = await _near_from(db, user, from_email or "", account_id)
+    if found is None:
+        return where_sql, total, {}
+    clauses[at] = "LOWER(em.from_address->>'email') = ANY(:from_near)"
+    params.pop("from_email", None)
+    params["from_near"] = found[1]
+    where_sql = " AND ".join(clauses)
+    total = (await db.execute(text(count_sql(where_sql)), params)).scalar() or 0
+    return where_sql, total, {"near": {"word": (from_email or "").strip()[:80], "as": found[0]}}
+
+
+async def _near_from(
+    db: Any, user: UserContext, wanted: str, account_id: str | None,
+) -> tuple[str, list[str]] | None:
+    """The near spelling of a sender filter that found no mail, and the
+    addresses of the senders that hold it (HRD-18b, ``find_engine.md`` §5.3).
+
+    ``None`` unless ``FIND_ORGS`` holds the member's org, the filter is one
+    word of 4 letters or more, and a sender of the mailboxes of the read is
+    near it. The senders come from ``contacts.sender_rows``, the reader of
+    the company search, and ``acb_common.name_match`` judges them. So a
+    sender of another member's mailbox never gives a spelling.
+    """
+    import asyncio
+
+    from acb_common import name_match
+    from gateway.retrieval.find import find_allowed
+    from gateway.routes.email.transport.contacts import sender_names, sender_rows
+
+    if not find_allowed(getattr(user, "organization_id", None)):
+        return None
+    asked = name_match.words(wanted)
+    if len(asked) != 1 or not name_match.near_eligible(asked[0]):
+        return None
+    rows = await sender_rows(db, user.email or "anonymous", account_id)
+    found = await asyncio.to_thread(
+        name_match.near_names, asked[0], sender_names(rows), NEAR_FROM_NAMES)
+    best = name_match.best_spelling(asked[0], found)
+    if best is None:
+        return None
+    spelt = name_match.words(best.spelling)[0]
+    addresses = [
+        address for name, address in rows
+        if spelt in name_match.words(name) or spelt in name_match.words(address)
+    ][:NEAR_FROM_MAX]
+    return (best.spelling, addresses) if addresses else None
 
 
 # Sender categories that are bulk/automated and never "important to check".
