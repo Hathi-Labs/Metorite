@@ -51,6 +51,10 @@ from gateway.routes.email.core import (
     router,
 )
 from gateway.routes.email.transport.messages import _also_in_by_message
+from gateway.routes.email.transport.recipient_filters import (
+    attachment_name_clause,
+    recipient_clause,
+)
 from sqlalchemy import text
 
 # The tsvector expression — MUST stay byte-for-byte identical to the GIN index
@@ -128,16 +132,11 @@ def _address_filters(
         where.append("(LOWER(em.from_address->>'email') LIKE :from_addr"
                      " OR LOWER(em.from_address->>'name') LIKE :from_addr)")
         params["from_addr"] = f"%{from_addr.strip().lower()}%"
-    if to_addr:
-        # to_addresses/cc_addresses are JSONB arrays of {name, email}; match a
-        # substring against any recipient. Cc counts as "to" — a user looking for
-        # mail addressed to someone means it, whichever header carried them.
-        where.append("EXISTS (SELECT 1 FROM jsonb_array_elements("
-                     " COALESCE(em.to_addresses, '[]'::jsonb)"
-                     " || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r"
-                     " WHERE LOWER(r->>'email') LIKE :to_addr"
-                     " OR LOWER(r->>'name') LIKE :to_addr)")
-        params["to_addr"] = f"%{to_addr.strip().lower()}%"
+    clause = recipient_clause(params, to_addr)
+    if clause:
+        # Cc counts as "to": a user looking for mail addressed to someone means
+        # it, whichever header carried them.
+        where.append(clause)
 
 
 def _state_filters(
@@ -192,6 +191,8 @@ async def search_messages(
     is_starred: bool | None = Query(None),
     has_attachments: bool | None = Query(None),
     sender_category: str | None = Query(None),
+    attachment_name: str | None = Query(
+        None, description="Substring match on a file name of the message"),
     importance: str | None = Query(
         None, description="Provider importance: high | normal | low"),
     hybrid: bool = Query(
@@ -247,6 +248,8 @@ async def search_messages(
             where.append(UNCATEGORIZED_SQL)
             params["known_labels"] = KNOWN_LABELS_LOWER
         _address_filters(where, params, from_addr, to_addr)
+        if clause := attachment_name_clause(params, attachment_name):
+            where.append(clause)
         _state_filters(where, params, {
             "received_after": received_after,
             "received_before": received_before,
