@@ -495,8 +495,11 @@ with HRD-12 before it builds.
   stored PZ-34 block can live up to 24 hours after a Delete (D-PZ-38), and the
   note takes no such store. The note goes in as instructions, which no session
   store keeps. The read on demand carries no source text (§16.4).
-- **What a Delete does not reach.** A reply that a later chat already wrote
-  from the note. That reply belongs to the later chat, as a quote does (§19
+- **What a Delete does not reach.** A later chat that already used the note
+  keeps what it wrote. That is its reply, and the reasoning of that turn
+  (`chat_message.reasoning`), which can quote the note. `agent_run.trace` also
+  keeps the reply and the reasoning of an errored, cancelled or flagged run
+  (`run_trace.py`). These belong to the later chat, as a quote does (§19
   question 3).
 - **Forget and offboarding** delete each note of the member (D142.3).
 
@@ -628,8 +631,9 @@ owner answers on task 3491 or on the slice.
    evidence (§16.2).
 3. **A source chat is deleted. Clear the note and offer a re-run, with no text
    of that chat?** Recommend YES. It matches D-PZ-33. The member loses their
-   edits of that note, and the Delete dialog says so first. A reply that a
-   later chat already wrote from the note keeps its words.
+   edits of that note, and the Delete dialog says so first. A later chat that
+   already used the note keeps its words. §16.5 lists them: the reply, its
+   reasoning, and the trace of a failed or flagged run.
 4. **Is the note a private topic brief, or also a Knowledge page to share?**
    Recommend a private topic brief first. Sharing comes later, as an act of the
    member (D104).
