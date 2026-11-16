@@ -656,16 +656,25 @@ async def _write_shell(
     save cannot write each other over (review of #1206). ``keep`` names the
     marks that a ``layout-keep`` write keeps: the ones the body omitted.
     """
-    from gateway.routes.tasks.settings import (
-        _BOUND_ORG,
-        _seed_from_work_schedule,
-        upsert_settings_sql,
-    )
+    from gateway.routes.tasks.settings import _BOUND_ORG
     from sqlalchemy import text
 
     if prefs is None:
         await db.execute(text(_RESET_SHELL_SQL.format(org=_BOUND_ORG)), {"uid": uid})
         return None
+    merge = _set_layout_keep(keep) if mode == "layout-keep" else _SET_BY_MODE[mode]
+    row = await _upsert_shell(db, uid, prefs, merge)
+    return row[0] if row is not None else prefs
+
+
+async def _upsert_shell(db: Any, uid: str, prefs: dict[str, Any], merge: str, where: str = "") -> Any:
+    """The ONE upsert of ``shell_prefs``, for ``_write_shell`` and
+    ``_claim_first_mark``. A new row carries the calendar seed (D-PC-16).
+    *where* guards the update of an existing row. Returns the row of
+    ``RETURNING``, or None when the guard kept the row as it was."""
+    from gateway.routes.tasks.settings import _seed_from_work_schedule, upsert_settings_sql
+    from sqlalchemy import text
+
     params: dict[str, Any] = {"uid": uid, "shell_prefs": json.dumps(prefs)}
     if await _read_shell(db, uid) is None:
         params.update(await _seed_from_work_schedule(db, uid))
@@ -675,10 +684,27 @@ async def _write_shell(
     def _ph(k: str) -> str:
         return ":shell_prefs ::jsonb" if k == "shell_prefs" else f":{k}"
 
-    merge = _set_layout_keep(keep) if mode == "layout-keep" else _SET_BY_MODE[mode]
     sql = upsert_settings_sql(cols, _ph, update=["shell_prefs"], merge={"shell_prefs": merge})
-    row = (await db.execute(text(f"{sql} RETURNING shell_prefs"), params)).first()
-    return row[0] if row is not None else prefs
+    guard = f" WHERE {where}" if where else ""
+    return (await db.execute(text(f"{sql}{guard} RETURNING shell_prefs"), params)).first()
+
+
+async def _claim_first_mark(db: Any, uid: str, key: str) -> bool:
+    """Claim the first mark *key* with the server's time. True when this call
+    took it (task 3537).
+
+    The ``WHERE`` of the upsert decides, never a compare of times. Two calls
+    in the same millisecond carry the same time, so each would read the
+    stored time as its own. The update runs only while the mark is free: a
+    missing key, a JSON null (a released claim), or no layout. A taken mark
+    keeps the row, and ``RETURNING`` gives that call no row. Postgres locks
+    the row and checks the guard on its newest version, so one call wins.
+    """
+    if key not in _FIRST_MARKS:
+        raise ValueError(f"not a first mark: {key}")
+    free = f"NULLIF(user_settings.shell_prefs->'{key}', CAST('null' AS jsonb)) IS NULL"
+    row = await _upsert_shell(db, uid, {key: _server_stamp()}, _SET_STAMP_FIRST, where=free)
+    return row is not None
 
 
 @me_router.get("/me/shell", summary="The caller's shell layout (NS-7)")
