@@ -6908,9 +6908,34 @@ async def _call_stored_tool(tool: Any, arguments: dict[str, Any]) -> Any:
     return out
 
 
+async def _mark_native_session_stale(agent_name: str, thread_id: str | None) -> None:
+    """RESUME-4a-1: drop the stored session of this continuation's key.
+
+    The key is the one that :func:`_begin_native_session` loads: the run's
+    org from the run binding (R5e), the caller's thread, and *agent_name*.
+    It is never :func:`_run_agent_label`, which an attribution scope can
+    change. With ``MAF_NATIVE_SESSIONS`` off, no thread or no org, it sends
+    no statement. Never raises: a fault logs its type only."""
+    if not _native_sessions_enabled():
+        return
+    thread = str(thread_id or "").strip()
+    org = _current_run_org() if thread else None
+    if not thread or not org:
+        return
+    try:
+        from orchestrator import native_session_store
+
+        await native_session_store.mark_stale(
+            organization_id=str(org), thread_id=thread, agent_name=agent_name,
+        )
+    except Exception as exc:
+        _log.warning("native_session.mark_stale_failed", agent=agent_name,
+                     error=type(exc).__name__)
+
+
 async def _resume_prologue(
     agents: list[Any], agent_name: str, resume_call: dict[str, Any],
-    event_payload: dict[str, Any],
+    event_payload: dict[str, Any], *, thread_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Run the stored call of a continuation run, and set the run's input.
 
@@ -6923,7 +6948,16 @@ async def _resume_prologue(
     the run's message is the note of ``chat_recovery.compose_resumed_call_note``,
     with the title and the result as fenced data. A refused call runs nothing,
     and the note tells the model to call the tool again, so the card asks
-    again. It never raises a fault of the tool."""
+    again. It never raises a fault of the tool.
+
+    RESUME-4a-1: FIRST, before the stored call and before the model, it
+    marks the stored native session of *thread_id* stale
+    (:func:`_mark_native_session_stale`). The run skips the session
+    (``resume_note``), and its reply has no user row before it, so the next
+    turn would load a session that lacks the reply. A mark before the run
+    fails closed: a crash later in the run still leaves a miss, never a
+    stale hit."""
+    await _mark_native_session_stale(agent_name, thread_id)
     from acb_skills.stored_call import resuming
     from gateway.chat_recovery import (
         RESUMED_APPROVED,
@@ -7988,6 +8022,7 @@ async def run_agent_stream(
             if resume_call is not None:
                 async for _resume_line in _resume_prologue(
                     agents, agent_name, resume_call, event_payload,
+                    thread_id=_caller_thread_id,
                 ):
                     yield _resume_line
 
@@ -10668,7 +10703,10 @@ def _native_session_skip(
 
     RESUME-2a: a continuation run (*resumed*) gives ``resume_note``. Its
     input is the server's note, not a member turn, so the session must
-    neither load nor save it. RESUME-4 owns the exact path.
+    neither load nor save it. RESUME-4a-1: the prologue marks the stored
+    session of the key stale first (:func:`_mark_native_session_stale`), so
+    the next turn reads the text history that holds the reply. RESUME-4b
+    owns the exact path.
 
     WS-43h: a provider with the store's own source id
     (``native_session_store.HISTORY_SOURCE_ID``) is the store's provider. A
