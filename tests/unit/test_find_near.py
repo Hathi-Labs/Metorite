@@ -105,9 +105,10 @@ class Near:
                         continue
                     # Full text holds the subject, the body and the sender name,
                     # and an address only as one whole token. With a sender,
-                    # the reader reads the mail from that sender only.
+                    # the reader reads the mail from that sender, and the
+                    # words of `q` still filter it, as the route does.
                     text = f"{subject} {body} {name} {address}"
-                    if sender or not q.strip() or _holds(q, text):
+                    if not q.strip() or _holds(q, text):
                         hits.append(Hit(app="email", kind="email", id=ident, title=subject,
                                         hint=f"Email · from {name}", href=f"/email?email={ident}",
                                         snippet=body))
@@ -216,22 +217,25 @@ class TestTheWords:
 
 
 class TestTheAsks:
-    def test_one_ask_for_each_word_with_the_best_spelling_of_all(self):
-        """Review of 2026-11-16 (P2-a): one ask for each word, so at most 3.
-        Email reads the mail from its own best sender in the same ask."""
+    def test_one_ask_for_each_word_with_the_query_replaced(self):
+        """Review of 2026-11-16 (P2-a), round 3 (P2-1): one ask for each word,
+        so at most 3. The ask is the whole query with that one word replaced
+        by the best spelling of all. Email reads the mail from its own best
+        sender, and the other words still filter that mail (``rest``)."""
         names = {key: name_match.near_lookup(["sharath"], NAMES[key], 5) for key in NAMES}
-        asks = company.near_asks(["sharath"], names, ["crm", "email", "tasks"])
-        assert [(a.q, a.keys, a.sender, a.spelling) for a in asks] == [
-            ("sharat", ("crm", "email", "tasks"), "Sharat", "Sharat"),
+        asks = company.near_asks(["sharath", "3d", "printer"], ["sharath"], names,
+                                 ["crm", "email", "tasks"])
+        assert [(a.q, a.keys, a.sender, a.rest, a.spelling) for a in asks] == [
+            ("sharat 3d printer", ("crm", "email", "tasks"), "Sharat", "3d printer", "Sharat"),
         ]
 
     def test_the_best_of_all_and_the_best_sender_of_email(self):
         names = {"crm": name_match.near_lookup(["nuropeak"], NAMES["crm"], 5),
                  "email": name_match.near_lookup(["nuropeak"], NAMES["email"], 5)}
-        asks = company.near_asks(["nuropeak"], names, ["crm", "email", "people"])
+        asks = company.near_asks(["nuropeak"], ["nuropeak"], names, ["crm", "email", "people"])
         # A tie of score goes to the raw trigrams: «Neuropeak» over «neuropeek».
-        assert [(a.q, a.keys, a.spelling, a.sender) for a in asks] == [
-            ("neuropeak", ("crm", "email", "people"), "Neuropeak", "neuropeek"),
+        assert [(a.q, a.keys, a.spelling, a.sender, a.rest) for a in asks] == [
+            ("neuropeak", ("crm", "email", "people"), "Neuropeak", "neuropeek", ""),
         ]
 
     def test_three_words_and_three_sources_give_at_most_three_asks(self):
@@ -240,7 +244,7 @@ class TestTheAsks:
                 "email": ["Sarath M", "Laxmy T", "Pujaa N", "sharat@x.test"],
                 "people": ["Sharat P", "Lakshmi Q", "Pooja Z"]}
         names = {key: name_match.near_lookup(words, pool[key], 5) for key in pool}
-        asks = company.near_asks(words, names, ["crm", "email", "people", "tasks"])
+        asks = company.near_asks(words, words, names, ["crm", "email", "people", "tasks"])
         assert len(asks) == 3
         assert [a.word for a in asks] == words
 
@@ -410,10 +414,11 @@ class TestTheFracktalCase:
         recency(True)
         find_on("*")
         answer = run("Sharath 3D printer")
-        # The mail from «Sharath BMS» holds "sharat" in its sender, so the
-        # sender filter finds it too: three records in all. "Sharath" alone
-        # found records, so the word is held, and no near line prints.
-        assert answer["near"] == [{"word": "Sharath", "as": "Sharat", "hits": 3, "held": True}]
+        # The deal and the mail of «Sharat»: the mail from «Sharath BMS» holds
+        # "sharat" in its sender, but not "3d printer", so the ask leaves it
+        # out (round 3, P2-1). "Sharath" alone found records, so the word is
+        # held, and no near line prints.
+        assert answer["near"] == [{"word": "Sharath", "as": "Sharat", "hits": 2, "held": True}]
         assert "No record holds «" not in cst.format_answer(answer, dated=True)
         # "3D" alone found the mail too. Its near copy holds 3 of 3 words and
         # the word copy 2, so the near copy stays (P2-d), and it comes first.
@@ -427,9 +432,27 @@ class TestTheFracktalCase:
         assert _hit(answer, "m-9")["matched_by"] == "word"
         # Each word alone still ran, after the one near ask.
         assert [b["word"] for b in answer["broadened"]] == ["sharath", "3d", "printer"]
+        # CRM asks the replaced query. Email asks the other words, from the
+        # sender (round 3, P2-1).
         asked = world.asked("crm")
-        assert asked.index(("sharat", {})) < asked.index(("sharath", {}))
-        assert ("sharat", {"sender": "Sharat"}) in world.asked("email")
+        assert asked.index(("sharat 3d printer", {})) < asked.index(("sharath", {}))
+        assert ("3d printer", {"sender": "Sharat"}) in world.asked("email")
+
+    def test_the_order_older_than_the_senders_newest_mail_comes_back(
+            self, world, recency, find_on, monkeypatch):  # noqa: F811
+        """Round 3 (P2-1): Sharat sent 6 newer mails about other things. The
+        near ask keeps the other words, so the printer order comes back, and
+        no mail that holds none of them is tagged near."""
+        chatter = [(f"m-x{i}", f"Lunch plan {i}", "Sharat Satyanarayana",
+                    "sharat@neuropeek.com", "see you soon") for i in range(6)]
+        monkeypatch.setattr(sys.modules[__name__], "MAIL_ROWS", [*chatter, *MAIL_ROWS])
+        recency(True)
+        find_on("*")
+        answer = run("Sharath 3D printer")
+        near = {h["id"]: h for h in answer["hits"] if h["matched_by"] == "near"}
+        assert "m-7" in near and (near["m-7"]["covers"], near["m-7"]["of"]) == (3, 3)
+        assert not any(i.startswith("m-x") for i in near)
+        assert not any(h["id"].startswith("m-x") for h in answer["hits"])
 
     def test_a_long_query_that_never_ran_alone_claims_nothing(
             self, world, recency, find_on):  # noqa: F811
@@ -613,7 +636,7 @@ class TestThePrint:
         broadened = [{"word": "sharath", "hits": 2, "skipped": []},
                      {"word": "puja", "hits": 0, "skipped": []}]
         got = {e["word"]: e["held"] for e in find.near_report(
-            near, found, broadened, words_of=["sharath", "laxmi", "puja"], first_zero=False,
+            near, found, broadened, query="Sharath Laxmi Puja", first_zero=False,
             skipped=[])}
         # Sharath alone found 2. Laxmi is in a hit of its own words. Puja is
         # only in a near hit, and alone it found nothing in every app.
@@ -624,12 +647,12 @@ class TestThePrint:
         skipped, a first pass with a skipped app, and a word that was never
         searched alone (a query of more than 5 tokens) are all unknown."""
         near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
-        words = ["puja", "shah"]
 
         def held(broadened: Any, *, first_zero: bool = True, skipped: Any = (),
-                 words_of: Any = None) -> Any:
-            (entry,) = find.near_report(near, {}, broadened, words_of=words_of or words,
-                                        first_zero=first_zero, skipped=list(skipped))
+                 query: str = "Puja Shah", limited: bool = False) -> Any:
+            (entry,) = find.near_report(near, {}, broadened, query=query,
+                                        first_zero=first_zero, skipped=list(skipped),
+                                        limited=limited)
             return entry["held"]
 
         zero = [{"word": "puja", "hits": 0, "skipped": []}]
@@ -638,9 +661,53 @@ class TestThePrint:
         assert held(zero, skipped=["email"]) is None
         assert held(None) is None
         # A query of the word alone: the first pass is the word alone.
-        assert held(None, words_of=["puja"]) is False
-        assert held(None, words_of=["puja"], skipped=["crm"]) is None
-        assert held(None, words_of=["puja"], first_zero=False) is True
+        assert held(None, query="Puja") is False
+        assert held(None, query="  puja ") is False
+        assert held(None, query="Puja", skipped=["crm"]) is None
+        assert held(None, query="Puja", first_zero=False) is True
+
+    def test_a_typed_token_that_is_not_the_word_proves_nothing(self):
+        """Round 3 (P2-2): the first pass searched "Sharath's" as typed. The
+        CRM matches each typed token, so «Sharath BMS» was missed. The first
+        pass is the word alone only when the typed token is the word."""
+        near = [{"word": "Sharath", "as": "Sharat", "hits": 1}]
+        for query in ("Sharath's", "Sharath.", "Sharath\u2019s"):
+            (entry,) = find.near_report(near, {}, None, query=query, first_zero=True,
+                                        skipped=[])
+            assert entry["held"] is None, query
+        (entry,) = find.near_report(near, {}, None, query="Sharath", first_zero=True,
+                                    skipped=[])
+        assert entry["held"] is False
+
+    def test_the_route_makes_no_claim_for_a_possessive(
+            self, world, recency, find_on):  # noqa: F811
+        """P2-2 on the route: the lead «Sharath .» and the contact «Sharath BMS»
+        hold the word, and the first pass asked "Sharath's" as typed."""
+        recency(True)
+        find_on("*")
+        answer = run("Sharath's")
+        assert [(e["word"], e["held"]) for e in answer["near"]] == [("Sharath", None)]
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
+
+    def test_a_search_limited_by_a_date_or_by_verified_proves_nothing(self):
+        """Round 3 (P3-3): with `after` or `verified_only`, an older or an
+        unverified record may hold the word, so held is not known."""
+        near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
+        zero = [{"word": "puja", "hits": 0, "skipped": []}]
+        for broadened, query in ((zero, "Puja Shah"), (None, "Puja")):
+            (entry,) = find.near_report(near, {}, broadened, query=query, first_zero=True,
+                                        skipped=[], limited=True)
+            assert entry["held"] is None, query
+
+    def test_the_route_limits_held_with_after(self, world, recency, find_on):  # noqa: F811
+        recency(True)
+        find_on("*")
+        answer = asyncio.run(company.company_search(
+            q="nuropeak", apps=None, k=5, user=member(*ALL), after="2020-01-01"))
+        assert [e["held"] for e in answer["near"]] == [None, None]
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
+        # Non-vacuity: with no date, the word alone that found nothing is false.
+        assert {e["held"] for e in run("nuropeak")["near"]} == {False}
 
     def test_undated_text_has_no_near_line(self):
         body = {"hits": [], "near": [{"word": "Sharath", "as": "Sharat", "hits": 1}],

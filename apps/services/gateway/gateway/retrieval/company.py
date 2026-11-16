@@ -625,7 +625,8 @@ async def _broaden(
 @dataclass(frozen=True)
 class NearAsk:
     """One ask of the near step: *q* to the apps of *keys*. *sender* asks
-    Email for the mail from that sender. *word* is the content word that the
+    Email for the mail from that sender, and *rest*, the other words of the
+    query, still filter that mail. *word* is the content word that the
     spelling *spelling* stands for."""
 
     q: str
@@ -633,6 +634,7 @@ class NearAsk:
     word: str
     spelling: str
     sender: str | None = None
+    rest: str = ""
 
 
 async def _near_lookup(
@@ -672,16 +674,20 @@ async def _near_lookup(
 
 
 def near_asks(
-    chosen: list[str], names: dict[str, dict[str, list[NearName]]], asked: list[str],
+    words_of: list[str], chosen: list[str], names: dict[str, dict[str, list[NearName]]],
+    asked: list[str],
 ) -> list[NearAsk]:
     """The asks of the near step: ONE for each word of *chosen*, so at most
     ``name_match.NEAR_MAX_WORDS`` (HRD-18b review of 2026-11-16, P2-a). Pure.
 
-    The ask carries the best spelling of all the sources alone
-    (``name_match.best_spelling``: the score, then the raw trigrams), to each
-    app of *asked*. An app with ``senders`` (Email) reads the mail from its
-    own best sender in the same ask (``sender``), because a full-text word
-    never matches inside an address.
+    The ask is the whole query, *words_of*, with that one word replaced by
+    the best spelling of all the sources (``name_match.best_spelling``: the
+    score, then the raw trigrams), to each app of *asked* (round 3, P2-1).
+    An app with ``senders`` (Email) reads the mail from its own best sender
+    in the same ask (``sender``), because a full-text word never matches
+    inside an address. The other words (``rest``) still filter that mail,
+    so an old order of the sender comes back, and his newest chatter does
+    not.
     """
     out: list[NearAsk] = []
     for word in chosen:
@@ -693,8 +699,10 @@ def near_asks(
             mine.spelling for key in asked if REGISTRY[key].senders
             and (mine := name_match.best_spelling(word, names.get(key, {}).get(word, [])))
         ), None)
-        out.append(NearAsk(every.spelling.lower(), tuple(asked), word, every.spelling,
-                           sender=sender))
+        out.append(NearAsk(
+            " ".join(find.spelled(words_of, word, every.spelling)), tuple(asked), word,
+            every.spelling, sender=sender, rest=" ".join(w for w in words_of if w != word),
+        ))
     return out
 
 
@@ -808,7 +816,7 @@ async def _near_step(
         until = started + (until - started) * NEAR_SHARE
     chosen = find.near_words(words, words_of, find.held(found, words_of))
     names = await _near_lookup(user, chosen, order, until) if chosen else {}
-    asks = near_asks(chosen, names, asked) if names else []
+    asks = near_asks(words_of, chosen, names, asked) if names else []
     lexical = {k: v for k, v in options.items() if k not in ("vectors", "budget_s")}
     passes: list[dict[str, list[Hit]]] = []
     #: Each word and spelling, and the records that they found, with no repeat.
@@ -817,7 +825,9 @@ async def _near_step(
         share = max(0.0, until - loop.time()) / (len(asks) - i)
         extra = dict(lexical)
         if ask.sender:
+            # Email: the mail from the sender that holds the other words.
             extra["sender"] = ask.sender
+            extra["sender_words"] = ask.rest
         got, _skipped, _knowledge = await _ask_each(
             user, ask.q, list(ask.keys), per_app, hybrid=False, options=extra,
             since=since, deadline=loop.time() + share, timed=False,
@@ -964,6 +974,6 @@ async def company_search(
         answer["broadened"] = broadened
     if near:
         answer["near"] = find.near_report(
-            near, found, broadened, words_of=words_of or [], first_zero=first_zero,
-            skipped=skipped)
+            near, found, broadened, query=words, first_zero=first_zero, skipped=skipped,
+            limited=since is not None or only_verified)
     return answer

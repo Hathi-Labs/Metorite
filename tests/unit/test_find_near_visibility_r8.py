@@ -413,6 +413,22 @@ async def test_sharath_3d_printer_finds_the_deal_and_the_mail_in_one_call(
     assert world["mail_b"] not in str(answer) and "Secretname" not in str(answer)
 
 
+async def test_the_order_older_than_the_senders_newest_mail_comes_back(
+        world, flags, roomy) -> None:
+    """Round 3 (P2-1): Sharat sent 6 newer mails about lunch. The near ask
+    keeps the other words of the query beside the sender, so the printer
+    order comes back, and no lunch mail is tagged near."""
+    p = world["p"]
+    lunch = [_mail(p.admin_engine, org=p.org_a, account=world["box_a"],
+                   name="Sharat Satyanarayana", address=NEUROPEEK,
+                   subject=f"Lunch {i}", body="see you at noon") for i in range(6)]
+    flags("*")
+    answer = await _ask(p, _member(A, p.org_a, *ALL), "Sharath 3D printer")
+    hits = {h["id"]: h for h in answer["hits"]}
+    assert world["mail_a"] in hits and hits[world["mail_a"]]["matched_by"] == "near"
+    assert not set(lunch) & set(hits)
+
+
 async def test_another_sharath_in_the_first_pass_still_finds_sharat(
         world, flags, roomy) -> None:
     """Production, 2026-11-14: «Sharath BMS» is the contact of «Twin Dragon 300

@@ -142,43 +142,52 @@ OWN_RUNGS = frozenset({"exact", "words", "word"})
 
 
 def _alone(asked: list[str], broadened: list[dict[str, Any]] | None, *,
-           words_of: list[str], first_zero: bool) -> tuple[int, bool] | None:
+           query: str, first_zero: bool) -> tuple[int, bool] | None:
     """What the word *asked* found alone: its hits, and whether an app was
     skipped. From its entry of ``broadened``, or from the first pass when the
-    query is the word itself. ``None`` when it was never searched alone."""
+    member typed the word itself. ``None`` when it was never searched alone.
+
+    The first pass searched the token as typed, and an app matches each typed
+    token. So "Sharath's" or "Sharath." is no search of "sharath" alone, and
+    the first pass counts only when the trimmed query IS the folded word
+    (round 3, P2-2).
+    """
     for entry in broadened or []:
         if isinstance(entry, dict) and name_match.words(entry.get("word")) == asked:
             hits = entry.get("hits")
             return (hits if isinstance(hits, int) else 0), bool(entry.get("skipped"))
-    if len(asked) == 1 and words_of == asked:
+    if len(asked) == 1 and (query or "").strip().casefold() == asked[0]:
         return (0 if first_zero else 1), False
     return None
 
 
 def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
-                broadened: list[dict[str, Any]] | None, *, words_of: list[str],
-                first_zero: bool, skipped: list[str]) -> list[dict[str, Any]]:
+                broadened: list[dict[str, Any]] | None, *, query: str,
+                first_zero: bool, skipped: list[str],
+                limited: bool = False) -> list[dict[str, Any]]:
     """Each entry of the route's ``near``, with ``held`` (HRD-18b).
 
     ``held`` is true when the word has a hit of its own: the word alone found
     records, or a hit of the answer that matched the member's own words holds
     it in its title, hint or snippet. It is false only with proof: the word
     was searched alone in every app that was asked, no app was skipped, in
-    the first pass (*skipped*) or alone, and it found nothing. In each other
-    case it is ``None``: not known. Only a false word may open the answer
-    with "No record holds" (§3.6, review of 2026-11-16). Pure.
+    the first pass (*skipped*) or alone, and it found nothing. A search that
+    *limited* by a date (``after``) or to verified pages proves nothing,
+    because an older or an unverified record may hold the word (round 3,
+    P3-3). In each other case it is ``None``: not known. Only a false word
+    may open the answer with "No record holds" (§3.6). Pure.
     """
     own = [f"{h.title} {h.hint} {h.snippet}" for hits in found.values() for h in hits
            if h.matched_by in OWN_RUNGS]
     out: list[dict[str, Any]] = []
     for entry in entries:
         asked = name_match.words(entry.get("word"))
-        alone = _alone(asked, broadened, words_of=words_of, first_zero=first_zero)
+        alone = _alone(asked, broadened, query=query, first_zero=first_zero)
         held: bool | None = None
         if (alone is not None and alone[0] > 0) or (
                 len(asked) == 1 and any(coverage(asked, t) for t in own)):
             held = True
-        elif alone is not None and not alone[1] and not skipped:
+        elif alone is not None and not alone[1] and not skipped and not limited:
             held = False
         out.append({**entry, "held": held})
     return out

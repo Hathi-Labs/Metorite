@@ -208,6 +208,7 @@ class Source:
         after: datetime | None = None, reviewed: bool = False,
         verified_only: bool = False, vectors: bool = False,
         budget_s: float | None = None, sender: str | None = None,
+        sender_words: str | None = None,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
@@ -219,7 +220,9 @@ class Source:
         owner and a review date in the future. A source ignores each option it does not declare, and the
         reader gets an option only when the consumer sets it. *sender*
         (HRD-18b) asks a source with ``senders`` for the mail from a near
-        sender only.
+        sender only. That source then reads *sender_words* in place of *q*:
+        the other words of the query, which still filter the mail (round 3,
+        P2-1). The sender stands for the near word, so the words leave it out.
         """
         if not holds(user, self.feature):
             return []
@@ -230,6 +233,7 @@ class Source:
             options["after"] = after
         if self.senders and sender:
             options["sender"] = sender
+            q = sender_words or ""
         if self.vectors and vectors:
             options["vectors"] = True
             # The time the route really left this source (KG-3b). Set only with
@@ -355,17 +359,16 @@ async def _email(
     user: UserContext, q: str, k: int, *, after: datetime | None = None,
     vectors: bool = False, budget_s: float | None = None, sender: str | None = None,
 ) -> list[Hit]:
-    """The member's mail. *sender* (HRD-18b) gives the mail from a sender
-    whose name or address holds it, newest first, through the route's own
-    ``from_addr`` filter, and *q* is not read then. A full-text word never
-    matches inside an address, so "neuropeek" finds the mail from
+    """The member's mail. *sender* (HRD-18b) keeps the mail from a sender
+    whose name or address holds it, through the route's own ``from_addr``
+    filter. *q* still filters and ranks that mail: the near step gives the
+    other words of the query there (round 3, P2-1). An empty *q* gives the
+    sender's newest mail, for a query of the one near word. A full-text word
+    never matches inside an address, so "neuropeek" finds the mail from
     ``neuropeek.com`` only this way."""
     from gateway.routes.email.transport.search import search_messages
 
     started = time.monotonic()
-    if sender:
-        # The near step asks for one sender alone (review of 2026-11-16).
-        q = ""
 
     # ⚠️ Every parameter, by name. The route declares them with `Query(...)`
     # defaults, and a direct call that left one out would pass the `Query`
