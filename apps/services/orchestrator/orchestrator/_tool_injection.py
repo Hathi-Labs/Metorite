@@ -3570,8 +3570,10 @@ def _chat_tools_open() -> bool:
     that the catalog route uses. The org is the run's own
     (:func:`_run_org_or_none`), never an argument (R5). It fails closed: no
     org, no gateway or an error reads as closed. :func:`_turn_with_skills`
-    asks it once for a turn with a skill to build, so with the flag off a
-    ``tool:`` action fails with ``chat_tools_off`` and brings no pack.
+    asks it once a turn at most. It asks for a turn with a skill to build, so
+    with the flag off a ``tool:`` action fails with ``chat_tools_off`` and
+    brings no pack. TOF-1c: when no name matches, the description pass asks
+    it first, and the build then uses that answer.
     """
     try:
         from gateway.routes.studio.flags import chat_tools_allowed
@@ -4301,6 +4303,10 @@ async def _apply_tool_packs(
 # loads only while ``STUDIO_CHAT_TOOLS_ORGS`` names the org
 # (:func:`_chat_tools_open`). ``tool_packs.choose`` adds the pack last, and
 # :func:`_apply_tool_packs` logs each skill that cannot bring its packs.
+# TOF-1c (``ai_studio_rows/TOF-1c.md``): when no name matches, the head
+# descriptions of the loadable skills give at most one skill
+# (``tool_search.match_skill_descriptions``). Only while
+# ``STUDIO_CHAT_TOOLS_ORGS`` names the org.
 
 
 async def _turn_with_skills(turn: Any) -> Any:
@@ -4313,9 +4319,17 @@ async def _turn_with_skills(turn: Any) -> Any:
     opens ``tenant_session()`` on the bound tenant, so RLS binds it. The
     store gives only the skills that the member may load
     (``skills_store.list_loadable``). The match reads the names, and only the
-    matched skills read a body, at most ``tool_packs.MAX_PACKS`` of them."""
+    matched skills read a body, at most ``tool_packs.MAX_PACKS`` of them.
+
+    TOF-1c: when no name matches, the description pass reads the head
+    descriptions of those same skills, and it names one skill at most. It
+    runs only when a head has a description and :func:`_chat_tools_open` is
+    True. That one read of the flag also serves the build. The pass writes
+    one ``executor.skill_matched`` line with the id and the hit count, and
+    never a word of the text. The description adds nothing to the prompt:
+    ``skill_packs.build`` makes the same pack as for a match by name."""
     from acb_common.db import current_tenant
-    from acb_skills import skill_packs, tool_packs
+    from acb_skills import skill_packs, tool_packs, tool_search
 
     words = str(getattr(turn, "words", "") or "")
     if not words.strip() or not _studio_open():
@@ -4333,17 +4347,27 @@ async def _turn_with_skills(turn: Any) -> Any:
         from acb_common.db import tenant_session
         from gateway.studio import skills_store
 
+        flag: bool | None = None
         async with tenant_session() as db:
             heads = await skills_store.list_loadable(db, member)
             named = [h.id for h in heads if skill_packs.matches(h.name, h.slug, words)]
+            # TOF-1c: a name wins. The pass needs a description and the flag.
+            if not named and any(h.description for h in heads):
+                flag = _chat_tools_open()
+                found = tool_search.match_skill_descriptions(
+                    words, {h.id: h.description for h in heads}) if flag else None
+                if found is not None:
+                    named = [found[0]]
+                    _log.info("executor.skill_matched", skill=found[0], hits=found[1])
             pairs = (await skills_store.loadable_versions(
                 db, member, named[:tool_packs.MAX_PACKS]) if named else [])
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.skills_unread", error_type=type(exc).__name__)
         return turn
     packs: list[Any] = []
-    # TOF-1b: one read of the flag, and only for a turn with a skill to build.
-    chat_tools = _chat_tools_open() if pairs else False
+    # TOF-1b: one read of the flag a turn, and only for a turn with a skill to
+    # build. TOF-1c: the description pass may have read it already.
+    chat_tools = (flag if flag is not None else _chat_tools_open()) if pairs else False
     for skill, version in pairs:
         built = skill_packs.build(
             skill.id, skill.name, skill.description, version.version,
