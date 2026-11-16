@@ -170,7 +170,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 
 **The rules.**
 
-1. **One key for each send.** The key is the existing `user_message_id`. No second id exists. The server keys a send on organization, thread and `user_message_id`. A repeat joins the first run by replay and starts no run. A send with no id works as it does today. The key comes from the session and the run binding, never from the body alone. Slice HRD-17a.
+1. **One key for each send.** The key is the existing `user_message_id`. No second id exists. The server keys a send on organization, thread and `user_message_id`. A repeat joins the first run by replay and starts no run. A repeat while a run is live is a steer of that run, so it adds no second run either. A send with no id works as it does today. The key comes from the session and the run binding, never from the body alone. Slice HRD-17a.
 2. **The outbox.** A send that the server did not acknowledge waits in `src/lib/chatOutbox.ts`. The server acknowledges a send with its first stream event, or when a poll finds the row by id. The outbox releases entries in order, once, on the `online` event and after the history fold. Slices HRD-17b and HRD-17d.
 3. **Where it lives.** The outbox lives in memory, and `sessionStorage` keeps a copy for a reload of the same tab. It never uses `localStorage`. It clears on sign-out and on a member switch. A fence reads the source and refuses a `localStorage` write of message text. This is the proposed default of D-HRD-17-1.
 4. **The waiting state.** A waiting entry shows in the existing run-status line (`runStatus.ts`) with a Cancel. It adds no banner. A send while a run is live is a steer, and it stays on the steer path (`chatSteer.ts`). It never enters the outbox.
@@ -236,7 +236,7 @@ A client slice that changes the look needs the owner's Visual review: light mode
 | **HRD-17a** | 3483 | The server runs one send once. A repeat of the same `user_message_id` in a thread joins the first run. Dark, behind a new flag | `tests/unit/test_send_once.py` | HIGH |
 | **HRD-17b** | 3484 | The chat outbox: in memory, with `sessionStorage` for a reload. It releases once and in order. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
 | **HRD-17c** | 3485 | A send while the history loads waits for the load. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
-| **HRD-17d** | 3486 | A send that lost its connection before the server answered is not marked sent. Builder: lane-ui | a vitest on the hook seam | STANDARD |
+| **HRD-17d** | 3486 | A send that lost its connection before the server answered is not marked sent. Builder: lane-ui | `src/hooks/useAgentChatDisconnect.test.ts` | STANDARD |
 | **HRD-17e** | 3487 | The server's copy wins the fold of a second device, and a shorter write before the seal is refused if the check says so. Builder: lane-ui, with a HIGH server part | `src/lib/chatFold.test.ts`, `tests/unit/test_chat_upsert_no_shrink_r8.py` | STANDARD |
 | **HRD-17f** | 3488 | The e2e test with the network off, and the Visual review. Builder: lane-ui | `e2e/chat_outbox.spec.ts` | STANDARD |
 | **HRD-18** | 2997 | Names as people say them. HRD-18a, BUILT 2026-11-14: the one matcher, the CRM search word by word with its near pass (`crm_platform.md` §19.5), `resolve_person` and `find_contact`. HRD-18b: the company search and the mail sender match | `tests/unit/test_name_variants.py`, `tests/unit/test_crm_near_search_r8.py` (R8) | STANDARD |
