@@ -362,6 +362,8 @@ async function installResume(page: Page, opts: { mintRow: boolean }) {
         const method = (init?.method ?? "GET").toUpperCase();
         if (url.includes("/room")) return json({ detail: "not a room" }, 403);
         if (method === "GET" && url.includes("/messages") && s.threadId && url.includes(s.threadId) && s.phase !== "none" && s.phase !== "r1") {
+          // A read of the saved rows after the run ended: the poll's merge.
+          if (s.phase === "ended") calls.push("rows-after-end");
           const rows: unknown[] = [
             { id: s.userId, role: "user", content: "Move Acme to Payment Complete", timestamp: s.r1At },
             { id: s.replyId, role: "assistant", content: PARKED, timestamp: s.r1At + 1, toolEvents: [] },
@@ -476,7 +478,7 @@ async function expectOneNewReply(page: Page) {
   expect(body).not.toContain("stopped waiting");
   expect(body).not.toContain("as a new message");
   // After the reload, the chat only re-attached: it sent no turn of its own.
-  expect((await resumeCalls(page)).filter((c) => c !== "reconnect" && c !== "respond")).toEqual([]);
+  expect((await resumeCalls(page)).filter((c) => c !== "reconnect" && c !== "respond" && c !== "rows-after-end")).toEqual([]);
   expect((await resumeCalls(page)).filter((c) => c === "reconnect").length).toBeGreaterThanOrEqual(1);
 }
 
@@ -497,9 +499,9 @@ test.describe("A late Approve resumes the parked card (RESUME-3a)", () => {
     await expectOneNewReply(page);
     // The poll reads the fold's row under its own id, and merges it into
     // the reply that the chat drew. Still one.
-    await expect.poll(async () => page.evaluate(() =>
-      (window as unknown as { __srv: { read: () => { phase: string } } }).__srv.read().phase), { timeout: 15_000 }).toBe("ended");
-    await page.waitForTimeout(12_000);
+    await expect.poll(async () => (await resumeCalls(page)).filter((c) => c === "rows-after-end").length, { timeout: 40_000 })
+      .toBeGreaterThan(0);
+    await page.waitForTimeout(1_500);
     await expect(page.locator("[data-rollup-turn]").filter({ hasText: RESUMED_TEXT })).toHaveCount(1);
   });
 });
