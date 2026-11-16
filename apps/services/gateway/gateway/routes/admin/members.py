@@ -922,6 +922,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     _PersonRows("connection_asks", "integration_attention",
                 "kind = 'ask' AND lower(member_email) = :email"
                 f" AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-2a (D163.2): the member's private topics of THIS organization.
+    # Only the owner reads a member topic, so a purged member leaves none
+    # behind. A company topic names no owner, so it stays. The clause names
+    # the bound org beside RLS, as `connection_asks` does. No table hangs off
+    # `chat_topic` in CO-2a.
+    _PersonRows("chat_topics", "chat_topic",
+                "scope = 'member' AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # Task 3435 (chat_run_continuity.md §4.12.4 item 1): the chat cards that
     # asked the member, in THIS organization. A row holds the card, the
     # member's answer and, with RESUME, the arguments of a call. Only the
