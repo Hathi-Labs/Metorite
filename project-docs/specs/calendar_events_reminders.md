@@ -54,15 +54,16 @@
   on. The planner reads no event, so the pack rules tell the model to check
   each proposed block against the events.
 
-  **The mark of CE-15 waits for the owner (task 3463).** Until the owner
-  rules, the code uses the safe default `EVENTS_MARK_UNTRUSTED = True`: a read
-  that shows an event marks the chat. In a marked chat, each egress tool,
+  **The mark of CE-15 is DECIDED by the owner, 2026-11-16 06:36 UTC (task
+  3463).** The code sets `EVENTS_MARK_UNTRUSTED = True`: a read that shows an
+  event marks the chat. In a marked chat, each egress tool,
   such as `fetch_page`, asks for the member's card, for up to 400 days. The
   twelve `calendar-day` writes leave that chat only where
   `HELD_CARD_WRITES_ORGS` names the org, and that list is empty by default.
 
-  With the mark off, `fetch_page` runs with no card after the chat reads a
-  hostile title. In both cases, none of the twelve writes asks for a card.
+  Without the mark, `fetch_page` would run with no card after the chat reads
+  a hostile title. The owner did not choose that. None of the twelve writes
+  asks for a platform card.
 
   **RX-3 (a reminder looks and acts like a reminder in My Day) and RX-4
   (the push has buttons) are BUILT, 2026-11-02**, under epic task 1402. They
