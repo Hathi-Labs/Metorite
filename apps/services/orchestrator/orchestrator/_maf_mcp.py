@@ -1525,6 +1525,7 @@ def _make_gate_class() -> type:
                 context.result = DENIED_TEXT.format(tool=name)
                 return
             _log.info("mcp.confirm", server=server, tool=name, outcome="approved")
+            rec["outcome"] = "card_approved"
             await call_next()
 
         @staticmethod
