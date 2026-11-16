@@ -426,7 +426,10 @@ export function detailRows(row: Connection): { label: string; value: string }[] 
   // `always_confirm` (H-300) and `read_only_key` (MCP-C2) are drawn as
   // switches, not as lines of text.
   return Object.entries(row.detail ?? {})
-    .filter(([key]) => key !== "key_names" && key !== "always_confirm" && key !== "read_only_key")
+    .filter(
+      ([key]) =>
+        key !== "key_names" && key !== "always_confirm" && key !== "read_only_key" && key !== "description",
+    )
     .map(([key, value]) => ({
     label: key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
     value: String(value),
@@ -500,6 +503,17 @@ export function mcpName(row: Connection): string | null {
 // row with no key reads as off, which is what the gateway reads too.
 
 export const ALWAYS_CONFIRM_LABEL = "Always ask before any tool runs";
+/** CSY-7: what the Description field tells the admin. The chat reads the text. */
+export const DESCRIPTION_HINT = "The chat reads this to know when to use the server. Say what data it holds.";
+
+/** CSY-7: the gateway stores 400 characters of a description at most. */
+export const MCP_DESCRIPTION_MAX = 400;
+
+/** CSY-7: the description that the list sends for an MCP server ("" when none). */
+export function mcpDescription(row: Connection): string {
+  return row.kind === "mcp" ? (row.detail?.description ?? "") : "";
+}
+
 export const ALWAYS_CONFIRM_HELP =
   "A server says which of its tools only read data. Metorite does not trust that claim. " +
   "With this on, every tool of this server waits for a member to approve it.";
