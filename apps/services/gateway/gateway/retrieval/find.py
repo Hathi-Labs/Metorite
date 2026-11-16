@@ -1,0 +1,105 @@
+"""How a hit says how it matched (WS-FIND FIND-2, ``find_engine.md`` §3.3 to §3.5).
+
+Pure functions and one flag reader. No SQL and no model call. With
+``FIND_ORGS`` empty, the route never reaches this module, so its answer stays
+the answer of KR-ZERO, byte for byte.
+
+* :func:`content_words` is the fold of §3.3. "Sharath's" gives ``sharath``.
+* :func:`coverage` counts the content words that a hit holds in its title,
+  hint or snippet.
+* :func:`rung_of` gives each ``matched_by`` its place in the ladder of §3.1.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import re
+from typing import Any
+
+from acb_common import get_settings, name_match
+
+#: The ``matched_by`` values of §3.5, from the closed list. The lower the
+#: number, the lower the rung of §3.1, and the earlier the hit comes on a tie.
+RUNGS: dict[str, int] = {
+    "exact": 1,
+    "words": 1,
+    "word": 2,
+    "near": 3,
+    "related": 4,
+    "meaning": 5,
+    "chat": 6,
+    "outside": 7,
+}
+
+#: The stop words of Postgres (``english.stop``), the list of KR-ZERO. A stop
+#: word is not a content word.
+_STOP = frozenset(
+    "i me my myself we our ours ourselves you your yours yourself yourselves he "
+    "him his himself she her hers herself it its itself they them their theirs "
+    "themselves what which who whom this that these those am is are was were be "
+    "been being have has had having do does did doing a an the and but if or "
+    "because as until while of at by for with about against between into "
+    "through during before after above below to from up down in out on off over "
+    "under again further then once here there when where why how all any both "
+    "each few more most other some such no nor not only own same so than too "
+    "very s t can will just don should now".split()
+)
+
+_PLURAL = re.compile(r"(?<=[a-z0-9]{3})s$")
+
+
+def find_allowed(organization_id: str | None) -> bool:
+    """True when ``FIND_ORGS`` holds the org, or holds ``*``. Default OFF.
+
+    The one reader of the setting. The org comes from the session, never from
+    request input (R5). A reload applies a change (``docs/flag_reload.md``).
+    """
+    if not organization_id:
+        return False
+    raw = str(getattr(get_settings(), "find_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def content_words(query: str) -> list[str]:
+    """The content words of *query*, in order, folded to lower case (§3.3).
+
+    No stop word, no one-letter word and no final ``'s``, so "Sharath's"
+    gives ``sharath``. A repeated word counts once. Pure.
+    """
+    out: list[str] = []
+    for word in name_match.words(query):
+        if len(word) < 2 or word in _STOP or word in out:
+            continue
+        out.append(word)
+    return out
+
+
+def _stem(word: str) -> str:
+    """A plural folded to its singular, so "printers" holds "printer"."""
+    return _PLURAL.sub("", word)
+
+
+def coverage(words: list[str], text: str) -> int:
+    """How many of *words* appear in *text*, as whole words (§3.4). Pure."""
+    held = {_stem(w) for w in name_match.words(text)}
+    return sum(1 for word in words if _stem(word) in held)
+
+
+def rung_of(matched_by: str | None) -> int:
+    """The rung number of a ``matched_by`` value. An unknown value is last."""
+    return RUNGS.get(matched_by or "", len(RUNGS) + 1)
+
+
+def stamped(hit: Any, words: list[str], matched_by: str, **extra: Any) -> Any:
+    """*hit* with ``matched_by``, ``covers`` and ``of`` set (§3.5).
+
+    A hit that already says how it matched keeps its lower rung. Pure: the
+    hit is frozen, so this gives a new one.
+    """
+    if getattr(hit, "matched_by", None) and rung_of(hit.matched_by) <= rung_of(matched_by):
+        matched_by, extra = hit.matched_by, {}
+    covers = coverage(words, f"{hit.title} {hit.hint} {hit.snippet}")
+    return dataclasses.replace(
+        hit, matched_by=matched_by, covers=covers, of=len(words), **extra,
+    )

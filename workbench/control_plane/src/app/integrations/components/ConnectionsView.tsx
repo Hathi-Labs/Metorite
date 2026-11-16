@@ -76,6 +76,7 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [savingConfirm, setSavingConfirm] = useState(false);
+  const [savingDescription, setSavingDescription] = useState(false);
   // MCP-C2 review: a save of the switches that the list may not show yet.
   const [held, setHeld] = useState<HeldSwitches | null>(null);
   // The list on screen now, so a save that ends records the list it saw.
@@ -220,6 +221,30 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
+  async function saveDescription(text: string) {
+    const name = open ? mcpName(open) : null;
+    if (!open || !name) return;
+    setSavingDescription(true);
+    try {
+      await api.setMcpDescription(name, text);
+      toast.show({
+        key: "integrations-description",
+        variant: "success",
+        title: "Description saved. New chats read it.",
+      });
+    } catch (err) {
+      toast.show({
+        key: "integrations-description",
+        variant: "error",
+        title: err instanceof Error ? err.message : "The request failed.",
+      });
+    } finally {
+      // Both ways: read the list again, so the panel shows what is stored.
+      invalidateConnections();
+      setSavingDescription(false);
+    }
+  }
+
   async function startConnect() {
     const name = open ? mcpName(open) : null;
     if (!open || !name) return;
@@ -295,6 +320,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           onSwitches={setSwitches}
           savingSwitches={savingConfirm || Boolean(heldView?.wait)}
           switches={heldView?.switches ?? null}
+          onDescription={saveDescription}
+          savingDescription={savingDescription}
           onConnect={() => {
             setConnectError(null);
             setAskingConnect(true);

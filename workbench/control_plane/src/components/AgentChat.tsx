@@ -79,7 +79,8 @@ import {
   confirmationReducer,
   formEditsReducer,
   liveCards,
-  liveEdits,
+  closedEdits,
+  heldKeys,
   receiptLabel,
   settleAnswer,
   type FormEdits,
@@ -117,7 +118,7 @@ import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import RunStatusRow, { useSteadyRunView } from "@/components/RunStatusRow";
 import { isLivePhase, isRunActiveForUi } from "@/lib/runStatus";
-import { dispatchRun, getCardLog, getSessionState, noteCardAnswered } from "@/lib/chatStore";
+import { dispatchRun, getCardLog, getFormEdits, getSessionState, keepFormEdits, noteCardAnswered } from "@/lib/chatStore";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
@@ -1175,15 +1176,37 @@ export default function AgentChat({
   // Fix round 5: the member's edits of each new-mail form, by key. The CHAT
   // holds them, and not the queue, because the queue mounts again on each new
   // message and when its last card leaves. A ref: the form reads them once,
-  // when it mounts. `liveEdits` drops the entry of a card that closed for good.
-  const formEditsRef = useRef<FormEdits>(NO_EDITS);
+  // when it mounts.
+  // Task 1893: the edits of each THREAD also live in `chatStore`, beside the card log. A chat switch
+  // and a new mount of this component (another chat, the Email pane, a rail, the dock) read them back,
+  // so the card that the log redraws keeps an untick. `clearCardLog` (a new run, the end of one) clears
+  // them with the log. The ref is read DURING render on a switch, because a form reads its edits once,
+  // when it mounts, and that can be in the same commit.
+  const formEditsRef = useRef<FormEdits>(getFormEdits(sessionId) ?? NO_EDITS);
+  const editsThreadRef = useRef(sessionId);
+  const heldRef = useRef<ReadonlySet<string>>(new Set());
+  if (editsThreadRef.current !== sessionId) {
+    editsThreadRef.current = sessionId;
+    formEditsRef.current = getFormEdits(sessionId) ?? NO_EDITS;
+    heldRef.current = new Set();
+  }
   const onFormEdits = useCallback((key: string, value: NewMailEdits) => {
     formEditsRef.current = formEditsReducer(formEditsRef.current, { key, value });
-  }, []);
+    keepFormEdits(sessionId, formEditsRef.current);
+  }, [sessionId]);
   const savedFormEdits = useCallback((key: string) => formEditsRef.current.get(key), []);
   useEffect(() => {
-    formEditsRef.current = liveEdits(formEditsRef.current, confirmations);
-  }, [confirmations]);
+    // Only a card that LEFT the queue in this thread loses its edits: an answer, a slot that a draft
+    // took, a slot that ended. The reset of a chat switch is not that: it empties the queue, and the
+    // card log then redraws the card. `heldRef` starts empty on a switch, so nothing counts as left.
+    const now = heldKeys(confirmations);
+    const next = closedEdits(formEditsRef.current, heldRef.current, now);
+    heldRef.current = now;
+    if (next !== formEditsRef.current) {
+      formEditsRef.current = next;
+      keepFormEdits(sessionId, next);
+    }
+  }, [confirmations, sessionId]);
   const onCardDraft = useCallback((key: string, draft: CardDraft | null) => {
     if (draft) cardDraftsRef.current.set(key, { draft, seq: ++draftSeqRef.current });
     else cardDraftsRef.current.delete(key);
