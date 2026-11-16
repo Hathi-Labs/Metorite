@@ -1,5 +1,5 @@
 /**
- * The warning for a task that names a person who is not a member (task 3597).
+ * The warning for a task that names a person who is not in the people list (task 3597).
  *
  * The server puts a `not in the directory` row on a card BEFORE Approve when
  * an assignee is an address that the `people` table does not know. The row drew
@@ -15,7 +15,7 @@
  * Fence: `src/components/assigneeWarning.test.ts`.
  */
 
-import { cardKey, parseFieldValue } from "@/lib/cardFields";
+import { cardKey } from "@/lib/cardFields";
 
 /** The key that the server writes for the addresses that `people` does not know. */
 export const STRANGER_KEY = "not in the directory";
@@ -25,13 +25,16 @@ const ACCESS_KEY = "gives access to";
 /** The words of the warning. The owner may change them here and nowhere else. */
 export const ASSIGNEE_WARNING = {
   one: (address: string) =>
-    `${address} is not a member of your organization. The task lists this address, but this person will not see the task or get a notice. Invite the person, or pick a member.`,
+    `${address} is not in your organization's people list. The task lists this address, but this person cannot see the task or get a notice until they are invited. Invite the person, or pick someone from the list.`,
   many: (addresses: readonly string[]) =>
-    `${addresses.join(", ")} are not members of your organization. The task lists these addresses, but these people will not see the task or get a notice. Invite them, or pick members.`,
+    `${addresses.join(", ")} are not in your organization's people list. The task lists these addresses, but these people cannot see the task or get a notice until they are invited. Invite them, or pick people from the list.`,
 } as const;
 
+/** The warning names this many addresses. Each tick row keeps its own mark. */
+export const MAX_SHOWN = 5;
+
 /** The mark on a tick row, and its accessible name (the text is the name). */
-export const ASSIGNEE_ROW_MARK = "Assignee not a member";
+export const ASSIGNEE_ROW_MARK = "Assignee not in the list";
 
 /** The shape that this file needs from a card field. */
 interface FieldLike {
@@ -41,9 +44,22 @@ interface FieldLike {
 }
 
 const norm = (s: string) => s.trim().toLowerCase();
+/** "and 4 more", which the server may add after the last address. */
+const MORE = /\s+and\s+\d+\s+more\s*$/;
 
-function itemsOf(value: string): string[] {
-  return parseFieldValue(value, true).after.map((i) => i.text.trim()).filter(Boolean);
+/**
+ * The addresses of a value. The server writes ONE fence with a comma list
+ * (`«a@x.com, b@x.com»`), and a list of fences (`«a», «b»`) gives the same
+ * result. Each address comes once, in order, whatever its case.
+ */
+function addressesOf(value: string): string[] {
+  const text = value.replace(/[«»]/g, "").replace(MORE, "");
+  const out: string[] = [];
+  for (const part of text.split(",")) {
+    const a = part.trim();
+    if (a && !out.some((o) => norm(o) === norm(a))) out.push(a);
+  }
+  return out;
 }
 
 /** The addresses that the card says the directory does not know. */
@@ -51,7 +67,7 @@ export function strangerAddresses(fields: readonly FieldLike[]): string[] {
   const out: string[] = [];
   for (const f of fields) {
     if (cardKey(f.key) !== STRANGER_KEY) continue;
-    for (const v of f.values ?? [f.value]) for (const a of itemsOf(v)) if (!out.includes(a)) out.push(a);
+    for (const v of f.values ?? [f.value]) for (const a of addressesOf(v)) if (!out.some((o) => norm(o) === norm(a))) out.push(a);
   }
   return out;
 }
@@ -59,7 +75,11 @@ export function strangerAddresses(fields: readonly FieldLike[]): string[] {
 /** The sentence of the warning, or "" when no address is a stranger. */
 export function assigneeWarningText(addresses: readonly string[]): string {
   if (addresses.length === 0) return "";
-  return addresses.length === 1 ? ASSIGNEE_WARNING.one(addresses[0]) : ASSIGNEE_WARNING.many(addresses);
+  if (addresses.length === 1) return ASSIGNEE_WARNING.one(addresses[0]);
+  const more = addresses.length - MAX_SHOWN;
+  const shown = addresses.slice(0, MAX_SHOWN).join(", ");
+  const list = more > 0 ? `${shown} and ${more} more` : shown;
+  return ASSIGNEE_WARNING.many([list]);
 }
 
 /**
@@ -75,12 +95,14 @@ export function fieldsWithoutStrangers<T extends FieldLike>(fields: readonly T[]
     const key = cardKey(f.key);
     if (key === STRANGER_KEY) continue;
     if (key === ACCESS_KEY && f.values === undefined) {
-      const items = itemsOf(f.value);
+      const items = addressesOf(f.value);
       const kept = items.filter((a) => !gone.has(norm(a)));
       if (kept.length < items.length) {
-        if (kept.length === 0) continue;
-        const fenced = f.value.includes("«");
-        out.push({ ...f, value: kept.map((a) => (fenced ? `«${a}»` : a)).join(", ") });
+        const tail = MORE.exec(f.value.replace(/[«»]/g, ""))?.[0] ?? "";
+        // Nobody named is left. The people that the server only counted stay.
+        if (kept.length === 0 && !tail) continue;
+        const text = kept.length === 0 ? tail.trim().replace(/^and\s+/, "") : kept.join(", ") + tail;
+        out.push({ ...f, value: f.value.includes("«") ? `«${text}»` : text });
         continue;
       }
     }
@@ -89,10 +111,13 @@ export function fieldsWithoutStrangers<T extends FieldLike>(fields: readonly T[]
   return out;
 }
 
-/** True when the first address of a row's hint is a stranger. */
+/** An address inside a hint segment: `Name (a@x.com)` or a bare `a@x.com`. */
+const ADDRESS = /[^\s,()<>«»]+@[^\s,()<>«»]+/g;
+
+/** True when ANY address in the first " · " segment of a hint is a stranger. */
 export function rowIsStranger(hint: string | undefined, strangers: readonly string[]): boolean {
   if (!hint || strangers.length === 0) return false;
-  const first = hint.split(" · ")[0].replace(/[«»]/g, "");
   const gone = new Set(strangers.map(norm));
-  return first.split(/[,\s]+/).some((t) => t !== "" && gone.has(norm(t)));
+  const first = hint.split(" · ")[0];
+  return (first.match(ADDRESS) ?? []).some((a) => gone.has(norm(a.replace(/[.;:]+$/, ""))));
 }

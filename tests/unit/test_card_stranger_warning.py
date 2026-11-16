@@ -58,3 +58,44 @@ async def test_a_member_has_no_such_line(monkeypatch) -> None:
     fake_gateway(monkeypatch, knows_one)
     await skill_projects.create_task(UUID, "Survey the site", assignees=STRANGER)
     assert "not in the directory" not in asked[0]["context"]
+
+
+# ── The real shapes (fix round 1) ───────────────────────────────────────────
+#
+# Several strangers are ONE fence with a comma list, never a fence for each.
+# `REAL_SHAPES` in `workbench/control_plane/src/components/assigneeWarning.test.ts`
+# holds the same three strings. Change one place, and this test or that one fails.
+
+_NOTE = "This change is recorded as yours, made through the Projects assistant."
+_SEEN = "seen by: «everyone in the organization (8 people)»"
+
+
+def _block(gives: str, strangers: str) -> str:
+    from skill_projects import writes as W
+
+    return W._fields_block(
+        {"seen by": "everyone in the organization (8 people)",
+         "gives access to": gives, "not in the directory": strangers}
+    )
+
+
+def test_the_real_text_for_one_two_and_three_strangers() -> None:
+    assert _block("a@x.com", "a@x.com") == (
+        f"{_NOTE}\n{_SEEN}\ngives access to: «a@x.com»\nnot in the directory: «a@x.com»"
+    )
+    assert _block("a@x.com, b@x.com, m@x.com", "a@x.com, b@x.com") == (
+        f"{_NOTE}\n{_SEEN}\ngives access to: «a@x.com, b@x.com, m@x.com»\n"
+        "not in the directory: «a@x.com, b@x.com»"
+    )
+    assert _block("a@x.com, b@x.com, c@x.com and 4 more", "a@x.com, b@x.com, c@x.com") == (
+        f"{_NOTE}\n{_SEEN}\ngives access to: «a@x.com, b@x.com, c@x.com and 4 more»\n"
+        "not in the directory: «a@x.com, b@x.com, c@x.com»"
+    )
+
+
+async def test_create_task_writes_two_strangers_as_one_fence(monkeypatch) -> None:
+    """The line that the card gets from the real tool, not from the helper."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _no_names)
+    await skill_projects.create_task(UUID, "Survey the site", assignees="a@x.com,b@x.com")
+    assert "not in the directory: «a@x.com, b@x.com»" in asked[0]["context"]
