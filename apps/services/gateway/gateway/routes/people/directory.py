@@ -10,9 +10,11 @@ and neither answer is computed here. Both are imported.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import name_match
 from fastapi import Depends, HTTPException
 from gateway.routes.people.absences import away_today
 from gateway.routes.people.core import (  # noqa: F401 — re-exports
@@ -188,6 +190,37 @@ async def list_directory(
     return DirectoryResponse(rows=people, total=len(people), hr_visible=hr,
                              can_manage=can_manage_people(user),
                              self_person_id=mine)
+
+
+#: The names that the near lookup of the company search reads (HRD-18b,
+#: ``find_engine.md`` §4.3 and §6): the name and the preferred name of each
+#: person of the directory, the newest first. The directory lists every
+#: person, so the lookup does too. It names the bound tenant beside row level
+#: security, so an unbound GUC matches no row.
+NEAR_NAME_SQL = (
+    "SELECT name, preferred_name FROM people "
+    "WHERE organization_id = CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid) "
+    "ORDER BY updated_at DESC NULLS LAST, id LIMIT :cap"
+)
+
+
+async def near_names(
+    user: UserContext, words: list[str], k: int,
+) -> dict[str, list[name_match.NearName]]:
+    """The directory names near each of *words*, for the company search.
+
+    No route: ``retrieval/sources.py`` calls it only for a member who holds
+    ``feature:people``, the gate of this router. A name is no HR field, so
+    the HR projection does not apply. ``acb_common.name_match`` scores the
+    names in Python, off the event loop.
+    """
+    async with _tenant_session() as db:
+        rows = (await db.execute(
+            text(NEAR_NAME_SQL), {"cap": name_match.NEAR_VOCABULARY},
+        )).fetchall()
+    names = [str(n) for r in rows for n in (r.preferred_name, r.name) if n]
+    return await asyncio.to_thread(
+        name_match.near_lookup, words, names, k, deadline=name_match.scoring_deadline())
 
 
 @router.get("/facets")
