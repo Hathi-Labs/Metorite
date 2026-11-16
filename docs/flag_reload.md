@@ -82,10 +82,18 @@ once, in a new reply, with no member turn. `*` lists every org, and the
 default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
-a late Approve takes the path of before. The late-approve scope holds the
-SPENT mark that stops the stored call of a twin card from writing twice. No
-client reads the answer `resumed` before RESUME-3, so do not add an org to
-`CHAT_RESUME_ORGS` before RESUME-3 merges.
+a late Approve takes the path of before. The SPENT mark stops the stored call
+of a twin card from writing twice. Since task 3467, either flag writes that
+mark. No client reads the answer `resumed` before RESUME-3, so do not add an
+org to `CHAT_RESUME_ORGS` before RESUME-3 merges.
+
+⚠️ Keep this order for each org (`chat_run_continuity.md` §4.12.4 item 2).
+Put the org in `CHAT_LATE_APPROVE_ORGS` BEFORE you put it in
+`CHAT_RESUME_ORGS`. Remove the org from `CHAT_LATE_APPROVE_ORGS` only
+`chat_ask_ttl_hours` (168 h by default) after you remove it from
+`CHAT_RESUME_ORGS`. A box that runs code from before task 3467 writes the mark
+only under `CHAT_LATE_APPROVE_ORGS`. Without the order, an old card can then
+write its act a second time.
 
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
 it at each card, and the injection asks it at the start of each run. The late

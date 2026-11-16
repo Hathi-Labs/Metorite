@@ -7127,6 +7127,7 @@ async def _resume_prologue(
         RESUMED_CHANGED,
         RESUMED_NOT_RUN,
         RESUMED_SPENT,
+        RESUMED_UNKNOWN,
         compose_resumed_call_note,
     )
 
@@ -7187,8 +7188,10 @@ async def _resume_prologue(
         text = "" if result is None else str(result)
         yield _sse({"type": "TOOL_CALL_RESULT", "toolCallId": call_id,
                     "content": text[:2000], "success": ok})
-        outcome = {"changed": RESUMED_CHANGED, "spent": RESUMED_SPENT}.get(
-            state.outcome, RESUMED_APPROVED)
+        # P2-3: a claim that could not tell maps to the neutral note, never
+        # to "spent" (which says that the change ran) or "approved".
+        outcome = {"changed": RESUMED_CHANGED, "spent": RESUMED_SPENT,
+                   "unknown": RESUMED_UNKNOWN}.get(state.outcome, RESUMED_APPROVED)
         _log.info("executor.resume_ran", agent=agent_name, tool=name[:60],
                   outcome=state.outcome or "no_card", ok=ok)
         note = compose_resumed_call_note(title, text, outcome)
