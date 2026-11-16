@@ -194,6 +194,8 @@ class TestTheFormatter:
 #: second number check. Each reads one value. None checks a model's numbers
 #: against sources.
 _OTHER_PARSERS = {
+    "packages/acb_common/acb_common/number_sense.py":
+        "grouping reads ONE figure against ONE source value, for the digit grouping and the scale. It checks no model answer against sources (NUM-1)",
     "apps/services/gateway/gateway/routes/email/automation/insights_extract.py":
         "parse_amount reads ONE amount from a quote, and refuses a scaled one (D-EM-41)",
     "apps/services/gateway/gateway/routes/notes/copilot_policy.py":

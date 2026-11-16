@@ -10,7 +10,14 @@ shapes that give NO finding, and the DEWiN case that MUST give one.
 
 from __future__ import annotations
 
+import math
+import shutil
+import subprocess
+import tempfile
 import time
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
 
 from acb_common import number_sense as ns
 
@@ -155,7 +162,6 @@ def test_past_the_cap_the_check_reads_the_largest_buckets() -> None:
 def test_the_module_is_pure() -> None:
     """No I/O, no settings and no model: the module imports none of them."""
     import ast
-    from pathlib import Path
 
     source = Path(ns.__file__).read_text(encoding="utf-8")
     imported = {
@@ -165,4 +171,255 @@ def test_the_module_is_pure() -> None:
         for alias in node.names
     }
     assert imported <= {"__future__", "bisect", "collections.abc", "dataclasses",
-                        "datetime", "heapq", "re", "typing"}
+                        "datetime", "decimal", "heapq", "math", "re", "typing"}
+
+
+def test_the_module_reads_no_clock() -> None:
+    """No ``datetime.now``, ``date.today``, ``utcnow`` or ``time.`` call."""
+    source = Path(ns.__file__).read_text(encoding="utf-8")
+    for banned in ("datetime.now", "date.today", ".utcnow", "time.time", "time.monotonic",
+                   "time.sleep", "import time"):
+        assert banned not in source, banned
+
+
+# ── Hostile values ───────────────────────────────────────────────────────────
+
+_HOSTILE = [None, math.nan, math.inf, -math.inf, True, False, "12", "abc", "", [], {},
+            object(), Decimal("NaN"), 10**400]
+
+
+def test_outlier_calm_and_positive() -> None:
+    """Mutations: OUTLIER_RATIO 5 to 50, a flipped ``<``, the OUTLIER_MIN_PEERS
+    rule dropped. Each turns this test or the edge test red."""
+    calm = [(f"2026-{m:02d}", 100.0 + m, 10) for m in range(1, 13)]
+    assert ns.outlier(calm) == []
+    rows = [(m, 100.0, 5) for m in "abcde"] + [("October", 620.0, 5)]
+    [one] = ns.outlier(rows, bucket="month")
+    assert one.sentence == "October is 6.2 times the median of the other 5 months. Check why."
+    assert (one.kind, one.severity, one.key, one.records) == (ns.OUTLIER, "warn", "October", 5)
+    low = [("a", 100.0, 5), ("b", 100.0, 5), ("c", 100.0, 5), ("d", 10.0, 5)]
+    [two] = ns.outlier(low)
+    assert two.sentence == "d is under one fifth of the median of the other 3 buckets. Check why."
+
+
+def test_outlier_edges() -> None:
+    peers = [(f"p{i}", 100.0, 1) for i in range(3)]
+    assert ns.outlier([*peers, ("x", 500.0, 1)]) == []        # exactly 5 times
+    assert len(ns.outlier([*peers, ("x", 500.1, 1)])) == 1    # just over
+    assert ns.outlier([*peers, ("x", 20.0, 1)]) == []         # exactly one fifth
+    assert len(ns.outlier([*peers, ("x", 19.9, 1)])) == 1     # just under
+    # Min peers: 2 peers are too few, 3 are enough.
+    assert ns.outlier([*peers[:2], ("x", 900.0, 1)]) == []
+    assert len(ns.outlier([*peers, ("x", 900.0, 1)])) == 1
+
+
+def test_outlier_zero_negative_and_missing() -> None:
+    zero = [(f"p{i}", 0.0, 1) for i in range(4)]
+    assert ns.outlier([*zero, ("x", 50.0, 1)]) == []           # a zero median
+    neg = [(f"p{i}", -10.0, 1) for i in range(4)]
+    assert ns.outlier([*neg, ("x", 50.0, 1)]) == []            # a negative median
+    peers = [(f"p{i}", 100.0, 1) for i in range(3)]
+    # None value, no records, no key: no bucket, no peer.
+    junk = [("n", None, 5), ("z", 900.0, 0), (None, 900.0, 5), ("", 900.0, 5)]
+    assert ns.outlier([*peers, *junk]) == []
+    assert ns.outlier([*peers, ("x", 900.0, 1), ("n", None, 5)])[0].total_records == 4
+    # The leave-one-out median holds for an even and an odd count of peers.
+    for size in range(3, 9):
+        rows = [(f"p{i}", 100.0 * (i + 1), 1) for i in range(size)]
+        for key, value, _r in rows:
+            others = sorted(v for k, v, _c in rows if k != key)
+            middle = len(others) // 2
+            median = others[middle] if len(others) % 2 else (others[middle - 1] + others[middle]) / 2
+            expect = value > 5 * median or value < median / 5
+            got = {f.key for f in ns.outlier(rows)}
+            assert (key in got) == expect or len(got) == ns.OUTLIER_MAX_FINDINGS
+
+
+def test_every_check_survives_hostile_values() -> None:
+    peers = [(f"p{i}", 100.0, 1) for i in range(5)]
+    for bad in _HOSTILE:
+        assert ns.outlier([*peers, ("x", bad, 1)]) == []
+        assert ns.outlier([*peers, ("x", 100.0, bad)]) == []
+        assert ns.outlier([*peers, (bad, 100.0, 1)]) == []
+        assert ns.coverage(bad, 5) == [] and ns.coverage(10, bad) == []
+        assert ns.coverage(10, 1, {"draft": bad}) == []
+        assert ns.parts(bad, [("a", 1.0), ("b", 2.0)]) == []
+        assert ns.parts(10.0, [("a", bad), ("b", 2.0)]) == []
+        assert ns.parts(10.0, bad) == []
+        assert ns.part_period(bad, date(2026, 11, 1), date(2026, 11, 13)) == []
+        assert ns.part_period("month", bad, date(2026, 11, 13)) == []
+        assert ns.part_period("month", date(2026, 11, 1), bad) == []
+        assert ns.grouping(bad, 100.0) == []
+        assert ns.grouping("1,00,000", bad) == []
+        assert ns.grouping("1,00,000", 100.0, bad) == []
+    assert ns.outlier([]) == [] and ns.coverage(0, 0) == [] and ns.parts(0, []) == []
+    assert ns.grouping("", 1.0) == [] and ns.grouping("hello world", 1.0) == []
+    assert ns.part_period("month", date(9999, 12, 1), date(9999, 12, 5)) == []
+
+
+def test_a_huge_series_finishes_fast_and_is_deterministic() -> None:
+    rows = [(f"k{i}", 100.0 + i % 3, 1) for i in range(100_000)]
+    rows.append(("spike", 9_000.0, 1))
+    start = time.perf_counter()
+    first = ns.outlier(rows)
+    assert time.perf_counter() - start < 0.5
+    assert first == ns.outlier(rows) and first == ns.outlier(list(rows))
+    assert ns.parts(100.0, [(f"p{i}", 1.0) for i in range(100_000)]) == []
+
+
+def test_outlier_gives_at_most_three_findings_the_farthest_first() -> None:
+    rows = [(f"p{i}", 100.0, 1) for i in range(10)]
+    rows += [("a", 600.0, 1), ("b", 900.0, 1), ("c", 700.0, 1), ("d", 800.0, 1)]
+    assert [f.key for f in ns.outlier(rows)] == ["b", "d", "c"]
+
+
+# ── coverage ─────────────────────────────────────────────────────────────────
+
+
+def test_coverage_dewin_case() -> None:
+    """Mutations: COVERAGE_SHARE 0.20 to 0.99, and ``>=`` to ``>``."""
+    [one] = ns.coverage(14_313, 13_219, measure="Total Tax Invoice Amount")
+    assert one.sentence == "13,219 of the records have no Total Tax Invoice Amount. Check why."
+    assert (one.kind, one.key, one.records, one.total_records) == (
+        ns.COVERAGE, "no_value", 13_219, 14_313)
+
+
+def test_coverage_edges_and_status() -> None:
+    assert ns.coverage(100, 19) == []
+    assert len(ns.coverage(100, 20)) == 1                      # 20 % is a finding
+    assert ns.coverage(100, 101) == []                         # more than the total
+    assert ns.coverage(100, 0, {"draft": 19}) == []
+    [one] = ns.coverage(100, 0, {"Draft": 10, "cancelled": 10, "open": 80})
+    assert one.sentence == ("20 of the records have the status draft or cancelled. "
+                            "Check if they belong in the total.")
+    [only] = ns.coverage(100, 0, {" DRAFT ": 25})
+    assert only.sentence.startswith("25 of the records have the status draft. ")
+    assert ns.coverage(100, 5, {"open": 95}) == []
+    assert len(ns.coverage(100, 30, {"draft": 30})) == 2
+
+
+# ── parts ────────────────────────────────────────────────────────────────────
+
+
+def test_parts_positive_calm_and_edges() -> None:
+    """Mutations: PARTS_GAP_SHARE 0.01 to 0.5, PARTS_GAP_MIN_UNITS 1 to 1e9."""
+    rows = [("Rent", 30_000_000.0), ("IP", 20_000_000.0), ("power", 11_000_000.0)]
+    [one] = ns.parts(78_000_000.0, rows)
+    assert one.sentence == "Rent, IP and power add up to 6.1 crore, not 7.8 crore. Check the parts."
+    assert ns.parts(61_000_000.0, rows) == []
+    # Over 1 % but 1 unit or less: calm. Over 1 unit but 1 % or less: calm.
+    assert ns.parts(100.0, [("a", 50.0), ("b", 50.9)]) == []
+    assert ns.parts(1_000_000.0, [("a", 500_000.0), ("b", 505_000.0)]) == []
+    assert len(ns.parts(1_000_000.0, [("a", 500_000.0), ("b", 510_001.0)])) == 1
+    assert len(ns.parts(100.0, [("a", 50.0), ("b", 52.0)])) == 1
+    assert ns.parts(100.0, [("a", 100.0)]) == []               # one part is no sum
+    two = ns.parts(1000.0, [("a", 400.0), ("b", 500.0)])[0]
+    assert two.sentence == "a and b add up to 900, not 1,000. Check the parts."
+    many = ns.parts(1000.0, [(f"p{i}", 1.0) for i in range(8)])[0]
+    assert many.sentence.startswith("The 8 parts add up to 8, not 1,000.")
+    west = ns.parts(7.8e9, [("a", 6.1e9), ("b", 0.0)], indian=False)[0]
+    assert "6.1 billion, not 7.8 billion" in west.sentence
+
+
+# ── part_period ──────────────────────────────────────────────────────────────
+
+
+def test_part_period() -> None:
+    """Mutation: ``<`` to ``<=`` on the end of the period."""
+    [one] = ns.part_period("month", date(2026, 11, 1), date(2026, 11, 13))
+    assert one.sentence == "November has only 13 days so far."
+    assert (one.severity, one.records, one.total_records) == (ns.INFO, 13, 30)
+    assert ns.part_period("month", date(2026, 11, 1), date(2026, 11, 30)) == []   # the last day
+    assert len(ns.part_period("month", date(2026, 11, 1), date(2026, 11, 29))) == 1
+    assert ns.part_period("month", date(2026, 11, 1), date(2026, 12, 2)) == []
+    assert ns.part_period("month", date(2026, 11, 1), date(2026, 10, 31)) == []   # not begun
+    assert ns.part_period("month", date(2026, 12, 1), date(2026, 12, 1))[0].sentence == (
+        "December has only 1 day so far.")
+    [week] = ns.part_period("week", date(2026, 11, 9), datetime(2026, 11, 11, 9, 0))
+    assert week.sentence == "The week of 2026-11-09 has only 3 days so far."
+    assert ns.part_period("week", date(2026, 11, 9), date(2026, 11, 15)) == []
+    [quarter] = ns.part_period("quarter", date(2026, 10, 1), date(2026, 11, 15))
+    assert quarter.sentence == "The quarter from 2026-10-01 has only 46 days so far."
+    assert ns.part_period("quarter", date(2026, 10, 1), date(2026, 12, 31)) == []
+    assert ns.part_period("year", date(2026, 1, 1), date(2026, 2, 1)) == []
+
+
+# ── grouping ─────────────────────────────────────────────────────────────────
+
+
+def test_grouping_dewin_cases() -> None:
+    """Mutations: GROUPING_SCALE_RATIO 9 to 1000, and the Indian pattern dropped."""
+    # The right digits, the wrong scale: 3,35,68,33,347 is ten times 33.57 crore.
+    [scale] = ns.grouping("INR 3,35,68,33,347", 335_700_000.0)
+    assert scale.sentence == "INR 3,35,68,33,347 is not 33.57 crore. Use the display value."
+    assert scale.kind == ns.GROUPING and scale.severity == "warn"
+    [bad] = ns.grouping("335,683,334,7", 335_683_334.7)
+    assert bad.sentence == "335,683,334,7 has a wrong digit grouping. Use the display value."
+    assert ns.grouping("INR 33,56,83,334", 335_683_334.0) == []
+    assert ns.grouping("335,683,334", 335_683_334.0) == []
+    assert ns.grouping("335683334", 335_683_334.0) == []
+    assert ns.grouping("33.57 crore", 335_700_000.0) == []
+    assert ns.grouping("₹ 1,00,000.50", 100_000.5) == []
+
+
+def test_grouping_edges() -> None:
+    assert ns.grouping("1,00,000", 100_000.0) == [] and ns.grouping("1,000", 1000.0) == []
+    assert ns.grouping("12,34", 1234.0) != []                  # neither system
+    assert ns.grouping("1,2,3", 123.0) != []
+    assert ns.grouping("123,456", 123_456.0) == []             # western only
+    assert ns.grouping("1,23,456", 123_456.0) == []            # Indian only
+    assert ns.grouping("1234,567", 1_234_567.0) != []
+    assert ns.grouping("1,000", 0.0) == [] and ns.grouping("1,000", 1000.0, 0.5) == []
+    assert ns.grouping("1,000", 8_999.0) == []                 # 8.999 times: calm
+    assert len(ns.grouping("1,000", 9_000.0)) == 1             # 9 times: finding
+    assert len(ns.grouping("1,000", 111.0)) == 1
+    assert len(ns.grouping("0", 5.0)) == 1
+    assert ns.grouping("1,000", 1_001.0) == []                 # inside any tolerance
+
+
+# ── Whole module ─────────────────────────────────────────────────────────────
+
+
+def test_a_calm_twelve_month_series_gives_no_finding_of_any_kind() -> None:
+    months = [(f"2026-{m:02d}", 1000.0 + 10 * m, 40 + m) for m in range(1, 13)]
+    assert ns.findings(months, bucket="month") == []
+    assert ns.outlier(months, bucket="month") == []
+    assert ns.coverage(sum(c for _k, _v, c in months), 3, {"open": 400}) == []
+    assert ns.parts(sum(v for _k, v, _c in months), [(k, v) for k, v, _c in months]) == []
+    assert ns.part_period("month", date(2026, 10, 1), date(2026, 11, 15)) == []
+    assert ns.grouping("12,000", 12_000.0) == []
+
+
+def test_the_new_constants() -> None:
+    assert (ns.OUTLIER_RATIO, ns.OUTLIER_MIN_PEERS, ns.COVERAGE_SHARE, ns.COVERAGE_STATUSES,
+            ns.PARTS_GAP_SHARE, ns.PARTS_GAP_MIN_UNITS, ns.GROUPING_SCALE_RATIO) == (
+        5.0, 3, 0.20, ("draft", "cancelled"), 0.01, 1.0, 9.0)
+
+
+def test_every_sentence_holds_the_ste_rules() -> None:
+    """Under 20 words, no semicolon, and the repo STE linter passes."""
+    peers = [(f"p{i}", 100.0, 1) for i in range(5)]
+    found = [
+        *ns.outlier([*peers, ("October", 900.0, 1)], bucket="month"),
+        *ns.outlier([*peers, ("May", 1.0, 1)]),
+        *ns.coverage(14_313, 13_219, {"draft": 5_000}, measure="Total Tax Invoice Amount"),
+        *ns.parts(78_000_000.0, [("Rent", 3e7), ("IP", 2e7), ("power", 1.1e7)]),
+        *ns.part_period("month", date(2026, 11, 1), date(2026, 11, 13)),
+        *ns.part_period("week", date(2026, 11, 9), date(2026, 11, 11)),
+        *ns.grouping("INR 3,35,68,33,347", 335_700_000.0),
+        *ns.grouping("335,683,334,7", 335_683_334.7),
+        *ns.findings([("a", 1.0, 80), *[(f"d{i}", 1.0, 2) for i in range(5)]], label="Day"),
+    ]
+    assert len(found) >= 9
+    for f in found:
+        assert len(f.sentence.split()) < 20 and ";" not in f.sentence, f.sentence
+    root = Path(__file__).resolve().parents[2]
+    lint = root / ".claude" / "hooks" / "ste-lint.mjs"
+    if shutil.which("node") is None or not lint.exists():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        doc = Path(tmp) / "sentences.md"
+        doc.write_text("\n\n".join(f.sentence for f in found) + "\n", encoding="utf-8")
+        run = subprocess.run(["node", str(lint), str(doc)], capture_output=True,
+                             text=True, timeout=30, check=False)
+    assert run.returncode == 0, run.stdout + run.stderr
