@@ -1428,11 +1428,14 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
             )
             raise SupersedeRefused(thread_id, _owner, actor)
     if exclusive:
-        _prev = _DETACHED_TASKS.get(thread_id)
         try:
             _busy = await is_active(thread_id)
         except Exception:  # fail closed: start nothing
             _busy = True
+        # Read the task AFTER the await, so a run that registered during the
+        # await refuses too (RESUME-2a follow-up). No await follows before
+        # the cancel below, so nothing can register between the two.
+        _prev = _DETACHED_TASKS.get(thread_id)
         if _busy or (_prev is not None and not _prev.done()):
             _log.info("stream_relay.exclusive_refused", thread_id=thread_id[:12])
             raise SupersedeRefused(thread_id, "a run in flight", actor or "")

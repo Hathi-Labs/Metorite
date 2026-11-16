@@ -5,7 +5,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 `e5644259b`.
 
 **§4.12 (RESUME, task 3255) is a SPEC of 2026-11-14, verified at
-`3040ac9e4`. RESUME-1a and RESUME-2a are built, and both are dark (the rows below).** It makes a chat pick up exactly where
+`3040ac9e4`. RESUME-1a, RESUME-2a and RESUME-4a-1 are built, and all three are dark (the rows below).** It makes a chat pick up exactly where
 it left off. A late Approve runs the stored call of its card once, and a
 release keeps the work.
 
@@ -26,10 +26,11 @@ release keeps the work.
 | §4.10 — one run status in the open chat | **BUILT** 2026-10-19, branch `chat-run-status`, no flag |
 | §4.11 — the line of a slow tool (HRD-6 part 1, task 2985) | **BUILT** 2026-11-13, branch `mt-83488e2c-long-reads`, dark behind `CHAT_PROGRESS_NOTICE_ORGS` |
 | D-1 — a separate run worker | **DEFERRED** 2026-10-29 on evidence (§5). Not built |
-| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). RESUME-1a and RESUME-2a are built (the rows below) |
+| §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). RESUME-1a, RESUME-2a and RESUME-4a-1 are built (the rows below) |
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 — the retention of a waiting card's row (task 3435) | **BUILT** 2026-11-16, branch `stu-pa-prune`, no new flag and no migration. A prune hook of the job worker clears the stored call of each expired row and deletes a row 7 days after it expires. The member purge deletes the rows that asked a leaver. The prune runs only with `JOB_QUEUE` on, and `JOB_QUEUE` is off on production (§4.12.6, step 1a) |
-| §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. Do not flip it before RESUME-3. No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-4a-1 — a continuation marks the stored native session stale (task 3478) | **BUILT** 2026-11-16, branch `stu-resume4a`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `MAF_NATIVE_SESSIONS` on. No migration and no new flag. RESUME-4a-2 (the late decline) waits for D-RES-9. RESUME-4b (task 3479) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1542,7 +1543,8 @@ names (`bot_run.long_reads_on`). Every other org keeps 240 s and 300 s.
 ### §4.12 — a chat picks up exactly where it left off (RESUME, task 3255, SPEC 2026-11-14)
 
 **Status: 📋 SPEC, 2026-11-14. RESUME-1a (2026-11-15) and RESUME-2a
-(2026-11-16) are built and dark. Nothing else is built.** Metorite task 3255
+(2026-11-16) are built and dark, and so are the RESUME-2a follow-ups (task
+3467). Nothing else is built.** Metorite task 3255
 (RESUME-0). Verified against code at `origin/main` `3040ac9e4`. HRD-22 (task
 3231) is on `main`, and this section read its commits too.
 
@@ -1640,8 +1642,11 @@ nothing. RESUME-0a fixes it on rung 0.
   (`_tools.py`, `_extract_function_calls`). So MAF sends a history that ends
   in an assistant `function_call` X and a tool `function_result` X to the
   model. The model then goes on with the same turn. MAF never runs X again.
-- A result that holds `[APPROVAL_PENDING]` is a placeholder (`_tools.py`
-  3785). A later result for the same call id takes its place.
+- ⚠️ **Corrected 2026-11-16 (RESUME-4a).** MAF swaps an
+  `[APPROVAL_PENDING]` placeholder only inside its own approval flow.
+  `_replace_approval_contents_with_results` needs a
+  `function_approval_response`, and no code here makes one. So Metorite
+  must swap the placeholder in `session.state` itself. RESUME-4b does that.
 - MAF has its own approval too (`approval_mode="always_require"`, and
   `function_approval_request` and `function_approval_response` in
   `session.state["tool_approval"]`). This repo draws its cards inside the
@@ -1674,10 +1679,15 @@ nothing. RESUME-0a fixes it on rung 0.
   with no model. Then it starts a run whose input is one framed note with the
   result. The model reads the text history and the note, and goes on. Rung 1
   builds this path.
-- **The exact path** (RESUME-4) saves the session at the card, with call X and
-  a placeholder result. The continuation puts the real result under X and runs
-  with no new message. The model sees its own call and its own result, as if
-  no pause came.
+- **The exact path** (RESUME-4b) saves the session at the park, with call X
+  and a placeholder result. The continuation puts the real result under X
+  and runs with no new message. The model sees its own call and its own
+  result, as if no pause came.
+- **Why at the park, and not at the card** (corrected 2026-11-16). A
+  snapshot at the card stays behind when the member approves live and the
+  run then fails. Also, `session.state` never holds the turn in flight. MAF
+  stores the turn in `after_run` only at the end of a run. So the park save
+  builds the response again from the streamed updates.
 
 The precedent for a stored call with no model is live. A WhatsApp Confirm
 (`gateway/routes/whatsapp_channel/acts.py` `_run`) runs the same tool with the
@@ -1808,8 +1818,9 @@ The continuation run does these steps, in order:
    question card no tool runs. The result is the member's answer, in the
    text that the question tool gives the model.
 4. The model goes on. On the note path, the run input is one framed note. On
-   the exact path (RESUME-4), the input is the session with the real result
-   in place of the placeholder.
+   the exact path (RESUME-4b), the input is the session with the real result
+   in place of the placeholder. On the note path, the run marks the stored
+   session of the thread stale first (RESUME-4a-1), so the next turn reads the text history.
 5. The run ends as each run does. The fold folds the whole stream into the
    same reply row, and it clears a `run_interrupted` mark on that row.
 
@@ -1842,9 +1853,16 @@ path.
 - **The route.** `POST /agent/respond-input` calls `_resume_from_row` before
   `_late_answer_from_row`. It runs only with `CHAT_DURABLE_ASKS` on, and with
   `CHAT_RESUME_ORGS` and `CHAT_LATE_APPROVE_ORGS` both naming the org of the
-  session. RESUME needs both flags, because only the late-approve scope
-  writes and reads the SPENT mark of a twin card (review, P1-A). With either
-  flag off it reads nothing, and the answer is the answer of before.
+  session. RESUME needs both flags. With either flag off it reads nothing,
+  and the answer is the answer of before.
+- **The flag order** (follow-up P2-2). Since task 3467, either flag writes
+  the SPENT mark of a twin card. The grant still needs
+  `CHAT_LATE_APPROVE_ORGS`. Even so, keep this order for an org. Put it in
+  `CHAT_LATE_APPROVE_ORGS` before `CHAT_RESUME_ORGS`. Remove it from
+  `CHAT_LATE_APPROVE_ORGS` only `chat_ask_ttl_hours` after its removal from
+  `CHAT_RESUME_ORGS`. A box that runs code from before task 3467 writes the
+  mark only under `CHAT_LATE_APPROVE_ORGS`. `docs/flag_reload.md` holds the
+  same rule.
 - **The client.** No client reads the answer `resumed` before RESUME-3. So
   `CHAT_RESUME_ORGS` must not flip for an org before RESUME-3 merges.
 - **The checks before the claim.** The answer is `APPROVE` and not a
@@ -1875,7 +1893,13 @@ path.
   `pending_ask.restore_stored_call` is ONE statement under the predicates
   of the claim. It moves the row back to `parked` with its stored call, and
   the slot goes. So the member can answer the card again. A raise after
-  `start_detached` began keeps the claim (`ResumeLaunch.phase`).
+  `start_detached` began keeps the claim (`ResumeLaunch.phase`). The
+  refusal of `_refuse_if_any_run_is_active` comes before the mint, so it
+  writes no reply row. The exclusive refusal of `start_detached` comes
+  after the mint, so it leaves one empty reply row. The mint stays before
+  the start, because the run, its checkpoints and the restart sweep write
+  into that row. `start_detached` reads the task of the thread after its
+  `is_active` await, so a run that starts during that await refuses too.
 - **The starter.** The run route `run_agent_stream_endpoint` is the ONE
   starter. `_resume_from_row` calls it with `_continuation`, a server-only
   `ResumeLaunch`. Its HTTP value is `_no_continuation`, which reads no
@@ -1916,6 +1940,16 @@ path.
   finds it. The cost: an identical act in the same thread within that life
   shows one more card. `take_grant` refuses an act that was SPENT already
   too.
+- **The follow-ups of the re-review** (task 3467). P2-1: `drop_offer`
+  tests and deletes the offer in ONE step (`TenantRedis.delete_unless`, a
+  fixed Lua script). So it never deletes a SPENT mark that a twin's
+  `claim_act` writes between a read and a delete. P2-2: a live approve and
+  a claim write the mark when either flag names the org
+  (`late_approve._run_scope(spend=True)`).
+  P2-3: `claim_act` gives `taken`, `spent` or `unknown`. A Redis fault, no
+  scope and no act give `unknown`. The card shows for both `spent` and
+  `unknown`. The note of `unknown` (`chat_recovery.RESUMED_UNKNOWN`) says
+  that the change may have run already. It never says that it ran.
 - **At most once.** The claim comes before the call. A process crash between
   the claim and the start of the run leaves an answered row with no stored
   call, no write and no run. No "interrupted" notice shows, because no run
@@ -2095,12 +2129,13 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 | RESUME-0 (task 3255) | — | This section, the INDEX row and the WS-51 row (task 3255) | STE lint and the doc fences pass | `tests/unit/test_index_completeness.py` | LOW | none |
 | RESUME-0a (task 3259) | 0 | A failed read of the pending asks settles no card | The BFF route answers a failure as a failure. The chat closes no card on a failed read | `src/lib/pendingAsks.test.ts` | STANDARD | none |
 | RESUME-1 (task 3260) | 1 | The card stores its call: the `stored_call` column, the bind at the card, and the resumable list. RESUME-1a (task 3260) is the plain card, BUILT 2026-11-15 and dark. RESUME-1b (task 3434) is the question cards | A plain card of each listed write stores its tool, arguments, call id, card text and act keys. A rows card, an email card and a large call store none. The browser never reads it. Each listed tool writes nothing before its card. R8 holds the column under FORCE RLS | `tests/unit/test_resume_stored_call.py`, `tests/unit/test_resume_stored_call_r8.py`, `tests/unit/test_tenant_coverage.py` | HIGH (a migration, consent). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | none |
-| RESUME-2a (task 3261) | 1 | A late Approve of a plain card claims its row once and runs the stored call once, in a NEW reply (case B): the claim, the 200 `resumed`, the stored-call yes, the prologue and the note path. **BUILT** 2026-11-16, dark | The sequence of 2026-11-14 on a real Postgres and a private Redis gives one card, one write, no 409 and no member turn. A changed record writes nothing and shows the new card. Another member, thread or org runs nothing. A second answer runs nothing. Flag off, the bytes are as before | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (consent, the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-1 |
+| RESUME-2a (task 3261) | 1 | A late Approve of a plain card claims its row once and runs the stored call once, in a NEW reply (case B): the claim, the 200 `resumed`, the stored-call yes, the prologue and the note path. **BUILT** 2026-11-16, dark. The follow-ups P2-1 to P2-3 (task 3467) are built: an atomic drop of the offer, the mark under either flag, and a claim of three answers | The sequence of 2026-11-14 on a real Postgres and a private Redis gives one card, one write, no 409 and no member turn. A changed record writes nothing and shows the new card. Another member, thread or org runs nothing. A second answer runs nothing. Flag off, the bytes are as before | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py`, `tests/unit/test_late_approve_grant.py`, `tests/unit/test_late_approve_grant_r8.py` | HIGH (consent, the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-1 |
 | RESUME-2b (task 3460) | 1 | Case A: the same reply. The same run id, no stream reset, the XDEL of the parked `RUN_FINISHED`, the fold into the same row, and D-RES-7 | A thread whose last turn is the parked turn goes on in the same reply | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (the run loop) | RESUME-2a |
 | RESUME-2c (task 3461) | 1 | Case C: a live run on the thread. The stored call runs at once, and its result goes into the live run as a steer note | An Approve during a live run acts once, and the live reply knows it | `tests/unit/test_resume_continuation.py` | HIGH (consent, the run loop) | RESUME-2a |
-| RESUME-3 (task 3262) | 1 | The chat takes the resume: no envelope, no notice, the same bubble, the BFF keeps `parked`, and the words of §4.12.4 | A parked card approved after a reload turns to "Approved", and the same reply goes on. No "restarted" shows, before or after a reload. A park shows no "Done". Visual review of the card and the row | `src/lib/chatResume.test.ts`, `e2e/chat-card-restart.spec.ts` | HIGH (the attach loop) | RESUME-2 |
+| RESUME-3 (task 3262) | 1 | The chat takes the resume: no envelope, no notice, the same bubble, the BFF keeps `parked`, and the words of §4.12.4 | A parked card approved after a reload turns to "Approved", and the same reply goes on. No "restarted" shows, before or after a reload. A park shows no "Done". After a case-B continuation, the messages of the next send hold the reply. Visual review of the card and the row | `src/lib/chatResume.test.ts`, `e2e/chat-card-restart.spec.ts` | HIGH (the attach loop) | RESUME-2 |
 | RESUME-D1 (task 3263) | 1 | Chat · Rung 1 demo · Approve a card an hour later, and the work goes on | The owner runs the script below on production and says so on the task | none | demo | RESUME-0a to RESUME-3 |
-| RESUME-4 (task 3264) | 2 | The exact path: save the session at the card with call X and a placeholder result, put the real result under X, and run with no new message | The model input of a continuation holds the call and its real result under one call id, and no orphan call. A plain message after a park sends no orphan call | `tests/unit/test_resume_native_session.py`, `tests/unit/test_native_session_persistence.py` | HIGH (the run loop) | RESUME-2 |
+| RESUME-4a (task 3478) | 2 | Two parts. **4a-1, BUILT 2026-11-16, dark:** after each continuation on the note path, each stored native session of the thread goes stale. The prologue marks it before the stored call and before the model runs, so the next turn reads the text history that holds the reply. **4a-2:** the late decline. It waits for the owner decision D-RES-9 (§4.12.8), asked on task 3264 | 4a-1: in case B with `MAF_NATIVE_SESSIONS` on, the turn after a continuation loads no session for any agent of the thread (`digest_drop`, reason `resume_stale`), and the next turn reads the text history (which holds the reply when the browser's copy holds it). Another org cannot mark a row. A thread with no row gets no row, and a second mark changes nothing. With the flags off or `MAF_NATIVE_SESSIONS` off, the run sends no statement. 4a-2: as D-RES-9 decides | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_native_stale_r8.py` (R8) | HIGH (the run loop, the native session store). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-2a |
+| RESUME-4b (task 3479) | 2 | The exact path: save the session at the park with call X and a placeholder result, swap the real result under X in `session.state`, and run with no new message | The model input of a continuation holds the call and its real result under one call id, and no orphan call. A run that is not a continuation keeps the preamble goldens byte for byte (`tests/unit/test_native_session_persistence.py`, `evals/trajectories`) | `tests/unit/test_resume_native_session.py`, `tests/unit/test_native_session_persistence.py` | HIGH (the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-4a |
 | RESUME-5 (task 3265) | 2 | Park at the stop | A stop with a card open parks its run. The row is `parked`, the reply has no "interrupted" mark, and an Approve after the restart resumes it | `tests/unit/test_gateway_drain.py`, `tests/unit/test_pending_ask_flow.py` | HIGH (the deploy path) | RESUME-1 |
 | RESUME-6 (task 3266) | 2 | A cut run goes on by itself | A cut run with no open write goes on in the same reply with no notice. A run with an open write shows Continue, as today. Flag off, nothing goes on by itself | `tests/unit/test_resume_after_release.py` | HIGH (the run loop, the deploy path) | RESUME-2, RESUME-3 |
 | RESUME-D2 (task 3267) | 2 | Chat · Rung 2 demo · A release does not stop the chat | The owner runs the script below at a release slot | none | demo | RESUME-4 to RESUME-6, RESUME-D1 |
@@ -2148,6 +2183,12 @@ None takes a D number in `work_plan.md` §3.
 | **D-RES-6** | Does a parked card look the same as a live wait? | Yes: "Waiting for your answer" for both. A park is a server detail |
 | **D-RES-7** | How long does the live stream of a parked run stay? | 24 hours. After that, an Approve shows the rest of the reply as a new reply directly below the parked one |
 | **D-RES-8** | Turn HRD-22 on now, as the stop-gap of rung 0? | Yes, after its own review. RESUME-8 retires it 7 days after RESUME is on for each org |
+
+**D-RES-9, OPEN (asked on task 3264, 2026-11-16).** Item 3 of §4.12.4 says
+that a "Not now" runs nothing and starts no run. The owner must decide what
+a late decline of a parked card does. Option 1, the recommendation: start a
+continuation, so that the model says that nothing was done. Option 2: record
+the answer only, and start no run. RESUME-4a-2 waits for this decision.
 
 #### 4.12.9 Anchors, and where the evidence and the code differ
 
@@ -2316,6 +2357,7 @@ FLUSHDB. Run one R8 file at a time. A skip is not a pass.
 ```bash
 uv run pytest tests/unit/test_resume_continuation.py tests/unit/test_resume_stored_call.py   tests/unit/test_pending_ask_flow.py tests/unit/test_late_approve_grant.py   tests/unit/test_held_card_writes.py tests/unit/test_wac_writes.py
 uv run pytest tests/unit/test_run_started_producers.py tests/unit/test_maf_mcp_confirm.py   tests/unit/test_concurrent_run_guard.py tests/unit/test_chat_deploy_recovery.py   tests/unit/test_chat_fold_other_run.py tests/unit/test_steer_unsent_card.py
+uv run pytest tests/unit/test_tenant_redis.py tests/unit/test_card_outcome_vocabulary.py   tests/unit/test_chat_supersede.py
 uv run pytest tests/unit/test_native_session_persistence.py tests/unit/test_crm_questions_chat.py   tests/unit/test_fence_lists.py tests/unit/test_flag_doc_sorted.py tests/unit/test_tenant_coverage.py
 docker run -d --rm --name resume2-r8-redis -p 127.0.0.1:16401:6379 redis:7-alpine
 HELD_R8_REDIS_URL=redis://127.0.0.1:16401/0   uv run pytest tests/unit/test_resume_continuation_r8.py -rs
@@ -2323,6 +2365,22 @@ HELD_R8_REDIS_URL=redis://127.0.0.1:16401/0   uv run pytest tests/unit/test_late
 uv run pytest tests/unit/test_resume_stored_call_r8.py -rs
 uv run pytest tests/unit/test_pending_ask_store.py -rs
 uv run pytest tests/unit/test_wac_writes_r8.py -rs
+```
+
+For §4.12 RESUME-4a-1, from the repo root. The R8 file needs a private
+database. Run one R8 file at a time. A skip is not a pass.
+
+```bash
+uv run pytest tests/unit/test_resume_continuation.py tests/unit/test_native_session_persistence.py \
+  tests/unit/test_resume_stored_call.py tests/unit/test_pending_ask_flow.py
+uv run pytest tests/unit/test_late_approve_grant.py tests/unit/test_fence_lists.py \
+  tests/unit/test_flag_doc_sorted.py tests/unit/test_index_union.py tests/unit/test_tenant_coverage.py
+uv run pytest evals/trajectories/test_native_structured_history_trajectory.py \
+  evals/trajectories/test_hitl_trajectory.py -q
+uv run pytest tests/unit/test_resume_native_stale_r8.py -rs
+uv run pytest tests/unit/test_native_session_persistence.py -rs -k r8
+docker run -d --rm --name resume4-r8-redis -p 127.0.0.1:16406:6379 redis:7-alpine
+HELD_R8_REDIS_URL=redis://127.0.0.1:16406/0 uv run pytest tests/unit/test_resume_continuation_r8.py -rs
 ```
 
 ## 8. Waiting cards reach My Day (D171, 2026-11-03)

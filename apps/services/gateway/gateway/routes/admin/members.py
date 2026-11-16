@@ -781,6 +781,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     _PersonRows("email_accounts", "email_accounts", MEMBER_MAILBOXES_WHERE),
     _PersonRows("whatsapp_accounts", "wa_accounts", "lower(user_id) = :email"),
     _PersonRows("task_accounts", "task_accounts", "lower(user_id) = :email"),
+    # WS-CO CO-11: the member's own rows of THIS organization on each chat,
+    # the pins today and the topic of CO-2 later. A row is the member's only,
+    # so it goes with the member, on a shared room too, where the room stays.
+    # The clause names the bound org beside RLS, as `reminders` does. It runs
+    # before `private_chat_sessions`, whose cascade would take only the rows
+    # on her private chats. So the count is each row of the member.
+    _PersonRows("chat_member_rows", "chat_session_member",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER

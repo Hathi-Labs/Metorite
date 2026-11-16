@@ -27,6 +27,7 @@ The fence is `tests/unit/test_skill_task_lens.py`.
 | `my_tasks_archive(item_id, restore)` | `POST /projects/tasks/{id}/archive` or `/unarchive` |
 | `my_tasks_schedule` / `my_tasks_unschedule` | `PATCH /projects/tasks/{id}/personal` |
 | `my_tasks_list_schedule(from, to)` | `GET /projects/my/calendar` |
+| `my_tasks_list_events(from, to)` | `GET /projects/my/calendar`, the `entries` key only. The `calendar-day` pack holds it (CE-15) |
 | `my_tasks_accounts()` / `my_tasks_sync()` | No call. They answer that no tool is connected |
 | `my_tasks_inbox_insights`, `my_tasks_people`, `my_tasks_plan_project` | `/tasks/insights`, `/tasks/people`, `/tasks/plan*` |
 | `my_tasks_plan_day`, `my_tasks_replan_day`, `my_tasks_rollover`, `my_tasks_day_digest`, `my_tasks_estimate_stats`, `my_tasks_set_one_thing` | `/tasks/calendar/*` |

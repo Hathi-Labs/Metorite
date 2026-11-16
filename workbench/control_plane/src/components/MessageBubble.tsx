@@ -45,7 +45,7 @@ import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
 import { profileMarkShown, ranByViewer } from "@/lib/profileMark";
 import { offerPrompt } from "@/lib/studio/skillOffer";
-import { skillOfferOn } from "@/lib/studio/skillOfferFlag";
+import { useSkillOfferOn } from "@/lib/shell/shellPrefs";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
@@ -294,6 +294,8 @@ function MessageBubble({
   // names next. Ask the task lookup again, so a miss read before the write
   // does not stay text (owner report, 2026-10-19). Only this chat's answers
   // and the cards (`""`) are asked again, never another session's numbers.
+  // TOF-1d: the shell read says whether the org of the member has the offer.
+  const skillOfferShown = useSkillOfferOn();
   useRevalidateOnTools(
     dedupedToolEvents.filter((t) => t.status === "done").length,
     !!message.streaming,
@@ -897,11 +899,11 @@ function MessageBubble({
         </div>
       )}
       {/* Last, the skill offer of the turn (STU-F6a), dark behind
-          NEXT_PUBLIC_SKILL_OFFER. It comes after the turn ends, so it sits
+          STUDIO_SKILL_OFFER_ORGS (the shell read serves it). It comes after the turn ends, so it sits
           under the action bar and its arrival moves no part of the turn. It
           reads only the typed words and the catalog, never a tool argument
           or a tool result. The ONE mount of the card. */}
-      {skillOfferOf && skillOfferOn() && (
+      {skillOfferOf && skillOfferShown && (
         <SkillOfferCard
           turn={{
             messageId: message.id,

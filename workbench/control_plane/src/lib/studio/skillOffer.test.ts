@@ -44,6 +44,7 @@ import { starterFor } from "./skillStarter";
 import type { CatalogAction } from "./skillsApi";
 import {
   MIN_CALLS,
+  NON_ANSWER_HEADS,
   NOT_SAVED,
   STALE_CATALOG,
   SAVE_LATER,
@@ -63,6 +64,7 @@ import {
   pressSave,
   promptBefore,
   provenSolo,
+  readCandidate,
   saveInput,
   skillHref,
   skillOffer,
@@ -619,5 +621,126 @@ describe("the press of the card", () => {
     expect(offerLocal("m-1")).toEqual({ kind: "dismissed" });
     expect(calls).toBe(0);
     expect(offerAsks(turn(), answeredOffer(offerLocal("m-1")))).toBe(false);
+  });
+});
+
+// ── TOF-1d: the chat tool source ────────────────────────────────────────────
+
+describe("TOF-1d: a turn of chat tool reads", () => {
+  // The rows of the source `tool` (`gateway/studio/chat_tool_actions.py`): the
+  // id is `tool:<name>`, the `tool` is the chat tool, and the class comes from
+  // the annotation of the tool (A reads only, B changes, C sends).
+  const toolRow = (name: string, cls: string): CatalogAction => ({
+    id: `tool:${name}`, title: name, source: "tool", class: cls, tool: name,
+  });
+  const TOOL_ROWS: CatalogAction[] = [
+    toolRow("search_crm", "A"),
+    toolRow("projects_tree", "A"),
+    // The email reads say `read_only=False`, so the catalog gives them class B (TOF-1a).
+    toolRow("query_inbox", "B"),
+    toolRow("find_tasks", "A"),
+    toolRow("create_task", "B"),
+    toolRow("send_reply", "C"),
+  ];
+  // The answers of tools in scope (`skill_families`): `search_crm` of the
+  // CRM assistant, `projects_tree` and `find_tasks` of Projects, and
+  // `query_inbox` of Email. Each is plain text in the shape of its file: a
+  // head line and "- ..." lines. No answer holds a common success mark.
+  const READ: Record<string, string> = {
+    search_crm: "Leads: 2 match, page 1.\n- Asha Rao · New (id=11)\n- Dev Mehta · Won (id=12)",
+    projects_tree: "Space Engineering\n  Project Roadmap  full_id: 5f0e",
+    query_inbox: "3 messages match.\n- From Asha: Invoice 22",
+    find_tasks: "2 tasks match 'invoice':\n- #12 Pay invoice",
+    create_task: "Created #44 Pay invoice.\n  full_id: 9a1c",
+  };
+  const readCall = (name: string, extra: Partial<OfferCallLike> = {}) => call(name, {}, { result: READ[name], ...extra });
+  const reads = () => [readCall("search_crm"), readCall("projects_tree"), readCall("find_tasks")];
+
+  it("three reads of CRM and Projects give one offer, named by the rows of the source tool", () => {
+    const offer = skillOffer(turn({ calls: reads() }), TOOL_ROWS, false);
+    expect(offer?.actions.map((a) => a.id)).toEqual(["tool:search_crm", "tool:projects_tree", "tool:find_tasks"]);
+    expect(offer?.actions.map((a) => a.cls)).toEqual(["A", "A", "A"]);
+  });
+
+  it("the known limit: an email read is class B today, so a turn with it gives none", () => {
+    const calls = [readCall("search_crm"), readCall("projects_tree"), readCall("query_inbox")];
+    expect(offerAsks(turn({ calls }), false)).toBe(true);
+    expect(skillOffer(turn({ calls }), TOOL_ROWS, false)).toBeNull();
+    // With class A (the owner's call on `read_only`), the same turn gives the offer.
+    const asRead = TOOL_ROWS.map((r) => (r.tool === "query_inbox" ? { ...r, class: "A" } : r));
+    expect(skillOffer(turn({ calls }), asRead, false)?.actions).toHaveLength(3);
+  });
+
+  it("a read beside a tool with a mark gives one offer too", () => {
+    const rows = [...TOOL_ROWS, ...CATALOG];
+    const calls = [readCall("find_tasks"), call("list_spaces"), call("read_page")];
+    expect(skillOffer(turn({ calls }), rows, false)?.actions).toHaveLength(3);
+  });
+
+  it("an org with no `tool:` row gives none: the calls map to no row", () => {
+    expect(skillOffer(turn({ calls: reads() }), CATALOG, false)).toBeNull();
+    expect(skillOffer(turn({ calls: reads() }), [], false)).toBeNull();
+  });
+
+  it("a write or a send never counts, even when its call finished with a plain answer", () => {
+    for (const name of ["create_task", "send_reply"]) {
+      const calls = [readCall("search_crm"), readCall("projects_tree"), call(name, {}, { result: "Created #44 Pay invoice." })];
+      expect(skillOffer(turn({ calls }), TOOL_ROWS, false), name).toBeNull();
+    }
+  });
+
+  it("a tool that two rows name maps no call", () => {
+    const twice = [...TOOL_ROWS, { id: "tool:search_crm2", title: "x", source: "tool", class: "A", tool: "search_crm" }];
+    expect(skillOffer(turn({ calls: reads() }), twice, false)).toBeNull();
+  });
+
+  it("each failure that a read answers as plain text gives no offer", () => {
+    const failures = [
+      "Refused: The CRM refused the request (422).\nNext: Fix the argument.",
+      "The CRM is off for this organization, so there is nothing to read. An admin of the organization can turn it on.",
+      "The CRM is not open to you. An admin of your organization can give you access.",
+      "I cannot see that mailbox or message for this account.",
+      "This tool has no data for this organization. Do not call it again in this chat.",
+      "Error: Function failed.",
+      "Rule 12 not found.",
+      "",
+      "   ",
+    ];
+    for (const text of failures) {
+      const calls = [readCall("projects_tree"), readCall("query_inbox"), call("search_crm", {}, { result: text })];
+      expect(readCandidate(calls[2]), text).toBe(false);
+      expect(offerAsks(turn({ calls }), false), text).toBe(false);
+      expect(skillOffer(turn({ calls }), TOOL_ROWS, false), text).toBeNull();
+    }
+    // A running call and an error call are no answer either.
+    for (const status of ["running", "error"]) {
+      expect(readCandidate(readCall("projects_tree", { status })), status).toBe(false);
+    }
+  });
+
+  it("an empty read is still an answer, and a long answer that ends in not found is one too", () => {
+    expect(readCandidate(call("search_crm", {}, { result: "No leads match these filters." }))).toBe(true);
+    const long = `${"A long answer. ".repeat(20)}The page was not found.`;
+    expect(readCandidate(call("projects_tree", {}, { result: long }))).toBe(true);
+  });
+
+  it("a tool with a mark counts by its mark alone: its plain refusal never falls to the read tier", () => {
+    const refused = call("propose_page", {}, { result: "A NEW refusal that no list names." });
+    expect(readCandidate(refused)).toBe(false);
+    expect(offerAsks(turn({ calls: [readCall("projects_tree"), readCall("query_inbox"), refused] }), false)).toBe(false);
+  });
+
+  it("each plain-text head of the list is the text of its file", () => {
+    for (const head of NON_ANSWER_HEADS) {
+      expect(pySource(head.source), head.text).toContain(head.text);
+      expect(readCandidate(call("search_crm", {}, { result: `${head.text} and more words.` })), head.text).toBe(false);
+    }
+  });
+
+  it("no argument and no result reaches the draft", () => {
+    const calls = reads().map((c) => ({ ...c, args: { q: MARKER }, result: `${c.result}\n${MARKER}` }));
+    const offer = skillOffer(turn({ calls }), TOOL_ROWS, false);
+    expect(offer).not.toBeNull();
+    expect(JSON.stringify(offer)).not.toContain(MARKER);
   });
 });
