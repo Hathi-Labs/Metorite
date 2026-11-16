@@ -2098,7 +2098,9 @@ Each slice is one PR. A foundation rides with the first rung that needs it
   "Done" after 20 s offline, and the "Metorite is updating" notice while
   offline. The third is the held send that lives in memory only.
 
-**The scope of RESUME-2c.** The `return None` of `_resume_from_row` on a live run becomes `_steer_from_row`. It goes on only when the row is parked, `run_liveness` is live, `get_run_actor` is the member, and `get_run_source` is empty or `chat`. The thread must not be in `threads_waiting_on_a_person`, and `is_inside_run_floor` must pass. It takes no cap. It calls `claim_stored_call` once. It calls `grant_from_offer(org, member, row_before_claim, 'APPROVE')` in place of `drop_offer`. It builds the note with `with_late_approve_note(card_resend(...))`, and it calls `send_steer(thread, member, note, typed=False)`. It is built after RESUME-2b, because both rewrite `_resume_from_row`.
+**The scope of RESUME-2c.** The `return None` of `_resume_from_row` on a live run becomes `_steer_from_row`. The same `return None` also holds when another party holds the recovery of a dead run, and that case keeps today's path. `_steer_from_row` goes on only when the row is parked, `run_liveness` is live, `get_run_actor` is the member, and `get_run_source` is empty or `chat`. The thread must not be in `threads_waiting_on_a_person`, and `is_inside_run_floor` must pass.
+
+It takes no cap. It calls `claim_stored_call` once. It calls `grant_from_offer(org, member, row_before_claim, 'APPROVE')` in place of `drop_offer`. It builds the note with `with_late_approve_note(card_resend(...))`, and it calls `send_steer(thread, member, note, typed=False)`. Build it after RESUME-2b, because both rewrite `_resume_from_row`.
 
 #### 4.12.8 Proposals for the owner
 
