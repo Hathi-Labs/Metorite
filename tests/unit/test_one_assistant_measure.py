@@ -659,3 +659,27 @@ def test_a_scripted_chat_reaches_no_database_for_the_session_or_the_access(
     rows = run.run_chat(scenario("five_turns"), "pack")
     assert rows and rows[0]["model_calls"], rows[0]["error"]
     assert reached == []
+
+
+def test_a_scripted_turn_may_take_more_than_the_live_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TS-ORD. The first scripted turn of a process loads the orchestrator and takes
+    20 s on a quiet PC and over 60 s on a busy one. A scripted run has no network, so
+    the turn limit is ``SCRIPTED_TURN_TIMEOUT`` and never the live default of 60 s.
+    Mutation: drop the ``max`` in ``run_chat`` -> the turn waits 60 s -> red."""
+    import asyncio
+
+    seen: list[float] = []
+    real = asyncio.wait_for
+
+    async def spy(aw: Any, timeout: Any = None, **kwargs: Any) -> Any:
+        if timeout is not None:
+            seen.append(float(timeout))
+        return await real(aw, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(asyncio, "wait_for", spy)
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    assert rows and rows[0]["model_calls"], rows[0]["error"]
+    assert run.SCRIPTED_TURN_TIMEOUT >= 300.0
+    assert run.SCRIPTED_TURN_TIMEOUT in seen, seen

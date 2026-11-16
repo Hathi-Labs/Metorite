@@ -746,6 +746,13 @@ def _system_one_seam(mp: Any) -> None:
     mp.setattr(routed, "routing_is_on", routing_is_on)
 
 
+#: TS-ORD. The seconds that a scripted turn may take. The first turn of a process
+#: loads the orchestrator, the registry and the model client: 20 s on a quiet
+#: PC, and over 60 s on a PC that runs other work. There is no network in a
+#: scripted run, so a long limit costs nothing and a short one is a flake.
+SCRIPTED_TURN_TIMEOUT = 300.0
+
+
 def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
              tier: str | None = None, timeout: float = 60.0, repeat: int = 1,
              models: dict[str, ReplyModel] | None = None,
@@ -765,6 +772,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     out (:func:`cap_sends`), and the row says ``capped``.
     Returns one row for each turn.
     """
+    if router is None:
+        timeout = max(timeout, SCRIPTED_TURN_TIMEOUT)
     from acb_common import get_settings
 
     from tests.unit._native_maf_harness import load_agent_module
