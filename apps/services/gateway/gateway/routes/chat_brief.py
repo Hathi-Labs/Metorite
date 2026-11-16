@@ -522,14 +522,14 @@ def _set_title(org: str, session_id: str, title: str) -> None:
 
 async def _claim_hello(email: str) -> bool:
     """Claim ``buddy_hello_at`` first-write-wins, in ONE statement
-    (``stamp-first``). True when this call's time is the stored one. The
-    loser sees the winner's time and posts nothing."""
+    (``me._claim_first_mark``). True when this call took the mark. The
+    database decides, never a compare of times: two tabs in the same
+    millisecond carry the same time (task 3537). The loser posts nothing."""
     from gateway.routes.admin import me
 
-    stamp = me._server_stamp()
     async with me._tenant_session() as db:
-        stored = await me._write_shell(db, email, {"buddy_hello_at": stamp}, "stamp-first")
-    return me.stored_shell(stored).get("buddy_hello_at") == stamp
+        won = await me._claim_first_mark(db, email, "buddy_hello_at")
+    return won
 
 
 async def _release_hello(email: str) -> None:

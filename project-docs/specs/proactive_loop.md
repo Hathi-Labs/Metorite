@@ -505,8 +505,8 @@ Two fences hold the change:
 **[a3-3] Tool gaps and tool failures as inputs.** The learner may read two
 stores that WS-TOF plans, and neither is on `main` today. The first is
 `tool_gaps` (SBX-1, `agent_sandbox.md` §7.4). The second is the one tool
-failure store if the owner approves it on task 3394, or else the log of task
-1793. The learner copies neither, and reads only the member's own rows, as
+failure store, which the owner approved on 2026-11-15 (D225, task 3394).
+The learner copies neither, and reads only the member's own rows, as
 counts by `category`, `outcome` and `failed_tool`. It never reads `need`, which
 a model writes, or any error text (SBX-Q8), and only counts cross a tenant
 (LOOP-16).
@@ -829,7 +829,7 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-13** (task 3453) | 6 | The poll of a connected system (§4.1.1) | `chat_connected_systems.md`, this spec §4.1.1 | CSY-2, CSY-8, the read-only key on each server (CSY-R0 for Shaurrya App), LOOP-Q10 | Its row | HIGH · AGENT-SAFE, dark |
 | **LOOP-14** (task 3454) | Later | A prior for each kind across tenants | This spec §7.4 | LOOP-Q7 | Its row | HIGH · OWNER-GATE until LOOP-Q7 |
 | **LOOP-15** (task 3455) | Later | The focus boost in the find ranking ([a3-1]) | This spec. `company_context.md` (CX-1) owns the score | LOOP-6 | The two fences of [a3-1] pass | STANDARD · AGENT-SAFE |
-| **LOOP-16** (task 3456) | Later | Tool gaps and tool failures as inputs ([a3-3]) | `agent_sandbox.md` | SBX-1, and the failure store of task 3394 or the log of task 1793 | Its row | STANDARD · AGENT-SAFE |
+| **LOOP-16** (task 3456) | Later | Tool gaps and tool failures as inputs ([a3-3]) | `agent_sandbox.md` | SBX-1, and the one failure store (D225, TOF-2a task 3416) | Its row | STANDARD · AGENT-SAFE |
 
 The rows of rungs 4 to 6 and Later say "Its row". The plan after the rung 3
 demo writes each "done when" in full, before its slice starts.
