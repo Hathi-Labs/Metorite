@@ -59,7 +59,8 @@ Only the model wire is scripted, and the card is answered the way
 
 Mutation table. Each mutation was made by hand, and the named test failed.
 Rows M1 to M48 were measured at their own slices, and their test names were
-updated for MCP-NC1. Rows M11 and M49 to M55 were measured on 2026-11-17.
+updated for MCP-NC1. Rows M11, M36a, M36b and M49 to M55 were measured on
+2026-11-17.
 
 | # | Mutation | Test that fails |
 |---|---|---|

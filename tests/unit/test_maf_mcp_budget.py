@@ -34,6 +34,7 @@ Mutation table. The rows M1 to M12 were written before the code, and M13 to
 M16 were added during the build. Each mutation was made by the runner script,
 and the named tests failed (measured 2026-10-12, all 16 killed). The first
 runs found two survivors, M6 and M12, and the two tests were then fixed.
+MCP-NC1 (2026-11-17) re-pointed M9 at two new tests, and both failed under it.
 
 | # | Mutation | Test that fails |
 |---|---|---|
