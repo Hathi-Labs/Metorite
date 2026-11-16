@@ -28,7 +28,13 @@ the phase-4 rehearsal (no superuser, no BYPASSRLS), with two organizations:
 (h) ``find_or_create_member_topic``, the topic of the automatic pass (CO-1):
     it finds a company topic that shows by its name in any case, else the
     member's own topic, else it makes ONE private topic of the member. It
-    never returns a colleague's topic or a topic of another org.
+    never returns a colleague's topic or a topic of another org;
+(i) a hidden company topic answers a member who is not an admin as an id
+    that does not exist, and a flag, a new emoji and a joined emoji pass the
+    CHECK of the table;
+(j) two merges that cross, as two real transactions and through the
+    routes, never both win and always leave one company row. A merge into
+    a target that an admin hides at that moment is refused.
 
 A hermetic fake agrees with any SQL that it gets, so none of this could be
 proved without the database.
@@ -46,7 +52,11 @@ Mutations, each red here (R7):
 * drop ``require_topics`` from the router -> (g);
 * drop ``_VISIBLE`` from ``_FIND_SQL`` -> (h) Bob gets Alice's topic;
 * drop the hidden filter from ``_FIND_SQL`` -> (h) the pass files a chat
-  under a hidden company topic.
+  under a hidden company topic;
+* drop ``FOR UPDATE`` from ``_LOCK_SQL`` -> (j) both merges win, and no
+  company row stays, and a merge into a target hidden at that moment wins;
+* drop ``_SHOWN`` from ``_ONE_SQL`` and ``_LOCK_SQL`` -> (i) a member gets
+  403 for a hidden company topic, where an unknown id gets 404.
 
 Not a mutation here: ``FORCE`` binds the table owner, and this suite runs
 as the app role, which RLS binds with or without it. (f) proves the policy.
@@ -55,6 +65,8 @@ as the app role, which RLS binds with or without it. (f) proves the policy.
 from __future__ import annotations
 
 import re
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -546,6 +558,163 @@ def test_g_with_the_switch_off_each_route_is_404_and_changes_nothing(db, monkeyp
     # The switch on again: the same list answers.
     monkeypatch.setattr(get_settings(), "chat_topics_orgs", db.org_a, raising=False)
     assert _names(admin) == [("company", "Sales"), ("member", "Mine")]
+
+
+# ── (i) A hidden company topic, and the names of the table ──────────────────
+
+
+def test_i_a_hidden_company_topic_reads_as_no_topic_for_a_member(db) -> None:
+    """Reviewer note: a member who is not an admin gets the 404 of an unknown
+    id for a hidden company topic, so the member cannot tell the two apart.
+    The admin still reads it and shows it again."""
+    legal = _company(db, db.org_a, "Legal", hidden=True)
+    sales = _company(db, db.org_a, "Sales")
+    bob = _client(_user(_BOB, db.org_a))
+    admin = _client(_user(_ADMIN, db.org_a, admin=True))
+    for tid in (legal, str(uuid.uuid4())):
+        for res in (bob.patch(f"/chat/topics/{tid}", json={"name": "Contracts"}),
+                    bob.patch(f"/chat/topics/{tid}", json={"hidden": False}),
+                    bob.post(f"/chat/topics/{tid}/merge", json={"into": sales}),
+                    bob.post(f"/chat/topics/{sales}/merge", json={"into": tid})):
+            assert (res.status_code, res.json()) == (404, _NOT_FOUND), res.text
+    # A topic that shows still answers 403 to him: the list shows it anyway.
+    assert bob.patch(f"/chat/topics/{sales}", json={"name": "Revenue"}).status_code == 403
+    res = admin.patch(f"/chat/topics/{legal}", json={"hidden": False})
+    assert res.status_code == 200 and res.json()["topic"]["hidden"] is False, res.text
+
+
+#: The flag of England: a black flag and six tag characters (Cf).
+_ENGLAND = "".join(chr(p) for p in (0x1F3F4, 0xE0067, 0xE0062, 0xE0065, 0xE006E,
+                                    0xE0067, 0xE007F))
+#: U+1FAE9, an emoji of Unicode 16, and a family joined by two ZWJ.
+_NEW_EMOJI = chr(0x1FAE9)
+_FAMILY = "".join(chr(p) for p in (0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467))
+
+
+def test_i_an_emoji_name_passes_the_check_of_the_table(db) -> None:
+    """Reviewer P2: the store takes a flag, a new emoji and a joined emoji,
+    and so must the CHECK of the table, or a create answers 500."""
+    alice = _client(_user(_ALICE, db.org_a))
+    names = ("Team " + _ENGLAND, "Tired " + _NEW_EMOJI, "Family " + _FAMILY)
+    for name in names:
+        _create(alice, name)
+    assert {n for _o, n, _s, _e, _h in _rows(db, org=db.org_a)} == set(names)
+
+
+# ── (j) Two merges at once ──────────────────────────────────────────────────
+
+
+def _until(check, timeout: float = 5.0) -> bool:
+    """Poll *check* every 50 ms for at most *timeout* seconds."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if check():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _a_session_waits_on_a_lock(ns) -> bool:
+    """True when a backend of the test database waits on a lock. AUTOCOMMIT,
+    because ``pg_stat_activity`` keeps one snapshot for each transaction."""
+    auto = ns.admin_engine.execution_options(isolation_level="AUTOCOMMIT")
+    with auto.connect() as c:
+        return bool(c.execute(text(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND wait_event_type = 'Lock'")).scalar())
+
+
+def _in_a_thread(fn) -> tuple[threading.Thread, dict]:
+    out: dict = {}
+
+    def run() -> None:
+        try:
+            out["value"] = fn()
+        except BaseException as exc:  # the test reads it
+            out["error"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return t, out
+
+
+def test_j_two_merges_that_cross_cannot_both_win(db) -> None:
+    """Verifier P1: X into Y and Y into X at once left no company row. The
+    first merge holds both rows (``FOR UPDATE``, id order) until its commit.
+    The second waits, then finds its target gone, and gets ``missing``.
+    Mutation: drop ``FOR UPDATE`` from ``_LOCK_SQL`` -> the second merge does
+    not wait, both answer ``ok``, and no company row stays."""
+    from acb_graph import tenant_session
+    from gateway.chat_topic import merge_company_topics
+
+    x = _company(db, db.org_a, "Ops")
+    y = _company(db, db.org_a, "Operations")
+
+    def second():
+        with tenant_session(db.org_a) as s2:
+            return merge_company_topics(s2, y, into=x, member=_ADMIN, admin=True).outcome
+
+    with tenant_session(db.org_a) as s1:
+        first = merge_company_topics(s1, x, into=y, member=_ADMIN, admin=True)
+        assert first.outcome == "ok"
+        t, out = _in_a_thread(second)
+        _until(lambda: _a_session_waits_on_a_lock(db) or not t.is_alive())
+    t.join(30)
+    assert not t.is_alive() and "error" not in out, out
+    assert out["value"] == "missing"
+    assert _rows(db, org=db.org_a) == {(db.org_a, "Operations", "company", None, False)}
+
+
+def test_j_crossing_merge_routes_leave_one_topic(db) -> None:
+    """The same race through the routes, three times: one merge answers 200,
+    the other 404, and one of the two company rows stays."""
+    admin_1 = _client(_user(_ADMIN, db.org_a, admin=True))
+    admin_2 = _client(_user(_ADMIN, db.org_a, admin=True))
+    for n in range(3):
+        x = _company(db, db.org_a, f"Ops {n}")
+        y = _company(db, db.org_a, f"Operations {n}")
+        gate = threading.Barrier(2)
+
+        def merge(client, src, dst, gate=gate):
+            gate.wait(10)
+            return client.post(f"/chat/topics/{src}/merge", json={"into": dst}).status_code
+
+        t1, o1 = _in_a_thread(lambda c=admin_1, s=x, d=y: merge(c, s, d))
+        t2, o2 = _in_a_thread(lambda c=admin_2, s=y, d=x: merge(c, s, d))
+        t1.join(30)
+        t2.join(30)
+        assert "error" not in o1 and "error" not in o2, (o1, o2)
+        assert sorted((o1["value"], o2["value"])) == [200, 404], (o1, o2)
+        left = {n_ for _o, n_, _s, _e, _h in _rows(db, org=db.org_a)} & {f"Ops {n}",
+                                                                        f"Operations {n}"}
+        assert len(left) == 1, left
+
+
+def test_j_a_merge_into_a_target_that_an_admin_hides_at_that_moment_is_refused(db) -> None:
+    """The hide commits first, so the merge reads the hidden target under its
+    lock and refuses. Mutation: drop ``FOR UPDATE`` from ``_LOCK_SQL`` -> the
+    merge reads the target as it was before the hide, and deletes X."""
+    from acb_graph import tenant_session
+    from gateway.chat_topic import merge_company_topics, set_hidden
+
+    x = _company(db, db.org_a, "Ops")
+    y = _company(db, db.org_a, "Operations")
+
+    def merge():
+        with tenant_session(db.org_a) as s2:
+            return merge_company_topics(s2, x, into=y, member=_ADMIN, admin=True).outcome
+
+    with tenant_session(db.org_a) as s1:
+        hid = set_hidden(s1, y, member=_ADMIN, hidden=True, admin=True)
+        assert hid.outcome == "ok"
+        t, out = _in_a_thread(merge)
+        _until(lambda: _a_session_waits_on_a_lock(db) or not t.is_alive())
+    t.join(30)
+    assert not t.is_alive() and "error" not in out, out
+    assert out["value"] == "missing"
+    assert _rows(db, org=db.org_a) == {
+        (db.org_a, "Ops", "company", None, False),
+        (db.org_a, "Operations", "company", None, True)}
 
 
 # ── (h) The topic of the automatic pass (CO-1) ──────────────────────────────

@@ -21,13 +21,19 @@ an org off the list gets 404 before any other check. The feature gate of the
 chat. A session with no address gets 403. An id that is not a UUID gets 404.
 Then one tenant-bound session.
 
+**The body is read after the flag.** A handler reads its own body
+(:func:`_body`), and no route declares a body parameter. FastAPI parses a
+declared body before any dependency, so a body that is not JSON would get 422
+from a dark route. Here the flag answers 404 first.
+
 **Who acts.** The member and the org come from the session (R11), never from
 the body. Each body model forbids an extra key, so a body that names an
 owner, a scope or an org gets 422. An admin holds ``chat_topic.TOPIC_ADMIN``.
 
 **No oracle.** A colleague's topic, an id that does not exist, and an id that
-is not a UUID give the same 404 and the same words. A duplicate is checked in
-the caller's own list only.
+is not a UUID give the same 404 and the same words. So does a hidden company
+topic, for a caller who is not an admin. A duplicate is checked in the
+caller's own list only.
 
 Fences: ``tests/unit/test_chat_topic.py``, ``tests/unit/test_chat_topic_r8.py`` (R8).
 """
@@ -38,9 +44,10 @@ import asyncio
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from gateway import chat_topic as topics
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 async def require_topics(user: UserContext = Depends(get_current_user)) -> None:
@@ -90,6 +97,28 @@ class MergeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     into: str = Field(max_length=64)
+
+
+#: The words of a body that is not a JSON object.
+BAD_BODY = "Send a JSON object."
+
+
+async def _body[M: BaseModel](request: Request, model: type[M]) -> M:
+    """The body of *request* as *model*. The route calls it after the flag.
+
+    A body that is not JSON, or not an object, gets 422 :data:`BAD_BODY`. A
+    body that the model refuses gets the 422 of FastAPI, with each error.
+    """
+    try:
+        raw = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=BAD_BODY) from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail=BAD_BODY)
+    try:
+        return model.model_validate(raw)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(include_url=False)) from exc
 
 
 def _member(user: UserContext) -> str:
@@ -173,7 +202,7 @@ def _patch(org: str | None, member: str, tid: str, *, name: str | None,
 
     try:
         with tenant_session(org) as s:
-            seen = topics.get_topic(s, member, tid)
+            seen = topics.get_topic(s, member, tid, admin=admin)
             company = seen is not None and seen.scope == "company"
             change = topics.Change("ok", seen) if seen is not None else topics.Change("missing")
             if name is not None:
@@ -215,10 +244,12 @@ async def list_topics(
 
 @router.post("/topics", status_code=201, summary="A new private topic of the caller")
 async def create_topic(
-    payload: TopicIn, user: UserContext = Depends(get_current_user),
+    request: Request, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """A new topic starts private (D163.2). 409 when the caller holds the name."""
+    """A new topic starts private (D163.2). 409 when the caller holds the name.
+    The body is :class:`TopicIn`."""
     member = _member(user)
+    payload = await _body(request, TopicIn)
     name = _name_or_422(payload.name)
     made = await asyncio.to_thread(_create, user.organization_id, member, name)
     if made is None:
@@ -228,12 +259,14 @@ async def create_topic(
 
 @router.patch("/topics/{topic_id}", summary="Rename, hide or show a topic")
 async def patch_topic(
-    topic_id: str, payload: TopicPatch, user: UserContext = Depends(get_current_user),
+    topic_id: str, request: Request, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The caller renames their own topic. An admin renames, hides and shows a
-    company topic. 404 for a topic that the caller may not read."""
+    company topic. 404 for a topic that the caller may not read. The body is
+    :class:`TopicPatch`."""
     member = _member(user)
     tid = _id_or_404(topic_id)
+    payload = await _body(request, TopicPatch)
     if payload.name is None and payload.hidden is None:
         raise HTTPException(status_code=422, detail=NO_CHANGE)
     name = _name_or_422(payload.name) if payload.name is not None else None
@@ -247,12 +280,15 @@ async def patch_topic(
 
 @router.post("/topics/{topic_id}/merge", summary="Merge a company topic into another")
 async def merge_topic(
-    topic_id: str, payload: MergeIn, user: UserContext = Depends(get_current_user),
+    topic_id: str, request: Request, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """An admin merges one company topic into another that shows. The source
-    goes. 404 for a topic that the caller may not read, or a hidden target."""
+    goes. 404 for a topic that the caller may not read, or a hidden target.
+    A merge that crosses another merge at the same time gets 404. The body is
+    :class:`MergeIn`."""
     member = _member(user)
     tid = _id_or_404(topic_id)
+    payload = await _body(request, MergeIn)
     into = _id_or_404(payload.into)
     change = await asyncio.to_thread(
         _merge, user.organization_id, member, tid, into, _admin(user))

@@ -9,10 +9,14 @@
 -- Why:  chat_organization.md §6 and §10 (Topics, CO-2). The chat rail groups
 --       a member's chats by topic. A name made from a private chat must not
 --       reach a colleague, so a member topic belongs to one member.
--- Later: CO-2b adds `topic_id` and `set_by` to `chat_session_member`
---        (migration 450, PR 2471), in its own file. That key can be
---        `(organization_id, topic_id)`, because this file adds
---        UNIQUE (organization_id, id). This file names no other table.
+-- Later: CO-2b adds `topic_id` and `set_by` to the per-member row of a
+--        chat, which CO-11 (task 3510, not merged) makes. CO-2b does it in
+--        its own file. That key can be `(organization_id, topic_id)`,
+--        because this file adds UNIQUE (organization_id, id). ⚠️ That
+--        foreign key must use ON DELETE SET NULL (topic_id), which
+--        Postgres 15 and later take, or RESTRICT with an explicit move of
+--        the chats before a delete. A plain SET NULL on the composite key
+--        also clears `organization_id`. This file names no other table.
 -- Depends on: 130_org_access_control.sql (organization).
 --
 -- THE SHAPE. `owner_email` is NULL on a company topic and is the lower-case
@@ -41,12 +45,14 @@
 -- WHO READS WHAT. RLS covers the org only. The member rule is in the SQL of
 -- the module: each statement reads company topics and the caller's own
 -- member topics, and nothing else. An admin reads no member topic of a
--- colleague through the member routes.
+-- colleague through the member routes. Only an admin reads a hidden company
+-- topic. A merge locks its two rows FOR UPDATE in id order before it checks
+-- them, so two merges that cross cannot both win.
 --
 -- Expand only (R6): one new table and one index. No rename, no drop, no
 -- data, and no change to an old object. Idempotent: CREATE TABLE IF NOT
 -- EXISTS, CREATE INDEX IF NOT EXISTS, and an RLS block guarded on
--- relforcerowsecurity. The file sets `lock_timeout` first, as 449 and 450 do.
+-- relforcerowsecurity. The file sets `lock_timeout` first, as 449 does.
 -- Tenant-scoped (R5): `organization_id` with ENABLE and FORCE row level
 -- security, and one policy with USING and WITH CHECK. The org of a new row
 -- comes from the DEFAULT, the bound tenant. The writer never names it.
@@ -54,8 +60,8 @@
 -- tests/unit/test_tenancy_boundary.py matches the two with no comma between.
 -- The generated phases carry the table.
 --
--- The number is taken at build time (R1): 451 was booked for this task, and
--- 450 is booked for PR 2471. Check it again at merge. Pinned by
+-- The number is taken at build time (R1): 451 was booked for this task.
+-- Check it again at merge. Pinned by
 -- tests/unit/test_chat_topic.py and tests/unit/test_chat_topic_r8.py, which
 -- find this file by CONTENT, never by number (R1).
 -- ============================================================================

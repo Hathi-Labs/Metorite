@@ -112,9 +112,40 @@ def test_each_read_holds_the_member_rule() -> None:
 
     assert store._VISIBLE == (
         "(t.scope = 'company' OR (t.scope = 'member' AND t.owner_email = :member))")
-    for sql in (store._LIST_SQL, store._ONE_SQL):
+    for sql in (store._LIST_SQL, store._ONE_SQL, store._LOCK_SQL):
         assert store._VISIBLE in sql, sql
     assert "t.hidden_at IS NULL OR CAST(:with_hidden AS boolean)" in store._LIST_SQL
+    # A hidden company topic is an admin's to read, by id too (reviewer note).
+    assert store._SHOWN == "(t.hidden_at IS NULL OR CAST(:admin AS boolean))"
+    for sql in (store._ONE_SQL, store._LOCK_SQL):
+        assert store._SHOWN in sql, sql
+
+
+def test_the_merge_locks_both_rows_in_id_order_before_it_checks() -> None:
+    """Verifier P1 and reviewer P2: two merges that cross must not both win.
+    ``_LOCK_SQL`` takes both rows ``FOR UPDATE`` in id order, and the merge
+    reads it before any check and before the delete. Mutation: drop
+    ``FOR UPDATE``, or read the rows with ``get_topic`` -> red here, and
+    ``test_merge_*`` of the R8 suite fails on the real database."""
+    import inspect
+
+    from gateway import chat_topic as store
+
+    assert store._LOCK_SQL.rstrip().endswith("ORDER BY t.id FOR UPDATE")
+    assert "t.id IN (CAST(:id AS uuid), CAST(:into AS uuid))" in store._LOCK_SQL
+    src = inspect.getsource(store.merge_company_topics)
+    assert "get_topic(" not in src
+    assert src.index("_LOCK_SQL") < src.index("source is None")
+    assert src.index("_LOCK_SQL") < src.index("_MERGE_SQL")
+
+
+def test_the_admin_capability_is_the_house_rule() -> None:
+    """Reviewer note: ``TOPIC_ADMIN`` is the house rule for an org-wide
+    write, so the two cannot drift."""
+    from gateway.chat_topic import TOPIC_ADMIN
+    from gateway.routes.projects.core import ORG_VOCABULARY_WRITE
+
+    assert TOPIC_ADMIN == ORG_VOCABULARY_WRITE
 
 
 def test_each_write_holds_the_write_rule() -> None:
@@ -223,6 +254,53 @@ def test_a_bad_name_is_refused(raw: Any) -> None:
 
     with pytest.raises(TopicNameError):
         clean_name(raw)
+
+
+def _cp(*points: int) -> str:
+    """A string of code points. Each case names its points, so no editor or
+    tool can change an invisible character in this file."""
+    return "".join(chr(p) for p in points)
+
+
+#: The flag of England: a black flag, five tag characters (Cf) and a cancel tag.
+ENGLAND = _cp(0x1F3F4, 0xE0067, 0xE0062, 0xE0065, 0xE006E, 0xE0067, 0xE007F)
+#: U+1FAE9, an emoji of Unicode 16. An older table reads it as unassigned (Cn).
+NEW_EMOJI = _cp(0x1FAE9)
+#: A family: three emoji joined by two ZWJ (Cf).
+FAMILY = _cp(0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467)
+NBSP = _cp(0xA0)
+
+
+@pytest.mark.parametrize(("raw", "name"), [
+    ("Tired " + NEW_EMOJI, "Tired " + NEW_EMOJI),
+    ("Team " + ENGLAND, "Team " + ENGLAND),
+    ("Family " + FAMILY, "Family " + FAMILY),
+    (NBSP + "Sales" + NBSP + " ", "Sales"),
+    ("Zero" + _cp(0x200B) + "width", "Zero" + _cp(0x200B) + "width"),
+])
+def test_an_emoji_a_flag_and_a_new_code_point_pass(raw: str, name: str) -> None:
+    """Reviewer P2: a format character (Cf) and an unassigned code point (Cn)
+    stay legal, so a flag, a joined emoji and a new emoji pass. A no-break
+    space at either end goes in the trim. Mutation: refuse ``Cf`` or ``Cn``
+    again -> red."""
+    from gateway.chat_topic import clean_name
+
+    assert clean_name(raw) == name
+
+
+@pytest.mark.parametrize("point", [
+    0x202A, 0x202B, 0x202C, 0x202D, 0x202E,  # the bidi embeddings and overrides
+    0x2066, 0x2067, 0x2068, 0x2069,  # the bidi isolates
+    0x2028, 0x2029,  # the line and paragraph marks (Zl, Zp)
+    0x85, 0x9B, 0x1B,  # control characters (Cc)
+    0xE000,  # private use (Co)
+    0xD800,  # a surrogate (Cs)
+])
+def test_a_bidi_control_a_line_mark_and_a_control_are_refused(point: int) -> None:
+    from gateway.chat_topic import TopicNameError, clean_name
+
+    with pytest.raises(TopicNameError):
+        clean_name("Sa" + _cp(point) + "les")
 
 
 def test_the_migration_check_agrees_with_the_cap() -> None:
@@ -467,6 +545,66 @@ def test_an_empty_patch_is_422_before_any_sql(monkeypatch) -> None:
     monkeypatch.setattr(acb_graph, "tenant_session", _NoDatabase())
     assert _client(_user("ana@co2.test", "org-a")).patch(
         f"/chat/topics/{_TID}", json={}).status_code == 422
+
+
+_BAD_BODIES = ("{not json", "", "[1, 2]", '"a string"', "null")
+
+
+def _raw(client, method: str, path: str, body: str):
+    return client.request(method, path, content=body.encode("utf-8"),
+                          headers={"content-type": "application/json"})
+
+
+def test_a_bad_body_with_the_switch_off_is_404(monkeypatch) -> None:
+    """Verifier P1: FastAPI parses a declared body before any dependency, so a
+    body that is not JSON got 422 from a dark route. No route declares a body
+    now, and the switch answers 404 first. Mutation: declare ``payload:
+    TopicIn`` on ``create_topic`` again -> red."""
+    import acb_graph
+
+    _topic_orgs(monkeypatch, "org-b")
+    monkeypatch.setattr(acb_graph, "tenant_session", _NoDatabase())
+    client = _client(_user("ana@co2.test", "org-a", admin=True))
+    for method, path, _body in _REQUESTS[1:]:
+        for body in _BAD_BODIES:
+            res = _raw(client, method, path, body)
+            assert (res.status_code, res.json()) == (404, {"detail": "Not Found"}), (
+                method, path, body, res.text)
+
+
+def test_a_bad_query_with_the_switch_off_is_404(monkeypatch) -> None:
+    """The same class as the body: a query value that FastAPI cannot parse
+    must not answer 422 from a dark route."""
+    import acb_graph
+
+    _topic_orgs(monkeypatch, "org-b")
+    monkeypatch.setattr(acb_graph, "tenant_session", _NoDatabase())
+    res = _client(_user("ana@co2.test", "org-a", admin=True)).get(
+        "/chat/topics?include_hidden=maybe")
+    assert (res.status_code, res.json()) == (404, {"detail": "Not Found"}), res.text
+
+
+def test_a_bad_body_with_the_switch_on_is_422_before_any_sql(monkeypatch) -> None:
+    import acb_graph
+    from gateway.routes.chat_topics import BAD_BODY
+
+    _topic_orgs(monkeypatch, "*")
+    monkeypatch.setattr(acb_graph, "tenant_session", _NoDatabase())
+    client = _client(_user("ana@co2.test", "org-a", admin=True))
+    for method, path, _body in _REQUESTS[1:]:
+        for body in _BAD_BODIES:
+            res = _raw(client, method, path, body)
+            assert (res.status_code, res.json()) == (422, {"detail": BAD_BODY}), (
+                method, path, body, res.text)
+
+
+def test_no_topic_route_declares_a_body_parameter() -> None:
+    """The source half of the test above: a declared body runs before the
+    switch. Each body is read by ``_body`` in the handler."""
+    from gateway.routes import chat_topics
+
+    for route in chat_topics.router.routes:
+        assert route.dependant.body_params == [], route.path
 
 
 # ── chat-topic-session-identity ─────────────────────────────────────────────

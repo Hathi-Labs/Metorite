@@ -2,8 +2,8 @@
 
 **Status:** ACTIVE (D163, 2026-11-02). CO-0 is BUILT (PR 1607, 2026-11-02).
 CO-2a, the topic store and its routes, is BUILT and dark behind
-`CHAT_TOPICS_ORGS` (task 3501, 2026-11-16). CO-2b waits for PR 2471
-(migration 450). It adds `topic_id` and `set_by`, the move, the pass that
+`CHAT_TOPICS_ORGS` (task 3501, 2026-11-16). CO-2b waits for CO-11 (task
+3510, not merged). It adds `topic_id` and `set_by`, the move, the pass that
 never overrides a member, the rail and the chip. The rest of D163 is not built.
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
@@ -262,7 +262,7 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 |---|---|---|---|---|---|
 | CO-0 | none | — | The full-screen chat (§9). **BUILT**, PR 1607 | AGENT-SAFE | The four captures pass, and `/chat` and the dock's full view match |
 | CO-1 | 3500 | 2 | The pass (§5), metered to the platform | **OWNER-GATE** for the flip. HIGH tier: money | A test run on Fracktal reports the real cost per chat, and no `usage_event` debits the company |
-| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. CO-2b: the topic of a chat, the move, the rail, the chip and the seed. It waits for PR 2471 | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
+| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. CO-2b: the topic of a chat, the move, the rail, the chip and the seed. It waits for CO-11 (task 3510, not merged) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
 | CO-3 | 3502 | Later | One search of chats and files, on MEM-2. Reconcile first (§10.1) | AGENT-SAFE, dark | A word inside a chat and a word inside a file both return, and a colleague's private chat does not |
 | CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log` | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
 | CO-5 | 3504 | 3 | The chip with a preview, join, carry and undo (§7, §17.1) | **OWNER-GATE** for the flip | Each row of §7.1 and each bar of §7.2 has a test, and the override rate is under 10 % on Fracktal |

@@ -32,10 +32,19 @@ The rules:
 * **One name for each list.** The unique index keys on the org, the scope, the
   owner and the name in lower case. So a member topic never clashes with the
   topic of a colleague, and a refusal never shows a colleague's name.
-* **A merge deletes the source.** No chat names a topic in CO-2a. ⚠️ CO-2b
-  adds ``topic_id`` to the per-member row of a chat, and its merge must move
-  each row of the source to the target in the same transaction, before the
-  delete.
+* **A merge deletes the source.** It first locks both rows with
+  ``SELECT ... FOR UPDATE`` in id order (:data:`_LOCK_SQL`), and checks them
+  again under the lock. So two merges of X into Y and Y into X cannot both
+  win, and a merge into a target that an admin hides at that moment is
+  refused. No chat names a topic in CO-2a. ⚠️ CO-2b adds ``topic_id`` to the
+  per-member row of a chat. Its merge must move each row of the source to
+  the target in the same transaction, before the delete. Its foreign key
+  must use ``ON DELETE SET NULL (topic_id)`` (Postgres 15 and later), or
+  ``RESTRICT`` with that explicit move. A plain ``SET NULL`` on a composite
+  key also clears ``organization_id``.
+* **A hidden company topic is an admin's to see.** For a member who is not
+  an admin, its id answers as an id that does not exist, so a member cannot
+  tell a hidden topic from no topic.
 * **The switch.** ``CHAT_TOPICS_ORGS`` lists the orgs. :func:`topics_allowed`
   is its one reader. Off, each topic route answers 404.
 * **The automatic pass (CO-1).** It sets the topic of a chat through one
@@ -75,13 +84,17 @@ TEAMS: tuple[str, ...] = ("Sales", "Marketing", "Finance", "Operations", "People
 #: The topic of a chat that fits no team (§6).
 GENERAL = "General"
 
-#: Characters that a name may hold although their category is ``Cf``: the
-#: two joiners of an emoji sequence and of some scripts.
-_JOINERS = frozenset({"\u200c", "\u200d"})
+#: The categories that a name may not hold: control characters, surrogates,
+#: private use, and the line and paragraph marks. A format character (``Cf``)
+#: stays legal, because a joiner and the tag characters build emoji such as a
+#: flag. An unassigned code point (``Cn``) stays legal, because a new emoji is
+#: unassigned in an older Unicode table.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cs", "Co", "Zl", "Zp"})
 
-#: The categories that a name may not hold: control and format characters,
-#: the line and paragraph marks, surrogates, private use and unassigned.
-_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+#: The bidi controls, which can make a name read as another name: the
+#: embeddings and overrides (U+202A to U+202E) and the isolates (U+2066 to
+#: U+2069). They are ``Cf``, so the store refuses them by code point.
+_BIDI_CONTROLS = frozenset(chr(c) for c in (*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
 
 
 class TopicNameError(ValueError):
@@ -121,8 +134,12 @@ def member_key(email: str | None) -> str:
 def clean_name(raw: object) -> str:
     """The name of a topic, trimmed. :class:`TopicNameError` for a bad one.
 
-    A name holds 1 to :data:`NAME_MAX` characters after the trim, and no
-    control, format or line character. The two joiners stay legal.
+    A name holds 1 to :data:`NAME_MAX` characters after the trim. The trim
+    removes each white space at either end, a no-break space too. A name holds
+    no character of :data:`_REFUSED_CATEGORIES` and no bidi control. An emoji
+    sequence, a flag of tag characters and a new emoji stay legal. The CHECK
+    of the migration refuses ``[[:cntrl:]]`` only, so this rule is the
+    stricter one, and never the looser one.
     """
     if not isinstance(raw, str):
         raise TopicNameError("A topic name must be text.")
@@ -132,7 +149,7 @@ def clean_name(raw: object) -> str:
     if len(name) > NAME_MAX:
         raise TopicNameError(f"A topic name can have {NAME_MAX} characters at most.")
     for ch in name:
-        if ch not in _JOINERS and unicodedata.category(ch) in _REFUSED_CATEGORIES:
+        if ch in _BIDI_CONTROLS or unicodedata.category(ch) in _REFUSED_CATEGORIES:
             raise TopicNameError("A topic name cannot hold a control character.")
     return name
 
@@ -208,8 +225,26 @@ _LIST_SQL = (
     "ORDER BY CASE t.scope WHEN 'company' THEN 0 ELSE 1 END, lower(t.name), t.id"
 )
 
-#: One topic that the caller may read, hidden or not.
-_ONE_SQL = f"SELECT {_COLUMNS} FROM {TABLE} t WHERE t.id = CAST(:id AS uuid) AND {_VISIBLE}"
+#: The rule of a hidden company topic: only an admin reads it. ``:admin`` is
+#: the bound boolean of the session. A member topic is never hidden by code.
+_SHOWN = "(t.hidden_at IS NULL OR CAST(:admin AS boolean))"
+
+#: One topic that the caller may read. A hidden company topic reads as no
+#: topic for a member who is not an admin.
+_ONE_SQL = (
+    f"SELECT {_COLUMNS} FROM {TABLE} t "
+    f"WHERE t.id = CAST(:id AS uuid) AND {_VISIBLE} AND {_SHOWN}"
+)
+
+#: The two rows of a merge, locked in id order before any check, so two
+#: merges that cross take the locks in one order and never both win. The
+#: read rule holds here too.
+_LOCK_SQL = (
+    f"SELECT {_COLUMNS} FROM {TABLE} t "
+    "WHERE t.id IN (CAST(:id AS uuid), CAST(:into AS uuid)) "
+    f"AND {_VISIBLE} AND {_SHOWN} "
+    "ORDER BY t.id FOR UPDATE"
+)
 
 #: A new member topic. The org comes from the DEFAULT, the owner from the
 #: session. A name that the member already holds gives no row.
@@ -283,11 +318,16 @@ def list_topics(s: Any, member: str, *, with_hidden: bool = False) -> list[Topic
     return [_topic(r) for r in rows]
 
 
-def get_topic(s: Any, member: str, tid: str) -> Topic | None:
-    """One topic that *member* may read, or None."""
+def get_topic(s: Any, member: str, tid: str, *, admin: bool = False) -> Topic | None:
+    """One topic that *member* may read, or None.
+
+    A hidden company topic is None unless *admin*, so a member who is not an
+    admin cannot tell it from an id that does not exist.
+    """
     from sqlalchemy import text
 
-    row = s.execute(text(_ONE_SQL), {"id": tid, "member": member_key(member)}).first()
+    row = s.execute(text(_ONE_SQL), {
+        "id": tid, "member": member_key(member), "admin": bool(admin)}).first()
     return _topic(row) if row is not None else None
 
 
@@ -349,7 +389,7 @@ def rename_topic(s: Any, tid: str, *, member: str, name: str, admin: bool) -> Ch
     from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError
 
-    seen = get_topic(s, member, tid)
+    seen = get_topic(s, member, tid, admin=admin)
     if seen is None:
         return Change("missing")
     if seen.scope == "company" and not admin:
@@ -376,7 +416,7 @@ def set_hidden(s: Any, tid: str, *, member: str, hidden: bool, admin: bool) -> C
     """
     from sqlalchemy import text
 
-    seen = get_topic(s, member, tid)
+    seen = get_topic(s, member, tid, admin=admin)
     if seen is None:
         return Change("missing")
     if seen.scope != "company":
@@ -396,13 +436,19 @@ def merge_company_topics(s: Any, tid: str, *, into: str, member: str, admin: boo
     The source goes, and the target stays. ``same``: one topic. ``missing``:
     either topic is not a company topic that the caller may read, or the
     target is hidden. ``not_company``: a member topic. ``forbidden``: no admin.
+
+    :data:`_LOCK_SQL` locks both rows in id order FIRST, and each check reads
+    the locked rows. A second merge that crosses this one waits for the lock.
+    It then finds its source or its target gone, and gets ``missing``. A hide
+    of the target that commits first makes the target hidden here.
     """
     from sqlalchemy import text
 
     if tid == into:
         return Change("same")
-    source = get_topic(s, member, tid)
-    target = get_topic(s, member, into)
+    locked = {r.id: _topic(r) for r in s.execute(text(_LOCK_SQL), {
+        "id": tid, "into": into, "member": member_key(member), "admin": bool(admin)})}
+    source, target = locked.get(tid), locked.get(into)
     if source is None or target is None:
         return Change("missing")
     if source.scope != "company" or target.scope != "company":
