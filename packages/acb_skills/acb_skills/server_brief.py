@@ -91,11 +91,33 @@ _ATTACHED: contextvars.ContextVar[tuple[tuple[str, str], ...]] = contextvars.Con
 )
 
 
+#: The run that set the briefs. A delegated run copies the context of its parent and
+#: holds no MCP tool of its own, so it must not read the parent's briefs. Both
+#: ids come from the run's log binding, never from request input.
+_RUN: contextvars.ContextVar[str] = contextvars.ContextVar("acb_mcp_briefs_run", default="")
+
+
+def _run_id() -> str:
+    try:
+        import structlog
+
+        return str(structlog.contextvars.get_contextvars().get("run_id") or "")
+    except Exception:
+        return ""
+
+
 def set_attached(briefs: Iterable[tuple[str, str]]) -> None:
     """Replace the briefs of this run."""
     _ATTACHED.set(tuple((str(n), str(b)) for n, b in briefs))
+    _RUN.set(_run_id())
 
 
 def attached_block() -> str:
-    """The block of the servers that this run attached, or ""."""
+    """The block of the servers that this run attached, or "".
+
+    "" when the briefs were set by ANOTHER run (a delegated run copies its parent's
+    context). A run with no bound id reads them, as the id is then unknown on both sides."""
+    owner, now = _RUN.get(), _run_id()
+    if owner and now and owner != now:
+        return ""
     return block(_ATTACHED.get())
