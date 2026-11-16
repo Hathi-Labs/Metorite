@@ -37,6 +37,7 @@ import contextvars as _contextvars
 import json as _json
 import re as _re
 from collections.abc import Iterator as _Iterator
+from collections.abc import Mapping as _Mapping
 from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Any
 from typing import NamedTuple as _NamedTuple
@@ -1708,28 +1709,88 @@ def forget_card_title() -> None:
     _LAST_TITLE.set(None)
 
 
+def card_records_no_act() -> None:
+    """The card of this call approves a PLAN or a PREVIEW, not an act (task
+    3595, review P2). A tool calls it right after its card, so the park line
+    never names the plan as an act that ran. ``studio_plan`` is one: its
+    approve only records a plan, and ``studio_save`` and ``studio_publish``
+    ask their own cards for the acts."""
+    _LAST_TITLE.set(None)
+
+
 #: The words of a tool result that says that the act did not run, or ran in
 #: part (task 3595). A Projects receipt of a partial write says "NOT saved",
 #: "may or may not", "stopped:", "not tried:" or "could not"
-#: (``writes._create_stopped``, ``forms._stopped``). A result that holds one
-#: is never named as run: a line that leaves out an act is the safe side.
+#: (``writes._create_stopped``, ``forms._stopped``). A batch receipt that
+#: left rows out says "left out:" or "unticked". A result that holds one
+#: outside its « » fences and its quotes is never named as run: a line that
+#: leaves out an act is the safe side.
 _NOT_RUN_MARKS: tuple[str, ...] = (
     "not saved", "not done", "not created", "not sent", "not tried",
-    "may or may not", "stopped:", "unknown:", "nothing was", "refused",
-    "failed", "could not", "couldn't", "unable to", "error:", "[blocked",
+    "not scheduled", "not converted", "not finished", "nothing changed",
+    "may or may not", "may not", "may have been", "stopped:", "unknown:", "nothing was",
+    "refused", "failed", "could not", "couldn't", "unable to", "error:",
+    "[blocked", "[not run", "did not land", "left out", "unticked", "already set",
 )
+
+#: The first words of a result that did nothing (task 3595, review P1). The
+#: email, CRM and Projects texts of an act that did not run start with one:
+#: "Not scheduled.", "Nothing was changed.", "No task of the 3 ...".
+_NOT_RUN_FIRST_WORDS = frozenset({
+    "not", "nothing", "no", "none", "error", "errors", "refused", "failed",
+    "unknown", "stopped", "blocked", "unable", "cannot", "can't", "couldn't",
+})
+
+#: Member data inside a result: a « » fence (``acb_common.tool_refusals.data``),
+#: or a quoted title ('Fix failed payment', "Fix it"). A quote opens and
+#: closes only beside a non-word character, so the "'" of "couldn't" is no
+#: quote. A fence with no end stays, so the check reads its words.
+_RESULT_DATA = _re.compile(
+    r"«[^«»]*»|(?<!\w)'[^'\n]*'(?!\w)|(?<!\w)\"[^\"\n]*\"(?!\w)|“[^“”\n]*”")
+
+
+def _mapping_ran(result: Any) -> bool:
+    """A result in the shape ``{"ok": ...}`` ran only when ``ok`` is True and
+    it holds no ``error``. The Studio tools answer in this shape
+    (``studio_tools._result``). A mapping with no ``ok`` gives no proof."""
+    return result.get("ok") is True and not result.get("error")
 
 
 def result_says_not_run(result: Any) -> bool:
-    """True when the tool *result* says that its act did not run, or ran in
-    part: it starts with a lead of a card that did nothing
-    (:data:`CARD_NOT_DONE_LEADS`) or with "Error", or it holds a word of
-    :data:`_NOT_RUN_MARKS`, in any case."""
-    text = result if isinstance(result, str) else str(result)
-    if text.lstrip().startswith((*CARD_NOT_DONE_LEADS, "Error")):
+    """True when the tool *result* does not prove that its act ran in full.
+
+    Fail safe (task 3595, review P1): when unsure, the line does not name
+    the act, so it never claims more than ran. So it is True when:
+
+    * the result is a mapping, or a JSON object as text, whose ``ok`` is not
+      True (:func:`_mapping_ran`), or a JSON text that does not parse;
+    * the result is no text and no mapping (None, a list, an object);
+    * the text is empty, or starts with a lead of a card that did nothing
+      (:data:`CARD_NOT_DONE_LEADS`), or its first word is in
+      :data:`_NOT_RUN_FIRST_WORDS` ("Not scheduled.", "[not run");
+    * the text holds a word of :data:`_NOT_RUN_MARKS` OUTSIDE its member
+      data (:data:`_RESULT_DATA`), in any case. A title such as «Fix failed
+      payment» is data, so it never hides the act."""
+    if isinstance(result, _Mapping):
+        return not _mapping_ran(result)
+    if not isinstance(result, str):
         return True
-    low = text.casefold()
-    return any(mark in low for mark in _NOT_RUN_MARKS)
+    text = result.strip()
+    if not text:
+        return True
+    if text.startswith("{"):
+        try:
+            parsed = _json.loads(text)
+        except ValueError:
+            return True
+        return not (isinstance(parsed, _Mapping) and _mapping_ran(parsed))
+    if text.startswith((*CARD_NOT_DONE_LEADS, "Error")):
+        return True
+    first = _re.match(r"[^\w']*([\w']+)", text.replace("\u2019", "'"))
+    if first and first.group(1).casefold() in _NOT_RUN_FIRST_WORDS:
+        return True
+    outside = _RESULT_DATA.sub(" ", text).casefold()
+    return any(mark in outside for mark in _NOT_RUN_MARKS)
 
 
 def note_approved_act(result: Any) -> bool:

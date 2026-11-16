@@ -1966,7 +1966,8 @@ def _batch_receipt(
         made = len(out.made)
         lines.append(
             f"The {made} task{'s' if made != 1 else ''} listed above exist. Never "
-            "create them again. To retry a failed row, call create_tasks with that row alone."
+            "create them again. To retry a row that is not in this list, call create_tasks "
+            "with that row alone."
         )
     lines.extend(
         f"left out: row {p.index} {data(p.title)}, {_left_why(p)}." for p in left
@@ -2310,7 +2311,8 @@ def _vocab_receipt(
     if made:
         lines.append(
             f"The {len(made)} {spec.nouns(len(made))} listed above exist. Never create them "
-            f"again. To retry a failed row, call {spec.tool} with that row alone."
+            f"again. To retry a row that is not in this list, call {spec.tool} with that "
+            "row alone."
         )
     lines.extend(
         f"left out: row {p.index} {data(p.name)}, unticked on the card"

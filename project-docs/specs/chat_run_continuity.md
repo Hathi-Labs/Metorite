@@ -2198,10 +2198,22 @@ member never heard what the reply had made. So these rules hold:
   words have no word "done", no link and no id. Each act is inert text from
   its card title (`card_act`), so a title such as "Mark this task done?"
   keeps its own words.
-- An act ran when the member approved its card, and its tool returned with
-  no raise. Its result must not start with a lead of a card that did nothing,
-  or with "Error". It must not hold a mark of a write that failed in part,
-  such as "NOT saved" (`ask_tools.result_says_not_run`).
+- An act ran when three things hold. The member approved its card, its tool
+  returned with no raise, and its result proves that the act ran in full
+  (`ask_tools.result_says_not_run`). A Studio result proves it only with
+  `ok` True, as a mapping or as JSON text. A text proves it when its first
+  word is not a word of an act that did nothing, such as "Not", "Nothing" or
+  "[not run". The text must also hold no mark of a write that failed in part,
+  such as "NOT saved", "stopped:", "failed" or "left out". The check reads the
+  marks outside the « » fences and the quoted titles, because a title such as
+  «Fix failed payment» is member data.
+- The check fails safe. When unsure, the line does not name the act, so it
+  never claims more than ran. A result with no text and no `ok`, an empty
+  text, a partial batch and a batch with rows left out are not named.
+- A card that approves a plan or a preview records no act. `studio_plan` calls
+  `ask_tools.card_records_no_act` after its card "Build X?".
+- The receipt of a batch says "To retry a row that is not in this list". The
+  old hint said "a failed row", and that mark hid each full batch.
 - The gate wrapper `_tool_injection._agated` records the act after a normal
   return. A tool that delegates records nothing itself.
 - Only a run that is not delegated opens the record
@@ -2364,7 +2376,7 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `workbench/control_plane/src/components/RunStatusRow.tsx` | The status row and `useSteadyRunView` (§4.10) |
 | `workbench/control_plane/src/lib/chatResume.ts` | The line of an Approve from another device, and the stale card set (§4.12 RESUME-3a). Fence: `chatResume.test.ts` |
 | `workbench/control_plane/src/lib/respondInput.ts` | The answer POST: `resumedOf` and the cap reason (§4.12 RESUME-3a) |
-| `packages/acb_skills/acb_skills/ask_tools.py` | `ApprovedActs`, `note_approved_act`, `result_says_not_run` and `park_line` (§4.12.7 PARK-LINE) |
+| `packages/acb_skills/acb_skills/ask_tools.py` | `ApprovedActs`, `note_approved_act`, `result_says_not_run`, `card_records_no_act` and `park_line` (§4.12.7 PARK-LINE). `studio_tools.studio_plan` calls `card_records_no_act` |
 
 ---
 
