@@ -602,8 +602,9 @@ def restore_stored_call(
 #: let a person who looks into a fault read the card.
 PENDING_ASK_KEEP_DAYS = 7
 #: The most rows that one prune of one org deletes, and the most rows that it
-#: clears. A larger backlog goes on the next days, so one run never holds a
-#: long transaction.
+#: clears. One run never holds a long transaction. The daily run keeps up only while an
+#: org makes fewer than this many expired cards a day. Above that, the table
+#: grows until task 3560 raises the bound or runs the prune more often.
 PENDING_ASK_PRUNE_BATCH = 1000
 
 #: The tenant that the session binds. NULL when no tenant is bound, and then a

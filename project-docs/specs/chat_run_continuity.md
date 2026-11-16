@@ -1749,7 +1749,7 @@ The fourth is a member who left. Now these rules hold:
   waits, and a call that a claim can still take, stay as they are. A move to
   `answered` or `closed` already sets the stored call to NULL.
 - **A bound.** One prune changes at most 1000 rows of each kind in one org
-  (`PENDING_ASK_PRUNE_BATCH`). A larger backlog goes on the next days.
+  (`PENDING_ASK_PRUNE_BATCH`). The daily run keeps up only while an org makes fewer than 1000 expired cards a day. Above that, the table grows (task 3560 raises the bound or runs the prune more often).
 - **The member purge** deletes the rows that asked the leaver in the bound
   org (`chat_pending_asks` in `routes/admin/members.py`).
 - **A deleted chat.** The prune does not look for rows whose chat is gone. A
