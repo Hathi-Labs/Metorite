@@ -195,7 +195,7 @@ _BASELINE: dict[str, _Entry] = {
         {"litellm verb acompletion": 2, "sdk litellm": 5},
         "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "
         "is off (H-171). acompletion_stream_text does the same since task "
-        "3541: with routing on it takes one answer from the Router. Each of "
+        "3541: with routing on it streams from the Router (task 3542). Each of "
         "the two calls imports litellm and the verb, and token_counter is the "
         "fifth import",
     ),

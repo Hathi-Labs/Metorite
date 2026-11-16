@@ -19,6 +19,8 @@ R8 suites, which this path now reaches.
 """
 from __future__ import annotations
 
+import asyncio
+import itertools
 import json
 from typing import Any
 
@@ -292,126 +294,478 @@ class TestTheUNROUTEDPathIsUntouched:
         assert seen, "the direct path stopped working"
 
 
-class TestTheSTREAMINGArmIsRouted:
-    """Task 3541. ``acompletion_stream_text`` called litellm directly, always.
+# ── The streamed arm (task 3541, then task 3542) ────────────────────────────
 
-    🔴 Production, 2026-11-16 07:20 UTC: the email draft, its one caller,
-    streamed from DeepSeek with the gateway's own key. That account had no
-    balance, so each draft failed, while the Router served chat. With routing
-    on, the streaming arm now asks the Router for one whole answer (the Router
-    cannot stream yet, CP-4b) and hands it to ``on_delta``.
+#: The model that a Router stream names in each frame.
+STREAM_MODEL = "deepseek/deepseek-v4-flash"
+
+
+def _sse(body: dict[str, Any]) -> bytes:
+    return b"data: " + json.dumps(body).encode("utf-8") + b"\n\n"
+
+
+def _frame(content: str | None = None, reasoning: str | None = None) -> bytes:
+    """One chunk frame of a Router stream, as the Console relays it."""
+    delta: dict[str, str] = {}
+    if content is not None:
+        delta["content"] = content
+    if reasoning is not None:
+        delta["reasoning_content"] = reasoning
+    return _sse({"model": STREAM_MODEL, "choices": [{"index": 0, "delta": delta}]})
+
+
+#: The usage frame: no choice, the counts only. It must never read as text.
+USAGE_FRAME = _sse({"model": STREAM_MODEL, "choices": [], "usage": {
+    "prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}})
+DONE_FRAME = b"data: [DONE]\n\n"
+
+
+class StreamSpy:
+    """A fake ``stream_completion_on_console``. It yields raw SSE bytes.
+
+    Each step is bytes, or ``(seconds, bytes)`` that first spends those
+    seconds of ``clock``. ``verdict`` and ``outage`` raise before the first
+    byte, as the real client does. ``hang_after`` waits with no end after the
+    last step. ``closed`` turns True in the ``finally``, so a test sees the
+    Console stream close.
     """
 
-    @staticmethod
-    def _no_litellm(monkeypatch):
-        import litellm
+    def __init__(self, steps: Any = (), *, verdict: tuple[int, dict] | None = None,
+                 outage: bool = False, hang_after: bool = False,
+                 clock: Any = None) -> None:
+        self.steps = steps
+        self.verdict = verdict
+        self.outage = outage
+        self.hang_after = hang_after
+        self.clock = clock
+        self.calls: list[tuple[dict, dict]] = []
+        self.closed = False
 
-        async def _boom(*a, **k):
-            raise AssertionError(
-                "the streaming arm reached litellm, so it billed nobody")
+    def __call__(self, payload, **kw):
+        self.calls.append((payload, kw))
+        return self._bytes()
 
-        monkeypatch.setattr(litellm, "acompletion", _boom)
+    async def _bytes(self):
+        from acb_auth.console_resolve import ConsoleRouterUnavailable, ConsoleRouterVerdict
 
-    async def test_it_reaches_the_ROUTER_and_hands_the_text_to_on_delta(
-        self, monkeypatch, routed
-    ):
-        from acb_llm.context import acompletion_stream_text
+        try:
+            if self.outage:
+                raise ConsoleRouterUnavailable("unreachable")
+            if self.verdict is not None:
+                raise ConsoleRouterVerdict(*self.verdict)
+            for step in self.steps:
+                delay, chunk = step if isinstance(step, tuple) else (0.0, step)
+                if delay:
+                    self.clock.spend(delay)
+                yield chunk
+            if self.hang_after:
+                if self.clock is not None:
+                    await self.clock.hang()
+                await asyncio.Event().wait()
+        finally:
+            self.closed = True
+
+
+class _Seen(list):
+    """An ``on_delta`` that records each ``(kind, text)``."""
+
+    async def __call__(self, kind: str, text: str) -> None:
+        self.append((kind, text))
+
+
+async def _draft(on_delta: Any = None, **kw: Any) -> tuple[str, str]:
+    from acb_llm.context import acompletion_stream_text
+
+    return await acompletion_stream_text(
+        model="tier-balanced", messages=MESSAGES, max_tokens=64,
+        on_delta=on_delta, **kw)
+
+
+@pytest.fixture
+def stream_spy(monkeypatch, routed):
+    """Route the streamed arm to a :class:`StreamSpy`. The buffered client and
+    litellm each fail the test, so the arm makes ONE Console call: a stream."""
+    import litellm
+    from acb_auth import console_resolve
+
+    async def _no_buffered(*a, **k):
+        raise AssertionError("the streamed arm made a buffered Router call too")
+
+    async def _no_litellm(*a, **k):
+        raise AssertionError("the streaming arm reached litellm, so it billed nobody")
+
+    monkeypatch.setattr(console_resolve, "chat_completion_on_console", _no_buffered)
+    monkeypatch.setattr(litellm, "acompletion", _no_litellm)
+
+    def install(spy: StreamSpy) -> StreamSpy:
+        monkeypatch.setattr(console_resolve, "stream_completion_on_console", spy)
+        return spy
+
+    return install
+
+
+#: A hang guard, never a budget. Only a fake that never answers meets it.
+_HANG_S = 30.0
+
+
+class _Clock:
+    """``asyncio`` as ``acb_llm.context`` reads it, on a clock only the fakes
+    move. The same fake as ``test_llm_stream_bounds.py``: the timing of a
+    stream is data, so a loaded runner cannot change which bound fires."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self._hung = asyncio.Event()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    def get_running_loop(self) -> _Clock:
+        return self
+
+    def time(self) -> float:
+        return self.now
+
+    def spend(self, seconds: float) -> None:
+        self.now += seconds
+
+    async def hang(self) -> None:
+        self._hung.set()
+        await asyncio.Event().wait()
+
+    async def wait_for(self, aw: Any, timeout: float | None) -> Any:
+        deadline = None if timeout is None else self.now + timeout
+        task = asyncio.ensure_future(aw)
+        self._hung.clear()
+        hung = asyncio.ensure_future(self._hung.wait())
+        try:
+            await asyncio.wait({task, hung}, timeout=_HANG_S,
+                               return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            hung.cancel()
+        if not task.done():
+            task.cancel()
+            assert self._hung.is_set(), "a fake neither answered nor hung"
+            if deadline is None:
+                raise AssertionError("a wait with no bound met a fake that hangs")
+            self.now = max(self.now, deadline)
+            raise TimeoutError
+        if deadline is not None and self.now > deadline:
+            raise TimeoutError
+        return task.result()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from acb_llm import context as ctx
+
+    fake = _Clock()
+    monkeypatch.setattr(ctx, "asyncio", fake)
+    return fake
+
+
+async def _closed(spy: StreamSpy) -> None:
+    """The fake clock cancels a wait and does not wait for the cancel, so the
+    close of the Console stream can land a few turns of the loop later."""
+    for _ in range(50):
+        if spy.closed:
+            return
+        await asyncio.sleep(0)
+    assert spy.closed, "the Console stream stayed open after the bound"
+
+
+def _timeout_line(logs: list[dict[str, Any]]) -> dict[str, Any]:
+    return next(e for e in logs if e["event"] == "acb_llm.stream_timeout")
+
+
+class TestTheSTREAMINGArmIsRouted:
+    """Task 3541 routed ``acompletion_stream_text``, and task 3542 streams it.
+
+    🔴 Production, 2026-11-16 07:20 UTC: the email draft streamed from DeepSeek
+    with the gateway's own key. That account had no balance, so each draft
+    failed, while the Router served chat. Task 3541 sent the arm to the Router
+    for one whole answer. So the member saw the draft at once, and only the
+    total bound held. Task 3542 reads the Router's stream (CP-4b) with
+    ``acb_llm.routed.stream_on_router``: each delta reaches ``on_delta`` as it
+    comes, and the three bounds hold again.
+    """
+
+    async def test_a_routed_draft_STREAMS_more_than_one_content_delta(self, stream_spy):
+        """The whole slice. ``aiter_bytes`` does not cut on a frame, so the
+        bytes come in pieces of 7, and most pieces end inside a frame."""
         from acb_llm.routed import router_tier
 
-        spy = RouterSpy()
-        _spy_on(monkeypatch, spy)
-        self._no_litellm(monkeypatch)
-        seen: list[tuple[str, str]] = []
-
-        async def on_delta(kind, text):
-            seen.append((kind, text))
-
-        text, used = await acompletion_stream_text(
-            model="tier-balanced", messages=MESSAGES, max_tokens=64,
-            on_delta=on_delta, feature="email.draft", job="writing",
-        )
-        assert spy.calls, "the Router was never called"
+        raw = (_frame(content="Dear ") + _frame(content="Ravi,")
+               + _frame(content=" thanks.") + USAGE_FRAME + DONE_FRAME)
+        spy = stream_spy(StreamSpy([raw[i:i + 7] for i in range(0, len(raw), 7)]))
+        seen = _Seen()
+        text, used = await _draft(on_delta=seen, feature="email.draft", job="writing")
+        assert seen == [("content", "Dear "), ("content", "Ravi,"), ("content", " thanks.")]
+        assert text == "Dear Ravi, thanks."
+        assert used == STREAM_MODEL
+        assert len(spy.calls) == 1, "one Router call, and no second one"
         payload, _ = spy.calls[0]
+        assert payload["stream"] is True
         assert payload["model"] == router_tier("tier-balanced")
-        assert "stream" not in payload
-        assert text == "hi"
-        assert used == "deepseek/deepseek-v4-flash"
-        assert seen == [("content", "hi")]
+        assert spy.closed
 
-    async def test_the_payload_VALIDATES(self, monkeypatch, routed):
-        from acb_llm.context import acompletion_stream_text
-
-        spy = RouterSpy()
-        _spy_on(monkeypatch, spy)
-        self._no_litellm(monkeypatch)
-        await acompletion_stream_text(
-            model=TIER, messages=MESSAGES, max_tokens=64, temperature=0.3,
-            job="writing",
-        )
-        payload, _ = spy.calls[0]
-        TestThePayloadSurvivesTheREALModel._model()(**payload)
-
-    async def test_an_empty_answer_sends_no_delta(self, monkeypatch, routed):
-        from acb_llm.context import acompletion_stream_text
-
-        body = json.loads(json.dumps(OK_BODY))
-        body["choices"][0]["message"]["content"] = ""
-        _spy_on(monkeypatch, RouterSpy(body=body))
-        self._no_litellm(monkeypatch)
-        seen: list[tuple[str, str]] = []
-
-        async def on_delta(kind, text):
-            seen.append((kind, text))
-
-        text, _used = await acompletion_stream_text(
-            model=TIER, messages=MESSAGES, max_tokens=64, on_delta=on_delta)
-        assert text == ""
-        assert seen == []
-
-    @pytest.mark.parametrize("status", [402, 400, 403])
-    async def test_a_refusal_RAISES_and_never_falls_back_to_litellm(
-        self, monkeypatch, routed, status
+    async def test_reasoning_goes_first_as_reasoning_and_never_into_the_text(
+        self, stream_spy
     ):
-        from acb_llm.context import acompletion_stream_text
+        """The contract of the direct arm: a reasoning delta is ``reasoning``,
+        it goes to ``on_delta``, and it is not part of the returned text."""
+        stream_spy(StreamSpy([
+            _frame(reasoning="Thinking"), _frame(reasoning=" more"),
+            _frame(content="Hi"), _frame(content=" Ravi"), DONE_FRAME]))
+        seen = _Seen()
+        text, _ = await _draft(on_delta=seen)
+        assert seen == [("reasoning", "Thinking"), ("reasoning", " more"),
+                        ("content", "Hi"), ("content", " Ravi")]
+        assert text == "Hi Ravi"
+
+    async def test_the_usage_frame_never_reaches_the_composer(self, stream_spy):
+        stream_spy(StreamSpy([_frame(content="Hi"), USAGE_FRAME, DONE_FRAME]))
+        seen = _Seen()
+        text, _ = await _draft(on_delta=seen)
+        assert seen == [("content", "Hi")]
+        assert text == "Hi"
+
+    async def test_the_payload_VALIDATES_with_stream_on(self, stream_spy):
+        """The stream payload is the buffered payload plus ``stream``. The
+        Console asks the provider for the usage frame itself
+        (``_stream_kwargs_for``), so the arm sends no ``stream_options``, as
+        the ``/v1`` relay sends none."""
+        spy = stream_spy(StreamSpy([_frame(content="Hi"), DONE_FRAME]))
+        await _draft(temperature=0.3, job="writing")
+        payload, _ = spy.calls[0]
+        parsed = TestThePayloadSurvivesTheREALModel._model()(**payload)
+        assert parsed.stream is True
+        assert parsed.model == "tier-balanced"
+        assert "stream_options" not in payload
+
+    async def test_attribution_comes_from_the_RUN_CONTEXT_as_on_the_buffered_call(
+        self, stream_spy
+    ):
+        """The same ``run_attribution`` as ``completion_on_router``, so a
+        streamed draft bills the same member and app as a buffered one."""
+        import structlog
+        from acb_common._log import bind_run_context
+
+        spy = stream_spy(StreamSpy([_frame(content="Hi"), DONE_FRAME]))
+        bind_run_context(
+            user="dana@example.com", agent="planner", source="email", run_id="run-9")
+        try:
+            await _draft()
+        finally:
+            structlog.contextvars.clear_contextvars()
+        _, kw = spy.calls[0]
+        assert kw["member"] == "dana@example.com"
+        assert kw["agent"] == "planner"
+        assert kw["module_slug"] == "email"
+        assert kw["run_id"] == "run-9"
+
+    async def test_an_empty_stream_sends_no_delta_and_logs_the_empty_answer(
+        self, stream_spy
+    ):
+        import structlog
+
+        finish = _sse({"model": STREAM_MODEL, "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "length"}]})
+        stream_spy(StreamSpy([_frame(), finish, USAGE_FRAME, DONE_FRAME]))
+        seen = _Seen()
+        with structlog.testing.capture_logs() as logs:
+            text, used = await _draft(on_delta=seen, job="writing")
+        assert text == "" and seen == []
+        assert used == STREAM_MODEL
+        [line] = [e for e in logs if e["event"] == "acb_llm.empty_answer"]
+        assert line["finish_reason"] == "length"
+        assert line["completion_tokens"] == 4
+        assert line["model"] == STREAM_MODEL
+
+    @pytest.mark.parametrize("status", [402, 400, 403, 501])
+    async def test_a_verdict_RAISES_a_refusal_and_never_falls_back(
+        self, stream_spy, status
+    ):
+        """D57.7. A verdict comes before the first byte, and it is the
+        buffered call's ``RoutedRefusal`` with the Console's own detail."""
         from acb_llm.routed import RoutedRefusal
 
-        _spy_on(monkeypatch, RouterSpy(status, {"detail": "no"}))
-        self._no_litellm(monkeypatch)
+        spy = stream_spy(StreamSpy(verdict=(status, {"detail": f"no ({status})"})))
         with pytest.raises(RoutedRefusal) as caught:
-            await acompletion_stream_text(
-                model=TIER, messages=MESSAGES, max_tokens=64)
+            await _draft()
         assert caught.value.status == status
+        assert caught.value.detail == f"no ({status})"
+        assert len(spy.calls) == 1
 
-    async def test_an_OUTAGE_also_never_falls_back(self, monkeypatch, routed):
+    async def test_an_OUTAGE_also_never_falls_back(self, stream_spy):
         from acb_auth.console_resolve import ConsoleRouterUnavailable
-        from acb_llm.context import acompletion_stream_text
 
-        async def _down(*a, **k):
-            raise ConsoleRouterUnavailable("unreachable")
-
-        _spy_on(monkeypatch, _down)
-        self._no_litellm(monkeypatch)
+        spy = stream_spy(StreamSpy(outage=True))
         with pytest.raises(ConsoleRouterUnavailable):
-            await acompletion_stream_text(
-                model=TIER, messages=MESSAGES, max_tokens=64)
+            await _draft()
+        assert len(spy.calls) == 1
 
-    async def test_an_answer_past_the_TOTAL_bound_is_a_total_timeout(
-        self, monkeypatch, routed
+    @pytest.mark.parametrize(("steps", "code"), [
+        ([_frame(content="Hi"), _sse({"error": {
+            "message": "SECRETWORD7 quoted from the prompt", "code": 500}})],
+         "stream_error_frame"),
+        ([_frame(content="Hi"), b"data: {not json}\n\n"], "stream_malformed_frame"),
+        ([_frame(content="Hi")], "stream_truncated"),
+        ([DONE_FRAME], "stream_never_opened"),
+    ], ids=["error-frame", "malformed", "truncated", "lone-done"])
+    async def test_a_broken_stream_is_an_OUTAGE_with_a_code_and_no_text(
+        self, stream_spy, steps, code
     ):
-        """The member waits at the composer, so the total bound still holds."""
-        import asyncio
+        """A stream that is not one whole answer fails, and never as a short
+        draft. ``stream_completion_on_console`` raises
+        ``ConsoleRouterUnavailable`` for a break in the middle of a stream, so
+        a broken frame takes the same class. The draft then says the AI
+        service did not answer (``drafting.draft_failure``). A lone ``[DONE]``
+        is what the Console sends when every step of its chain failed.
 
-        from acb_llm.context import StreamTotalTimeout, acompletion_stream_text
+        The message is our code only. A provider error can quote the prompt,
+        and the drafter logs ``str(exc)``."""
+        import structlog
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+        from acb_llm.routed import is_router_outage
 
-        async def _slow(*a, **k):
-            await asyncio.sleep(5)
-            return 200, OK_BODY
+        spy = stream_spy(StreamSpy(steps))
+        with structlog.testing.capture_logs() as logs, \
+                pytest.raises(ConsoleRouterUnavailable) as caught:
+            await _draft(on_delta=_Seen())
+        assert str(caught.value) == code
+        assert is_router_outage(caught.value)
+        assert "SECRETWORD7" not in repr(caught.value)
+        assert "SECRETWORD7" not in repr(logs)
+        assert spy.closed
 
-        _spy_on(monkeypatch, _slow)
-        self._no_litellm(monkeypatch)
-        with pytest.raises(StreamTotalTimeout):
-            await acompletion_stream_text(
-                model=TIER, messages=MESSAGES, max_tokens=64, total_s=0.05)
+    async def test_DONE_ends_the_read_and_closes_the_Router_stream(self, stream_spy):
+        """The spy waits with no end after ``[DONE]``. A reader that went on
+        would meet the idle bound, and a stream left open would not read
+        closed."""
+        spy = stream_spy(StreamSpy([_frame(content="Hi"), DONE_FRAME], hang_after=True))
+        text, _ = await _draft(idle_s=2.0)
+        assert text == "Hi"
+        assert spy.closed, "the Console stream stayed open after [DONE]"
+
+    async def test_a_cancel_while_the_arm_waits_closes_the_Router_stream(
+        self, stream_spy
+    ):
+        spy = stream_spy(StreamSpy([_frame(content="Hi")], hang_after=True))
+        first = asyncio.Event()
+
+        async def on_delta(_kind: str, _text: str) -> None:
+            first.set()
+
+        task = asyncio.create_task(_draft(on_delta=on_delta))
+        await asyncio.wait_for(first.wait(), 5.0)
+        await asyncio.sleep(0)  # the arm waits for the next frame by now
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert spy.closed, "the Console stream stayed open after the cancel"
+
+    async def test_a_cancel_inside_on_delta_closes_the_Router_stream(self, stream_spy):
+        """The member closed the composer while the route sent a delta. The
+        Console generator sits at a ``yield`` then, so only the close in the
+        ``finally`` of the arm and of the client reaches it."""
+        spy = stream_spy(StreamSpy(
+            [_frame(content="Hi"), _frame(content=" there"), DONE_FRAME]))
+        entered = asyncio.Event()
+
+        async def on_delta(_kind: str, _text: str) -> None:
+            entered.set()
+            await asyncio.Event().wait()  # a slow composer
+
+        task = asyncio.create_task(_draft(on_delta=on_delta))
+        await asyncio.wait_for(entered.wait(), 5.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert spy.closed, "the Console stream stayed open after the cancel"
+
+    # ── The three bounds, on a fake clock ───────────────────────────────────
+
+    async def test_no_frame_ends_at_the_FIRST_CHUNK_bound(self, stream_spy, clock):
+        import structlog
+        from acb_llm.context import StreamFirstChunkTimeout
+
+        spy = stream_spy(StreamSpy([], hang_after=True, clock=clock))
+        with structlog.testing.capture_logs() as logs, \
+                pytest.raises(StreamFirstChunkTimeout) as info:
+            await _draft(first_chunk_s=0.15, idle_s=5.0, total_s=5.0)
+        assert info.value.reason == "model_slow"
+        line = _timeout_line(logs)
+        assert (line["bound"], line["bound_s"], line["chunks"]) == ("first_chunk", 0.15, 0)
+        assert line["elapsed_ms"] == 150
+        await _closed(spy)
+
+    async def test_a_stream_that_stops_ends_at_the_IDLE_bound(self, stream_spy, clock):
+        import structlog
+        from acb_llm.context import StreamIdleTimeout
+
+        spy = stream_spy(StreamSpy(
+            [_frame(content="Hi "), _frame(content="there")], hang_after=True,
+            clock=clock))
+        seen = _Seen()
+        with structlog.testing.capture_logs() as logs, \
+                pytest.raises(StreamIdleTimeout) as info:
+            await _draft(on_delta=seen, first_chunk_s=5.0, idle_s=0.15, total_s=5.0)
+        assert info.value.reason == "model_stalled"
+        assert seen == [("content", "Hi "), ("content", "there")], (
+            "the preview reached the composer before the stall")
+        line = _timeout_line(logs)
+        assert (line["bound"], line["bound_s"], line["chunks"]) == ("idle", 0.15, 2)
+        assert line["elapsed_ms"] == 150
+        await _closed(spy)
+
+    async def test_every_stream_ends_by_the_TOTAL_bound(self, stream_spy, clock):
+        import structlog
+        from acb_llm.context import StreamTotalTimeout
+
+        spy = stream_spy(StreamSpy(
+            itertools.repeat((0.02, _frame(content="x"))), clock=clock))
+        with structlog.testing.capture_logs() as logs, \
+                pytest.raises(StreamTotalTimeout) as info:
+            await _draft(first_chunk_s=5.0, idle_s=5.0, total_s=0.3)
+        assert info.value.reason == "model_timeout"
+        line = _timeout_line(logs)
+        assert (line["bound"], line["bound_s"]) == ("total", 0.3)
+        assert 300 <= line["elapsed_ms"] <= 320, line["elapsed_ms"]
+        await _closed(spy)
+
+    async def test_reasoning_frames_reset_the_idle_bound(self, stream_spy, clock):
+        """A reasoning model thinks for longer than one idle bound before it
+        writes. Each reasoning frame is a sign of life, as on the direct arm."""
+        steps: list[Any] = [(0.06, _frame(reasoning="thinking")) for _ in range(8)]
+        steps += [(0.06, _frame(content="Hi Ravi")), DONE_FRAME]
+        stream_spy(StreamSpy(steps, clock=clock))
+        text, _ = await _draft(first_chunk_s=0.15, idle_s=0.15, total_s=5.0)
+        assert text == "Hi Ravi"
+
+    async def test_a_keepalive_is_no_sign_of_life(self, stream_spy, clock):
+        """A comment line is not a frame of the model. Three of them, 0.06 s
+        apart, pass an idle bound of 0.15 s. If a comment reset the bound,
+        the stream would end well with " late"."""
+        from acb_llm.context import StreamIdleTimeout
+
+        steps: list[Any] = [_frame(content="Hi")]
+        steps += [(0.06, b": keepalive\n\n")] * 3
+        steps += [_frame(content=" late"), DONE_FRAME]
+        stream_spy(StreamSpy(steps, clock=clock))
+        with pytest.raises(StreamIdleTimeout):
+            await _draft(first_chunk_s=5.0, idle_s=0.15, total_s=5.0)
+
+    async def test_a_short_module_constant_bounds_the_routed_arm_too(
+        self, stream_spy, clock, monkeypatch
+    ):
+        """Each bound is read at call time, on this arm as on the direct one."""
+        from acb_llm import context as ctx
+
+        monkeypatch.setattr(ctx, "STREAM_IDLE_S", 0.1)
+        stream_spy(StreamSpy([_frame(content="Hi")], hang_after=True, clock=clock))
+        with pytest.raises(ctx.StreamIdleTimeout):
+            await _draft()
 
     async def test_with_the_flag_OFF_it_still_streams_from_litellm(
         self, monkeypatch
@@ -461,6 +815,95 @@ class TestTheSTREAMINGArmIsRouted:
             get_settings.cache_clear()
         assert streamed == [True], "the direct streaming path stopped working"
         assert text == "hi"
+
+
+class TestTheStreamedArmThroughTheREALClient:
+    """The real ``stream_completion_on_console`` over an ``httpx`` mock.
+
+    A stub agrees with whatever it is handed (R8). Here the request is the one
+    that leaves the box, and the bytes come in pieces of 5, as a socket cuts
+    them, through ``aiter_bytes``.
+    """
+
+    @staticmethod
+    def _wire(monkeypatch, *, status: int = 200, body: bytes = b"",
+              error: dict[str, Any] | None = None, hang: bool = False,
+              state: dict[str, bool] | None = None) -> list[Any]:
+        """``hang`` makes the body wait with no end after its bytes, and
+        ``state["closed"]`` turns True when httpx closes the body stream."""
+        import httpx
+        import litellm
+        from acb_auth import console_resolve
+
+        seen: list[httpx.Request] = []
+
+        class _Pieces(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                for i in range(0, len(body), 5):
+                    yield body[i:i + 5]
+                if hang:
+                    await asyncio.Event().wait()
+
+            async def aclose(self) -> None:
+                if state is not None:
+                    state["closed"] = True
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if status != 200:
+                return httpx.Response(status, json=error or {})
+            return httpx.Response(200, stream=_Pieces(),
+                                  headers={"content-type": "text/event-stream"})
+
+        async def _no_litellm(*a, **k):
+            raise AssertionError("the streaming arm reached litellm")
+
+        monkeypatch.setattr(litellm, "acompletion", _no_litellm)
+        monkeypatch.setattr(
+            console_resolve, "_new_http_client",
+            lambda _timeout=None: httpx.AsyncClient(
+                transport=httpx.MockTransport(answer), timeout=5.0))
+        return seen
+
+    async def test_the_draft_streams_through_the_real_client(self, monkeypatch, routed):
+        raw = _frame(content="Dear ") + _frame(content="Ravi") + USAGE_FRAME + DONE_FRAME
+        requests = self._wire(monkeypatch, body=raw)
+        seen = _Seen()
+        text, used = await _draft(on_delta=seen)
+        assert seen == [("content", "Dear "), ("content", "Ravi")]
+        assert (text, used) == ("Dear Ravi", STREAM_MODEL)
+        [request] = requests
+        assert str(request.url) == "https://console.test/v1/chat/completions"
+        assert request.headers["authorization"] == "Bearer cc_live_fixture_notarealsecret"
+        sent = json.loads(request.content)
+        assert sent["stream"] is True
+        TestThePayloadSurvivesTheREALModel._model()(**sent)
+
+    async def test_a_402_through_the_real_client_is_a_refusal(self, monkeypatch, routed):
+        from acb_llm.routed import RoutedRefusal
+
+        self._wire(monkeypatch, status=402, error={"detail": "out of credits"})
+        with pytest.raises(RoutedRefusal) as caught:
+            await _draft()
+        assert (caught.value.status, caught.value.detail) == (402, "out of credits")
+
+    async def test_a_bound_through_the_real_client_closes_the_connection(
+        self, monkeypatch, routed
+    ):
+        """The idle bound with the REAL ``asyncio.wait_for`` and the real
+        client. The cancel of the wait runs through both generators and the
+        httpx stream, and ``stream_completion_on_console`` turns each
+        ``Exception`` into an outage. So the arm must still raise the bound,
+        and the body stream must be closed when the raise lands."""
+        from acb_llm.context import StreamIdleTimeout
+
+        state = {"closed": False}
+        self._wire(monkeypatch, body=_frame(content="Hi"), hang=True, state=state)
+        seen = _Seen()
+        with pytest.raises(StreamIdleTimeout):
+            await _draft(on_delta=seen, first_chunk_s=5.0, idle_s=0.05, total_s=5.0)
+        assert seen == [("content", "Hi")]
+        assert state["closed"], "the connection to the Console stayed open"
 
 
 # ── The fence the stub could not be ─────────────────────────────────────────
