@@ -6322,9 +6322,21 @@ On 2026-11-15 the owner asked that the chat fix tools, and build the tools that 
 2. A chain of existing actions comes before code. It needs no sandbox and no owner hardware gate.
 3. A saved tool lives in the Studio skill store (`studio_skills`). A code tool is an `app_versions` row (D187). This adds no store.
 4. The chat loads a saved tool through the one path: `_apply_tool_packs`, the F3 skill packs and `find_tools` (D222). This adds no loader.
-5. This decision changes no rule of D187 or D222. `agent_sandbox.md` §0b proposes two merges of their parts, and the owner decides them on task 3394.
+5. This decision changes no rule of D187 or D222. `agent_sandbox.md` §0b proposes two merges of their parts, and the owner decides them on task 3394. (2026-11-16: the owner approved both. D225 records them.)
 
 Fence: none new, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D224 entries merge. **Re-check this number at merge.** On 2026-11-15, main held D223 at most.
+
+### D225 — One finder and one failure store for tools on the fly. It amends D187 §6.1 and the tool failure log of task 1793 (DECIDED, 2026-11-15)
+
+The owner approved both merges of `agent_sandbox.md` §0b on task 3394, at 19:23 UTC on 2026-11-15 (answer `466cf40c`). D224 item 5 proposed them.
+
+1. **One finder.** The chat has one tool finder, `find_tools` (D222). D187 planned a second one, `find_tool` (`agent_sandbox.md` §6.1). SBX-1 does not build it.
+2. **The no-match path.** When `find_tools` finds no tool, it does the rest of §6.1. It checks the library and the catalog actions, and asks the one decide question. Then it writes the `tool_gaps` row. Its answer says if existing actions can do the job as a chain, or if a new tool is necessary.
+3. **The guards of §6.1 stay.** The no-match path keeps SBX-F7, SBX-F18 and SBX-F23. `find_tools` rides in every turn of a listed org, but `find_tool` needed a `tool_scope`. The SBX-1 audit decides how the path keeps that gate.
+4. **One failure store.** Tool failures (task 1793) and issue reports (IR-4, epic 475) write to one store, with one fingerprint. The store groups them into one task for each cause. TOF-2a (task 3416) writes its spec together with IR-0 (task 555).
+5. **The consent rules stay.** D126 and SBX-Q8 bind the store. Error text and a chat reach the Metorite team only with the member's consent, one report at a time. Without that consent, a report holds the counts, the tool name and the error class only.
+
+Fence: none new, so this entry is advisory until SBX-1 and TOF-2a name their tests. `tests/unit/test_decision_ids.py` fails when two D225 entries merge. **Re-check this number at merge.** On 2026-11-16, main held D224 at most, and no open PR held D225.
 
 ## 4. Single-owner registry (who owns duplicated work)
 

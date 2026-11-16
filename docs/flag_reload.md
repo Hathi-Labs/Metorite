@@ -98,6 +98,11 @@ rung 3). On a miss, the best hit holds fewer than all the words (§3.3). Then
 the search tries each word alone, and the near spelling of up to 3 words. The
 near names come from rows that the member can open.
 
+The flag also opens the related records of FIND-3 (`find_engine.md` §3.1
+rung 4). The search follows the links of its first 5 hits that are a deal,
+lead, contact, person or company. It shows at most 3 records for each hit,
+in the answer key `related`. Each record is one that the member can open.
+
 The flag also opens the sender near spelling of `GET /email/messages`, for a
 caller that sends `near_sender`. Only `query_inbox` sends it. When
 `from_email` finds no mail, the tool tries the near spelling of the sender and
@@ -221,6 +226,18 @@ member owns or has installed. `*` lists every org, and the default is empty.
 Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
 asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
 the flip stays OWNER-GATE (`enforcement-flip`).
+
+`STUDIO_SKILL_OFFER_ORGS` opens the card "Save this as a skill?" in the chat
+(`ai_studio.md` §14 TOF-1d). For each listed org, a finished turn that passes
+the rule of the offer draws the card, and Save makes a private draft skill. `*`
+lists every org, and the default is empty. Empty means the chat draws no card
+and reads no catalog for it. Its one reader is
+`gateway.routes.studio.flags.skill_offer_allowed`, and each shell read asks it.
+`GET /auth/me/shell` serves the answer to the chat as `skill_offer`. The offer
+also needs `STUDIO_ORGS`, and it maps a chat tool to a catalog row only for an
+org on `STUDIO_CHAT_TOOLS_ORGS`. A reload applies a change, and a tab shows it
+at its next shell read. The flip stays OWNER-GATE (`enforcement-flip`), after
+the owner preview.
 
 `TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
 (`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`
