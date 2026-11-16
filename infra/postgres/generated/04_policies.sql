@@ -215,6 +215,13 @@ CREATE POLICY chat_session_participant_tenant_isolation ON chat_session_particip
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE chat_topic ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_topic FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chat_topic_tenant_isolation ON chat_topic;
+CREATE POLICY chat_topic_tenant_isolation ON chat_topic
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE copilot_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE copilot_config FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS copilot_config_tenant_isolation ON copilot_config;

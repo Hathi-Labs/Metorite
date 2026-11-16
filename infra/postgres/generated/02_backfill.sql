@@ -99,6 +99,9 @@ UPDATE chat_session_member SET organization_id = (SELECT id FROM organization WH
 UPDATE chat_session_participant SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE chat_topic SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE copilot_config SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
