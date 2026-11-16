@@ -246,24 +246,28 @@ describe("waiting for you and parked are not working", () => {
     expect(back.phase).toBe("working");
   });
 
-  it("a parked run whose card is answered elsewhere ends", () => {
+  it("a parked run whose card is answered elsewhere ends, with no \"Done\" (RESUME-3a)", () => {
     const p = reduceRun(IDLE_RUN, server(T0, { state: "needs_input", live: false }));
-    expect(reduceRun(p, server(T0 + 5_000, null)).phase).toBe("done");
+    const gone = reduceRun(p, server(T0 + 5_000, null));
+    expect(gone.phase).toBe("idle");
+    expect(runView(gone, T0 + 5_000)).toBeNull();
     // The answer started a new run.
     expect(reduceRun(p, server(T0 + 5_000, RUNNING)).phase).toBe("working");
   });
 
-  it("each draws its own words and tone", () => {
+  it("a parked card reads as a live wait, and keeps its own tone (D-RES-6)", () => {
     const now = T0 + 1_000;
-    expect(runView(reduceRun(working(), { type: "card", at: now, open: true }), now)?.tone).toBe("waiting");
-    expect(runView(reduceRun(IDLE_RUN, server(now, { state: "needs_input", live: false })), now)?.tone).toBe("parked");
+    const waiting = runView(reduceRun(working(), { type: "card", at: now, open: true }), now)!;
+    const parked = runView(reduceRun(IDLE_RUN, server(now, { state: "needs_input", live: false })), now)!;
+    expect(waiting.tone).toBe("waiting");
+    // The tone stays `parked`, so the composer sends and offers no Stop.
+    expect(parked.tone).toBe("parked");
     expect(runView(working(), now)?.tone).toBe("working");
-    const labels = new Set([
-      runView(reduceRun(working(), { type: "card", at: now, open: true }), now)!.label,
-      runView(reduceRun(IDLE_RUN, server(now, { state: "needs_input", live: false })), now)!.label,
-      runView(working(), now)!.label,
-    ]);
-    expect(labels.size).toBe(3);
+    expect(parked.label).toBe("Waiting for your answer");
+    expect(waiting.label).toBe(parked.label);
+    // A park has no clock: the run that ran has ended.
+    expect(parked.elapsed).toBeNull();
+    expect(runView(working(), now)!.label).not.toBe(parked.label);
   });
 });
 
