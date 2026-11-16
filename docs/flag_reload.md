@@ -98,6 +98,17 @@ default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_TOPICS_ORGS` turns on the topics of the chat list
+(`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`
+lists the company topics and the member's own topics. A member makes a
+private topic, and an admin renames, hides or merges a company topic. `*`
+lists every org, and the default is empty. Empty means each topic route
+answers 404.
+
+Its one reader is `gateway.chat_topic.topics_allowed`, and each topic route
+asks it first. So a reload applies at the next request. The flip stays
+OWNER-GATE (`enforcement-flip`), after the owner preview.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
