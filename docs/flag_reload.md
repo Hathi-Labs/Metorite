@@ -41,6 +41,18 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
+CO-11). For each listed org, a member may pin a chat, and the chat list shows a
+Pinned group. `*` lists every org, and the default is empty. Empty means the
+list sends no pin key, and PUT and DELETE `/chat/sessions/{id}/pin` answer
+404.
+
+Its one reader is `gateway.chat_session_member.pin_allowed`. The chat list,
+the pin routes and `GET /auth/me/shell` ask it on each call. The shell read
+gives the answer to the client as `chat_pin`. So a tab shows a change at its
+next shell read. A reload applies a change. The flip stays OWNER-GATE
+(`enforcement-flip`), after the owner preview.
+
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
 runs past 6 s sends the member one line. A WhatsApp run of a listed org
@@ -59,10 +71,18 @@ once, in a new reply, with no member turn. `*` lists every org, and the
 default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
-a late Approve takes the path of before. The late-approve scope holds the
-SPENT mark that stops the stored call of a twin card from writing twice. No
-client reads the answer `resumed` before RESUME-3, so do not add an org to
-`CHAT_RESUME_ORGS` before RESUME-3 merges.
+a late Approve takes the path of before. The SPENT mark stops the stored call
+of a twin card from writing twice. Since task 3467, either flag writes that
+mark. No client reads the answer `resumed` before RESUME-3, so do not add an
+org to `CHAT_RESUME_ORGS` before RESUME-3 merges.
+
+⚠️ Keep this order for each org (`chat_run_continuity.md` §4.12.4 item 2).
+Put the org in `CHAT_LATE_APPROVE_ORGS` BEFORE you put it in
+`CHAT_RESUME_ORGS`. Remove the org from `CHAT_LATE_APPROVE_ORGS` only
+`chat_ask_ttl_hours` (168 h by default) after you remove it from
+`CHAT_RESUME_ORGS`. A box that runs code from before task 3467 writes the mark
+only under `CHAT_LATE_APPROVE_ORGS`. Without the order, an old card can then
+write its act a second time.
 
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
 it at each card, and the injection asks it at the start of each run. The late
@@ -77,6 +97,17 @@ draws it yet, and no saved message keeps it. `*` lists every org, and the
 default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
+
+`CHAT_TOPICS_ORGS` turns on the topics of the chat list
+(`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`
+lists the company topics and the member's own topics. A member makes a
+private topic, and an admin renames, hides or merges a company topic. `*`
+lists every org, and the default is empty. Empty means each topic route
+answers 404.
+
+Its one reader is `gateway.chat_topic.topics_allowed`, and each topic route
+asks it first. So a reload applies at the next request. The flip stays
+OWNER-GATE (`enforcement-flip`), after the owner preview.
 
 `CHAT_SEARCH_ORGS` opens the past chats of `search_company`
 (`find_engine.md` §3.1 rung 6, §6, HRD-21). For each listed org, the search
@@ -155,6 +186,22 @@ read. The edge reads its flags at
 start. So set the same value in the env file of both units, reload
 `acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
 (`enforcement-flip`).
+
+`MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
+member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of
+the member, and it adds the affinity of each kind to the score. A needs card
+goes to Later at worst, and the bell does not change. `*` lists every org, and
+the default is empty. Empty gives the answer of before, byte for byte.
+
+The reach loop, the briefs and the chat brief read the same learned feed. So
+a kind that the member mutes leaves them too. A muted needs card in Later is
+no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect on
+reach.
+
+Its one reader is `gateway.routes.shell.state.learn_allowed`, and each feed
+read asks it. The read cache keys on the flag, so a flip misses at once. A
+reload applies a change. The flip is `enforcement-flip`, and it waits for the
+owner preview (D218).
 
 `PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
 also selects the orgs where the daily expiry tick may delete installs

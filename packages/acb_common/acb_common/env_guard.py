@@ -351,6 +351,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).
     "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # WS-58 LOOP-4a: the orgs whose feed learns from the member's acts. It
+    # changes what each member of the org sees, so only the operator writes
+    # it (proactive_loop.md §7.2).
+    "MY_DAY_LEARN_ORGS",
     # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
     # moves what an org pays, so only the operator writes it.
     "PROJECTS_DECIDE_ORGS",
