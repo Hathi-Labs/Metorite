@@ -9,7 +9,8 @@ member's groups:
 
 * **The declaration of one kind** (§6.2) and its check.
 * **The fields of one finding** (§6.1) and its check (§6.4 rules 1 and 2).
-* **The delivery check** (§8.4). ``visibility_scope`` is checked again for each
+* **The delivery check** (§8.4, the scope half; the owning app's authorized read
+  stays with the provider, which reads with the member's ``UserContext``). ``visibility_scope`` is checked again for each
   recipient when the finding is delivered, not only when it is found. A
   recipient that the scope does not hold gets nothing, and gets no error.
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 #: The two points of ``package_host.md`` §4 that a kind joins.
@@ -41,6 +43,10 @@ SEVERITIES: frozenset[str] = NUDGE_GROUPS | INSIGHT_GROUPS
 #: default, so a kind with no reviewed class never leaves the app (§6.4 rule 5).
 REACH_CLASSES: tuple[str, ...] = ("none", "brief", "interrupt", "urgent")
 HARM_CLASSES: frozenset[str] = frozenset({"normal", "high"})
+
+#: The entity types of §6.1. An allow-list, so a synonym of "person" cannot pass
+#: as a new type (ALN-Q5). A new type is a change of this set and of the spec.
+ENTITY_TYPES: frozenset[str] = frozenset({"task", "deal", "thread", "project", "metric"})
 
 PRIOR_MIN, PRIOR_MAX = -20, 20
 EVIDENCE_MIN, EVIDENCE_MAX = 1, 3
@@ -65,8 +71,12 @@ class Evidence:
 
 @dataclass(frozen=True)
 class Finding:
-    """One finding. The first eight fields are the signal of
-    ``my_day_feed.md`` §4.1. The last five are new (§6.1)."""
+    """One finding: the signal of ``my_day_feed.md`` §4.1 plus five new fields.
+
+    ``to_signal()`` gives the ``needs.Signal`` that the feed reads, so the feed
+    keeps one signal type. ``organization_id`` is the tenant that found the
+    finding. Delivery drops the finding for a recipient of another tenant.
+    """
 
     kind: str
     entity: Mapping[str, Any]
@@ -81,6 +91,22 @@ class Finding:
     visibility_scope: Sequence[str] = ()
     severity_hint: str = "info"
     batch_key: str | None = None
+    organization_id: str = ""
+    app: str = ""
+    title: str = ""
+    at: str | None = None
+    urgent_at: str | None = None
+
+    def to_signal(self) -> Any:
+        """The ``needs.Signal`` of this finding. The five new fields stay here."""
+        from gateway.routes.shell.needs import Signal
+
+        return Signal(
+            signal_id=self.signal_id, app=self.app, kind=self.kind,
+            entity=dict(self.entity), title=self.title or str(self.entity.get("label", "")),
+            facts=dict(self.facts), href=self.href, acts=tuple(self.acts),
+            at=self.at, urgent_at=self.urgent_at, expires_at=self.expires_at,
+        )
 
 
 @dataclass(frozen=True)
@@ -141,8 +167,11 @@ def check_declaration(decl: KindDeclaration) -> list[str]:
     # ALN-Q5: no kind has a person as the subject of a fault.
     if not decl.entity_types:
         out.append("entity_types is empty")
-    elif "person" in decl.entity_types:
-        out.append("a kind may not name a person as its entity (ALN-Q5)")
+    else:
+        types = {str(t).strip().lower() for t in decl.entity_types}
+        if types - ENTITY_TYPES:
+            out.append(f"entity_types holds an unknown type: {sorted(types - ENTITY_TYPES)}"
+                       " (a person is never one, ALN-Q5)")
     fixtures = decl.fixtures or {}
     for key in ("positive", "negative"):
         if key not in fixtures:
@@ -158,6 +187,43 @@ def check_scope(scope: Iterable[str] | None) -> list[str]:
     return [f"visibility_scope has a bad subject: {s!r}" for s in bad]
 
 
+def _check_entity(entity: Mapping[str, Any]) -> list[str]:
+    out: list[str] = []
+    if not all(_text(entity.get(k)) for k in ("type", "id", "label")):
+        out.append("entity needs type, id and label")
+    etype = str(entity.get("type") or "").strip().lower()
+    if etype not in ENTITY_TYPES:
+        out.append(f"entity type {entity.get('type')!r} is not allowed (a person is never one, ALN-Q5)")
+    return out
+
+
+def _check_evidence(evidence: Sequence[Evidence] | None) -> list[str]:
+    count = len(evidence or ())
+    out: list[str] = []
+    if not EVIDENCE_MIN <= count <= EVIDENCE_MAX:
+        out.append(f"evidence needs {EVIDENCE_MIN} to {EVIDENCE_MAX} records, has {count}")
+    for ev in evidence or ():
+        if not all(_text(getattr(ev, k, None)) for k in _EVIDENCE_KEYS):
+            out.append("an evidence record needs app, type, id, label and href")
+            break
+    return out
+
+
+def _check_kind(finding: Finding, decl: KindDeclaration) -> list[str]:
+    out: list[str] = []
+    if finding.kind != decl.kind:
+        out.append(f"kind {finding.kind!r} is not the declared kind {decl.kind!r}")
+    etype = str((finding.entity or {}).get("type") or "").strip().lower()
+    if etype not in {str(t).strip().lower() for t in decl.entity_types}:
+        out.append(f"entity type {etype!r} is not declared by the kind")
+    allowed = INSIGHT_GROUPS if decl.point == "insights" else NUDGE_GROUPS
+    if finding.severity_hint not in allowed:
+        out.append(f"severity_hint {finding.severity_hint!r} does not fit the {decl.point} point")
+    if finding.severity_hint != decl.group:
+        out.append(f"severity_hint {finding.severity_hint!r} is not the group {decl.group!r} of the kind")
+    return out
+
+
 def check_finding(finding: Finding, decl: KindDeclaration | None = None) -> list[str]:
     """The faults of a finding (§6.1 and §6.4 rules 1 and 2).
 
@@ -165,40 +231,19 @@ def check_finding(finding: Finding, decl: KindDeclaration | None = None) -> list
     also holds the finding to its kind.
     """
     out: list[str] = []
-    if not _text(finding.kind):
-        out.append("kind is empty")
-    if not _text(finding.signal_id):
-        out.append("signal_id is empty")
-    if not _text(finding.fingerprint):
-        out.append("fingerprint is empty")
-    entity = finding.entity or {}
-    if not all(_text(entity.get(k)) for k in ("type", "id", "label")):
-        out.append("entity needs type, id and label")
-    if entity.get("type") == "person":
-        out.append("a person is never the entity of a finding (ALN-Q5)")
-    count = len(finding.evidence or ())
-    if not EVIDENCE_MIN <= count <= EVIDENCE_MAX:
-        out.append(f"evidence needs {EVIDENCE_MIN} to {EVIDENCE_MAX} records, has {count}")
-    for ev in finding.evidence or ():
-        if not all(_text(getattr(ev, k, None)) for k in _EVIDENCE_KEYS):
-            out.append("an evidence record needs app, type, id, label and href")
-            break
+    for name in ("kind", "signal_id", "fingerprint", "href"):
+        if not _text(getattr(finding, name)):
+            out.append(f"{name} is empty")
+    out.extend(_check_entity(finding.entity or {}))
+    out.extend(_check_evidence(finding.evidence))
     out.extend(check_scope(finding.visibility_scope))
     conf = finding.confidence
     if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not 0 <= conf <= 1:
         out.append("confidence must be a number from 0 to 1")
     if finding.severity_hint not in SEVERITIES:
         out.append(f"severity_hint {finding.severity_hint!r} is unknown")
-    if not _text(finding.href):
-        out.append("href is empty")
     if decl is not None:
-        if finding.kind != decl.kind:
-            out.append(f"kind {finding.kind!r} is not the declared kind {decl.kind!r}")
-        if entity.get("type") not in set(decl.entity_types):
-            out.append(f"entity type {entity.get('type')!r} is not declared by the kind")
-        allowed = INSIGHT_GROUPS if decl.point == "insights" else NUDGE_GROUPS
-        if finding.severity_hint not in allowed:
-            out.append(f"severity_hint {finding.severity_hint!r} does not fit the {decl.point} point")
+        out.extend(_check_kind(finding, decl))
     return out
 
 
@@ -242,28 +287,51 @@ def scope_holds(scope: Iterable[str], email: str, groups: Iterable[str]) -> bool
     return False
 
 
-def deliverable(finding: Finding, email: str, groups: Iterable[str],
-                decl: KindDeclaration | None = None) -> bool:
-    """May this finding reach this recipient now? A failure is silent (§8.4)."""
+def _expired(expires_at: str | None, now: datetime) -> bool:
+    if not expires_at:
+        return False
+    try:
+        when = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return True  # an expiry nobody can read fails closed
+    if when.tzinfo is None:
+        return True
+    return when <= now
+
+
+def deliverable(finding: Finding, email: str, groups: Iterable[str], *,
+                organization_id: str, decl: KindDeclaration,
+                now: datetime | None = None) -> bool:
+    """May this finding reach this recipient now? A failure is silent (§8.4).
+
+    The caller passes the recipient's tenant and groups, read from the tenant
+    session. The recipient must be an active member: ``member_groups`` counts
+    active members only, and the caller reads the member from the same session.
+    """
+    if not organization_id or finding.organization_id != organization_id:
+        return False
+    if _expired(finding.expires_at, now or datetime.now(UTC)):
+        return False
     return not check_finding(finding, decl) and scope_holds(
         finding.visibility_scope, email, groups)
 
 
-def deliver(findings: Iterable[Finding], email: str, groups: Iterable[str],
-            registry: Mapping[str, KindDeclaration] | None = None) -> list[Finding]:
+def deliver(findings: Iterable[Finding], email: str, groups: Iterable[str], *,
+            organization_id: str,
+            registry: Mapping[str, KindDeclaration] | None = None,
+            now: datetime | None = None) -> list[Finding]:
     """The findings that reach one recipient. The rest drop with no error.
 
-    With a *registry*, a finding of a kind that nobody declared drops too.
+    A finding of a kind that nobody declared drops (§6.5). *registry* defaults
+    to ``REGISTRY``, so no caller can skip the kind check by leaving it out.
     """
+    reg = REGISTRY if registry is None else registry
     mine = list(groups)
     out: list[Finding] = []
     for f in findings:
-        decl = None
-        if registry is not None:
-            decl = registry.get(f.kind)
-            if decl is None:
-                continue
-        if deliverable(f, email, mine, decl):
+        decl = reg.get(f.kind)
+        if decl is not None and deliverable(
+                f, email, mine, organization_id=organization_id, decl=decl, now=now):
             out.append(f)
     return out
 

@@ -19,6 +19,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
+
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -80,13 +81,23 @@ async def _groups(w, org: str, email: str) -> list[str]:
         release_tenant(token)
 
 
-def _finding(scope):
+def _finding(scope, org: str):
     from gateway.routes.shell import finding_contract as fc
-    return fc.Finding(
+    return fc.Finding(organization_id=org, app="projects", title="T",
         kind="k", entity={"type": "task", "id": "1", "label": "T"}, signal_id="tasks:1",
         fingerprint="f", facts={}, expires_at=None, acts=(), href="/t",
         evidence=(fc.Evidence("projects", "task", "1", "T", "/t"),),
         visibility_scope=tuple(scope), severity_hint="now")
+
+
+def _registry():
+    from gateway.routes.shell import finding_contract as fc
+    pos = _finding(["org"], "x")
+    neg = _finding([], "x")
+    d = fc.KindDeclaration(kind="k", label="K", point="nudges", group="now", why=("w",),
+                           source="s", entity_types=("task",),
+                           fixtures={"positive": pos, "negative": neg})
+    return {"k": d}
 
 
 @pytest.mark.asyncio
@@ -94,12 +105,12 @@ async def test_r8_a_group_member_gets_the_finding_and_others_get_nothing(world):
     from gateway.routes.shell.finding_contract import deliver
 
     w = world
-    f = _finding([f"group:{w.slug}"])
+    f = _finding([f"group:{w.slug}"], w.p.org_a)
     carol = await _groups(w, w.p.org_a, w.m.carol)
     dave = await _groups(w, w.p.org_a, w.m.dave)
     assert f"group:{w.slug}" in carol and dave == []
-    assert deliver([f], w.m.carol, carol) == [f]
-    assert deliver([f], w.m.dave, dave) == []
+    assert deliver([f], w.m.carol, carol, organization_id=w.p.org_a, registry=_registry()) == [f]
+    assert deliver([f], w.m.dave, dave, organization_id=w.p.org_a, registry=_registry()) == []
 
 
 @pytest.mark.asyncio
@@ -109,7 +120,7 @@ async def test_r8_a_disabled_member_is_not_in_the_group(world):
     w = world
     groups = await _groups(w, w.p.org_a, w.m.gone)
     assert groups == []
-    assert deliver([_finding([f"group:{w.slug}"])], w.m.gone, groups) == []
+    assert deliver([_finding([f"group:{w.slug}"], w.p.org_a)], w.m.gone, groups, organization_id=w.p.org_a, registry=_registry()) == []
 
 
 @pytest.mark.asyncio
@@ -119,7 +130,7 @@ async def test_r8_another_tenant_member_gets_nothing_even_for_the_group_slug(wor
     w = world
     zed = await _groups(w, w.p.org_b, w.m.zed)
     assert zed == []
-    assert deliver([_finding([f"group:{w.slug}"])], w.m.zed, zed) == []
+    assert deliver([_finding([f"group:{w.slug}"], w.p.org_a)], w.m.zed, zed, organization_id=w.p.org_b, registry=_registry()) == []
     # Zed under the tenant of org A cannot read the org A groups as carol either.
     assert await _groups(w, w.p.org_b, w.m.carol) == []
 
@@ -129,7 +140,17 @@ async def test_r8_a_named_member_outside_the_scope_gets_nothing(world):
     from gateway.routes.shell.finding_contract import deliver
 
     w = world
-    f = _finding([w.m.dave])
+    f = _finding([w.m.dave], w.p.org_a)
     carol = await _groups(w, w.p.org_a, w.m.carol)
-    assert deliver([f], w.m.carol, carol) == []
-    assert deliver([f], w.m.dave, []) == [f]
+    assert deliver([f], w.m.carol, carol, organization_id=w.p.org_a, registry=_registry()) == []
+    assert deliver([f], w.m.dave, [], organization_id=w.p.org_a, registry=_registry()) == [f]
+
+
+@pytest.mark.asyncio
+async def test_r8_an_org_scope_gives_nothing_to_a_member_of_another_tenant(world):
+    from gateway.routes.shell.finding_contract import deliver
+
+    w = world
+    f = _finding(["org"], w.p.org_a)
+    assert deliver([f], w.m.zed, [], organization_id=w.p.org_b, registry=_registry()) == []
+    assert deliver([f], w.m.dave, [], organization_id=w.p.org_a, registry=_registry()) == [f]
