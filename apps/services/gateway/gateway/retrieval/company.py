@@ -79,11 +79,15 @@ when no record holds both words. With the flag on:
 
 **A near spelling, behind ``FIND_ORGS``** (HRD-18b, task 3226,
 ``find_engine.md`` §3.1 rung 3, §3.2 and §3.3). It acts only with
-``CONTEXT_RECENCY`` on. When every app that answered found nothing, and the
-query holds no operator:
+``CONTEXT_RECENCY`` on. With it, the second pass starts on a MISS of
+D-FIND-4 (:func:`_missed`): the best hit holds fewer than all the content
+words, and zero hits is one kind of miss. The words alone run on that miss
+too, and the hits of the first pass stay (:func:`_keep_first`). On a miss,
+for a query with no operator:
 
-* the route picks at most 3 words of 4 letters or more
-  (:func:`find.near_words`) and asks each source that can ``near`` for the
+* the route picks at most 3 words of 4 letters or more, first the words
+  that no hit holds (:func:`find.near_words`, :func:`find.held`), and asks
+  each source that can ``near`` for the
   names near them, all at once, inside :data:`NEAR_LOOKUP_S`. Each name comes
   from a row that the member can open, and ``acb_common.name_match`` scores
   it in the app's own module. A late or failed lookup gives no name;
@@ -95,7 +99,8 @@ query holds no operator:
   text word never matches inside an address;
 * each hit found so says ``matched_by`` ``near``, with ``word`` and ``as``.
   A hit that two rungs found keeps the lower rung. ``near`` in the answer
-  names each word, its spelling and its hits. The log line is
+  names each word, its spelling, its hits and ``held``: true when the word
+  has a hit of its own (:func:`find.near_report`). The log line is
   ``search.company.near``, with no word.
 
 **A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
@@ -710,6 +715,33 @@ def near_asks(
     return out
 
 
+def _missed(found: dict[str, list[Hit]], words_of: list[str] | None) -> bool:
+    """True when the first pass missed, so the second pass may run.
+
+    Off (*words_of* is None), the rule of KR-ZERO: an app answered, and every
+    app that answered found nothing. On (``FIND_ORGS``), the rule of D-FIND-4
+    (``find_engine.md`` §3.3): the best hit holds fewer than all the content
+    words. Zero hits is one kind of miss. Pure.
+    """
+    if not found:
+        return False
+    if words_of is None:
+        return not any(found.values())
+    return find.missed(found, words_of)
+
+
+def _keep_first(found: dict[str, list[Hit]], wide: dict[str, list[Hit]],
+                words_of: list[str] | None, order: list[str],
+                per_app: int) -> dict[str, list[Hit]]:
+    """The hits after the words alone. Off, *wide* replaces *found*, as in
+    KR-ZERO, because the first pass found nothing. On, the first pass may hold
+    hits (a miss of D-FIND-4), so :func:`_merge_near` adds *wide* to them.
+    On a first pass with no hit, that is *wide*, byte for byte. Pure."""
+    if words_of is None:
+        return wide
+    return _merge_near(found, [wide], order, per_app)
+
+
 def _first_in_order(hit: Hit) -> tuple[int, int]:
     """The two keys of §3.4 that come before the score: more words first,
     then the lower rung."""
@@ -755,28 +787,29 @@ def _merge_near(merged: dict[str, list[Hit]], passes: list[dict[str, list[Hit]]]
 async def _near_step(
     user: UserContext, words: str, words_of: list[str] | None, order: list[str],
     found: dict[str, list[Hit]], per_app: int, *, options: dict[str, Any],
-    since: datetime | None, until: float, after_asks: int,
+    since: datetime | None, until: float, after_asks: int, miss: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, list[Hit]]]]:
     """Rung 3 of the second pass (HRD-18b, ``find_engine.md`` §3.2).
 
-    It runs only with ``FIND_ORGS`` on (*words_of* set), when every app that
-    answered the first pass (*found*) found nothing, for a query with no
-    operator, and with :data:`BROADEN_FLOOR_S` left. Else it gives
-    ``([], [])`` and asks nothing.
+    It runs only with ``FIND_ORGS`` on (*words_of* set), when the first pass
+    (*found*) missed (*miss*, D-FIND-4: its best hit holds fewer than all the
+    content words), for a query with no operator, and with
+    :data:`BROADEN_FLOOR_S` left. Else it gives ``([], [])`` and asks nothing.
 
-    The near lookup over each source the member holds (*order*), then the
-    asks of :func:`near_asks` to the apps that answered. Each ask takes an
-    equal share of the time left before *until*, counting the *after_asks*
-    asks of the words alone that follow. No vector half runs. It returns
-    ``near`` for the answer and the stamped hits of each ask.
+    The near lookup over each source the member holds (*order*), for the
+    words of :func:`find.near_words`: first the words that no hit of *found*
+    holds. Then the asks of :func:`near_asks` to the apps that answered. Each
+    ask takes an equal share of the time left before *until*, counting the
+    *after_asks* asks of the words alone that follow. No vector half runs. It
+    returns ``near`` for the answer and the stamped hits of each ask.
     """
     loop = asyncio.get_running_loop()
-    if (not words_of or not found or any(found.values()) or bare_words(words) is None
+    if (not words_of or not miss or bare_words(words) is None
             or until - loop.time() < BROADEN_FLOOR_S):
         return [], []
     asked = list(found)
     started = loop.time()
-    chosen = find.near_words(words, words_of, set())
+    chosen = find.near_words(words, words_of, find.held(found, words_of))
     names = await _near_lookup(user, chosen, order, until) if chosen else {}
     asks = near_asks(words_of, chosen, names, asked) if names else []
     lexical = {k: v for k, v in options.items() if k not in ("vectors", "budget_s")}
@@ -889,27 +922,33 @@ async def company_search(
             "skipped": skipped,
         }
     # KR-ZERO: every app that answered found nothing. Ask again, each word alone.
+    # With FIND_ORGS on, the miss of D-FIND-4 (§3.3): the best hit holds fewer
+    # than all the content words, so a hit of 1 word of 3 asks again too.
     broadened: list[dict[str, Any]] | None = None
-    alone = alone_words(words) if found and not any(found.values()) else []
+    miss = _missed(found, words_of)
+    alone = alone_words(words) if miss else []
     if words_of is not None and alone:
         # The fold of §3.3: "Sharath's" is searched as "sharath".
         alone = words_of
     until = min(loop.time() + BROADEN_BUDGET_S, began + ANSWER_CAP_S)
-    # HRD-18b: rung 3 on a zero answer, with FIND_ORGS on. Its asks run before
-    # the words alone, and share the time of the second pass with them.
+    # HRD-18b: rung 3 on a miss, with FIND_ORGS on. Its asks run before the
+    # words alone, and share the time of the second pass with them.
     near, near_passes = await _near_step(
         user, words, words_of, order, found, per_app, options=options,
-        since=since, until=until, after_asks=len(alone),
+        since=since, until=until, after_asks=len(alone), miss=miss,
     )
     if alone and until - loop.time() >= BROADEN_FLOOR_S:
         started = loop.time()
-        broadened, found = await _broaden(
+        broadened, wide = await _broaden(
             user, alone, list(found), per_app, options=options, since=since, until=until,
             tag=words_of,
         )
+        # Off, the words alone answer, as in KR-ZERO. On, a first pass that
+        # missed may hold hits, and they stay, each at its lower rung.
+        found = _keep_first(found, wide, words_of, order, per_app)
         _events.info(
             "search.company.broaden", words=len(alone),
-            hits=sum(len(hits) for hits in found.values()),
+            hits=sum(len(hits) for hits in wide.values()),
             ms=round((loop.time() - started) * 1000),
         )
     found = _merge_near(found, near_passes, order, per_app)
@@ -925,5 +964,5 @@ async def company_search(
     if broadened is not None:
         answer["broadened"] = broadened
     if near:
-        answer["near"] = near
+        answer["near"] = find.near_report(near, found, broadened)
     return answer

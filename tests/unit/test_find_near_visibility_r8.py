@@ -235,11 +235,70 @@ async def test_people_names_stay_in_their_org(world) -> None:
 
 # ── query_inbox: the sender filter of /email/messages ───────────────────────
 
-async def _inbox(p: Any, user: UserContext, sender: str) -> dict[str, Any]:
+async def _inbox(p: Any, user: UserContext, sender: str, *, opt_in: bool = True,
+                 **given: Any) -> dict[str, Any]:
+    """``list_messages`` as ``query_inbox`` calls it: with ``near_sender``."""
     from gateway.routes.email.transport import messages
 
+    if opt_in:
+        given["near_sender"] = True
     async with _as_member(p, user.organization_id):
-        return await _direct(messages.list_messages, folder="all", from_email=sender, user=user)
+        return await _direct(messages.list_messages, folder="all", from_email=sender,
+                             user=user, **given)
+
+
+async def _inbox_http(p: Any, user: UserContext, params: dict[str, str]) -> dict[str, Any]:
+    """``GET /email/messages`` through the real email router, as a request
+    of the Mail UI runs it. The tenant comes from the user."""
+    import httpx
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+    from gateway.routes.email.core import router
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    async def _caller() -> UserContext:
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = _caller
+    scope = clear_tenant()
+    try:
+        async with (
+            tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                              base_url="http://mail.test") as client,
+        ):
+            res = await client.get("/email/messages", params=params)
+    finally:
+        release_tenant(scope)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+async def test_the_mail_ui_never_gets_a_near_sender(world, flags) -> None:
+    """The opt-in (review of 2026-11-16): ``list_messages`` is the shared route
+    of the Mail UI. With no ``near_sender``, a sender filter that finds no
+    mail stays at zero, with no ``near`` key, also with ``FIND_ORGS=*``."""
+    p = world["p"]
+    me = _member(A, p.org_a, "feature:email")
+    flags("*")
+    direct = await _inbox(p, me, "Sharath", opt_in=False)
+    assert direct["total"] == 0 and direct["emails"] == [] and "near" not in direct
+    plain = await _inbox_http(p, me, {"folder": "all", "from_email": "Sharath"})
+    assert plain["total"] == 0 and "near" not in plain
+    # Non-vacuity: the same request with the opt-in gets the near spelling.
+    asked = await _inbox_http(p, me, {"folder": "all", "from_email": "Sharath",
+                                      "near_sender": "true"})
+    assert asked["near"] == {"word": "Sharath", "as": "Sharat"} and asked["total"] == 1
+    # With the flag off, the opt-in alone changes nothing.
+    flags("")
+    off = await _inbox_http(p, me, {"folder": "all", "from_email": "Sharath",
+                                    "near_sender": "true"})
+    assert off["total"] == 0 and "near" not in off
 
 
 async def test_a_sender_filter_tries_the_near_spelling(world, flags) -> None:
@@ -258,11 +317,7 @@ async def test_a_sender_filter_tries_the_near_spelling(world, flags) -> None:
     exact = await _inbox(p, me, "neuropeek")
     assert exact["total"] == 1 and "near" not in exact
     # Page 2 counts the same near senders, so the pages agree.
-    from gateway.routes.email.transport import messages
-
-    async with _as_member(p, p.org_a):
-        second = await _direct(messages.list_messages, folder="all", from_email="Sharath",
-                               page=2, page_size=1, user=me)
+    second = await _inbox(p, me, "Sharath", page=2, page_size=1)
     assert second["total"] == 1 and second["emails"] == []
     assert second["near"] == {"word": "Sharath", "as": "Sharat"}
 
@@ -317,6 +372,34 @@ async def test_sharath_3d_printer_finds_the_deal_and_the_mail_in_one_call(
     assert hits[world["mail_a"]]["matched_by"] == "word"
     # B's mail never reaches A, as a hit or a word.
     assert world["mail_b"] not in str(answer) and "Secretname" not in str(answer)
+
+
+async def test_another_sharath_in_the_first_pass_still_finds_sharat(
+        world, flags, roomy) -> None:
+    """Production, 2026-11-14: «Sharath BMS» is the contact of «Twin Dragon 300
+    - 3D Printer Hardware», so the first pass finds that deal. Its text holds 2
+    of the 3 words: a miss of D-FIND-4. The second pass still runs, finds the
+    deal of «Sharat» and his mail, and the first hit stays exact."""
+    p = world["p"]
+    bms = await _make(p, p.org_a, "/crm/contacts", {
+        "first_name": "Sharath", "last_name": "BMS Purchase Dept"})
+    twin = await _make(p, p.org_a, "/crm/deals", {"name": "Twin Dragon 300 - 3D Printer Hardware"})
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_deal_contacts (organization_id, deal_id, contact_id, is_primary) "
+            "VALUES (CAST(:o AS uuid), CAST(:d AS uuid), CAST(:c AS uuid), true)"),
+            {"o": p.org_a, "d": twin, "c": bms})
+    flags("*")
+    answer = await _ask(p, _member(A, p.org_a, *ALL), "Sharath 3D printer")
+    hits = {h["id"]: h for h in answer["hits"]}
+    assert (hits[twin]["matched_by"], hits[twin]["covers"], hits[twin]["of"]) == ("exact", 2, 3)
+    assert world["deal"] in hits and world["mail_a"] in hits
+    assert [(e["word"], e["as"]) for e in answer["near"]] == [("Sharath", "Sharat")]
+    assert [b["word"] for b in answer["broadened"]] == ["sharath", "3d", "printer"]
+    # The zero rule of KR-ZERO would stop here: the flag off asks nothing again.
+    flags("")
+    off = await _ask(p, _member(A, p.org_a, *ALL), "Sharath 3D printer")
+    assert "near" not in off and "broadened" not in off and world["deal"] not in str(off)
 
 
 async def test_nuropeak_finds_the_deal_and_the_mail_from_its_domain(

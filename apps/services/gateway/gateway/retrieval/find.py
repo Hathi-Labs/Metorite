@@ -95,6 +95,52 @@ def rung_of(matched_by: str | None) -> int:
     return RUNGS.get(matched_by or "", len(RUNGS) + 1)
 
 
+def missed(found: dict[str, list[Any]], words: list[str]) -> bool:
+    """True when a pass is a miss (§3.3, D-FIND-4): its best hit holds fewer
+    than all the content words. Zero hits is one kind of miss. Each hit is
+    stamped already, so ``covers`` counts its words. Pure."""
+    best = max((h.covers or 0 for hits in found.values() for h in hits), default=0)
+    return best < len(words)
+
+
+def held(found: dict[str, list[Any]], words: list[str]) -> set[str]:
+    """The content words that some hit of *found* holds, in its title, hint
+    or snippet, as :func:`coverage` counts them (§3.3). Pure."""
+    out: set[str] = set()
+    for hits in found.values():
+        for hit in hits:
+            text = f"{hit.title} {hit.hint} {hit.snippet}"
+            out |= {w for w in words if w not in out and coverage([w], text)}
+    return out
+
+
+#: The rungs whose hit matched the member's own words, not a near spelling.
+OWN_RUNGS = frozenset({"exact", "words", "word"})
+
+
+def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
+                broadened: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Each entry of the route's ``near``, with ``held`` (HRD-18b).
+
+    ``held`` is true when the word has a hit of its own: the word alone found
+    records (``broadened``), or a hit of the answer that matched the member's
+    own words holds it in its title, hint or snippet. Only a word with no
+    such hit may open the answer with "No record holds" (§3.6). Pure.
+    """
+    own = [f"{h.title} {h.hint} {h.snippet}" for hits in found.values() for h in hits
+           if h.matched_by in OWN_RUNGS]
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        asked = name_match.words(entry.get("word"))
+        alone = any(
+            isinstance(b, dict) and name_match.words(b.get("word")) == asked and b.get("hits")
+            for b in broadened or []
+        )
+        text = len(asked) == 1 and any(coverage(asked, t) for t in own)
+        out.append({**entry, "held": bool(alone or text)})
+    return out
+
+
 def spelled(words: list[str], word: str, spelling: str) -> list[str]:
     """*words* with *word* replaced by *spelling*, both folded as
     :func:`content_words` folds them (HRD-18b). Pure."""

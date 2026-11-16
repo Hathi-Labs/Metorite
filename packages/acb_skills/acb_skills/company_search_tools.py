@@ -348,16 +348,19 @@ def _near_line(body: dict[str, Any]) -> str:
 
     HRD-18b (``find_engine.md`` §3.1 rung 3). One clause for each word, from
     the route's ``near``, a closed shape: "No record holds «Sharath». Records
-    for the near spelling «Sharat»:". A spelling that found nothing is left
-    out. The route sends ``near`` only with ``FIND_ORGS`` on, so with it off
-    the text does not change.
+    for the near spelling «Sharat»:". A clause prints only for a word that
+    has no hit of its own: the route says ``held`` false. A word that found
+    records alone, and a spelling that found nothing, get no clause. The
+    route sends ``near`` only with ``FIND_ORGS`` on, so with it off the text
+    does not change.
     """
     entries = body.get("near")
     if not isinstance(entries, list):
         return ""
     spellings: dict[str, list[str]] = {}
     for entry in entries:
-        if not isinstance(entry, dict) or not _count(entry.get("hits")):
+        if (not isinstance(entry, dict) or not _count(entry.get("hits"))
+                or entry.get("held") is not False):
             continue
         # The route sends each value as one token of at most 40 characters.
         word, spelt = _line(entry.get("word")), _line(entry.get("as"))

@@ -86,11 +86,14 @@ gives the answer of KR-ZERO, byte for byte. It acts only with `CONTEXT_RECENCY`
 on.
 
 The flag also opens the near spelling step of HRD-18b (`find_engine.md` §3.1
-rung 3). When a search finds nothing, it tries the near spelling of up to 3
-words, from names that the member can open. It also opens the sender near
-spelling of `GET /email/messages`. When `from_email` finds no mail,
-`query_inbox` tries the near spelling of the sender and names it. That part
-needs no `CONTEXT_RECENCY`.
+rung 3). On a miss, the best hit holds fewer than all the words (§3.3). Then
+the search tries each word alone, and the near spelling of up to 3 words. The
+near names come from rows that the member can open.
+
+The flag also opens the sender near spelling of `GET /email/messages`, for a
+caller that sends `near_sender`. Only `query_inbox` sends it. When
+`from_email` finds no mail, the tool tries the near spelling of the sender and
+names it. That part needs no `CONTEXT_RECENCY`.
 
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the

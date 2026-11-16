@@ -222,6 +222,10 @@ async def list_messages(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     user: UserContext = Depends(get_current_user),
+    # HRD-18b. A plain default, so a direct call that leaves it out gets False.
+    # Only the chat's `query_inbox` sends it. The Mail UI never does, so its
+    # list keeps the exact sender filter.
+    near_sender: bool = False,
 ):
     """List/search emails across accounts.
 
@@ -239,6 +243,9 @@ async def list_messages(
     level, matching the one-classification-per-conversation invariant); the
     assistant's inbox-query tools leave it off so their counts stay per-message.
     Ignored when ``thread_id`` is set (the conversation view wants every message).
+
+    ``near_sender`` (HRD-18b) opts in to the near spelling of a sender filter
+    that finds no mail. It acts only when ``FIND_ORGS`` holds the org too.
     """
     # Chat speed (2026-10-25): the assistant's `query_inbox` waited a median
     # 7.5 s on this route, and the page itself reads in about 0.1 s. One log
@@ -380,11 +387,12 @@ async def list_messages(
         count_result = await db.execute(text(count_sql(where_sql)), params)
         total = count_result.scalar() or 0
         # HRD-18b: a sender filter that found no mail tries the near spelling
-        # of the sender, with FIND_ORGS on. The answer names the spelling.
+        # of the sender, when the caller asks (`near_sender`) and FIND_ORGS is
+        # on. The answer names the spelling.
         where_sql, total, near = await _near_sender_retry(
             db, user, from_email, account_id, clauses=where_clauses, at=from_at,
             params=params, where_sql=where_sql, total=total, count_sql=count_sql,
-            listing=not thread_id,
+            listing=near_sender is True and not thread_id,
         )
         _counted = time.monotonic()
 
@@ -519,8 +527,8 @@ async def _near_sender_retry(
 ) -> tuple[str, int, dict[str, Any]]:
     """The list's WHERE and total after the near retry of a sender filter.
 
-    It runs only for a list (*listing*, no thread load) with a sender filter
-    that found no mail. An exact total of 0 is 0 on each page, so each page
+    It runs only when *listing* is true: the caller sent ``near_sender`` and
+    the read is no thread load. The sender filter must have found no mail. An exact total of 0 is 0 on each page, so each page
     retries, and the pages agree. With a near spelling (:func:`_near_from`),
     the filter's clause becomes the addresses of the near senders, and the
     count runs again. The third value is ``{"near": ...}`` for the answer,

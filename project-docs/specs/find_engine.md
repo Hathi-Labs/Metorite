@@ -6,10 +6,11 @@
 planned (§9.2). **FIND-1 is built (branch `mt-45237431-find-misses-eval`, task
 3238):** the misses set is in `evals/search_company/fixtures/misses.json`, and
 `--fixture` prints its score. **HRD-4 is built (task 2983, 2026-11-16):** the sources run at once, 4 at most, and `find_tasks` ranks by the words held on a miss. The owner accepted D-FIND-1 to D-FIND-8 as
-recommended on 2026-11-14 (task 3233, answer `30dfa0d6`, §10). **HRD-18b is
-built (branch `mt-e1736481-hrd-18b-near-names`, task 3226, 2026-11-16):**
-rung 3 runs behind `FIND_ORGS` when the first pass finds nothing.
-`query_inbox` tries the near spelling of a sender behind the same flag.
+recommended on 2026-11-14 (task 3233, answer `30dfa0d6`, §10).
+
+**HRD-18b is built (task 3226, 2026-11-16).** Behind `FIND_ORGS`, a miss of
+§3.3 (D-FIND-4) starts rung 2 and rung 3. `query_inbox` asks for the near
+spelling of a sender (`near_sender`). The Mail UI never asks.
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec

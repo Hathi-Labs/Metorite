@@ -1739,6 +1739,9 @@ async def query_inbox(
         params["sender_category"] = sender_category
     if from_email:
         params["from_email"] = from_email
+        # HRD-18b: a sender that finds no mail tries its near spelling. Only
+        # this tool asks for it, and the route also needs FIND_ORGS on.
+        params["near_sender"] = "true"
     if unread_only:
         params["is_read"] = "false"
     if starred_only:

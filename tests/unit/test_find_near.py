@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import sys
 import time
 from typing import Any, ClassVar
 
@@ -300,13 +301,47 @@ class TestOnlyWithTheFlag:
         assert "near" not in answer and world.near_calls == []
 
 
-class TestOnlyOnAZero:
-    def test_a_first_pass_hit_asks_no_near_reader(self, world, recency, find_on):  # noqa: F811
+#: The «Sharath BMS» contact on «Twin Dragon 300» (production, 2026-11-14).
+#: The CRM matches the deal through its contact, so the first pass finds it.
+#: Its title holds 1 of the 3 words, so the pass is a miss (D-FIND-4).
+TWIN_DRAGON = ("d-9", "Twin Dragon 300 - 3D", "deal", "twin dragon 300 3d printer sharath bms")
+
+
+class TestOnlyOnAMiss:
+    def test_a_first_pass_hit_with_every_word_asks_nothing_again(
+            self, world, recency, find_on):  # noqa: F811
         recency(True)
         find_on("*")
         answer = run("Snowflake printer")
+        assert (_hit(answer, "d-1")["covers"], _hit(answer, "d-1")["of"]) == (2, 2)
         assert world.near_calls == []
-        assert "near" not in answer
+        assert "near" not in answer and "broadened" not in answer
+        assert world.asked("crm") == [("Snowflake printer", {})]
+
+    def test_a_first_pass_hit_with_1_of_3_words_asks_again(
+            self, world, recency, find_on, monkeypatch):  # noqa: F811
+        """D-FIND-4: the deal of another Sharath holds "3D" only. Both the
+        near step and the words alone run, and the first hit stays exact."""
+        monkeypatch.setattr(sys.modules[__name__], "CRM_ROWS", [*CRM_ROWS, TWIN_DRAGON])
+        recency(True)
+        find_on("*")
+        answer = run("Sharath 3D printer")
+        twin = _hit(answer, "d-9")
+        assert (twin["matched_by"], twin["covers"], twin["of"]) == ("exact", 1, 3)
+        assert [b["word"] for b in answer["broadened"]] == ["sharath", "3d", "printer"]
+        assert [(e["word"], e["as"]) for e in answer["near"]] == [("Sharath", "Sharat")]
+        # The deal of «Sharat Satyanarayana» is found too.
+        assert "d-1" in {h["id"] for h in answer["hits"]}
+        # "sharath" is the word that no hit holds, so the lookup takes it first.
+        assert world.near_calls[0][1][0] == "sharath"
+
+    def test_the_rule_of_kr_zero_stays_with_the_flag_off(
+            self, world, recency, find_on, monkeypatch):  # noqa: F811
+        monkeypatch.setattr(sys.modules[__name__], "CRM_ROWS", [*CRM_ROWS, TWIN_DRAGON])
+        recency(True)
+        answer = run("Sharath 3D printer")
+        assert "broadened" not in answer and "near" not in answer
+        assert [h["id"] for h in answer["hits"]] == ["d-9"]
 
     def test_an_operator_asks_no_near_reader(self, world, recency, find_on):  # noqa: F811
         recency(True)
@@ -323,8 +358,10 @@ class TestTheFracktalCase:
         find_on("*")
         answer = run("Sharath 3D printer")
         # The mail from «Sharath BMS» holds "sharat" in its sender, so the
-        # sender filter finds it too: three records in all.
-        assert answer["near"] == [{"word": "Sharath", "as": "Sharat", "hits": 3}]
+        # sender filter finds it too: three records in all. "Sharath" alone
+        # found records, so the word is held, and no near line prints.
+        assert answer["near"] == [{"word": "Sharath", "as": "Sharat", "hits": 3, "held": True}]
+        assert "No record holds «" not in cst.format_answer(answer, dated=True)
         # "3D" alone found the mail and the deal too, and the lower rung wins
         # (§3.5). The near copy of the mail held 3 of 3 words, the word copy
         # holds 2: the cost of §3.5 against the order of §3.4.
@@ -346,8 +383,8 @@ class TestTheFracktalCase:
         find_on("*")
         answer = run("nuropeak")
         assert answer["near"] == [
-            {"word": "nuropeak", "as": "Neuropeak", "hits": 1},
-            {"word": "nuropeak", "as": "neuropeek", "hits": 1},
+            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": False},
+            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": False},
         ]
         assert {h["id"] for h in answer["hits"]} == {"d-1", "m-7"}
         for hit in answer["hits"]:
@@ -391,7 +428,8 @@ class TestTheNearLookup:
         answer = run("nuropeak")
         assert time.monotonic() - began < 1.5
         assert answer["skipped"] == []
-        assert answer["near"] == [{"word": "nuropeak", "as": "neuropeek", "hits": 1}]
+        assert answer["near"] == [
+            {"word": "nuropeak", "as": "neuropeek", "hits": 1, "held": False}]
 
     def test_a_failed_reader_gives_no_name_and_no_skip(self, world, recency, find_on):  # noqa: F811
         recency(True)
@@ -399,7 +437,8 @@ class TestTheNearLookup:
         world.broken.add("email")
         answer = run("nuropeak")
         assert answer["skipped"] == []
-        assert answer["near"] == [{"word": "nuropeak", "as": "Neuropeak", "hits": 1}]
+        assert answer["near"] == [
+            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": False}]
 
     def test_no_near_name_no_near_key(self, world, recency, find_on):  # noqa: F811
         recency(True)
@@ -434,28 +473,49 @@ class TestTheNearLookup:
 class TestThePrint:
     def test_a_word_that_found_nothing_says_no_record_holds_it(self):
         body = {"query": "nuropeak", "hits": [], "skipped": [], "near": [
-            {"word": "nuropeak", "as": "Neuropeak", "hits": 1}]}
+            {"word": "nuropeak", "as": "Neuropeak", "hits": 1, "held": False}]}
         lines = cst.format_answer(body, dated=True).splitlines()
         assert lines[1] == "No record holds «nuropeak». Records for the near spelling «Neuropeak»:"
         # No hit in the list: the zero lines still follow.
         assert lines[2] == cst.NOTHING
 
-    def test_one_clause_for_each_word(self):
-        body = {"query": "Sharath Laxmi", "hits": [], "near": [
-            {"word": "Sharath", "as": "Sharat", "hits": 3},
-            {"word": "Laxmi", "as": "Lakshmi", "hits": 1}]}
+    def test_one_clause_for_each_word_with_no_hit_of_its_own(self):
+        body = {"query": "Sharath Laxmi Puja", "hits": [], "near": [
+            {"word": "Sharath", "as": "Sharat", "hits": 3, "held": False},
+            {"word": "Laxmi", "as": "Lakshmi", "hits": 1, "held": False},
+            # Puja found records alone, so no line says that no record holds it.
+            {"word": "Puja", "as": "Pooja", "hits": 2, "held": True}]}
         line = cst.format_answer(body, dated=True).splitlines()[1]
         assert line == ("No record holds «Sharath». Records for the near spelling «Sharat»: "
                         "No record holds «Laxmi». Records for the near spelling «Lakshmi»:")
 
-    def test_a_spelling_with_no_record_and_a_bad_entry_give_no_clause(self):
+    def test_a_held_word_a_spelling_with_no_record_and_a_bad_entry_give_no_clause(self):
         body = {"hits": [], "near": [
-            {"word": "Sharath", "as": "Sharat", "hits": 0},
-            {"word": "Laxmi «x»", "as": "Lakshmi", "hits": 1},
-            {"word": "", "as": "nobody", "hits": 1}, "not a dict",
-            {"word": "Puja", "as": "Pooja", "hits": True}]}
+            {"word": "Sharath", "as": "Sharat", "hits": 0, "held": False},
+            {"word": "Laxmi «x»", "as": "Lakshmi", "hits": 1, "held": False},
+            {"word": "", "as": "nobody", "hits": 1, "held": False}, "not a dict",
+            {"word": "Puja", "as": "Pooja", "hits": True, "held": False},
+            # No `held`: the route did not say, so the line claims nothing.
+            {"word": "Deepa", "as": "Dipa", "hits": 1},
+            {"word": "Geeta", "as": "Gita", "hits": 1, "held": "no"}]}
         lines = cst.format_answer(body, dated=True).splitlines()
         assert lines[1] == "No record holds «Laxmi x». Records for the near spelling «Lakshmi»:"
+
+    def test_the_route_says_held_from_the_words_alone_and_from_an_own_hit(self):
+        def hit(ident: str, title: str, rung: str) -> Hit:
+            return Hit(app="crm", kind="deal", id=ident, title=title, hint="", href="/x",
+                       matched_by=rung)
+
+        near = [{"word": "Sharath", "as": "Sharat", "hits": 1},
+                {"word": "Laxmi", "as": "Lakshmi", "hits": 1},
+                {"word": "Puja", "as": "Pooja", "hits": 1}]
+        found = {"crm": [hit("a", "Laxmi Rao", "exact"), hit("b", "Puja Shah", "near")]}
+        broadened = [{"word": "sharath", "hits": 2, "skipped": []},
+                     {"word": "puja", "hits": 0, "skipped": []}]
+        got = {e["word"]: e["held"] for e in find.near_report(near, found, broadened)}
+        # Sharath alone found 2. Laxmi is in a hit of its own words. Puja is
+        # only in a near hit, and alone it found nothing.
+        assert got == {"Sharath": True, "Laxmi": True, "Puja": False}
 
     def test_undated_text_has_no_near_line(self):
         body = {"hits": [], "near": [{"word": "Sharath", "as": "Sharat", "hits": 1}],
@@ -515,6 +575,16 @@ class TestQueryInbox:
         assert out.splitlines()[0] == (
             "No mail from «Sharath». Mail from the near spelling «Sharat»:")
         assert out.splitlines()[1] == "Found 1 emails (filtered); showing 1:"
+
+    def test_only_a_sender_filter_opts_in_to_the_near_sender(self, agent):
+        """The route retries a near sender only when the caller asks. This tool
+        asks with a sender filter, and only then."""
+        module, state = agent
+        state["answer"] = {"emails": [], "total": 0}
+        asyncio.run(module.query_inbox(from_email="Sharath"))
+        assert (state["path"], state["params"]["near_sender"]) == ("/email/messages", "true")
+        asyncio.run(module.query_inbox(query="invoice"))
+        assert "near_sender" not in state["params"]
 
     def test_a_near_sender_with_no_mail_says_so(self, agent):
         module, state = agent
