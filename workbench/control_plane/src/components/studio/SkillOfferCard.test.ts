@@ -9,8 +9,8 @@
  * `lib/studio/skillOffer.test.ts`.
  *
  * Mutations, each one red here (2026-11-14):
- * - return true from `skillOfferOn`: "the flag off draws nothing and reads nothing";
- * - drop `skillOfferOn() &&` from the mount in `MessageBubble`: "the one mount";
+ * - return true from `skillOfferAllowed`: "the flag off draws nothing and reads nothing";
+ * - drop `skillOfferShown &&` from the mount in `MessageBubble`: "the one mount";
  * - send `{ ...input, publish: true }` or a second create from `pressSave`:
  *   "Save sends one POST with the body that the card shows";
  * - show `reply.detail` raw in place of `offerFailure`: "a stale catalog says to reload";
@@ -51,7 +51,7 @@ import {
   skillOffer,
   type OfferTurn,
 } from "@/lib/studio/skillOffer";
-import { skillOfferOn } from "@/lib/studio/skillOfferFlag";
+import { __setSkillOfferForTests, skillOfferOn } from "@/lib/shell/shellPrefs";
 import { createSkill, type CatalogAction } from "@/lib/studio/skillsApi";
 
 import SkillOfferCard, { OFFER_CATALOG_KEY, loadOfferCatalog } from "./SkillOfferCard";
@@ -108,29 +108,33 @@ function stubFetch(answer: (url: string, n: number) => { status: number; body: u
 }
 
 beforeEach(() => {
-  vi.stubEnv("NEXT_PUBLIC_SKILL_OFFER", "1");
+  __setSkillOfferForTests(true);
   put(OFFER_CATALOG_KEY, CATALOG);
 });
 
 afterEach(() => {
+  __setSkillOfferForTests(false);
   clearAll();
   __forgetOffersForTests();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
-describe("the flag (NEXT_PUBLIC_SKILL_OFFER)", () => {
-  it("is off by default and on only for 1", () => {
-    vi.stubEnv("NEXT_PUBLIC_SKILL_OFFER", "");
-    expect(skillOfferOn()).toBe(false);
-    vi.stubEnv("NEXT_PUBLIC_SKILL_OFFER", "true");
-    expect(skillOfferOn()).toBe(false);
-    vi.stubEnv("NEXT_PUBLIC_SKILL_OFFER", "1");
-    expect(skillOfferOn()).toBe(true);
+describe("the flag (STUDIO_SKILL_OFFER_ORGS, served as skill_offer)", () => {
+  it("is off by default and on only for the word true of the shell read", () => {
+    expect(skillOfferOn(undefined)).toBe(false);
+    expect(skillOfferOn({})).toBe(false);
+    expect(skillOfferOn({ skill_offer: "true" })).toBe(false);
+    expect(skillOfferOn({ skill_offer: 1 })).toBe(false);
+    expect(skillOfferOn({ skill_offer: true })).toBe(true);
+  });
+
+  it("the build-time flag is gone: no source names it", () => {
+    for (const f of sources()) expect(code(read(f)), f).not.toContain("NEXT_PUBLIC_SKILL_OFFER");
   });
 
   it("the flag off draws nothing and reads nothing", () => {
-    vi.stubEnv("NEXT_PUBLIC_SKILL_OFFER", "");
+    __setSkillOfferForTests(false);
     const sent = stubFetch(() => ({ status: 200, body: { actions: CATALOG } }));
     expect(draw()).toBe("");
     expect(sent).toEqual([]);
@@ -320,7 +324,7 @@ describe("the wiring", () => {
     const mounts = sources().filter((f) => /<SkillOfferCard\b/.test(code(read(f))));
     expect(mounts).toEqual(["components/MessageBubble.tsx"]);
     expect(bubble.match(/<SkillOfferCard\b/g)?.length).toBe(1);
-    expect(bubble).toContain("{skillOfferOf && skillOfferOn() && (");
+    expect(bubble).toContain("{skillOfferOf && skillOfferShown && (");
     const at = bubble.indexOf("<SkillOfferCard");
     for (const before of ["<StudioToolCards", "<ProfileToolCards", "<GenerativeUIPanel", "<MessageActionBar"]) {
       expect(bubble.indexOf(before), before).toBeGreaterThan(0);
@@ -343,7 +347,7 @@ describe("the wiring", () => {
   it("AgentChat gives solo on proof only, so the dock and a failed room read give no offer", () => {
     const chat = code(read("components/AgentChat.tsx"));
     // With the flag off, `offerSolo` is false at every room read (skillOffer.test.ts).
-    expect(chat).toContain("const soloForOffer = offerSolo(skillOfferOn(), { enabled: !compact, room, error: roomError });");
+    expect(chat).toContain("const soloForOffer = offerSolo(skillOfferShown, { enabled: !compact, room, error: roomError });");
     expect(chat).toContain("{ prompt: promptBefore(visibleMessages, i), solo: soloForOffer }");
     expect(chat).not.toMatch(/solo: !isRoom/);
   });
@@ -373,7 +377,7 @@ describe("the wiring", () => {
     const body = card.slice(card.indexOf("export default function SkillOfferCard"));
     const firstReturn = body.indexOf("return");
     const hooks = [...body.matchAll(/\buse[A-Z]\w*(?:<[^>]*>)?\(/g)].map((m) => m.index ?? 0);
-    expect(hooks.length).toBe(3);
+    expect(hooks.length).toBe(4);
     expect(Math.max(...hooks)).toBeLessThan(firstReturn);
   });
 });
