@@ -79,6 +79,12 @@ export interface ChatMessage {
    * again (attach) never has it, because the server may be far past reading by then. Never saved.
    */
   firstLine?: boolean;
+  /**
+   * CS-3b: the fixed words of the server's phase ("Gathering what I need") while the run has no real
+   * step. The header of the thinking trail says them in place of `firstLine`'s words. Live only: a
+   * re-attach clears it, a real step takes the header over, and no save names it. Never saved.
+   */
+  phaseWord?: string;
   /** Sequential reasoning blocks — each displayed as a separate timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3a, message-id-native): one entry

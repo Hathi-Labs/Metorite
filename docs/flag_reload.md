@@ -128,6 +128,17 @@ one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
 gate ask it at each card, so a reload applies to the next card. A flip stays
 OWNER-GATE (`enforcement-flip`, EAC-7).
 
+`STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
+(`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
+one `tool:<name>` row for each chat tool of the CRM, Email, Projects and
+Calendar packs. A member can then put that tool in a skill. `*` lists every
+org, and the default is empty. Its one reader is
+`gateway.routes.studio.flags.chat_tools_allowed`, and each catalog read asks
+it. The catalog also needs `STUDIO_ORGS`.
+
+A row runs nothing: a skill still loads only in a run that holds the tool. A
+reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
 (`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
 install `needs_setup`, and the action door refuses each action with 409
