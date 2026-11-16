@@ -806,6 +806,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_edit_day_rule",
             "my_tasks_get_calendar_settings",
             "my_tasks_list_day_rules",
+            "my_tasks_list_events",
             "my_tasks_list_schedule",
             "my_tasks_plan_day",
             "my_tasks_replan_day",
