@@ -18,12 +18,12 @@ from sqlalchemy import text
 
 _MESSAGE_SQL = (
     "SELECT lower(from_address->>'email') FROM email_messages "
-    "WHERE id::text = :id LIMIT 1"
+    "WHERE id = CAST(:id AS uuid) LIMIT 1"
 )
 #: The newest mail of the thread that the member did not send.
 _THREAD_SQL = (
     "SELECT lower(from_address->>'email') FROM email_messages "
-    "WHERE account_id::text = :aid AND thread_id = :tid "
+    "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid "
     "AND lower(coalesce(folder, '')) <> 'sent' "
     "ORDER BY received_at DESC NULLS LAST LIMIT 1"
 )
@@ -37,8 +37,11 @@ def of_address(address: Any) -> dict[str, Any]:
     return {"sender_domain": domain} if domain else {}
 
 
-async def of_message(db: Any, message_id: str) -> dict[str, Any]:
-    """The features of one mail, read on the caller's tenant session."""
+async def of_message(db: Any, org: str | None, message_id: str) -> dict[str, Any]:
+    """The features of one mail, read on the caller's tenant session. With
+    ``MEMBER_ACTIONS_ORGS`` off for *org* it reads nothing."""
+    if not member_actions.enabled_for(org):
+        return {}
     try:
         async with db.begin_nested():
             row = (await db.execute(text(_MESSAGE_SQL), {"id": str(message_id)})).first()
@@ -47,8 +50,12 @@ async def of_message(db: Any, message_id: str) -> dict[str, Any]:
         return {}
 
 
-async def of_thread(db: Any, account_id: str, thread_id: str) -> dict[str, Any]:
-    """The features of a thread: the sender of its newest inbound mail."""
+async def of_thread(db: Any, org: str | None, account_id: str,
+                    thread_id: str) -> dict[str, Any]:
+    """The features of a thread: the sender of its newest inbound mail. With
+    ``MEMBER_ACTIONS_ORGS`` off for *org* it reads nothing."""
+    if not member_actions.enabled_for(org):
+        return {}
     try:
         async with db.begin_nested():
             row = (await db.execute(text(_THREAD_SQL), {

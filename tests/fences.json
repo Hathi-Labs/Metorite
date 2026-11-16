@@ -278,6 +278,7 @@
       "tests/unit/test_mcp_edge_attachment_r8.py",
       "tests/unit/test_mcp_edge_comment_edit_r8.py",
       "tests/unit/test_member_action_r8.py",
+      "tests/unit/test_member_action_seams_1c_r8.py",
       "tests/unit/test_member_of_org_read.py",
       "tests/unit/test_my_day_loop_r8.py",
       "tests/unit/test_no_person_present_r8.py",

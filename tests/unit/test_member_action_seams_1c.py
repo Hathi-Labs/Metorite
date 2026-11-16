@@ -56,14 +56,30 @@ class _Db:
         return SimpleNamespace(first=lambda: self.row)
 
 
-def test_a_message_and_a_thread_read_the_sender_only() -> None:
+def _flag(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "member_actions_orgs", value, raising=False)
+
+
+def test_a_message_and_a_thread_read_the_sender_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _flag(monkeypatch, ORG)
     db = _Db(("ana@ge.com",))
-    assert asyncio.run(act_features.of_message(db, "m1")) == {"sender_domain": "ge.com"}
-    assert asyncio.run(act_features.of_thread(db, "a1", "t1")) == {"sender_domain": "ge.com"}
+    assert asyncio.run(act_features.of_message(db, ORG, "m1")) == {"sender_domain": "ge.com"}
+    assert asyncio.run(act_features.of_thread(db, ORG, "a1", "t1")) == {
+        "sender_domain": "ge.com"}
     for sql in db.sql:
         assert "from_address" in sql and "subject" not in sql and "body" not in sql
-    assert asyncio.run(act_features.of_message(_Db(None), "m")) == {}
-    assert asyncio.run(act_features.of_message(_Db(boom=True), "m")) == {}
+    assert asyncio.run(act_features.of_message(_Db(None), ORG, "m")) == {}
+    assert asyncio.run(act_features.of_message(_Db(boom=True), ORG, "m")) == {}
+
+
+def test_the_flag_off_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    db = _Db(("ana@ge.com",))
+    assert asyncio.run(act_features.of_message(db, ORG, "m1")) == {}
+    assert asyncio.run(act_features.of_thread(db, ORG, "a1", "t1")) == {}
+    assert asyncio.run(act_features.of_message(db, None, "m1")) == {}
+    assert db.sql == []
 
 
 def _item(action: str, sid: str, kind: str = "task_due") -> Any:
@@ -140,10 +156,10 @@ def test_the_forward_row_reads_a_jsonb_sender() -> None:
 def test_the_seams_carry_the_features() -> None:
     em = _G / "routes" / "email"
     msgs = (em / "transport" / "messages.py").read_text(encoding="utf-8")
-    assert "act_features.of_message(db, message_id)" in msgs
+    assert "act_features.of_message(db, user.organization_id, message_id)" in msgs
     assert msgs.count("act_features.of_message(") == 2
     rz = (em / "automation" / "replyzero.py").read_text(encoding="utf-8")
-    assert "act_features.of_thread(db, req.account_id, req.thread_id)" in rz
+    assert "db, user.organization_id, req.account_id, req.thread_id)" in rz
     send = (em / "transport" / "send.py").read_text(encoding="utf-8")
     assert "*(req.cc or [])" in send and "act_features.of_address(" in send
 

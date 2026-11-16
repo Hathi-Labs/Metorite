@@ -3061,7 +3061,8 @@ async def resolve_thread(
                 db, org=user.organization_id or "", member=user.email or "",
                 app="email", act="mark_done", via="app", item_kind="thread",
                 item_id=req.thread_id, mailbox_id=req.account_id,
-                features=await act_features.of_thread(db, req.account_id, req.thread_id))
+                features=await act_features.of_thread(
+                    db, user.organization_id, req.account_id, req.thread_id))
         else:
             # Reopen: re-derive from the latest message's folder. Resolve the
             # latest message directly (don't rely on last_message_id, which may
