@@ -31,6 +31,13 @@ What it holds (R7):
    the grant keeps its own flag. P2-3: the claim gives TAKEN, SPENT or
    UNKNOWN, and UNKNOWN gives the neutral note. ``start_detached`` reads the
    task of the thread after its await.
+9. RESUME-4a-1 (task 3478): the prologue marks the stored native session of
+   its key stale BEFORE the stored call and the note, with the org of the
+   run binding, the caller's thread and the session key (never the label of
+   an attribution scope). No mark with ``MAF_NATIVE_SESSIONS`` off or no
+   thread. A failing mark never fails the run. The mark is ONE bound UPDATE
+   that names ``organization_id``. The R8 half is
+   ``tests/unit/test_resume_native_stale_r8.py``.
 
 Run::
 
@@ -564,8 +571,12 @@ def _wrapped(fn: Any) -> Any:
 
 
 def _prologue(agents: list[Any], resume: dict[str, Any], *, tid: str = "t-pro",
-              payload: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict]:
+              payload: dict[str, Any] | None = None,
+              mark_thread: str | None = None) -> tuple[list[dict[str, Any]], dict]:
     payload = {"message": ""} if payload is None else payload
+    # RESUME-4a-1: the run route passes the caller's thread. The cases of
+    # RESUME-2a pass none, so they send no mark.
+    extra: dict[str, Any] = {} if mark_thread is None else {"thread_id": mark_thread}
 
     async def _answer_cards() -> None:
         # A card that shows is answered REJECT, so a run never hangs on it.
@@ -581,7 +592,7 @@ def _prologue(agents: list[Any], resume: dict[str, Any], *, tid: str = "t-pro",
         helper = asyncio.create_task(_answer_cards())
         try:
             lines = [line async for line in executor._resume_prologue(
-                agents, "orchestrator", resume, payload)]
+                agents, "orchestrator", resume, payload, **extra)]
         finally:
             helper.cancel()
         return [json.loads(line[len("data: "):]) for line in lines]
@@ -1380,3 +1391,213 @@ def test_start_detached_exclusive_reads_the_task_after_its_await(liveness, monke
             stream_relay._DETACHED_TASKS.pop(tid, None)
 
     asyncio.run(go())
+# ---------------------------------------------------------------------------
+# 11. RESUME-4a-1: a continuation marks the stored native session stale
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def native_on(monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", True)
+
+
+@pytest.fixture
+def marks(monkeypatch):
+    """The store's mark as a recorder. Each call keeps its key, and what the
+    run had done at that moment: the writes and the run's message."""
+    from orchestrator import native_session_store
+
+    seen: list[dict[str, Any]] = []
+    state: dict[str, Any] = {}
+
+    async def _mark(*, organization_id: str, thread_id: str) -> str:
+        payload = state.get("payload") or {}
+        seen.append({"org": organization_id, "thread": thread_id,
+                     "writes": list(WRITES), "message": payload.get("message")})
+        return "marked"
+
+    monkeypatch.setattr(native_session_store, "mark_stale", _mark)
+    return seen, state
+
+
+class _LineLog:
+    """A logger that keeps each line as ``(event, fields)``."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, dict[str, Any]]] = []
+
+    def __getattr__(self, _level: str) -> Any:
+        return lambda event, **kw: self.lines.append((event, kw))
+
+
+def test_a_continuation_marks_the_session_stale_before_the_call_and_the_note(
+    native_on, marks, resume_on, ask_db, liveness,
+):
+    """The mark goes FIRST: before the stored call writes and before the note
+    becomes the run's input. Mutation: remove the
+    ``_mark_native_session_stale`` call from ``_resume_prologue`` -> no
+    mark -> red."""
+    seen, state = marks
+    payload: dict[str, Any] = {"message": ""}
+    state["payload"] = payload
+    _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume(),
+              payload=payload, mark_thread="t-pro")
+    assert [(m["org"], m["thread"]) for m in seen] == [(_ORG_A, "t-pro")]
+    assert seen[0]["writes"] == [], "the mark came before the stored call wrote"
+    assert seen[0]["message"] == "", "the mark came before the note"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert payload["message"].startswith("[Metorite] The member approved the card")
+
+
+def test_a_refused_call_marks_too(native_on, marks, resume_on, ask_db, liveness):
+    """A refused call still runs the model on the note, so its reply is a
+    row with no user row before it. It marks as well."""
+    seen, _ = marks
+    _prologue([_Agent([])], _resume(), mark_thread="t-refused")
+    assert [m["thread"] for m in seen] == ["t-refused"] and WRITES == []
+
+
+def test_no_mark_with_native_sessions_off_or_no_thread(
+    marks, resume_on, ask_db, liveness, monkeypatch,
+):
+    from acb_common import get_settings
+
+    seen, _ = marks
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", False)
+    _prologue([_Agent([])], _resume(), mark_thread="t-off")
+    assert seen == [], "MAF_NATIVE_SESSIONS off sends no statement"
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", True)
+    _prologue([_Agent([])], _resume(), mark_thread="  ")
+    _prologue([_Agent([])], _resume())
+    assert seen == [], "no thread sends no statement"
+    _prologue([_Agent([])], _resume(), mark_thread="t-on")
+    assert [m["thread"] for m in seen] == ["t-on"], "non-vacuity"
+
+
+def test_no_org_sends_no_mark(native_on, marks, resume_on, ask_db, liveness, monkeypatch):
+    seen, _ = marks
+    monkeypatch.setattr(executor, "_current_run_org", lambda: None)
+    _prologue([_Agent([])], _resume(), mark_thread="t-no-org")
+    assert seen == []
+
+
+def test_a_failing_mark_never_fails_the_run(native_on, resume_on, ask_db, liveness, monkeypatch):
+    """The executor glue catches a fault of the store, and logs its type
+    only. Mutation: drop the ``try`` of ``_mark_native_session_stale`` -> the
+    prologue raises -> red."""
+    from orchestrator import native_session_store
+
+    async def _broken(**_k: Any) -> str:
+        raise RuntimeError("secret detail of the fault")
+
+    log = _LineLog()
+    monkeypatch.setattr(native_session_store, "mark_stale", _broken)
+    monkeypatch.setattr(executor, "_log", log)
+    _events, payload = _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume(),
+                                 mark_thread="t-broken")
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")], "the run went on"
+    assert payload["message"].startswith("[Metorite] The member approved the card")
+    failed = [kw for event, kw in log.lines if event == "native_session.mark_stale_failed"]
+    assert failed == [{"agent": "orchestrator", "error": "RuntimeError"}]
+    assert "secret detail" not in repr(log.lines)
+
+
+def test_the_store_mark_never_raises_and_logs_the_type_only(monkeypatch):
+    from orchestrator import native_session_store as store
+
+    def _down(*_a: Any) -> bool:
+        raise ConnectionError("password=hunter2 host=db")
+
+    log = _LineLog()
+    monkeypatch.setattr(store, "mark_row_stale", _down)
+    monkeypatch.setattr(store, "_log", log)
+    out = asyncio.run(store.mark_stale(
+        organization_id=_ORG_A, thread_id="t-down"))
+    assert out == "failed"
+    assert log.lines == [("native_session.mark_stale_failed",
+                          {"thread_id": "t-down", "error": "ConnectionError"})]
+    monkeypatch.setattr(store, "mark_row_stale", lambda *_a: False)
+    assert asyncio.run(store.mark_stale(
+        organization_id=_ORG_A, thread_id="t")) == "unchanged"
+    monkeypatch.setattr(store, "mark_row_stale", lambda *_a: True)
+    assert asyncio.run(store.mark_stale(
+        organization_id=_ORG_A, thread_id="t")) == "marked"
+
+
+def test_the_mark_binds_the_thread_and_org_under_an_attribution_scope(
+    native_on, marks, resume_on, ask_db, liveness,
+):
+    """The mark binds the bound org and the caller's thread, and no agent
+    key, so an attribution scope (``_run_agent_label``) changes nothing.
+    Mutation: bind another thread or org -> red."""
+    from acb_common import run_attribution_scope
+
+    seen, _ = marks
+    with run_attribution_scope(app="auto", agent="auto.headless"):
+        assert executor._run_agent_label("orchestrator") == "auto.headless", "non-vacuity"
+        _prologue([_Agent([])], _resume(), mark_thread="t-scope")
+    assert [(m["org"], m["thread"]) for m in seen] == [(_ORG_A, "t-scope")]
+    src = inspect.getsource(executor.run_agent_stream)
+    assert "_begin_native_session(\n                    agent, agent_name," in src
+    assert ("agents, agent_name, resume_call, event_payload,\n"
+            "                    thread_id=_caller_thread_id,") in src
+    assert "caller_thread_id=_caller_thread_id" in src
+
+
+def test_the_prologue_is_the_one_caller_and_runs_before_the_session_load():
+    """Only a continuation marks: the ONE call is in ``_resume_prologue``,
+    which runs only under ``if resume_call is not None:``, before the session
+    load and the compose. So a run that is not a continuation sends no
+    statement, and its input stays byte for byte as before."""
+    src = inspect.getsource(executor)
+    assert src.count("await _mark_native_session_stale(") == 1, "ONE call"
+    prologue = inspect.getsource(executor._resume_prologue)
+    body = prologue.split('"""', 2)[2]
+    assert body.lstrip().startswith("await _mark_native_session_stale(agent_name, thread_id)")
+    assert src.count("native_session_store.mark_stale(") == 1
+    run = inspect.getsource(executor.run_agent_stream)
+    gate = run.index("if resume_call is not None:\n                async for _resume_line")
+    assert gate < run.index("_session_turn = await _begin_native_session(")
+    assert gate < run.index("_native_input, _native_ctx = _compose_maf_run(")
+
+
+def test_the_mark_is_one_bound_update_that_names_the_org():
+    """Mutation: drop the org predicate -> red. The R8 file proves the rows."""
+    import re
+
+    from orchestrator import native_session_store as store
+
+    sql = " ".join(store._MARK_STALE_SQL.split())
+    assert sql.startswith("UPDATE maf_agent_session SET transcript_digest = :stale WHERE ")
+    for part in ("organization_id = CAST(:org AS uuid)", "thread_id = :tid",
+                 "transcript_digest <> :stale"):
+        assert part in sql, part
+    assert "agent_name" not in sql and ":agent" not in sql, "each agent of the thread"
+    assert ";" not in sql and "INSERT" not in sql.upper() and "DELETE" not in sql.upper()
+    body = inspect.getsource(store.mark_row_stale)
+    assert body.count(".execute(") == 1
+    assert "tenant_session(organization_id)" in body
+    assert "_MARK_STALE_SQL" in body
+    # The column takes 64 hex characters only (the CHECK of migration 228), so
+    # the sentinel is the zero digest. A real digest equals it only through a
+    # SHA-256 preimage of zero. Mutation: mark with a real digest -> red.
+    assert re.fullmatch(r"[0-9a-f]{64}", store.STALE_DIGEST)
+    assert store.STALE_DIGEST == "0" * 64
+    for rows in ([], [("user", "")], [("user", "x")]):
+        assert store.transcript_digest(rows) != store.STALE_DIGEST
+
+
+def test_a_stale_row_loads_as_a_digest_drop_and_the_room_still_wins():
+    from orchestrator import native_session_store as store
+
+    covered = [("user", "hello")]
+    row = store.StoredRow({}, store.STALE_DIGEST, "fp")
+    state = store.LoadState(chat_exists=True, stored=row)
+    assert store._decide(state, covered=covered, fingerprint="fp", browser_history=None) == (
+        store.DIGEST_DROP, "resume_stale")
+    assert store._decide(state, covered=covered, fingerprint="other",
+                         browser_history=None)[0] == store.FINGERPRINT_DROP
+    fresh = store.StoredRow({}, store.transcript_digest(covered), "fp")
+    assert store._decide(store.LoadState(chat_exists=True, stored=fresh), covered=covered,
+                         fingerprint="fp", browser_history=None) == (store.HIT, "")

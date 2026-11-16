@@ -16,6 +16,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -67,7 +68,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 104,
    "via_loader": []
   },
   "calendar_projects_and_calendar_day_sticky_with_email|held=on": {
@@ -86,6 +87,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -147,7 +149,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 104,
    "via_loader": [
     "projects-assistant"
    ]
@@ -729,6 +731,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -748,7 +751,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 109,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_and_two_word_packs|held=on": {
@@ -802,6 +805,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -832,7 +836,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 109,
    "via_loader": [
     "projects-assistant"
    ]
@@ -888,6 +892,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -907,7 +912,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 109,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_the_follower_used_later|held=on": {
@@ -961,6 +966,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -991,7 +997,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 109,
    "via_loader": [
     "projects-assistant"
    ]
@@ -1024,6 +1030,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -1066,7 +1073,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 109,
    "via_loader": []
   },
   "studio_with_crm_records_and_calendar_day|held=on": {
@@ -1097,6 +1104,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -1150,7 +1158,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 109,
    "via_loader": [
     "projects-assistant"
    ]
@@ -2231,6 +2239,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -2282,7 +2291,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 104,
    "via_loader": []
   },
   "calendar_projects_and_calendar_day_sticky_with_email|held=on": {
@@ -2301,6 +2310,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -2363,7 +2373,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 104,
    "via_loader": [
     "projects-assistant"
    ]
@@ -2912,6 +2922,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -2931,7 +2942,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 95,
+   "tools": 96,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_and_two_word_packs|held=on": {
@@ -2974,6 +2985,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3005,7 +3017,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 95,
+   "tools": 96,
    "via_loader": [
     "projects-assistant"
    ]
@@ -3053,6 +3065,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3072,7 +3085,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 98,
+   "tools": 99,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_the_follower_used_later|held=on": {
@@ -3118,6 +3131,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3149,7 +3163,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 98,
+   "tools": 99,
    "via_loader": [
     "projects-assistant"
    ]
@@ -3182,6 +3196,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3213,7 +3228,7 @@
    "skipped": [
     "studio-more"
    ],
-   "tools": 95,
+   "tools": 96,
    "via_loader": []
   },
   "studio_with_crm_records_and_calendar_day|held=on": {
@@ -3244,6 +3259,7 @@
     "my_tasks_edit_day_rule",
     "my_tasks_get_calendar_settings",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3287,7 +3303,7 @@
    "skipped": [
     "studio-more"
    ],
-   "tools": 95,
+   "tools": 96,
    "via_loader": [
     "projects-assistant"
    ]
