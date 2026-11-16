@@ -80,6 +80,47 @@ fi
 git rev-parse -q --verify MERGE_HEAD >/dev/null && fail "a merge is already in progress here."
 
 [ "${PREMERGE_SKIP_FETCH:-0}" = 1 ] || git fetch -q origin "${BASE#origin/}"
+
+# ── 00. The release freeze (CIV, task 3415) ────────────────────────────────
+# A merge cancels main's running batch, and a release ships only a green main.
+# So no merge lands from 70 minutes before each release slot (04:20, 12:20 and
+# 20:20 UTC for the 05:30, 13:30 and 21:30 slots) until the release run of that
+# slot has started, or slot + 30 minutes, whichever is first.
+# Started = a workflow_dispatch run of deploy.yml created from slot - 15 minutes on.
+# No answer from gh: the window ends at the slot time (fail closed).
+# Override: PREMERGE_FREEZE_OK=<task number> for a Rung 0 fix that the owner or the
+# orchestrator approved. Test hooks: PREMERGE_NOW (epoch s), PREMERGE_RUNS_CMD.
+# Fence: tests/unit/test_premerge.py.
+freeze_check() {
+  local now day slot_h slot start end started ans rc created c
+  now="${PREMERGE_NOW:-$(date -u +%s)}"
+  day="$(date -u -d "@$now" +%F)"
+  for slot_h in 05:30 13:30 21:30; do
+    slot="$(date -u -d "$day $slot_h" +%s)"
+    start=$(( slot - 4200 )); end=$(( slot + 1800 ))
+    [ "$now" -ge "$start" ] && [ "$now" -lt "$end" ] || continue
+    rc=0
+    ans="$( ${PREMERGE_RUNS_CMD:-gh run list --workflow deploy.yml --event workflow_dispatch --limit 10 --json createdAt --jq .[].createdAt} 2>/dev/null )" || rc=$?
+    started=0
+    if [ "$rc" = 0 ]; then
+      while IFS= read -r created; do
+        [ -n "$created" ] || continue
+        c="$(date -u -d "$created" +%s 2>/dev/null || echo 0)"
+        [ "$c" -ge $(( slot - 900 )) ] && started=1
+      done <<< "$ans"
+    else
+      end="$slot"; [ "$now" -ge "$end" ] && return 0
+    fi
+    [ "$started" = 1 ] && return 0
+    if [ -n "${PREMERGE_FREEZE_OK:-}" ]; then
+      say "release freeze OVERRIDDEN for task ${PREMERGE_FREEZE_OK} (window $(date -u -d "@$start" +%H:%M) to $(date -u -d "@$end" +%H:%M) UTC)"
+      return 0
+    fi
+    fail "release freeze: no merge from $(date -u -d "@$start" +%H:%M) UTC until the $slot_h UTC release run starts (or $(date -u -d "@$end" +%H:%M) UTC at the latest). It is $(date -u -d "@$now" +%H:%M) UTC. A merge now cancels main's batch. Wait. A Rung 0 fix that the owner approved: PREMERGE_FREEZE_OK=<task number>."
+  done
+  return 0
+}
+freeze_check
 base="$(git merge-base HEAD "$BASE")"
 
 # ── 0. A reverted patch does not land again unchanged (CIV-31) ─────────────
