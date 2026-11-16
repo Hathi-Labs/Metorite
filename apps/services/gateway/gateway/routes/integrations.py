@@ -41,7 +41,7 @@ from gateway import outbound_guard
 from gateway.connections import github as github_connection
 from gateway.connections import store as connection_store
 from gateway.db import current_tenant, tenant_session
-from pydantic import BaseModel, StrictBool, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator, model_validator
 from sqlalchemy import text
 
 _log = get_logger("gateway.integrations")
@@ -1985,20 +1985,33 @@ class McpServerRequest(BaseModel):
     read_only_key: StrictBool = False
 
 
-class McpSwitchesRequest(BaseModel):
-    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2).
+#: CSY-7: the longest description that the PATCH stores. The chat reads at
+#: most 400 characters of it (``chat_connected_systems.md`` §3.2).
+MCP_DESCRIPTION_MAX = 400
 
-    Either switch, or both. A body with neither is 422, and so is a value
-    that is not a JSON boolean. A body with only ``always_confirm`` is the
-    H-300 body, and it behaves as it did."""
+
+class McpSwitchesRequest(BaseModel):
+    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2, CSY-7).
+
+    Either switch, the description, or any of them. A body with none is 422,
+    and so is a switch that is not a JSON boolean. A body with only
+    ``always_confirm`` is the H-300 body, and it behaves as it did. The
+    description is trimmed and holds 400 characters at most (the chat reads
+    it, ``chat_connected_systems.md`` §3.2). An empty one clears it."""
 
     always_confirm: StrictBool | None = None
     read_only_key: StrictBool | None = None
+    description: StrictStr | None = Field(default=None, max_length=MCP_DESCRIPTION_MAX)
+
+    @field_validator("description", mode="after")
+    @classmethod
+    def _trim_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
 
     @model_validator(mode="after")
-    def _one_switch_at_least(self) -> McpSwitchesRequest:
-        if self.always_confirm is None and self.read_only_key is None:
-            raise ValueError("Send always_confirm, read_only_key, or both.")
+    def _one_field_at_least(self) -> McpSwitchesRequest:
+        if self.always_confirm is None and self.read_only_key is None and self.description is None:
+            raise ValueError("Send always_confirm, read_only_key, description, or any of them.")
         return self
 
 
@@ -2223,6 +2236,7 @@ async def set_mcp_switches(
     try:
         server = await mcp_registry.set_switches(
             org, name, always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+            description=req.description,
         )
     except mcp_registry.McpSwitchRefused as exc:
         _log.info("mcp.switches_refused", name=name, actor=user.email, reason=exc.reason)
@@ -2248,6 +2262,14 @@ async def set_mcp_switches(
         _log.info("mcp.read_only_key_set", name=server.name, actor=user.email,
                   read_only_key=server.read_only_key)
         out["read_only_key"] = server.read_only_key
+    if req.description is not None:
+        # The audit event holds the length, never the text.
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.description",
+                          description_length=len(server.description))
+        _log.info("mcp.description_set", name=server.name, actor=user.email,
+                  description_length=len(server.description))
+        out["description"] = server.description
     return out
 
 
