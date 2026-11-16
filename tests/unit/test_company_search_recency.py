@@ -515,7 +515,8 @@ class TestTheToolAnswer:
         assert cst.search_company_dated.__name__ == "search_company"
         assert cst.search_company_dated.__tool_risk__ == TOOL_ANNOTATIONS["search_company"]
         params = inspect.signature(cst.search_company_dated).parameters
-        assert list(params) == ["query", "apps", "after", "verified_only"]
+        # FIND-4 added `explain` (find_engine.md §3.7, §5.2, D-FIND-2).
+        assert list(params) == ["query", "apps", "after", "verified_only", "explain"]
         assert list(inspect.signature(cst.search_company).parameters) == ["query", "apps"]
 
 
