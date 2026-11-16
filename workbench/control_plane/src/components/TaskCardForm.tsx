@@ -5,10 +5,10 @@
  * §32, slice EAC-2, task 3469).
  *
  * It draws inside `ConfirmationCard`, under the card's summary and rows, in
- * the place of the rows that it edits: the due date and the people. The other
- * five values of the card (start, status, the two priority flags, the
- * description) are not edited in this slice (EAC-3 owns them). The card's own
- * rows still show them, and the answer sends them back as the card showed them.
+ * the place of the rows that it edits. EAC-2 gave it the due date and the
+ * people. EAC-3a adds the start date, the status (a lane of the project), the
+ * two priority flags and the description. The project stays read-only on the
+ * card (EAC-3b owns it).
  *
  * The member changes the due date, takes a person off, or adds a person, then
  * presses the Approve of the card. `lib/taskEditCard.ts` builds the answer and
@@ -16,6 +16,13 @@
  *
  * - The date is the shared `Input` with `type="date"`. No shared picker exists
  *   (`DESIGN_SYSTEM.md`), and this file builds none.
+ * - The status is the shared `SelectButton`, a list of the lanes of the project
+ *   (`projectsApi.statuses`, by the project of the card). The answer holds the
+ *   exact lane NAME, and "" for the default lane. When the lanes do not load,
+ *   the status shows as text, and the form says so.
+ * - Important is a `SelectButton` of three (not judged, yes, no), because the
+ *   server keeps "not judged" apart from "no". Leveraged is the shared `Switch`.
+ * - The description is the shared `Textarea`. The form trims nothing.
  * - The people are the shared `AssigneePicker` and `AssigneeChips`. The picker
  *   adds a person only when the member picks a row or presses Enter. A typed
  *   name must match one person EXACTLY (`matchTyped`), because the server
@@ -38,12 +45,21 @@ import type { PickerResponse } from "@/app/projects/lib/assignees";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { Input } from "@/components/ui/Input";
+import { Input, Textarea } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
+import Switch from "@/components/ui/Switch";
 import {
+  DESCRIPTION_MAX,
+  IMPORTANT_OPTIONS,
   MAX_ASSIGNEES,
   addAssignee,
   changedSummary,
+  dateOrderLine,
+  descriptionProblem,
   fullLine,
+  importantFromPick,
+  importantPick,
+  laneOptions,
   isUnchanged,
   matchTyped,
   norm,
@@ -92,6 +108,30 @@ function rowsOf(res: PickerResponse | null): DirectoryRow[] {
     }
   }
   return out;
+}
+
+/**
+ * The lane names of a project, in board order, or null while they load, or
+ * "failed" when the call fails. A failure makes the status read-only, and the
+ * form says why. The call runs as the member, under the grants of the route.
+ */
+function useLanes(projectId: string): string[] | null | "failed" {
+  const [lanes, setLanes] = useState<string[] | null | "failed">(null);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const res = await projectsApi.statuses(projectId);
+        if (!live) return;
+        const rows = Array.isArray(res?.rows) ? res.rows : [];
+        setLanes([...rows].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map((r) => String(r.name ?? "")));
+      } catch {
+        if (live) setLanes("failed");
+      }
+    })();
+    return () => { live = false; };
+  }, [projectId]);
+  return lanes;
 }
 
 export interface TaskCardFormProps {
@@ -171,6 +211,15 @@ export default function TaskCardForm({ form, edits, onChange, typed, onTyped, di
   };
   const full = fullLine(edits.assignees.length);
   const dueId = `task-due-${form.projectId}`;
+  const startId = `task-start-${form.projectId}`;
+  const statusId = `task-status-${form.projectId}`;
+  const importantId = `task-important-${form.projectId}`;
+  const leveragedId = `task-leveraged-${form.projectId}`;
+  const descId = `task-description-${form.projectId}`;
+  const lanes = useLanes(form.projectId);
+  const options = useMemo(() => laneOptions(Array.isArray(lanes) ? lanes : [], edits.status), [lanes, edits.status]);
+  const orderLine = dateOrderLine(edits);
+  const textProblem = descriptionProblem(edits.description);
 
   return (
     <div
@@ -209,6 +258,119 @@ export default function TaskCardForm({ form, edits, onChange, typed, onTyped, di
             </Button>
           )}
         </div>
+      </div>
+
+      <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:gap-2">
+        <label htmlFor={startId} className="shrink-0 text-muted-foreground sm:w-20">Start date</label>
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <Input
+            id={startId}
+            type="date"
+            inputSize="lg"
+            value={edits.start}
+            min="1000-01-01"
+            max="9999-12-31"
+            onChange={(e) => onChange({ ...edits, start: e.target.value })}
+            disabled={disabled}
+            className="w-44 min-w-0"
+            data-task-edit-start=""
+          />
+          {edits.start && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onChange({ ...edits, start: "" })}
+              disabled={disabled}
+              data-task-edit-clear-start=""
+            >
+              No start date
+            </Button>
+          )}
+        </div>
+      </div>
+
+
+      {orderLine && (
+        <p className="flex items-start gap-1 break-words text-[11px] text-warning" role="status" data-task-edit-date-order="">
+          <Icon name="AlertTriangle" size={12} className="mt-px shrink-0" />
+          {orderLine}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:gap-2" data-task-edit-status="">
+        <label htmlFor={statusId} className="shrink-0 text-muted-foreground sm:w-20">Status</label>
+        {Array.isArray(lanes) ? (
+          <SelectButton
+            id={statusId}
+            label="Status"
+            value={edits.status}
+            options={options}
+            onChange={(next) => onChange({ ...edits, status: next })}
+            defaultValue=""
+            widthClass="w-full sm:w-56"
+            disabled={disabled}
+            filterAbove={8}
+          />
+        ) : (
+          <div className="min-w-0 space-y-0.5">
+            <span className="break-words text-foreground" id={statusId} data-task-edit-status-text="">
+              {edits.status || "Default lane"}
+            </span>
+            <p className="break-words text-[11px] text-muted-foreground" data-task-edit-lanes-note="">
+              {lanes === "failed"
+                ? "Metorite could not load the lanes of this project, so the status stays as the card shows it."
+                : "Loading the lanes of this project."}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1 text-xs sm:flex-row sm:items-center sm:gap-2" data-task-edit-priority="">
+        <label htmlFor={importantId} className="shrink-0 text-muted-foreground sm:w-20">Important</label>
+        <SelectButton
+          id={importantId}
+          label="Important"
+          value={importantPick(edits.important)}
+          options={IMPORTANT_OPTIONS}
+          onChange={(next) => onChange({ ...edits, important: importantFromPick(next) })}
+          defaultValue="unjudged"
+          widthClass="w-full sm:w-56"
+          disabled={disabled}
+        />
+      </div>
+      <div className="flex items-center gap-2 text-xs sm:gap-2">
+        <span id={leveragedId} className="shrink-0 text-muted-foreground sm:w-20">Leveraged</span>
+        <Switch
+          checked={edits.leveraged}
+          onChange={(next) => onChange({ ...edits, leveraged: next })}
+          label="Leveraged"
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1 text-xs" data-task-edit-description="">
+        <label htmlFor={descId} className="text-muted-foreground">Description</label>
+        <Textarea
+          id={descId}
+          inputSize="lg"
+          rows={4}
+          value={edits.description}
+          onChange={(e) => onChange({ ...edits, description: e.target.value })}
+          disabled={disabled}
+          className="w-full"
+          aria-invalid={textProblem ? true : undefined}
+          data-task-edit-description-field=""
+        />
+        {textProblem === "long" && (
+          <p className="break-words text-[11px] text-foreground" role="status" data-task-edit-line="">
+            The description is too long. A task takes at most {DESCRIPTION_MAX.toLocaleString("en-US")} characters.
+          </p>
+        )}
+        {textProblem === "control" && (
+          <p className="break-words text-[11px] text-foreground" role="status" data-task-edit-line="">
+            The description holds a character that Metorite cannot save. Remove it.
+          </p>
+        )}
       </div>
 
       <div className="space-y-1.5 text-xs" data-task-edit-people="">
