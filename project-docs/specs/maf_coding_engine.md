@@ -5001,6 +5001,21 @@ table. WS-43t2 adds it to the source scan of
 - **A delegated run** (`call_agent`, `delegate_to_agent`, a MAF sub-agent)
   neither loads nor saves a session. The parent's session holds the
   delegation call and its result.
+- ⚠️ **As built (RESUME-4a-1, 2026-11-16).** A continuation run on the note
+  path (`chat_run_continuity.md` §4.12.4) neither loads nor saves a session
+  (`_native_session_skip` gives `resume_note`). Its reply has no user row
+  before it, so the next load would be a `hit` that lacks the reply. So
+  `executor._resume_prologue` first calls
+  `native_session_store.mark_stale` for each session of the thread. The bound
+  values are the org of the run binding and the caller's thread. There is no
+  agent key, because the rows of every agent in the thread feed the next turn.
+  The mark is ONE bound UPDATE that writes `STALE_DIGEST` over
+  `transcript_digest`, and it makes no row. The next load then gives
+  `digest_drop` with the reason `resume_stale`, and the run uses the text
+  history. The rules of §15.9.4 and §15.9.5 for a normal run do not change.
+  RESUME-4b brings the full amendment. Fences:
+  `tests/unit/test_resume_continuation.py`,
+  `tests/unit/test_resume_native_stale_r8.py`.
 
 #### 15.9.6 The bounds and the compaction
 
