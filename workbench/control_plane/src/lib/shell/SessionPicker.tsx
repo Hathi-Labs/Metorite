@@ -55,6 +55,8 @@ function SessionRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const title = sessionTitle(session);
+  // Rename is the owner's. Archive, restore and delete come as props.
+  const hasActions = session.isOwner !== false || Boolean(onArchive || onRestore || onRemove);
   if (editing) {
     return (
       <li className="px-1 py-0.5">
@@ -89,26 +91,41 @@ function SessionRow({
     );
   }
   return (
-    <li className="group relative" data-session-row={session.id}>
+    <li
+      className="group relative flex items-center"
+      data-session-row={session.id}
+      data-has-actions={hasActions ? "" : undefined}
+    >
       <Button
         variant="ghost"
         size="none"
         layout="flex items-center"
         onClick={onSelect}
         aria-current={on ? "true" : undefined}
-        className={`w-full gap-2 rounded-md px-2 py-1.5 text-left text-sm glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-label ${
+        className={`min-w-0 flex-1 gap-2 rounded-md px-2 py-1.5 text-left text-sm glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-label ${
           on ? "bg-primary/10 text-primary glass:bg-sidebar-accent glass:text-foreground" : ""
         }`}
       >
         {/* A dot only when it says something: a live run or an unread
             reply (CO-0). A grey dot on every row said nothing. */}
         <span className={`min-w-0 flex-1 truncate ${on ? "font-medium" : ""}`}>{title}</span>
-        <SessionRunDot running={running} unread={unread} />
-        <span className="shrink-0 text-[11px] text-muted-foreground group-hover:invisible group-focus-within:invisible glass:text-caption">
-          {relativeAge(session.updatedAt, now)}
+        {/* The dot and the age give their place to the row's acts on hover
+            and on keyboard focus (`rail-row-meta`), so nothing is covered. */}
+        <span className="rail-row-meta flex shrink-0 items-center gap-2">
+          <SessionRunDot running={running} unread={unread} />
+          <span className="text-[11px] text-muted-foreground glass:text-caption">
+            {relativeAge(session.updatedAt, now)}
+          </span>
         </span>
       </Button>
-      <span className="reveal-on-hover absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+      {/* The acts are IN the row, after the title, and take no width at rest
+          (`rail-row-actions`). On hover the title gives up exactly their
+          width, for two icons or for more. Add an act as one more Button
+          here, never an offset. Fence: `sessionPickerStrip.test.ts`. */}
+      <span
+        data-session-acts=""
+        className={`reveal-on-hover rail-row-actions flex shrink-0 items-center gap-0.5 ${hasActions ? "" : "hidden"}`}
+      >
         {/* A room's name is its owner's to change: every member sees it. */}
         {session.isOwner !== false ? (
           <Button
