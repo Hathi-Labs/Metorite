@@ -614,7 +614,7 @@ async def test_a_question_never_holds_an_id_a_card_could_read(gw: Gateway) -> No
 
 import ast as _ast  # noqa: E402
 
-from acb_skills.ask_tools import CARD_APPROVED, CARD_OUTCOMES  # noqa: E402
+from acb_skills.ask_tools import CARD_APPROVED, CARD_OUTCOMES, CLOSED_BY_YOUR_MESSAGE  # noqa: E402
 
 #: HRD-7: the lead of each card outcome that did nothing, from the one table.
 TABLE_LEADS = tuple(f"{o.lead}:" for k, o in CARD_OUTCOMES.items() if k != CARD_APPROVED)
@@ -652,6 +652,11 @@ def _lead(node: _ast.AST) -> str | None:
         first = node.values[0]
         return str(first.value) if isinstance(first, _ast.Constant) else "{"
     if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
+            and node.func.id == "_closed_by_message"):
+        # HRD-8a: the call takes an ACT ("send", "forward"), not a lead. Its text
+        # starts with the lead of the closed-by-your-message row of the table.
+        return f"{CARD_OUTCOMES[CLOSED_BY_YOUR_MESSAGE].lead}:"
+    if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
             and node.func.id in TABLE_CALLS):
         return TABLE_LEADS[0]  # a text of the one table: its lead is known
     if isinstance(node, _ast.Call) and node.args:
@@ -676,6 +681,15 @@ def test_each_answer_that_did_not_act_has_a_known_lead(tool: str) -> None:
         assert lead.startswith(ACTING[tool]) or lead.startswith(NO_ACTION_LEADS), (
             f"{tool} answers {lead[:60]!r}, and the card would draw it as done"
         )
+
+
+def test_a_closed_by_message_call_starts_with_its_table_lead() -> None:
+    """``_lead()`` reads a call of ``_closed_by_message(act)`` as the lead of the
+    closed-by-your-message row. This holds the real text to that reading, for each act."""
+    lead = f"{CARD_OUTCOMES[CLOSED_BY_YOUR_MESSAGE].lead}:"
+    assert agents._CLOSED_STEPS, "the table of acts is empty"
+    for act in agents._CLOSED_STEPS:
+        assert agents._closed_by_message(act).startswith(lead), act
 
 
 @pytest.mark.parametrize("helper", HELPERS)
