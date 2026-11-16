@@ -142,7 +142,8 @@ def test_reply_to_it_holds_the_email_in_focus(flag, harness) -> None:
     assert cf.BLOCK_HEAD in second, second
     assert "- kind: email" in second and f"- email_id: {MAIL}" in second
     assert f"- in-app link: /email?email={MAIL}" in second
-    assert '\\"It\\", \\"this\\" and \\"mark it done\\" mean this item.' in second
+    assert '\\"It\\", \\"this\\" and \\"mark it done\\" can mean this item.' in second
+    assert "A newer item in this chat wins over this item." in second
     assert "Quote for the clinic" not in second.split(cf.BLOCK_HEAD)[1].split("##")[0], \
         "the block holds no title"
     assert harness.sent == []

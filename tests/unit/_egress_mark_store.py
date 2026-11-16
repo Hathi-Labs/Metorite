@@ -40,6 +40,13 @@ class MemoryMarkClient:
         self.calls.append(("exists", ",".join(names)))
         return sum(1 for n in names if n in self.values or n in self.hashes)
 
+    async def delete(self, *names: str) -> int:
+        # HRD-11a fix round 1: the item in focus is deleted when a run names
+        # two or more items, or when a call clears it.
+        self.calls.append(("delete", ",".join(names)))
+        return sum(1 for n in names
+                   if self.values.pop(n, None) is not None or self.hashes.pop(n, None) is not None)
+
     async def expire(self, name: str, _seconds: int) -> bool:
         self.calls.append(("expire", name))
         return name in self.values or name in self.hashes
