@@ -1479,6 +1479,17 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_chat_transcribe.py.
     chat_voice_orgs: str = ""
 
+    # ── The topics of the chat list (chat_organization.md §6, WS-CO CO-2a) ─
+    #
+    # `chat_topics_orgs` lists the organization ids where the routes of
+    # `/chat/topics` answer, or `*` for each one. Empty means off, and each
+    # route answers 404. The one reader is `gateway.chat_topic.topics_allowed`,
+    # and it fails closed. The name ends in `_orgs`, so a SIGHUP applies a
+    # change with no restart (`docs/flag_reload.md`). A value other than empty
+    # on a box is the gate `enforcement-flip`, after the owner preview.
+    # Fences: tests/unit/test_chat_topic.py, tests/unit/test_chat_topic_r8.py.
+    chat_topics_orgs: str = ""
+
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #
     # `email_edit_card_orgs` lists the organization ids whose chat shows a new
