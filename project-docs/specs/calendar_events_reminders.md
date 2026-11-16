@@ -1642,7 +1642,7 @@ its note first. It never returns notes, the join link or the provider link. A
 line that looks like the end of the block inside a title cannot close it. The
 tool is `read_only`, `idempotent` and not `open_world`.
 
-**Ruling PENDING, the owner decides (task 3463).** Until the owner rules, the
+**Ruling DECIDED by the owner, 2026-11-16 06:36 UTC (task 3463): mark.** The
 read marks the chat as one that holds untrusted input
 (`egress.mark_untrusted_answer`). With the mark, each tool that sends data
 out asks for the member's card in that chat, for up to 400 days. The twelve
@@ -1652,8 +1652,7 @@ after a read of a hostile title. None of the twelve writes asks for a platform c
 the calendar settings use a propose-and-confirm step in the chat, and that
 step is not a card.
 
-The choice sits in one constant, `EVENTS_MARK_UNTRUSTED`, so the other ruling
-is a one-line change. `CALENDAR_EVENTS` is one flag for the whole calendar
+The choice sits in one constant, `EVENTS_MARK_UNTRUSTED`, set to True. `CALENDAR_EVENTS` is one flag for the whole calendar
 grid, so its flip waits for this ruling.
 
 `create_personal_task` (with `block_start` and `block_end`) and
@@ -1871,7 +1870,7 @@ needs no decision change.
 | **CE-14** The setup guide | AGENT-SAFE | `docs/calendar_connect.md` (§8.1a point 10) | A member can connect each of the four account types from the text alone | `ste-lint` on the file |
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
-| **CE-15** The chat reads the events (task 3463, CHAT-REACH-1) | AGENT-SAFE to build, dark. The live effect needs `CALENDAR_EVENTS` and `feature:tasks`, an enforcement-flip, and D218 adds the owner preview. The untrusted-text ruling is pending: the owner decides | §6.7: one read tool `my_tasks_list_events` in `skill_my_tasks`, in the `calendar-day` pack. It reads the `entries` key of `GET /projects/my/calendar`. No SQL, no route, no flag | "What is on my calendar" lists the synced Google and Outlook events with the provider of each. With no `entries` key the tool gives one fixed line and sends one request. The titles and places sit in one `UntrustedFrame` block, and notes and links never show. The tool has no identity argument. The tool refuses a window above the cap. The pack holds 17 tools | `tests/unit/test_calendar_day_pack.py`, `test_calendar_day_held.py`, `test_pack_requests.py`, `test_studio_split_matrix.py`, `test_connector_chat_reach.py`, `test_read_tool_paging.py`, and a new `tests/unit/test_calendar_events_tool.py` |
+| **CE-15** The chat reads the events (task 3463, CHAT-REACH-1) | AGENT-SAFE to build, dark. The live effect needs `CALENDAR_EVENTS` and `feature:tasks`, an enforcement-flip, and D218 adds the owner preview. The untrusted-text ruling is decided: the read marks the chat | §6.7: one read tool `my_tasks_list_events` in `skill_my_tasks`, in the `calendar-day` pack. It reads the `entries` key of `GET /projects/my/calendar`. No SQL, no route, no flag | "What is on my calendar" lists the synced Google and Outlook events with the provider of each. With no `entries` key the tool gives one fixed line and sends one request. The titles and places sit in one `UntrustedFrame` block, and notes and links never show. The tool has no identity argument. The tool refuses a window above the cap. The pack holds 17 tools | `tests/unit/test_calendar_day_pack.py`, `test_calendar_day_held.py`, `test_pack_requests.py`, `test_studio_split_matrix.py`, `test_connector_chat_reach.py`, `test_read_tool_paging.py`, and a new `tests/unit/test_calendar_events_tool.py` |
 
 **The order.** CE-1 and CE-3 now. CE-0 is decided (D138). Then CE-4, CE-5,
 CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11 together, for Google
