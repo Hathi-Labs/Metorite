@@ -276,7 +276,7 @@ def tool_result_fields(content: Any) -> tuple[str, bool]:
         if unknown_call_name(content):
             return MEMBER_LINE, False
     except Exception:  # the mapping of before, never a lost result
-        pass
+        _log.warning("event_translator.unknown_call_check_failed", exc_info=True)
     return (str(exc) if exc else str(result)), exc is None and not is_refusal(result)
 
 
