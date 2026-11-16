@@ -1825,6 +1825,8 @@ The slices, with their Metorite tasks:
   another agent.
 - No summary in the chat list, in My Day or in any shared surface.
 - No new recall store and no vector store. MEM-2 stays the one search.
+- No note over a series of chats. `chat_organization.md` §16 plans it (task
+  3491), on the typed-words rule of D-PZ-37.
 - No change to the day's brief (CF-5, BR-2c). §15.4 reads beside it.
 - No outbound message. Reach stays the only sender (D103).
 
