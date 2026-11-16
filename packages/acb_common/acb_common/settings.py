@@ -762,11 +762,22 @@ class Settings(BaseSettings):
     # TOF-1a: STUDIO_CHAT_TOOLS_ORGS lists the org ids where the Studio
     # action catalog serves one `tool:<name>` row for each chat tool of the
     # CRM, Email, Projects and Calendar packs. `*` opens every org. Empty
-    # opens none, and the catalog then has no such row. Reader:
+    # opens none, and the catalog then has no such row. TOF-1b: it also gates
+    # the skill load. For an org that it leaves out, each skill with a
+    # `tool:` action fails to load with `chat_tools_off`. Reader:
     # `gateway.routes.studio.flags.chat_tools_allowed`. A SIGHUP reload
     # applies a change (docs/flag_reload.md). A flip in production is the
-    # gate `enforcement-flip`. Spec: ai_studio.md section 14 TOF-1a.
+    # gate `enforcement-flip`. Spec: ai_studio.md section 14 TOF-1a, TOF-1b.
     studio_chat_tools_orgs: str = ""
+    # TOF-1d: STUDIO_SKILL_OFFER_ORGS lists the org ids where the chat draws
+    # the card "Save this as a skill?" after a finished turn (STU-F6a). `*`
+    # opens every org. Empty opens none: the chat draws no card and reads no
+    # catalog for it. Reader: `gateway.routes.studio.flags.skill_offer_allowed`.
+    # `GET /auth/me/shell` serves it as `skill_offer`, and it also needs
+    # STUDIO_ORGS. A SIGHUP reload applies a change (docs/flag_reload.md). A
+    # flip in production is the gate `enforcement-flip`, after the owner
+    # preview. Spec: ai_studio.md section 14 TOF-1d.
+    studio_skill_offer_orgs: str = ""
     # STU-I1a: STUDIO_CONNECTION_GATE_ORGS lists the org ids where the
     # `connections` of a Studio manifest bind. A missing connection then makes
     # the install `needs_setup`, and the action door refuses each action with
@@ -1440,6 +1451,19 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
 
+    # ── Pin a chat (chat_organization.md §18, WS-CO CO-11) ─────────────────
+    #
+    # `chat_pin_orgs` lists the organization ids where a member may pin a
+    # chat, or `*` for each one. Empty means off: the chat list sends no pin
+    # key, the shell read says `chat_pin: false`, and PUT and DELETE
+    # `/chat/sessions/{id}/pin` answer 404. The one reader is
+    # `gateway.chat_session_member.pin_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`). A value other than empty on a box is the gate
+    # `enforcement-flip`, after the owner preview.
+    # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
+    chat_pin_orgs: str = ""
+
     # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
     #
     # `chat_voice_orgs` lists the organization ids whose chat composer shows the
@@ -1468,6 +1492,20 @@ class Settings(BaseSettings):
     # Name the flag and the box in the same message.
     # Fence: tests/unit/test_email_new_mail_card.py.
     email_edit_card_orgs: str = ""
+
+    # ── The card of a new task that the member edits (projects_ai_chat.md §32) ──
+    #
+    # `project_edit_card_orgs` lists the organization ids whose chat shows the
+    # card of `create_task` as a form that the member edits before Approve, or
+    # `*` for each one (EAC-1). Empty means off, and the card is the card of
+    # before. The one reader is `acb_skills.task_card.task_edit_card_on`, and
+    # it fails closed. The name ends in `_orgs`, so a SIGHUP applies a change
+    # with no restart.
+    #
+    # A value on a box is an `enforcement-flip` (EAC-7): it changes what a card
+    # writes. Name the flag and the box in the same message.
+    # Fence: tests/unit/test_task_edit_card_answer.py.
+    project_edit_card_orgs: str = ""
 
     # ── Outlook all-mail webhook (WS-17, task 1966) ─────────────────────────
     #
@@ -1556,6 +1594,20 @@ class Settings(BaseSettings):
     # billed to the org. Fence: tests/unit/test_feed_decide.py.
     my_day_decide_orgs: str = ""
     my_day_decide_org_daily_calls: int = 0
+
+    # ── My Day learns from the member (WS-58 MD-9, LOOP-4a) ─────────────────
+    #
+    # `my_day_learn_orgs` lists the organization ids whose feed reads the
+    # member's own acts: the `affinity` term of each kind, and the kind mutes
+    # of `user_settings.my_day_prefs` (`my_day_feed.md` §6.6, §7,
+    # `proactive_loop.md` §7.2). `*` lists every organization. Default empty:
+    # the feed answers the same bytes as before. The one reader is
+    # `gateway/routes/shell/state.py` (`learn_allowed`), on each call, so a
+    # flag reload applies a change.
+    #
+    # The flip is `enforcement-flip`, after the owner preview (D218).
+    # Fence: tests/unit/test_my_day_state.py.
+    my_day_learn_orgs: str = ""
 
     # ── The CRM's `decide` org list (WS-53 CRM-Q26) ─────────────────────────
     #

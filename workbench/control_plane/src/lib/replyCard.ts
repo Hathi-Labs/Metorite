@@ -742,6 +742,17 @@ export interface NewMailEdits {
   startedBare?: true;
 }
 
+/**
+ * True for the edits of a new-mail form. The queue keeps the edits of a new
+ * mail and of a task card in one map (`FormEdits`), so a reader of one kind
+ * asks here, and never casts (EAC-2). `redraftCard.ts` reads only this kind.
+ */
+export function isNewMailEdits(x: unknown): x is NewMailEdits {
+  if (!x || typeof x !== "object") return false;
+  const v = x as Record<string, unknown>;
+  return typeof v.subject === "string" && typeof v.body === "string" && typeof v.ticks === "object" && Array.isArray(v.fileTicks);
+}
+
 /** True when the people the member left ticked differ from the card's start. */
 export function newMailTicksMoved(form: ReplyForm, ticks: ReplyTicks): boolean {
   const start = startTicks(form).reply_all;
