@@ -263,7 +263,16 @@ def test_run_chat_checks_the_cap_before_each_send_inside_a_turn() -> None:
     send out and refuses the second. Mutation: drop ``cap_sends`` from
     ``run_chat`` -> the turn makes both calls -> red."""
     sc = scenario("five_turns")
+    import faulthandler
+    import sys as _sys
+    import time as _time
+
+    _t0 = _time.monotonic()
+    faulthandler.dump_traceback_later(45, file=_sys.stderr, exit=False)
     free = run.run_chat(sc, "pack")
+    faulthandler.cancel_dump_traceback_later()
+    print("DIAG free run seconds", round(_time.monotonic() - _t0, 1),
+          [(r.get("first_text_s"), r.get("total_s"), r.get("error")) for r in free])
     assert len(free[0]["model_calls"]) >= 2 and free[0]["capped"] is None, (
         free[0]["error"], free[0]["answer"], free[0]["capped"])
     seen: list[float] = []
