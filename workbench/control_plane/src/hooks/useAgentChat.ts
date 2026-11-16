@@ -38,16 +38,16 @@ import {
   type LiveRun,
 } from "@/lib/liveRuns";
 import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
-import { stepOfMessage } from "@/lib/runStep";
+import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
-import { planReplay, rejectFor } from "@/lib/runReplay";
+import { planReplay, rejectFor, replayIdOf } from "@/lib/runReplay";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
 import { noteToolEnd, noteToolStart } from "@/lib/assistantWrites";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
-import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCustomEvent, type StreamFold } from "@/lib/chatStream";
+import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, PROGRESS_EVENT, RUN_PHASE_EVENT, withCustomEvent, withProgressNotice, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import {
   RUN_CAP_NOTICE_ID,
@@ -447,6 +447,8 @@ export function useAgentChat({
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
           // A card answer keeps its answered card while it waits.
           ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
+          // The typed mark, live only, for the skill offer (STU-F6a).
+          ...(opts?.typed === true && !opts?.cardAnswer ? { typed: true } : {}),
           // A held send has not reached the server either, so it carries the
           // same mark: a later run-cap refusal must leave no row (review of
           // #821). The retry spreads the bubble, so the mark travels with it.
@@ -481,6 +483,9 @@ export function useAgentChat({
           // envelope the model reads, and the bubble draws this marker. It
           // persists in `custom_events`, so a reload draws it too.
           ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
+          // The typed mark, live only (never saved), for the skill offer
+          // (STU-F6a, `lib/studio/skillOffer.ts`). A card answer is never typed.
+          ...(opts?.typed === true && !opts?.cardAnswer ? { typed: true } : {}),
           // WS-51 D-3: on the gateway path the server saves this turn at run
           // start (S4). The chat saves it only once the server answers, so a
           // send the run cap refuses leaves no row behind.
@@ -491,7 +496,7 @@ export function useAgentChat({
       const assistantId = adopt?.assistantId ?? nanoid();
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
-        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
+        streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true, firstLine: true,
         // Who this turn is from: the agent it was sent to (S9 fix round 3).
         ...agentAuthor(agentNameRef.current),
       };
@@ -554,6 +559,8 @@ export function useAgentChat({
       // gateway steered the words into a run already going.
       let streamRead = false;
       let sawDone = false;
+      // The `done` was a park (RESUME-3a): the run waits on its card.
+      let sawPark = false;
       let runFailed = false;
       let steeredLive = false;
       // The server answered with anything but the run cap, so the chat may
@@ -800,6 +807,14 @@ export function useAgentChat({
                 sawDone = true;
                 clearCardLog(threadId);
                 upd((m) => applyStreamEvent(m, evt, fold));
+                // RESUME-3a: a park settles the reply, and its card stays on
+                // screen. A remount takes the card from the pending asks only.
+                // A slot of a redraft still ends (C3).
+                if (evt.parked === true) {
+                  sawPark = true;
+                  emitAgentEvent("onRunRested", { threadId });
+                  break;
+                }
                 emitAgentEvent("onRunFinalized", { runId: String(evt.run_id ?? ""), threadId });
                 break;
               case "state":
@@ -840,13 +855,31 @@ export function useAgentChat({
                   const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
                   emitAgentEvent("onGuide", { guideId: String(data?.guide_id ?? ""), threadId });
                 }
+                // CS-3b: the phase of the run shows as fixed words, until the
+                // first real step. An unknown name draws nothing. Never kept.
+                if (evtName === RUN_PHASE_EVENT) {
+                  const word = phaseWordOf(evt.value ?? evt.data);
+                  if (word) {
+                    dispatchRun(threadId, { type: "phase", at: Date.now(), word });
+                    upd((m) => (m.content.trim() || (m.toolEvents?.length ?? 0) > 0 ? m : { ...m, phaseWord: word }));
+                  }
+                  // A phase proves nothing moved: no run event follows it.
+                  continue;
+                }
+                // HRD-6: the line of a slow step shows under that step. Live
+                // loop ONLY, and never kept on the message's custom events.
+                if (evtName === PROGRESS_EVENT) {
+                  upd((m) => withProgressNotice(m, evt.value ?? evt.data));
+                  break;
+                }
                 // HITL control events (ask_questions / ask_user / confirm) are
                 // rendered by the inline ElicitationCard — they are NOT data to
                 // display.  Storing them in customEvents made them surface in the
                 // generic "Interactive view" AG-UI panel too, a duplicate that
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
+                // CS-3a: the phase of the run is never kept either.
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== RUN_PHASE_EVENT && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT) {
                   upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -999,7 +1032,7 @@ export function useAgentChat({
           // while it ran. `finishing` asks the server (`lib/runStatus.ts`).
           const at = Date.now();
           if (runFailed) dispatchRun(threadId, { type: "failed", at });
-          else if (sawDone) dispatchRun(threadId, { type: "stream_end", at, terminal: true });
+          else if (sawDone) dispatchRun(threadId, { type: "stream_end", at, terminal: true, ...(sawPark ? { parked: true } : {}) });
           else if (streamRead || steeredLive) dispatchRun(threadId, { type: "stream_end", at, terminal: false });
           else dispatchRun(threadId, { type: "abandon", at });
         }
@@ -1163,7 +1196,9 @@ export function useAgentChat({
       dispatchRun(threadId, { type: "attach_skipped", at: Date.now() });
       return;
     }
-    const lastId = target?.id ?? nanoid();
+    // RESUME-3a (C2): a continuation whose reply row the server named replays
+    // into that row, so the fold at its end draws no second bubble.
+    const lastId = replayIdOf(target, st0.run.resumedAt > 0 ? st0.run.messageId : null, nanoid);
     const lastContent = target?.content || "";
     const placeholder = !target;
     // No thinking flag yet: the status row says the run works, and the
@@ -1189,6 +1224,8 @@ export function useAgentChat({
 
     let reconToken: string | null = null;
     let terminal = false;
+    // The last `done` was a park (RESUME-3a).
+    let parkedEnd = false;
     let streamed = false;
     try {
       const curState = getSessionState(threadId);
@@ -1243,6 +1280,10 @@ export function useAgentChat({
         progressLines: [],
         customEvents: [],
         isThinkingActive: true,
+        // CS-1: a run that this tab joins again has no first line, even in the tab that sent it.
+        firstLine: undefined,
+        // CS-3b: nor a phase. A joined run has none until a new one arrives.
+        phaseWord: undefined,
         streaming: true,
       } : null;
       const hasBody = (m: ChatMessage | null | undefined) =>
@@ -1353,9 +1394,27 @@ export function useAgentChat({
                     quiet: isQuietArtifact(data),
                   });
                 }
+                // HRD-6: this loop replays the run, then follows it LIVE. The
+                // replay brings each line and its clear in order, so the end
+                // state is the true one: a line that still runs shows, and a
+                // line that ended or went to a card is gone. Never saved.
+                if (evtName === PROGRESS_EVENT) {
+                  updLast((m) => withProgressNotice(m, evt.value ?? evt.data));
+                }
+                // CS-3b: a run phase that arrives on a joined run shows as fixed words, and
+                // only until the first real event. The replay never keeps it on the message.
+                if (evtName === RUN_PHASE_EVENT) {
+                  const word = phaseWordOf(evt.value ?? evt.data);
+                  if (word) {
+                    dispatchRun(threadId, { type: "phase", at: Date.now(), word });
+                    updLast((m) => (m.content.trim() || (m.toolEvents?.length ?? 0) > 0 ? m : { ...m, phaseWord: word }));
+                  }
+                  // A phase proves nothing moved: no run event follows it.
+                  continue;
+                }
                 // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
-                // and it draws nothing either.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
+                // and it draws nothing either. CS-3a: nor does a run phase.
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== RUN_PHASE_EVENT && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT && evtName !== PROGRESS_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -1367,6 +1426,10 @@ export function useAgentChat({
                 // on a tool call) and mark the message settled — the shared
                 // reducer does the un-fold + streaming:false in one update.
                 updLast((m) => applyStreamEvent(m, evt, fold));
+                // RESUME-3a: a park, as in the live loop. The card stays, and
+                // a slot of a redraft ends (C3).
+                parkedEnd = evt.parked === true;
+                if (parkedEnd) emitAgentEvent("onRunRested", { threadId });
                 break;
               case "error":
                 // The agent emitted an error during its run (e.g. Copilot
@@ -1426,7 +1489,7 @@ export function useAgentChat({
         // the server answers whether the run goes on.
         // No stream: the next attach waits longer (`attach_failed`), so a run
         // that cannot replay is never asked in a loop.
-        if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal });
+        if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal, ...(terminal && parkedEnd ? { parked: true } : {}) });
         else dispatchRun(threadId, { type: "attach_failed", at: Date.now() });
       }
     }

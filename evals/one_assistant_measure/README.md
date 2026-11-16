@@ -232,6 +232,138 @@ Projects chats and the mixed chats, and it lists the fan-out chats as
 skipped. The scripted plan loads the pack with `load_skill_tools` when
 neither the surface nor a word of the turn does.
 
+## TS-5a: the Studio chats and the `search` arm
+
+**Status.** TS-5a was built on 2026-11-14 (task 3288). It runs scripted only, with no live
+run and no spend. The owning spec is `one_assistant_context.md` §4.2.9 (TS-5a, TS-5b)
+and §4.3.3. The last measure report is `docs/one_assistant_measure_oa8e_run5_2026-10-30.md`.
+
+This slice has one test: a tool that no layer loaded before the first request.
+`scenarios_studio.py` holds five Studio chats. No word of any pack matches them, so
+layer (a) never loads `studio`. The `pack` arm needs `load_skill_tools`, and the
+`search` arm needs `find_tools`.
+
+| Chat | Surface | Asks | Checks |
+|---|---|---|---|
+| `stu_skills` | `crm` | Which of my saved skills are still drafts? | `studio_skill_list` ran, `found_tool`, `search_round` |
+| `stu_new_app` | none | Make me a small app to log visitor badges. | `studio_draft` ran, `found_tool`, `search_round` |
+| `stu_plain` | `crm` | Give me a one-line thank-you note for the team. | `not_searched` |
+| `stu_no_feature` | `crm` | the words of `stu_skills`, a member WITHOUT `feature:studio` | `no_studio_names`, `answer_none` |
+| `stu_held` | `crm` | Turn 1 reads Priya's mail. Turn 2 has the words of `stu_skills`. | `held_note`, `found_tool` |
+
+The chats run on the `pack` and `search` arms only, because `studio-builder` takes no
+hand-off (`run.arms_for`). They are outside `WORK_SCENARIOS`. The member of
+`stu_no_feature` lacks the feature through the `Scenario` field `without_features`, which
+the run reads. The harness file is not edited.
+
+**The arm.** `--arms` lists `search`. TS-5b is BUILT: `run.SEARCH_PLANS` is True, so the arm
+runs when the settings hold `tool_search_orgs` (`run.search_built`). It prints
+`SKIP: arm search` when either one is missing. An unknown `--arms` value exits with status 2.
+
+**The plans of the `search` arm (TS-5b).** `Plan.find` holds the query of each
+`find_tools` call. The scripted model calls `find_tools` first, then the Studio tool, and
+it never calls `load_skill_tools` for a Studio tool. `Plan.search_calls` replaces the calls
+on this arm when the model heeds an empty find. The real loop runs: the MAF loop, the
+function middleware, the ranker and the guarded build. The harness swaps only the HTTP
+transport.
+
+| Chat | Query | Tool that must rank in the top 5 |
+|---|---|---|
+| `stu_skills` | `list my saved skills` | `studio_skill_list` (rank 1) |
+| `stu_new_app` | `draft a new app` | `studio_draft` (rank 1) |
+| `stu_plain` | none (`not_searched`) | none |
+| `stu_no_feature` | `list my saved skills` | none runs: the answer is `FIND_NONE`, because the pack is no candidate for this member |
+| `stu_held` turn 2 | `list my saved skills` | `studio_skill_list` (rank 1), and the answer carries the hold note |
+
+The query `make a new app` does NOT rank `studio_draft` (the ranker gives `studio_app_read`
+first), so the plan uses `draft a new app`. A test ranks each query with
+`tool_search.rank` and names the registry when a tool leaves the top 5.
+
+**The held chat.** The product holds the Studio pack in a chat that read mail, so `held_note`
+is satisfiable. The hold note comes after the rules text, past the 2000 characters that the
+event stream keeps of a tool result. The tap reads the full answer from the next request
+(`checks.find_answers_in`, `checks.full_find_results`). A found answer that starts `Found` is a
+round, also when its rules text holds a refusal sentence (`checks._find_refused`).
+
+**The flags.** A Studio chat adds `studio` BY NAME to `TOOL_PACKS` and the eval org to
+`STUDIO_ORGS` (`run.flag_for`). It never uses `owner_packs("studio-builder")`, because
+that also turns on the dark pack `studio-workflows`. The `search` arm adds
+`TOOL_SEARCH_ORGS`.
+
+**The fake gateway** answers the `/studio/` read routes: skills, packages, templates and
+the action catalog. A Studio route with no fixture answers 404 and fails the scripted run.
+Do not use `list_workflows` in a chat: it reads the local database in process.
+
+**The checks** (all pure, in `checks.py`):
+
+| Check | Passes when |
+|---|---|
+| `found_tool` | A Studio tool ran after the find (`find_tools`, or `load_skill_tools` on the pack arms). A call that answers `Requested function "X" not found` does not count. |
+| `search_round` | Search arm. Exactly one counted `find_tools` call in a turn that needs a search. Zero fails, and two fail. |
+| `not_searched` | A turn that needs no tool makes no find (and no load on the pack arms). |
+| `no_studio_names` | A member without `feature:studio`: no Studio tool name in the tool list, the `find_tools` description or any answer. |
+| `held_note` | Search arm, held chat: the answer of `find_tools` carries the hold note. On the pack arm the note is in the persona, so the check gives None. |
+| `schema_tokens` | Search arm. No request carries more than 30,000 schema tokens. `schema_tokens_of` uses the estimate of `orchestrator._maf_mcp.schema_tokens`. |
+
+The names and the description of the tools of a request come from `run.tap_schemas`. It
+wraps the wire tap and sets three attributes on `ModelCall`. It changes nothing on the wire.
+
+**Stop result 12.** More than 15 percent of the app turns of the `search` arm call
+`find_tools`: STOP. 15 of 100 is ok, and 16 of 100 is a STOP. A find on a turn that needs
+no tool is a false search, and the report counts it on its own. The report adds the
+searches per turn, the tools that ran after a find, and the schema tokens per request.
+
+The report prints the same columns for `pack` and `search`, side by side. They are the pass
+rate, the calls per turn, the input tokens, the tools per request and the schema tokens. The
+live `--out` file holds them in `summary`. A set of Studio chats alone gives 3 of 3 app
+turns that searched, so result 12 reads STOP on it. The rule counts the full app set
+(spec decision 12).
+
+```bash
+uv run python -m evals.one_assistant_measure.run --scripted --arms pack,search
+uv run python -m evals.one_assistant_measure.run --scripted --scenarios stu_skills,stu_held
+```
+
+The fence is `tests/unit/test_one_assistant_measure_search.py`.
+
+### TS-5b: the cap chat, the offered field and a fair skill check
+
+**The cap chat `stu_cap`** is the case that the tool-search design exists for. It has four turns
+on the CRM surface.
+
+| Turn | Words | Pack that loads by words | Tool that runs |
+|---|---|---|---|
+| 1 | Show my open deals. | `crm-records` | `get_pipeline` |
+| 2 | Check my inbox for Priya. | `email` | `query_inbox` |
+| 3 | What reminders do I have? | `projects-reminders` | `list_reminders` |
+| 4 | Which of my saved skills are still drafts? | none | see below |
+
+A pack is sticky only after one of its tools ran, so turns 1 to 3 each run one. After turn 3 the
+run holds three packs, the cap (`tool_packs.MAX_PACKS`). Turn 4 matches no pack, so Studio does
+not load by words, and `plan_loader` offers nothing. `load_skill_tools` is not in the request.
+
+* **`search` arm.** `find_tools` is in the request. A found tool takes no place of `MAX_PACKS`.
+  The model finds `studio_skill_list` in `studio-more`. Checks: `found_tool`, `search_round`.
+* **`pack` arm.** The model has no way to a Studio tool. No Studio tool runs, and the answer says
+  that it cannot. Checks: `no_studio_ran`, `no_load_offered`, `says_it_cannot`.
+
+A `Check` has an `arms` field, so one turn holds the checks of each arm. `Plan.search_answer`
+gives the answer of the `search` arm when it differs. A test proves the words of each turn with the
+real `matched_layer`. It also proves the three held packs and the empty offer from the log of the loader.
+
+**`find_tools_offered` and `find_tools_requests`.** Each row (live and scripted) says whether
+`find_tools` was in a request of the turn, and in how many requests. A `pack` row holds False and 0.
+The report prints the requests per turn and a line `offered but not called: N of M` for the
+`search` arm. It tells "offered and ignored" from "not offered". It is a count, not a check.
+
+**`drafts_listed_fairly`** replaces `answer_none` for the live skill in `stu_skills`. The first
+live pilot (2026-11-15) gave a right answer: "Two of your three skills are still drafts: ... Quote
+follow-up is already published." The strict check failed it. Now the answer must name both drafts.
+
+A sentence or line that names the live skill must not say "draft". It may say "draft" when it also
+says published, live, already or not a draft (`checks.calls_live_skill_a_draft`).
+The check also reads headings. A list item under a heading that says "draft" counts as a draft. A blank line, a prose line or a new heading ends the block. The check reads English only.
+
 ## Run it with no model
 
 ```bash
@@ -298,37 +430,69 @@ uv run python -m evals.one_assistant_measure.run --live --arms pack   --tier-map
    tier that went out) and `served` (the model the Router names). The
    results header lists `tier_map` and `served_models`. Read `served_models`
    first. If the operator rebinds `tier-fast`, only that field shows what ran.
-5. A call is priced by its `served` model, else by the target tier. The
-   cost is the vendor `usage.cost` when the call has one. Otherwise the
-   `flash` card in `rate_card.json` prices it, and the peak factor applies.
+5. The card of the `served` model prices a call, mapped or not (rule 1 of
+   the spend rules). The cost is the vendor `usage.cost` when the call has one.
+   Otherwise the card of the served model in `rate_card.json` prices it. The
+   peak factor applies to a DeepSeek model and to an unknown model.
 6. `--merge` refuses a chunk whose rows are not named by its own map. It also
    refuses one arm name that two maps share. A mapped and an unmapped chunk
    merge as two separate arms. The merged file lists `tier_maps`.
 
 ### Spend rules (after the drain of 2026-10-30)
 
-A live run goes through the production Router, on the one DeepSeek account.
-On 2026-10-30 the account ran out of funds, and production chat failed for
-about 50 minutes. The harness total had read USD 4.62, and the Router had
-billed USD 12.70 for the eval member. Three rules now bind each run.
+A live run goes through the production Router.
+On 2026-10-30 the DeepSeek account ran out of funds.
+Production chat then failed for about 50 minutes.
+The harness total had read USD 4.62. The Router had billed USD 12.70 for the eval member.
+Four rules now bind each run.
 
 1. **Count every call, and count the unknown at the worst case.**
-   - The wire tap now covers the System-1 client. Before, each turn that asked
-     the turn kind sent one request that no tap saw.
+   - The count covers every call that reaches the Router. The wire tap covers
+     each agent that a factory builds (`run.tap_every_agent`), the
+     specialists, the worker and the System-1 client.
+   - The card of the model that SERVED the call prices it (`card` on the
+     call). The tier does not set the price, because the Router can bind a
+     tier to another model. On 2026-11-15 the Router served Claude, the old
+     card priced DeepSeek, and the count read USD 0.328 against a bill of
+     USD 0.4889 (TS-7a-cap).
+   - A model that the card does not hold, or no served name, gets the most
+     expensive rate of the card (`spend.worst_card`). It never gets the
+     cheapest rate.
    - A call with no usage frame counts from the size of its request
      (`cost_source` `estimate`), and not as USD 0.
-   - A send that reached the Router and that no tap saw counts at a worst case
-     of 20k input tokens and 4k output tokens (`unseen_usd` on the row).
-   - A call that starts in a peak band counts double (`peak` on the call).
+   - A send that no tap saw still counts, at the worst case (`unseen_usd` on
+     the row). The worst case is 20k input tokens and 4k output tokens, at the
+     most expensive rate.
+   - A DeepSeek call counts double when it starts in a band of peak hours
+     (`peak` on the call).
    - A refused call (status 4xx or 5xx) counts nothing.
 
-   The counted total is a safe upper bound, not an exact bill. Compare it with
-   the `usage_event` rows of the eval member after each run.
-2. **The budget stops the run at once.** `--budget-usd` counts the earlier
-   chunks too (`--spent-before` and `--spent-before-from`). The runner checks it
-   before each chat and before each turn after the first. A chat that crosses
-   the cap ends there, and the file says `stopped`.
-3. **Do not run in a peak band.** DeepSeek charges double in two bands.
+   The counted total is a safe upper bound, not an exact bill. When the card
+   prices every call, the count is at or above the bill, and at most 2 times it.
+2. **The budget stops the run at once.** The budget is `--budget-usd`, and
+   it counts the earlier chunks too (`--spent-before`, `--spent-before-from`).
+   The runner checks the budget before each chat and before each turn.
+   Inside a turn, the runner checks it before each model send, with the
+   count of the turn so far (`run.cap_sends`).
+   A send past the cap gets a local answer with status 402. The Router
+   never sees it.
+   The row says `capped`, the console says `CAPPED`, and the file says `stopped`.
+   No check scores a capped turn. The pass rate and the stop results leave it
+   out, and the report lists it on its own line. Its spend stays in the count.
+   A served model that the card does not hold stops the run after its turn.
+   The stop line names the model. Add the model to `rate_card.json`, then run again.
+   The card takes a dated alias such as `claude-sonnet-5-5-20261101` as its model.
+3. **Check the bill by hand after each run.** The harness does not read
+   `usage_event`. The results file holds `started_utc` and `member`. The
+   last line of the run names both, and the counted total of the run:
+
+   ```text
+   check usage_event for member@example.com since 2026-11-15 04:23:00 UTC: expected about USD 0.4889. ...
+   ```
+
+   Sum the `usage_event` rows of that member since that time. When the bill is
+   above the count, stop and repair the card before the next run.
+4. **Do not run in a peak band.** DeepSeek charges double in two bands.
    They run from 01:00 to 04:00 and from 06:00 to 10:00 UTC, Monday to Friday
    (<https://api-docs.deepseek.com/quick_start/pricing/>). The bands are
    `spend.PEAK_BANDS_UTC`. `--live` refuses to start in a band and prints the
@@ -371,9 +535,12 @@ A re-score runs only the checks that read the stored answer and tasks. Each
 other check keeps its stored value, because a results file keeps no tool
 arguments, cards or gateway calls. Each change goes in `rescored`.
 
-The cost of a streamed call is the vendor's `usage.cost`. A buffered call
-has no such field, so `rate_card.json` prices it. The card reproduces each
-probe of 2026-10-25 within 1 percent.
+The vendor's `usage.cost` gives the cost of a streamed call.
+A buffered call has no such field. The card of its served model in
+`rate_card.json` prices it.
+The `deepseek-v4-pro` card reproduces each probe of 2026-10-25 within 1 percent.
+The two Claude cards reproduce the bill of the pilot of 2026-11-15
+(`tests/unit/test_eval_spend_count.py`).
 
 ## Exit codes
 

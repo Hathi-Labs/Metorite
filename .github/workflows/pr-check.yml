@@ -78,18 +78,30 @@ jobs:
       operator: ${{ steps.diff.outputs.operator }}
       database: ${{ steps.diff.outputs.database }}
       caddy: ${{ steps.diff.outputs.caddy }}
+      # CIV-29d (D218). The browser specs that this diff can affect. `e2e_files`
+      # is empty for every spec. `e2e_shards` is a JSON list: `[]` runs no
+      # browser job. Empty text here means `changes` failed, and the e2e job
+      # then runs the full suite in 3 shards. Map: scripts/e2e_spec_map.json.
+      e2e_files: ${{ steps.diff.outputs.e2e_files }}
+      e2e_shards: ${{ steps.diff.outputs.e2e_shards }}
+      e2e_total: ${{ steps.diff.outputs.e2e_total }}
       # CIV-3. The unit tests that this diff can affect (affected_tests.py
       # --gate). `full` is `false` ONLY when the selector ran and found no
       # reason for a full run. The list is one line of space-separated paths
       # in a job output, not an artifact. A typical list is 2-20 KB and the
-      # limit is 1 MB. The 6 shards and the guard need no download step, and
+      # limit is 1 MB. The 8 shards and the guard need no download step, and
       # `ci_unit_guard.py gate-output` turns a list over 200 KB into `full`.
       full: ${{ steps.gate.outputs.full }}
       files: ${{ steps.gate.outputs.files }}
       # CIV-17. The unit shards this selection needs, a JSON list: `[]` for
-      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
+      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6,7,8]` for a full
       # run. The `test` matrix reads it. Empty here means `changes` failed.
       shards: ${{ steps.gate.outputs.shards }}
+    # CIV-32. `actions: read` lets the gate step find the last run of this PR
+    # and download its shard reports. A job-level block replaces the top one.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -102,19 +114,63 @@ jobs:
       - id: gate
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
+          # CIV-32 (D218). A repair round re-tests what failed and what the fix
+          # reaches. NEW_SHA is the PR head, not the merge commit that checkout
+          # builds. The step fails open: any doubt keeps the selection above.
+          # `gate-meta` keeps the base and the head of the merge that this run
+          # tests. The next push reads it to add the reach of main's move.
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          NEW_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
+          python3 scripts/ci_unit_guard.py gate-meta --out gate-meta.json
+          # CIV-29b (D218). On a merge ref the PR's own change is HEAD^1..HEAD. The
+          # range from the event base also holds what main gained since, and a
+          # main change to a FULL path then made a PR run FULL. Not a merge: $BASE.
+          gate_base="$BASE"
+          git rev-parse -q --verify HEAD^2 >/dev/null 2>&1 && gate_base="HEAD^1"
+          python3 scripts/affected_tests.py --gate --base "$gate_base" > gate.json || rm -f gate.json
+          mode="full selection: not a push to an open PR"
+          if [ "$EVENT" = "pull_request" ] && [ "$ACTION" = "synchronize" ] && [ -f gate.json ]; then
+            mode="$(python3 scripts/ci_unit_guard.py repair --repo "$REPO" --pr "$PR" \
+              --new-sha "$NEW_SHA" --json gate.json --meta gate-meta.json \
+              --workdir "$RUNNER_TEMP")" || mode="full selection: the repair step failed"
+          fi
+          echo "$mode"
+          echo "### Unit test selection" >> "$GITHUB_STEP_SUMMARY"
+          echo "$mode" >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/ci_unit_guard.py gate-output --json gate.json \
             "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
+
+      # CIV-32. The next push of this PR downloads this file to find main's
+      # move between the two runs. No file (an old run) gives a full selection.
+      - name: Keep the tested merge for the next push
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-meta
+          path: gate-meta.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - id: diff
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -u
-          if files="$(git diff --name-only "$BASE"...HEAD 2>/dev/null)" && [ -n "$files" ]; then :; else
+          # CIV-29b (D218). HEAD is the merge ref. Its first parent is main as GitHub
+          # merged it, so HEAD^1..HEAD holds ONLY the PR's own change. The old
+          # BASE...HEAD range also counted what main gained after the event, and
+          # that made a tests-only PR run the browser suite (PR 2213). Without a
+          # merge commit the old range stays.
+          if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then range="HEAD^1 HEAD"; else range="$BASE...HEAD"; fi
+          if files="$(git diff --name-only $range 2>/dev/null)" && [ -n "$files" ]; then :; else
             echo "cannot read the diff, so every area runs"
             for a in frontend operator database caddy; do echo "$a=true" >> "$GITHUB_OUTPUT"; done
+            printf 'e2e_files=\ne2e_shards=[1,2,3]\ne2e_total=3\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "$files"
@@ -129,6 +185,15 @@ jobs:
             echo "database=$(hit '^(infra/|scripts/|deploy/)')"
             echo "caddy=$(hit '^deploy/hostinger/caddy/')"
           } | tee -a "$GITHUB_OUTPUT"
+          # CIV-29d (D218). Which browser specs cover this diff. A selector error
+          # keeps the full suite.
+          echo "$files" > changed-files.txt
+          if sel="$(python3 scripts/e2e_select.py --files-from changed-files.txt)"; then
+            echo "$sel" | grep '^e2e_' | tee -a "$GITHUB_OUTPUT"
+          else
+            echo "the spec selector failed, so every spec runs"
+            printf 'e2e_files=\ne2e_shards=[1,2,3]\ne2e_total=3\n' >> "$GITHUB_OUTPUT"
+          fi
 
   lint:
     name: "Lint"
@@ -294,7 +359,8 @@ jobs:
   #
   # Refresh the timings when the split drifts (one shard much longer than the
   # rest): download the `test-durations` artifact of a green run and commit it
-  # as `.test_durations`.
+  # as `.test_durations`. CIV-33b: `scripts/refresh_test_durations.py --pr` does this,
+  # from a box timer. A selected file with no entry gets a warning in the pick step.
   #
   # CIV-3: a PR runs only the tests its diff can affect. The `changes` job
   # exports `needs.changes.outputs.full` and `.files`. The shard selects only
@@ -313,7 +379,7 @@ jobs:
     # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
     # GitHub fails a matrix with no values, so the `if:`
     # skips the job before the matrix is read. A failed `changes` job leaves
-    # `shards` empty text, and the matrix then falls back to all six shards.
+    # `shards` empty text, and the matrix then falls back to all eight shards.
     if: ${{ !cancelled() && needs.changes.outputs.shards != '[]' }}
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
@@ -321,7 +387,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}
+        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6,7,8]') }}
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
     # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
@@ -500,12 +566,25 @@ jobs:
           set -f
           [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
           rc=0
+          # CIV-33a (task 3071). pytest 9.1 lists tests/unit again for EACH file path,
+          # so 341 paths cost 272 s of 310 s. A selection of tests/unit files passes
+          # tests/unit ONCE, and scripts/pytest_only_selected.py drops the others.
+          # A full run, and a selection with a path outside tests/unit, are unchanged.
+          PLUGIN=""
+          if [ "$SHARD_MODE" = "selection" ] && ! echo $SHARD_TARGETS | tr ' ' '\012' | grep -qv '^tests/unit/'; then
+            SELECTED="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/selected.txt"
+            echo $SHARD_TARGETS > "$SELECTED"
+            export SHARD_SELECTED_FILES="$SELECTED"
+            export PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}"
+            PLUGIN="-p pytest_only_selected"
+            SHARD_TARGETS="tests/unit/"
+          fi
           # CIV-8k (task 2191). Shard 1 hung for 25 to 39 minutes in 6 red runs, always
           # right after tests/unit/test_adaptive_tier.py::test_a_long_thread_drafts_on_powerful
           # [...-False-tier-fast], and the log shows no cause. `faulthandler_timeout`
           # prints the stack of every thread when one test runs over 900 s. It kills
           # nothing, and no test takes more than 260 s.
-          uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
+          uv run python -m pytest $SHARD_TARGETS $PLUGIN -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
             --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
@@ -546,9 +625,10 @@ jobs:
   #   * a `--never-skip` file skipped a test (a database gate leaked into a
   #     fence that needs none).
   #
-  # ⚠️ The `--must-run` list is HAND-MAINTAINED. Add an R8 suite in the commit
-  # that creates it. Each suite's own `test_this_suite_is_named_in_the_ci_skip
-  # _guard` reads this file and fails if its entry goes.
+  # ⚠️ The `must_run` list is HAND-MAINTAINED, in the `r8` key of
+  # tests/fences.json (CIV-33c-2). Add an R8 suite there, in the commit that
+  # creates it. Each suite's own `test_this_suite_is_named_in_the_ci_skip
+  # _guard` reads that key and fails if its entry goes.
   #
   # Fence: tests/unit/test_ci_unit_guard.py.
   unit-tests:
@@ -605,134 +685,7 @@ jobs:
           ONLY=""
           if [ "$FULL" = "false" ] && [ "$CHANGES" = "success" ]; then ONLY="--only-selected $FILES"; fi
           python3 scripts/ci_unit_guard.py check --junit junit $ONLY \
-            --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
-            --disarmed "TENANT_LADDER_DATABASE_URL unset" \
-            --never-skip \
-              tests/unit/test_console_dependency_boundary.py \
-              tests/unit/test_signin_resolve_route.py \
-              tests/unit/test_seat_admin_proxy_route.py \
-              tests/unit/test_billing_proxy_route.py \
-            --must-run \
-              tests/unit/test_customer_console_sql.py \
-              tests/unit/test_customer_console_key_auth.py \
-              tests/unit/test_customer_console_api.py \
-              tests/unit/test_customer_console_router.py \
-              tests/unit/test_customer_console_lifecycle.py \
-              tests/unit/test_customer_console_resolve.py \
-              tests/unit/test_customer_console_payments.py \
-              tests/unit/test_customer_console_operator_list.py \
-              tests/unit/test_customer_console_member_write.py \
-              tests/unit/test_customer_console_org_rename.py \
-              tests/unit/test_customer_console_seat_overview.py \
-              tests/unit/test_customer_console_billing_reads.py \
-              tests/unit/test_customer_console_billing_checkout.py \
-              tests/unit/test_customer_console_tasks.py \
-              tests/unit/test_customer_console_stt_assemblyai.py \
-              tests/unit/test_customer_console_catalog.py \
-              tests/unit/test_customer_console_decide.py \
-              tests/unit/test_customer_console_try_voice.py \
-              tests/unit/test_catalog_health_r8.py \
-              tests/unit/test_customer_console_embed.py \
-              tests/unit/test_customer_console_aroh_app.py \
-              tests/unit/test_operator_identity.py \
-              tests/unit/test_operator_session.py \
-              tests/unit/test_operator_roles.py \
-              tests/unit/test_operator_admin.py \
-              tests/unit/test_operator_elevation.py \
-              tests/unit/test_operator_activity.py \
-              tests/unit/test_provider_keys.py \
-              tests/unit/test_operator_signin.py \
-              tests/unit/test_deployment_resolve_cache.py \
-              tests/unit/test_console_dependency_boundary.py \
-              tests/unit/test_signin_resolve_route.py \
-              tests/unit/test_seat_admin_proxy_route.py \
-              tests/unit/test_billing_proxy_route.py \
-              tests/unit/test_invite_console_mirror.py \
-              tests/unit/test_signup_provision_route.py \
-              tests/unit/test_signup_reconciler.py \
-              tests/unit/test_console_bootstrap.py \
-              tests/unit/test_billing_purchase_capability.py \
-              tests/unit/test_app_user_upserts.py \
-              tests/unit/test_org_provisioning.py \
-              tests/unit/test_org_provisioning_tenancy.py \
-              tests/unit/test_owner_bootstrap.py \
-              tests/unit/test_credential_tenant_threading.py \
-              tests/unit/test_h3_rls_promotion_rehearsal.py \
-              tests/unit/test_studio_templates_r8.py \
-              tests/unit/test_skill_packs_r8.py \
-              tests/unit/test_studio_hierarchy_r8.py \
-              tests/unit/test_action_broker_tenancy_r8.py \
-              tests/unit/test_org_settings_tenancy_r8.py \
-              tests/unit/test_user_settings_per_org_r8.py \
-              tests/unit/test_auth_me_shell_r8.py \
-              tests/unit/test_h6_identity_shadow.py \
-              tests/unit/test_member_of_org_read.py \
-              tests/unit/test_h6_rbac_rekey.py \
-              tests/unit/test_email_otp_token.py \
-              tests/unit/test_invited_member_promotion.py \
-              tests/unit/test_org_purge_console.py \
-              tests/unit/test_org_purge_tenant.py \
-              tests/unit/test_operator_door.py \
-              tests/unit/test_shell_needs_r8.py \
-              tests/unit/test_my_day_loop_r8.py \
-              tests/unit/test_chat_session_archive_r8.py \
-              tests/unit/test_projects_search_description_r8.py \
-              tests/unit/test_staging_minimise_r8.py \
-              tests/unit/test_studio_objects_r8.py \
-              tests/unit/test_studio_query_r8.py \
-              tests/unit/test_goal_record_r8.py \
-              tests/unit/test_studio_objects_batch_r8.py \
-              tests/unit/test_studio_state_machine_r8.py \
-              tests/unit/test_studio_expr.py \
-              tests/unit/test_studio_formula_r8.py \
-              tests/unit/test_studio_rollup_r8.py \
-              tests/unit/test_studio_lines_r8.py \
-              tests/unit/test_no_person_present_r8.py \
-              tests/unit/test_studio_packages_r8.py \
-              tests/unit/test_studio_publish_install_r8.py \
-              tests/unit/test_studio_package_install_r8.py \
-              tests/unit/test_studio_action_door_r8.py \
-              tests/unit/test_studio_catalog_r8.py \
-              tests/unit/test_studio_packages_versions_r8.py \
-              tests/unit/test_studio_package_routes_r8.py \
-              tests/unit/test_studio_package_delete_r8.py \
-              tests/unit/test_studio_chat_build_r8.py \
-              tests/unit/test_studio_route_gate_r8.py \
-              tests/unit/test_studio_publish_seed_r8.py \
-              tests/unit/test_workflows_author_gate_r8.py \
-              tests/unit/test_package_host_store_r8.py \
-              tests/unit/test_auth_me_install_features_r8.py \
-              tests/unit/test_shell_layout_r8.py \
-              tests/unit/test_package_disposal_r8.py \
-              tests/unit/test_auth_me_shell_install_r8.py \
-              tests/unit/test_auth_me_appearance_r8.py \
-              tests/unit/test_package_lifetime_r8.py \
-              tests/unit/test_package_field_values_r8.py \
-              tests/unit/test_agent_policies_r8.py \
-              tests/unit/test_package_expiry_loop_r8.py \
-              tests/unit/test_app_requests_r8.py \
-              tests/unit/test_workflows_lifecycle_rls_r8.py \
-              tests/unit/test_project_rules.py \
-              tests/unit/test_project_rules_propose.py \
-              tests/unit/test_crm_change_history.py \
-              tests/unit/test_crm_pipelines_native.py \
-              tests/unit/test_crm_lead_pipelines.py \
-              tests/unit/test_auto_park.py \
-              tests/unit/test_headless_turn_r8.py \
-              tests/unit/test_projects_status_set_read_r8.py \
-              tests/unit/test_email_signature_images_r8.py \
-              tests/unit/test_email_signature_settings_r8.py \
-              tests/unit/test_mcp_edge_attachment_r8.py \
-              tests/unit/test_mcp_edge_comment_edit_r8.py \
-              tests/unit/test_projects_status_slot_r8.py \
-              tests/unit/test_pm_project_updates_r8.py \
-              tests/unit/test_task_check_r8.py \
-              tests/unit/test_app_create_slug_r8.py \
-              tests/unit/test_apps_slug_per_org_r8.py \
-              tests/unit/test_app_audit_bound_r8.py \
-              tests/unit/test_app_delete_workspace_r8.py \
-              tests/unit/test_team_scope_isolation_r8.py \
-              tests/unit/test_staging_export.py
+            --lists-from-fences tests/fences.json
 
       # CIV-3. A selection run holds part of the timings. Only a full run
       # publishes them, or `.test_durations` would refresh from a fragment.
@@ -950,7 +903,11 @@ jobs:
       run:
         working-directory: workbench/control_plane
     steps:
+      # CIV-39. Depth 2 keeps both parents of the merge commit, so the
+      # Visual review step can diff HEAD^1 against HEAD.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-node@v4
         with:
@@ -988,10 +945,10 @@ jobs:
       # body: a line that starts "Visual review:", then the four captures or
       # "no UI change". It lives in THIS job because this job is a required
       # check, and "Changed areas" is not.
-      # * Python reads the body and the base sha from the event FILE into
+      # * Python reads the body from the event FILE into
       #   variables, so no text of the body becomes shell code.
-      # * The checkout is shallow, so the step fetches the one base commit.
-      #   When the base is absent or the diff cannot be read, the line is
+      # * The checkout is shallow, so the step fetches the one first parent.
+      #   When HEAD is no merge commit or the diff cannot be read, the line is
       #   required.
       # * With no event file (the local CI on the PC) there is no body, so
       #   the step passes.
@@ -1011,11 +968,13 @@ jobs:
           set -u
           if [ ! -f "${GITHUB_EVENT_PATH:-}" ]; then echo "no pull request event, so no body to check"; exit 0; fi
           ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; k = sys.argv[1]; print(((p.get("base") or {}).get("sha") if k == "base" else str(p.get("number") or "") if k == "number" else p.get("body")) or "")' "$1"; }
-          base="$(ev base)"
           frontend=true
-          if [ -n "$base" ] \
-            && { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$base" 2>/dev/null; } \
-            && files="$(git diff --name-only "$base" HEAD 2>/dev/null)"; then
+          # CIV-39 (D218). The PR's own change is HEAD^1..HEAD on the merge ref.
+          # A two-dot diff from the event base also counted what main gained
+          # after the event (PR 2213). The checkout is shallow, so the step
+          # fetches the one first parent when it is absent. A HEAD that is not
+          # a merge commit, or a failed diff, keeps the line required.
+          if parent="$(git rev-parse -q --verify HEAD^2 >/dev/null 2>&1 && git rev-parse -q --verify HEAD^1 2>/dev/null)"             && { git cat-file -e "$parent^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$parent" 2>/dev/null; }             && files="$(git diff --name-only HEAD^1 HEAD 2>/dev/null)"; then
             grep -q '^workbench/control_plane/src/' <<< "$files" || frontend=false
           fi
           $frontend || { echo "no change under workbench/control_plane/src"; exit 0; }
@@ -1114,7 +1073,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        # CIV-29d: a partial selection uses fewer shards, and `[]` skips the job.
+        shard: ${{ fromJSON(needs.changes.outputs.e2e_shards || '[1,2,3]') }}
     # ── A push copy of this job must never come back ─────────────────────────
     #
     # This workflow has no `push` trigger (see the note at the top). The `if:`
@@ -1130,7 +1090,7 @@ jobs:
     # 2026-10-19: and only when the PR touches the control plane. A skipped
     # e2e frees three runners for the other PRs.
     needs: changes
-    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
+    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') && needs.changes.outputs.e2e_shards != '[]'"
     # A hung dev server must cost minutes, not the runner's six-hour default.
     #
     # 🔴 THE CAP WAS THE FAULT, NOT THE CODE. It was 20 minutes, set when the
@@ -1143,11 +1103,22 @@ jobs:
     # 40 is about twice the measured job. A suite that keeps growing will
     # reach it again. Then split the suite, or raise the cap with a new count.
     timeout-minutes: 40
+    # CIV-29a: `actions: read` lets the compare step list and download main's nightly result.
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: workbench/control_plane
     steps:
       - uses: actions/checkout@v5
+
+      # ⚠️ After the checkout, never before it: the job's default folder
+      # (workbench/control_plane) exists only after the checkout, and a run
+      # step before it fails the whole shard in one second (PR 2181, first run).
+      - name: What blocks a merge
+        run: |
+          echo "The browser suite is not a required check. Required checks: see Lint, Unit tests, Backup/restore rehearsal, Migration ladder replay, Frontend, Operator console, Secret scan." >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v4
         with:
@@ -1172,13 +1143,52 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser suite
+        id: suite
         # The watchdog ends a run whose dev server stops answering. See the
-        # header of scripts/e2e_watchdog.sh. The run's exit code passes through.
+        # header of scripts/e2e_watchdog.sh. CIV-29a (D218): this step hands the
+        # run's exit code to the next step, which fails the job on a NEW failure.
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: e2e-result.json
+          # CIV-29d: empty means every spec. The word split of the list is on purpose.
+          SPECS: ${{ needs.changes.outputs.e2e_files }}
+          TOTAL: ${{ needs.changes.outputs.e2e_total || 3 }}
         run: |
-          npx playwright test --project=ci --shard=${{ matrix.shard }}/3 &
+          npx playwright test --project=ci --reporter=list,json --shard=${{ matrix.shard }}/"$TOTAL" $SPECS &
           pw=$!
           bash ../../scripts/e2e_watchdog.sh http://127.0.0.1:3101/chat "$pw" &
-          wait "$pw"
+          code=0
+          wait "$pw" || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      # CIV-29a (D218): 36 of 70 red runs failed ONLY this suite, and it is not a
+      # required check. A failure that the newest nightly on main also has is
+      # inherited, and it does not fail the PR. A NEW failure still fails the job.
+      # No readable main result keeps the old rule: any failure fails.
+      - name: Compare with main's newest nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARD: ${{ matrix.shard }}
+        # ⚠️ Trust only a nightly that this repo started: a schedule or a
+        # dispatch. The repo is public, and a fork PR from its own `main` also
+        # has head branch `main`, so `--branch main` alone lets a fork plant a
+        # result in which every test "fails" (Opus review, 2026-11-12). A fork
+        # cannot make a schedule or a dispatch event here.
+        # All three shards are read and joined, because a spec file can move
+        # to another shard when the test count changes.
+        run: |
+          rm -rf ../../.e2e-main && mkdir -p ../../.e2e-main
+          run_id=$(gh run list --workflow e2e-nightly.yml --branch main --status completed --limit 20 \
+            --json databaseId,conclusion,event --jq '[.[] | select((.event == "schedule" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].databaseId' || true)
+          mains=()
+          if [ -n "$run_id" ]; then
+            for s in 1 2 3; do
+              gh run download "$run_id" --name "e2e-nightly-result-$s" --dir "../../.e2e-main/$s" || true
+              [ -f "../../.e2e-main/$s/e2e-result.json" ] && mains+=(--main "../../.e2e-main/$s/e2e-result.json")
+            done
+          fi
+          echo "Shard $SHARD compares with nightly run ${run_id:-none} (${#mains[@]} report args)."
+          python3 ../../scripts/e2e_inherited.py --pr e2e-result.json "${mains[@]}" \
+            --exit-code "${{ steps.suite.outputs.code }}" --summary "$GITHUB_STEP_SUMMARY"
 
       # ⚠️ Without this a red run is a wall of text and no screenshot, and an
       # undiagnosable gate is one somebody deletes. The report carries the

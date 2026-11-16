@@ -172,7 +172,8 @@ ANSWER_PATHS = ("archive-approval", "agent-runs/")
 #: answer, so it answers no question that waits. It refuses the answer to an
 #: archive request (D-OP-13) and a run with no person, before any read.
 #: `test_agent_answer_tools.py` holds it.
-NAMED_ANSWER_TOOLS = frozenset({"answer_decision", "change_agent_answer"})
+NAMED_ANSWER_TOOLS = frozenset({
+    "answer_decision", "change_agent_answer", "answer_agent_question"})
 
 #: SW-43c. The run paths that ONE module may name, each whole: the read of one
 #: run, which names the question and the answer on the card, and the two
@@ -184,7 +185,13 @@ NAMED_RUN_PATHS: dict[str, frozenset[str]] = {
         "agent-runs/{rid}/answer/withdraw",
         "agent-runs/{rid}/answer/replace",
     }),
+    # WS-55 EA-18d (spec §12.8): `answer_agent_question` reads one run and posts
+    # ONE `prompt` to its activities, after a card. The server decides who may
+    # answer (`may_answer_run`). It never names `archive-approval`.
+    "question_answers.py": frozenset({"agent-runs/{rid}", "agent-runs/{rid}/activities"}),
 }
+
+ACTIVITIES_MODULE = "question_answers.py"
 
 #: The whole path at a hit, up to the end of its string.
 _RUN_PATH = re.compile(r"agent-runs/[^\"'\s`]*")
@@ -259,3 +266,16 @@ def test_the_list_is_a_read_the_agent_offers_and_the_instructions_never_claim_to
     text = (agent / "instructions.md").read_text(encoding="utf-8")
     assert "waiting_agent_requests" in text
     assert "No tool of yours can" in text and "Give the link" in text
+
+
+def test_the_one_module_that_posts_an_answer_reaches_two_routes_only() -> None:
+    """EA-18d. `question_answers.py` reads one run and posts to its activities,
+    and it never names the archive approval."""
+    lines = (SKILL_DIR / ACTIVITIES_MODULE).read_text(encoding="utf-8").splitlines()
+    assert not [ln for ln in lines if "archive-approval" in ln]
+    code = [ln for ln in lines if "agent-runs/" in ln and ('f"' in ln)]
+    assert code, "the module no longer reaches a run"
+    for ln in code:
+        assert "agent-runs/{rid}" in ln, ln
+        assert ln.strip().startswith(
+            ("payload = (await get(", "again = ((await get(", "written = await post(")), ln

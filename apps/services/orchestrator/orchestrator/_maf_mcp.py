@@ -107,6 +107,7 @@ from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger, get_settings
 from acb_common.secret_shapes import REDACTION_SHAPES
+from acb_skills.permission_policy import MCP_HINT_NAMES
 
 if TYPE_CHECKING:
     from agent_framework import FunctionInvocationContext
@@ -149,7 +150,8 @@ LOADER_ACTIONS = ("list", "load", "unload")
 #: The longest reason that a log line carries.
 _REASON_CHARS = 80
 #: The MCP hint names, from the ``annotations`` of one tool (MCP 2025-03-26).
-HINT_NAMES = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+#: ``acb_skills.permission_policy`` holds the one copy (STU-B1b-1).
+HINT_NAMES = MCP_HINT_NAMES
 #: The longest server description that a card carries.
 _DESCRIPTION_CHARS = 1000
 #: Seconds for ``on_unauthorized`` to mark ONE row (rule 9). The run waits
@@ -709,7 +711,23 @@ def _names_held(agent: Any) -> set[str]:
     for tool in getattr(agent, "mcp_tools", None) or []:
         held |= {tool_name(f) for f in getattr(tool, "functions", None) or []}
         held |= {tool_name(f) for f in getattr(tool, "_functions", None) or []}
+    held |= _finder_names(agent)
     return {n for n in held if n}
+
+
+def _finder_names(agent: Any) -> set[str]:
+    """WS-67 TS-2a: the name of ``find_tools`` when a ``FindToolsProvider`` of
+    the run is on *agent*. That provider adds the tool in ``before_run``, so
+    ``default_options`` never holds it, and a server tool of the same name
+    would fail the turn. Only a run with ``TOOL_SEARCH_ORGS`` on holds the
+    provider, so a run with the flag off reads nothing new here."""
+    try:
+        from acb_skills.tool_guard import tool_name
+        from acb_skills.tool_packs import FindToolsProvider
+    except ImportError:  # pragma: no cover - acb_skills ships with the platform
+        return set()
+    return {tool_name(p.finder.tool) for p in getattr(agent, "context_providers", None) or []
+            if isinstance(p, FindToolsProvider)}
 
 
 def _choose_disclosure(tool: Any) -> None:

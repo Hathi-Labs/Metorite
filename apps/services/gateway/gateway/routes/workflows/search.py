@@ -48,6 +48,7 @@ def collect_catalog_entries() -> list[CatalogEntry]:
     """Every searchable capability, from the registries the runtime uses."""
     from gateway.routes.workflows.catalog import (
         NODE_TYPE_META,
+        UNOFFERED_NODE_TYPES,
         _agent_entries,
         _integration_entries,
     )
@@ -101,7 +102,9 @@ def collect_catalog_entries() -> list[CatalogEntry]:
                 category="integration",
             )
         )
-    return entries
+    # WFC-4a-1: the offer leaves out a node type that cannot run or has no
+    # form. The palette search and the Copilot shortlist read this list.
+    return [e for e in entries if not (e.kind == "node" and e.key in UNOFFERED_NODE_TYPES)]
 
 
 async def _module_entries() -> list[CatalogEntry]:

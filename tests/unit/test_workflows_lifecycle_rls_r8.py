@@ -84,8 +84,9 @@ from gateway.routes.workflows.engine.handlers import NodeExecutionError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
-from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
+from tests.unit import _r8_lists as r8_lists
+from tests.unit._tenant_ladder import tenant_engine_scope
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GENERATED = _ROOT / "infra" / "postgres" / "generated"
@@ -1421,5 +1422,4 @@ def test_a_schedule_never_starts_a_workflow_with_a_task_node(promoted, monkeypat
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard():
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_workflows_lifecycle_rls_r8.py" in workflow
+    assert "tests/unit/test_workflows_lifecycle_rls_r8.py" in r8_lists.must_run()

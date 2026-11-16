@@ -49,7 +49,7 @@ import {
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
-import { takeHandoff } from "@/lib/chatStream";
+import { RUN_PHASE_EVENT, takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
@@ -411,7 +411,14 @@ async function translateAndPersistStream(
           progressLines.push(name);
           if (progressLines.length > 20) progressLines.shift();
           enqueue({ type: "progress", name });
-          out = { type: "tool_start", id: ev.toolCallId, name, args: {} };
+          // CSY-10: the server's own stamp of an MCP tool (name and label, never
+          // an argument), passed on as it came.
+          const mcp = ev.mcp as { server?: unknown; label?: unknown } | undefined;
+          out = {
+            type: "tool_start", id: ev.toolCallId, name, args: {},
+            ...(mcp && typeof mcp.server === "string" && typeof mcp.label === "string"
+              ? { mcp: { server: mcp.server, label: mcp.label } } : {}),
+          };
         } else if (t === "TOOL_CALL_ARGS") {
           const id = String(ev.toolCallId ?? "");
           toolArgs[id] = (toolArgs[id] ?? "") + String(ev.delta ?? "");
@@ -472,6 +479,12 @@ async function translateAndPersistStream(
           out = { type: "state", snapshot: ev.snapshot ?? {} };
         } else if (t === "STATE_DELTA") {
           out = { type: "state_delta", delta: ev.delta ?? [] };
+        } else if (t === "CUSTOM" && ev.name === RUN_PHASE_EVENT) {
+          // CS-3b: the server's phase of the run (`acb_skills.run_phase`).
+          // It is forwarded as a custom event, and never saved: it does not
+          // join `customEvents`. The client draws a fixed word for a known
+          // name and ignores any other (`phaseWordOf`).
+          out = { type: "custom", name: RUN_PHASE_EVENT, value: ev.value ?? null };
         } else if (t === "CUSTOM") {
           const cev = { name: String(ev.name ?? ""), value: ev.value ?? null };
           // A dispatched browser action (H-164) is a side effect, not part
@@ -479,7 +492,9 @@ async function translateAndPersistStream(
           // The count of segments now, 0 before the first text, so the
           // saved card keeps its place in the turn (`genUiFlow`,
           // lib/chatPlacement.ts). The live hook stamps it the same way.
-          if (cev.name !== "frontend_tool") {
+          // HRD-6: the line of a slow tool (`progress`) shows only while the
+          // tool runs. The saved message never holds it (`chat_fold.py`).
+          if (cev.name !== "frontend_tool" && cev.name !== "progress") {
             customEvents.push({ ...cev, segmentCutoff: segments.length });
           }
           out = { type: "custom", name: cev.name, value: cev.value };
@@ -545,6 +560,10 @@ async function translateAndPersistStream(
             }
           }
           out = { type: "done", run_id: ev.runId || ev.run_id };
+          // RESUME-3a: a park ends the run, and its card still waits. The
+          // chat then shows no "Done" (§4.12.4 item 5). Every other frame is
+          // as before.
+          if (ev.parked === true) out.parked = true;
         } else if (t === "RUN_ERROR") {
           // The server names the failure (`acb_llm.run_errors`). Pass its
           // code and ref through, and never derive one from the text here.

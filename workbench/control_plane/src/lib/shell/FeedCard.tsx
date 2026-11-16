@@ -41,7 +41,6 @@
  * Fences: `feed.test.ts`, `feedState.test.ts`, `feedHandled.test.ts` and
  * `myDayPage.test.ts`.
  */
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
@@ -65,6 +64,8 @@ import {
   type FeedAct,
   type FeedAnswer,
   type FeedCard as Card,
+  isAgentQuestionsCard,
+  isExpandAct,
   type HandledEntry,
   type Visit,
   actLeavesCard,
@@ -107,9 +108,12 @@ import {
   runMenuAct,
   stateItem,
 } from "./feedState";
+import dynamic from "next/dynamic";
+
 import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
+import { useMyDayGo } from "./myDayGo";
 import RemindersBand from "./RemindersBand";
 import { bandCount, bandRows } from "./reminderBand";
 import { isReminderKind } from "./reminderKinds";
@@ -124,6 +128,12 @@ import {
   subscribeActs,
 } from "./needsActs";
 import { joinNeedsPoll } from "./ShellBell";
+
+/** EA-18e. The question list loads when a card opens it, not with My Day. */
+const QuestionsInCard = dynamic(() => import("./QuestionsInCard"), {
+  ssr: false,
+  loading: () => <Skeleton className="mt-2 h-16 w-full basis-full" />,
+});
 
 const DANGER = accentForHue("red");
 
@@ -693,6 +703,7 @@ export function FeedColumn({
         error={feed.menuErrors[card.signal_id] ?? card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
         onAct={(a, from) => feed.act(card, a, from)}
         onMenu={(choice) => feed.menu(card, choice)}
+        renderExpand={(c, close) => (isAgentQuestionsCard(c) ? <QuestionsInCard onChanged={feed.refresh} onClose={close} /> : null)}
         layout="row"
       />
     </div>
@@ -951,12 +962,14 @@ export function phoneMenuItems(
   onAct: (act: FeedAct) => void,
   go: (href: string) => void,
   onMenu?: (choice: MenuChoice) => void,
+  /** EA-18e. An act that opens inside its card runs `onAct`, as a tap does. */
+  expandHere: (act: FeedAct) => boolean = () => false,
 ): CtxItem[] {
   const items: CtxItem[] = acts.map((a) => ({
     kind: "item",
     label: a.label,
     icon: themedIcon(a.way === "tap" ? (a.act === "done" ? "Check" : "CheckCheck") : "ArrowRight"),
-    onSelect: () => (a.way === "tap" ? onAct(a) : go(a.href ?? card.href)),
+    onSelect: () => (a.way === "tap" || expandHere(a) ? onAct(a) : go(a.href ?? card.href)),
   }));
   const menu = onMenu ? cardMenuItems(onMenu) : [];
   return items.length > 0 && menu.length > 0 ? [...items, { kind: "sep" }, ...menu] : [...items, ...menu];
@@ -964,7 +977,9 @@ export function phoneMenuItems(
 
 /**
  * The phone's "···" menu of a feed row. It mounts only while it is open, so
- * `useRouter` runs inside the app, and a static render never calls it.
+ * `useRouter` runs inside the app, and a static render never calls it. An
+ * open act goes through `useMyDayGo`, so a task opens in My Day's panel
+ * while that flag is on (PK-1), as a click on the row does.
  */
 function PhoneRowMenu({
   x,
@@ -973,6 +988,7 @@ function PhoneRowMenu({
   acts,
   onAct,
   onMenu,
+  expandHere,
   onClose,
 }: {
   x: number;
@@ -981,15 +997,16 @@ function PhoneRowMenu({
   acts: readonly FeedAct[];
   onAct: (act: FeedAct) => void;
   onMenu?: (choice: MenuChoice) => void;
+  expandHere?: (act: FeedAct) => boolean;
   onClose: () => void;
 }) {
-  const router = useRouter();
+  const go = useMyDayGo();
   return (
     <ContextMenu
       x={x}
       y={y}
       autoFocus
-      items={phoneMenuItems(card, acts, onAct, (href) => router.push(href), onMenu)}
+      items={phoneMenuItems(card, acts, onAct, go, onMenu, expandHere)}
       onClose={onClose}
     />
   );
@@ -1012,6 +1029,7 @@ export function FeedCard({
   onAct,
   onMenu,
   layout = "card",
+  renderExpand,
 }: {
   card: Card;
   /** `null` before the client clock exists: the card then prints no time. */
@@ -1028,11 +1046,32 @@ export function FeedCard({
    * one meta line (source and why), and the acts at the row's end.
    */
   layout?: "card" | "row";
+  /**
+   * EA-18e. What an expand act (`isExpandAct`) opens under the card. The
+   * column gives it. With none, the act stays the link it was sent as.
+   */
+  renderExpand?: (card: Card, close: () => void) => React.ReactNode;
 }) {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   // Which "···" opened the menu: the phone's holds the row's acts too.
   const [menuPhone, setMenuPhone] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useRef<HTMLElement | null>(null);
+  // A card that leaves with its list open (the last answer) must not drop
+  // focus to the page body: it goes to the column's heading.
+  useEffect(() => {
+    if (!expanded) return;
+    return () => {
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          document.querySelector<HTMLElement>("[data-leave-focus]")?.focus();
+        }
+      });
+    };
+  }, [expanded]);
+  const expandHere = (a: FeedAct) => !!renderExpand && isExpandAct(card, a);
+  const expandedId = `feed-expand-${safeId(card.signal_id)}`;
   const time = nowMs === null ? "" : cardTime(card, nowMs);
   const acts = drawnActs(card).filter((a) => !marked || !actSpent(a, marked));
   const mark = stateMark(card);
@@ -1114,7 +1153,7 @@ export function FeedCard({
         data-testid={testId}
         data-home-card=""
         data-feed-row=""
-        className="flex min-w-0 items-center gap-3 px-3 py-2.5"
+        className="flex min-w-0 flex-wrap items-center gap-3 px-3 py-2.5"
       >
         <span aria-hidden className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${appHue(card.app).soft} ${appHue(card.app).text}`}>
           <Icon name={feedAppIcon(card.app)} size={15} />
@@ -1210,6 +1249,24 @@ export function FeedCard({
                 >
                   {a.label}
                 </Button>
+              ) : expandHere(a) ? (
+                <Button
+                  key={a.id}
+                  variant={i === 0 ? "secondary" : "ghost"}
+                  size="sm"
+                  icon={expanded ? "ChevronUp" : "ChevronDown"}
+                  data-feed-act={i}
+                  data-feed-expand=""
+                  aria-expanded={expanded}
+                  aria-controls={expandedId}
+                  aria-label={`${a.label}: ${card.title}`}
+                  onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
+                >
+                  {a.label}
+                </Button>
               ) : (
                 <Button
                   key={a.id}
@@ -1247,12 +1304,16 @@ export function FeedCard({
             x={menuAt.x}
             y={menuAt.y}
             card={card}
-            acts={phoneActs}
-            onAct={(a) => onAct(a, opener.current ?? document.body)}
+            acts={phoneActs.map((a) => (expanded && expandHere(a) ? { ...a, label: "Hide answers" } : a))}
+            onAct={(a) => (expandHere(a) ? setExpanded((v) => !v) : onAct(a, opener.current ?? document.body))}
+            expandHere={expandHere}
             onMenu={withMenu ? onMenu : undefined}
             onClose={closeMenu}
           />
         ) : null}
+        <div id={expandedId} className="basis-full empty:hidden" hidden={!expanded}>
+          {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
+        </div>
       </section>
     );
   }
@@ -1290,6 +1351,24 @@ export function FeedCard({
               >
                 {a.label}
               </Button>
+            ) : expandHere(a) ? (
+              <Button
+                key={a.id}
+                variant={i === 0 ? "primary" : "secondary"}
+                size="sm"
+                icon={expanded ? "ChevronUp" : "ChevronDown"}
+                data-feed-act={i}
+                data-feed-expand=""
+                aria-expanded={expanded}
+                aria-controls={expandedId}
+                aria-label={`${a.label}: ${card.title}`}
+                onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
+              >
+                {a.label}
+              </Button>
             ) : (
               <Button
                 key={a.id}
@@ -1305,6 +1384,9 @@ export function FeedCard({
           )}
         </div>
       ) : null}
+      <div id={expandedId} className="px-2 empty:hidden" hidden={!expanded}>
+        {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
+      </div>
       {error ? (
         <p role="alert" className={`px-2 pb-1 text-xs ${DANGER.text}`}>
           {error}

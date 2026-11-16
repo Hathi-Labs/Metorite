@@ -2764,12 +2764,15 @@ def _refuse_claim(code: str, message: str) -> NoReturn:
 
 class ClaimIn(BaseModel):
     """``POST /projects/tasks/{id}/claim``. The body is optional (CIV-14a).
-    An agent may send ``external_link``, an https link to its session. The
-    tenant and the member never come from this body (R5)."""
+    An agent may send ``external_link``, an https link to its session.
+    SW-7b: it may also send ``agent_label``, the display name of its session,
+    and a person's body that names one is 422. The tenant and the member
+    never come from this body (R5)."""
 
     model_config = ConfigDict(extra="forbid")
 
     external_link: str | None = Field(default=None, max_length=2_048)
+    agent_label: str | None = Field(default=None, max_length=200)
 
 
 #: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
@@ -2857,6 +2860,8 @@ async def claim_task(
     from gateway.routes.projects import agent_runs
 
     link = agent_runs.check_run_link(payload.external_link)
+    # SW-7b: the display label of the agent's session. A person's is 422.
+    label = agent_runs.agent_label_of(user, payload.agent_label)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         # 1. The visibility load answers 404 for a task the caller cannot see.
@@ -2895,7 +2900,7 @@ async def claim_task(
         # the claim keeps that order (O-M9). Its place after the key does not
         # matter: no run writer takes an assignee key. A refusal below rolls
         # the run back with the claim. None for a member.
-        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link)
+        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link, label)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new

@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import codecs
 import contextlib
 import hashlib
@@ -93,6 +94,20 @@ from typing import Any
 
 from acb_auth import agent_oauth
 from acb_common import app_manifests, get_logger, get_settings
+
+# AD-10 and §9.4. The wrap rule of an answer lives in acb_common.door_values,
+# once. This module imports it, with a few private names kept, and stays the ONE mapping
+# module (EA3-9). Fence: tests/unit/test_door_values_single_copy.py.
+from acb_common.door_values import KEY_RE as _KEY_RE
+from acb_common.door_values import (
+    SECRET_WORDS,
+    door_value,
+    plain_shape,
+    untrusted,
+)
+from acb_common.door_values import compact_json as _compact
+from acb_common.door_values import is_number as _number
+from acb_common.image_probe import RASTER_MIMES, looks_like_svg, sniff_image_mime
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
@@ -108,6 +123,7 @@ from agent_edge.gateway_client import (
 )
 from agent_edge.gateway_client import get as gateway_get
 from agent_edge.gateway_client import write as gateway_write
+from agent_edge.gateway_client import write_file as gateway_write_file
 
 _log = get_logger("agent_edge.tools")
 
@@ -338,6 +354,10 @@ TEXT_QUESTION_WAITS = (
     " with its run_id and wait_seconds 20.")
 #: A 409 of the start: the key started a run on another task.
 TEXT_KEY_USED = "This idempotency_key started another run. Send a new key."
+#: CIV-14b fix round 3. A 409 of the question of ``ask_on_task`` when the
+#: start replayed the run of the key, and that run has ended. An example is
+#: the run that a refused question released.
+TEXT_KEY_RUN_ENDED = "This idempotency_key started a run that has ended. Send a new key."
 #: A 409 of ``request_task_archive`` (EA-6g): a question of the run waits,
 #: the run is stopping, or the key wrote another activity.
 TEXT_ARCHIVE_CONFLICT = (
@@ -519,13 +539,6 @@ class GatewayUnauthorized(Exception):
     """The gateway answered 401. The transport answers the MCP 401 (§9.6)."""
 
 
-def untrusted(value: Any) -> dict[str, str] | None:
-    """``{"untrusted_text": value}``, or ``None`` for a null (§9.4)."""
-    if value is None:
-        return None
-    return {"untrusted_text": value if isinstance(value, str) else str(value)}
-
-
 def error_result(text: str, retry_after: int | None = None) -> dict[str, Any]:
     """A refusal. MCP-G10: with *retry_after* it also holds the seconds to
     wait, in ``structuredContent`` and in a second text block, so a client
@@ -674,6 +687,20 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         raise ToolError(TEXT_BUSY) from None
     except RouteRefused:
         raise ToolError(TEXT_BAD_REQUEST) from None
+    return _written(answer, not_found, texts=texts, details=details, coded=coded,
+                    prefixes=prefixes, coded_statuses=coded_statuses)
+
+
+def _written(answer: Answer, not_found: str, *,
+             texts: Mapping[int, str] | None = None,
+             details: Mapping[tuple[int, str], str] | None = None,
+             coded: Mapping[str, str | Callable[[Mapping[str, Any]], str]] | None = None,
+             prefixes: Mapping[tuple[int, str], str] | None = None,
+             coded_statuses: tuple[int, ...] = (422,),
+             ) -> tuple[int, Any]:
+    """The mapping of the answer of one write, as :func:`_write` gives it.
+    CIV-14b: the file write of ``upload_task_image`` sends its own request
+    and maps its answer here, so the edge holds one write mapping."""
     detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
     if details and isinstance(detail, str) and (answer.status, detail) in details:
         raise ToolError(details[(answer.status, detail)])
@@ -806,9 +833,6 @@ def _next_cursor(ctx: Context, tool: str, args: Mapping[str, Any], *,
 
 _ID_RE = re.compile(_UUID_PATTERN)
 
-#: A key-shaped string: a field name, a category, a link type.
-_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
-
 #: A member address: the shape of ``acb_common/tool_refusals.py`` (``_EMAIL``),
 #: with caps. The domain has at most 4 labels (fix round 2). With
 #: :data:`MAX_ADDRESS_CHARS` it bounds what a planted address can carry. A
@@ -834,14 +858,6 @@ _PREFIX_RE = re.compile(r"[A-Za-z0-9_-]{1,16}")
 #: An IANA zone name. The API checks a zone with ``ZoneInfo``, and the column
 #: has no CHECK, so the edge checks the shape too (§9.1).
 _TIMEZONE_RE = re.compile(r"[A-Za-z0-9_+/-]{1,64}")
-
-
-def _number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _compact(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _str_or_none(value: Any) -> str | None:
@@ -1171,6 +1187,34 @@ CHECK_TEXTS: Mapping[str, tuple[str, str]] = {
 }
 
 
+#: CIV-14b fix round 1. The input of a question or a line that names images.
+IMAGES_INPUT = "attachment_ids"
+
+#: CIV-14b fix round 1. The image sentences of a tool text, each filled at
+#: ``tools/list`` by ``agent_oauth.image_upload_allowed`` of the caller's
+#: organization (:meth:`Tool.describe`). While the organization is off
+#: ``mcp_image_upload_orgs``, an agent reads no image sentence and no
+#: :data:`IMAGES_INPUT`, and :func:`offered` hides ``upload_task_image``.
+IMAGE_TEXTS: Mapping[str, tuple[str, str]] = {
+    "[[ASK_IMAGES]]": (
+        " To show a capture, upload it with upload_task_image and send its id in"
+        " attachment_ids.", ""),
+    "[[LINE_IMAGES]]": (
+        " attachment_ids shows up to 4 images of upload_task_image with a"
+        " thought, an action or an elicitation, and never with a response or an"
+        " error.", ""),
+}
+
+
+def image_text(text: str, organization_id: object) -> str:
+    """*text* with each marker of :data:`IMAGE_TEXTS` filled for the
+    organization (CIV-14b fix round 1)."""
+    on = agent_oauth.image_upload_allowed(organization_id)
+    for mark, (yes, no) in IMAGE_TEXTS.items():
+        text = text.replace(mark, yes if on else no)
+    return text
+
+
 def session_text(text: str) -> str:
     """*text* with each marker of :data:`SESSION_TEXTS` filled by the
     session flag (SW-7), then each marker of :data:`CHECK_TEXTS` filled by
@@ -1258,35 +1302,44 @@ class Tool:
     #: ``agent_task_checks_enabled`` is on, read through
     #: ``agent_oauth.task_checks_enabled``.
     checks: bool = False
+    #: CIV-14b fix round 1. True for ``upload_task_image``. It shows only for
+    #: an organization of ``agent_oauth.image_upload_allowed`` (:func:`offered`).
+    images: bool = False
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self, organization_id: object = None) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool. SW-23: while the Check flag
-        is off, the ``check`` input of a task write is not listed."""
+        is off, the ``check`` input of a task write is not listed. CIV-14b
+        fix round 1: for an organization off ``mcp_image_upload_orgs``,
+        :data:`IMAGES_INPUT` and the image sentences are not listed."""
+        images = agent_oauth.image_upload_allowed(organization_id)
         return {
             "name": self.name,
             "title": self.title,
-            "description": session_text(self.description + (
+            "description": session_text(image_text(self.description, organization_id) + (
                 write_limit_line() if self.method != "GET" else "")),
-            "inputSchema": shown_inputs(self.input_schema),
+            "inputSchema": shown_inputs(self.input_schema, images=images),
             "outputSchema": dict(self.output_schema),
             "annotations": {"title": self.title, **self.annotations},
         }
 
 
-def shown_inputs(schema: Mapping[str, Any]) -> dict[str, Any]:
+def shown_inputs(schema: Mapping[str, Any], *, images: bool = True) -> dict[str, Any]:
     """*schema* as ``tools/list`` shows it (SW-23). While the Check flag is
     off, the :data:`CHECK_INPUT` input is left out, at the top and in the
     items of ``updates`` (``update_tasks``). The static schema keeps it, so a
-    call that still sends it gets :data:`TEXT_CHECKS_OFF` from the tool."""
-    if agent_oauth.task_checks_enabled():
-        return dict(schema)
+    call that still sends it gets :data:`TEXT_CHECKS_OFF` from the tool.
+    CIV-14b fix round 1: with *images* false, :data:`IMAGES_INPUT` is left
+    out too, and a call that still sends it gets the refusal of the gateway."""
+    hidden = set() if agent_oauth.task_checks_enabled() else {CHECK_INPUT}
+    if not images:
+        hidden.add(IMAGES_INPUT)
     properties = schema.get("properties")
-    if not isinstance(properties, Mapping):
+    if not hidden or not isinstance(properties, Mapping):
         return dict(schema)
-    kept: dict[str, Any] = {k: v for k, v in properties.items() if k != CHECK_INPUT}
+    kept: dict[str, Any] = {k: v for k, v in properties.items() if k not in hidden}
     updates = kept.get("updates")
     if isinstance(updates, Mapping) and isinstance(updates.get("items"), Mapping):
-        kept["updates"] = {**updates, "items": shown_inputs(updates["items"])}
+        kept["updates"] = {**updates, "items": shown_inputs(updates["items"], images=images)}
     return {**schema, "properties": kept}
 
 
@@ -2836,6 +2889,9 @@ RUN_STATUSES: tuple[str, ...] = (
 #: A run is open in these statuses (EA12-6).
 OPEN_RUN_STATUSES: frozenset[str] = frozenset(
     {"created", "in_progress", "awaiting", "stopping"})
+#: CIV-14b fix round 3. A run has ended in these statuses. ``stale`` is an
+#: open run that is quiet, so it is in neither set.
+ENDED_RUN_STATUSES: frozenset[str] = frozenset(RUN_STATUSES) - OPEN_RUN_STATUSES - {"stale"}
 #: The types an agent writes. ``prompt`` is a person's (§12.1).
 AGENT_ACTIVITY_TYPES: tuple[str, ...] = (
     "thought", "action", "response", "elicitation", "error")
@@ -2905,6 +2961,8 @@ _RUN_SCHEMA = _object({
     "open_question": {"anyOf": [_QUESTION_SCHEMA, {"type": "null"}]},
     "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
     "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
+    # SW-7b. The name that an agent gave its session. An agent wrote it, so (U).
+    "agent_label": _UNTRUSTED_OR_NULL,
     "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
@@ -3063,7 +3121,9 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
 
     A database CHECK shapes ``status``, and the gateway derives ``state``.
     The link is (S). The question and the line hold free text, so (U).
+    SW-7b: ``agent_label`` is the name that an agent gave its session, so (U).
     """
+    label = row.get("agent_label")
     out = {
         "id": str(row.get("id")),
         "task_id": str(row.get("task_id")),
@@ -3078,6 +3138,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "open_question": _question(row.get("open_elicitation")),
         "latest_line": _line(row.get("latest_ephemeral")),
         "stranded": _stranded(row.get("stranded")),
+        "agent_label": untrusted(label) if isinstance(label, str) else None,
         "waiting": _waiting(row.get("waiting")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
@@ -5115,6 +5176,212 @@ GET_ATTACHMENT = Tool(
 )
 
 
+# ── upload_task_image (CIV-14b, external_agent_access.md §12.9) ─────────────
+
+#: The largest image that ``upload_task_image`` sends, after the decode: the
+#: cap of ``get_attachment`` too, 3.75 MiB (``agent_oauth.AGENT_IMAGE_MAX_BYTES``).
+UPLOAD_IMAGE_MAX_BYTES = agent_oauth.AGENT_IMAGE_MAX_BYTES
+#: The longest ``content_base64``: the 5 MiB of base64 of the largest image,
+#: and room for a line break each 64 characters, as CRLF. The decode decides.
+UPLOAD_BASE64_MAX = 5_500_000
+#: The file endings of an SVG, which the tool refuses before any read.
+UPLOAD_SVG_SUFFIXES: tuple[str, ...] = (".svg", ".svgz")
+#: The keys of the result of ``upload_task_image``.
+UPLOAD_KEYS: tuple[str, ...] = ("attachment", "created")
+
+TEXT_IMAGE_EMPTY = "content_base64 holds no bytes. Send the base64 of the image file."
+TEXT_IMAGE_BAD_BASE64 = (
+    "content_base64 is not valid base64. Send the standard base64 of the image"
+    " file only, with no data: prefix.")
+TEXT_IMAGE_TOO_LARGE = (
+    "The image is larger than 3.75 MB. Send a smaller capture, or crop it.")
+TEXT_IMAGE_TYPE = (
+    "The file is not a PNG, JPEG, GIF or WebP image. Its first bytes decide its"
+    " type, and the file name does not.")
+TEXT_IMAGE_SVG = (
+    "SVG files are not accepted, because an SVG can hold a script. Export the"
+    " image as a PNG and send that.")
+TEXT_IMAGES_OFF = "Images from agents are turned off in this organization."
+TEXT_IMAGE_BUDGET = (
+    "The image does not fit: a task holds 10 MB of files at most. Ask the member"
+    " to remove a file from the task, or send a smaller image.")
+TEXT_IMAGE_NAME = (
+    "The file name is not allowed. Use a name such as capture.png, with letters,"
+    " digits, spaces, dots, dashes and underscores.")
+TEXT_UPLOAD_RACE = (
+    "Another write to this task ran at the same moment, and nothing changed."
+    " Send the same call again.")
+TEXT_UPLOAD_KEY_REUSED = (
+    "This idempotency_key was used for a different image. Send a new key.")
+TEXT_UPLOAD_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it uploaded the image. Read the attachments with get_task_context before"
+    " you use a new key.")
+TEXT_UPLOAD_GONE = (
+    "The image of this idempotency_key is no longer on the task. Send a new key"
+    " to upload it again.")
+
+_UPLOAD_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_TASK_ID_INPUT["properties"],
+        "filename": {
+            "type": "string", "pattern": agent_oauth.ATTACHMENT_FILENAME_PATTERN,
+            "description": "A file name such as capture.png: up to 120 letters, digits,"
+                           " spaces, dots, dashes and underscores."},
+        "content_base64": {
+            "type": "string", "minLength": 1, "maxLength": UPLOAD_BASE64_MAX,
+            "description": "The image file as standard base64, with no data: prefix."
+                           " A PNG, JPEG, GIF or WebP file of 3.75 MB or less."},
+        "idempotency_key": {
+            "type": "string", "pattern": _IDEMPOTENCY_PATTERN,
+            "description": "A new unique key for this call, such as a UUID. The same"
+                           " key again returns the first image and uploads nothing."},
+    },
+    "required": ["task_id", "filename", "content_base64", "idempotency_key"],
+    "additionalProperties": False,
+}
+_UPLOAD_OUTPUT: dict[str, Any] = _object({
+    "attachment": _ATTACHMENT_SCHEMA, "created": {"type": "boolean"},
+})
+
+
+def decode_image(value: str) -> bytes:
+    """The bytes of the base64 *value* of ``upload_task_image`` (CIV-14b).
+
+    White space and line breaks drop out first, because a ``base64`` command
+    breaks its lines. A ``data:`` prefix, a character outside the standard
+    alphabet and a wrong padding are refused, and so is an empty file and a
+    file over :data:`UPLOAD_IMAGE_MAX_BYTES`. The check of the length comes
+    after the decode, so it counts the bytes of the file.
+    """
+    if value.lstrip()[:5].lower() == "data:":
+        raise ToolError(TEXT_IMAGE_BAD_BASE64)
+    compact = "".join(value.split())
+    try:
+        data = base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        raise ToolError(TEXT_IMAGE_BAD_BASE64) from None
+    if not data:
+        raise ToolError(TEXT_IMAGE_EMPTY)
+    if len(data) > UPLOAD_IMAGE_MAX_BYTES:
+        raise ToolError(TEXT_IMAGE_TOO_LARGE)
+    return data
+
+
+def upload_type(filename: str, data: bytes) -> str:
+    """The type of the image *data*, from its first bytes only (CIV-14b).
+
+    An SVG is refused by its file ending or by its first bytes. Bytes that
+    ``acb_common.image_probe.sniff_image_mime`` does not name are refused,
+    whatever the file name says. The gateway checks the type again.
+    """
+    if filename.lower().endswith(UPLOAD_SVG_SUFFIXES) or looks_like_svg(data):
+        raise ToolError(TEXT_IMAGE_SVG)
+    mime = sniff_image_mime(data)
+    if mime is None:
+        raise ToolError(TEXT_IMAGE_TYPE)
+    return mime
+
+
+async def _post_image(ctx: Context, task_id: str, filename: str, data: bytes, mime: str,
+                      sent: _Sent) -> dict[str, Any]:
+    """The one multipart POST, and the gateway's row. A hidden task is ``Task
+    not found.``, and each refusal of the route has its own fixed text."""
+    sent.post = True
+    try:
+        answer = await gateway_write_file(
+            ctx.key, ctx.caller.lookup, path_params={"task_id": task_id},
+            filename=filename, content=data, content_type=mime, session=ctx.session)
+    except GatewayNotSent:
+        raise _NotSent(TEXT_BUSY) from None
+    except GatewayUnreachable:
+        raise ToolError(TEXT_BUSY) from None
+    except RouteRefused:
+        raise ToolError(TEXT_BAD_REQUEST) from None
+    # Fix round 1: the 413 of the agent cap has its own code and text. Any
+    # other 413 of the route is the budget of 10 MB for each task.
+    _, row = _written(answer, TEXT_TASK_NOT_FOUND,
+                      details={(404, agent_oauth.IMAGE_UPLOAD_OFF): TEXT_IMAGES_OFF,
+                               (413, agent_oauth.AGENT_IMAGE_TOO_LARGE): TEXT_IMAGE_TOO_LARGE},
+                      texts={400: TEXT_IMAGE_NAME, 409: TEXT_UPLOAD_RACE,
+                             413: TEXT_IMAGE_BUDGET, 415: TEXT_IMAGE_TYPE})
+    if not isinstance(row, dict) or _id(row.get("attachment_id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return row
+
+
+async def _first_image(ctx: Context, task_id: str, attachment_id: str) -> dict[str, Any]:
+    """The answer to a call whose key uploaded an image before: the row of
+    the list of the task, with ``created: false``."""
+    listed = await _get(ctx, ATTACHMENTS_ROUTE, TEXT_TASK_NOT_FOUND,
+                        path_params={"task_id": task_id})
+    row = _row_of(listed, attachment_id.lower())
+    if row is None:
+        raise ToolError(TEXT_UPLOAD_GONE)
+    return {"attachment": _attachment(row), "created": False}
+
+
+async def _upload_task_image(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``upload_task_image``: one image, and at most one per key (CIV-14b).
+
+    The edge decodes the bytes and reads the type from them before it claims
+    the slot, so a refused file never takes a key. The fingerprint of the slot
+    holds the SHA-256 of the bytes, not the base64, so the slot holds no copy
+    of the file. The log line holds ids and counts only (rule 7).
+    """
+    task_id = str(args["task_id"])
+    filename = str(args["filename"])
+    data = decode_image(str(args["content_base64"]))
+    mime = upload_type(filename, data)
+    claim = await _claim_slot(
+        ctx, "upload_task_image", str(args["idempotency_key"]),
+        {"task_id": task_id, "filename": filename,
+         "content_sha256": hashlib.sha256(data).hexdigest()},
+        _UPLOAD_KEY_TEXTS)
+    if claim.earlier is not None:
+        return await _first_image(ctx, task_id, claim.earlier)
+    sent = _Sent()
+    row = await _keyed_write(
+        claim, sent, lambda: _post_image(ctx, task_id, filename, data, mime, sent),
+        lambda done: str(done["attachment_id"]))
+    _log.info("agent_edge.image_uploaded", task_id=task_id,
+              attachment_id=str(row.get("attachment_id")), bytes=len(data),
+              connection_id=ctx.caller.lookup.connection_id)
+    return {"attachment": _attachment(row), "created": True}
+
+
+UPLOAD_TASK_IMAGE = Tool(
+    name="upload_task_image",
+    title="Upload an image to a task",
+    description=(
+        "Upload one image to a task that this member can see, so that people see"
+        " it in Metorite, also when they cannot reach your machine. Send the"
+        " task_id, a file name such as capture.png, the image file as standard"
+        " base64 in content_base64, and an idempotency_key. The image is a PNG,"
+        " JPEG, GIF or WebP file of 3.75 MB or less. Its first bytes decide its"
+        " type, and the file name does not. An SVG is refused. A task holds 10 MB"
+        " of files at most. The same key again gives back the first image with"
+        " created false. To show the image with a question, send its"
+        " attachment_id in attachment_ids of ask_on_task or post_agent_activity."
+        " The member can remove the image in the Files tab of the task."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_UPLOAD_INPUT,
+    output_schema=_UPLOAD_OUTPUT,
+    route=ATTACHMENTS_ROUTE,
+    params={"task_id": "task_id", "filename": "file", "content_base64": "file"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_upload_task_image,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    routes=(ATTACHMENTS_ROUTE,),
+    edge_inputs=frozenset({"idempotency_key"}),
+    images=True,
+)
+
+
 # ── my_work (EA-15b, §12.4) ─────────────────────────────────────────────────
 
 MY_WORK_LIMIT_MAX = 25
@@ -6248,6 +6515,9 @@ class _KeyTexts:
 _TASK_KEY_TEXTS = _KeyTexts(reused=TEXT_KEY_REUSED, unknown=TEXT_KEY_UNKNOWN)
 _COMMENT_KEY_TEXTS = _KeyTexts(reused=TEXT_COMMENT_KEY_REUSED,
                                unknown=TEXT_COMMENT_KEY_UNKNOWN)
+#: CIV-14b. The key texts of ``upload_task_image`` name an image.
+_UPLOAD_KEY_TEXTS = _KeyTexts(reused=TEXT_UPLOAD_KEY_REUSED,
+                              unknown=TEXT_UPLOAD_KEY_UNKNOWN)
 
 
 @dataclass(frozen=True)
@@ -7472,6 +7742,24 @@ _LINK_INPUT: dict[str, Any] = {
     "type": "string", "minLength": 9, "maxLength": 2048, "pattern": r"^https://\S+$",
     "description": "An https link to your session or its log."}
 
+#: SW-7b (``agent_coordination.md`` §3.7 item 2). The most characters of
+#: ``agent_label``. The gateway cleans the value and caps it at the same
+#: number (``agent_runs.AGENT_LABEL_MAX``), and a pin test compares the two.
+AGENT_LABEL_MAX = 40
+
+#: SW-7b. The optional display name of this session, on a claim and a start.
+#: It holds no control character. The guidance lives here only, because the
+#: server instructions are at their budget (task 1803).
+_LABEL_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": AGENT_LABEL_MAX,
+    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
+    "description": (
+        "A short name for this session, such as backend-worker-3. People see"
+        " it beside the client name on the task card and in the run panel. It"
+        " is display data only. It changes no access, no hold and no session."
+        " Send the same name on each claim and each start. A new name replaces"
+        " the old one.")}
+
 #: The fixed text of each refused claim, by the code of the gateway's 422
 #: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
 #: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
@@ -7494,6 +7782,7 @@ _CLAIM_INPUT: dict[str, Any] = {
             "type": "string", "pattern": _VERSION_PATTERN,
             "description": "The version that get_task returned for this task."},
         "external_link": _LINK_INPUT,
+        "agent_label": _LABEL_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -7521,14 +7810,21 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     ``update_task`` does, so the version works as the next
     ``expected_version``. A failed re-read gives the claim's own answer.
 
-    It needs no ``_refuse_nul`` (EA-6c): both inputs must match a pattern of
-    the input schema, a UUID and a version, so no control character passes.
+    It needs no ``_refuse_nul`` (EA-6c): each input must match a pattern of
+    the input schema, so no NUL passes. SW-7b: ``agent_label`` goes in the
+    body only, and its pattern refuses every control character.
     """
+    body: dict[str, Any] = {}
     link = _str_or_none(args.get("external_link"))
+    if link is not None:
+        body["external_link"] = link
+    label = _str_or_none(args.get("agent_label"))
+    if label is not None:
+        body["agent_label"] = label
     _, after = await _write(
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
-        json_body={} if link is None else {"external_link": link},
+        json_body=body,
         if_match=str(args["expected_version"]), coded=CLAIM_TEXTS)
     if not isinstance(after, dict) or _id(after.get("id")) is None:
         raise ToolError(TEXT_BUSY)
@@ -7602,7 +7898,7 @@ CLAIM_TASK = Tool(
     output_schema=_CLAIM_OUTPUT,
     route=CLAIM_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
-            "external_link": "external_link"},
+            "external_link": "external_link", "agent_label": "agent_label"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -8897,12 +9193,16 @@ def _check_options(options: list[dict[str, Any]] | None) -> None:
 
 
 async def _start(ctx: Context, task_id: str, key: str,
-                 link: str | None = None) -> tuple[bool, dict[str, Any]]:
+                 link: str | None = None,
+                 label: str | None = None) -> tuple[bool, dict[str, Any]]:
     """POST the start of a run. ``(created, run)``. The gateway gives the
-    open run of this member and client on the task, if one exists (EA12-6)."""
+    open run of this member and client on the task, if one exists (EA12-6).
+    SW-7b: *label* is the display name of this session, in the body only."""
     payload: dict[str, Any] = {"idempotency_key": key}
     if link is not None:
         payload["external_link"] = link
+    if label is not None:
+        payload["agent_label"] = label
     status, body = await _write(
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
@@ -8917,7 +9217,7 @@ async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], 
     status, body = await _write(
         ctx, "POST", RUN_ACTIVITIES_ROUTE, TEXT_RUN_NOT_FOUND,
         path_params={"run_id": run_id}, json_body=payload, texts={409: conflict},
-        coded=WAITING_TEXTS)
+        coded=ACTIVITY_TEXTS)
     return _activity_result(status, body)
 
 
@@ -8942,6 +9242,7 @@ _START_INPUT: dict[str, Any] = {
         "task_id": _TASK_INPUT,
         "external_link": _LINK_INPUT,
         "idempotency_key": _KEY_INPUT,
+        "agent_label": _LABEL_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
@@ -8951,7 +9252,8 @@ _START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type":
 
 async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
-                                _str_or_none(args.get("external_link")))
+                                _str_or_none(args.get("external_link")),
+                                _str_or_none(args.get("agent_label")))
     return {"run": agent_run(run), "created": created}
 
 
@@ -8977,7 +9279,7 @@ START_AGENT_RUN = Tool(
     output_schema=_START_OUTPUT,
     route=TASK_RUNS_ROUTE,
     params={"task_id": "task_id", "external_link": "external_link",
-            "idempotency_key": "idempotency_key"},
+            "idempotency_key": "idempotency_key", "agent_label": "agent_label"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_start_agent_run,
     method="POST",
@@ -9021,6 +9323,38 @@ WAITING_TEXTS: Mapping[str, str] = {
         " then send a new waiting line when it ends."),
 }
 
+#: CIV-14b (spec §12.9 item 2). The codes of a 422 of ``attachment_ids``:
+#: copies of ``agent_runs.ATTACHMENT_NOT_ON_TASK`` and
+#: ``agent_runs.ATTACHMENT_NOT_IMAGE``, pinned equal by
+#: ``test_mcp_upload_image_limits.py``.
+ATTACHMENT_NOT_ON_TASK_CODE = "attachment_not_on_task"
+ATTACHMENT_NOT_IMAGE_CODE = "attachment_not_image"
+#: Fix round 1: a copy of ``agent_runs.ATTACHMENTS_NOT_ON_TYPE``, pinned the
+#: same way.
+ATTACHMENTS_NOT_ON_TYPE_CODE = "attachments_not_on_type"
+TEXT_ATTACHMENT_NOT_ON_TASK = (
+    "Each attachment_id must be a file of this task. Upload the image to this"
+    " task with upload_task_image first.")
+TEXT_ATTACHMENT_NOT_IMAGE = "Each attachment_id must be a PNG, JPEG, GIF or WebP image."
+TEXT_ATTACHMENTS_NOT_ON_TYPE = (
+    "Only a thought, an action or an elicitation takes attachment_ids. A response"
+    " or an error becomes a comment, and a comment shows no image.")
+#: The fixed text of each coded 422 of the activity route: the wait, and the
+#: images of CIV-14b.
+ACTIVITY_TEXTS: Mapping[str, str] = {
+    **WAITING_TEXTS,
+    agent_oauth.IMAGE_UPLOAD_OFF: TEXT_IMAGES_OFF,
+    ATTACHMENT_NOT_ON_TASK_CODE: TEXT_ATTACHMENT_NOT_ON_TASK,
+    ATTACHMENT_NOT_IMAGE_CODE: TEXT_ATTACHMENT_NOT_IMAGE,
+    ATTACHMENTS_NOT_ON_TYPE_CODE: TEXT_ATTACHMENTS_NOT_ON_TYPE,
+}
+_ATTACHMENT_IDS_INPUT: dict[str, Any] = {
+    "type": "array", "minItems": 1, "maxItems": agent_oauth.ACTIVITY_IMAGES_MAX,
+    "items": {"type": "string", "pattern": _UUID_PATTERN},
+    "description": "Up to 4 images to show with a thought, an action or a"
+                   " question, and never with a response or an error: the"
+                   " attachment_id of each, from upload_task_image on this task."}
+
 _POST_ACTIVITY_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -9036,6 +9370,7 @@ _POST_ACTIVITY_INPUT: dict[str, Any] = {
                        "additionalProperties": {"type": "string", "maxLength": 2000},
                        "description": "For type action: its inputs, as strings."},
         "waiting": _WAITING_INPUT,
+        "attachment_ids": _ATTACHMENT_IDS_INPUT,
         "idempotency_key": _KEY_INPUT,
     },
     "required": ["run_id", "type", "idempotency_key"],
@@ -9060,12 +9395,23 @@ def _activity_payload(args: Mapping[str, Any]) -> dict[str, Any]:
         raise ToolError(f"The input 'body' is required for type {kind}.")
     if "waiting" in args and kind not in WAITING_TYPES:
         raise ToolError("Only an activity of type thought, action or response takes waiting.")
+    if IMAGES_INPUT in args and kind not in agent_oauth.IMAGE_ACTIVITY_TYPES:
+        # CIV-14b fix round 1: the gateway refuses it too.
+        raise ToolError(TEXT_ATTACHMENTS_NOT_ON_TYPE)
     _check_options(args.get("options"))
     payload: dict[str, Any] = {"type": kind, "idempotency_key": str(args["idempotency_key"])}
     for name in ("body", "options", "allow_multiple", "action", "parameters", "waiting"):
         if name in args:
             payload[name] = args[name]
+    _add_images(payload, args)
     return payload
+
+
+def _add_images(payload: dict[str, Any], args: Mapping[str, Any]) -> None:
+    """CIV-14b. ``attachment_ids`` of the call, each as a lower-case id. The
+    gateway checks that each one is an image of the run's task."""
+    if "attachment_ids" in args:
+        payload["attachment_ids"] = [str(i).lower() for i in args["attachment_ids"]]
 
 
 async def _post_agent_activity(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -9091,7 +9437,7 @@ POST_AGENT_ACTIVITY = Tool(
         " stays working. Before a wait of more than 2 minutes on CI, a review,"
         " a deploy, a member or another agent, add waiting with on and"
         " until_minutes (at most 120). The run then reads waiting, not idle. A wait on a person for longer than 120"
-        " minutes is a question: use ask_on_task." + _UNTRUSTED_NOTE
+        " minutes is a question: use ask_on_task.[[LINE_IMAGES]]" + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_POST_ACTIVITY_INPUT,
@@ -9100,7 +9446,7 @@ POST_AGENT_ACTIVITY = Tool(
     params={"run_id": "run_id", "type": "type", "body": "body", "options": "options",
             "allow_multiple": "allow_multiple", "action": "action",
             "parameters": "parameters", "waiting": "waiting",
-            "idempotency_key": "idempotency_key"},
+            "attachment_ids": "attachment_ids", "idempotency_key": "idempotency_key"},
     not_found=TEXT_RUN_NOT_FOUND,
     run=_post_agent_activity,
     method="POST",
@@ -9119,6 +9465,7 @@ _ASK_INPUT: dict[str, Any] = {
         "options": _OPTIONS_INPUT,
         "allow_multiple": _ALLOW_MULTIPLE_INPUT,
         "external_link": _LINK_INPUT,
+        "attachment_ids": _ATTACHMENT_IDS_INPUT,
         "idempotency_key": _KEY_INPUT,
     },
     "required": ["task_id", "question", "idempotency_key"],
@@ -9126,14 +9473,57 @@ _ASK_INPUT: dict[str, Any] = {
 }
 
 
+async def _question_images(ctx: Context, task_id: str, ids: list[str]) -> None:
+    """The checks of ``attachment_ids`` of a question, BEFORE the run starts
+    (CIV-14b fix round 1). Without them, a question that the gateway refuses
+    for its images left an empty run open on the task.
+
+    The flag of the organization, then one read of the list of the task: each
+    id must be a file of THIS task, and a PNG, JPEG, GIF or WebP image. The
+    gateway runs the same checks again when it writes the question."""
+    if not agent_oauth.image_upload_allowed(ctx.caller.lookup.organization_id):
+        raise ToolError(TEXT_IMAGES_OFF)
+    listed = await _get(ctx, ATTACHMENTS_ROUTE, TEXT_TASK_NOT_FOUND,
+                        path_params={"task_id": task_id})
+    for attachment_id in ids:
+        row = _row_of(listed, attachment_id)
+        if row is None:
+            raise ToolError(TEXT_ATTACHMENT_NOT_ON_TASK)
+        if str(row.get("mime") or "").split(";")[0].strip().lower() not in RASTER_MIMES:
+            raise ToolError(TEXT_ATTACHMENT_NOT_IMAGE)
+
+
+def _refused(error: ToolError) -> bool:
+    """True when the gateway refused a write and a release can follow: a
+    write that never left the edge, and every tool error but two texts.
+
+    * The busy text. A busy answer can come after the write landed (CIV-14b
+      fix round 2).
+    * The cap text (fix round 3). The cap counts each write, so the release
+      gets 429 too. The run stays, and after the wait a retry with the same
+      key asks on that run."""
+    if isinstance(error, _NotSent):
+        return True
+    return error.text not in (TEXT_BUSY, TEXT_CAP)
+
+
 async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """Start or reuse the open run of this member and client on the task,
     then write the question (§12.1). The two writes share the key, so a
-    second call with the same key returns the same run and question."""
+    second call with the same key returns the same run and question.
+    CIV-14b fix round 1: the images are checked before the start.
+
+    CIV-14b fix round 2: when the gateway refuses the question, the call
+    releases the run that IT started, so no empty run stays open on the
+    task. A run that the start found open (``created`` false) stays as it
+    is, and so does each run after a busy or a cap answer (:func:`_refused`)."""
     _check_options(args.get("options"))
     key = str(args["idempotency_key"])
-    _, run = await _start(ctx, str(args["task_id"]), key,
-                          _str_or_none(args.get("external_link")))
+    if IMAGES_INPUT in args:
+        await _question_images(ctx, str(args["task_id"]),
+                               [str(i).lower() for i in args[IMAGES_INPUT]])
+    created, run = await _start(ctx, str(args["task_id"]), key,
+                                _str_or_none(args.get("external_link")))
     run_id = _id(run.get("id"))
     if run_id is None:
         raise ToolError(TEXT_BUSY)
@@ -9142,9 +9532,24 @@ async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     for name in ("options", "allow_multiple"):
         if name in args:
             payload[name] = args[name]
+    _add_images(payload, args)
     waits = run.get("status") == "awaiting"
-    return await _post_activity(
-        ctx, run_id, payload, conflict=TEXT_QUESTION_WAITS if waits else TEXT_RUN_CONFLICT)
+    try:
+        return await _post_activity(
+            ctx, run_id, payload, conflict=TEXT_QUESTION_WAITS if waits else TEXT_RUN_CONFLICT)
+    except ToolError as error:
+        if created and _refused(error):
+            # The release route of `release_task`. A failed release still
+            # gives the refusal of the question.
+            await _after_write(lambda: _release_task(ctx, {"run_id": run_id}), {})
+        elif (not created and error.text == TEXT_RUN_CONFLICT
+              and run.get("status") in ENDED_RUN_STATUSES):
+            # Fix round 3: the start replayed the run of this key, and that
+            # run has ended. The question goes out first, because the gateway
+            # gives back a question that the key wrote before. Only its 409
+            # comes here, and the text says to send a new key.
+            raise ToolError(TEXT_KEY_RUN_ENDED) from None
+        raise
 
 
 ASK_ON_TASK = Tool(
@@ -9165,7 +9570,7 @@ ASK_ON_TASK = Tool(
         " The my_work text holds the rule."
         " Send external_link, an https link to your session, when you have one."
         " When the member answers in another place, such as your chat, call"
-        " record_outside_decision at once." + _UNTRUSTED_NOTE
+        " record_outside_decision at once.[[ASK_IMAGES]]" + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ASK_INPUT,
@@ -9173,12 +9578,15 @@ ASK_ON_TASK = Tool(
     route=RUN_ACTIVITIES_ROUTE,
     params={"task_id": "task_id", "question": "body", "options": "options",
             "allow_multiple": "allow_multiple", "external_link": "external_link",
-            "idempotency_key": "idempotency_key"},
+            "attachment_ids": "attachment_ids", "idempotency_key": "idempotency_key"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_ask_on_task,
     method="POST",
     annotations=dict(WRITE_ANNOTATIONS),
     runs=True,
+    # CIV-14b fix round 1: the list of the files of the task, read for the
+    # images before the start.
+    routes=(ATTACHMENTS_ROUTE,),
     prior_writes=(TASK_RUNS_ROUTE,),
 )
 
@@ -9876,55 +10284,10 @@ TEXT_DOOR_LIMIT = f"The input 'args.{DOOR_LIMIT_ARG}' must be a whole number."
 #: bytes of JSON. The gateway cuts a larger one to its field names (AD-9).
 DOOR_SCHEMA_MAX_BYTES = 16 * 1024
 
-#: AD-10, the second guard. A key whose name holds one of these words leaves
-#: no answer, at any depth. The first guard is that no X route is a door op.
-SECRET_WORDS: tuple[str, ...] = ("token", "secret", "password", "credential", "api_key")
-
-#: An ISO-8601 date or time, one of the plain shapes of AD-10.
-_ISO_TIME_RE = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,9})?)?"
-    r"(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?")
-
 #: The names of a 422 ``loc`` that only say where a field is.
 _LOC_PLACES = frozenset({"body", "query", "path", "header", "cookie"})
 
 _DOOR_KEY_TEXTS = _KeyTexts(reused=TEXT_DOOR_KEY_REUSED, unknown=TEXT_DOOR_KEY_UNKNOWN)
-
-
-def plain_shape(value: str) -> bool:
-    """True for a plain shape of AD-10: an id, an ISO-8601 time, or a token
-    of ``[A-Za-z0-9_.:-]`` with at most 64 characters."""
-    return bool(_KEY_RE.fullmatch(value) or _ISO_TIME_RE.fullmatch(value))
-
-
-def door_value(value: Any, plain: frozenset[str], key: str | None = None) -> Any:
-    """One value of a door answer, mapped by AD-10.
-
-    Each string becomes ``{"untrusted_text": ...}``, at any depth. A string
-    under a key that *plain* names stays plain only in a plain shape. A
-    number, a boolean and null stay. A dict keeps each key of a key shape
-    (:data:`_KEY_RE`) whose name holds no word of :data:`SECRET_WORDS`, and
-    drops the others with their values. A list maps each item under the key
-    of the list.
-    """
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for name, item in value.items():
-            if not isinstance(name, str) or not _KEY_RE.fullmatch(name):
-                continue
-            if any(word in name.lower() for word in SECRET_WORDS):
-                continue
-            out[name] = door_value(item, plain, name)
-        return out
-    if isinstance(value, list):
-        return [door_value(item, plain, key) for item in value]
-    if isinstance(value, str):
-        if key in plain and plain_shape(value):
-            return value
-        return untrusted(value)
-    if value is None or isinstance(value, bool) or _number(value):
-        return value
-    return untrusted(_compact(value))
 
 
 def _json_size(value: Any) -> int:
@@ -10575,6 +10938,9 @@ _READ_PLAYBOOK_OUTPUT: dict[str, Any] = {
         "topics": {"type": "array", "items": {
             "type": "object", "properties": _PLAYBOOK_TOPIC_PROPS,
             "required": list(_PLAYBOOK_TOPIC_PROPS), "additionalProperties": False}},
+        # KIT-5. The current kit version, in the index only (no topic sent).
+        "kit_version": {"type": "integer"},
+        "kits": {"type": "object", "additionalProperties": {"type": "integer"}},
         "topic": {"type": ["object", "null"], "properties": {
             **_PLAYBOOK_TOPIC_PROPS, "body": _UNTRUSTED_SCHEMA},
             "required": [*_PLAYBOOK_TOPIC_PROPS, "body"], "additionalProperties": False},
@@ -10595,12 +10961,13 @@ async def _read_playbook(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     No gateway request. The text is the playbook of ``acb_playbook``, the same
     for every organization, and it leaves as untrusted text (§9.4).
     """
-    from acb_playbook import load_all
+    from acb_playbook import kit_version, kit_versions, load_all
 
     topics = load_all()
     wanted = args.get("topic")
     if wanted is None:
-        return {"topics": [_playbook_entry(t) for t in topics], "topic": None}
+        return {"topics": [_playbook_entry(t) for t in topics], "topic": None,
+                "kit_version": kit_version(), "kits": kit_versions()}
     for topic in topics:
         if topic.slug == wanted:
             return {"topics": [], "topic": {**_playbook_entry(topic),
@@ -10615,7 +10982,7 @@ READ_PLAYBOOK = Tool(
         "Read the orchestration playbook of Metorite: patterns for agent teams,"
         " the brief contract, gates, failure causes, the cost model and starter"
         " files. Leave topic out to list the topics, each with its version and"
-        " summary. Send a topic to read it. The text is the same for every"
+        " summary, and the current kit_version of the agent kit. Send a topic to read it. The text is the same for every"
         " organization. Use it when your client shows no MCP resources."
         + _UNTRUSTED_NOTE
     ),
@@ -10659,6 +11026,9 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS, POST_PROJECT_UPDATE,
+    # CIV-14b: one image onto a task. It shows only for an organization of
+    # `mcp_image_upload_orgs`, and the gateway reads the flag too.
+    UPLOAD_TASK_IMAGE,
     # SW-23: shows only while the Check flag is on.
     REPORT_CHECK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
@@ -10675,10 +11045,15 @@ def offered(tool: Tool, organization_id: object = None) -> bool:
     agent-run tool only while the runs flag is on too (EA-12b), read through
     the ONE reader, ``agent_oauth.runs_enabled``. A tool of the app door only
     while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15). The playbook
-    tool only for an organization that ``playbook_orgs`` names (PB-3a)."""
+    tool only for an organization that ``playbook_orgs`` names (PB-3a).
+    ``upload_task_image`` only for an organization that
+    ``mcp_image_upload_orgs`` names (CIV-14b fix round 1). The gateway
+    refuses the upload of any other organization too."""
     if tool.door and not agent_oauth.door_apps():
         return False
     if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
+        return False
+    if tool.images and not agent_oauth.image_upload_allowed(organization_id):
         return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
@@ -10710,7 +11085,7 @@ def listed(scopes: frozenset[str], *, delete_on: bool = False,
     agent-run tool only while the runs flag is on (EA-12b). ``delete_task``
     shows only with *delete_on*, the member's switch (EA-6h)."""
     return [
-        t.describe() for t in TOOLS.values()
+        t.describe(organization_id) for t in TOOLS.values()
         if _covered(t, scopes, organization_id) and (delete_on or not t.switch)
     ]
 
@@ -10763,6 +11138,9 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     if not offered(tool, ctx.caller.lookup.organization_id):
         if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
             return error_result(TEXT_PLAYBOOK_OFF)
+        if tool.images and not agent_oauth.image_upload_allowed(
+                ctx.caller.lookup.organization_id):
+            return error_result(TEXT_IMAGES_OFF)
         if tool.door and not agent_oauth.door_apps():
             return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
@@ -10789,6 +11167,7 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "ACTIVITY_TEXTS",
     "ADD_COMMENT",
     "ADD_LINK_KEYS",
     "ADD_REF_BODY_KEYS",
@@ -10816,10 +11195,13 @@ __all__ = [
     "ASSIGNEE_PERSONAL_CODE",
     "ASSIGNEE_REFUSED_CODE",
     "ASSIGN_ANNOTATIONS",
+    "ATTACHMENTS_NOT_ON_TYPE_CODE",
     "ATTACHMENTS_ROUTE",
     "ATTACHMENTS_TRUNCATED_KEY",
     "ATTACHMENT_BYTES_ROUTE",
     "ATTACHMENT_KEYS",
+    "ATTACHMENT_NOT_IMAGE_CODE",
+    "ATTACHMENT_NOT_ON_TASK_CODE",
     "ATTACHMENT_READS_AT_ONCE",
     "ATTACHMENT_READ_WAIT_S",
     "ATTACHMENT_STAND_IN_NAME",
@@ -10881,6 +11263,7 @@ __all__ = [
     "DOOR_PAGE_MAX",
     "DOOR_RESULT_MAX_BYTES",
     "DOOR_SCHEMA_MAX_BYTES",
+    "ENDED_RUN_STATUSES",
     "EPIC_CHECK_COUNT_DETAIL",
     "EPIC_CHECK_KEYS",
     "EPIC_CONTRACTS_OFF_DETAIL",
@@ -10918,8 +11301,10 @@ __all__ = [
     "GUIDANCE_REF_KEY",
     "GUIDANCE_ROUTE",
     "HELD_STATE",
+    "IMAGES_INPUT",
     "IMAGE_MAGIC",
     "IMAGE_MAX_BYTES",
+    "IMAGE_TEXTS",
     "IMPORTANCE_VALUES",
     "LINKS_ROUTE",
     "LINK_CHAIN_DETAIL",
@@ -11019,7 +11404,10 @@ __all__ = [
     "TEXT_ARCHIVE_CONFLICT",
     "TEXT_ASSIGNEES_PERSONAL",
     "TEXT_ASSIGNEES_REFUSED",
+    "TEXT_ATTACHMENTS_NOT_ON_TYPE",
     "TEXT_ATTACHMENT_NOT_FOUND",
+    "TEXT_ATTACHMENT_NOT_IMAGE",
+    "TEXT_ATTACHMENT_NOT_ON_TASK",
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BAD_SHARE",
@@ -11061,8 +11449,17 @@ __all__ = [
     "TEXT_EXTENSIONS",
     "TEXT_FORBIDDEN",
     "TEXT_GUESSED_TYPES",
+    "TEXT_IMAGES_OFF",
+    "TEXT_IMAGE_BAD_BASE64",
+    "TEXT_IMAGE_BUDGET",
+    "TEXT_IMAGE_EMPTY",
+    "TEXT_IMAGE_NAME",
+    "TEXT_IMAGE_SVG",
+    "TEXT_IMAGE_TOO_LARGE",
+    "TEXT_IMAGE_TYPE",
     "TEXT_KEY_REUSED",
     "TEXT_KEY_RUNNING",
+    "TEXT_KEY_RUN_ENDED",
     "TEXT_KEY_UNKNOWN",
     "TEXT_KEY_USED",
     "TEXT_LEVEL_FLOOR",
@@ -11135,6 +11532,10 @@ __all__ = [
     "TEXT_TWO_FORMS",
     "TEXT_UNAVAILABLE",
     "TEXT_UPDATE_EMPTY",
+    "TEXT_UPLOAD_GONE",
+    "TEXT_UPLOAD_KEY_REUSED",
+    "TEXT_UPLOAD_KEY_UNKNOWN",
+    "TEXT_UPLOAD_RACE",
     "TEXT_USE_READ",
     "TEXT_USE_WRITE",
     "TEXT_WAIT_NEEDS_REQUEST",
@@ -11158,6 +11559,11 @@ __all__ = [
     "UPDATE_PROJECT",
     "UPDATE_TASK",
     "UPDATE_TASKS",
+    "UPLOAD_BASE64_MAX",
+    "UPLOAD_IMAGE_MAX_BYTES",
+    "UPLOAD_KEYS",
+    "UPLOAD_SVG_SUFFIXES",
+    "UPLOAD_TASK_IMAGE",
     "WAITING_REASONS",
     "WHOAMI",
     "WHOAMI_KEYS",
@@ -11175,6 +11581,7 @@ __all__ = [
     "check_input",
     "check_of",
     "comment",
+    "decode_image",
     "delete_switch_on",
     "door_cut",
     "door_limit",
@@ -11184,6 +11591,7 @@ __all__ = [
     "field_value",
     "image_bytes_match",
     "image_result",
+    "image_text",
     "image_type",
     "is_text_file",
     "listed",
@@ -11203,5 +11611,6 @@ __all__ = [
     "timeline_meta",
     "untrusted",
     "updated_comment",
+    "upload_type",
     "write_limit_line",
 ]

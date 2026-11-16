@@ -520,6 +520,32 @@ describe("the direct proof", () => {
     delete process.env.STUDIO_DIRECT_KEY;
   });
 
+  it("signs the CSV import of an object, and nothing else under packages (STU-C11b)", () => {
+    process.env.STUDIO_DIRECT_KEY = VECTOR.key;
+    const imp = ["packages", APP, "objects", "ledger", "import"];
+    expect(studioDirectHeaders("Ana@Example.test", "POST", imp, 1790000000)).toEqual({
+      "X-Studio-Direct": signStudioDirect(
+        VECTOR.key, "ana@example.test", "POST", `/studio/packages/${APP}/objects/ledger/import`, 1790000000
+      ),
+    });
+    expect(studioDirectHeaders("a@example.test", "GET", imp)).toEqual({});
+    for (const path of [
+      ["packages", APP, "objects", "ledger", "import", "preview"],
+      ["packages", APP, "objects", "ledger", "preview"],
+      ["packages", APP, "objects", "ledger", "import", "x"],
+      ["packages", "x", "objects", "ledger", "import"],
+      ["packages", APP, "objects", "Ledger", "import"],
+      ["packages", APP, "objects", "led ger", "import"],
+      ["packages", APP, "objects", "..", "import"],
+      ["packages", APP, "object", "ledger", "import"],
+      ["package", APP, "objects", "ledger", "import"],
+      ["packages", APP, "objects", "ledger"],
+    ]) {
+      expect(studioDirectHeaders("a@example.test", "POST", path)).toEqual({});
+    }
+    delete process.env.STUDIO_DIRECT_KEY;
+  });
+
   it("signs nothing with a short key or no key", () => {
     const action = ["apps", APP, "actions", "add"];
     process.env.STUDIO_DIRECT_KEY = "short";

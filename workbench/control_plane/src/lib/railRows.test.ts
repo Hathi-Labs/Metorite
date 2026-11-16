@@ -27,6 +27,7 @@ const RAILS: Record<string, string> = {
   "app/whatsapp/page.tsx": "the triage streams and the labels",
   "app/crm/components/CrmRail.tsx": "the views, from Pipeline to Reports, and Pipeline settings",
   "app/knowledge/components/KnowledgeRail.tsx": "Search, Sources, Spaces, each space, the page tree of the open space, and the Directories rows",
+  "components/studio/StudioAppFrame.tsx": "the pages of a Studio app",
 };
 
 const strip = (text: string) =>

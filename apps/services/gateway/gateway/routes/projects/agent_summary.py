@@ -57,6 +57,30 @@ overview reads the whole organization, and most of its agents hold no task.
   ``AGENTS_VIEW_ORGS``. Off, the route answers 404 before it opens a session.
 * The route reads the tenant from the session only (R5), and it writes
   nothing.
+
+    GET /projects/agents/{agent_key}/runs
+
+**The drill-down of one agent (WS-AGA AGA-9, ``agents_view.md`` §4).** At
+most :data:`RUNS_MAX` lean runs, newest first: the id, the state, the start,
+the end, the run time in seconds and, for a task run, the task id and its
+title. It is a list, not a third summary.
+
+* **The key.** ``agent_key`` is a ``key`` of the overview.
+  :func:`parse_agent_key` checks its shape before any read, and each value
+  is a bound parameter.
+* **What a run is.** An outside agent: its task runs in ``pm_agent_runs``,
+  through the SAME ``seen`` text as the overview (:data:`_SEEN_RUNS_SQL`), so
+  the drill-down never shows a run that the overview does not count. A
+  built-in or org agent: its chat runs in ``agent_run``, by ``agent_name``.
+  An admin reads every run of the org. Any other caller reads their own runs
+  only, the rule of the live presence above.
+* **Lean (§4).** No row holds the trace, the traceback, the tool list, the
+  model or the stored error text of ``agent_run``. The trace stays
+  executive-only at ``/debug/runs/{run_id}``. A task run carries the one
+  line of :func:`_external_error`, as the overview does.
+* **No oracle.** An unknown key, a key of another org, a key out of the
+  caller's reach, a key of a bad shape and the flag off all answer the SAME
+  404, and its body names no input.
 """
 
 from __future__ import annotations
@@ -189,13 +213,14 @@ EXTERNAL_JOB = "An outside agent that works on tasks in Projects for a member."
 _OPEN = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
 _BUSY = ", ".join(f"'{s}'" for s in ("queued", *WORKING_STATES))
 
-#: The task runs that the caller may see, one row for each outside agent.
-#: ``{visible}`` is ``task_visibility_clause`` and ``{reach}`` is the D12 arm
-#: of :func:`_reach_sql`. The org predicate is defence in depth beside FORCE
-#: RLS, which the session binds.
-_EXTERNAL_SQL = """
-WITH seen AS (
-    SELECT r.id, r.client_via, r.status, r.created_at,
+#: The task runs that the caller may see (§4). ONE text: the overview groups
+#: them for each outside agent, and the drill-down (AGA-9) lists the runs of
+#: one. ``{visible}`` is ``task_visibility_clause`` and ``{reach}`` is the D12
+#: arm of :func:`_reach_sql`. ``{only}`` is empty for the overview, and
+#: :data:`_ONE_AGENT` for the drill-down. The org predicate is defence in
+#: depth beside FORCE RLS, which the session binds.
+_SEEN_RUNS_SQL = """
+    SELECT r.id, r.client_via, r.status, r.created_at, r.task_id,
            {state} AS state,
            COALESCE(r.started_at, r.created_at) AS run_at,
            COALESCE(r.ended_at, r.last_activity_at) AS ended_at,
@@ -206,8 +231,19 @@ WITH seen AS (
      WHERE r.task_id IS NOT NULL
        AND r.organization_id = CAST(:vis_org AS uuid)
        AND {visible}
-       AND {reach}
-), agg AS (
+       AND {reach}{only}
+"""
+
+#: The ``{only}`` of the drill-down: the runs of one outside agent.
+_ONE_AGENT = "\n       AND r.client_via = :via"
+
+#: A run of ``seen`` that reads as an error (AGA-7): it failed, or it is open
+#: on a revoked or expired connection. ONE text for the overview and the
+#: drill-down.
+_ERR_SQL = f"(status = 'failed' OR (status IN ({_OPEN}) AND connection_gone))"
+
+#: The task runs that the caller may see, one row for each outside agent.
+_EXTERNAL_SQL = "WITH seen AS (" + _SEEN_RUNS_SQL + """), agg AS (
     SELECT client_via,
            count(*) AS runs,
            bool_or(status IN ({open}) AND state = 'awaiting') AS waiting,
@@ -219,12 +255,45 @@ WITH seen AS (
     SELECT DISTINCT ON (client_via) client_via, status AS err_status,
            error_body, connection_gone AS err_gone, ended_at AS err_at
       FROM seen
-     WHERE status = 'failed' OR (status IN ({open}) AND connection_gone)
+     WHERE """ + _ERR_SQL + """
      ORDER BY client_via, created_at DESC, id DESC
 )
 SELECT agg.*, err.err_status, err.error_body, err.err_gone, err.err_at
   FROM agg LEFT JOIN err USING (client_via)
  ORDER BY agg.last_at DESC NULLS LAST, agg.client_via
+ LIMIT :cap
+"""
+
+#: The newest task runs of one outside agent that the caller may see
+#: (AGA-9). ``shown`` names the error columns as :func:`_external_error`
+#: reads them. Each task is one that ``seen`` lets the caller see, so a run
+#: on a task that the caller cannot see is left out, never masked.
+_AGENT_RUNS_SQL = "WITH seen AS (" + _SEEN_RUNS_SQL + """), shown AS (
+    SELECT id, status, state, created_at, run_at, ended_at, task_id,
+           error_body, connection_gone AS err_gone, ended_at AS err_at,
+           CASE WHEN """ + _ERR_SQL + """ THEN status END AS err_status
+      FROM seen
+     ORDER BY created_at DESC, id DESC
+     LIMIT :cap
+)
+SELECT shown.*, t.title AS task_title
+  FROM shown
+  JOIN pm_tasks t ON t.id = shown.task_id
+ ORDER BY shown.created_at DESC, shown.id DESC
+"""
+
+#: The chat runs of one built-in or org agent in the durable store
+#: ``agent_run`` (AGA-9), by ``agent_name``. Lean columns only: never
+#: ``trace``, ``error_traceback``, ``error_message``, ``tool_summary`` or
+#: ``model``. ``{reach}`` is :func:`_reach_sql` with no task. The org
+#: predicate is defence in depth beside FORCE RLS, which the session binds.
+_CHAT_RUNS_SQL = """
+SELECT ar.run_id AS id, ar.status, ar.started_at, ar.ended_at, ar.duration_ms
+  FROM agent_run ar
+ WHERE ar.organization_id = CAST(:vis_org AS uuid)
+   AND ar.agent_name = :name
+   AND {reach}
+ ORDER BY ar.started_at DESC, ar.run_id DESC
  LIMIT :cap
 """
 
@@ -235,21 +304,29 @@ _ORG_AGENTS_SQL = (
 )
 
 
-def _reach_sql(admin: bool) -> str:
-    """The D12 arm of a run read (§4), over the run ``r`` and the task ``t``.
+def _reach_sql(admin: bool, *, runner: str = "r.member_email", task: str | None = "t") -> str:
+    """The D12 arm of a run read (§4). ONE rule for each run read here.
 
-    An admin sees every visible run. Any other caller sees their own runs,
-    the runs on their own tasks and the runs on the tasks of the projects
-    they lead (``:led``, from :func:`authority.led_projects`).
+    An admin sees every visible run. Any other caller sees their own runs
+    (*runner* is the member of the run), the runs on their own tasks and the
+    runs on the tasks of the projects they lead (``:led``, from
+    :func:`authority.led_projects`), over the task alias *task*.
+
+    A chat run of ``agent_run`` has no task (``task=None``). Then only the
+    first arm holds: a caller who is not an admin reads their own runs, as
+    :func:`_live_by_agent` counts the live presence.
     """
     if admin:
         return "true"
+    own = f"lower({runner}) = :me"
+    if task is None:
+        return f"({own})"
     return (
-        "(lower(r.member_email) = :me"
-        " OR lower(t.created_by) = :me"
+        f"({own}"
+        f" OR lower({task}.created_by) = :me"
         " OR EXISTS (SELECT 1 FROM pm_task_assignees a"
-        "             WHERE a.task_id = t.id AND lower(a.assignee) = :me)"
-        " OR t.project_id = ANY(CAST(:led AS uuid[])))"
+        f"             WHERE a.task_id = {task}.id AND lower(a.assignee) = :me)"
+        f" OR {task}.project_id = ANY(CAST(:led AS uuid[])))"
     )
 
 
@@ -290,9 +367,13 @@ def _split_description(name: str, description: str) -> tuple[str, str]:
     return _line(title, name), _line(job, "No job description yet.")
 
 
-def _external_error(row: Any) -> dict[str, Any] | None:
+def _external_error(row: Any, *, subject: str = "The last run") -> dict[str, Any] | None:
     """The last error of an outside agent, in plain words: what happened, and
-    the next step (AGA-7). ``None`` when no visible run failed."""
+    the next step (AGA-7). ``None`` when no visible run failed.
+
+    The drill-down (AGA-9) shapes the error of each run here too, with the
+    *subject* "This run". The agent's text is one :func:`_line`, never more.
+    """
     status = getattr(row, "err_status", None)
     if status is None:
         return None
@@ -305,8 +386,8 @@ def _external_error(row: Any) -> dict[str, Any] | None:
                          "then start it again on the task.",
         }
     reason = _line(getattr(row, "error_body", None))
-    what = (f"The last run failed. The agent said: {reason}" if reason
-            else "The last run failed, and the agent gave no reason.")
+    what = (f"{subject} failed. The agent said: {reason}" if reason
+            else f"{subject} failed, and the agent gave no reason.")
     return {
         "at": _when(getattr(row, "err_at", None)),
         "what": what,
@@ -360,6 +441,22 @@ def _builtin_registry() -> list[dict[str, Any]]:
     return [dict(a) for a in _AGENT_REGISTRY]
 
 
+def _builtin_names() -> frozenset[str]:
+    """The names of the built-in agents, as the overview writes their keys."""
+    return frozenset(
+        name for name in (str(a.get("name") or "").strip() for a in _builtin_registry()) if name
+    )
+
+
+#: The one body of a 404 here. It names no input, so an unknown key, a key
+#: of another org, a key out of reach and the flag off read the same (AGA-9).
+NOT_FOUND = "Not Found"
+
+
+def _not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail=NOT_FOUND)
+
+
 @router.get("/agents/overview")
 async def agents_overview(
     user: UserContext = Depends(get_current_user),
@@ -370,7 +467,7 @@ async def agents_overview(
     caller are the session's, never a value from the request (R5).
     """
     if not agents_view_allowed(getattr(user, "organization_id", None)):
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise _not_found()
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -381,7 +478,7 @@ async def agents_overview(
             sql = _EXTERNAL_SQL.format(
                 state=AGENT_RUN_STATE_SQL, gone=connection_gone_sql("r"),
                 visible=task_visibility_clause(vis), reach=_reach_sql(admin),
-                open=_OPEN, busy=_BUSY,
+                only="", open=_OPEN, busy=_BUSY,
             )
             external = list((await db.execute(text(sql), {
                 **vis.params, "me": me, "led": led, "cap": EXTERNAL_MAX + 1,
@@ -425,10 +522,195 @@ async def agents_overview(
         })
     order = {state: i for i, state in enumerate(("waiting_on_person", "working", "idle"))}
     rows.sort(key=lambda r: (order[r["state"]], r["name"].lower()))
-    viewer = "admin" if admin else ("lead" if led else "member")
     return {
         "agents": rows,
         "count": len(rows),
-        "viewer": viewer,
+        "viewer": _viewer(admin, led),
         "truncated": len(external) > EXTERNAL_MAX,
+    }
+
+
+def _viewer(admin: bool, led: list[str]) -> str:
+    """The viewer level of §4: ``admin``, ``lead`` or ``member``."""
+    return "admin" if admin else ("lead" if led else "member")
+
+
+# ── WS-AGA AGA-9: the drill-down of one agent ───────────────────────────────
+
+#: The most runs in one drill-down (AGA-9, ``agents_view.md`` §6).
+RUNS_MAX = 40
+
+#: The longest agent key, in characters. A longer key is 404 before the regex.
+AGENT_KEY_MAX = 128
+
+#: The one shape of an agent key, as the overview writes it. ``built_in:<name>``
+#: and ``org:<name>`` name a registry agent, and ``external:<client_via>`` an
+#: outside agent. The stamp part is the CHECK of ``pm_agent_runs.client_via``
+#: (migration 342). A key of another shape never reaches a read.
+AGENT_KEY_PATTERN = re.compile(
+    r"(?P<source>built_in|org):(?P<name>[A-Za-z0-9][A-Za-z0-9._-]{0,99})"
+    r"|external:(?P<via>(?:mcp|studio):[a-z0-9:_.-]{1,60})"
+)
+
+#: The top keys of a drill-down answer, and the keys of one run (AGA-9).
+#: Lean: no trace, no traceback, no tool list, no model, no stored error text.
+ANSWER_KEYS: tuple[str, ...] = ("key", "source", "runs_of", "viewer", "runs", "count", "truncated")
+RUN_KEYS: tuple[str, ...] = ("id", "state", "started_at", "ended_at", "run_seconds", "task", "error")
+
+#: What a run of each source is (AGA-9). ``task``: a task run in
+#: ``pm_agent_runs``. ``chat``: a chat run in ``agent_run``.
+RUNS_OF = {"external": "task", "built_in": "chat", "org": "chat"}
+
+#: The state of a chat run, in the words of the task run states
+#: (``filters.AGENT_RUN_STATE_SQL``), so that a run reads one way in each
+#: source. ``agent_run.status`` holds these four (``gateway/run_trace.py``).
+CHAT_STATES: dict[str, str] = {
+    "running": "working",
+    "completed": "completed",
+    "error": "failed",
+    "cancelled": "stopped",
+}
+
+#: The error of a failed chat run. It never quotes ``agent_run``: the stored
+#: message, the traceback and the trace stay executive-only.
+CHAT_ERROR_WHAT = "This run failed before it finished."
+CHAT_ERROR_NEXT = "Ask the agent again. If it fails again, tell an admin of your organization."
+
+
+def parse_agent_key(raw: Any) -> tuple[str, str] | None:
+    """``(source, name)`` of an agent key, or ``None`` for any other value.
+
+    The check is the whole key against :data:`AGENT_KEY_PATTERN`, after a
+    length cap. It reads nothing, and it echoes nothing.
+    """
+    if not isinstance(raw, str) or len(raw) > AGENT_KEY_MAX:
+        return None
+    found = AGENT_KEY_PATTERN.fullmatch(raw)
+    if found is None:
+        return None
+    if found.group("via"):
+        return "external", found.group("via")
+    return found.group("source"), found.group("name")
+
+
+def _seconds(start: Any, end: Any) -> float | None:
+    if not isinstance(start, datetime) or not isinstance(end, datetime):
+        return None
+    return round(max(0.0, (end - start).total_seconds()), 1)
+
+
+def _task_run_row(row: Any) -> dict[str, Any]:
+    """One task run of an outside agent, lean (AGA-9).
+
+    An open run has no end and no run time yet. The error is the one line
+    of :func:`_external_error`, and the task title is one :func:`_line`.
+    """
+    is_open = str(row.status) in AGENT_RUN_OPEN_STATUSES
+    ended = None if is_open else row.ended_at
+    return {
+        "id": str(row.id),
+        "state": str(row.state),
+        "started_at": _when(row.run_at),
+        "ended_at": _when(ended),
+        "run_seconds": None if is_open else _seconds(row.run_at, ended),
+        "task": {"id": str(row.task_id), "title": _line(row.task_title, "Untitled task")},
+        "error": _external_error(row, subject="This run"),
+    }
+
+
+def _chat_run_row(row: Any) -> dict[str, Any]:
+    """One chat run of a built-in or org agent, lean (AGA-9).
+
+    A running run has no end and no run time yet. The run time is the
+    measured ``duration_ms`` when the store holds it. A chat run has no task.
+    """
+    status = str(row.status or "")
+    running = status == "running"
+    ended = None if running else row.ended_at
+    if running:
+        seconds = None
+    elif row.duration_ms is not None:
+        seconds = round(max(0, int(row.duration_ms)) / 1000, 1)
+    else:
+        seconds = _seconds(row.started_at, ended)
+    error = None
+    if status == "error":
+        error = {"at": _when(ended), "what": CHAT_ERROR_WHAT, "next_step": CHAT_ERROR_NEXT}
+    return {
+        "id": str(row.id),
+        "state": CHAT_STATES.get(status, "unknown"),
+        "started_at": _when(row.started_at),
+        "ended_at": _when(ended),
+        "run_seconds": seconds,
+        "task": None,
+        "error": error,
+    }
+
+
+@router.get("/agents/{agent_key}/runs")
+async def agent_recent_runs(
+    agent_key: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The newest runs of one agent that the caller may see (AGA-9).
+
+    The flag, the key shape and the reach each answer the one 404 of
+    :func:`_not_found`. The org and the caller are the session's, never a
+    value from the request (R5). The route writes nothing.
+    """
+    if not agents_view_allowed(getattr(user, "organization_id", None)):
+        raise _not_found()
+    parsed = parse_agent_key(agent_key)
+    if parsed is None:
+        raise _not_found()
+    source, name = parsed
+    builtin = _builtin_names()
+    if source == "built_in" and name not in builtin:
+        raise _not_found()
+    if source == "external" and not agent_runs_enabled():
+        # The overview lists no outside agent while the runs flag is off.
+        raise _not_found()
+    me = actor(user).strip().lower()
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        admin = bool(vis.unrestricted)
+        led = sorted(await led_projects(db, user)) if not admin else []
+        if source == "external":
+            sql = _AGENT_RUNS_SQL.format(
+                state=AGENT_RUN_STATE_SQL, gone=connection_gone_sql("r"),
+                visible=task_visibility_clause(vis), reach=_reach_sql(admin),
+                only=_ONE_AGENT,
+            )
+            found = list((await db.execute(text(sql), {
+                **vis.params, "me": me, "led": led, "via": name, "cap": RUNS_MAX + 1,
+            })).fetchall())
+            if not found:
+                # No run that the caller may see: the overview has no row of
+                # this agent for the caller, so the key is out of reach.
+                raise _not_found()
+            rows = [_task_run_row(r) for r in found[:RUNS_MAX]]
+        else:
+            if source == "org":
+                registered = {
+                    str(getattr(r, "name", "") or "").strip()
+                    for r in (await db.execute(
+                        text(_ORG_AGENTS_SQL), {"vis_org": vis.organization_id},
+                    )).fetchall()
+                }
+                # The overview lists a name of the code registry once, as built-in.
+                if name not in registered or name in builtin:
+                    raise _not_found()
+            sql = _CHAT_RUNS_SQL.format(reach=_reach_sql(admin, runner="ar.user_id", task=None))
+            found = list((await db.execute(text(sql), {
+                "vis_org": vis.organization_id, "name": name, "me": me, "cap": RUNS_MAX + 1,
+            })).fetchall())
+            rows = [_chat_run_row(r) for r in found[:RUNS_MAX]]
+    return {
+        "key": agent_key,
+        "source": source,
+        "runs_of": RUNS_OF[source],
+        "viewer": _viewer(admin, led),
+        "runs": rows,
+        "count": len(rows),
+        "truncated": len(found) > RUNS_MAX,
     }

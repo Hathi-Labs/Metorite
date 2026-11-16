@@ -26,7 +26,9 @@ Four doors check it (spec §10.6): the consent routes, the store's token
 issue, the edge bearer check and the connection read of branch 0.
 :func:`change_access_allowed` is the one reader of
 ``agent_change_access_orgs``, the dark switch of Change access (EA-17c-1,
-spec §10.8).
+spec §10.8). :func:`image_upload_allowed` is the one reader of
+``mcp_image_upload_orgs``, the dark switch of the images of an agent
+(CIV-14b, spec §12.9).
 
 **First-party clients (D-EA-11, spec §10.7).** :func:`is_first_party` is
 the one reader of ``agent_first_party_client_ids``, and
@@ -47,6 +49,11 @@ EA-19b adds the box stamp ``mcp:box:<slug>-<8 hex>`` (spec §10.9), and
 is the one cover rule. :func:`door_apps` is the one reader of
 ``agent_door_apps``. :func:`door_route` gives the door op of a pair from the
 manifests, and no hand list holds a door pair (AD-3).
+
+**What a token may do (EA-17c-3, spec §10.8).** :func:`effective_scopes` is
+the ONE rule: the token scope intersected with the connection scopes.
+:func:`granted_scope` names it for a token answer, and :func:`mint_scope`
+gives the scope that ``approve`` mints.
 
 Fences: ``tests/unit/test_agent_oauth_server.py``,
 ``tests/unit/test_mcp_edge_signing.py`` and
@@ -103,7 +110,7 @@ def covered_by(scope: str) -> str | None:
 
 def covered_scopes(scopes: Iterable[str]) -> set[str]:
     """The resource scopes that *scopes* hold, with each read scope that a
-    write scope among them covers. ``bearer.effective_scopes`` calls it on
+    write scope among them covers. :func:`effective_scopes` calls it on
     each side of the intersection."""
     held = {s for s in scopes if s in RESOURCE_SCOPES}
     held |= {c for s in held if (c := covered_by(s)) in RESOURCE_SCOPES}
@@ -170,6 +177,84 @@ def scope_string(scopes: Iterable[str]) -> str:
     """The space-separated form of *scopes*, in the canonical order."""
     wanted = set(scopes)
     return " ".join(s for s in SUPPORTED_SCOPES if s in wanted)
+
+
+# ── What a token may do (EA-17c-3, D-EA-13 rule 2, spec §7.1 step 4) ────────
+#
+# ⚠️ A token minted at ``approve`` carries every resource scope that the agent
+# ASKED for, and the connection row holds what the member GRANTED. So the
+# token scope alone can be wider than the grant. Every reader of
+# ``agent_token.scope`` takes it through :func:`effective_scopes` or
+# :func:`granted_scope`, which intersect it with the connection scopes. A
+# reader that took the token scope alone would give an agent a scope that the
+# member cleared. Fence: ``tests/unit/test_agent_change_access.py``
+# (``TestTheMintAtTheRequestedScopes``).
+
+
+def _token_scopes(token_scope: str | None) -> set[str]:
+    """The supported scopes that *token_scope* names. A malformed one names
+    none, so it fails closed."""
+    try:
+        return set(parse_scope(token_scope))
+    except ValueError:
+        return set()
+
+
+def effective_scopes(
+    token_scope: str | None, connection_scopes: Iterable[str]
+) -> frozenset[str]:
+    """The resource scopes that a token may use NOW. The ONE rule.
+
+    The token scope intersected with the scopes of the connection row, each
+    side with the cover rule (:func:`covered_scopes`), so a
+    ``projects:write`` token on a ``projects:read`` connection may read. A
+    malformed token scope gives no scope. ``offline_access`` is never in the
+    answer. The edge bearer check calls it on each call, and
+    :func:`granted_scope` and ``agent_tokens.ceiling_of`` build on it.
+    """
+    return frozenset(
+        covered_scopes(_token_scopes(token_scope)) & covered_scopes(connection_scopes))
+
+
+def granted_scope(token_scope: str | None, connection_scopes: Iterable[str]) -> str:
+    """The scope string that a token may use now, as an issue names it.
+
+    RFC 6749 §5.1: the token answer names the scope of the token. The
+    answer holds each scope of the connection that is effective, then each
+    effective scope of the token that those do not cover, and
+    ``offline_access`` only when the token AND the connection hold it. So
+    the cover of the answer equals :func:`effective_scopes`, and the answer
+    never names a scope that the member cleared. A token whose scope equals
+    the connection scopes gives that scope string.
+
+    The token endpoint names this string in its answer and in the scope check
+    of a refresh. The store gives a refresh token only when it holds
+    ``offline_access``.
+    """
+    live = effective_scopes(token_scope, connection_scopes)
+    token = _token_scopes(token_scope)
+    connection = set(connection_scopes)
+    named = {s for s in connection if s in live}
+    named |= {s for s in token if s in live and not scope_holds(named, s)}
+    if OFFLINE_ACCESS in token and OFFLINE_ACCESS in connection:
+        named.add(OFFLINE_ACCESS)
+    return scope_string(named)
+
+
+def mint_scope(requested: Iterable[str], granted: Iterable[str]) -> str:
+    """The scope of the code that ``approve`` mints (EA-17c-3).
+
+    Every resource scope that the agent asked for, so the connection scopes
+    alone narrow the token. Then a scope that the member cleared at the
+    connect can turn on with Change access and no reconnect (D-EA-13 rule
+    2). ``offline_access`` is the member's choice: it is in the answer only
+    when *granted* holds it, so a cleared ``offline_access`` never gives a
+    refresh token. A scope outside *requested* is never in the answer.
+    """
+    kept = {s for s in requested if s in RESOURCE_SCOPES}
+    if OFFLINE_ACCESS in set(granted):
+        kept.add(OFFLINE_ACCESS)
+    return scope_string(kept)
 
 
 # ── The flag and the fixed addresses (spec §5.5) ────────────────────────────
@@ -432,6 +517,62 @@ def change_access_allowed(organization_id: object) -> bool:
         return False
     orgs = _parse_orgs(str(get_settings().agent_change_access_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
+
+
+def image_upload_allowed(organization_id: object) -> bool:
+    """True when ``mcp_image_upload_orgs`` allows *organization_id*.
+
+    CIV-14b (spec §12.9). The ONE reader of the flag. It keeps the images of
+    an outside agent dark: for a signed agent of an organization that it
+    refuses, the upload route answers 404 with :data:`IMAGE_UPLOAD_OFF`, and
+    ``attachment_ids`` of an activity answers 422 with the same code. A person
+    in the app is never refused by it. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty.
+
+    Two units read it. The gateway asks it at each call, so a flag reload
+    applies a change there. The agent edge asks it too (CIV-14b fix rounds 1
+    and 2): it hides the upload tool and the image inputs, checks a question
+    before its run starts, and refuses a large body of an organization off
+    the flag. The edge reads its settings at start. So a flip sets the same
+    value in the env file of the gateway and of the edge, reloads the gateway
+    and restarts the agent edge (``docs/flag_reload.md``). The caller passes
+    the organization of the session or of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().mcp_image_upload_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+#: CIV-14b. The code of the refusal while :func:`image_upload_allowed` is
+#: false: the ``detail`` of the 404 of the upload, and the ``error`` of the
+#: 422 of ``attachment_ids``. The edge maps it to a fixed tool text. ONE
+#: copy: the edge may not import the gateway.
+IMAGE_UPLOAD_OFF = "image_upload_off"
+
+#: CIV-14b. The most images on one question or one activity
+#: (``attachment_ids``). The gateway body model and the edge schema read it.
+ACTIVITY_IMAGES_MAX = 4
+
+#: CIV-14b fix round 1. The activity types that take ``attachment_ids``. The
+#: card draws the images of a question (``elicitation``) and of the line of
+#: the newest ``thought`` or ``action``. A ``response`` or an ``error``
+#: becomes a comment, which draws no image, and a ``prompt`` is a person's.
+#: The gateway refuses every other type with 422, and the edge refuses it
+#: before it sends the call.
+IMAGE_ACTIVITY_TYPES: tuple[str, ...] = ("thought", "action", "elicitation")
+
+#: CIV-14b. The largest image that a signed agent uploads: 3.75 MiB, the cap
+#: of the read of IMG-3 too. The edge refuses a larger file before it sends
+#: one byte, and the upload route refuses it for a signed agent.
+AGENT_IMAGE_MAX_BYTES = 3_932_160
+
+#: CIV-14b fix round 1. The ``detail`` of the 413 of a signed agent upload
+#: over :data:`AGENT_IMAGE_MAX_BYTES`: of the upload route, and of the body
+#: wrapper of branch 0. The edge maps it to its own text, which is not the
+#: text of the budget of 10 MB for each task.
+AGENT_IMAGE_TOO_LARGE = "agent_image_too_large"
 
 
 def playbook_allowed(organization_id: object) -> bool:
@@ -902,6 +1043,15 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: the task. It answers 404 while ``agent_task_checks_enabled`` is off. HIGH
 #: tier from the start (identity of who may close a task).
 #: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
+#: CIV-14b (spec §12.9) adds the upload of a file to a task, the route of
+#: ``upload_task_image``. For a signed agent the route takes only a png,
+#: jpeg, gif or webp image of at most :data:`AGENT_IMAGE_MAX_BYTES`, and only
+#: for an organization of :func:`image_upload_allowed`. The route keeps its
+#: own visibility check, advisory lock and budget of 10 MB for each task. The
+#: author takes the image off again in the Files tab of the task, through
+#: ``DELETE /projects/tasks/{task_id}/attachments/{attachment_id}``. That
+#: DELETE stays OFF both sets. Fences: ``test_mcp_upload_image_tenant_r8.py``
+#: and the coverage fence.
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
     ("PATCH", "/projects/nodes/{project_id}"),
@@ -940,6 +1090,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-MCP SW-23: `report_check`. A pass closes the task only when the
     # caller may move it. It answers 404 while the Check flag is off.
     ("POST", "/projects/tasks/{task_id}/check-result"),
+    # CIV-14b: `upload_task_image`. One image, multipart. The route checks
+    # the first bytes against the type and refuses an SVG for every caller.
+    ("POST", "/projects/tasks/{task_id}/attachments"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -1327,7 +1480,10 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 
 
 __all__ = [
+    "ACTIVITY_IMAGES_MAX",
     "ACTOR_VIA_PATTERN",
+    "AGENT_IMAGE_MAX_BYTES",
+    "AGENT_IMAGE_TOO_LARGE",
     "ALL_ORGS",
     "APPROVAL_REQUIRED_CODE",
     "APP_OFF_CODE",
@@ -1345,6 +1501,8 @@ __all__ = [
     "DOOR_READ_WINDOW_S",
     "DOOR_WRITES_OFF_CODE",
     "FIXED_RESOURCE_SCOPES",
+    "IMAGE_ACTIVITY_TYPES",
+    "IMAGE_UPLOAD_OFF",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
     "MCP_PATH_SHAPES",
@@ -1381,13 +1539,17 @@ __all__ = [
     "door_available",
     "door_route",
     "door_serves",
+    "effective_scopes",
     "enabled",
+    "granted_scope",
+    "image_upload_allowed",
     "is_allowed_redirect_uri",
     "is_cimd_client_id",
     "is_valid_challenge",
     "is_valid_verifier",
     "issuer",
     "mcp_sessions_enabled",
+    "mint_scope",
     "org_allowed",
     "parse_scope",
     "path_shapes",

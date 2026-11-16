@@ -330,6 +330,9 @@ async def test_the_attribution_headers_are_forwarded(monkeypatch, spy):
         # DECIDE their cap. Attribution keeps working — the four fields above
         # are unchanged — and only enforcement waits for a signed proof.
         "member_proven": False,
+        # AUTO-8b-2b: no `X-CC-Run-Ceiling` came in, so none goes out. The
+        # hop forwards it raw when it comes (`test_run_ceiling_header.py`).
+        "run_ceiling": None,
     }
 
 

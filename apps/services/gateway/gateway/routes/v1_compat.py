@@ -588,6 +588,24 @@ def _router_should_serve(body: dict[str, Any]) -> bool:
     return True
 
 
+def _run_ceiling(request: Request) -> str | None:
+    """``X-CC-Run-Ceiling`` EXACTLY as the caller sent it, or None with none.
+
+    AUTO-8b-2b (``proactive_agent.md`` §4.4). Both Router hops call it.
+
+    🔴 **The gateway does not parse or clamp it.** The Console is the one
+    place that does, and it answers 400 ``run_ceiling_invalid`` to a bad
+    value. So an empty value travels as empty. The ``or None`` of the other
+    headers would turn it into "no header", and the call would run at the
+    default ceiling.
+
+    ⚠️ It decides nothing here. ``/v1`` takes the LLM key, and the Console
+    sums the spend of the run for the org that ITS credential resolves. So a
+    forged value can only lower the ceiling of the forger's own run.
+    """
+    return request.headers.get("x-cc-run-ceiling")
+
+
 def _router_outbound(body: dict[str, Any]) -> dict[str, Any]:
     """The body both Router hops send. ONE builder, so they cannot drift.
 
@@ -645,6 +663,8 @@ async def _serve_via_router_stream(
         agent=request.headers.get("x-cc-agent") or None,
         module_slug=request.headers.get("x-cc-module") or None,
         run_id=request.headers.get("x-cc-run") or None,
+        # AUTO-8b-2b: raw, with no `or None`. `_run_ceiling` says why.
+        run_ceiling=_run_ceiling(request),
     )
 
     first: bytes | None = None
@@ -735,6 +755,8 @@ async def _serve_via_router(
             agent=request.headers.get("x-cc-agent") or None,
             module_slug=request.headers.get("x-cc-module") or None,
             run_id=request.headers.get("x-cc-run") or None,
+            # AUTO-8b-2b: raw, with no `or None`. `_run_ceiling` says why.
+            run_ceiling=_run_ceiling(request),
         )
     except ConsoleRouterUnavailable as exc:
         _router_failed()

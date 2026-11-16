@@ -172,6 +172,8 @@ __all__ = [
     "BILLING_READ_DOORS",
     "CAPABILITY_REFUSAL_PREFIX",
     "CONSOLE_UNAVAILABLE",
+    "RUN_CEILING_HEADER",
+    "RUN_SPEND_DOOR",
     "TRANSCRIBE_TIER",
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleBillingUnavailable",
@@ -199,6 +201,7 @@ __all__ = [
     "rename_org_on_console",
     "resolve_for_signin",
     "router_is_wired",
+    "run_spend_on_console",
     "seat_overview_on_console",
     "transcribe_on_console",
 ]
@@ -1123,6 +1126,38 @@ async def billing_read_on_console(
         payload["scope"] = "org" if scope == "org" else "self"
     return await _post_deployment_door(
         endpoint, payload, unavailable=ConsoleBillingUnavailable
+    )
+
+
+#: The Console door of the spend of ONE run (AUTO-8b-2d,
+#: ``proactive_agent.md`` §4.4). ⚠️ It is NOT in :data:`BILLING_READ_DOORS`,
+#: because each entry there has a browser route (``gateway/routes/billing.py``,
+#: fence ``test_billing_proxy_route.py``). Only the headless turn's meter
+#: calls this door, from the job worker.
+RUN_SPEND_DOOR = "/registry/usage/run"
+
+
+async def run_spend_on_console(
+    *, actor_email: str, run_id: str
+) -> tuple[int, dict[str, Any]]:
+    """Read the credits that run *run_id* spent, for *actor_email*'s org.
+
+    The body is ``{"actor_email", "run_id"}`` and nothing else. The Console
+    derives the org from this box's deployment key and the member (R11), the
+    way the Router metered the call. A 200 answers ``{"credits": "7.5000"}``.
+
+    The caller passes the PROVEN member of the run (``job_member_scope``),
+    never a value from a payload. Returns the Console's ``(status_code,
+    body)``. Raises :class:`ConsoleBillingUnavailable` on an unwired box or a
+    no-answer status, the transport rule of the billing reads. Non-allocating:
+    a read, and it never touches ``resolve_for_signin``.
+    """
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        RUN_SPEND_DOOR,
+        {"actor_email": actor_email, "run_id": run_id},
+        unavailable=ConsoleBillingUnavailable,
     )
 
 
@@ -2419,6 +2454,12 @@ def router_is_wired() -> bool:
     return router_credential() is not None
 
 
+#: The ceiling of one run (AUTO-8b-2b). ``acb_llm.attribution.RUN_CEILING``
+#: spells the same name. This package does not import ``acb_llm``, so a test
+#: pins the two (``tests/unit/test_run_ceiling_header.py``).
+RUN_CEILING_HEADER = "X-CC-Run-Ceiling"
+
+
 def _attribution_headers(
     *,
     member: str | None,
@@ -2426,6 +2467,7 @@ def _attribution_headers(
     module_slug: str | None,
     run_id: str | None,
     member_proven: bool = False,
+    run_ceiling: str | None = None,
 ) -> dict[str, str]:
     """The ``X-CC-*`` headers that let a ``usage_event`` answer *who burned it*.
 
@@ -2436,6 +2478,13 @@ def _attribution_headers(
     ``None``. An EMPTY value is therefore omitted rather than sent, because
     sending it would record the empty string as a member — which reads as an
     attribution nobody made rather than as the absence of one.
+
+    🔴 **``run_ceiling`` is the one exception** (AUTO-8b-2b). It is a limit on
+    money, not attribution. It travels EXACTLY as the caller sent it, the
+    empty string too, and only ``None`` (no header) omits it. This side
+    parses nothing. The Console parses it, takes the min with its own ceiling,
+    and answers 400 ``run_ceiling_invalid`` to a bad value. Dropping a bad
+    value here would serve the call at the default ceiling.
     """
     pairs = (
         ("X-CC-Member", member),
@@ -2454,7 +2503,10 @@ def _attribution_headers(
         # party that could forge this header could simply spend directly.
         ("X-CC-Member-Proven", "1" if (member_proven and member) else ""),
     )
-    return {name: value for name, value in pairs if value}
+    headers = {name: value for name, value in pairs if value}
+    if run_ceiling is not None:
+        headers[RUN_CEILING_HEADER] = run_ceiling
+    return headers
 
 
 def _require_proven_member_on_deployment(
@@ -2497,6 +2549,9 @@ async def chat_completion_on_console(
     agent: str | None = None,
     module_slug: str | None = None,
     run_id: str | None = None,
+    #: ``X-CC-Run-Ceiling`` as the caller sent it (AUTO-8b-2b). Not parsed
+    #: here. :func:`_attribution_headers` states why.
+    run_ceiling: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Serve one completion through the Console Router, on OUR provider account.
 
@@ -2538,7 +2593,7 @@ async def chat_completion_on_console(
     headers.update(
         _attribution_headers(
             member=member, agent=agent, module_slug=module_slug, run_id=run_id,
-            member_proven=member_proven,
+            member_proven=member_proven, run_ceiling=run_ceiling,
         )
     )
 
@@ -2860,6 +2915,9 @@ async def stream_completion_on_console(
     agent: str | None = None,
     module_slug: str | None = None,
     run_id: str | None = None,
+    #: ``X-CC-Run-Ceiling`` as the caller sent it (AUTO-8b-2b). Not parsed
+    #: here. :func:`_attribution_headers` states why.
+    run_ceiling: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream one completion through the Console Router, on OUR account.
 
@@ -2901,7 +2959,7 @@ async def stream_completion_on_console(
     headers.update(
         _attribution_headers(
             member=member, agent=agent, module_slug=module_slug, run_id=run_id,
-            member_proven=member_proven,
+            member_proven=member_proven, run_ceiling=run_ceiling,
         )
     )
 

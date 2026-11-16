@@ -137,6 +137,8 @@ const PURGE_LABELS: Record<string, string> = {
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
+  // WS-CO CO-11: the member's own row on a chat, the pin today.
+  chat_member_rows: "personal chat setting",
   private_chat_sessions: "private chat session",
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
@@ -553,6 +555,13 @@ export default function OrganizationAdmin() {
                 className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
               >
                 Agents
+              </Link>
+              {/* PKG-17c-2: the org default of the Home layout. */}
+              <Link
+                href="/settings/layout"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Home layout
               </Link>
               {!isMobile && (
                 <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>

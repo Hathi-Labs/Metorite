@@ -28,7 +28,8 @@ The path of one text from a linked phone:
    most 4096 characters.
 4. **The sweep** (:func:`sweep_once`, every minute). It binds each org of the
    allowlist in turn and takes the oldest waiting row of each thread. A row
-   that stayed ``received`` or ``running`` for 5 minutes runs again, at most 3
+   that stayed ``received`` or ``running`` for 5 minutes (8 for a long-read
+   org, :func:`stale_for`) runs again, at most 3
    times. A row that used its 3 tries gets the general failure text once. A
    row older than 24 hours becomes ``expired`` and gets no reply.
 
@@ -36,7 +37,7 @@ The path of one text from a linked phone:
 Just before the first part of a reply goes out, the row becomes ``sending``,
 in the database. Nothing runs a ``sending`` row again, and nothing sends it
 the general text: the sweep closes it as ``replied`` (``send_unconfirmed``)
-after 5 minutes. A crash in the middle of a long reply can lose its tail, and
+after 5 minutes (8 for a long-read org). A crash in the middle of a long reply can lose its tail, and
 it never sends a part twice. A failure BEFORE ``sending`` gives the row back
 as ``received`` with its try counted, so the sweep runs it again. A first part
 that SURELY did not reach the member (Meta answered 4xx, or the connection
@@ -287,8 +288,12 @@ DOCUMENTS_RULE = (
 
 #: WhatsApp's limit for one text message.
 MAX_CHARS = 4096
-#: A row that waits this long gets a run again from the sweep.
+#: A row that waits this long gets a run again from the sweep. Longer than
+#: ``RUN_TIMEOUT_S``, so the sweep never takes a run that still works.
 STALE_S = 5 * 60
+#: The stale time of a long-read org (:func:`stale_for`). Longer than
+#: ``LONG_RUN_TIMEOUT_S``, for the same reason.
+LONG_STALE_S = 8 * 60
 #: The most runs one message gets.
 MAX_TRIES = 3
 #: The reply window. An older row gets no reply.
@@ -297,6 +302,10 @@ EXPIRE_S = 24 * 3600
 THREAD_IDLE_S = 24 * 3600
 #: Shorter than ``STALE_S``, so the sweep never takes a run that still works.
 RUN_TIMEOUT_S = 4 * 60
+#: The cap of one whole run of a long-read org (:func:`run_timeout_for`). It
+#: holds one long read of up to 180 s and the model calls around it (HRD-6,
+#: ``chat_run_continuity.md`` §4.11). Shorter than ``LONG_STALE_S``.
+LONG_RUN_TIMEOUT_S = 7 * 60
 #: The prior turns that the run sees.
 HISTORY_TURNS = 20
 SWEEP_EVERY_S = 60
@@ -810,10 +819,82 @@ async def _write_reply(req: RunRequest, reply: str) -> None:
         raise RuntimeError("the reply was declined")
 
 
+def _listed(raw: str, org: str | None) -> bool:
+    """True when the comma list *raw* names *org*, or holds ``*``."""
+    entries = {part.strip().lower() for part in str(raw or "").split(",") if part.strip()}
+    return "*" in entries or (bool(org) and str(org).strip().lower() in entries)
+
+
+def _crm_long_reads(org: str | None, settings: Any) -> bool:
+    """True when the CRM long mode (HRD-6 part 2) is on for *org*.
+
+    The CRM's own reader, ``gateway.routes.crm.flags.long_read_allowed``, wins
+    when it exists, because it holds the CRM switch too. A build before the
+    CRM long mode has no such reader, and then ``CRM_LONG_READ_ORGS`` is read
+    as a plain list (empty when the setting does not exist). Fails closed."""
+    try:
+        from gateway.routes.crm.flags import long_read_allowed
+    except ImportError:
+        return _listed(getattr(settings, "crm_long_read_orgs", "") or "", org)
+    try:
+        return bool(long_read_allowed(org))
+    except Exception:
+        return False
+
+
+def long_reads_on(org: str | None) -> bool:
+    """True when *org* may run a long read (HRD-6). ``CHAT_PROGRESS_NOTICE_ORGS``
+    names it or holds ``*``, or the CRM long mode is on for it
+    (:func:`_crm_long_reads`). Both off, the default, gives False, and each
+    cap stays as it was. Fails closed. *org* is the org of the link row or of
+    the sweep's binding, never message input."""
+    try:
+        from acb_common import get_settings
+
+        settings = get_settings()
+        return (_listed(getattr(settings, "chat_progress_notice_orgs", "") or "", org)
+                or _crm_long_reads(org, settings))
+    except Exception:
+        return False
+
+
+def run_timeout_for(org: str | None) -> float:
+    """The cap of one run of *org*: ``LONG_RUN_TIMEOUT_S`` for a long-read org,
+    else ``RUN_TIMEOUT_S`` as before."""
+    return LONG_RUN_TIMEOUT_S if long_reads_on(org) else RUN_TIMEOUT_S
+
+
+def stale_for(org: str | None) -> float:
+    """The stale time of a row of *org*: ``LONG_STALE_S`` for a long-read org,
+    else ``STALE_S`` as before. For one reading of the flags it is longer than
+    :func:`run_timeout_for`.
+
+    Each sweep pass binds ONE org, and FORCE RLS keeps every row of the pass
+    in that org, so the time of the org is the time of each row.
+
+    A flag flip in the middle of a long run can give that run's row the short
+    stale time. In this process ``_LIVE_ROWS`` is the real guard: the sweep
+    and the exhausted and unconfirmed closes skip a live row. Only a row that
+    another process runs depends on the order of the two caps."""
+    return LONG_STALE_S if long_reads_on(org) else STALE_S
+
+
+def _bound_org() -> str | None:
+    """The bound tenant of this frame: the org of the row that it works."""
+    try:
+        from acb_common.db import current_tenant
+
+        return current_tenant()
+    except Exception:
+        return None
+
+
 async def _claim(message_id: str, *, stale: bool) -> int | None:
-    """Claim one row for a run. Returns its try number, or None."""
+    """Claim one row for a run. Returns its try number, or None. The row's
+    org is the bound tenant, and it sets the stale time (:func:`stale_for`)."""
     sql, params = (
-        (_CLAIM_STALE_SQL, {"id": message_id, "max": MAX_TRIES, "stale": STALE_S})
+        (_CLAIM_STALE_SQL, {"id": message_id, "max": MAX_TRIES,
+                            "stale": stale_for(_bound_org())})
         if stale else
         (_CLAIM_FRESH_SQL, {"id": message_id, "max": MAX_TRIES})
     )
@@ -1091,7 +1172,8 @@ def _swept(org: str) -> bool:
     return org.lower() in {o.strip().lower() for o in flags.assistant_orgs()}
 
 
-def _ai_path_down(code: str, exc: BaseException, run_started: float) -> bool:
+def _ai_path_down(code: str, exc: BaseException, run_started: float,
+                  cap: float | None = None) -> bool:
     """Did Metorite's AI path fail to answer (WAC-13)?
 
     ``connection`` always: the Router or the model refused or dropped the
@@ -1102,8 +1184,9 @@ def _ai_path_down(code: str, exc: BaseException, run_started: float) -> bool:
     """
     if code not in UNAVAILABLE_CODES:
         return False
+    cap = RUN_TIMEOUT_S if cap is None else cap
     own_limit = (type(exc) is TimeoutError
-                 and time.time() - run_started >= RUN_TIMEOUT_S - 1)
+                 and time.time() - run_started >= cap - 1)
     if not own_limit:
         return True
     from gateway.routes.v1_compat import router_failed_since
@@ -1739,6 +1822,8 @@ async def _model_answer(req: RunRequest, message: str,
         await _show_typing(req)
     _WAITING_ON_MODEL[req.message_id] = req
     run_started = time.time()
+    # HRD-6: a long-read org gets the longer cap. Every other org keeps 240 s.
+    run_cap = run_timeout_for(req.organization_id)
     # WS-53 CRM-Q33 part 2: the holder of the CRM's one text question. The
     # run's tasks copy the context, so they share this one holder.
     crm_asks = _open_crm_asks(req.organization_id)
@@ -1755,22 +1840,27 @@ async def _model_answer(req: RunRequest, message: str,
                 notify=_notifier(req), writes=writes,
                 document=_document_renderer(req) if documents else None)
                 if native else contextlib.nullcontext()) as wa_run:
-            result = await _still_working(req, wa_run, asyncio.wait_for(
-                _executor()(
-                    AGENT, payload,
-                    run_id=run_id,
-                    thread_id=req.chat_session_id,
-                    model=None,
-                    # D-WAC-3: the link's org, bound explicitly.
-                    organization_id=req.organization_id,
-                    # H-73: the member who pays is the link's member.
-                    session_user=req.member_email,
-                    # WS-63 PZ-2: the link's thread is the member's own. A
-                    # room is refused before the run, and `shared` says so.
-                    solo_room=not shared,
-                ),
-                timeout=RUN_TIMEOUT_S,
-            ))
+            try:
+                result = await _still_working(req, wa_run, asyncio.wait_for(
+                    _executor()(
+                        AGENT, payload,
+                        run_id=run_id,
+                        thread_id=req.chat_session_id,
+                        model=None,
+                        # D-WAC-3: the link's org, bound explicitly.
+                        organization_id=req.organization_id,
+                        # H-73: the member who pays is the link's member.
+                        session_user=req.member_email,
+                        # WS-63 PZ-2: the link's thread is the member's own. A
+                        # room is refused before the run, and `shared` says so.
+                        solo_room=not shared,
+                    ),
+                    timeout=run_cap,
+                ))
+            finally:
+                # HRD-6: an early message that is on its way lands first, so
+                # "Please wait" never follows the answer or the failure text.
+                await _settle_early_message(wa_run)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -1779,7 +1869,7 @@ async def _model_answer(req: RunRequest, message: str,
                      message_id=req.message_id, code=code,
                      error_type=type(exc).__name__)
         _WAITING_ON_MODEL.pop(req.message_id, None)  # no hold note after this
-        if _ai_path_down(code, exc, run_started):
+        if _ai_path_down(code, exc, run_started, run_cap):
             # WAC-13: Metorite itself did not answer. In an org that the
             # sweep visits, the message waits, and the sweep answers it when
             # the AI path is back. The member hears so once. Elsewhere no
@@ -2034,6 +2124,20 @@ def _notifier(req: RunRequest) -> Callable[[str], Awaitable[bool]]:
         return True
 
     return _notify
+
+
+async def _settle_early_message(wa_run: Any) -> None:
+    """Let the line of a slow tool (HRD-6) land before the answer goes.
+
+    ``progress_notice.settle_channel`` returns at once when no early message
+    is on its way, which is always so with the flag off."""
+    if wa_run is None:
+        return
+    try:
+        from acb_skills.progress_notice import settle_channel
+    except Exception:  # pragma: no cover - ships with the platform
+        return
+    await settle_channel(wa_run)
 
 
 async def _still_working(req: RunRequest, wa_run: Any,
@@ -2343,6 +2447,9 @@ async def _sweep_org(org: str, *, back: bool = True) -> list[RunRequest]:
     A row that used its tries gets its last word once, here: the UPDATE
     that closes it returns it only once (:func:`_close_used_up`).
     """
+    # HRD-6: the stale time of THIS org. The pass binds one org, and FORCE RLS
+    # keeps each row of the pass in it, so it is the time of each row.
+    stale = stale_for(org)
     token = bind_tenant(org)
     try:
         async with tenant_session() as db:
@@ -2353,13 +2460,13 @@ async def _sweep_org(org: str, *, back: bool = True) -> list[RunRequest]:
             # Exhausted first: its own `state` filter is what keeps a
             # `sending` row from the general text, not the order.
             exhausted = (await db.execute(text(_EXHAUSTED_SQL), {
-                "max": MAX_TRIES, "stale": STALE_S, "live": live,
+                "max": MAX_TRIES, "stale": stale, "live": live,
             })).mappings().all()
             unconfirmed = (await db.execute(
-                text(_UNCONFIRMED_SQL), {"stale": STALE_S, "live": live},
+                text(_UNCONFIRMED_SQL), {"stale": stale, "live": live},
             )).fetchall()
             rows = (await db.execute(text(_STALE_SQL), {
-                "max": MAX_TRIES, "stale": STALE_S, "expire": EXPIRE_S,
+                "max": MAX_TRIES, "stale": stale, "expire": EXPIRE_S,
                 "n": SWEEP_BATCH, "back": back,
             })).mappings().all()
         for row in exhausted:

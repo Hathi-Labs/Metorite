@@ -20,19 +20,29 @@
  */
 import { useEffect, useState } from "react";
 
+import { relativeTime } from "@/lib/taskCard";
+
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-import { agentsOverviewApi } from "../lib/api";
+import { agentRecentRunsApi, agentsOverviewApi } from "../lib/api";
 import {
   type AgentAtWork,
+  type AgentRunsRead,
   type AgentsAtWorkRead,
+  RUNS_EMPTY_COPY,
+  RUNS_ERROR_COPY,
+  RUNS_TITLE,
+  RUNS_TRUNCATED_COPY,
+  RUNS_UNAVAILABLE_COPY,
+  runTimeWord,
   EMPTY_COPY,
   ERROR_COPY,
   SECTION_TITLE,
   TRUNCATED_COPY,
   lastRunLine,
+  outcomeWord,
   outcomeChip,
   outcomeIcon,
   runsWord,
@@ -61,9 +71,81 @@ export function useAgentsAtWork(): AgentsAtWorkRead {
   return read;
 }
 
+/** One read of the last runs of one agent, when its list opens. */
+export function useAgentRuns(agentKey: string): AgentRunsRead {
+  const [read, setRead] = useState<AgentRunsRead>({ kind: "loading" });
+  useEffect(() => {
+    let live = true;
+    agentRecentRunsApi
+      .read(agentKey)
+      .then((runs) => {
+        if (live) setRead(runs ? { kind: "ready", runs } : { kind: "unavailable" });
+      })
+      .catch(() => {
+        if (live) setRead({ kind: "error" });
+      });
+    return () => {
+      live = false;
+    };
+  }, [agentKey]);
+  return read;
+}
+
 const CHIP = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium";
 
+/** The last runs of one agent. Lean rows: no trace, which stays executive-only. */
+export function AgentRunsView({ read, nowMs = Date.now() }: { read: AgentRunsRead; nowMs?: number }) {
+  return (
+    <div data-agent-runs="" aria-label={RUNS_TITLE} className="basis-full pt-1">
+      {read.kind === "loading" ? (
+        <Skeleton className="h-6 w-full" />
+      ) : read.kind === "error" ? (
+        <p role="alert" className="text-xs text-foreground">
+          {RUNS_ERROR_COPY}
+        </p>
+      ) : read.kind === "unavailable" ? (
+        <p className="text-xs text-muted-foreground">{RUNS_UNAVAILABLE_COPY}</p>
+      ) : read.runs.runs.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{RUNS_EMPTY_COPY}</p>
+      ) : (
+        <>
+          <ul className="divide-y divide-border">
+            {read.runs.runs.map((run) => (
+              <li
+                key={run.id}
+                data-agent-run={run.id}
+                className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-1 text-xs"
+              >
+                <span className={`${CHIP} ${outcomeChip(run.state)}`}>{outcomeWord(run.state)}</span>
+                <span className="text-muted-foreground">
+                  {run.started_at ? relativeTime(run.started_at, nowMs) : "Not started"}
+                </span>
+                <span className="tabular-nums text-muted-foreground">{runTimeWord(run.run_seconds)}</span>
+                {run.task ? <span className="min-w-0 flex-1 truncate text-foreground">{run.task.title}</span> : null}
+                {run.error ? (
+                  <span data-agent-run-error="" className="basis-full text-foreground">
+                    {run.error.what}
+                    {run.error.next_step ? ` ${run.error.next_step}` : ""}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {read.runs.truncated ? (
+            <p className="pt-1 text-xs text-muted-foreground">{RUNS_TRUNCATED_COPY}</p>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AgentRuns({ agentKey, nowMs }: { agentKey: string; nowMs: number }) {
+  return <AgentRunsView read={useAgentRuns(agentKey)} nowMs={nowMs} />;
+}
+
 function AgentRow({ agent, nowMs }: { agent: AgentAtWork; nowMs: number }) {
+  const [open, setOpen] = useState(false);
   const outcome = agent.last_run?.state ?? "";
   const glyph = outcomeIcon(outcome);
   return (
@@ -105,7 +187,11 @@ function AgentRow({ agent, nowMs }: { agent: AgentAtWork; nowMs: number }) {
           <span data-agent-last-run="">{lastRunLine(agent.last_run, nowMs)}</span>
         )}
         <span className="tabular-nums">{runsWord(agent.runs)}</span>
+        <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+          {open ? "Hide runs" : RUNS_TITLE}
+        </Button>
       </div>
+      {open ? <AgentRuns agentKey={agent.key} nowMs={nowMs} /> : null}
     </li>
   );
 }

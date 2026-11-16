@@ -6043,6 +6043,11 @@ One more mutation removed the `sni_hostname` extension. The real TLS test failed
 **D-EM-61.** No member chooses the model or the tier of an email AI task. Our
 code chooses each tier. This amends D-EM-7, which took the rules model only.
 
+**Amended 2026-11-16 (owner, task 3541, answer 3715a9c6).** "Draft with AI"
+moves from `tier-fast` to `tier-powerful`. The owner chose a better draft and
+accepted a few seconds more for each click. The member still chooses no tier.
+`tier_for_size` never lowers a tier, so a long thread stays on `tier-powerful`.
+
 **Status.** ✅ MERGED #759 (`cc0e5ba4d`, 2026-10-09). No migration and no
 flag. The slice is AGENT-SAFE.
 
@@ -6052,7 +6057,7 @@ it:
 | Row | Field | Tier now |
 |---|---|---|
 | Draft writing model | `draft_model` | `tier-powerful` |
-| Manual draft model | `compose_model` | `tier-fast` |
+| Manual draft model | `compose_model` | `tier-powerful` (was `tier-fast` until 2026-11-16) |
 | Email chat model | `chat_model` | `tier-powerful`, or the tier policy when `AI_TIER_ROUTING` covers email-assistant (D90) |
 
 The email agent's `update_assistant_settings` tool loses `draft_model` and
@@ -6067,8 +6072,8 @@ never a member choice, and they do not change.
 |---|---|---|
 | A rule draft (REPLY, DRAFT_EMAIL) | `actions._apply_rule_actions` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
 | A follow-up nudge | `followups._maybe_send_follow_up_reminders` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
-| "Draft with AI", reply | `drafting.draft_reply_smart` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
-| "Draft with AI", composer | `drafting._compose_assist_run` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
+| "Draft with AI", reply | `drafting.draft_reply_smart` | `EMAIL_TASK_TIERS["compose"]`, `tier-powerful` (2026-11-16) |
+| "Draft with AI", composer | `drafting._compose_assist_run` | `EMAIL_TASK_TIERS["compose"]`, `tier-powerful` (2026-11-16) |
 | The email chat | `chat.ai_chat`, `EmailAssistantChat.tsx`, `chat/page.tsx` | `tier-powerful`, or no model for a covered agent |
 | The rule match, thread status, cold check and sender pin | `decide_features` | `tier-decide` (D-EM-7) |
 | The old rule call outside `on` | `engine` | `tier-fast` |
@@ -18376,6 +18381,7 @@ owner's, except where a row says "agent decision".
 | **D-EM-58** | **A banner in the header of the email app shows each mailbox that syncs.** It names the mailbox, shows the progress as a count or a percent, and says that the sync still runs. It goes away when the sync ends. It shows for each import, not only the first one. It uses the one design system. (Owner, 2026-10-07.) EM-S9 builds it for the first import. EM-S9b makes a Resync write progress, so the same banner shows during a Resync. |
 | **D-EM-59** | **After the first import, the setup invites the member to set up AI rules, when the mailbox has none.** It happens on the first connect of a mailbox only. A sort of the imported mail costs AI compute, so it stays opt-in, and the step shows its estimate first. (Owner, 2026-10-07.) |
 | **D-EM-60** | **A second mailbox goes through the same flow, plus one choice.** The member copies the rules of a mailbox that they pick, or sets up new rules. The copy keeps each folder and label name. The answer names each name that the new mailbox does not hold, and the provider makes it on first use. (Owner, 2026-10-07. The rule for a missing name is an agent decision.) |
+| **D-EM-73** | **Background work that changes a mailbox shows in the sync banner.** It extends D-EM-58 from a sync to a run of the rules over older mail (EM-S11), and then to the cleaner sweep (EM-S11b). One row for each mailbox. The end is honest: done, failed or stopped, and never "done" for a run that a restart ended. A test run shows no row. (Owner, 2026-11-14, task 3165.) |
 
 ### 14.4 The design
 
@@ -18679,6 +18685,22 @@ text.
 - **The poll.** It reuses the poll of the first sync (`app/email/page.tsx:358-374`). EM-S9b widens
   its condition to "a row shows", so it also runs during a Resync.
 
+#### 14.4.6b Background work on a mailbox, in the same banner (D-EM-73, EM-S11)
+
+The owner asked on 2026-11-14 (task 3165). A run of the rules over older mail moves mail and adds labels in the inbox. "Process past emails" in AI settings starts one, and so does "Sort my imported mail" in the rules step. Today only AI settings shows its progress (`PastJobBanner` in `components/automation/AISettingsView.tsx`). So a member who reads the inbox sees mail move, and nothing says why.
+
+- **The place.** The sync banner of §14.4.6 gets a second kind of row, "Sorting with your rules". It has the same shape and the same place: `MailboxChip`, `ProgressBar` and a count. The change adds no second banner, no mark in the mailbox list and no modal.
+- **One row for each mailbox.** An import or a Resync row wins. The sorting row shows when that row ends. EM-T5b-4 ("not sorted yet") uses this row when it is built, and never adds a second row.
+- **The data.** While a run that applies is in flight, `GET /email/accounts` adds `rules_job` to each mailbox of the viewer: `{phase, processed, total}`. The route reads the one tracker, `_PAST_JOBS` in `routes/email/automation/runner.py`, with the owner check of `GET /rules/process-past/status`. The gateway runs one worker, so the route and the job share the tracker. The change adds no route, no table and no second poll. The poll of §14.4.6 runs while a row shows.
+- **The start.** A run that the member starts in AI settings or in the rules step makes the page read the mailboxes at once, so the row shows with no wait. A run that the chat starts shows at the next read of the mailboxes.
+- **The phases.** In `downloading` the row reads "Getting older mail to sort", with no bar. In `processing` it draws a bar of `processed` over `total`, and "340 of 900 emails".
+- **A test run shows no row.** A test run (`dry_run`) changes no mail. AI settings keeps its own banner for it.
+- **The end.** The row becomes one line that the member closes: "Sorted 900 emails. Your rules moved 312.", with the link "See what changed" to the History of AI settings. A run that fails names the cause and the next step: "Sorting stopped: <cause>. Run it again in AI settings."
+- **A run that stops with no end.** The tracker lives in the memory of the gateway. A restart ends the run and empties the tracker, and each release slot restarts the gateway. So the page reads a change from running to nothing as a stop: "Sorting stopped at 340 of 900. Run it again in AI settings. It skips the mail that is already sorted." A new run skips that mail, because `skip_processed` is on by default. The row never says "done" for a run that did not end.
+- **The rules step.** While `OnboardingPanel` shows the rules step for the mailbox in view, the header leaves that mailbox out. The step draws the same count from the same row model. This is the rule "One surface, not two" of §14.4.6.
+- **Chat.** `run_rules` already reads `GET /email/rules/process-past/status` (`acb_skills/chat_parity.py`). So "How far along is the sorting?" works in chat, and EM-S11 adds no tool.
+- **The cleaner sweep (EM-S11b).** The cleaner sweep moves mail out of the inbox in bulk too (`GET /email/cleanup/status`). It uses the same tracker class (`routes/email/automation/jobs.py`). EM-S11b shows it in the same row, as "Cleaning up old mail". The order in one row is the import first, then the rules run, then the sweep.
+
 #### 14.4.7 The rules step, and a second mailbox
 
 - **The invitation exists.** EM-S10 adds the estimate. "Sort my imported mail" first reads
@@ -18764,6 +18786,8 @@ migration.
 | **EM-S9** | 🟢 AGENT-SAFE · visual review | No | The sync banner in the header, for the first import | §14.6.9 · ✅ MERGED #717 (2026-10-07) |
 | **EM-S9b** | 🟢 AGENT-SAFE · R8 | No | A Resync writes progress, so the banner shows during a Resync | §14.6.9b |
 | **EM-S10** | 🟢 AGENT-SAFE · R8 · visual review · ✅ MERGED #721 (2026-10-07) | No | The estimate in the rules step, and `will_create` in the copy | §14.6.10 |
+| **EM-S11** | 🟢 AGENT-SAFE · visual review | No | The rules run in the sync banner: the count, the end line, the stop line, and no row for a test run (task 3165) | §14.4.6b |
+| **EM-S11b** | 🟢 AGENT-SAFE · visual review | No | The cleaner sweep in the same row (task 3166), after EM-S11 | §14.4.6b |
 | **Flip A** | 🟡 GRANT `enforcement-flip` | — | `EMAIL_HTML_FROM_PROVIDER=true`, then `EMAIL_HTML_HOT_ONLY=true` | The live check of §14.6.3 |
 | **Flip B** | 🔴 OWNER ONLY | — | `EMAIL_HTML_CLEAR=on` | The live check of §14.6.4 |
 | **Flip C** | 🔴 OWNER ONLY | — | `EMAIL_SYNC_WINDOW_CHOICE=true` | The live check of §14.6.8 |
@@ -21151,9 +21175,9 @@ in step.
 
 ### 18.11 A redraft through the chat keeps the member's edits (2026-11-05, owner)
 
-**Status:** 🔨 BUILT on branch `mt-5f606b3e-redraft-in-place`, not merged, dark behind
+**Status:** ✅ BUILT and MERGED on `main` (#1785, task 1650), dark behind
 `EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
-1533, slice 3 of 4 (task 1650).
+1533, slice 3 of 4. The link covers a new mail only. HRD-8b (§21.9, item 11) extends it.
 
 **Fix round 1 (2026-11-05, Opus review).** A steer carries a snapshot of each open
 new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" line names
@@ -21922,6 +21946,12 @@ fences run against the real database and Redis (`bash scripts/dev_db.sh`).
    still right for the new sends? The proposal says yes.
 10. **The flag owner.** The flag moves mail to real people. §3a rule 3 of `CLAUDE.md`
     says that the owner flips it. Confirm that no session may flip it.
+11. **The act of a redraft (HRD-8b, HIGH, task 3459).** The held-card record keeps its act kind.
+    The revise link of §18.11 then covers a forward and a reply, and not only a new mail. A new card with
+    another act kind, or other To and Cc, shows a plain line. The owner decides two things. First, the words
+    of that line. Second, whether a card with a changed act still takes the revise link. The safe default
+    is that it takes the link and shows the line. The Redis case runs in `TestTheOrderOnARealRedis`,
+    which skips in pr-check until task 1856 adds the Redis service. `chat_failure_modes.md` §6 holds the row.
 
 
 ### 21.10 Build record (2026-10-22)
