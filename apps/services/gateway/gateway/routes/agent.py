@@ -3434,8 +3434,12 @@ async def run_agent_stream_endpoint(
         if _resume_launch is not None:
             # RESUME-2a review, P2: `_resume_from_row` found the thread at
             # rest, then claimed the row. A run that any party started since
-            # then keeps the thread, and the claim goes back. This comes
-            # before the mint, so a refusal writes no reply row.
+            # then keeps the thread, and the claim goes back. This check
+            # comes before the mint, so ITS refusal writes no reply row. The
+            # exclusive refusal of `start_detached` below comes AFTER the
+            # mint, so it leaves one empty reply row. The mint stays before
+            # the start: the run, its checkpoints and the restart sweep
+            # (`record.messageId`) write into that row.
             await _refuse_if_any_run_is_active(thread_id)
     except HTTPException:
         # The run will not start, so its cap reservation goes too.
@@ -3578,7 +3582,9 @@ async def run_agent_stream_endpoint(
             count_member_steers(_actor, _taken_steers)
             # Review, P2: `exclusive` refuses while ANY run is live on the
             # thread, so a continuation never cancels a run of this member
-            # in another tab. A refusal raises before anything began.
+            # in another tab. A refusal raises before the run began. The
+            # reply row minted above stays, empty (the note at
+            # `_refuse_if_any_run_is_active` says why).
             _resume_launch.phase = "starting"
             try:
                 await start_detached(

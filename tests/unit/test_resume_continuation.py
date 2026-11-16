@@ -26,6 +26,11 @@ What it holds (R7):
    of the request, never reach the executor.
 7. The note is never the member's words: memory reads and extracts ``""``,
    the typed and sent words are ``""``, and the native session skips the run.
+8. The follow-ups of the RESUME-2a re-review. P2-2: with only
+   ``CHAT_RESUME_ORGS`` on, a live approve still writes the SPENT mark, and
+   the grant keeps its own flag. P2-3: the claim gives TAKEN, SPENT or
+   UNKNOWN, and UNKNOWN gives the neutral note. ``start_detached`` reads the
+   task of the thread after its await.
 
 Run::
 
@@ -58,7 +63,7 @@ from tests.unit.test_chat_deploy_recovery import (  # noqa: E402, F401
     liveness,
     no_persist,
 )
-from tests.unit.test_late_approve_grant import (  # noqa: E402, F401
+from tests.unit.test_late_approve_grant import (  # noqa: E402
     DEALS,
     WRITES,
     _cards,
@@ -941,21 +946,161 @@ def test_a_lock_timeout_and_a_deadlock_mean_no_claim(monkeypatch):
 # 8. Review of RESUME-2a: P1-A (the twin guard fails closed)
 # ---------------------------------------------------------------------------
 
-def test_with_no_late_approve_scope_the_yes_is_refused_and_the_card_shows(
+def test_with_no_scope_the_yes_is_refused_and_the_card_shows(
     resume_on, ask_db, liveness, monkeypatch,
 ):
-    """P1-A (b): ``claim_act`` fails CLOSED. A run with no late-approve scope
-    (the flag off for the run's org) takes no yes, so the card shows and
-    nothing writes before the member answers it. Mutation: return True from
-    ``claim_act`` when the scope is None -> one write and no card -> red."""
+    """P1-A (b): ``claim_act`` fails CLOSED. A run with no scope (both flags
+    off for the run's org, after P2-2) takes no yes, so the card shows and
+    nothing writes before the member answers it. Its outcome is ``unknown``,
+    never ``spent`` (P2-3). Mutation: give ``CLAIM_TAKEN`` from ``claim_act``
+    when the scope is None -> one write and no card -> red."""
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
     out = _yes_run(_stored(), lambda: _keyed(
         update_deal_status, deal_id="d-neuro", stage="Payment Complete"))
     assert WRITES == [] and out["cards"], "the card showed, and REJECT wrote nothing"
-    assert out["state"].outcome == "spent"
-    assert resume_on.data == {}, "no scope writes no mark"
+    assert out["state"].outcome == "unknown"
+    assert resume_on.data == {} and resume_on.calls == [], "no scope reads and writes nothing"
+
+
+# ---------------------------------------------------------------------------
+# 8b. RESUME-2a follow-up: P2-2 (either flag writes the mark) and P2-3 (three
+#     answers of the claim)
+# ---------------------------------------------------------------------------
+
+def _plain_card(deal_id: str = "d-neuro", stage: str = "Payment Complete",
+                keyed: bool = True) -> Any:
+    """The plain card of the stand-in call, as the gate builds it."""
+    from acb_skills.ask_tools import PlainCard
+
+    title = DEALS[deal_id]
+    keys = card_call_keys(update_deal_status, deal_id=deal_id, stage=stage) if keyed else None
+    return PlainCard(f"Move this deal to {stage}?", f"{title} → {stage}",
+                     f"deal: {title}\nstage: {stage}", None, keys, update_deal_status, False)
+
+
+def _in_run(body: Any, tid: str = "t-claim") -> Any:
+    """Run *body* (an async callable) in a run bound to *tid*, org A and
+    Alice, in a task of its own."""
+    async def _bound() -> Any:
+        executor._stream_relay_thread_id.set(tid)
+        _bound_run(tid)
+        return await body()
+
+    async def go() -> Any:
+        return await asyncio.create_task(_bound())
+
+    return asyncio.run(go())
+
+
+def test_the_claim_gives_taken_spent_and_unknown(resume_on, monkeypatch):
+    """P2-3. ``claim_act`` tells three answers apart. TAKEN once, then SPENT.
+    A Redis fault, no scope and a card with no act give UNKNOWN, never
+    SPENT. Mutation: give SPENT for a fault -> red."""
+    from acb_common import get_settings
+
+    card = _plain_card()
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_TAKEN
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_SPENT
+    resume_on.fail = ConnectionError("redis down")
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_UNKNOWN
+    resume_on.fail = None
+    no_act = _plain_card(keyed=False)
+    assert _in_run(lambda: late_approve.claim_act(no_act)) == late_approve.CLAIM_UNKNOWN
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_UNKNOWN
+    assert {late_approve.CLAIM_TAKEN, late_approve.CLAIM_SPENT,
+            late_approve.CLAIM_UNKNOWN} == {"taken", "spent", "unknown"}
+
+
+def test_a_claim_fault_shows_the_card_and_the_note_never_says_it_ran(
+    resume_on, ask_db, liveness,
+):
+    """P2-3. A Redis fault at the claim: the card shows (fail closed), the
+    outcome is ``unknown``, and the note says that the change MAY have run.
+    It never says that the change ran. Mutation: map UNKNOWN to ``spent`` in
+    ``resume_answer``, or drop the ``unknown`` row of the executor's map ->
+    red."""
+    resume_on.fail = ConnectionError("redis down")
+    out = _yes_run(_stored(), lambda: _keyed(
+        update_deal_status, deal_id="d-neuro", stage="Payment Complete"))
+    assert WRITES == [] and out["cards"], "the card showed, and REJECT wrote nothing"
+    assert out["state"].outcome == "unknown"
+
+    events, payload = _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume())
+    assert WRITES == []
+    assert _cards(liveness, "t-pro"), "the card showed"
+    assert not [e for e in events if e.get("type") == "TOOL_CALL_RESULT" and e.get("success") is False]
+    note = payload["message"]
+    assert "It may have run already." in note
+    assert "already ran in this chat" not in note and "Metorite ran the tool" not in note
+
+
+def test_the_unknown_note_is_neutral_and_fenced():
+    """P2-3: the one new outcome lives in the one seam of the notes
+    (``chat_recovery``). Its note says neither that the change ran nor that
+    nothing ran."""
+    from gateway import chat_recovery as cr
+
+    assert cr.RESUMED_UNKNOWN == "unknown"
+    outcomes = [cr.RESUMED_APPROVED, cr.RESUMED_CHANGED, cr.RESUMED_NOT_RUN,
+                cr.RESUMED_SPENT, cr.RESUMED_UNKNOWN]
+    assert len(set(outcomes)) == len(outcomes)
+    notes = {o: cr.compose_resumed_call_note("Move it?", "ok", o) for o in outcomes}
+    assert len(set(notes.values())) == len(notes), "each outcome has its own note"
+    unknown = notes[cr.RESUMED_UNKNOWN]
+    assert "could not tell if this change ran already" in unknown
+    assert "It may have run already." in unknown
+    assert "did not write the approved values" in unknown
+    assert unknown.count("<<<tool-result>>>") == 1
+
+
+def test_a_live_approve_with_only_resume_on_marks_the_act_for_a_later_flip(
+    resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """P2-2. ``CHAT_RESUME_ORGS`` on and ``CHAT_LATE_APPROVE_ORGS`` off: a
+    live approve of a twin card still writes the SPENT mark, and only the
+    mark. The org then joins the late-approve list within the life of a row.
+    The stored call of the OLD twin card reads SPENT and writes nothing.
+    Mutation: gate ``note_approved`` on ``CHAT_LATE_APPROVE_ORGS`` alone ->
+    no mark -> the old card writes again -> red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    tid = "t-p22-flip"
+    out = _run(liveness, tid, live="APPROVE", deal_id="d-neuro", stage="Payment Complete")
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert list(resume_on.data.values()) == [late_approve._SPENT], "the mark, and no offer or grant"
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
+    twin = _yes_run(_stored(), lambda: _keyed(
+        update_deal_status, deal_id="d-neuro", stage="Payment Complete"), tid=tid)
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")], "the old card writes nothing"
+    assert twin["cards"] and twin["state"].outcome == "spent"
+
+
+def test_the_grant_keeps_its_own_flag(resume_on, monkeypatch):
+    """P2-2 widens the writer of the SPENT mark only. With only
+    ``CHAT_RESUME_ORGS`` on, a grant in place is never used, and the card
+    shows: the members that get a grant do not change. Mutation: open
+    ``take_grant`` with ``spend=True`` -> the grant is used -> red."""
+    from acb_common import get_settings
+    from acb_common.tenant_redis import key, organization_scope
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    card = _plain_card()
+    act = late_approve.act_of(card, "orchestrator")
+    assert act is not None
+    with organization_scope(_ORG_A):
+        gkey = key(late_approve.GRANT_NAMESPACE, _ALICE, "t-grant", act.digest).value
+    resume_on.data[gkey] = late_approve._encode("rid-x", act.text, act.keys)
+    assert _in_run(lambda: late_approve.take_grant(card), tid="t-grant") is False
+    assert gkey in resume_on.data, "the grant is not read"
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
+    assert _in_run(lambda: late_approve.take_grant(card), tid="t-grant") is True, "non-vacuity"
 
 
 # ---------------------------------------------------------------------------
@@ -1202,3 +1347,36 @@ def test_start_detached_exclusive_refuses_any_live_run(liveness, monkeypatch):
             await stream_relay.start_detached("t-ex2", _gen(), actor=None, exclusive=True)
 
     asyncio.run(go_down())
+
+
+def test_start_detached_exclusive_reads_the_task_after_its_await(liveness, monkeypatch):
+    """RESUME-2a follow-up. A run that registers its task on the thread while
+    ``is_active`` awaits still refuses the exclusive start, and it is never
+    cancelled. Mutation: read ``_DETACHED_TASKS`` before the await -> the
+    start goes on and cancels that run -> red."""
+    tid = "t-ex-late"
+
+    async def _gen():
+        for line in ():
+            yield line
+
+    async def go() -> None:
+        other = asyncio.create_task(asyncio.sleep(30))
+
+        async def _registers_during_the_await(_tid: str) -> bool:
+            stream_relay._DETACHED_TASKS[tid] = other
+            return False
+
+        monkeypatch.setattr(stream_relay, "is_active", _registers_during_the_await)
+        try:
+            with pytest.raises(stream_relay.SupersedeRefused):
+                await stream_relay.start_detached(tid, _gen(), actor=None, exclusive=True)
+            assert not other.done(), "the other run goes on"
+            assert stream_relay._DETACHED_TASKS.get(tid) is other
+        finally:
+            other.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await other
+            stream_relay._DETACHED_TASKS.pop(tid, None)
+
+    asyncio.run(go())
