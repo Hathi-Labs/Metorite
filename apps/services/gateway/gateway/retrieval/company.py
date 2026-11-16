@@ -406,17 +406,28 @@ def _kept(hit: Hit, after: datetime) -> bool:
     return stamped is None or stamped >= after
 
 
-def _order(apps: str | None) -> list[str]:
+def _known(user: UserContext) -> list[str]:
+    """The source keys that the route knows for *user*, in the order of the
+    registry. ``chat`` is known only while ``CHAT_SEARCH_ORGS`` names the org
+    (HRD-21). So with the flag off, ``apps=chat`` and the 422 of an unknown
+    app are the ones of before HRD-21, byte for byte, and no text names a
+    dark source."""
+    named = find.chat_search_named(user.organization_id)
+    return [key for key in REGISTRY if key != find.CHAT_KEY or named]
+
+
+def _order(apps: str | None, user: UserContext) -> list[str]:
     """The source keys to ask, the named ones first. An unknown key is a 422."""
+    known = _known(user)
     named = [a.strip().lower() for a in (apps or "").split(",") if a.strip()]
-    unknown = [a for a in named if a not in REGISTRY]
+    unknown = [a for a in named if a not in known]
     if unknown:
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown app {unknown[0]!r}. One of: {', '.join(REGISTRY)}.",
+            detail=f"Unknown app {unknown[0]!r}. One of: {', '.join(known)}.",
         )
     first = list(dict.fromkeys(named))
-    return first + [key for key in REGISTRY if key not in first]
+    return first + [key for key in known if key not in first]
 
 
 def _meaning_allowed(user: UserContext) -> bool:
@@ -1208,6 +1219,9 @@ async def _find_tail(
                        notes=ladder.notes["related"])
     ladder.ms["related"] = _ms_since(loop, started)
     why = ladder.skip_reasons(skipped)
+    # The miss of the FINAL answer: every hit, a past chat too (HRD-21). A past
+    # chat holds every word (`find.stamp_first`), so it makes no miss. The
+    # trigger of pass 2 read the records only (`company_search`).
     miss = bool(find.missed(found, words_of))
     _events.info(
         "search.company.ladder", hits=len(shown), exact_ms=ladder.ms["exact"],
@@ -1390,7 +1404,7 @@ async def company_search(
     current = _chat_current(user, current_chat)
     # An app the member does not hold is not asked, and it is not "skipped":
     # the member has no such app. Each source checks the feature again.
-    order = [key for key in _order(apps) if holds(user, REGISTRY[key].feature)
+    order = [key for key in _order(apps, user) if holds(user, REGISTRY[key].feature)
              and (key != find.CHAT_KEY or current is not None)]
     hybrid = _meaning_allowed(user)
     recency = recency_enabled()
@@ -1441,9 +1455,11 @@ async def company_search(
 
     words_of = find.content_words(words) if find_on else None
     if words_of is not None:
-        # HRD-21: a past chat matched by rung 6, `chat`, and every other
-        # pass-1 hit by rung 1. A stamp keeps its lower rung, so this comes first.
-        found = {key: [find.stamped(h, words_of, find.first_rung(key)) for h in hits]
+        # HRD-21: a past chat matched by rung 6, `chat`, and holds every word
+        # (its search proved them, its printed text need not show them). Every
+        # other pass-1 hit matched by rung 1, counted on its printed text. A
+        # stamp keeps its lower rung, so this comes first.
+        found = {key: [find.stamp_first(key, h, words_of) for h in hits]
                  for key, hits in found.items()}
     if not recency:
         return {
@@ -1452,8 +1468,11 @@ async def company_search(
             "skipped": skipped,
         }
     # HRD-21: rung 6 answers in pass 1 only (`find_engine.md` §3.1). The past
-    # chats take no part in the miss rule, the words alone or the near step,
-    # so those see the records as before. The chats join the merge below.
+    # chats take no part in the miss rule of pass 2, the words alone or the
+    # near step: the `miss` below reads the RECORDS only, so a chat that holds
+    # every word never stops the search for the records. The chats join the
+    # merge below. The `miss` of the log line (`_find_tail`) reads the final
+    # answer, chats too, so a chat with every word makes no miss there.
     past = found.pop(find.CHAT_KEY, None)
     # KR-ZERO: every app that answered found nothing. Ask again, each word alone.
     # With FIND_ORGS on, the miss of D-FIND-4 (§3.3): the best hit holds fewer

@@ -755,7 +755,8 @@ class Settings(BaseSettings):
     # WS-FIND HRD-21: CHAT_SEARCH_ORGS lists the org ids where company search
     # reads the member's own past chats (the `chat` source, rung 6). `*`
     # opens every org. Empty opens none, and the answer is the one of before
-    # HRD-21, byte for byte. Reader: `gateway.retrieval.find.
+    # HRD-21, byte for byte: `apps=chat` and each other unknown app get the
+    # 422 of before, whose list of keys has no `chat`. Reader: `gateway.retrieval.find.
     # chat_search_named`. A SIGHUP reload applies a change
     # (docs/flag_reload.md). The flip waits for the owner's preview. Spec:
     # find_engine.md sections 6 and 8.

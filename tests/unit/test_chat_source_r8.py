@@ -258,6 +258,11 @@ async def test_a_finds_her_own_solo_chats_and_no_other(world, marks, flags, app_
     assert MIRA_WORD not in json.dumps(answer)
     assert found[chats["by_mira"]]["snippet"] == ""
     assert found[chats["tapped"]]["snippet"] == ""
+    # Review P1: the SQL proved every word, so each chat holds 2 of 2, also
+    # the chat whose printed text («Weekly plan», "Your chat") shows none.
+    by_mira = found[chats["by_mira"]]
+    assert (by_mira["matched_by"], by_mira["covers"], by_mira["of"]) == ("chat", 2, 2)
+    assert {(h["covers"], h["of"]) for h in found.values()} == {(2, 2)}
     for name in ("marked", "room", "org_wide", "current", "seat", "agent_row", "null_kind",
                  "email_agent", "whatsapp", "tool", "b_own", "c_own"):
         assert chats[name] not in json.dumps(answer), name
@@ -349,6 +354,7 @@ async def test_a_reply_of_mira_makes_a_hit_with_no_snippet(world, marks, flags) 
     assert set(_chats(answer)) == {chats["own"]}
     hit = _chats(answer)[chats["own"]]
     assert hit["snippet"] == "" and MIRA_WORD not in json.dumps(answer["hits"])
+    assert (hit["covers"], hit["of"]) == (1, 1)
 
 
 # ── The flag off ────────────────────────────────────────────────────────────

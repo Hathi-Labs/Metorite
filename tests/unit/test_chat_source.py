@@ -35,14 +35,17 @@ from typing import Any
 import pytest
 from acb_skills import company_search_tools as cst
 from acb_skills import egress
+from fastapi import HTTPException
 from gateway import chat_search
 from gateway.retrieval import company, find, sources
+from gateway.retrieval.sources import Hit
 
 from tests.unit.test_company_search_recency import recency  # noqa: F401
 from tests.unit.test_company_search_sources import ALL, ORG, member
 from tests.unit.test_find_honest_zero import (  # noqa: F401
     MARKER,
     World,
+    _log,
     chat_orgs,
     find_on,
 )
@@ -125,8 +128,41 @@ CASES = [
     (f"{MARKER} Quasar", False, False, None),
     ("Snowflake printer", True, False, None),
     (f"{MARKER} Quasar", False, True, None),
-    ("Snowflake printer", False, False, "chat"),
+    ("Snowflake printer", False, False, "crm"),
 ]
+
+
+#: The 422 of an unknown app before HRD-21: the eight keys, with no `chat`.
+BEFORE_KEYS = ("tasks", "email", "people", "crm", "artifacts", "whatsapp", "knowledge",
+               "studio")
+
+
+@pytest.mark.parametrize("recency_on", [False, True])
+def test_a_dark_chat_key_is_the_unknown_app_of_before(
+        w, chats, recency, chat_orgs, recency_on) -> None:  # noqa: F811
+    """While ``CHAT_SEARCH_ORGS`` does not name the org, ``apps=chat`` gets the
+    422 of before HRD-21, byte for byte, and so does any unknown app: no
+    text names the dark source."""
+    recency(recency_on)
+    chat_orgs("")
+    for apps, bad in (("chat", "chat"), ("tasks,ledger", "ledger")):
+        with pytest.raises(HTTPException) as e:
+            _route("Snowflake printer", member(*ALL, "chat"), apps=apps, current_chat=HERE)
+        assert e.value.status_code == 422
+        assert e.value.detail == f"Unknown app {bad!r}. One of: {', '.join(BEFORE_KEYS)}."
+    assert chats.calls == []
+
+
+def test_an_open_chat_key_is_a_known_app(w, chats, recency, chat_orgs) -> None:  # noqa: F811
+    """With the org on the list, ``apps=chat`` asks the past chats first, and
+    the 422 of an unknown app names ``chat`` too."""
+    recency(True)
+    chat_orgs(ORG)
+    answer = _route("Snowflake printer", member(*ALL, "chat"), apps="chat", current_chat=HERE)
+    assert "chat" in {h["app"] for h in answer["hits"]} and chats.calls
+    with pytest.raises(HTTPException) as e:
+        _route("Snowflake printer", member(*ALL, "chat"), apps="ledger")
+    assert e.value.detail.endswith(f"One of: {', '.join(sources.REGISTRY)}.")
 
 
 @pytest.mark.parametrize("recency_on", [False, True])
@@ -141,7 +177,7 @@ def test_a_dark_chat_source_changes_no_answer(
     q, explain, spent, apps = case
     if spent:
         monkeypatch.setattr(company, "TOTAL_BUDGET_S", 0.0)
-    plain = _route(q, member(*ALL), explain=explain)
+    plain = _route(q, member(*ALL), explain=explain, apps=apps)
     with_chat = _route(q, member(*ALL, "chat"), explain=explain, apps=apps,
                        current_chat=HERE)
     assert _bare(with_chat) == _bare(plain)
@@ -202,6 +238,81 @@ def test_a_chat_with_every_word_does_not_stop_pass_2(w, open_chats) -> None:
     answer = _route(f"{MARKER} Quasar", member(*ALL, "chat"), current_chat=HERE)
     assert [h["id"] for h in answer["hits"]] == ["s-1"]
     assert w.asked(MARKER.lower()) and w.asked("quasar")
+
+
+# ── A past chat holds every word (review P1) ────────────────────────────────
+
+def _mira_only(chats: Chats) -> None:
+    """One past chat that holds the words only in a reply of Mira, so its
+    printed text (title, "Your chat", an empty snippet) shows none of them."""
+    chats.rows = [chat_search.ChatHit(session_id="s-2", title="Weekly plan",
+                                      last_activity=WHEN, snippet="")]
+    chats.words = {"s-2": "snowflake printer zqvortex quasar chat about pricing"}
+
+
+def test_a_past_chat_holds_every_word_of_the_query(w, open_chats) -> None:
+    """The chat's search proved each word in its title or in one row. The
+    snippet can show none of them, so its count is not of its printed text."""
+    _mira_only(open_chats)
+    answer = _route("Snowflake printer", member(*ALL, "chat"), current_chat=HERE)
+    (chat,) = [h for h in answer["hits"] if h["app"] == "chat"]
+    assert (chat["matched_by"], chat["covers"], chat["of"]) == ("chat", 2, 2)
+    assert chat["snippet"] == "" and "Snowflake" not in chat["title"]
+    first = cst._hit_lines(chat, dated=True)[0]
+    assert first.endswith("[past chat · 2 of 2 words]")
+
+
+def test_a_past_chat_sorts_before_a_hit_with_fewer_words(w, open_chats) -> None:
+    """The order of §3.4: the words first, then the rung. The deal with 2 of 2
+    words comes first, then the past chat, then the mail that shows 1 of 2."""
+    _mira_only(open_chats)
+    answer = _route("Snowflake printer", member(*ALL, "chat"), current_chat=HERE)
+    order = [(h["id"], h["covers"]) for h in answer["hits"]]
+    assert order[:2] == [("d-1", 2), ("s-2", 2)]
+    assert ("m-7", 1) in order[2:]
+
+
+def test_the_hint_of_a_past_chat_counts_no_word() -> None:
+    """"Your chat" holds the word "chat". A query "chat about pricing" must
+    not count it, because the count of a past chat is every word, by proof."""
+    hit = Hit(app="chat", kind="chat", id="s-2", title="Weekly plan", hint="Your chat",
+              href="/chat?do=open-chat&fill.session=s-2")
+    words = find.content_words("chat about pricing")
+    assert words == ["chat", "pricing"]
+    # Non-vacuity: the printed text alone would count 1, through the hint.
+    assert find.coverage(words, f"{hit.title} {hit.hint} {hit.snippet}") == 1
+    stamped = find.stamp_first(find.CHAT_KEY, hit, words)
+    assert (stamped.matched_by, stamped.covers, stamped.of) == ("chat", 2, 2)
+    # Every other source keeps the count of its printed text, at rung 1.
+    other = find.stamp_first("crm", dataclasses.replace(hit, app="crm", kind="deal"), words)
+    assert (other.matched_by, other.covers, other.of) == ("exact", 1, 2)
+
+
+def test_the_ladder_reads_no_miss_when_a_chat_holds_every_word(
+        w, open_chats, monkeypatch) -> None:
+    """The second pass reads the records only, so it still runs. The log line
+    reads the final answer, where the past chat holds every word."""
+    _mira_only(open_chats)
+    lines = _log(monkeypatch)
+    answer = _route(f"{MARKER} Quasar", member(*ALL, "chat"), current_chat=HERE)
+    assert answer["broadened"], "the records missed, so the words alone ran"
+    (ladder,) = [f for e, f in lines if e == "search.company.ladder"]
+    assert ladder["miss"] is False and ladder["hits"] == 1
+
+
+def test_a_query_past_the_word_cap_gives_no_chat(monkeypatch) -> None:
+    """The shared word rule checks at most ``MAX_QUERY_WORDS`` words. A chat
+    hit says that it holds every word, so a longer query gives no chat, and
+    the reader opens no session."""
+    from gateway.routes.projects.filters import MAX_QUERY_WORDS
+
+    def _no_session(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("the reader opened a session")
+
+    monkeypatch.setattr(chat_search, "tenant_session", _no_session)
+    many = " ".join(f"word{i}" for i in range(MAX_QUERY_WORDS + 1))
+    assert asyncio.run(chat_search.search_own_chats(member("chat"), many, 5,
+                                                    current=HERE)) == []
 
 
 def test_no_current_chat_asks_no_past_chat(w, open_chats) -> None:

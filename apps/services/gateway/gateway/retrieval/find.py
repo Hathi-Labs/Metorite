@@ -27,7 +27,7 @@ the answer of KR-ZERO, byte for byte.
   it proves nothing, so no line says that a record does not exist.
 * The past chats (HRD-21, §3.1 rung 6): :func:`chat_search_named` is the one
   reader of ``CHAT_SEARCH_ORGS``, :data:`CHAT_KEY` names the source and its
-  rung, and :func:`first_rung` stamps its hits ``chat``.
+  rung, and :func:`stamp_first` stamps its hits ``chat``, with every word.
 """
 
 from __future__ import annotations
@@ -657,10 +657,20 @@ TRACE_RUNGS: tuple[str, ...] = ("exact", "word", "near", "related")
 CHAT_KEY = "chat"
 
 
-def first_rung(key: str) -> str:
-    """The ``matched_by`` of a pass-1 hit of source *key*: ``chat`` for the
-    past chats (rung 6, HRD-21), and ``exact`` for every other source. Pure."""
-    return CHAT_KEY if key == CHAT_KEY else "exact"
+def stamp_first(key: str, hit: Any, words: list[str]) -> Any:
+    """*hit*, a hit of pass 1 of source *key*, with ``matched_by``, ``covers``
+    and ``of`` (§3.5). Pure.
+
+    A past chat (rung 6, HRD-21) says ``chat``, and it holds every word:
+    ``covers`` is ``of``. Its search proved each word of the query in its title
+    or in one row (``gateway.chat_search``). Its snippet can show none of
+    them, and its hint "Your chat" holds a word that the chat may not. So its
+    printed text does not decide its count. Every other source says
+    ``exact``, counted on its printed text, as :func:`stamped` counts it.
+    """
+    if key == CHAT_KEY:
+        return dataclasses.replace(hit, matched_by=CHAT_KEY, covers=len(words), of=len(words))
+    return stamped(hit, words, "exact")
 #: The codes of a "Where else" line (§3.6), in the order of its list: an app
 #: that was skipped, the past chats, and an app that is not open to the member.
 WHERE_ELSE: tuple[str, ...] = ("skipped", "past_chats", "not_open")

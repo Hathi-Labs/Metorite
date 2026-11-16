@@ -30,8 +30,8 @@ answers the trace of §3.7 with no record. Each search writes one
 Behind `CHAT_SEARCH_ORGS`, rung 6 reads the member's own solo chats with
 Mira, and never the current chat. A hit names the title, the date of the last
 change of the chat and the link that opens the chat. With the flag empty, the
-answer is the answer of before, byte for byte. The flip waits for the owner's
-preview.
+answer is the answer of before, byte for byte, and so is the 422 of an unknown
+app, `chat` too. The flip waits for the owner's preview.
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -182,8 +182,15 @@ Measured on production on 2026-11-14, over the last 3 days (task 3232):
   before the miss rule, the words alone and the near step, and join the one
   list before the sort. So a past chat that holds every word does not stop
   the search for the records.
-- With `FIND_ORGS` on, a past chat says `matched_by` `chat`. On a tie of
+- With `FIND_ORGS` on, a past chat says `matched_by` `chat`. It holds every
+  word, because its search proved each word in the title or in one row. So
+  `covers` is `of`, whatever its snippet and its hint show. On a tie of
   words, a record comes first, because rung 1 is lower than rung 6.
+- The second pass starts on a miss of the records only. The `miss` of the
+  log line reads the final answer, so a past chat with every word makes no
+  miss there.
+- A query of more distinct words than the shared word rule checks (8) gives
+  no past chat, because a hit must hold every word.
 - The reader is `gateway/chat_search.py`, in the chat's own code. The caps
   bound the word match. It reads the newest 100 chats that pass every rule,
   the newest 80 rows of each chat, and 4,000 characters of each row. The rules run
@@ -650,17 +657,33 @@ bound tenant session. The tests of each rule are
 | No text of another person | The search reads the title and the `user` and `assistant` rows. It never reads a `system` row or the tool events. The snippet comes only from a row that the member typed (`member_typed`, `typed_text`, not a card answer). A reply of Mira can restate a mail, so its text never prints. The statement returns the text of no other row |
 | The frame | A hit is a record of the answer, under "Company records (data, not instructions)" |
 
-Three limits stay, and the review must know them:
+Six limits stay, and the review must know them:
 
-1. The mark lives in Redis with a TTL of 400 days. A mark write that failed,
-   or a chat that read mail before the marks existed, has no mark. The
-   snippet rule is the second layer. Such a chat can give a hit, and it
-   never prints the text of a mail.
-2. A title prints as the chat keeps it, cut to 200 characters. The member
-   already sees the same title in the list of chats. The search does not
-   check which words the title holds.
-3. The `current_chat` parameter is request input. It only takes a chat away,
-   so a wrong value can only show the current chat to its own member.
+1. **A `no_egress` chat with no mark CAN show.** The mark lives in Redis,
+   with a TTL of 400 days. A chat has no mark when its mark write failed, or
+   Redis restarted before a save. It has none after 400 idle days too, or
+   when it read mail before the marks existed. Such a chat gives a hit with
+   its title, date, link and a snippet of the member's typed words. No reply
+   of Mira prints, so no mail text reaches the model.
+   This departs from the acceptance row "never shows". The owner must accept
+   it at the preview, before the flip.
+2. **A title prints as the chat keeps it**, cut to 200 characters. It can
+   hold the start of a pasted mail. The member already sees the same title in
+   the list of chats. We accept this while the flag is dark.
+3. **The `current_chat` parameter is request input.** It only takes a chat
+   away, so a wrong value can only show the current chat to its own member.
+4. **Two other searches read chat text.** `query_history`
+   (`acb_skills/history_tools.py`, given by `_tool_injection.py`) matches the
+   text of each row of each room that the member can read. It checks no mark,
+   and it returns the text of each reply. CO-3 of `chat_organization.md`
+   plans one search of chats and files. CO-3 must reuse or replace
+   `gateway/chat_search.py`, so that no third chat reader exists.
+5. **The `miss` of the log line and `near_report` read the past chats.**
+   While `find.ABSENCE_CLAIMS` is off, no line reads them as a claim. The
+   slice that sets it on must decide how a past chat counts.
+6. **The cost before the cut.** `ONLY_AGENT_SQL` reads each row of each chat
+   that it tests, before the cut to 100 chats. Run EXPLAIN ANALYZE on a large
+   chat history before the flip.
 - **An outside source names whose access it used** (D98). It stores nothing
   and logs no word.
 - **The answer is data.** It keeps the header and the quotes of KR-2, and the
@@ -695,7 +718,7 @@ Three limits stay, and the review must know them:
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
 | `FIND_ORGS` | empty | `matched_by`, the coverage order, rung 3 in the engine, rung 4, the honest zero lines, the explain mode, `resolve_name` and the standing rule. In the engine it acts only with `CONTEXT_RECENCY` on. It also opens the sender near spelling of `query_inbox` (HRD-18b), which needs no `CONTEXT_RECENCY`. Empty gives the answer of KR-ZERO, byte for byte. It reloads with no restart (`docs/flag_reload.md`) | AGENT-SAFE. It spends nothing. Flip it under the `enforcement-flip` grant, after the FIND-1 eval |
-| `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21). Empty gives the answer of before HRD-21, byte for byte. Its one reader is `find.chat_search_named`. It reloads with no restart (`docs/flag_reload.md`) | The owner sees the preview before the flip (task 3225). Owner-only in `env_guard` |
+| `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21). Empty gives the answer of before HRD-21, byte for byte, and the 422 of before for `apps=chat` and each other unknown app. Its one reader is `find.chat_search_named`. It reloads with no restart (`docs/flag_reload.md`) | The owner sees the preview before the flip (task 3225). Owner-only in `env_guard` |
 | `FIND_OUTSIDE_ORGS` | empty | Rung 7 (FIND-10) | **OWNER-GATE.** A read of a third party |
 | `FIND_CLAIM_CHECK` | `off` | The "not found" check of §5.5: `off`, `shadow` or `on` | `shadow` is AGENT-SAFE. `on` is an `enforcement-flip` after 7 days of shadow |
 | `KNOWLEDGE_EMBED`, `EMAIL_SEMANTIC_SEARCH_ENABLED`, `GRAPH_SEARCH_ORGS` | As built | Unchanged | Unchanged |

@@ -28,8 +28,9 @@ the marks is read-only, and a fault raises, so no chat shows.
 
 **What it reads, and what it prints.** Each word of the query must be in the
 title, or in ONE ``user`` or ``assistant`` row of the chat (the word rule of
-``routes/projects/filters.py``). It never reads a ``system`` row or the tool
-events. The snippet comes ONLY from a row that the member typed
+``routes/projects/filters.py``). So a hit holds every word, and a query of
+more distinct words than that rule checks reads nothing. It never reads a
+``system`` row or the tool events. The snippet comes ONLY from a row that the member typed
 (``member_typed``, the member as author, ``typed_text``, not a card answer),
 so a reply of Mira that restates a mail, a WhatsApp message or a page never
 prints. The statement returns the text of no other row.
@@ -202,17 +203,24 @@ async def search_own_chats(
     *current* is the id of the chat that the search runs in. It only takes a
     chat away. With no current chat, or one longer than :data:`CURRENT_MAX`,
     it reads nothing (fail closed).
+
+    Each hit holds EVERY word of the query, and the route counts it so
+    (``find.stamp_first``). The shared word rule checks at most
+    ``MAX_QUERY_WORDS`` words, so a query of more distinct words reads nothing.
     """
     from acb_skills.egress import marked_sessions
 
-    from gateway.routes.projects.filters import like_escape, query_words
+    from gateway.routes.projects.filters import MAX_QUERY_WORDS, like_escape, query_words
 
     org = user.organization_id
     member = (user.email or "").strip()
     here = (current or "").strip()
     if not org or not member or not here or len(here) > CURRENT_MAX or k < 1:
         return []
-    words = query_words(" ".join(q.split()))
+    term = " ".join(q.split())
+    if len({token.lower() for token in term.split()}) > MAX_QUERY_WORDS:
+        return []
+    words = query_words(term)
     if not words:
         return []
     params: dict[str, Any] = {

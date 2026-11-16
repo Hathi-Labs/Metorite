@@ -500,17 +500,20 @@ class TestTheAnswer:
         with pytest.raises(HTTPException) as e:
             run(member(*ALL), apps="tasks,ledger")
         assert e.value.status_code == 422 and "ledger" in e.value.detail
-        # HRD-21: the list of keys comes from the registry, so it names `chat`.
-        assert e.value.detail.endswith(f"One of: {', '.join(sources.REGISTRY)}.")
-        assert "chat" in e.value.detail
+        # HRD-21: the list of keys names `chat` only while CHAT_SEARCH_ORGS
+        # names the org. The flag is empty here, so it is the list of before.
+        keys = [k for k in sources.REGISTRY if k != "chat"]
+        assert e.value.detail.endswith(f"One of: {', '.join(keys)}.")
+        assert "chat" not in e.value.detail
         assert apps.calls == []
 
-    def test_naming_chat_while_it_is_dark_changes_nothing(self, apps):
-        """HRD-21: ``apps=chat`` is no 422, and with the switch closed it
-        answers like ``apps=None``. The chat source is never asked."""
-        user = member(*ALL, "chat")
-        assert run(user, apps="chat") == run(user)
-        assert "chat" not in apps.called()
+    def test_naming_chat_while_it_is_dark_is_the_422_of_before(self, apps):
+        """HRD-21: with the switch closed, ``apps=chat`` gets the 422 of an
+        unknown app, as before HRD-21. The chat source is never asked."""
+        with pytest.raises(HTTPException) as e:
+            run(member(*ALL, "chat"), apps="chat")
+        assert e.value.status_code == 422 and "chat" not in e.value.detail.split("One of:")[1]
+        assert apps.calls == []
 
     @pytest.mark.parametrize("q", ["a", " a ", "x" * 301])
     def test_the_words_must_be_2_to_300_characters(self, apps, q):
