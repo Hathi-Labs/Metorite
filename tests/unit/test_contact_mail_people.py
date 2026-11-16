@@ -51,8 +51,26 @@ def test_the_answer_names_the_mail_and_never_says_nobody() -> None:
     assert "<b@x.test>" in out
 
 
+def _nobody(**flags: bool) -> str:
+    body = {"source": None, "matches": [], "total": 0, **flags}
+    return pt.format_answer(body, "Vidyadhar Nayak")
+
+
 def test_the_nobody_text_names_the_three_places() -> None:
-    assert "members" in pt.NOBODY and "People" in pt.NOBODY and "mail" in pt.NOBODY
+    out = _nobody(directory=True, mail_searched=True)
+    assert "members" in out and "People" in out and "your mail" in out
+
+
+@pytest.mark.parametrize("flags", [{"directory": True}, {"directory": False}])
+def test_the_nobody_text_never_claims_the_mail_it_did_not_search(flags: dict) -> None:
+    # CT-1 verify, finding 2: a member without feature:email gets no mail tier.
+    assert "mail" not in _nobody(**flags)
+
+
+def test_without_the_directory_the_text_names_only_aliases_and_mail() -> None:
+    out = _nobody(directory=False, mail_searched=True)
+    assert "your saved aliases or your mail" in out
+    assert "the members" not in out
 
 
 def test_a_recipient_with_no_sent_name_is_still_sent() -> None:

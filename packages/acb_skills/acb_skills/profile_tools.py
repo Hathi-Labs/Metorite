@@ -182,9 +182,18 @@ SHARED_ROOM = "A shared room cannot look up a colleague. Ask in your own chat."
 #: What the model reads when the gateway refuses the member.
 CLOSED = "The colleague lookup is not open to you."
 
-#: No tier matched.
-NOBODY = ("Nobody matches in the members, the People directory or your mail. "
-          "Ask for the full name or the address.")
+#: No tier matched. ``{where}`` names only the places that the tool
+#: searched (CT-1 verify): the mail tier needs ``feature:email``, and the
+#: directory needs ``feature:people``.
+NOBODY = "Nobody matches in {where}. Ask for the full name or the address."
+
+#: The places, by (the directory was searched, the mail was searched).
+WHERE = {
+    (True, True): "the members, the People directory or your mail",
+    (True, False): "the members or the People directory",
+    (False, True): "your saved aliases or your mail",
+    (False, False): "your saved aliases",
+}
 
 #: The first line of an answer from the member's mail (CT-1). These people
 #: are not members. The model asks, and never acts on one without a yes.
@@ -192,10 +201,11 @@ MAIL = ("No member and no People row matches «{asked}». These people are from 
         "your mail, not a member of Metorite. Ask the member whether one is the "
         "person they mean, and never act on one without a yes:")
 
-#: The member lacks ``feature:people``, so only their aliases were searched.
+#: The member lacks ``feature:people``, so the directory was not searched.
+#: It says nothing about the mail, which has its own feature (CT-1).
 NO_DIRECTORY = (
-    "Only your saved aliases were searched, because the People directory "
-    "is not open to you. Ask for the full address."
+    "The People directory is not open to you, so it was not searched. "
+    "Ask for the full address."
 )
 
 #: The words of each source in the answer.
@@ -314,7 +324,9 @@ def format_answer(body: Any, asked: str) -> str:
     total = max(int(body.get("total") or 0), len(people))
     lines = [HEADER]
     if not people:
-        lines.append(NOBODY)
+        where = WHERE[(body.get("directory") is not False,
+                       body.get("mail_searched") is True)]
+        lines.append(NOBODY.format(where=where))
         if body.get("directory") is False:
             lines.append(NO_DIRECTORY)
         if body.get("truncated") is True:

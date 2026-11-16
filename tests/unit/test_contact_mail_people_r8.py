@@ -116,6 +116,7 @@ async def test_a_near_name_finds_the_person_the_member_wrote_to(promoted, app_en
         assert got[w.vidya].match == "closest" and got[w.vidya].source == "sent"
         body = await _resolve(w, w.a, promoted.org_b, "Vidyadhar Nayak")
         assert body["mail"] is True and body["matches"][0]["email"] == w.vidya
+        assert body["mail_searched"] is True
     finally:
         w.purge()
 

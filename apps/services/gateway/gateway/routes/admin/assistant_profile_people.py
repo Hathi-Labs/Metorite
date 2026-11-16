@@ -286,6 +286,8 @@ async def resolve_person_for_assistant(
     and the matches are near spellings (HRD-18a), nearest first. ``mail`` is
     true when the directory found nobody and the matches are people of the
     member's own mail (CT-1): near spellings, who are not members.
+    ``mail_searched`` is true when the mail tier ran, so the answer names
+    only the places that were searched. Both keys are absent when false.
     """
     uid = getattr(user, "email", None) or ""
     if not uid:
@@ -304,6 +306,7 @@ async def resolve_person_for_assistant(
     truncated = False
     near = False
     mail = False
+    mail_searched = False
     try:
         async with _tenant_session() as db:
             found = await _alias_tier(db, uid, org, wanted, address)
@@ -323,6 +326,7 @@ async def resolve_person_for_assistant(
                 # may hold the person: the one reader of the suggest door.
                 from gateway.routes.email.transport.contacts import mail_people
 
+                mail_searched = True
                 hits = await mail_people(db, uid, raw)
                 # A mail hit that is a member or a person is no stranger:
                 # it is dropped, because the directory missed its name only.
@@ -341,4 +345,6 @@ async def resolve_person_for_assistant(
         "directory": directory, "truncated": truncated, "near": near}
     if mail:
         out["mail"] = True
+    if mail_searched:
+        out["mail_searched"] = True
     return out
