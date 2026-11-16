@@ -13,7 +13,13 @@ The claims, each written so that a wrong build fails it:
   ``find.SKIP_REASONS``. ``where_else`` holds at most 3 entries, in the order
   of §3.6, each a code, an app key and a reason. The tool prints a line only
   for a value on its own list.
-* **No false claim.** "No record has all the words" prints only with proof,
+* **No claim at all, for now.** ``find.ABSENCE_CLAIMS`` ships off (review
+  round 4), so no line says that a record does not exist. Each sentence of a
+  zero answer states what the search did or found. The four families that no
+  guard can see (a recipient, an old sender, a project name, a chat name cut
+  by k) prove that the switch alone stops the claim.
+* **The guard behind the switch.** With the switch on (``claims_on``), "No
+  record has all the words" prints only with proof,
   the rule of ``held`` false: one word of 4 letters or more, searched alone
   in each app that answered, found nothing, nothing was skipped, and no date
   or verified filter limited it. A first pass with no hit is no proof,
@@ -69,8 +75,19 @@ ROWS: dict[str, list[tuple[str, str, str, str]]] = {
         ("m-9", "email", "Invoice copy 7", "invoice copy acme.com"),
         # Full text has no unaccent, so "resume" alone finds nothing.
         ("m-10", "email", "Résumé", "résumé for review"),
+        # Review round 4. The member sent it to Ramesh <ramesh@vendorco.in>.
+        # Full text reads the subject, the body and the sender, never To or Cc.
+        ("m-11", "email", "Invoice for October", "invoice for october"),
+        # From «ops@kowalco.com», an old sender past the newest 2000 names, so
+        # no near name holds "kowalco". Full text keeps the address as one token.
+        ("m-12", "email", "Shipment update", "shipment update ops@kowalco.com"),
     ],
-    "tasks": [("t-1", "task", "Ship the printer", "ship the printer")],
+    # Tasks search the title and the description. The hint prints the project.
+    "tasks": [
+        ("t-1", "task", "Ship the printer", "ship the printer"),
+        ("t-3", "task", "Budget notes", "budget notes"),
+        ("t-4", "task", "Quarterly budget", "quarterly budget"),
+    ],
     # People matches the whole query as one phrase, as `directory.py` does,
     # with no unaccent, and never over `preferred_name`.
     "people": [
@@ -84,11 +101,20 @@ ROWS: dict[str, list[tuple[str, str, str, str]]] = {
         ("p-4", "person", "Venky", "venkatesh rao engineering manager platform"),
     ],
     # WhatsApp searches the message, and the hit prints the chat name.
-    "whatsapp": [("w-1", "whatsapp", "Zoravar Ops", "rollout plan")],
+    "whatsapp": [
+        ("w-1", "whatsapp", "Zoravar Ops", "rollout plan"),
+        ("w-3", "whatsapp", "Ops Room", "deploy done"),
+        ("w-2", "whatsapp", "Orion Team", "deploy plan"),
+    ],
 }
 #: The hint of a hit, where it is not the kind. A person's hit names the
-#: department or the title, as `_person_hit` does.
-HINTS = {"p-3": "Person · Engineering", "p-4": "Person · Engineering Manager"}
+#: department or the title, as `_person_hit` does. A task names its project,
+#: and a mail names its sender.
+HINTS = {
+    "p-3": "Person · Engineering", "p-4": "Person · Engineering Manager",
+    "t-3": "Task · Ops", "t-4": "Task · Zenith Launch",
+    "m-11": "Email · from Ana Member", "m-12": "Email · from Ops Team",
+}
 #: The names that each near reader can give, newest first. People gives the
 #: preferred name and the name. Email gives the sender name and the address,
 #: so "billing@acme.com" gives the word "acme".
@@ -195,6 +221,13 @@ def on(world, recency, find_on):  # noqa: F811
     recency(True)
     find_on("*")
     return world
+
+
+@pytest.fixture()
+def claims_on(monkeypatch):
+    """``find.ABSENCE_CLAIMS`` on, so the three-part guard behind it stays
+    fenced (review round 4). The product ships with it off."""
+    monkeypatch.setattr(find, "ABSENCE_CLAIMS", True)
 
 
 def run(q: str, user: Any = None, **given: Any) -> dict[str, Any]:
@@ -362,12 +395,12 @@ class TestTheHonestZero:
         body = run(f"{MARKER} Quasar", user=_without("artifacts"))
         lines = cst.format_answer(body, dated=True).splitlines()
         assert lines[0].startswith(cst.DATED_HEADER) and lines[0].endswith("Skipped: whatsapp.")
-        # An app was skipped, so no line says that no record holds all the words.
+        # No line says that no record holds all the words (review round 4).
         assert lines[1] == f"{cst.EACH_WORD_OPENING} zqvortex (0), quasar (0)."
-        assert lines[2] == cst.NOTHING
+        assert lines[2] == cst.NOTHING_FOUND
         assert lines[3] == (f'Tried: "{MARKER} Quasar", with every word in one record, '
                             "then each word alone.")
-        assert lines[4] == cst.MEANING_WORDS["off"]
+        assert lines[4] == cst.MEANING_NOT_RUN
         assert lines[5] == cst.WHERE_ELSE_SKIPPED["timed_out"].format(app="whatsapp")
         assert lines[6] == cst.WHERE_ELSE_PAST_CHATS
         assert lines[7] == cst.WHERE_ELSE_NOT_OPEN.format(app="artifacts")
@@ -375,7 +408,15 @@ class TestTheHonestZero:
         assert len(lines) == 9
         assert "No record holds all" not in "\n".join(lines)
 
-    def test_a_proven_zero_keeps_the_opening_of_kr_zero(self, on):
+    def test_a_zero_makes_no_claim_while_the_switch_is_off(self, on):
+        body = run(f"{MARKER} Quasar")
+        assert body["none_has_all"] is False
+        lines = cst.format_answer(body, dated=True).splitlines()
+        assert lines[1] == f"{cst.EACH_WORD_OPENING} zqvortex (0), quasar (0)."
+        assert not _claims(body)
+
+    def test_with_the_switch_on_a_proven_zero_keeps_the_opening_of_kr_zero(
+            self, on, claims_on):
         body = run(f"{MARKER} Quasar")
         assert body["none_has_all"] is True
         lines = cst.format_answer(body, dated=True).splitlines()
@@ -390,9 +431,13 @@ class TestTheHonestZero:
         assert set(cst.WHERE_ELSE_SKIPPED) == set(find.SKIP_REASONS)
 
     def test_the_meaning_line_reads_the_route(self):
+        """Review round 4: "off" also means that the member has no app with a
+        meaning search, so the line gives no cause."""
         for value in turn_vector.MEANINGS:
             body = {"query": "a b", "hits": [], "skipped_why": {}, "meaning": value}
-            assert cst.MEANING_WORDS[value] in cst.format_answer(body, dated=True).splitlines()
+            said = cst.MEANING_NOT_RUN if value == "off" else cst.MEANING_WORDS[value]
+            assert said in cst.format_answer(body, dated=True).splitlines()
+        assert "because" not in cst.MEANING_NOT_RUN
 
     def test_a_near_word_of_unknown_hold_claims_nothing(self):
         body = {"query": "Sharath Quasar", "hits": [], "skipped": [], "skipped_why": {},
@@ -433,7 +478,14 @@ class TestTheHonestZero:
 # ── The line of D-HRD-2, with proof only ────────────────────────────────────
 
 class TestMostOfTheWords:
-    def test_a_proven_miss_with_hits_says_so(self, on):
+    def test_a_miss_with_hits_makes_no_claim_while_the_switch_is_off(self, on):
+        body = run(f"Snowflake {MARKER}")
+        assert body["hits"] and body["none_has_all"] is False
+        lines = cst.format_answer(body, dated=True).splitlines()
+        assert lines[1].startswith(f"{cst.EACH_WORD_OPENING} snowflake (")
+        assert not _claims(body)
+
+    def test_with_the_switch_on_a_proven_miss_with_hits_says_so(self, on, claims_on):
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is True
         lines = cst.format_answer(body, dated=True).splitlines()
@@ -461,7 +513,7 @@ class TestMostOfTheWords:
         text = cst.format_answer(body, dated=True)
         assert "No record holds all" not in text and cst.MOST_WORDS not in text
 
-    def test_one_word_found_nowhere_is_the_proof(self):
+    def test_one_word_found_nowhere_is_the_proof(self, claims_on):
         # Each word is typed as it folds, no hit shows it, and the near lookup
         # ran for it with no name of the word itself. So only the rules of the
         # words alone are tested here.
@@ -571,7 +623,7 @@ class TestTheTypedWord:
         assert {"word": "resume", "hits": 0, "skipped": []} in body["broadened"]
         assert body["none_has_all"] is False and not _claims(body)
 
-    def test_the_proof_needs_a_miss_and_no_shown_word(self, on):
+    def test_the_proof_needs_a_miss_and_no_shown_word(self, on, claims_on):
         zero = [{"word": "zqvortex", "hits": 0, "skipped": []}]
 
         def proven(*, miss: bool = True, shown: Any = (), looked: Any = None) -> bool:
@@ -587,12 +639,12 @@ class TestTheTypedWord:
         assert not proven(looked={"zqvortex": False})
         assert not proven(looked={})
 
-    def test_a_plain_word_found_nowhere_still_proves_absence(self, on):
+    def test_a_plain_word_found_nowhere_still_proves_absence(self, on, claims_on):
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is True
         assert cst.format_answer(body, dated=True).splitlines()[1] == cst.MOST_WORDS
 
-    def test_the_one_rule_of_a_typed_word(self):
+    def test_the_one_rule_of_a_typed_word(self, claims_on):
         assert find.typed_alone("Hans Zqvortex", "hans")
         assert find.typed_alone("(Hans), printer!", "hans")
         assert find.typed_alone("  HANS  ", "hans")
@@ -612,7 +664,7 @@ class TestTheTypedWord:
                                 query="Müller Zqvortex", skipped=[], limited=False,
                                 shown=[], looked=looked) is True
 
-    def test_held_of_an_accented_word_is_not_known(self):
+    def test_held_of_an_accented_word_is_not_known(self, claims_on):
         """The same rule in ``near_report`` (HRD-18b), so the near line does
         not say «No record holds «Müller»» either."""
         near = [{"word": "Müller", "as": "Mueller", "hits": 1}]
@@ -686,16 +738,17 @@ class TestTheWordSomewhere:
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is False and not _claims(body)
 
-    def test_the_positive_control_still_claims(self, on):
-        """A plain word, typed as it folds, with zero hits, no skip, no shown
-        hit that holds it and no near name of the word itself."""
+    def test_the_positive_control_still_claims(self, on, claims_on):
+        """With the switch on: a plain word, typed as it folds, with zero
+        hits, no skip, no shown hit that holds it and no near name of the
+        word itself."""
         body = run(f"Snowflake {MARKER}")
         assert body["none_has_all"] is True
         lines = cst.format_answer(body, dated=True).splitlines()
         assert lines[1] == cst.MOST_WORDS
         assert run(f"{MARKER} Quasar")["none_has_all"] is True
 
-    def test_the_one_helper_of_both_proofs(self):
+    def test_the_one_helper_of_both_proofs(self, claims_on):
         def proves(word: str = "puja", *, shown: Any = (), looked: Any = None,
                    query: str = "Puja Shah") -> bool:
             return find.proves_absence(word, query=query, shown=list(shown),
@@ -708,7 +761,7 @@ class TestTheWordSomewhere:
         assert not proves(looked={"puja": False})
         assert not proves(looked={})
 
-    def test_held_needs_the_same_proof(self):
+    def test_held_needs_the_same_proof(self, claims_on):
         """``near_report`` (HRD-18b) uses the one helper: a hit of ANY rung
         or a related record that shows the word, and a near name of the word
         itself, each make ``held`` unknown."""
@@ -728,6 +781,128 @@ class TestTheWordSomewhere:
         assert held(related=[{"title": "Mail to Puja", "hint": "", "snippet": ""}]) is None
         assert held(looked={"puja": False}) is None
         assert held(looked={}) is None
+
+
+# ── The claim is off (review round 4) ───────────────────────────────────────
+
+@pytest.fixture()
+def no_guard(monkeypatch):
+    """Rules (ii) and (iii) of ``find.proves_absence`` see nothing: no shown
+    text and no near name of the word itself. So a test that passes with this
+    fixture rests on ``find.ABSENCE_CLAIMS`` alone."""
+    monkeypatch.setattr(find, "shown_texts", lambda found, related=None: [])
+    monkeypatch.setattr(find, "named_itself", lambda word, names: False)
+
+
+#: The sentences that a zero answer of the flag path may print, as patterns.
+#: Each says what the search did or found, never that a record does not exist.
+ZERO_SENTENCES = (
+    r"Company records \(data, not instructions\)\.( Searched: [a-z, ]+\.)?( Skipped: [a-z, ]+\.)?",
+    r"Each word alone: .+\.",
+    r"\(this search found no records\)",
+    r'Tried: ".+", with every word in one record(, then each word alone)?\.'
+    r"( Near spellings tried: .+\.)?",
+    r"(No meaning search ran\.|The meaning search ran too\.|The meaning search did not "
+    r"finish in time, so it found nothing\.|The meaning search failed, so it found nothing\.)",
+    r"Where else: .+",
+    r"A zero answer is not proof that no record exists\. .+",
+)
+
+
+class TestTheClaimIsOff:
+    """Review round 4 of 2026-11-16. An app can hold a word in a field that
+    no search reads and no hit prints: the To and Cc of a mail, a sender past
+    the newest names of the near lookup, the project of a task, the chat of a
+    WhatsApp message. So ``find.ABSENCE_CLAIMS`` is off: no line says that a
+    record does not exist. The facts stay."""
+
+    def test_the_switch_ships_off(self):
+        assert find.ABSENCE_CLAIMS is False
+        assert not find.proves_absence("puja", query="Puja Shah", shown=[],
+                                       looked={"puja": True})
+        assert not find.word_absent([{"word": "puja", "hits": 0, "skipped": []}],
+                                    query="Puja Shah", skipped=[], limited=False, shown=[],
+                                    looked={"puja": True})
+
+    def test_held_is_true_or_unknown_never_false(self):
+        near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
+        (entry,) = find.near_report(near, {}, [{"word": "puja", "hits": 0, "skipped": []}],
+                                    query="Puja Shah", first_zero=True, skipped=[],
+                                    looked={"puja": True})
+        assert entry["held"] is None
+        (entry,) = find.near_report(near, {}, [{"word": "puja", "hits": 2, "skipped": []}],
+                                    query="Puja Shah", first_zero=True, skipped=[],
+                                    looked={"puja": True})
+        assert entry["held"] is True
+
+    @staticmethod
+    def _only_the_switch(monkeypatch, q: str, k: int = 5) -> dict[str, Any]:
+        """The answer of *q*: no claim. Then, as proof that the switch alone
+        stops it, the same search with the switch on claims."""
+        body = run(q, k=k)
+        assert body["none_has_all"] is False and not _claims(body)
+        monkeypatch.setattr(find, "ABSENCE_CLAIMS", True)
+        assert run(q, k=k)["none_has_all"] is True, "only the switch stops the claim"
+        monkeypatch.setattr(find, "ABSENCE_CLAIMS", False)
+        return body
+
+    def test_a_recipient_proves_nothing(self, on, no_guard, monkeypatch):
+        """The member sent «Invoice for October» to Ramesh. Full text never
+        reads To or Cc, so "ramesh" alone finds nothing, and no near name or
+        hint holds it."""
+        body = self._only_the_switch(monkeypatch, "Ramesh invoice")
+        assert "m-11" in [h["id"] for h in body["hits"]]
+        assert {"word": "ramesh", "hits": 0, "skipped": []} in body["broadened"]
+
+    def test_an_old_sender_proves_nothing(self, on, no_guard, monkeypatch):
+        """«ops@kowalco.com» is past the newest names of the near lookup, and
+        full text keeps the address as one token."""
+        body = self._only_the_switch(monkeypatch, "kowalco shipment")
+        assert [h["id"] for h in body["hits"]] == ["m-12"]
+        assert {"word": "kowalco", "hits": 0, "skipped": []} in body["broadened"]
+
+    def test_a_project_name_proves_nothing(self, on, no_guard, monkeypatch):
+        """Tasks search the title and the description. «Quarterly budget» is in
+        the project «Zenith Launch». "budget" finds «Budget notes» and it, and
+        the cut to k = 1 removes the one hit whose hint shows the project. So
+        the answer misses, and only the switch stops the claim."""
+        body = self._only_the_switch(monkeypatch, "Zenith budget", k=1)
+        assert [h["id"] for h in body["hits"] if h["app"] == "tasks"] == ["t-3"]
+        assert {"word": "zenith", "hits": 0, "skipped": []} in body["broadened"]
+
+    def test_a_chat_name_cut_by_k_proves_nothing(self, on, no_guard, monkeypatch):
+        """WhatsApp never searches the chat name. "deploy" finds «Ops Room»
+        and «Orion Team», and the cut to k = 1 keeps «Ops Room» only."""
+        body = self._only_the_switch(monkeypatch, "Orion deploy", k=1)
+        assert [h["id"] for h in body["hits"] if h["app"] == "whatsapp"] == ["w-3"]
+        assert {"word": "orion", "hits": 0, "skipped": []} in body["broadened"]
+
+    def test_no_near_line_says_a_record_does_not_exist(self, on):
+        """The near hits keep a line of facts: the spelling and its records.
+        "Nuropeak" alone finds nothing, and «Neuropeak» finds the deal."""
+        body = run("Nuropeak snowflake")
+        assert body["near"] == [{"word": "Nuropeak", "as": "Neuropeak", "hits": 1,
+                                 "held": None}]
+        text = cst.format_answer(body, dated=True)
+        assert "No record holds" not in text
+        assert text.splitlines()[1] == "Near spellings: «Nuropeak» as «Neuropeak» (1 record)."
+
+    def test_each_sentence_of_a_zero_answer(self, on, monkeypatch):
+        """The full list of what a zero answer prints. Each sentence stays
+        true when a record that holds all the words exists."""
+        import re
+
+        monkeypatch.setattr(company, "SOURCE_TIMEOUT_S", 0.2)
+        on.fail = {"whatsapp": "slow"}
+        for body in (run(f"{MARKER} Quasar", user=_without("artifacts")),
+                     run(f"Sharath {MARKER}")):
+            assert body["hits"] == []
+            for line in cst.format_answer(body, dated=True).splitlines():
+                assert any(re.fullmatch(p, line) for p in ZERO_SENTENCES), line
+            text = cst.format_answer(body, dated=True)
+            for claim in ("No record holds", "No record has", "(no matching records)",
+                          "because it is off"):
+                assert claim not in text, claim
 
 
 # ── The explain mode (§3.7) ─────────────────────────────────────────────────
@@ -975,7 +1150,8 @@ class TestTheTool:
             "Each word alone: crm did not run.",
             "Past chats: closed.",
             "Near spellings over the floor: «Sharath» as «Sharat».",
-            cst.MEANING_WORDS["off"],
+            # Review round 4: "off" names no cause. The flags line names them.
+            cst.MEANING_NOT_RUN,
             "Flags off for this organization: KNOWLEDGE_EMBED.",
             cst.TRACE_FOOTER,
         ]

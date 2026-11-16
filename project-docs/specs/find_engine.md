@@ -20,11 +20,11 @@ most, inside one second. A record that the member cannot open leaves no trace.
 
 **FIND-4 is built** (task 3241, 2026-11-16, see "As built" in §3.6 and
 §3.7). Behind `FIND_ORGS`, the answer names why the route skipped each app
-(`skipped_why`). The line "No record holds all of the words" prints only with
-proof (`none_has_all`). A zero answer names the near spellings that it tried,
-and at most 3 "Where else" lines. `search_company(explain=true)` answers the
-trace of §3.7 with no record. Each search writes one `search.company.ladder`
-line.
+(`skipped_why`). No line says that a record does not exist: the switch
+`find.ABSENCE_CLAIMS` is off. A zero answer names the near spellings that it
+tried, and at most 3 "Where else" lines. `search_company(explain=true)`
+answers the trace of §3.7 with no record. Each search writes one
+`search.company.ladder` line.
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -278,7 +278,44 @@ A "Where else" line never names a record, a count or a name that the member
 cannot open.
 
 **As built (FIND-4).** The route marks its answer with `skipped_why`, and the
-tool prints the new lines only with that mark. The rest is as follows:
+tool prints the new lines only with that mark.
+
+**The claim is off.** `find.ABSENCE_CLAIMS` is `False`, so no line says that
+a record does not exist. This departs from the wording of D-HRD-2 and from
+the example above. The line "No record has all the words. These have most of
+them." does not print. Neither does "No record holds all of the words", nor
+the near line "No record holds «X»".
+
+The reason is that no app can promise that its search reads every field
+that holds a word. Email full text never reads To or Cc. The near lookup
+reads only the newest senders. A task hint prints its project, and the task
+search does not read it. A WhatsApp hit prints a chat name, and the message
+search does not read it. A cut to `k` can also drop the one hit that shows
+the word.
+
+To switch the claim on, each source must first declare
+`Source.proves_absence`, in a later slice. That slice sets the constant to
+`True`, and the claim must read each declaration. The tests set the constant
+to `True`, so the rule below stays fenced.
+
+A zero answer prints these lines, in this order. Each one stays true when a
+record that holds all the words exists:
+
+1. The header, with the apps searched and skipped.
+2. "Each word alone: x (n), y (m)." These are the counts of each search.
+3. "(this search found no records)", in place of "(no matching records)".
+4. "Tried: «the query», with every word in one record, then each word
+   alone." It can end with "Near spellings tried: «x» as «y»."
+5. The meaning line. With `off` it says "No meaning search ran." It names
+   no cause, because `off` also means that the member has no such app.
+6. At most 3 "Where else" lines.
+7. "A zero answer is not proof that no record exists.", then the next step.
+
+An answer with near hits opens with "Near spellings: «x» as «y» (n
+records)." It names the spelling and its records, and nothing about the
+word itself. In `near`, `held` is `true` or `null`, and never `false`.
+
+The rule behind the switch is as follows:
 
 - The line "No record has all the words. These have most of them." needs the
   proof `none_has_all`, and so does "No record holds all of the words". The
@@ -301,11 +338,8 @@ tool prints the new lines only with that mark. The rest is as follows:
   alone never matches inside «billing@acme.com». A lookup that did not run,
   failed or ran out of time proves nothing.
 - The answer must also miss: no hit shows every word.
-- Two limits stay. The near lookup reads the newest 2000 names of a source,
-  and its scoring stops at 0.5 s with no error. A record that no word alone
-  finds can still hold a word in a printed field that no search reads. A
-  task hint shows the project name, and a WhatsApp hit shows the chat name.
-  A `proves_absence` declaration on each source would close these limits.
+- The near lookup reads the newest 2000 names of a source, and its scoring
+  stops at 0.5 s with no error. These limits are why the switch is off.
 - A first pass with no hit is no proof. People matches the whole query as
   one phrase, so a person who holds the words in another order is no hit. A
   low `covers` is no proof either. A hit can hold a word in its body that its
@@ -320,8 +354,7 @@ tool prints the new lines only with that mark. The rest is as follows:
 - Item 4 waits for FIND-10.
 - Item 5 is not built. The route reads no total of an app, and a list of `k`
   hits proves no more hits.
-- The meaning search keeps its own line, from `MEANING_WORDS`. It is not
-  also a "Where else" line.
+- The meaning search keeps its own line. It is not also a "Where else" line.
 - The last line keeps the words of KR-ZERO: "A zero answer is not proof that
   no record exists." The tool does not print "Each app needs the words in
   one record". Knowledge matches any of the words, so that sentence is false

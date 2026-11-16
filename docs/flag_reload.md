@@ -106,9 +106,11 @@ in the answer key `related`. Each record is one that the member can open.
 The flag also opens the honest zero, the explain mode and the log line of
 FIND-4 (`find_engine.md` §3.6, §3.7). The answer names why the search skipped
 each app. A zero answer adds at most 3 "Where else" lines from a closed list,
-and no line names a record. `search_company(explain=true)` answers a trace of
-each step, with no record. Each search writes one `search.company.ladder` log
-line. It holds counts, times, `miss` and `explain`, and no word.
+and no line names a record. No line says that a record does not exist.
+
+`search_company(explain=true)` answers a trace of each step, with no record.
+Each search writes one `search.company.ladder` log line. It holds counts,
+times, `miss` and `explain`, and no word.
 
 The flag also opens the sender near spelling of `GET /email/messages`, for a
 caller that sends `near_sender`. Only `query_inbox` sends it. When

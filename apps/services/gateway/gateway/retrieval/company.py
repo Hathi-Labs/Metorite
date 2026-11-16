@@ -126,7 +126,7 @@ a closed list of :mod:`gateway.retrieval.find`:
   alone and passes ``find.proves_absence``. The member typed it as it folds,
   no hit and no related record shows it, and the near lookup ran and gave no
   name of the word itself. A low ``covers``, or a first pass with no hit, is
-  no proof;
+  no proof. While ``find.ABSENCE_CLAIMS`` is off, it is never true;
 * a zero answer gets ``where_else``: at most 3 entries, the skipped apps, the
   past chats while ``CHAT_SEARCH_ORGS`` does not name the org, then the apps
   that are not open to the member. No entry names a record;

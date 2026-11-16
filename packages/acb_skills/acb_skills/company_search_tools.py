@@ -46,8 +46,10 @@ change.
 **The honest zero and the explain mode** (WS-FIND FIND-4, ``find_engine.md``
 §3.6 and §3.7). With ``FIND_ORGS`` on, the route marks its answer with
 ``skipped_why``. Then "No record holds all of the words" prints only with the
-route's proof (``none_has_all``), and a zero answer adds the near spellings it
-tried and at most 3 "Where else" lines from closed lists. ``explain`` is an
+route's proof (``none_has_all``), which the route never sends while
+``find.ABSENCE_CLAIMS`` is off. Each marked line states what the search did
+or found. A zero answer adds the near spellings it tried and at most 3
+"Where else" lines from closed lists. ``explain`` is an
 argument of the dated tool only: the route answers a trace, and
 :func:`format_trace` prints it with no record. With no mark and no trace, the
 text is the text of KR-ZERO.
@@ -379,6 +381,15 @@ NOTHING = "(no matching records)"
 #: The sentence of a dated zero answer that the model must not skip (KR-ZERO).
 ZERO_IS_NO_PROOF = "A zero answer is not proof that no record exists."
 
+#: The zero line of an answer with ``FIND_ORGS`` on (FIND-4 review round 4).
+#: It says what the search found, and not that no record matches.
+NOTHING_FOUND = "(this search found no records)"
+
+#: The meaning sentence for ``off`` with ``FIND_ORGS`` on. ``off`` also means
+#: that the member has no app with a meaning search, so it names no cause.
+#: The trace names the flags that are off.
+MEANING_NOT_RUN = "No meaning search ran."
+
 #: The sentence of each ``meaning`` value of the route (KR-ZERO).
 MEANING_WORDS: dict[str, str] = {
     "ran": "The meaning search ran too.",
@@ -453,7 +464,16 @@ def _near_line(body: dict[str, Any]) -> str:
     return " ".join(clauses)
 
 
-def _tried_parts(body: dict[str, Any]) -> tuple[str, str, str]:
+def _meaning_sentence(value: Any, *, marked: bool = False) -> str:
+    """The sentence of the route's ``meaning``, or ``""``. With ``FIND_ORGS``
+    on (*marked*), ``off`` gives :data:`MEANING_NOT_RUN`."""
+    key = str(value or "")
+    if marked and key == "off":
+        return MEANING_NOT_RUN
+    return MEANING_WORDS.get(key, "")
+
+
+def _tried_parts(body: dict[str, Any], *, marked: bool = False) -> tuple[str, str, str]:
     """The three parts of the zero line of KR-ZERO: what the route tried, the
     sentence of the meaning search (or ``""``), and that zero is not proof,
     with the next step."""
@@ -462,7 +482,7 @@ def _tried_parts(body: dict[str, Any]) -> tuple[str, str, str]:
         "Tried: every word in one record")
     if body.get("broadened"):
         tried += ", then each word alone"
-    meaning = MEANING_WORDS.get(str(body.get("meaning") or ""), "")
+    meaning = _meaning_sentence(body.get("meaning"), marked=marked)
     if body.get("broadened"):
         step = ("Try other words, such as a full name or an email address, "
                 "before you tell the member that no record exists.")
@@ -471,9 +491,9 @@ def _tried_parts(body: dict[str, Any]) -> tuple[str, str, str]:
     return tried + ".", meaning, f"{ZERO_IS_NO_PROOF} {step}"
 
 
-def _tried_line(body: dict[str, Any]) -> str:
+def _tried_line(body: dict[str, Any], *, marked: bool = False) -> str:
     """What a zero answer tried, and that zero is not proof (KR-ZERO)."""
-    return " ".join(part for part in _tried_parts(body) if part)
+    return " ".join(part for part in _tried_parts(body, marked=marked) if part)
 
 
 # ── The honest zero (FIND-4, ``find_engine.md`` §3.6) ──────────────────────
@@ -560,11 +580,38 @@ def _near_tried(body: dict[str, Any]) -> str:
     return f"{NEAR_TRIED} " + ", ".join(f"«{w}» as «{s}»" for w, s in pairs) + "."
 
 
+#: The words before the near spellings that found records (FIND-4 review
+#: round 4).
+NEAR_FOUND = "Near spellings:"
+
+
+def _near_found(body: dict[str, Any]) -> str:
+    """The near spellings that found records, with ``FIND_ORGS`` on, or
+    ``""``: "Near spellings: «nuropeak» as «Neuropeak» (1 record)." It names
+    the typed word, the spelling and the count of the records that the
+    spelling found, and claims nothing about the word itself. An entry that
+    :func:`_near_line` prints (``held`` false) is left out."""
+    entries = body.get("near")
+    parts: list[str] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or entry.get("held") is False:
+            continue
+        word, spelt, hits = _token(entry.get("word")), _token(entry.get("as")), _count(
+            entry.get("hits"))
+        if not word or not spelt or not hits:
+            continue
+        noun = "record" if hits == 1 else "records"
+        part = f"«{word}» as «{spelt}» ({hits} {noun})"
+        if part not in parts:
+            parts.append(part)
+    return f"{NEAR_FOUND} {', '.join(parts)}." if parts else ""
+
+
 def _honest_zero(body: dict[str, Any]) -> list[str]:
-    """The lines of an honest zero (§3.6), after :data:`NOTHING`: what the
+    """The lines of an honest zero (§3.6), after :data:`NOTHING_FOUND`: what the
     route tried, the meaning search, "Where else", and that zero is not
     proof. Each part is the text of KR-ZERO or a line from a closed list."""
-    tried, meaning, proof = _tried_parts(body)
+    tried, meaning, proof = _tried_parts(body, marked=True)
     near = _near_tried(body)
     lines = [f"{tried} {near}" if near else tried]
     if meaning:
@@ -622,6 +669,12 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
     opening of :func:`_opening_lines` says "No record holds all of the words"
     only with the route's proof, and a zero with no related record prints
     :func:`_honest_zero`. With no mark, the text is the text of KR-ZERO.
+
+    With the mark, each line states what the search did or found (review
+    round 4). The route sends no proof while ``find.ABSENCE_CLAIMS`` is off,
+    so no line says that a record does not exist. The near spellings that
+    found records print as :func:`_near_found`, a zero says
+    :data:`NOTHING_FOUND`, and ``off`` says :data:`MEANING_NOT_RUN`.
     """
     hits = body.get("hits") if isinstance(body, dict) else None
     skipped = body.get("skipped") if isinstance(body, dict) else None
@@ -633,6 +686,9 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
     opening = 1
     if dated and _near_line(data):
         lines.append(_near_line(data))
+        opening += 1
+    if marked and _near_found(data):
+        lines.append(_near_found(data))
         opening += 1
     if marked:
         found = any(isinstance(hit, dict) for hit in hits or [])
@@ -646,11 +702,11 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
         if isinstance(hit, dict):
             lines += _hit_lines(hit, dated=dated)
     if len(lines) == opening:
-        lines.append(NOTHING)
+        lines.append(NOTHING_FOUND if marked else NOTHING)
         if marked and not has_related:
             lines += _honest_zero(data)
         elif dated:
-            lines.append(_tried_line(data))
+            lines.append(_tried_line(data, marked=marked))
     if has_related:
         # FIND-3: the related records, in their own block (§3.5). The route
         # sends `related` only with FIND_ORGS on, so with it off the text
@@ -777,7 +833,7 @@ def format_trace(body: Any) -> str:
     lines += _weighed_lines(trace.get("near"))
     meaning = trace.get("meaning")
     if isinstance(meaning, str) and meaning in MEANING_WORDS:
-        lines.append(MEANING_WORDS[meaning])
+        lines.append(_meaning_sentence(meaning, marked=True))
     flags = trace.get("flags_off") if isinstance(trace.get("flags_off"), list) else []
     named = [f for f in FLAG_NAMES if f in flags]
     if named:

@@ -23,7 +23,8 @@ the answer of KR-ZERO, byte for byte.
   :func:`proves_absence` is the ONE rule of a word that may prove absence,
   for it and for ``held`` of :func:`near_report`. It reads
   :func:`typed_alone`, :func:`shown_texts` and the result of
-  :func:`named_itself`.
+  :func:`named_itself`. While :data:`ABSENCE_CLAIMS` is off (the default),
+  it proves nothing, so no line says that a record does not exist.
 """
 
 from __future__ import annotations
@@ -160,6 +161,21 @@ OWN_RUNGS = frozenset({"exact", "words", "word"})
 EDGE_MARKS = ".,;:!?()[]{}"
 
 
+#: May a line say that a record does not exist? Off (FIND-4 review round 4).
+#:
+#: No app can promise that its search reads every field that its hit prints,
+#: or every field that holds a word. Email full text never reads To or Cc, and
+#: the near lookup reads only the newest senders. A task's hint prints its
+#: project, which its search does not read. A WhatsApp hit prints a chat name
+#: that its search does not read. So no line may say that a record does not
+#: exist: :func:`proves_absence` gives False, ``held`` is never false, and
+#: ``none_has_all`` is never true. The facts stay.
+#:
+#: Set it True only after each source declares ``Source.proves_absence`` (a
+#: later slice), and the claim reads that declaration too. Tests set it True
+#: to keep the guard of :func:`proves_absence` fenced.
+ABSENCE_CLAIMS = False
+
 #: A typed token that may prove absence: ASCII letters and digits only.
 _PLAIN = re.compile(r"[0-9a-z]+")
 
@@ -223,9 +239,12 @@ def proves_absence(word: str, *, query: str, shown: list[str],
        sender address is such a field: "acme" alone never matches inside
        «billing@acme.com». A lookup that did not run, failed or ran out of
        time gives no ``True``, so it proves nothing.
+
+    While :data:`ABSENCE_CLAIMS` is off, it gives False for every word.
     """
     return (
-        typed_alone(query, word)
+        ABSENCE_CLAIMS
+        and typed_alone(query, word)
         and not any(coverage([word], text) for text in shown)
         and looked is not None and looked.get(word) is True
     )
@@ -268,8 +287,9 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
     P3-3). The word must also pass :func:`proves_absence` (FIND-4 review):
     the member typed it as it folds, no hit of any rung and no *related*
     record shows it, and the near lookup gave no name of the word itself
-    (*looked*). In each other case it is ``None``: not known. Only a false
-    word may open the answer with "No record holds" (§3.6). Pure.
+    (*looked*). While :data:`ABSENCE_CLAIMS` is off, ``held`` is never false.
+    In each other case it is ``None``: not known. Only a false word may open
+    the answer with "No record holds" (§3.6). Pure.
     """
     own = [f"{h.title} {h.hint} {h.snippet}" for hits in found.values() for h in hits
            if h.matched_by in OWN_RUNGS]
