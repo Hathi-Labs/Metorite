@@ -749,6 +749,163 @@ async def near_names(
         name_match.near_lookup, words, names, k, deadline=name_match.scoring_deadline())
 
 
+# ── The related records of the company search (FIND-3) ──────────────────────
+# ``find_engine.md`` §3.1 rung 4 and §4.3. No route: ``retrieval/sources.py``
+# calls these after the CRM router's gates, with ids that it checked as UUIDs.
+# Each read gives ids and addresses only, never a name or a note. Each text
+# is a constant of this module. The reads share one ``_tenant_session()``, so
+# FORCE RLS keeps each in the caller's tenant. The edge and key names are the
+# codes of ``gateway.retrieval.find.EDGES`` and ``KEYS``. The step drops any
+# other code.
+
+#: The contacts of each deal: the primary contact first, then the newest.
+_DEAL_CONTACTS_SQL = (
+    "SELECT x.deal_id, x.id, x.email FROM (SELECT dc.deal_id, c.id, "
+    "lower(btrim(c.email)) AS email, row_number() OVER (PARTITION BY dc.deal_id "
+    "ORDER BY dc.is_primary DESC NULLS LAST, c.last_activity_at DESC NULLS LAST, c.id) AS n "
+    "FROM crm_deal_contacts dc JOIN crm_contacts c ON c.id = dc.contact_id "
+    "WHERE dc.deal_id = ANY(CAST(:ids AS uuid[]))) x WHERE x.n <= :per "
+    "ORDER BY x.deal_id, x.n"
+)
+#: The source lead of each deal: the lead that converted into it, or the lead
+#: that it names (the rule of ``DEALS.related_search``).
+_DEAL_LEADS_SQL = (
+    "SELECT x.deal_id, x.id, x.email FROM (SELECT d.id AS deal_id, l.id, "
+    "lower(btrim(l.email)) AS email, row_number() OVER (PARTITION BY d.id "
+    "ORDER BY l.converted_at DESC NULLS LAST, l.id) AS n "
+    "FROM crm_deals d JOIN crm_leads l ON l.converted_deal_id = d.id OR l.id = d.lead_id "
+    "WHERE d.id = ANY(CAST(:ids AS uuid[]))) x WHERE x.n <= :per ORDER BY x.deal_id, x.n"
+)
+#: The company of each deal.
+_DEAL_COMPANY_SQL = (
+    "SELECT id AS deal_id, company_id FROM crm_deals "
+    "WHERE id = ANY(CAST(:ids AS uuid[])) AND company_id IS NOT NULL ORDER BY id"
+)
+#: The deals of each company, the newest activity first.
+_COMPANY_DEALS_SQL = (
+    "SELECT x.company_id, x.id FROM (SELECT company_id, id, row_number() OVER ("
+    "PARTITION BY company_id ORDER BY last_activity_at DESC NULLS LAST, id) AS n "
+    "FROM crm_deals WHERE company_id = ANY(CAST(:ids AS uuid[]))) x "
+    "WHERE x.n <= :per ORDER BY x.company_id, x.n"
+)
+#: The address of each lead and of each contact. ``crm_companies.email`` is
+#: never read: many companies write a free-mail address there (KG-5).
+_ADDRESS_SQL: dict[str, str] = {
+    "lead": "SELECT id, lower(btrim(email)) AS email FROM crm_leads "
+            "WHERE id = ANY(CAST(:ids AS uuid[])) ORDER BY id",
+    "contact": "SELECT id, lower(btrim(email)) AS email FROM crm_contacts "
+               "WHERE id = ANY(CAST(:ids AS uuid[])) ORDER BY id",
+}
+#: The most characters of an address that the step carries.
+_ADDRESS_MAX = 254
+
+
+def _address_link(kind: str, record_id: Any, email: Any) -> list[tuple[str, str, str]]:
+    """The key of one stored address, or nothing for a value that is no
+    address: one ``@`` with text on each side, and no space."""
+    value = str(email or "")
+    local, at, host = value.partition("@")
+    if not at or not local or "." not in host or "@" in host or len(value) > _ADDRESS_MAX \
+            or any(ch.isspace() for ch in value):
+        return []
+    return [(f"{kind}:{record_id}", "address", f"address:{value}")]
+
+
+async def _deal_links(db: Any, deals: list[str], per: int) -> tuple[list[tuple[str, str, str]],
+                                                                      list[str]]:
+    """The contacts, the source lead and the company of each deal, with the
+    address of each contact and lead. Also the companies, for their domain."""
+    out: list[tuple[str, str, str]] = []
+    params = {"ids": deals, "per": per}
+    for sql, edge, kind in ((_DEAL_CONTACTS_SQL, "contact_of", "contact"),
+                            (_DEAL_LEADS_SQL, "lead_of", "lead")):
+        for row in (await db.execute(text(sql), params)).fetchall():
+            out.append((f"deal:{row.deal_id}", edge, f"{kind}:{row.id}"))
+            out += _address_link(kind, row.id, row.email)
+    companies: list[str] = []
+    for row in (await db.execute(text(_DEAL_COMPANY_SQL), params)).fetchall():
+        out.append((f"deal:{row.deal_id}", "company_of", f"company:{row.company_id}"))
+        companies.append(str(row.company_id))
+    return out, companies
+
+
+async def _domain_links(db: Any, user: UserContext,
+                        companies: list[str]) -> list[tuple[str, str, str]]:
+    """The web domain of each company, by the one rule of KG-5
+    (``kb_entities.graph.ONE_COMPANY_HOSTS_SQL``): never a free-mail host, a
+    site host, or a host that two companies share. The org comes from the
+    session's member, beside row level security."""
+    from gateway.kb_entities.graph import ONE_COMPANY_HOSTS_SQL
+
+    # ⚠️ Name each column: `Row.t` is a method of SQLAlchemy's row.
+    rows = (await db.execute(text(
+        f"SELECT o.t AS company_id, o.k AS host FROM ({ONE_COMPANY_HOSTS_SQL}) AS o "
+        "WHERE o.t = ANY(CAST(:ids AS text[])) ORDER BY o.t"),
+        {"org": str(user.organization_id), "ids": companies},
+    )).fetchall()
+    return [(f"company:{row.company_id}", "domain", f"domain:{row.host}") for row in rows]
+
+
+async def related_links(
+    user: UserContext, ids: dict[str, list[str]], per: int,
+) -> list[tuple[str, str, str]]:
+    """The links of the CRM records of *ids* (``kind -> ids``), for the
+    company search (FIND-3).
+
+    A deal gives its contacts (``contact_of``), its source lead
+    (``lead_of``) and its company (``company_of``). A company gives its deals
+    (``deal_of``). Each gives at most *per* records of one edge. A lead and a
+    contact give their address, and a company its web domain, as a key for
+    the mail of the email app. Ids and addresses only.
+    """
+    out: list[tuple[str, str, str]] = []
+    companies = list(ids.get("company", []))
+    async with _tenant_session() as db:
+        if ids.get("deal"):
+            links, linked = await _deal_links(db, ids["deal"], per)
+            out += links
+            companies += [c for c in linked if c not in companies]
+        for kind, sql in _ADDRESS_SQL.items():
+            if ids.get(kind):
+                for row in (await db.execute(text(sql), {"ids": ids[kind]})).fetchall():
+                    out += _address_link(kind, row.id, row.email)
+        if ids.get("company"):
+            rows = (await db.execute(text(_COMPANY_DEALS_SQL),
+                                     {"ids": ids["company"], "per": per})).fetchall()
+            out += [(f"company:{r.company_id}", "deal_of", f"deal:{r.id}") for r in rows]
+        if companies:
+            out += await _domain_links(db, user, companies)
+    return out
+
+
+async def open_records(
+    user: UserContext, ids: dict[str, list[str]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """The CRM records of *ids* (``kind -> ids``), as ``(kind, row)``, for the
+    company search (FIND-3, ``knowledge_graph.md`` §6).
+
+    Each kind is read by its list contract, as :func:`search_records` reads
+    it, with the ids as the one filter. A converted lead opens, as
+    ``GET /crm/leads/{id}`` opens it. A record of another tenant matches no
+    row under row level security, so it gives nothing.
+    """
+    found: list[tuple[str, dict[str, Any]]] = []
+    async with _tenant_session() as db:
+        for entity, kind in SEARCH_KINDS:
+            mine = ids.get(kind) or []
+            if not mine:
+                continue
+            query = list_contract(
+                entity, sort="last_activity_at", direction="desc", page=1,
+                page_size=min(len(mine), MAX_PAGE_SIZE),
+                extra_where=("id = ANY(CAST(:open_ids AS uuid[]))",),
+                extra_params={"open_ids": mine},
+            )
+            answer = await run_list(db, entity, query, rows_only=True)
+            found += [(kind, row) for row in answer.rows]
+    return found
+
+
 def _activity_instant(row: dict[str, Any]) -> datetime:
     """The row's ``last_activity_at`` as an instant, or the earliest one."""
     value = row.get("last_activity_at")
