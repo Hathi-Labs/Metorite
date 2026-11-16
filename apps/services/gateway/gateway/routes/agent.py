@@ -3860,8 +3860,8 @@ async def _resume_from_row(
 
     Each of these must hold, or it answers None and changes nothing:
 
-    * The answer is ``APPROVE``, and not a decline (RESUME-4 owns the late
-      decline).
+    * The answer is ``APPROVE``, and not a decline (RESUME-4a-2, task 3478, owns the
+      late decline and waits for D-RES-9).
     * The row of the session's org (RLS) waits, the session's member is its
       ``actor_email``, the request's thread is its thread, and its kind is
       ``confirmation``.

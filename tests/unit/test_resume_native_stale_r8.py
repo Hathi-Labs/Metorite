@@ -24,7 +24,9 @@ R7, each with the mutation that turns it red:
 * ``test_r8_without_the_mark_the_next_turn_is_a_stale_hit`` - the defect
   itself, so the case above is not vacuous.
 * ``test_r8_org_b_cannot_mark_org_a`` - RLS refuses org B, and the mark
-  touches only its own key.
+  of org A takes each session of its own thread.
+* ``test_r8_two_agents_in_one_thread_are_both_marked_and_both_drop`` - add
+  ``AND agent_name = :agent`` back, and agent Y keeps a stale hit.
 * ``test_r8_a_key_with_no_row_makes_no_row`` - an upsert in place of the
   UPDATE makes a row.
 * ``test_r8_a_second_mark_is_a_no_op`` - drop ``transcript_digest <>
@@ -91,8 +93,8 @@ def store_log(monkeypatch) -> _LogSpy:
     return spy
 
 
-def _mark(org: str, tid: str, agent: str = _PROBE_AGENT) -> str:
-    return asyncio.run(store.mark_stale(organization_id=org, thread_id=tid, agent_name=agent))
+def _mark(org: str, tid: str) -> str:
+    return asyncio.run(store.mark_stale(organization_id=org, thread_id=tid))
 
 
 def _row(cat: Any, tid: str, agent: str = _PROBE_AGENT) -> tuple[Any, ...] | None:
@@ -197,13 +199,36 @@ def test_r8_org_b_cannot_mark_org_a(graph_as_app, store_log) -> None:
     # RLS is the first lock: org B's session that names org A changes nothing.
     with tenant_session(org_b) as s:
         hit = s.execute(text(store._MARK_STALE_SQL), {
-            "org": org_a, "tid": tid, "agent": _PROBE_AGENT,
+            "org": org_a, "tid": tid,
             "stale": store.STALE_DIGEST}).first()
     assert hit is None and _row(graph_as_app, tid) == before
-    # The mark of org A touches its own key only, never agent Y's session.
+    assert _mark(org_b, tid) == "unchanged"
+    assert _row(graph_as_app, tid, _AGENT_Y) == other, "org B left agent Y alone"
+    # The mark of org A takes each session of the thread, agent Y's too.
     assert _mark(org_a, tid) == "marked"
     assert _row(graph_as_app, tid)[0] == store.STALE_DIGEST
-    assert _row(graph_as_app, tid, _AGENT_Y) == other
+    assert _row(graph_as_app, tid, _AGENT_Y)[0] == store.STALE_DIGEST
+
+
+def test_r8_two_agents_in_one_thread_are_both_marked_and_both_drop(
+    graph_as_app, store_log,
+) -> None:
+    """The member switched to agent Y after the park. Y saved a session
+    through user N+1, so Y's session is stale too after the continuation."""
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _one_turn(org, tid, _LIST, _LISTED)
+    _one_turn(org, tid, _AFTER, _AFTER_ANSWER, agent=_AGENT_Y)
+    assert _mark(org, tid) == "marked"
+    for agent in (_PROBE_AGENT, _AGENT_Y):
+        assert _row(graph_as_app, tid, agent)[0] == store.STALE_DIGEST
+    _agent_row(org, tid, _REPLY)
+    _user_row(org, tid, _NEXT)
+    for agent in (_PROBE_AGENT, _AGENT_Y):
+        turn = _begin(tid, _NEXT, org=org, browser=_browser(), agent=agent)
+        assert turn.outcome == "digest_drop" and not turn.loaded
+        loads = store_log.named("native_session.load")
+        assert (loads[-1]["outcome"], loads[-1]["reason"]) == ("digest_drop", "resume_stale")
 
 
 def test_r8_a_key_with_no_row_makes_no_row(graph_as_app, store_log) -> None:

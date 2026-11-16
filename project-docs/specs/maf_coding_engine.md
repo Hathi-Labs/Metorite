@@ -5006,8 +5006,9 @@ table. WS-43t2 adds it to the source scan of
   (`_native_session_skip` gives `resume_note`). Its reply has no user row
   before it, so the next load would be a `hit` that lacks the reply. So
   `executor._resume_prologue` first calls
-  `native_session_store.mark_stale` for the key that `begin_turn` loads. That
-  key is the org of the run binding, the caller's thread and `agent_name`.
+  `native_session_store.mark_stale` for each session of the thread. The bound
+  values are the org of the run binding and the caller's thread. There is no
+  agent key, because the rows of every agent in the thread feed the next turn.
   The mark is ONE bound UPDATE that writes `STALE_DIGEST` over
   `transcript_digest`, and it makes no row. The next load then gives
   `digest_drop` with the reason `resume_stale`, and the run uses the text

@@ -1235,9 +1235,9 @@ def marks(monkeypatch):
     seen: list[dict[str, Any]] = []
     state: dict[str, Any] = {}
 
-    async def _mark(*, organization_id: str, thread_id: str, agent_name: str) -> str:
+    async def _mark(*, organization_id: str, thread_id: str) -> str:
         payload = state.get("payload") or {}
-        seen.append({"org": organization_id, "thread": thread_id, "agent": agent_name,
+        seen.append({"org": organization_id, "thread": thread_id,
                      "writes": list(WRITES), "message": payload.get("message")})
         return "marked"
 
@@ -1267,8 +1267,7 @@ def test_a_continuation_marks_the_session_stale_before_the_call_and_the_note(
     state["payload"] = payload
     _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume(),
               payload=payload, mark_thread="t-pro")
-    assert [(m["org"], m["thread"], m["agent"]) for m in seen] == [
-        (_ORG_A, "t-pro", "orchestrator")]
+    assert [(m["org"], m["thread"]) for m in seen] == [(_ORG_A, "t-pro")]
     assert seen[0]["writes"] == [], "the mark came before the stored call wrote"
     assert seen[0]["message"] == "", "the mark came before the note"
     assert WRITES == [("deal", "d-neuro", "Payment Complete")]
@@ -1338,33 +1337,31 @@ def test_the_store_mark_never_raises_and_logs_the_type_only(monkeypatch):
     monkeypatch.setattr(store, "mark_row_stale", _down)
     monkeypatch.setattr(store, "_log", log)
     out = asyncio.run(store.mark_stale(
-        organization_id=_ORG_A, thread_id="t-down", agent_name="orchestrator"))
+        organization_id=_ORG_A, thread_id="t-down"))
     assert out == "failed"
     assert log.lines == [("native_session.mark_stale_failed",
-                          {"agent": "orchestrator", "thread_id": "t-down",
-                           "error": "ConnectionError"})]
+                          {"thread_id": "t-down", "error": "ConnectionError"})]
     monkeypatch.setattr(store, "mark_row_stale", lambda *_a: False)
     assert asyncio.run(store.mark_stale(
-        organization_id=_ORG_A, thread_id="t", agent_name="a")) == "unchanged"
+        organization_id=_ORG_A, thread_id="t")) == "unchanged"
     monkeypatch.setattr(store, "mark_row_stale", lambda *_a: True)
     assert asyncio.run(store.mark_stale(
-        organization_id=_ORG_A, thread_id="t", agent_name="a")) == "marked"
+        organization_id=_ORG_A, thread_id="t")) == "marked"
 
 
-def test_the_mark_takes_the_session_key_under_an_attribution_scope(
+def test_the_mark_binds_the_thread_and_org_under_an_attribution_scope(
     native_on, marks, resume_on, ask_db, liveness,
 ):
-    """An attribution scope changes the run's label (``_run_agent_label``),
-    and never the key of the session (``_begin_native_session`` loads with
-    ``agent_name``). Mutation: mark with ``_run_agent_label(agent_name)``
-    -> the mark names ``auto.headless`` -> red."""
+    """The mark binds the bound org and the caller's thread, and no agent
+    key, so an attribution scope (``_run_agent_label``) changes nothing.
+    Mutation: bind another thread or org -> red."""
     from acb_common import run_attribution_scope
 
     seen, _ = marks
     with run_attribution_scope(app="auto", agent="auto.headless"):
         assert executor._run_agent_label("orchestrator") == "auto.headless", "non-vacuity"
         _prologue([_Agent([])], _resume(), mark_thread="t-scope")
-    assert [m["agent"] for m in seen] == ["orchestrator"]
+    assert [(m["org"], m["thread"]) for m in seen] == [(_ORG_A, "t-scope")]
     src = inspect.getsource(executor.run_agent_stream)
     assert "_begin_native_session(\n                    agent, agent_name," in src
     assert ("agents, agent_name, resume_call, event_payload,\n"
@@ -1398,8 +1395,9 @@ def test_the_mark_is_one_bound_update_that_names_the_org():
     sql = " ".join(store._MARK_STALE_SQL.split())
     assert sql.startswith("UPDATE maf_agent_session SET transcript_digest = :stale WHERE ")
     for part in ("organization_id = CAST(:org AS uuid)", "thread_id = :tid",
-                 "agent_name = :agent", "transcript_digest <> :stale"):
+                 "transcript_digest <> :stale"):
         assert part in sql, part
+    assert "agent_name" not in sql and ":agent" not in sql, "each agent of the thread"
     assert ";" not in sql and "INSERT" not in sql.upper() and "DELETE" not in sql.upper()
     body = inspect.getsource(store.mark_row_stale)
     assert body.count(".execute(") == 1

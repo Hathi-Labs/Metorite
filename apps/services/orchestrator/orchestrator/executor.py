@@ -6909,12 +6909,11 @@ async def _call_stored_tool(tool: Any, arguments: dict[str, Any]) -> Any:
 
 
 async def _mark_native_session_stale(agent_name: str, thread_id: str | None) -> None:
-    """RESUME-4a-1: drop the stored session of this continuation's key.
+    """RESUME-4a-1: drop each stored session of this continuation's thread.
 
-    The key is the one that :func:`_begin_native_session` loads: the run's
-    org from the run binding (R5e), the caller's thread, and *agent_name*.
-    It is never :func:`_run_agent_label`, which an attribution scope can
-    change. With ``MAF_NATIVE_SESSIONS`` off, no thread or no org, it sends
+    The bound ones are the run's org from the run binding (R5e) and the
+    caller's thread. *agent_name* is for the log only: the thread holds the
+    sessions of every agent, and each one lacks the reply. With ``MAF_NATIVE_SESSIONS`` off, no thread or no org, it sends
     no statement. Never raises: a fault logs its type only."""
     if not _native_sessions_enabled():
         return
@@ -6926,7 +6925,7 @@ async def _mark_native_session_stale(agent_name: str, thread_id: str | None) -> 
         from orchestrator import native_session_store
 
         await native_session_store.mark_stale(
-            organization_id=str(org), thread_id=thread, agent_name=agent_name,
+            organization_id=str(org), thread_id=thread,
         )
     except Exception as exc:
         _log.warning("native_session.mark_stale_failed", agent=agent_name,

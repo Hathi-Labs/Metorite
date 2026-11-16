@@ -52,7 +52,7 @@ and takes no ambient tenant, so a worker thread could not resolve it.
 9. **No pickle.** ``AgentSession.from_dict`` restores through MAF's state type
    registry only.
 10. **The stale mark** (RESUME-4a-1). A continuation on the note path writes
-    :data:`STALE_DIGEST` over the row of its key before its model runs
+    :data:`STALE_DIGEST` over each session row of its thread before its model runs
     (:func:`mark_stale`). The next load gives ``digest_drop`` with the reason
     ``resume_stale``, and the run reads the text history. The mark makes no
     row, and a run that is not a continuation never sends it.
@@ -154,12 +154,14 @@ _UPSERT_SQL = """
 STALE_DIGEST = "0" * 64
 
 #: The mark. ONE bound statement: an UPDATE only, so it never makes a row.
+#: It has no agent predicate: ``_ROWS_SQL`` reads the rows of EVERY agent in
+#: the thread, so the session of each agent in the thread is stale too.
 #: The organization predicate stands beside RLS (FORCE, migration 228). A
 #: row that is already stale matches nothing, so a second mark is a no-op.
 _MARK_STALE_SQL = (
     "UPDATE maf_agent_session SET transcript_digest = :stale "
     "WHERE organization_id = CAST(:org AS uuid) AND thread_id = :tid "
-    "AND agent_name = :agent AND transcript_digest <> :stale RETURNING 1"
+    "AND transcript_digest <> :stale RETURNING 1"
 )
 
 Row = tuple[str, str]
@@ -465,11 +467,11 @@ def write_row(
     return written is not None
 
 
-def mark_row_stale(organization_id: str, thread_id: str, agent_name: str) -> bool:
-    """Write :data:`STALE_DIGEST` over one session row. True when a row changed.
+def mark_row_stale(organization_id: str, thread_id: str) -> bool:
+    """Write :data:`STALE_DIGEST` over each session row of the thread. True when a row changed.
 
-    ONE bound statement under ``tenant_session``. It makes no row. A key with
-    no row, a row of another tenant and a row that is stale already change
+    ONE bound statement under ``tenant_session``. It makes no row. A thread
+    with no row, a row of another tenant and a row that is stale already change
     nothing.
     """
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
@@ -478,14 +480,13 @@ def mark_row_stale(organization_id: str, thread_id: str, agent_name: str) -> boo
     with tenant_session(organization_id) as s:
         marked = s.execute(
             text(_MARK_STALE_SQL),
-            {"org": organization_id, "tid": thread_id, "agent": agent_name,
-             "stale": STALE_DIGEST},
+            {"org": organization_id, "tid": thread_id, "stale": STALE_DIGEST},
         ).first()
     return marked is not None
 
 
-async def mark_stale(*, organization_id: str, thread_id: str, agent_name: str) -> str:
-    """Make the next load of this key a miss (RESUME-4a-1). Never raises.
+async def mark_stale(*, organization_id: str, thread_id: str) -> str:
+    """Make the next load of each session of the thread a miss (RESUME-4a-1). Never raises.
 
     A continuation on the note path neither loads nor saves a session
     (``resume_note``), and its reply row has no user row before it. So the
@@ -498,10 +499,10 @@ async def mark_stale(*, organization_id: str, thread_id: str, agent_name: str) -
     ``failed``. A fault logs its type only.
     """
     loop = asyncio.get_running_loop()
-    log = {"agent": agent_name, "thread_id": thread_id[:40]}
+    log = {"thread_id": thread_id[:40]}
     try:
         marked = await loop.run_in_executor(None, functools.partial(
-            mark_row_stale, organization_id, thread_id, agent_name,
+            mark_row_stale, organization_id, thread_id,
         ))
     except Exception as exc:
         _log.warning("native_session.mark_stale_failed", **log, error=type(exc).__name__)
