@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog
 from acb_skills import server_brief as sb
 
 pytest.importorskip("agent_framework", reason="agent_framework not installed")
@@ -100,7 +101,7 @@ def test_only_a_server_that_attached_gets_a_brief() -> None:
     tool.__dict__["_ws8c_tool_meta"] = {"search": object()}
     _tool_injection._note_mcp_briefs(rows, ["ok"], [tool])
     text = sb.attached_block()
-    assert "Ok (ok)" in text and "Tools: search" in text
+    assert "Ok (ok)" in text and "_<tool>): search" in text
     assert "refused" not in text and "hidden" not in text
 
 
@@ -227,3 +228,26 @@ async def test_attach_reports_a_refused_server_as_unreachable(monkeypatch) -> No
     agent = SimpleNamespace(mcp_tools=[], middleware=[])
     got = await _maf_mcp.attach_mcp_tools(agent, [_server("down")], [], failures=failures)
     assert got == [] and failures == {"down": "unreachable"}
+
+
+def test_a_delegated_run_does_not_read_the_parents_briefs(monkeypatch) -> None:
+    """A delegated run copies its parent's context and holds no MCP tool (review of PR 2497)."""
+    _flag(monkeypatch, True)
+    structlog.contextvars.clear_contextvars()
+    try:
+        structlog.contextvars.bind_contextvars(run_id="parent")
+        _attach("shaurrya-app")
+        assert sb.attached_block() != ""
+        structlog.contextvars.bind_contextvars(run_id="child")
+        assert sb.attached_block() == ""
+        assert not any(p.startswith(sb.BLOCK_HEADER) for p in _parts())
+        structlog.contextvars.bind_contextvars(run_id="parent")
+        assert sb.attached_block() != ""
+    finally:
+        structlog.contextvars.clear_contextvars()
+
+
+def test_a_run_with_no_bound_id_still_reads_its_briefs() -> None:
+    structlog.contextvars.clear_contextvars()
+    _attach("s")
+    assert sb.attached_block() != ""
