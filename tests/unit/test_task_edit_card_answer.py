@@ -252,7 +252,9 @@ def test_an_extra_key_beside_edit_is_no_answer(body: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize("bad", [
     {"due": 20261201}, {"due": None}, {"due": "2026-02-30"}, {"due": "12/01/2026"},
-    {"due": "２０２６-１２-０１"}, {"start": "next week"}, {"start": False},
+    # Full-width digits: a digit of another script is no date.
+    {"due": "".join(chr(0xFF10 + int(c)) if c.isdigit() else c for c in "2026-12-01")},
+    {"start": "next week"}, {"start": False},
     {"status": 5}, {"status": None}, {"status": "   "}, {"status": "To\ndo"},
     {"important": "yes"}, {"important": 1}, {"leveraged": None}, {"leveraged": 0},
     {"description": None}, {"description": ["a"]}, {"description": "a\x00b"},
@@ -292,10 +294,11 @@ def test_whitespace_is_not_trimmed() -> None:
 
 
 def test_a_key_twice_and_a_constant_that_is_not_json_are_no_answer() -> None:
-    twice = '{"edit": %s, "edit": %s}' % (json.dumps(FORM_VALUES), json.dumps(FORM_VALUES))
+    values = json.dumps(FORM_VALUES)
+    twice = '{"edit": ' + values + ', "edit": ' + values + "}"
     assert tc.parse_task_edit_answer("APPROVE " + twice, MEMBER) is None
-    inner = json.dumps(FORM_VALUES)[:-1] + ', "due": "2026-12-02"}'
-    assert tc.parse_task_edit_answer('APPROVE {"edit": %s}' % inner, MEMBER) is None
+    inner = values[:-1] + ', "due": "2026-12-02"}'
+    assert tc.parse_task_edit_answer('APPROVE {"edit": ' + inner + "}", MEMBER) is None
     nan = json.dumps({"edit": FORM_VALUES}).replace('"leveraged": false', '"leveraged": NaN')
     assert tc.parse_task_edit_answer("APPROVE " + nan, MEMBER) is None
     assert tc.parse_task_edit_answer("APPROVE {not json", MEMBER) is None
