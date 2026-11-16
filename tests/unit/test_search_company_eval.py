@@ -447,3 +447,18 @@ def test_the_misses_report_holds_ids_and_counts_only() -> None:
     assert "misses: 1/1 found in the top 5 of one call" in text
     assert "found ids: m01" in text and "near_name 1/1" in text
     assert "Corrigan" not in text and "Vaishnavi" not in text
+
+
+def test_a_gold_among_the_related_records_is_named_apart_and_is_no_hit() -> None:
+    """FIND-3: rung 4 puts a record in ``related``, never in ``hits``. The
+    misses report names such a case apart, and ``found`` does not count it."""
+    meta = _meta()
+    outs = [_o("m11", "email", None, related=True), _o("m12", "email", None),
+            _o("m01", "crm", 1, place=1, related=True)]
+    summary = score.summarize_misses(outs, {k: meta[k] for k in ("m11", "m12", "m01")})
+    assert (summary.found, summary.related_ids) == (1, ("m11",))
+    text = score.render_misses(summary)
+    assert "missed, found in related records: m11" in text
+    none = score.render_misses(score.summarize_misses([_o("m12", "email", None)],
+                                                      {"m12": meta["m12"]}))
+    assert "missed, found in related records: none" in none

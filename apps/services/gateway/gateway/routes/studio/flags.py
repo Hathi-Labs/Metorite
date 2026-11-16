@@ -24,6 +24,10 @@ each chat tool of the CRM, Email, Projects and Calendar packs.
 skill load. ``orchestrator._tool_injection._chat_tools_open`` asks it once a
 turn, and for an org that it leaves out, each skill with a ``tool:`` action
 fails to load with ``chat_tools_off``.
+
+``STUDIO_SKILL_OFFER_ORGS`` (TOF-1d) has the same grammar and the same
+default. It opens the card "Save this as a skill?" in the chat. The shell read
+serves it to the client. :func:`skill_offer_allowed` is its one reader.
 """
 
 from __future__ import annotations
@@ -81,6 +85,17 @@ def chat_tools_allowed(organization_id: str | None) -> bool:
     if not organization_id:
         return False
     listed = _parse_orgs(str(getattr(get_settings(), "studio_chat_tools_orgs", "") or ""))
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def skill_offer_allowed(organization_id: str | None) -> bool:
+    """True when ``STUDIO_SKILL_OFFER_ORGS`` holds the org, or holds ``*``
+    (TOF-1d). Default OFF. The one reader of the setting. ``GET /auth/me/shell``
+    serves it as ``skill_offer``. The org comes from the session, never from
+    request input (R5)."""
+    if not organization_id:
+        return False
+    listed = _parse_orgs(str(getattr(get_settings(), "studio_skill_offer_orgs", "") or ""))
     return "*" in listed or str(organization_id).strip().lower() in listed
 
 

@@ -232,6 +232,21 @@ def test_studio_chat_tools_orgs_reloads_and_its_reader_follows(env, monkeypatch)
     assert chat_tools_allowed("acme")
     assert not chat_tools_allowed("globex")
 
+def test_studio_skill_offer_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-1d, ai_studio.md §14 TOF-1d. The reload list holds the key,
+    and the one reader of the skill offer sees a change with no restart."""
+    from gateway.routes.studio.flags import skill_offer_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_OFFER_ORGS")
+    monkeypatch.setenv("STUDIO_SKILL_OFFER_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_offer_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_OFFER_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_OFFER_ORGS",)
+    assert skill_offer_allowed("acme")
+    assert not skill_offer_allowed("globex")
+    assert not skill_offer_allowed(None)
+
 def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
     the one reader of the logic module switch sees a change with no restart."""

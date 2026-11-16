@@ -511,7 +511,7 @@ These paths reach a vendor without the Router, whatever the flag says:
 | Live notes mint Deepgram keys | `gateway/routes/notes/live.py:38` | transcribe |
 | ~~An integration check calls four vendor models~~ Moved to `acb_llm.client.complete`, task 3007 (2449 A6), 2026-11-12 | `gateway/routes/integrations.py`, `discover_api` | chat |
 | The prompt-cache warm-up | `gateway/main.py:500` | chat |
-| The streamed text helper | `acb_llm/context.py`, `acompletion_stream_text` (H-171) | chat |
+| ~~The streamed text helper~~ With routing on, it takes one answer from the Router, task 3541, 2026-11-16. Task 3542 makes it stream there | `acb_llm/context.py`, `acompletion_stream_text` (H-171) | chat |
 
 The key tests and model lists in `gateway/routes/settings.py` reach vendor
 hosts too. They move no tenant content, so they are not AI work, and this spec
