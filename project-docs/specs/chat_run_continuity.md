@@ -2194,8 +2194,10 @@ member never heard what the reply had made. So these rules hold:
 - The server sends one line at the park, not the model. The line is "Approved
   and run in this reply: «a» and «b». This reply stopped at the card «c» to
   wait for your answer." Three acts or more read "«a», «b», and «c»".
-- The words tell history, so they stay true after a late Approve. They have
-  no word "done", no link and no id. Each act is inert text (`card_act`).
+- The words tell history, so they stay true after a late Approve. The fixed
+  words have no word "done", no link and no id. Each act is inert text from
+  its card title (`card_act`), so a title such as "Mark this task done?"
+  keeps its own words.
 - An act ran when the member approved its card, and its tool returned with
   no raise. Its result must not start with a lead of a card that did nothing,
   or with "Error". It must not hold a mark of a write that failed in part,
