@@ -624,3 +624,25 @@ def test_a_merge_keeps_the_sha_of_each_chunk(tmp_path) -> None:
     assert data["sha"] == "mixed"
     assert [c["sha"] for c in data["chunks_run"]] == ["1111111", "2222222"]
     assert [r["sha"] for r in data["rows"]] == ["1111111", "2222222"]
+
+
+def test_a_scripted_chat_never_reads_the_session_from_a_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TS-ORD. A scripted run reaches no database. A PC with a stale dev database
+    on a port stalled each turn at the session load until the turn timeout.
+    Mutation: drop the ``read_state`` pin in ``run_chat`` -> the spy sees the
+    call -> red."""
+    from acb_graph import tenant_session as real
+    import acb_graph
+
+    reached: list[str] = []
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        reached.append("tenant_session")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(acb_graph, "tenant_session", spy)
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    assert rows and rows[0]["model_calls"], rows[0]["error"]
+    assert reached == []

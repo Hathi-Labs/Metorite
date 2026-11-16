@@ -841,6 +841,15 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         fanout.install_timer(harness._mp, tap.events, harness.model_calls)
         if not live:
             harness.models = models if models is not None else scripted_models(sc, arm)
+            # TS-ORD: a scripted run reaches no database. The session load of a
+            # native run reads the chat rows, and a PC with a stale dev database
+            # on a port made each scripted turn stall until the turn timeout.
+            # The answer is the one of a database with no chat row: no session,
+            # the text history, no save. Fence: ``test_one_assistant_measure``.
+            from orchestrator import native_session_store as nss
+
+            harness._mp.setattr(
+                nss, "read_state", lambda *a, **k: nss.LoadState(chat_exists=False))
         member = Member()
         history = [dict(h) for h in sc.history]
         thread: str | None = None
