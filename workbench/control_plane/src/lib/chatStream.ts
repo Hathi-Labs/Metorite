@@ -300,6 +300,14 @@ export interface StreamFold {
   foldedAnswerIdx: number;
 }
 
+/** CSY-10: the `mcp` stamp of a `tool_start`, or undefined when it is not two strings. */
+function mcpOfEvent(raw: unknown): ToolEvent["mcp"] {
+  const r = raw as { server?: unknown; label?: unknown } | null | undefined;
+  return r && typeof r.server === "string" && typeof r.label === "string"
+    ? { server: r.server, label: r.label }
+    : undefined;
+}
+
 /**
  * Apply ONE streamed event to the assistant message.  Returns a NEW message
  * (immutable) and mutates `fold` in place — the fold cursor is per-stream state,
@@ -414,6 +422,8 @@ export function applyStreamEvent(
         // and fall back to the reasoning fold.
         ...(hasSegments ? { segmentCutoff: m.segments!.length } : {}),
         ...(isDelegate ? { subAgentActive: true } : {}),
+        // CSY-10: the connected server of an MCP tool, so its row reads "<label>: <tool>".
+        ...(mcpOfEvent(evt.mcp) ? { mcp: mcpOfEvent(evt.mcp) } : {}),
       };
       return {
         ...m,
