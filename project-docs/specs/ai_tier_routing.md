@@ -1383,9 +1383,10 @@ tool declare its task.
    `main.py` baseline of `test_no_direct_ai_vendor_calls.py`.
 
    ⚠️ The callers that name this door (`capability.py`, `wa_embeddings.py`,
-   Mem0, Graphiti) send the LLM key. The app-wide gate refuses that key on
-   this route (`test_v1_llm_key_gate.py`), so those callers get a 401 today.
-   Moving each one is the rest of item 2.
+   Mem0) send the LLM key. The app-wide gate refuses that key on this route
+   (`test_v1_llm_key_gate.py`), so those callers get a 401 today. Graphiti
+   posts to `/embeddings`, a path that no route serves, so it gets a 404.
+   Moving each one is the rest of item 2 (tasks 3567, 3568 and 3569).
 3. Image and speech: a tool names `image` or `speak`, and the Router serves
    `tier-image` or `tier-tts`.
 4. Live notes: Deepgram keys come from the Router, or the feature moves to a
@@ -1417,7 +1418,8 @@ uv run pytest tests/unit/test_system_one_tool.py tests/unit/test_tier_policy.py 
   tests/unit/test_turn_kind_parallel.py -q
 
 # The gateway embeddings door (S5 item 2, task 3553)
-uv run pytest tests/unit/test_gateway_embeddings_console.py \n  tests/unit/test_no_embed_outside_door.py tests/unit/test_kb_one_index.py -q
+uv run pytest tests/unit/test_gateway_embeddings_console.py \
+  tests/unit/test_no_embed_outside_door.py tests/unit/test_kb_one_index.py -q
 
 # The UI fences (S3)
 cd workbench/control_plane && npx tsc --noEmit && \
