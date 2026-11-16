@@ -4143,7 +4143,7 @@ Affinity, mutes, "Why am I seeing this", `metric_moved`, `lead_replied`,
 in words, for example "Judged high: it moves the Q3 launch".
 
 **The learning of MD-9, proposed 2026-11-16.** `proactive_loop.md` §7 and its
-slices LOOP-4 and LOOP-5 specify the learned `affinity`, the mutes and the class
+slices LOOP-4a, LOOP-4b and LOOP-5 specify the learned `affinity`, the mutes and the class
 that the learner lowers. This spec stays the owner of the feed parts.
 
 ### MD-10 · Nudges outside the app — OWNER-GATE
