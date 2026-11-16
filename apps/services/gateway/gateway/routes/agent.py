@@ -4164,6 +4164,12 @@ async def respond_user_input(
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(req.thread_id, _command)
+    _org_id = getattr(user, "organization_id", None)
+    if delivered:
+        # HRD-16: a run took this answer. A repeat of it acts on nothing.
+        from orchestrator.answer_once import mark_answered  # noqa: PLC0415
+
+        await mark_answered(_org_id, req.thread_id, req.request_id)
     if delivered and not req.declined:
         # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
         # a reply card's answer, only AFTER the thread that owns the card took
@@ -4192,6 +4198,14 @@ async def respond_user_input(
             detail="No pending question matches that request_id "
             "(the run may have already finished).",
         )
+    if not delivered:
+        # HRD-16: a double tap or a retry of an answer that a run already
+        # took. It resends nothing, so the answer acts once.
+        from orchestrator.answer_once import was_answered  # noqa: PLC0415
+
+        if await was_answered(_org_id, req.thread_id, req.request_id):
+            _log.info("agent.user_input_repeat", request_id=req.request_id[:12])
+            return {"ok": True, "declined": True} if req.declined else {"ok": True}
     if not delivered:
         # ── A card answer across a restart (incident 2026-10-09) ─────────────
         # The run that asked may have died with its process. Then a bare 409
