@@ -61,7 +61,7 @@ function SessionRow({
   const [draft, setDraft] = useState("");
   const title = sessionTitle(session);
   // Rename is the owner's. Archive, restore and delete come as props.
-  const hasActions = session.isOwner !== false || Boolean(onArchive || onRestore || onRemove);
+  const hasActions = session.isOwner !== false || Boolean(onArchive || onRestore || onRemove || onPin);
   if (editing) {
     return (
       <li className="px-1 py-0.5">
