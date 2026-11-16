@@ -13,6 +13,12 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 `AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
 Neither flag covers an agent on any box.
 
+**S5 item 2, the gateway's `/v1/embeddings` door, is built** (2026-11-16,
+task 3553, 2449 S2). The door calls the Router on `tier-embed` through
+`kb_index.embed.relay`. It holds no vendor client and no zero vector. A 402
+stays a 402, and an outage is a 502 with no fallback (D57.7). The other
+writers of item 2 move in later tasks.
+
 **Helper routes default to a tier name (task 1128 follow-up, 2026-11-02).**
 `/api/chat/sessions/[id]/compact` and `/api/chat/suggestions` defaulted to the
 bare model id `deepseek/deepseek-chat`. The Router refuses a bare id with a
@@ -505,7 +511,7 @@ These paths reach a vendor without the Router, whatever the flag says:
 
 | Path | Anchor | Kind |
 |---|---|---|
-| The `/v1/embeddings` door calls OpenAI with `OPENAI_API_KEY` | `apps/services/gateway/gateway/main.py:1716-1719` | embed |
+| ~~The `/v1/embeddings` door calls OpenAI with `OPENAI_API_KEY`~~ Calls the Router on `tier-embed` through `kb_index.embed.relay`, task 3553 (2449 S2), 2026-11-16 | `gateway/main.py`, `embeddings` | embed |
 | Three embedding writers call `litellm.aembedding` | `email_ingestion/email_embeddings.py:85-100`, `whatsapp_ingestion/wa_embeddings.py:65-75`, `gateway/routes/tasks/capability.py:87-100` | embed |
 | Transcription through `acb_stt` | `packages/acb_stt/acb_stt/litellm_provider.py:196`, `assemblyai_provider.py:57` | transcribe |
 | Live notes mint Deepgram keys | `gateway/routes/notes/live.py:38` | transcribe |
@@ -1367,6 +1373,19 @@ tool declare its task.
 2. Embeddings: the gateway's `/v1/embeddings` and the three writers call the
    Router. The Router serves no `aembedding` door today
    (`customer_console/router.py:625-645`), so this needs one first, per D61.1.
+
+   **Built for the gateway door (task 3553, 2026-11-16).** The Console door
+   came first (CP-EMB, `customer_console.md` §6A.16). The route sends
+   `{"model": "tier-embed", "input": [...]}` and nothing else. The member
+   is the session's `user.email`, and the run context of the session proves
+   it. A deployment-key box refuses a service call, because it names no
+   member. Fences: `test_gateway_embeddings_console.py` and the lower
+   `main.py` baseline of `test_no_direct_ai_vendor_calls.py`.
+
+   ⚠️ The callers that name this door (`capability.py`, `wa_embeddings.py`,
+   Mem0, Graphiti) send the LLM key. The app-wide gate refuses that key on
+   this route (`test_v1_llm_key_gate.py`), so those callers get a 401 today.
+   Moving each one is the rest of item 2.
 3. Image and speech: a tool names `image` or `speak`, and the Router serves
    `tier-image` or `tier-tts`.
 4. Live notes: Deepgram keys come from the Router, or the feature moves to a
@@ -1396,6 +1415,9 @@ uv run pytest tests/unit/test_system_one_tool.py tests/unit/test_tier_policy.py 
   tests/unit/test_agent_list_tier_routed.py \
   tests/unit/test_tier_policy_effort_from_text.py \
   tests/unit/test_turn_kind_parallel.py -q
+
+# The gateway embeddings door (S5 item 2, task 3553)
+uv run pytest tests/unit/test_gateway_embeddings_console.py \n  tests/unit/test_no_embed_outside_door.py tests/unit/test_kb_one_index.py -q
 
 # The UI fences (S3)
 cd workbench/control_plane && npx tsc --noEmit && \
