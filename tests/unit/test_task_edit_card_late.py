@@ -25,8 +25,9 @@ The rules, each with its fence (R7):
    parser takes an answer, the shape test says True (an implication table).
 4. ``chat_recovery.card_resend`` reduces only an answer of a confirmation card
    that carries an edit form, or whose card it does not know
-   (``task_card.is_late_edit_answer``). An ``ask_user`` card and a plain card
-   keep the member's words.
+   (``task_card.is_late_edit_answer``). A card that the park shrank
+   (``truncated``) is not known (round 4). An ``ask_user`` card and a whole
+   plain card keep the member's words.
 
 The mutations (R7) of each round are in the report of that round.
 """
@@ -61,7 +62,7 @@ from tests.unit.test_late_approve_grant import (  # noqa: F401
     late_on,
     store,
 )
-from tests.unit.test_pending_ask_flow import ask_db, flag_on  # noqa: F401
+from tests.unit.test_pending_ask_flow import _ORG_A, ask_db, flag_on  # noqa: F401
 
 PID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 #: The values that the member types into the form. Each one must stay out.
@@ -188,6 +189,43 @@ def test_a_late_edit_answer_takes_no_grant(edit_on, ask_db, liveness, no_persist
     assert len(_grants(edit_on)) == 1
 
 
+#: A description of 12,000 characters of Devanagari. ``json.dumps`` writes
+#: each one as six characters, so the card event passes the 64 KiB cap of a
+#: parked row (``pending_ask._PAYLOAD_BYTES``) and ``card_of`` shrinks it.
+LONG_DESCRIPTION = chr(0x0928) * 12_000
+
+
+async def create_long_task(title: str) -> str:
+    """A card whose edit form holds :data:`LONG_DESCRIPTION`."""
+    form = tc.create_task_form(project_id=PID, **{**FORM_VALUES, "description": LONG_DESCRIPTION})
+    assert form is not None
+    ok = await request_confirmation(title=f"Create {title}?", detail=title,
+                                    context=f"title: {title}", responder=_ALICE, edit=form)
+    return "made" if ok else "not made"
+
+
+def test_a_shrunk_parked_card_still_reduces_a_late_edit_answer(
+    edit_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Round 4. The real park shrinks the payload of the row to the request id,
+    the question and ``truncated``, so the row has no edit form any more. The
+    late edit answer must still go as the line with no value."""
+    tid = "t-eac1-late-shrunk"
+    out = _run(liveness, tid, create_long_task, title="the nozzle")
+    assert out.get("parked"), out
+    rid = str(_cards(liveness, tid)[-1]["request_id"])
+    payload = ask_db.rows[(_ORG_A, rid)]["payload"]
+    assert set(payload) == {"request_id", "question", "truncated"}, sorted(payload)
+    answer = "APPROVE " + json.dumps({"edit": {
+        **FORM_VALUES, "description": LONG_DESCRIPTION + " " + SECRET_DESCRIPTION}})
+    detail = _approve_late(monkeypatch, tid, rid, answer=answer).json()["detail"]
+    shown = detail["resumeMessage"] + json.dumps(detail["resumeDisplay"])
+    for value in ("LATE-EDIT-SECRET", chr(0x0928) * 5, '"edit"', "priya"):
+        assert value not in shown, value
+    assert detail["resumeMessage"].endswith("My answer: " + tc.LATE_EDIT_ANSWER)
+    assert detail["resumeDisplay"]["answer"] == tc.LATE_EDIT_ANSWER
+
+
 def test_a_plain_late_approve_reads_as_before(edit_on, ask_db, liveness, no_persist, monkeypatch):
     tid = "t-eac1-late-approve"
     rid = _park(liveness, tid)
@@ -296,6 +334,17 @@ _FORM = {"edit": {"kind": "create_task"}}
     pytest.param("ask_user", {"question": "Which button?"}, 'approve the "edit" button', False, id="ask-user-note"),
     pytest.param("ask_user", {}, "APPROVE " + _BODY, False, id="ask-user-body"),
     pytest.param("questions", {}, "APPROVE " + _BODY, False, id="questions-body"),
+    # Round 4: a card that the park shrank, or that did not encode, is not known.
+    pytest.param("confirmation", {"request_id": "a" * 32, "question": "Q", "truncated": True},
+                 "APPROVE " + _BODY, True, id="shrunk-card"),
+    pytest.param("confirmation", {"request_id": "a" * 32, "question": "Q"},
+                 "APPROVE " + _BODY, True, id="stub-card"),
+    pytest.param("confirmation", {"title": "Create?", "truncated": True},
+                 "APPROVE " + _BODY, True, id="truncated-with-a-title"),
+    pytest.param("", {"title": "Move this deal?"}, "APPROVE " + _BODY, False,
+                 id="no-kind-plain-card"),
+    pytest.param("", {"request_id": "a" * 32, "question": "Q", "truncated": True},
+                 "APPROVE " + _BODY, True, id="no-kind-shrunk-card"),
 ])
 def test_card_resend_reduces_only_an_edit_answer_of_an_edit_card(
     kind: str, card: dict[str, Any], answer: str, reduced: bool,

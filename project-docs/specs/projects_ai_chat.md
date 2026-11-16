@@ -7652,7 +7652,8 @@ a dead run).
 - An edit answer that comes late writes nothing. `task_card.is_late_edit_answer`
   finds it.
   The card is a confirmation card with an edit form, or a card that the route
-  does not know. The body decodes, by the one decode of the parser, to an
+  does not know. A card that the park shrank (`truncated`, over 64 KiB) is a
+  card that the route does not know. The body decodes, by the one decode of the parser, to an
   object with the key `edit`. So an escaped key counts. A free-text note with
   the word `"edit"` does not count.
 - `chat_recovery.card_resend` then sends `task_card.LATE_EDIT_ANSWER` in place
@@ -7669,6 +7670,10 @@ a dead run).
   `_card_edit` resolves a changed name. A name that no lane or person has
   exactly then refuses AFTER the Approve, and the tool writes nothing.
 - So EAC-2 shows the exact-name rule on the form, before the Approve.
+- A card event over 64 KiB (`pending_ask._PAYLOAD_BYTES`) parks with a shrunk
+  payload, and its edit form is gone. A long description of non-ASCII text
+  can do it, because JSON writes each such character as 6 or 12 characters.
+  The late route then reads the card as not known, and it fails closed.
 
 **Receipts and declines.**
 

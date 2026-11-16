@@ -412,19 +412,33 @@ def is_task_edit_answer(answer: Any) -> bool:
 #: a card whose kind the late route does not know.
 _EDIT_CARD_KINDS = frozenset({"confirmation", ""})
 
+#: The keys that are left of a parked card that ``orchestrator.pending_ask
+#: .card_of`` shrank: a payload over its cap, or one that JSON cannot hold.
+_STUB_KEYS = frozenset({"request_id", "question", "truncated"})
+
+
+def _card_known(card: Any) -> bool:
+    """True when *card* is a whole card value: a mapping with a key other
+    than :data:`_STUB_KEYS`, and not marked ``truncated``. An empty value, a
+    shrunk payload and a stub are not known, because their form is gone."""
+    return (isinstance(card, Mapping) and card.get("truncated") is not True
+            and bool(set(card) - _STUB_KEYS))
+
 
 def is_late_edit_answer(kind: Any, card: Any, answer: Any) -> bool:
     """True when the late answer *answer* of a card whose run ended is an
     edit answer of an edit card. ``gateway.chat_recovery.card_resend`` asks
     it, and then sends :data:`LATE_EDIT_ANSWER` in place of the answer.
 
-    The card is a confirmation card, or its kind is not known. When the card
-    value is known (*card* is not empty), it carries an edit form. The answer
-    passes :func:`is_task_edit_answer`. An ``ask_user`` card, a plain card
-    and a note that only names ``"edit"`` keep the member's words."""
+    The card is a confirmation card, or its kind is not known. A card that is
+    known (:func:`_card_known`) must carry an edit form. A card that is not
+    known (empty, shrunk by the park or a stub) counts as an edit card, so
+    the answer fails closed. The answer passes :func:`is_task_edit_answer`.
+    An ``ask_user`` card, a whole plain card and a note that only names
+    ``"edit"`` keep the member's words."""
     if str(kind or "") not in _EDIT_CARD_KINDS:
         return False
-    if isinstance(card, Mapping) and card and card.get(EDIT_KEY) is None:
+    if _card_known(card) and card.get(EDIT_KEY) is None:
         return False
     return is_task_edit_answer(answer)
 
