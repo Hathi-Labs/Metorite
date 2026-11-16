@@ -92,7 +92,9 @@ function SessionRow({
   }
   return (
     <li
-      className="group relative flex items-center"
+      className={`group relative flex items-center rounded-md glass:rounded-[10px] ${
+        on ? "bg-primary/10 glass:bg-sidebar-accent" : "hover:bg-secondary has-[:focus-visible]:bg-secondary"
+      }`}
       data-session-row={session.id}
       data-has-actions={hasActions ? "" : undefined}
     >
@@ -102,8 +104,8 @@ function SessionRow({
         layout="flex items-center"
         onClick={onSelect}
         aria-current={on ? "true" : undefined}
-        className={`min-w-0 flex-1 gap-2 rounded-md px-2 py-1.5 text-left text-sm glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-label ${
-          on ? "bg-primary/10 text-primary glass:bg-sidebar-accent glass:text-foreground" : ""
+        className={`min-w-0 flex-1 gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-transparent! glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-label ${
+          on ? "text-primary glass:text-foreground" : ""
         }`}
       >
         {/* A dot only when it says something: a live run or an unread

@@ -26,7 +26,15 @@ describe("the session row strip", () => {
     expect(STRIP_CLASS).not.toMatch(/\babsolute\b/);
     expect(STRIP_CLASS).not.toMatch(/\bright-\d/);
     expect(STRIP_CLASS).not.toMatch(/-translate-y/);
-    expect(ROW).toMatch(/className="group relative flex items-center"/);
+    expect(ROW).toMatch(/group relative flex items-center/);
+  });
+  it("paints the hover and the active background on the whole row, not on the title Button", () => {
+    const li = /<li\s+className=\{`([^`]*)`\}\s+data-session-row/.exec(ROW)?.[1] ?? "";
+    expect(li).toMatch(/rounded-md/);
+    expect(li).toMatch(/hover:bg-secondary/);
+    expect(li).toMatch(/bg-primary\/10/);
+    const btn = /layout="flex items-center"[\s\S]*?className=\{`([^`]*)`/.exec(ROW)?.[1] ?? "";
+    expect(btn).not.toMatch(/bg-primary\/10|bg-sidebar-accent/);
   });
   it("takes no width at rest and gives the room on hover and focus", () => {
     expect(STRIP_CLASS).toMatch(/\brail-row-actions\b/);

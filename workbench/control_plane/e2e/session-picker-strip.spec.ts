@@ -128,6 +128,17 @@ for (const n of [2, 3]) {
       // The strip sits inside the row, after the title.
       expect(on.strip!.r).toBeLessThanOrEqual(on.row!.r + 0.5);
       expect(meets(on.strip!, on.title!)).toBe(false);
+      // The hover background is the ROW's, so the pill spans the title AND the
+      // icons (owner, 2026-11-16: the icons sat outside the pill).
+      const pill = await row.evaluate((li) => {
+        const cs = getComputedStyle(li);
+        const b = li.getBoundingClientRect();
+        return { bg: cs.backgroundColor, radius: parseFloat(cs.borderTopLeftRadius), r: b.right, l: b.left };
+      });
+      expect(pill.bg).not.toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
+      expect(pill.radius).toBeGreaterThan(0);
+      expect(on.strip!.r).toBeLessThanOrEqual(pill.r + 0.5);
+      expect(on.strip!.l).toBeGreaterThan(pill.l);
       // The dot and the age fold away together with the strip showing.
       expect(on.metaShown).toBe(false);
       expect(on.titleClipped).toBe(true);
