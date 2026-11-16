@@ -74,7 +74,7 @@ from skill_projects.writes import (
     _prepare_new_task,
     _project_id,
     _resolve_assignee,
-    _root_of,
+    _space_of,
     _split,
     _statuses_of,
     _subtask_counts,
@@ -83,9 +83,11 @@ from skill_projects.writes import (
     _tree_scope,
     _unknown_addresses,
     _vocab,
+    _with_line,
     _yes_no,
     agent_assignee_refusal_as_text,
     mailbox_line,
+    shared_vocab_line,
     space_refusal,
     update_project,
     update_task,
@@ -2149,20 +2151,25 @@ class _VocabPlan:
 
     def __init__(
         self, spec: _VocabKind, path: str, node: dict[str, Any], where: str,
-        rows: list[_VocabRow],
+        rows: list[_VocabRow], reach: str = "",
     ) -> None:
         self.spec = spec
         self.path = path
         self.node = node
         self.where = where
         self.rows = rows
+        #: HRD-9a: "Changes the tags of «Space» for N projects", or "". The
+        #: card shows it, and the receipt does not change.
+        self.reach = reach
 
     def card(self) -> dict[str, Any]:
         n, spec = len(self.rows), self.spec
         body = {"project": data(self.node.get("name")), "scope": self.where}
         return {
             "title": f"Add {n} {spec.nouns(n)} to {data(self.node.get('name'))}?",
-            "detail": f"one batch in {self.where} · untick a {spec.noun} to leave it out",
+            "detail": _with_line(
+                f"one batch in {self.where} · untick a {spec.noun} to leave it out", self.reach,
+            ),
             "context": _fields_block(body),
             "rows": [_vocab_card_row(spec, p) for p in self.rows],
         }
@@ -2213,8 +2220,11 @@ async def _vocab_plan(spec: _VocabKind, project_id: str, raw: Any) -> _VocabPlan
             f"Row {long.index}: a name is at most {ROW_LABEL_MAX} characters on the card. "
             "Nothing was created."
         )
-    where = _tree_scope(await _root_of(pid, node), node)
-    plan = _VocabPlan(spec, paths[spec.kind], node, where, rows)
+    space = await _space_of(pid, node)
+    where = _tree_scope(space, node)
+    plan = _VocabPlan(
+        spec, paths[spec.kind], node, where, rows, shared_vocab_line(spec.kind, space),
+    )
     if not plan.fits():
         return (
             f"These {len(rows)} {spec.nouns(2)} do not fit on one confirmation card. "

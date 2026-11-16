@@ -745,6 +745,9 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
     # RX-1: a held card reads this row, not a read tool. The fence that reaches
     # it is ``tests/unit/test_held_card_promises.py``.
     expected.discard(("GET", "/projects/nodes/{project_id}/audience"))
+    # HRD-9a: the cards of the twelve vocabulary writes read this row, not a
+    # read tool. The fence that reaches it is ``test_shared_vocab_guard.py``.
+    expected.discard(("GET", "/projects/nodes/{project_id}/vocabulary/reach"))
     unreached = sorted(expected - reached)
     assert not unreached, (
         "manifest rows whose built tool never calls them — repoint, exclude, "

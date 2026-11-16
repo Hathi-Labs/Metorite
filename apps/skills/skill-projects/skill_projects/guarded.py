@@ -110,6 +110,7 @@ from skill_projects.writes import (
     _resolve_assignee,
     _resolve_assignee_name,
     _same_chase,
+    _space_of,
     _split,
     _subtask_counts,
     _subtask_receipt,
@@ -117,9 +118,11 @@ from skill_projects.writes import (
     _subtasks_wanted,
     _task,
     _vocab,
+    _with_line,
     agent_assignee_refusal_as_text,
     ask_about_subtasks,
     shared_set_line,
+    shared_vocab_line,
     status_edit_refusal,
 )
 
@@ -1600,13 +1603,17 @@ async def delete_type(project_id: str, type_name: str) -> str:
     if row.get("is_system"):
         return f"{data(row.get('name'))} is a system type and cannot be deleted."
     kid = uuid_of(str(row.get("id")), "type_id")
+    # HRD-9a: the type is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     impact = (
-        f"1 type deleted · every task in {data(node.get('name'))}'s tree that carries it becomes "
+        f"1 type deleted · every task in the tree of {space.words} that carries it becomes "
         "untyped (the receipt carries the count)"
     )
     if not await _confirm(
         title="Delete this task type?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(row.get('name'))} in {space.words}", shared_vocab_line("types", space),
+        ),
         context=_guard_card(impact, {"type": data(row.get("name"))}),
     ):
         return _not_confirmed()
@@ -1630,13 +1637,18 @@ async def delete_field(project_id: str, field: str) -> str:
     if _org_wide(row):
         return _shared_entry_text(row, "delete")
     fid = uuid_of(str(row.get("id")), "field_id")
+    # HRD-9a: the field is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     impact = (
         f"1 field deleted · every value under key {data(row.get('field_key'))} in "
-        f"{data(node.get('name'))}'s tree is cleared (the receipt carries the count)"
+        f"the tree of {space.words} is cleared (the receipt carries the count)"
     )
     if not await _confirm(
         title="Delete this custom field and its values?",
-        detail=f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {space.words}",
+            shared_vocab_line("fields", space),
+        ),
         context=_guard_card(
             impact, {"field": data(row.get("name")), "type": row.get("field_type")}
         ),
@@ -1665,9 +1677,14 @@ async def delete_tag(project_id: str, tag: str) -> str:
     hit = (await get(f"/projects/tags/{gid}/impact")) or {}
     tasks = int(hit.get("tasks") or 0)
     impact = f"1 tag deleted · {_plural(tasks, 'task')} untagged"
+    # HRD-9a: the tag is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     if not await _confirm(
         title="Delete this tag?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}",
+        detail=_with_line(
+            f"{data(row.get('name'))} in {space.words} · {impact}",
+            shared_vocab_line("tags", space),
+        ),
         context=_guard_card(impact, {"tag": data(row.get("name"))}),
     ):
         return _not_confirmed()
@@ -1701,9 +1718,14 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
         f"{_plural(worn, 'task')} retagged {data(source.get('name'))} → "
         f"{data(target.get('name'))} · 1 tag deleted"
     )
+    # HRD-9a: both tags are the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     if not await _confirm(
         title="Merge these tags?",
-        detail=f"{data(source.get('name'))} into {data(target.get('name'))} in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(source.get('name'))} into {data(target.get('name'))} in {space.words}",
+            shared_vocab_line("tags", space),
+        ),
         context=_guard_card(
             impact, {"from": data(source.get("name")), "into": data(target.get("name"))}
         ),
