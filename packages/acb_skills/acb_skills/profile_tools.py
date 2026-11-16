@@ -183,7 +183,14 @@ SHARED_ROOM = "A shared room cannot look up a colleague. Ask in your own chat."
 CLOSED = "The colleague lookup is not open to you."
 
 #: No tier matched.
-NOBODY = "Nobody matches. Ask for the full name or the address."
+NOBODY = ("Nobody matches in the members, the People directory or your mail. "
+          "Ask for the full name or the address.")
+
+#: The first line of an answer from the member's mail (CT-1). These people
+#: are not members. The model asks, and never acts on one without a yes.
+MAIL = ("No member and no People row matches «{asked}». These people are from "
+        "your mail, not a member of Metorite. Ask the member whether one is the "
+        "person they mean, and never act on one without a yes:")
 
 #: The member lacks ``feature:people``, so only their aliases were searched.
 NO_DIRECTORY = (
@@ -313,6 +320,17 @@ def format_answer(body: Any, asked: str) -> str:
         if body.get("truncated") is True:
             lines.append(TRUNCATED)
         return "\n".join(lines)
+    if body.get("mail") is True:
+        lines.append(MAIL.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}> (from your mail, not a member of Metorite)"
+                  for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        if body.get("directory") is False:
+            lines.append(NO_DIRECTORY)
+        return "\n".join(lines)
     if body.get("near") is True:
         # HRD-18a: one near name asks too. It is never a "Match:".
         lines.append(NEAR.format(asked=clean(asked)))
@@ -347,7 +365,8 @@ async def resolve_person(name: str) -> str:
 
     Call it when the member names a person ("send it to Raj") and you need
     the address. It looks in the member's saved aliases first. Then it looks
-    in the People directory and the members together. One match: act on it. Several: ask the
+    in the People directory and the members together, and last in the
+    member's mail. One match: act on it. Several: ask the
     member which one, and never guess. Near spellings only: ask the member to
     confirm one, even when there is one. None: ask for the full name or the
     address.
