@@ -151,6 +151,26 @@ def held(found: dict[str, list[Any]], words: list[str]) -> set[str]:
 #: The rungs whose hit matched the member's own words, not a near spelling.
 OWN_RUNGS = frozenset({"exact", "words", "word"})
 
+#: The marks taken off the two ends of a typed token: the list of KR-ZERO's
+#: ``alone_words`` (``company._EDGE_MARKS`` is this string).
+EDGE_MARKS = ".,;:!?()[]{}"
+
+
+def typed_alone(query: str, word: str) -> bool:
+    """True when the member typed *word* as it folds: one token of *query*,
+    split at white space, with :data:`EDGE_MARKS` off its ends and
+    casefolded, IS the folded word (FIND-4 review, P1). Pure.
+
+    The ONE rule of a word that may prove absence, for ``held`` false in
+    :func:`near_report` (HRD-18b) and for :func:`word_absent` (FIND-4). The
+    fold is not what the member typed: "Müller" folds to "muller", and
+    "acme.com" to "acme" and "com". An app with no unaccent, or a full text
+    that keeps "acme.com" as one token, finds nothing for the fold, and that
+    zero proves nothing. "Sharath's" is no "sharath" either.
+    """
+    return bool(word) and any(
+        token.strip(EDGE_MARKS).casefold() == word for token in (query or "").split())
+
 
 def _alone(asked: list[str], broadened: list[dict[str, Any]] | None, *,
            query: str, first_zero: bool) -> tuple[int, bool] | None:
@@ -185,7 +205,9 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
     the first pass (*skipped*) or alone, and it found nothing. A search that
     *limited* by a date (``after``) or to verified pages proves nothing,
     because an older or an unverified record may hold the word (round 3,
-    P3-3). In each other case it is ``None``: not known. Only a false word
+    P3-3). A word that the member did not type as it folds proves nothing
+    (:func:`typed_alone`, FIND-4 review P1): "Müller" alone was searched as
+    "muller". In each other case it is ``None``: not known. Only a false word
     may open the answer with "No record holds" (§3.6). Pure.
     """
     own = [f"{h.title} {h.hint} {h.snippet}" for hits in found.values() for h in hits
@@ -198,13 +220,14 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
         if (alone is not None and alone[0] > 0) or (
                 len(asked) == 1 and any(coverage(asked, t) for t in own)):
             held = True
-        elif alone is not None and not alone[1] and not skipped and not limited:
+        elif (alone is not None and not alone[1] and not skipped and not limited
+              and len(asked) == 1 and typed_alone(query, asked[0])):
             held = False
         out.append({**entry, "held": held})
     return out
 
 
-def word_absent(broadened: list[dict[str, Any]] | None, *, skipped: list[str],
+def word_absent(broadened: list[dict[str, Any]] | None, *, query: str, skipped: list[str],
                 limited: bool) -> bool:
     """True when the words alone prove that no record holds all the words
     (FIND-4, ``find_engine.md`` §3.6): one content word, searched alone in
@@ -218,13 +241,17 @@ def word_absent(broadened: list[dict[str, Any]] | None, *, skipped: list[str],
     hit. Each app matches one word alone, so a zero of one word is proof.
     The word needs ``name_match.NEAR_MIN_LETTERS`` letters, as each word of
     ``held`` does: an app may answer nothing for a short word, with no error.
+    The member must have typed the word as it folds (:func:`typed_alone`).
+
+    This is half of the proof. The route also needs a miss: no hit shows
+    every word (``company._none_has_all``).
     """
     if skipped or limited:
         return False
     return any(
         isinstance(entry, dict) and _count_of(entry.get("hits")) == 0
         and not entry.get("skipped") and isinstance(entry.get("word"), str)
-        and name_match.near_eligible(entry["word"])
+        and name_match.near_eligible(entry["word"]) and typed_alone(query, entry["word"])
         for entry in broadened or []
     )
 

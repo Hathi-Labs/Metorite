@@ -122,15 +122,17 @@ a closed list of :mod:`gateway.retrieval.find`:
 * ``skipped_why`` names the reason of each app of ``skipped``: timed out,
   failed or refused. Its presence marks the answer of the flag for the tool;
 * ``none_has_all`` is true only with proof that no record holds all the words
-  (:func:`_none_has_all`): one word alone found nothing. A low ``covers``, or
-  a first pass with no hit, is no proof;
+  (:func:`_none_has_all`): the answer misses, and one word that the member
+  typed as it folds found nothing alone. A low ``covers``, or a first pass
+  with no hit, is no proof;
 * a zero answer gets ``where_else``: at most 3 entries, the skipped apps, the
   past chats while ``CHAT_SEARCH_ORGS`` does not name the org, then the apps
   that are not open to the member. No entry names a record;
 * ``explain`` runs each rung with no early stop and answers the trace of
   :func:`_explained` in place of the hits and the related records;
 * each search writes one ``search.company.ladder`` line: the hits, the ms of
-  each rung and ``miss``. It holds no word, no name, no address and no id.
+  each rung, ``miss`` and ``explain``. It holds no word, no name, no address
+  and no id.
 
 **A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
 §8.4 door 3). When Knowledge answered with zero hits, the route hands the
@@ -234,7 +236,8 @@ STOP_WORDS: frozenset[str] = frozenset(_STOP_TEXT.split(" "))
 #: The quote marks that make a phrase. A query with one is not broadened.
 _QUOTE_MARKS = ('"', "“", "”")
 #: The marks taken off the two ends of a word before it is searched alone.
-_EDGE_MARKS = ".,;:!?()[]{}"
+#: ``find.typed_alone`` takes the same marks off a typed token (FIND-4).
+_EDGE_MARKS = find.EDGE_MARKS
 
 
 def bare_words(words: str) -> list[str] | None:
@@ -1152,8 +1155,9 @@ async def _find_tail(
 
     FIND-3: rung 4 runs after every other pass, so a related record never
     counts in the hits, the coverage, ``near`` or ``broadened``. The log line
-    holds the hits, the ms of each rung and ``miss``: the miss of D-FIND-4 on
-    the hits of the final answer. It holds no word, no name and no id (§3.7).
+    holds the hits, the ms of each rung, ``miss`` (the miss of D-FIND-4 on
+    the hits of the final answer) and ``explain``, so the zero rate can leave
+    out an explain call. It holds no word, no name and no id (§3.7).
     """
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -1161,16 +1165,18 @@ async def _find_tail(
                        notes=ladder.notes["related"])
     ladder.ms["related"] = _ms_since(loop, started)
     why = ladder.skip_reasons(skipped)
+    miss = bool(find.missed(found, words_of))
     _events.info(
         "search.company.ladder", hits=len(shown), exact_ms=ladder.ms["exact"],
         word_ms=ladder.ms["word"], near_ms=ladder.ms["near"],
-        related_ms=ladder.ms["related"], miss=bool(find.missed(found, words_of)),
+        related_ms=ladder.ms["related"], miss=miss, explain=ladder.explain,
     )
     if ladder.explain:
         return _explained(answer, user, skipped, why, hybrid, ladder)
     answer["skipped_why"] = why
     answer["none_has_all"] = _none_has_all(
-        user, answer["query"], answered, skipped, answer.get("broadened"), limited=limited)
+        user, answer["query"], answered, skipped, answer.get("broadened"), limited=limited,
+        miss=miss, related=answer.get("related"))
     if not shown and not answer.get("related"):
         answer["where_else"] = find.where_else(
             skipped, why, chat_named=find.chat_search_named(user.organization_id),
@@ -1179,21 +1185,41 @@ async def _find_tail(
 
 
 def _none_has_all(user: UserContext, words: str, answered: list[str], skipped: list[str],
-                  broadened: list[dict[str, Any]] | None, *, limited: bool) -> bool:
+                  broadened: list[dict[str, Any]] | None, *, limited: bool, miss: bool,
+                  related: list[dict[str, Any]] | None) -> bool:
     """True only with proof that no record the member can open holds all the
     words (``find_engine.md`` §3.6, FIND-4).
 
-    The proof is :func:`find.word_absent`: one word, searched alone in each
-    app that answered, found nothing, and nothing was skipped or limited. An
-    app that is open to the member must have answered, and the query has no
-    operator. A low ``covers`` is no proof: the body of a hit can hold a word
-    that its title, hint and snippet do not show. A first pass with no hit is
-    no proof either, because People matches the whole query as one phrase.
+    The proof is :func:`find.word_absent`: one word that the member typed as
+    it folds, searched alone in each app that answered, found nothing, and
+    nothing was skipped or limited. An app that is open to the member must
+    have answered, and the query has no operator. A low ``covers`` is no
+    proof: the body of a hit can hold a word that its title, hint and snippet
+    do not show. A first pass with no hit is no proof either, because People
+    matches the whole query as one phrase.
+
+    The answer must also *miss* (FIND-4 review, P1): no hit and no *related*
+    record shows every word. A record can hold every word while one word
+    alone finds nothing: People never searches a preferred name.
     """
     return bool(
-        bare_words(words) is not None
+        miss and not _shows_every_word(related)
+        and bare_words(words) is not None
         and any(REGISTRY[key].reaches(user) for key in answered)
-        and find.word_absent(broadened, skipped=skipped, limited=limited)
+        and find.word_absent(broadened, query=words, skipped=skipped, limited=limited)
+    )
+
+
+def _shows_every_word(related: list[dict[str, Any]] | None) -> bool:
+    """True when a related record of the answer shows every content word in
+    its title, hint or snippet: its ``covers`` equals ``of`` (FIND-4)."""
+    def count(value: Any) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return any(
+        isinstance(h, dict) and (covers := count(h.get("covers"))) is not None
+        and (of := count(h.get("of"))) is not None and 0 < of <= covers
+        for h in related or []
     )
 
 

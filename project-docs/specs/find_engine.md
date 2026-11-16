@@ -286,6 +286,13 @@ tool prints the new lines only with that mark. The rest is as follows:
   alone in each app that answered, found nothing. The route skipped no app,
   and no date or verified filter applied. An app may answer nothing for a
   shorter word, with no error.
+- The member must type that word as it folds (`find.typed_alone`, the one
+  rule of `held` false and of `none_has_all`). "Müller" folds to "muller",
+  and "acme.com" folds to "acme" and "com". An app with no unaccent, or a
+  full text that keeps "acme.com" as one token, finds nothing for the fold.
+- The answer must also miss. When a hit or a related record shows every
+  word, no claim prints. People never searches a preferred name, so one word
+  alone can find nothing while a hit shows it.
 - A first pass with no hit is no proof. People matches the whole query as
   one phrase, so a person who holds the words in another order is no hit. A
   low `covers` is no proof either. A hit can hold a word in its body that its
@@ -339,8 +346,9 @@ name, no address and no id. The weekly delivery review reads the zero rate of
   `EMAIL_SEMANTIC_SEARCH_ENABLED` and `CHAT_SEARCH_ORGS`.
 - An explain call records no Knowledge gap, because it asks the same words
   again.
-- The log line has six fields: `hits`, `exact_ms`, `word_ms`, `near_ms`,
-  `related_ms` and `miss`. `miss` reads the hits of the final answer.
+- The log line has seven fields: `hits`, `exact_ms`, `word_ms`, `near_ms`,
+  `related_ms`, `miss` and `explain`. `miss` reads the hits of the final
+  answer. `explain` lets the zero rate leave out an explain call.
 
 ## 4. The source contract: `contributes.search`
 

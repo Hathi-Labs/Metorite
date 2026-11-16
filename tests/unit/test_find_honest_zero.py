@@ -17,8 +17,10 @@ The claims, each written so that a wrong build fails it:
   the rule of ``held`` false: one word of 4 letters or more, searched alone
   in each app that answered, found nothing, nothing was skipped, and no date
   or verified filter limited it. A first pass with no hit is no proof,
-  because People matches the query as one phrase. A near spelling with
-  ``held`` unknown claims nothing.
+  because People matches the query as one phrase. The member must type the
+  word as it folds (``find.typed_alone``), so "Müller" and "acme.com" prove
+  nothing. And the answer must miss: no hit and no related record shows
+  every word. A near spelling with ``held`` unknown claims nothing.
 * **No record that the member cannot open.** A "Where else" line names an
   app key, a reason or a fixed sentence, never a record.
 * **The explain mode.** It runs each rung with no early stop, and it answers
@@ -61,11 +63,23 @@ ROWS: dict[str, list[tuple[str, str, str, str]]] = {
         ("m-7", "email", "Snowflake order and payment", "snowflake order payment printer"),
         # The app matched both words in the body, and the title shows one.
         ("m-8", "email", "Invoice copy", "invoice copy quillon"),
+        # Full text keeps "acme.com" as one token, so "acme" alone finds nothing.
+        ("m-9", "email", "Invoice copy 7", "invoice copy acme.com"),
+        # Full text has no unaccent, so "resume" alone finds nothing.
+        ("m-10", "email", "Résumé", "résumé for review"),
     ],
     "tasks": [("t-1", "task", "Ship the printer", "ship the printer")],
-    # People matches the whole query as one phrase, as `directory.py` does.
-    "people": [("p-1", "person", "Neha Rao", "neha rao lead buyer")],
+    # People matches the whole query as one phrase, as `directory.py` does,
+    # with no unaccent, and never over `preferred_name`.
+    "people": [
+        ("p-1", "person", "Neha Rao", "neha rao lead buyer"),
+        ("p-2", "person", "Hans Müller", "hans müller"),
+        ("p-3", "person", "Venky", "venkatesh engineering"),
+    ],
 }
+#: The hint of a hit, where it is not the kind. A person's hit names the
+#: department, as `_person_hit` does.
+HINTS = {"p-3": "Person · Engineering"}
 #: The names that each near reader can give, newest first.
 NAMES = {
     "crm": ["Sharat Satyanarayana", "Neuropeak - Snowflake 3D printer"],
@@ -101,8 +115,8 @@ class World:
                 return bool(words) and all(w in text.split() for w in words)
 
             return [
-                Hit(app=key, kind=kind, id=ident, title=title, hint=kind.title(),
-                    href=f"/{key}/{ident}")
+                Hit(app=key, kind=kind, id=ident, title=title,
+                    hint=HINTS.get(ident, kind.title()), href=f"/{key}/{ident}")
                 for ident, kind, title, text in ROWS.get(key, []) if match(text)
             ][:k]
         return read
@@ -433,9 +447,11 @@ class TestMostOfTheWords:
         assert "No record holds all" not in text and cst.MOST_WORDS not in text
 
     def test_one_word_found_nowhere_is_the_proof(self):
+        # Each word is typed as it folds, so only the other rules are tested.
+        typed = "alpha bravo xq 3d"
         assert find.word_absent([{"word": "alpha", "hits": 2, "skipped": []},
                                  {"word": "bravo", "hits": 0, "skipped": []}],
-                                skipped=[], limited=False)
+                                query=typed, skipped=[], limited=False)
         for broadened, skipped, limited in (
                 ([{"word": "bravo", "hits": 0, "skipped": ["email"]}], [], False),
                 ([{"word": "bravo", "hits": 0, "skipped": []}], ["email"], False),
@@ -447,7 +463,8 @@ class TestMostOfTheWords:
                 ([{"word": "3d", "hits": 0, "skipped": []}], [], False),
                 ([{"hits": 0, "skipped": []}], [], False),
                 (None, [], False)):
-            assert not find.word_absent(broadened, skipped=skipped, limited=limited)
+            assert not find.word_absent(broadened, query=typed, skipped=skipped,
+                                        limited=limited)
 
     def test_a_short_word_found_nowhere_proves_nothing(self, on):
         body = run("Snowflake xq")
@@ -473,6 +490,114 @@ class TestMostOfTheWords:
 
     def test_an_operator_proves_nothing(self, on):
         assert run(f'"Snowflake {MARKER}"')["none_has_all"] is False
+
+
+# ── The word as typed, and a hit that shows every word (review P1) ──────────
+
+def _claims(body: dict[str, Any]) -> bool:
+    text = cst.format_answer(body, dated=True)
+    return "No record holds all" in text or cst.MOST_WORDS in text
+
+
+class TestTheTypedWord:
+    """Review P1 of 2026-11-16. The fold of a word is not what the member
+    typed: "Müller" folds to "muller", and "acme.com" to "acme" and "com".
+    An app with no unaccent, or a full text that keeps "acme.com" as one
+    token, finds nothing for the fold. So a word proves absence only when the
+    member typed it as it folds (``find.typed_alone``). And no claim prints
+    while a hit shows every word: the claim needs ``miss``."""
+
+    def test_an_accented_name_proves_nothing(self, on, monkeypatch):
+        """Both rules: "muller" is no typed word, and «Hans Müller» shows
+        both words."""
+        lines = _log(monkeypatch)
+        body = run("Müller Hans")
+        assert [h["id"] for h in body["hits"]] == ["p-2"]
+        assert body["hits"][0]["covers"] == body["hits"][0]["of"] == 2
+        assert {"word": "muller", "hits": 0, "skipped": []} in body["broadened"]
+        assert body["none_has_all"] is False and not _claims(body)
+        (fields,) = [f for e, f in lines if e == "search.company.ladder"]
+        assert fields["miss"] is False
+
+    def test_a_hit_that_shows_every_word_blocks_the_claim(self, on):
+        """Rule (a) alone. People never searches the preferred name «Venky»,
+        so "venky" alone finds nothing, and the member typed it as it folds.
+        "engineering" finds the person, whose hit shows both words."""
+        body = run("Venky engineering")
+        assert [h["id"] for h in body["hits"]] == ["p-3"]
+        assert body["hits"][0]["covers"] == 2
+        assert {"word": "venky", "hits": 0, "skipped": []} in body["broadened"]
+        assert body["none_has_all"] is False and not _claims(body)
+
+    def test_an_address_split_by_the_fold_proves_nothing(self, on):
+        """Rule (b) alone. "acme.com" folds to "acme" and "com". The full
+        text keeps "acme.com" as one token, so "acme" alone finds nothing, and
+        m-9 holds every word in its body, with one shown."""
+        body = run("acme.com invoice")
+        assert "m-9" in [h["id"] for h in body["hits"]]
+        assert {"word": "acme", "hits": 0, "skipped": []} in body["broadened"]
+        # No hit shows every word, so rule (a) does not block the claim here.
+        assert max(h["covers"] for h in body["hits"]) < 3
+        assert body["none_has_all"] is False and not _claims(body)
+
+    def test_an_accented_email_subject_proves_nothing(self, on):
+        """Rule (b) alone. The subject «Résumé» shows one word, and its body
+        holds "review". "resume" alone finds nothing, with no unaccent."""
+        body = run("Résumé review")
+        assert [h["id"] for h in body["hits"]] == ["m-10"]
+        assert body["hits"][0]["covers"] == 1
+        assert {"word": "resume", "hits": 0, "skipped": []} in body["broadened"]
+        assert body["none_has_all"] is False and not _claims(body)
+
+    def test_a_related_record_that_shows_every_word_blocks_the_claim(self, on):
+        assert company._shows_every_word([{"covers": 1, "of": 2}, {"covers": 2, "of": 2}])
+        for related in (None, [], [{"covers": 1, "of": 2}], [{"covers": 0, "of": 0}],
+                        [{"covers": True, "of": 1}], ["not a dict"]):
+            assert not company._shows_every_word(related), related
+        zero = [{"word": "zqvortex", "hits": 0, "skipped": []}]
+
+        def proven(*, miss: bool, related: Any) -> bool:
+            return company._none_has_all(member(*ALL), f"Snowflake {MARKER}", ["crm"], [],
+                                         zero, limited=False, miss=miss, related=related)
+
+        assert proven(miss=True, related=None)
+        assert not proven(miss=True, related=[{"covers": 2, "of": 2}])
+        assert not proven(miss=False, related=None)
+
+    def test_a_plain_word_found_nowhere_still_proves_absence(self, on):
+        body = run(f"Snowflake {MARKER}")
+        assert body["hits"] and body["none_has_all"] is True
+        assert cst.format_answer(body, dated=True).splitlines()[1] == cst.MOST_WORDS
+
+    def test_the_one_rule_of_a_typed_word(self):
+        assert find.typed_alone("Hans Zqvortex", "hans")
+        assert find.typed_alone("(Hans), printer!", "hans")
+        assert find.typed_alone("  HANS  ", "hans")
+        for query, word in (("Müller Hans", "muller"), ("acme.com invoice", "acme"),
+                            ("acme.com invoice", "com"), ("Sharath's order", "sharath"),
+                            ("Sharath\u2019s order", "sharath"), ("Résumé", "resume"),
+                            ("x-ray", "ray"), ("a@b.example", "example"), ("Hans", "")):
+            assert not find.typed_alone(query, word), (query, word)
+        assert find.word_absent([{"word": "muller", "hits": 0, "skipped": []}],
+                                query="Müller Hans", skipped=[], limited=False) is False
+        assert find.word_absent([{"word": "zqvortex", "hits": 0, "skipped": []}],
+                                query="Müller Zqvortex", skipped=[], limited=False) is True
+
+    def test_held_of_an_accented_word_is_not_known(self):
+        """The same rule in ``near_report`` (HRD-18b), so the near line does
+        not say «No record holds «Müller»» either."""
+        near = [{"word": "Müller", "as": "Mueller", "hits": 1}]
+        zero = [{"word": "muller", "hits": 0, "skipped": []}]
+        (entry,) = find.near_report(near, {}, zero, query="Müller Zqvortex",
+                                    first_zero=True, skipped=[])
+        assert entry["held"] is None
+        body = {"query": "Müller Zqvortex", "hits": [], "skipped": [], "near": [entry]}
+        assert "No record holds «" not in cst.format_answer(body, dated=True)
+        # The unchanged positive case: a word typed as it folds.
+        (plain,) = find.near_report([{"word": "Puja", "as": "Pooja", "hits": 1}], {},
+                                    [{"word": "puja", "hits": 0, "skipped": []}],
+                                    query="Puja Shah", first_zero=True, skipped=[])
+        assert plain["held"] is False
 
 
 # ── The explain mode (§3.7) ─────────────────────────────────────────────────
@@ -600,7 +725,9 @@ class TestExplain:
 
 # ── The log line (§3.7) ─────────────────────────────────────────────────────
 
-LOG_FIELDS = {"hits", "exact_ms", "word_ms", "near_ms", "related_ms", "miss"}
+LOG_FIELDS = {"hits", "exact_ms", "word_ms", "near_ms", "related_ms", "miss", "explain"}
+#: The fields of the log line that are counts or times.
+LOG_COUNTS = LOG_FIELDS - {"miss", "explain"}
 
 
 class TestTheLogLine:
@@ -613,7 +740,10 @@ class TestTheLogLine:
         (fields,) = self._ladder(lines)
         assert set(fields) == LOG_FIELDS
         assert isinstance(fields["miss"], bool) and fields["miss"] is True
-        for key in LOG_FIELDS - {"miss"}:
+        # Review P3-1: a plain search says so, so the zero rate can leave out
+        # the explain calls.
+        assert fields["explain"] is False
+        for key in LOG_COUNTS:
             assert _int(fields[key]), key
         text = repr(self._ladder(lines)).lower()
         for secret in (MARKER, "sharath", "sharat", "printer", "t-1", "m-7", "d-1",
@@ -635,6 +765,8 @@ class TestTheLogLine:
         # The explain mode ran the words alone too, and "printer" found t-1.
         assert set(fields) == LOG_FIELDS and fields["hits"] == 3
         assert fields["miss"] is False and fields["word_ms"] >= 0
+        # Review P3-1: an explain call after a zero is no second zero.
+        assert fields["explain"] is True
 
 
 # ── The tool ────────────────────────────────────────────────────────────────
@@ -694,6 +826,14 @@ class TestTheTool:
     def test_only_the_dated_tool_takes_explain(self):
         assert "explain" in inspect.signature(cst.search_company_dated).parameters
         assert "explain" not in inspect.signature(cst.search_company).parameters
+
+    def test_the_argument_says_where_it_is_ignored(self):
+        """Review P3-2: the dated tool reaches each org with
+        ``CONTEXT_RECENCY`` on, and the route reads ``explain`` only with
+        ``FIND_ORGS`` on. The words must not promise a trace everywhere."""
+        doc = " ".join((cst.search_company_dated.__doc__ or "").split())
+        said = doc[doc.index("explain:"):]
+        assert "ignored" in said and "the records come back" in said
 
     def test_explain_sends_the_flag_and_prints_the_trace(self, monkeypatch):
         text, sent = self._call(monkeypatch, TRACE_BODY, explain=True)

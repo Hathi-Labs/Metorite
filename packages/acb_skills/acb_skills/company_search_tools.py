@@ -843,9 +843,11 @@ async def _search_company_dated(
         after: Optional. A date as YYYY-MM-DD. Only records that changed on
             or after it come back, for example the first day of this month.
         verified_only: Optional. Only Knowledge pages that have an owner and a review date in the future. Other apps are unchanged.
-        explain: Optional. True gives a trace of the search in place of the
-            records: what each step searched, its hits, its time and its
-            result. Use it when the member asks why a search found nothing.
+        explain: Optional. Where the search has its trace mode on, true
+            gives a trace in place of the records: what each step searched,
+            its hits, its time and its result. Elsewhere it is ignored and
+            the records come back. Use it when the member asks why a search
+            found nothing.
     """
     words = " ".join(str(query or "").split())
     if not 2 <= len(words) <= 300:
