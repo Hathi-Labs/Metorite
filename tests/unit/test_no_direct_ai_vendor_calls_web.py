@@ -307,22 +307,36 @@ def _memory_block() -> str:
     return text[start:end]
 
 
+def _forced_loop() -> str:
+    """The loop that forces both flags to false, from its 2449 S1 comment."""
+    block = _memory_block()
+    return block[block.index("for _var in", block.index("2449 S1")):]
+
+
 def test_the_deploy_forces_the_memory_flags_off() -> None:
-    """The block names both flags and rewrites a line that exists.
-    Mutation: restore the old ``if ! grep`` guard -> no ``sed`` line -> red."""
-    block = _memory_block()
-    assert "for _var in MEM0_ENABLED GRAPHITI_ENABLED; do" in block
-    assert 'sed -i "s/^${_var}=.*/${_var}=false/" "$ENV_FILE"' in block
-    assert 'echo "${_var}=false" >> "$ENV_FILE"' in block
+    """A line with any value but false is written back as false, on each deploy.
+    Mutation: delete the forcing loop -> no ``printf`` into the file -> red."""
+    loop = _forced_loop()
+    assert "for _var in MEM0_ENABLED GRAPHITI_ENABLED; do" in loop
+    assert '! grep -qE "^${_var}=false$"' in loop
+    assert 'sed "s/^${_var}=.*/${_var}=false/" "$ENV_FILE"' in loop
+    assert "printf '%s\\n' \"$_forced\" > \"$ENV_FILE\"" in loop
 
 
-def test_the_deploy_does_not_wait_for_a_missing_line() -> None:
-    """The old guard ran for a missing line only, so a line with another value
-    stayed. No guard of that kind may come back, and no value but false may be
-    written for either flag."""
+def test_the_forcing_loop_keeps_the_inode_of_env() -> None:
+    """The writer builds the content first and writes INTO the file. A
+    ``sed -i`` or a ``mv`` replaces the inode, and the sandboxed gateway keeps a
+    dead copy (``test_env_inode.py``). Mutation: put ``sed -i`` in the loop."""
+    loop = _forced_loop()
+    assert not re.search(r"sed\s+(-[A-Za-z]+\s+)*-[A-Za-z]*i", loop)
+    assert not re.search(r"\bmv\b", loop)
+
+
+def test_the_missing_line_default_stays_false() -> None:
+    """The old default for a missing line stays (``test_deploy_memory_default.py``)."""
     block = _memory_block()
-    assert 'if ! grep -qE "^${_var}="' not in block
-    assert not re.search(r"_ENABLED=(?!false)", block.replace("${_var}=", ""))
+    assert 'echo "MEM0_ENABLED=false" >> "$ENV_FILE"' in block
+    assert 'echo "GRAPHITI_ENABLED=false" >> "$ENV_FILE"' in block
 
 
 def test_the_deploy_script_parses_in_bash() -> None:
@@ -333,20 +347,24 @@ def test_the_deploy_script_parses_in_bash() -> None:
     assert done.returncode == 0, done.stderr
 
 
-def test_the_forced_block_overwrites_any_value(tmp_path: Path) -> None:
-    """Run the loop on a copy of an env file. A line with any other value is
-    rewritten, a missing line is added, and another key stays.
-    Mutation: put the old guard back -> the value stays -> red."""
+def test_the_forced_loop_overwrites_any_value_and_keeps_the_inode(tmp_path: Path) -> None:
+    """Run the forcing loop on a copy of an env file. A line with any other
+    value is rewritten, a line that says false stays, another key stays, and
+    the inode of the file does not change.
+    Mutation: remove the loop -> the value stays -> red."""
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("needs bash")
     env_file = tmp_path / ".env"
-    env_file.write_text("MEM0_ENABLED=enabled\nOTHER=kept\n", encoding="utf-8")
-    block = _memory_block()
-    loop = block[block.index("for _var in"):]
-    script = f'ENV_FILE="{env_file.as_posix()}"\n' + loop
+    env_file.write_text(
+        "MEM0_ENABLED=enabled\nOTHER=kept\nGRAPHITI_ENABLED=false\n", encoding="utf-8"
+    )
+    before = env_file.stat().st_ino
+    script = f'ENV_FILE="{env_file.as_posix()}"\n' + _forced_loop()
     done = subprocess.run([bash, "-c", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     lines = set(env_file.read_text(encoding="utf-8").split())
     assert {"MEM0_ENABLED=false", "GRAPHITI_ENABLED=false", "OTHER=kept"} <= lines
     assert "MEM0_ENABLED=enabled" not in lines
+    if before:
+        assert env_file.stat().st_ino == before
