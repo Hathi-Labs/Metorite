@@ -101,6 +101,7 @@ import {
   getSessions,
   renameSession,
   setSessionArchived,
+  setSessionPinned,
   upsertSession,
   type ChatSession,
 } from "@/lib/sessions";
@@ -121,7 +122,7 @@ import {
   requestReminderOpen,
   useKnownReminder,
 } from "./reminderOpen";
-import { markBuddyHello, markChatFirstMessage, setHelloPending } from "./shellPrefs";
+import { markBuddyHello, markChatFirstMessage, setHelloPending, useChatPinOn } from "./shellPrefs";
 import {
   dockFloats,
   dockFoldsNav,
@@ -170,7 +171,7 @@ import {
   type AssistantMode,
 } from "./assistant";
 import { surfaceOfPane } from "./surface";
-import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
+import { chatFilesHref, isPinned, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
 import { ContinuedMark } from "./ContinuedMark";
 import { useDocumentLook } from "@/lib/theme/glassTokens";
@@ -637,6 +638,13 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       if (archived && id === activeId) openAssistant({ fresh: true });
       refresh();
     },
+    /**
+     * CO-11: pin a chat for this member, or unpin it. The list draws the
+     * mark at once. A refusal of the server puts it back and draws again.
+     */
+    pin: (id: string, pinned: boolean) => {
+      if (setSessionPinned(id, pinned, refresh)) refresh();
+    },
     activity: (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
       if (!activeId) return;
       enrichSession(activeId, info);
@@ -888,6 +896,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const form: AssistantMode = effectiveMode(st.mode, vw, phone);
   // Read once, as the other shell flags are. Off, a phone has no strip.
   const [chatFirst] = useState(() => chatFirstOn());
+  // CO-11: the shell read says whether the member may pin a chat.
+  const pinsOn = useChatPinOn();
   const strip = phone && form === "peek";
   // Every desktop has the side panel. Below the floor it floats over the
   // page instead of sitting beside it (owner, 2026-10-14).
@@ -1146,19 +1156,34 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
   // The switcher shows a title, so it keeps the 44 px height and lets the width follow the title (task 1717).
   const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";
+  // CO-11: the chat on screen may take a pin when the server holds it (it
+  // has a message) and it is not archived. An archive takes it out of Pinned.
+  const pinnable = pinsOn && active != null && active.messageCount > 0 && !active.archivedAt;
+  const activePinned = active != null && isPinned(active);
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
-        ? [{
-            icon: "FolderOpen",
-            label: "This chat's files",
-            onClick: () => {
-              closeAssistant();
-              router.push(chatFilesHref(chat.activeId));
+        ? [
+            {
+              icon: "FolderOpen",
+              label: "This chat's files",
+              onClick: () => {
+                closeAssistant();
+                router.push(chatFilesHref(chat.activeId));
+              },
             },
-          }]
+            // CO-11: the phone's header has no room for a sixth control, so
+            // the pin sits here, beside the files (CF-8).
+            ...(pinnable
+              ? [{
+                  icon: activePinned ? "PinOff" : "Pin",
+                  label: activePinned ? "Unpin this chat" : "Pin this chat",
+                  onClick: () => chat.pin(chat.activeId, !activePinned),
+                }]
+              : []),
+          ]
         : [],
-    [phoneChrome, chat.activeId, router],
+    [phoneChrome, chat, router, pinnable, activePinned],
   );
   const pickerProps = {
     sessions: chat.sessions,
@@ -1170,6 +1195,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     onRename: chat.rename,
     onArchive: chat.archive,
     onRemove: chat.remove,
+    onPin: chat.pin,
+    pinsOn,
   };
 
   return (
@@ -1289,6 +1316,19 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           >
             {phone ? null : "Files"}
           </Button>
+        ) : null}
+        {pinnable && !phone ? (
+          // CO-11: the member's own pin of the chat on screen. The phone
+          // offers it in the chat's "…" control (CF-8).
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon={activePinned ? "PinOff" : "Pin"}
+            aria-label={activePinned ? "Unpin this chat" : "Pin this chat"}
+            title={activePinned ? "Unpin" : "Pin to the top of your chats"}
+            data-chat-pin={activePinned ? "on" : "off"}
+            onClick={() => chat.pin(chat.activeId, !activePinned)}
+          />
         ) : null}
         {columnForm ? <span ref={setHeadSlot} data-dock-head-slot="" className="flex shrink-0 items-center" /> : null}
         {/* The window controls, apart from the chat's own. */}

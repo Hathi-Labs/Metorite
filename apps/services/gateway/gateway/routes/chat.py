@@ -11,6 +11,8 @@ GET    /chat/sessions/{session_id}/messages    Fetch messages the caller may rea
 POST   /chat/sessions/{session_id}/messages    Upsert a batch of messages
 POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
 POST   /chat/sessions/{session_id}/continue    Continue a held chat in a fresh chat (WT-1)
+PUT    /chat/sessions/{session_id}/pin         Pin a chat for the caller (CO-11)
+DELETE /chat/sessions/{session_id}/pin         Unpin a chat for the caller (CO-11)
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -46,6 +48,7 @@ from acb_common.assistant_profile import PROFILE_USED_EVENT
 from acb_common.chat_continue_flag import continue_allowed
 from acb_common.pg_text import storable
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from gateway import chat_session_member as chat_pins
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -133,6 +136,10 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
+    # CO-11 (`chat_organization.md` §18): the caller's own pins, only with the
+    # switch on. Off, the list sends today's one statement and today's keys.
+    pins_on = chat_pins.pin_allowed(organization_id)
+    pins: dict[str, Any] = {}
     with tenant_session(organization_id) as s:
         rows = s.execute(
             text(
@@ -160,6 +167,8 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             ),
             {"uid": user_id},
         ).fetchall()
+        if pins_on:
+            pins = chat_pins.pinned_at_of(s, user_id)
     # CO-13 (§17.5): the source of a continued chat is readable by this member
     # exactly when it is a row of this list. The list holds every row that
     # SESSION_VISIBLE_SQL passes, with no limit, under the bound tenant, so a
@@ -174,7 +183,7 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             return {"id": link, "title": readable[link]}
         return {"id": None, "title": None}
 
-    return [
+    listed = [
         {
             "id": r.id,
             "agentName": r.agent_name,
@@ -211,6 +220,13 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
         }
         for r in rows
     ]
+    if pins_on:
+        # Only the caller's pin: a colleague in the same room reads none of
+        # it. An archived chat reads as not pinned (`pin_fields`).
+        for item, r in zip(listed, rows, strict=True):
+            item.update(chat_pins.pin_fields(pins.get(r.id),
+                                             archived=r.archived_at is not None))
+    return listed
 
 
 def _refuse_if_elsewhere(s: Any, session_id: str) -> bool:
@@ -553,6 +569,26 @@ def _delete_session(
             if pending_ask.durable_asks_enabled():
                 pending_ask.close_thread_asks(s, session_id)
         return deleted
+
+
+def _pin_session(
+    session_id: str, user_id: str, *, organization_id: str | None,
+) -> chat_pins.PinResult:
+    """Pin the chat for *user_id* in the caller's tenant (CO-11)."""
+    from acb_graph import tenant_session
+
+    with tenant_session(organization_id) as s:
+        return chat_pins.pin(s, session_id, viewer=user_id)
+
+
+def _unpin_session(
+    session_id: str, user_id: str, *, organization_id: str | None,
+) -> bool:
+    """Clear the pin of *user_id* in the caller's tenant (CO-11)."""
+    from acb_graph import tenant_session
+
+    with tenant_session(organization_id) as s:
+        return chat_pins.unpin(s, session_id, viewer=user_id)
 
 
 def _get_messages(
@@ -1151,6 +1187,63 @@ async def patch_session(
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
+
+
+def _pin_member(user: UserContext) -> str:
+    """The address of the session, the key of a pin (CO-11). A caller with no
+    address gets 403: a shared key such as ``default`` would give every such
+    caller one pin row."""
+    email = (user.email or "").strip()
+    if not email:
+        raise HTTPException(status_code=403, detail="Sign in to pin a chat.")
+    return email
+
+
+@router.put("/sessions/{session_id}/pin", summary="Pin a chat for the caller")
+async def pin_session(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """CO-11 (`chat_organization.md` §18). The pin is the caller's own: the
+    member is the session's, never a request field (R11). Any member who can
+    read the chat may pin it. 404 while `CHAT_PIN_ORGS` leaves the org out,
+    and for a chat that the caller cannot read. 409 for an archived chat. A
+    second pin keeps the time of the first."""
+    org = user.organization_id
+    if not chat_pins.pin_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    member = _pin_member(user)
+    result = await asyncio.to_thread(
+        _pin_session, session_id, member, organization_id=org,
+    )
+    if result.state == "missing":
+        raise HTTPException(status_code=404, detail="Session not found")
+    if result.state == "archived":
+        raise HTTPException(
+            status_code=409, detail="This chat is archived. Restore it, then pin it.",
+        )
+    return {"ok": True, "pinned": True,
+            "pinnedAt": result.at.isoformat() if result.at else None}
+
+
+@router.delete("/sessions/{session_id}/pin", summary="Unpin a chat for the caller")
+async def unpin_session(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """CO-11. Clears the caller's own pin, and no pin of a colleague. A chat
+    with no pin answers 200 too. 404 while the switch is off, and for a chat
+    that the caller cannot read."""
+    org = user.organization_id
+    if not chat_pins.pin_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    member = _pin_member(user)
+    found = await asyncio.to_thread(
+        _unpin_session, session_id, member, organization_id=org,
+    )
+    if not found:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True, "pinned": False, "pinnedAt": None}
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
