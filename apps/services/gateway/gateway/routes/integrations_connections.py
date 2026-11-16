@@ -359,6 +359,9 @@ async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
             # MCP-C2: a switch too. The one parse is ``StoredServer``.
             "read_only_key": "true" if srv.read_only_key else "false",
         }
+        if srv.description:
+            # CSY-7: the panel edits it in place, so it is not a line of text.
+            detail["description"] = srv.description
         host = _host_only(srv.url)
         if host:
             detail["host"] = host
