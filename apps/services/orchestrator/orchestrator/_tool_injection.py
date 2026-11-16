@@ -2996,6 +2996,10 @@ def _inject_agent_tools(
     # RESUME-1a: the MAF call id of each tool call, for the stored call of a
     # card. Off for the org, it attaches nothing.
     _apply_resume_call_id(agents)
+    # HRD-5: after 3 empty or refused answers from one read tool in a turn, its
+    # next call gets a stop line. Dark behind TOOL_TURN_BUDGET_ORGS. It runs
+    # before the notice, so a stopped call starts no timer.
+    _apply_tool_turn_budget(agents)
     # HRD-6: a slow tool call gets one line for the member. Its middleware
     # wraps each tool call, and the number check's recorder sits inside it.
     _apply_progress_notice(agents)
@@ -3059,6 +3063,32 @@ def _apply_progress_notice(agents: list[Any]) -> None:
     for i, agent in enumerate(agents):
         if isinstance(agent, Agent):
             agents[i] = agent_with_providers(agent, [ProgressNoticeProvider()])
+
+
+def _apply_tool_turn_budget(agents: list[Any]) -> None:
+    """The per-turn budget of each read tool on ONE run (HRD-5, task 2984).
+
+    It replaces each native MAF ``Agent`` in *agents* with a per-run view that
+    carries ``orchestrator.tool_turn_budget.ToolTurnBudgetProvider``, as
+    :func:`_apply_progress_notice` does. With ``TOOL_TURN_BUDGET_ORGS`` off for
+    the run's org it changes nothing. The org is the run binding's
+    (:func:`_run_org`), never request input. A Copilot SDK agent and a plain
+    object stay as they are. Fence: ``tests/unit/test_tool_turn_budget.py``.
+    """
+    from orchestrator.tool_turn_budget import ToolTurnBudgetProvider, tool_turn_budget_on
+
+    if not tool_turn_budget_on(_run_org()):
+        return
+    try:
+        from agent_framework import Agent
+    except ImportError as exc:  # pragma: no cover — ships with the platform
+        _log.warning("executor.tool_turn_budget_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if isinstance(agent, Agent):
+            agents[i] = agent_with_providers(agent, [ToolTurnBudgetProvider()])
 
 
 def _apply_steer_turns(agents: list[Any]) -> None:
