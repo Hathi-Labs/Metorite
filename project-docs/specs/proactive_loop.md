@@ -612,6 +612,34 @@ from −20 to +20, over 30 days, computed once each day at day start. LOOP-4
 builds it. The count read is `feed_decide._habits`. The day value goes into a
 Redis key through `acb_common.tenant_redis` (R5).
 
+**The pins of LOOP-4a (2026-11-16, from the audit of task 3444).**
+
+- **P1, the formula.** The affinity is the truncation of
+  `(acted − not_useful) / shown × 20`, held between −20 and +20. A kind shown
+  fewer than 5 times gets 0, because the prior is 0 until LOOP-7 (§7.4).
+  Five cards shown, none acted and three "Not useful" give −12. Three shown and
+  three "Not useful" give 0. The demo of rung 2 needs five or more cards of one
+  kind.
+- **P2, the clock.** "Not useful" counts by `not_useful_at`, and an act counts
+  by `acted_at`, inside 30 days. No count uses `updated_at`.
+- **P3, the needs card.** A kind mute or a negative affinity never takes a
+  needs card out of the feed. A needs card is `feed_decide.is_needs_card`, by
+  its main kind or its folded kind. At worst a muted needs card goes to Later.
+  Dismiss, Snooze and "Not useful" on one card still hide that card.
+- **P4, the mute key.** A mute keys on the main kind of the card.
+- **P5, the flag off.** With the flag off, the feed answers the same bytes,
+  also when the member has stored mutes. If the prefs read or the count read
+  fails, the affinity is 0 and no mute applies, as `apply_state` does.
+- **P6, the day value.** The key is
+  `tenant_redis.key("my_day", "affinity", <member>, <feed day>)`, with a TTL of
+  26 hours. The first read of the member's day computes it. A Redis fault
+  gives 0.
+
+The count read must add the bound-org predicate to `_HABITS_SQL`
+(`state.py` requires it in each statement on `my_day_card_state`). The seat of
+the change is `apply_state` and `join` in `state.py`. `state.py` imports
+`feed_decide` inside the function, because `feed_decide` imports `feed`.
+
 ### 7.3 A threshold for each kind
 
 **One member's dislike of a kind moves it from the interrupt to the digest.**
@@ -775,7 +803,8 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-1** (task 3441) | 0 | Comment the evidence on task 602, and fix items 2 to 4 of §2.3 in their specs | Each named spec | LOOP-0 | Task 602 holds the evidence. Each spec states the fact of `main` | LOW · AGENT-SAFE |
 | **LOOP-2** (task 3442) | 1 | The brief in the app for HathiLabs: `BRIEF_ENABLED`, `BRIEF_ORGS` (the org id), `BRIEF_IN_APP`, and `NEXT_PUBLIC_BRIEF_CARD` in a release. The slice first reads `JOB_QUEUE` and `UNATTENDED_LEDGER` on the box | `core_brief.md` §10 rows 2 and 5 | LOOP-Q4 | `GET /brief/today` answers the owner's run. The `brief_runs` row reads `delivered`. My Day shows the card. The task holds the box, the flags and the log line | STANDARD · AGENT-SAFE after the owner preview, under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
 | **LOOP-3** (task 3443) | 1 | `CORE_EVENTS_ORGS` for HathiLabs. It gives a week of event evidence before rung 4 adds emit sites | `ai_studio.md` E12 | LOOP-Q4 | One person edit logs one `people.person.updated` event. The reload line is in the task | LOW · AGENT-SAFE under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
-| **LOOP-4** (task 3444) | 2 | MD-9, part 1: `affinity` from the one count read, the `mutes` key on the feed, "Why am I seeing this". Dark behind `MY_DAY_LEARN_ORGS` | `my_day_feed.md` MD-9, §6.6, §7 | None | Three "Not useful" on one kind give the affinity of §7.2. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
+| **LOOP-4a** (task 3444) | 2 | MD-9, part 1, the server half: the flag `MY_DAY_LEARN_ORGS`, `affinity` from the one count read, and the `mutes` key on the feed. Dark | `my_day_feed.md` MD-9, §6.6, §7. The pins of §7.2 | None | The pins P1 to P6 of §7.2. Five cards of a kind shown and three "Not useful" give the affinity −12. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
+| **LOOP-4b** | 2 | "Why am I seeing this": the card field, the clauses, the menu item and the panel | `my_day_feed.md` MD-9 | LOOP-4a | NOT DISPATCHABLE. The spec must name the field, the template of each clause, when each clause shows, the client files and a done-when | STANDARD · waits for a spec edit |
 | **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3) | `proactive_reach.md` §4.2, §5.1 | LOOP-4 | A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower. Another member keeps the class. No path raises a class | STANDARD · AGENT-SAFE |
 | **MM-1** | 3 | The act record (task 2878), with the acts of §5.3 | `personalization.md` §19.4 | None | The fences of §19.10, and each new act has its seam | HIGH · AGENT-SAFE, dark |
 | **MM-2**, **PZ-15**, **MM-5** | 3 | Habits (2879), proposals with Undo (309), a habit to a kept habit (2882) | `personalization.md` §12, §19 | MM-1 | Their own rows | Their own tiers · AGENT-SAFE |
@@ -813,6 +842,8 @@ Each fence is advisory until its slice builds it.
 |---|---|
 | A needs card never leaves the feed | `tests/unit/test_feed_rank.py` (rule 2 of §7 there). V |
 | One reader of the card counts | LOOP-4 extends `tests/unit/test_feed_rank.py`. A scan fails on a second query that groups `my_day_card_state` by kind |
+| A needs card stays in the feed | `tests/unit/test_feed_decide.py` TestRuleTwo, and LOOP-4a adds a mute case to `tests/unit/test_my_day_state.py` |
+| The flag off answers the same bytes | LOOP-4a adds the case to `tests/unit/test_shell_feed.py` |
 | The learner never raises a class | LOOP-5 extends `tests/unit/test_reach_plan.py` |
 | A finding with no evidence or no `visibility_scope` drops. A person is never the subject of a fault | `tests/unit/test_finding_contract.py` (LOOP-7, new) |
 | A recipient outside `visibility_scope` gets nothing | An R8 test of LOOP-7, with the `_DB_GATE` |
@@ -828,7 +859,15 @@ uv run pytest tests/unit/test_index_completeness.py tests/unit/test_doc_names_re
 node .claude/hooks/ste-lint.mjs project-docs/specs/proactive_loop.md
 ```
 
-Run these for LOOP-4 and LOOP-5:
+Run these for LOOP-4a:
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 1200 uv run pytest tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py tests/unit/test_shell_feed_r8.py tests/unit/test_my_day_state.py tests/unit/test_my_day_state_r8.py tests/unit/test_feed_decide.py tests/unit/test_feed_decide_r8.py tests/unit/test_my_day_prefs.py tests/unit/test_my_day_prefs_r8.py tests/unit/test_my_day_cache.py tests/unit/test_my_day_loop.py -q
+timeout 600 uv run pytest tests/unit/test_flag_reload.py tests/unit/test_flag_doc_sorted.py tests/unit/test_integrations_env_hardening.py tests/unit/test_tenant_redis.py tests/unit/test_db_engine_seam.py -q
+```
+
+Run these for LOOP-5:
 
 ```bash
 uv run pytest tests/unit/test_feed_rank.py tests/unit/test_shell_feed.py tests/unit/test_reach_plan.py -q
