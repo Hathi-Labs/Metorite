@@ -55,6 +55,7 @@ ALLOWED: dict[tuple[str, str], str] = {
 #: The only TypeScript files that name the `continuedFrom` key of the list.
 CAMEL_OK: frozenset[str] = frozenset({
     "workbench/control_plane/src/lib/sessions.ts",
+    "workbench/control_plane/src/lib/sessionsContinued.test.ts",
     "workbench/control_plane/src/lib/shell/ContinuedMark.tsx",
     "workbench/control_plane/src/lib/shell/ContinuedMark.test.tsx",
     "workbench/control_plane/src/lib/shell/AssistantDock.tsx",

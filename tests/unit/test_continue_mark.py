@@ -36,16 +36,27 @@ def _row(sid: str, *, title: str | None = "t", link: str | None = None, archived
     )
 
 
-def _list(monkeypatch, rows):
+def _list(monkeypatch, rows, *, pins=None):
+    """Run the list. The pin switch is set here, so a developer ``.env`` with
+    ``CHAT_PIN_ORGS`` cannot change a case. ``pins`` maps a chat id to its
+    ``pinned_at``. With ``pins`` None the switch is OFF."""
     import acb_graph
+    from acb_common import get_settings
     from gateway.routes.chat import _get_sessions
 
+    monkeypatch.setattr(
+        get_settings(), "chat_pin_orgs", "*" if pins is not None else "", raising=False)
     statements: list[str] = []
 
     class _Session:
         def execute(self, stmt, params=None):
             statements.append(str(stmt))
             self.params = params
+            if "chat_session_member" in str(stmt):
+                return SimpleNamespace(fetchall=lambda: [
+                    SimpleNamespace(session_id=k, pinned_at=v)
+                    for k, v in (pins or {}).items()
+                ])
             return SimpleNamespace(fetchall=lambda: rows)
 
     @contextlib.contextmanager
@@ -109,3 +120,18 @@ def test_the_existing_keys_are_unchanged(monkeypatch) -> None:
         "updatedAt", "visibility", "isOwner", "participantCount",
         "hasUserMessage", "archivedAt", "continuedFrom",
     }
+
+
+def test_the_pin_branch_keeps_the_mark_next_to_the_pin(monkeypatch) -> None:
+    """CO-11 adds pin keys to each row. It must not rebuild the row (CO-13)."""
+    out, statements = _list(
+        monkeypatch,
+        [_row("new", link="old"), _row("old", title="Old", archived=NOW)],
+        pins={"new": NOW, "old": NOW},
+    )
+    new, old = out[0], out[1]
+    assert len(statements) == 2, "the list statement and the pin statement"
+    assert new["pinned"] is True and new["pinnedAt"] == NOW.isoformat()
+    # An archived and pinned source reads as not pinned, and still resolves.
+    assert old["pinned"] is False
+    assert new["continuedFrom"] == {"id": "old", "title": "Old"}
