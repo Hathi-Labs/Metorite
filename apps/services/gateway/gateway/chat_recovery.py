@@ -610,7 +610,15 @@ def card_resend(
     kind: str, value: dict[str, Any] | None, question: str | None,
     answer: str, request_id: str,
 ) -> CardResend:
-    """The envelope and the display of one card answer."""
+    """The envelope and the display of one card answer.
+
+    EAC-1 (``projects_ai_chat.md`` §32.4): an edit answer of a card that no
+    run took wrote nothing, so it goes as ``task_card.LATE_EDIT_ANSWER``, a
+    line with no value. The display shows the same line."""
+    from acb_skills.task_card import LATE_EDIT_ANSWER, is_task_edit_answer
+
+    if is_task_edit_answer(answer):
+        kind, answer = "ask_user", LATE_EDIT_ANSWER
     return CardResend(
         compose_card_answer(card_question(kind, value, question), answer),
         card_answer_display(kind, value, question, answer, request_id),

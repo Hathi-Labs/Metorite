@@ -8,7 +8,7 @@ changes a value, then presses Approve. The answer carries the values as
 ``APPROVE {"edit": {...}}``, and the tool writes them. A plain ``APPROVE``
 approves the values of the card as the assistant wrote them.
 
-**Three parts, and each is ONE copy.**
+**Four parts, and each is ONE copy.**
 
 * :func:`create_task_form` builds the form that the card draws, from the
   values that the tool resolved before the card. :func:`clean_task_edit_form`
@@ -20,8 +20,12 @@ approves the values of the card as the assistant wrote them.
   ``reply`` or ``rows`` key each read as NO answer. Nothing is trimmed and
   nothing is cut to fit. The responder comes from the session (the gateway
   takes it from the session of ``/agent/respond-input``), never from the
-  answer. The answer names no id: the tool keeps the project of the card,
-  and it resolves the status and each person again after the answer.
+  answer. The answer names no id: the tool keeps the project of the card.
+  It resolves a CHANGED lane or person again after the answer, by exact name
+  only. Each value that the member did not change stays as the card showed it.
+* :func:`is_task_edit_answer` is the ONE shape test of an edit answer, and it
+  reads no value. ``gateway.chat_recovery.card_resend`` asks it for a late
+  answer (below).
 * :func:`task_edit_card_on` is the ONE reader of ``PROJECT_EDIT_CARD_ORGS``.
   It reads the settings on each call, so a flag reload (SIGHUP,
   ``docs/flag_reload.md``) applies a change. The org is the bound tenant of
@@ -30,12 +34,21 @@ approves the values of the card as the assistant wrote them.
 **What stays as before.** With the flag off, in a WhatsApp run, in a run with
 no card channel and in a held chat, the card of ``create_task`` is the card of
 before, byte for byte. A repeating task keeps the card of before too, because
-its rule reads the due date. A late Approve after a chat resume takes the card
-of the stored call, which holds the original values (RESUME-1a, HRD-22).
+its rule reads the due date.
+
+**A late answer** (the run of the card ended, and the card parked or died).
+A plain late ``APPROVE`` writes the original values. The HRD-22 grant takes
+the same card by its digest (``late_approve``), and RESUME-2a resumes the
+stored call (``stored_call``). Both take the exact word ``APPROVE`` only. An
+edit answer to such a card writes nothing. The late route sends
+:data:`LATE_EDIT_ANSWER` in its place, with no value, and the line asks the
+member to show the card again. The client line that the edits were not used
+is EAC-2.
 
 This module does no I/O and never imports ``skill_projects``: the tool calls
-it, not the other way. Fences (R7): ``tests/unit/test_task_edit_card_answer.py``
-and ``tests/unit/test_task_edit_card_r8.py`` (R8).
+it, not the other way. Fences (R7): ``tests/unit/test_task_edit_card_answer.py``,
+``tests/unit/test_task_edit_card_late.py`` and
+``tests/unit/test_task_edit_card_r8.py`` (R8).
 """
 from __future__ import annotations
 
@@ -345,6 +358,46 @@ def parse_task_edit_answer(answer: Any, responder: Any) -> TaskEdit | None:
     )
 
 
+#: What the next run reads in place of an edit answer whose run ended (review
+#: P2). A parked or dead card writes nothing on an edit answer: only the word
+#: ``APPROVE`` takes a late grant (``late_approve.grant_from_offer``) or a
+#: stored call. So the answer goes as this line, with NO value in it. The form
+#: holds text that the model wrote, and the member's words are not facts until
+#: a live card takes them. ``gateway.chat_recovery.card_resend`` sends it, and
+#: the chat draws the same line.
+LATE_EDIT_ANSWER = (
+    "I changed this card and pressed Approve, but the run had ended. "
+    "Nothing was written. Please show the card again."
+)
+
+#: An answer head that a body can follow: ``APPROVE`` and white space.
+_APPROVE_HEAD = re.compile(r"(?i)APPROVE\s")
+
+
+def is_task_edit_answer(answer: Any) -> bool:
+    """True when *answer* has the shape of an edit answer: ``APPROVE`` and a
+    body that names the key ``edit``. It reads the shape only, never a value.
+
+    It fails closed. A body that names the key and does not parse, a body
+    over :data:`MAX_TASK_EDIT_ANSWER` that names it, and a body that is no
+    object but names it each read True. So a broken edit answer never goes
+    to the model as the member's words. A plain ``APPROVE``, a ``rows`` answer
+    and a ``reply`` answer read False."""
+    text = answer.strip() if isinstance(answer, str) else ""
+    if not _APPROVE_HEAD.match(text):
+        return False
+    body = text[len("APPROVE"):]
+    if f'"{EDIT_KEY}"' not in body:
+        return False
+    if len(text) > MAX_TASK_EDIT_ANSWER:
+        return True
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError, RecursionError):
+        return True
+    return not isinstance(parsed, dict) or EDIT_KEY in parsed
+
+
 def changed_values(form: Mapping[str, Any], edit: TaskEdit) -> dict[str, Any]:
     """The values that *edit* changes on *form*, by key. Empty when the member
     changed nothing. *form* is the tool's own form, never an echo of the
@@ -362,6 +415,7 @@ __all__ = [
     "DESCRIPTION_MAX",
     "EDIT_ANSWER_PREFIX",
     "EDIT_KEY",
+    "LATE_EDIT_ANSWER",
     "MAX_ASSIGNEES",
     "MAX_TASK_EDIT_ANSWER",
     "STATUS_MAX",
@@ -370,6 +424,7 @@ __all__ = [
     "changed_values",
     "clean_task_edit_form",
     "create_task_form",
+    "is_task_edit_answer",
     "parse_task_edit_answer",
     "task_edit_card_on",
 ]

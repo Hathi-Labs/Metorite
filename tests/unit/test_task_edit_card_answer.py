@@ -36,9 +36,8 @@ Mutations (R7), run on 2026-11-16. Each turned the named tests red:
 * M5. ``ask_tools._task_edit_form``: drop the ``task_edit_card_channel_open``
   test. ``test_a_whatsapp_run_gets_no_edit_form``,
   ``test_off_the_card_is_the_card_of_before``.
-* M6. ``writes._card_edit``: keep the task of the card, with no second
-  prepare step. ``test_an_edited_due_date_and_assignee_are_written_as_edited``,
-  ``test_an_edited_status_is_resolved_again_after_the_card``.
+* M6. ``writes._card_edit``: keep the task of the card (``edited = new``).
+  ``test_an_edited_due_date_and_assignee_are_written_as_edited``.
 * M7. ``ask_tools._verdict``: read a plain ``APPROVE`` on an edit card as a
   REJECT. ``test_a_plain_approve_writes_the_original_values``.
 * M8. ``ask_tools._verdict``: approve an answer that does not parse.
@@ -54,6 +53,21 @@ Mutations (R7), run on 2026-11-16. Each turned the named tests red:
   ``test_a_stranger_is_written_and_warned_as_the_card_warns``.
 * M13. ``ask_tools._block_on``: give ``True`` for an edited answer.
   ``test_an_edited_due_date_and_assignee_are_written_as_edited``.
+
+Review round (P1a), run on 2026-11-16. Before the fix, the old code ran
+``_prepare_new_task`` again on the model's raw words: three of the four new
+tests below were red on it. Each mutation of the fix turned its test red:
+
+* A1. ``writes._edited_task``: drop the people that the card showed.
+  ``test_an_untouched_fuzzy_name_is_not_resolved_again``.
+* A2. ``writes._edited_task``: ``exact=False`` for an edited person.
+  ``test_an_edited_name_resolves_by_exact_match_only``.
+* A3. ``writes._edited_lane``: ``_named`` (with ``decide``) for ``_one_named``.
+  ``test_an_edited_status_resolves_by_exact_match_only``.
+* A4. ``writes._prepare_new_task``: keep the raw name as ``who``.
+  ``test_a_plain_approve_writes_the_resolved_person_of_a_name``.
+* A5. ``writes._resolve_assignee_name``: ask ``decide`` with ``exact`` too.
+  ``test_an_edited_name_resolves_by_exact_match_only``.
 """
 from __future__ import annotations
 
@@ -840,12 +854,8 @@ def test_a_late_approve_writes_the_original_values(monkeypatch: pytest.MonkeyPat
     assert out.startswith("Created:"), out
 
 
-def test_a_late_edit_answer_takes_no_grant() -> None:
-    """A late answer with edits never grants: only the word APPROVE does. So no
-    late answer writes the edited values (``late_approve.grant_from_offer``)."""
-    from acb_skills.late_approve import APPROVE
-
-    assert _answer(due="2026-12-24").strip().upper() != APPROVE
+# A late EDIT answer (a parked or dead card) goes through the real late route
+# in ``test_task_edit_card_late.py``: no grant, and no value reaches the model.
 
 
 # ── 6. The source fences ─────────────────────────────────────────────────────
@@ -890,7 +900,8 @@ def test_parse_task_edit_answer_is_the_one_parser_of_the_edit_key() -> None:
                     calls.append(p.relative_to(ROOT).as_posix())
     assert defs == ["packages/acb_skills/acb_skills/task_card.py"]
     assert calls == ["packages/acb_skills/acb_skills/ask_tools.py"]
-    # In task_card, only the parser reads the key of the body.
+    # In task_card, only the parser reads the values of the body. The shape
+    # test names the key and reads no value (review P2).
     tree = _tree(TASK_CARD)
     parser = _function(tree, "parse_task_edit_answer")
     users = {
@@ -898,8 +909,33 @@ def test_parse_task_edit_answer_is_the_one_parser_of_the_edit_key() -> None:
         if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any(isinstance(n, ast.Name) and n.id == "EDIT_KEY" for n in ast.walk(f))
     }
-    assert users == {"parse_task_edit_answer"}
+    assert users == {"parse_task_edit_answer", "is_task_edit_answer"}
     assert any(isinstance(n, ast.Name) and n.id == "EDIT_KEY" for n in ast.walk(parser))
+    shape = _function(tree, "is_task_edit_answer")
+    assert not [n for n in ast.walk(shape) if isinstance(n, ast.Subscript)
+                and isinstance(n.ctx, ast.Load) and isinstance(n.slice, ast.Constant)
+                and isinstance(n.slice.value, str)], "the shape test reads no value by key"
+
+
+def test_only_the_late_resend_asks_the_shape_of_an_edit_answer() -> None:
+    """``chat_recovery.card_resend`` is the one caller of the shape test, and
+    no late path reads the key of an answer."""
+    calls = []
+    for base in (ROOT / "packages", ROOT / "apps"):
+        for p in base.rglob("*.py"):
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if "is_task_edit_answer" not in text:
+                continue
+            for n in ast.walk(ast.parse(text)):
+                if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "is_task_edit_answer":
+                    calls.append(p.relative_to(ROOT).as_posix())
+    assert calls == ["apps/services/gateway/gateway/chat_recovery.py"]
+    recovery = ROOT / "apps" / "services" / "gateway" / "gateway" / "chat_recovery.py"
+    late = ROOT / "packages" / "acb_skills" / "acb_skills" / "late_approve.py"
+    assert _reads_of_edit(_tree(recovery)) == [] and _reads_of_edit(_tree(late)) == []
+    resend = _function(_tree(recovery), "card_resend")
+    assert any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "is_task_edit_answer"
+               for n in ast.walk(resend))
 
 
 def test_request_confirmation_reads_edit_nowhere_else() -> None:

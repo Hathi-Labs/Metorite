@@ -7625,8 +7625,11 @@ values. The email cards already work this way (`email_app_master_plan.md`
 
 **The write.**
 
-- The edit path runs `_prepare_new_task` again on the edited values, AFTER the
-  answer. It never trusts an id from the card.
+- The edit path resolves each CHANGED value again, AFTER the answer, with the
+  checks of `_prepare_new_task`. A changed lane or person resolves by exact name
+  only, with no `decide` call and no question after the Approve. Each value that
+  the member did not change stays as the card showed it. The path never trusts
+  an id from the card.
 - The write goes through the gateway routes under the session of the member.
   Route grants apply to every field.
 - The edit card refuses `files` in a held chat.
@@ -7640,10 +7643,18 @@ a SIGHUP reloads it. It sits in `acb_common/env_guard.py` after
 The rule "refuse an assignee that the member cannot see" is NEW and HIGH. The
 owner decides it (§32.9, Q1). Until then the form lists the org directory.
 
-**Late Approve.** A late Approve after a chat resume replays the stored original
-values (`chat_pending_ask.stored_call`, RESUME-1a, migration 448, dark). The card
-shows one line that says the edits were not used. PR 2434 (RESUME-2a) changes
-`ask_tools.py`, so the second PR to merge takes `main` first.
+**Late Approve.** A late answer reaches a card whose run ended (a parked card or
+a dead run).
+
+- A plain late `APPROVE` writes the original values once. The HRD-22 grant takes
+  the same card by its digest (`late_approve`), and RESUME-2a resumes the stored
+  call (`stored_call`, migration 448). Both take the exact word `APPROVE` only.
+- A late edit answer writes nothing. `task_card.is_task_edit_answer` finds it,
+  and `chat_recovery.card_resend` sends `task_card.LATE_EDIT_ANSWER` in its
+  place. That line holds no value, and it asks the member to show the card
+  again. The display shows the same line. So no edited value, and no text that
+  the model wrote into the form, reaches the next run as the member's words.
+- The client line that says the edits were not used is EAC-2.
 
 **Receipts and declines.**
 
@@ -7697,8 +7708,8 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 
 | Slice | Task | Tier | Rung | Files | Fence and tests | Gate | Done when |
 |---|---|---|---|---|---|---|---|
-| **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
-| **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `confirmationQueue.ts`, `lib/taskCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, a new `taskCard.test.ts` | AGENT-SAFE build, OWNER-GATE preview | A member edits the due date and one assignee on a `create_task` card, then presses Approve. |
+| **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `gateway/chat_recovery.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_late.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
+| **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `confirmationQueue.ts`, `lib/taskCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, a new `taskCard.test.ts` | AGENT-SAFE build, OWNER-GATE preview | A member edits the due date and one assignee on a `create_task` card, then presses Approve. The form shows "not in the directory" for an edited address BEFORE the Approve (H-162). A person or a lane that the member types by name must match a name exactly. |
 | **EAC-3** | 3470 | STANDARD for status, priority, start date and description. HIGH for project or subproject | 2 | `TaskCardForm.tsx`, `lib/taskCard.ts`, `task_card.py` | The tests of EAC-1 and EAC-2, extended | AGENT-SAFE | Each added field edits and writes. A project change passes the route grants. |
 | **EAC-4** | 3471 | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | EAC-1 tests, plus `tests/unit/test_task_edit_card_precondition.py` (needs HRD-10) | AGENT-SAFE | An `update_task` card edits the changed fields. |
 | **EAC-5** | 3472 | HIGH, last | 2 | `TaskCardForm.tsx`, `task_card.py`, `egress.py` | A held-chat test for `files` | AGENT-SAFE | A member edits the files of a `create_task` card. A held chat refuses them. |
@@ -7723,12 +7734,17 @@ union. It uses a type guard and not a cast (HRD-8b needs this).
 
 - **EAC-1.** `parse_task_edit_answer` accepts a whitelisted `edit` object. An
   extra key reads as no answer. A value is not trimmed. A plain `APPROVE` writes
-  the original values. An edited value goes through `_prepare_new_task` again.
-  An id on the card has no effect. An R8 test shows that route grants refuse a
-  field that the member may not write.
+  the original values. A changed value goes through the checks of the tool
+  again, by exact name. A value that the member did not change stays as the card
+  showed it. An id on the card has no effect. A late edit answer writes nothing
+  and carries no value. An R8 test shows that route grants refuse a field that
+  the member may not write.
 - **EAC-2.** The card shows a form for `create_task` when the flag is on for the
   org. The edits survive a tab change and a replay. The receipt is the receipt of
-  the write. A decline shows the standard decline line.
+  the write. A decline shows the standard decline line. The form warns of an
+  edited address that the directory does not know, before the Approve (H-162).
+  A name typed into the form matches a person or a lane exactly, or the form
+  asks for another.
 - **EAC-3.** Each field writes through its route. A project that the member
   cannot open is not on the list.
 - **EAC-4.** An edit that changes `due`, then a change by a teammate between the
@@ -7742,7 +7758,7 @@ union. It uses a type guard and not a cast (HRD-8b needs this).
 
 ### 32.7 Verify
 
-- `uv run pytest tests/unit/test_task_edit_card_answer.py tests/unit/test_task_edit_card_r8.py`
+- `uv run pytest tests/unit/test_task_edit_card_answer.py tests/unit/test_task_edit_card_late.py tests/unit/test_task_edit_card_r8.py`
   (the R8 file needs a database: `bash scripts/dev_db.sh` first)
 - `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/cardEditsKept.test.ts src/components/redraftCard.test.ts`
 - `uv run python scripts/affected_tests.py --run`
@@ -7759,7 +7775,7 @@ and R8 (a real database for the write path).
    recommendation, no new rule), or only people who can open the project. The
    second choice is a new HIGH server rule and changes the form too. Asked on
    task 2493, 2026-11-16.
-2. **A late Approve after a chat resume.** The default is to replay the stored
-   original values and show a line that the edits were not used. The owner may
-   choose a different rule.
+2. **A late Approve after a chat resume.** The default, as built: a plain late
+   `APPROVE` writes the original values once. A late edit answer writes nothing,
+   and the member shows the card again. The owner may choose a different rule.
 3. **Plain Approve.** The default is to approve the original values.

@@ -28,8 +28,7 @@ Run (a private ladder database, one R8 suite at a time)::
 **The mutations (R7)**, run on 2026-11-16 on a private ladder database. Each
 turned the named test red.
 
-* R-M6. ``writes._card_edit``: keep the task of the card, with no second
-  prepare step. ``test_r8_an_edited_due_status_and_assignee_are_written_as_edited``.
+* R-M6. ``writes._card_edit``: keep the task of the card (``edited = new``). ``test_r8_an_edited_due_status_and_assignee_are_written_as_edited``.
 * R-M7. ``ask_tools._verdict``: read a plain ``APPROVE`` on an edit card as a
   REJECT. ``test_r8_a_plain_approve_writes_the_original_values``.
 * R-M8. ``ask_tools._verdict``: approve an answer that does not parse.
