@@ -26,7 +26,7 @@ import { Input } from "@/components/ui/Input";
 import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
-import { chatGroups, isPinned, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
+import { BRIEFS_GROUP, chatGroups, foldBriefs, isPinned, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
 
 // ── The session picker ───────────────────────────────────────────────────────
 
@@ -220,6 +220,20 @@ export function SessionPicker({
   const unread = useUnreadIds();
   const [now] = useState(() => Date.now());
   const lists = useMemo(() => splitSessions(sessions, query, activeId), [sessions, query, activeId]);
+  // Daily briefs fold into one closed group at the end (task 3564). A search
+  // shows one flat list, so there the briefs stay in it.
+  const folded = useMemo(
+    () => (query ? { main: lists.open, briefs: [] as ChatSession[] } : foldBriefs(lists.open)),
+    [lists.open, query],
+  );
+  // The group opens when the member moves into a chat that it holds, so the
+  // chat on screen never hides. The member may close it again.
+  const [showBriefs, setShowBriefs] = useState(() => folded.briefs.some((s) => s.id === activeId));
+  const [seenActive, setSeenActive] = useState(activeId);
+  if (seenActive !== activeId) {
+    setSeenActive(activeId);
+    if (folded.briefs.some((s) => s.id === activeId)) setShowBriefs(true);
+  }
   const row = (s: ChatSession, archived: boolean) => (
     <SessionRow
       key={s.id}
@@ -265,17 +279,17 @@ export function SessionPicker({
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
-        {lists.open.length === 0 ? (
+        {folded.main.length === 0 && folded.briefs.length === 0 ? (
           <p className="px-3 py-3 text-xs text-muted-foreground glass:text-footnote">
             {query ? "No chat matches." : "Your chats will show here."}
           </p>
         ) : (
           query ? (
-            <ul className="flex flex-col gap-0.5">{lists.open.map((s) => row(s, false))}</ul>
+            <ul className="flex flex-col gap-0.5">{folded.main.map((s) => row(s, false))}</ul>
           ) : (
             // By day, newest first (CO-0), with the pinned chats first
             // (CO-11). A search shows one list.
-            chatGroups(lists.open, now, pinsOn && Boolean(onPin)).map((g) => (
+            chatGroups(folded.main, now, pinsOn && Boolean(onPin)).map((g) => (
               <section key={g.label} aria-label={g.label} data-chat-group={g.label} className="mb-1">
                 <h3 className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground glass:px-3 glass:text-caption">{g.label}</h3>
                 <ul className="flex flex-col gap-0.5">{g.items.map((s) => row(s, false))}</ul>
@@ -283,6 +297,27 @@ export function SessionPicker({
             ))
           )
         )}
+        {folded.briefs.length > 0 ? (
+          <div className="mt-1 border-t border-border pt-1" data-chat-group={BRIEFS_GROUP}>
+            <Button
+              variant="ghost"
+              size="none"
+              layout="flex items-center"
+              onClick={() => setShowBriefs((o) => !o)}
+              aria-expanded={showBriefs}
+              className="w-full gap-2 rounded-md px-2 py-1.5 text-left text-xs"
+            >
+              <Icon name={showBriefs ? "ChevronDown" : "ChevronRight"} size={14} />
+              <span className="flex-1">{BRIEFS_GROUP}</span>
+              <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+                {folded.briefs.length}
+              </span>
+            </Button>
+            {showBriefs ? (
+              <ul className="flex flex-col gap-0.5">{folded.briefs.map((s) => row(s, false))}</ul>
+            ) : null}
+          </div>
+        ) : null}
         {lists.archived.length > 0 ? (
           <div className="mt-1 border-t border-border pt-1">
             <Button

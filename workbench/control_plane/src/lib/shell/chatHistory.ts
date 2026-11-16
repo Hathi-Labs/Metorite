@@ -163,3 +163,32 @@ export function splitSessions(
     archived: shown.filter((s) => Boolean(s.archivedAt)),
   };
 }
+
+/** The group of the daily briefs that nobody has answered (task 3564). */
+export const BRIEFS_GROUP = "Daily briefs" as const;
+
+/**
+ * True when the chat folds into Daily briefs (task 3564, owner 2026-11-16).
+ * The server marks a brief (`isBrief`). The chat folds only while the
+ * viewer owns it and nobody typed in it, because a reply makes it a real
+ * chat. A flag that the list leaves out never folds. A pinned or an archived
+ * chat keeps its own group: Pinned wins, and Archived holds the archived.
+ */
+export function isFoldedBrief(
+  s: Pick<ChatSession, "isBrief" | "hasUserMessage" | "isOwner" | "pinnedAt" | "archivedAt">,
+): boolean {
+  return (
+    s.isBrief === true &&
+    s.hasUserMessage === false &&
+    s.isOwner === true &&
+    !s.archivedAt &&
+    !isPinned(s)
+  );
+}
+
+/** The open chats, split into the main list and the folded daily briefs. */
+export function foldBriefs<T extends Parameters<typeof isFoldedBrief>[0]>(
+  open: readonly T[],
+): { main: T[]; briefs: T[] } {
+  return { main: open.filter((s) => !isFoldedBrief(s)), briefs: open.filter(isFoldedBrief) };
+}
