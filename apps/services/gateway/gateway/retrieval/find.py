@@ -10,12 +10,17 @@ the answer of KR-ZERO, byte for byte.
 * :func:`rung_of` gives each ``matched_by`` its place in the ladder of §3.1.
 * :func:`near_words` picks the words of the near lookup of rung 3 (HRD-18b,
   §3.3), and :func:`asked_form` gives a word as the member typed it.
+* :data:`EDGES` is the closed list of the edge of a related hit of rung 4
+  (FIND-3, §3.5). :func:`sort_links`, :func:`sort_mail`, :func:`lanes` and
+  :func:`pick_related` sort the ids that the sources' ``related`` gave, and
+  pick the records that their ``open`` gave.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from acb_common import get_settings, name_match
@@ -246,3 +251,236 @@ def near_words(query: str, words: list[str], held: set[str]) -> list[str]:
     # `sorted` is stable, so a tie keeps the order of the query.
     ranked = sorted(eligible, key=lambda w: (w in held, w not in capital, -len(w)))
     return ranked[:name_match.NEAR_MAX_WORDS]
+
+
+# ── Rung 4: related records (FIND-3, §3.1, §3.5, §4.3) ──────────────────────
+
+#: The edge of a related hit (§3.5): a code constant from this closed list. It
+#: holds no text of either record.
+EDGES: tuple[str, ...] = (
+    "contact_of", "lead_of", "deal_of", "company_of", "mail_from", "mail_to", "mail_domain",
+)
+#: The edges that end in a mail. Each starts at a key of :data:`KEYS`.
+MAIL_EDGES: dict[str, str] = {"mail_from": "address", "mail_to": "address",
+                              "mail_domain": "domain"}
+#: The edges from a record to a record, each with the kind of record it ends at.
+RECORD_EDGES: dict[str, str] = {"contact_of": "contact", "lead_of": "lead",
+                                "deal_of": "deal", "company_of": "company"}
+#: The keys that carry the step from a record to its mail: an address and a
+#: web domain. A key is a transit value: no answer key, no ``from`` and no log
+#: line holds one.
+KEYS: tuple[str, ...] = ("address", "domain")
+#: The kinds of hit whose links rung 4 follows (§3.1).
+RELATED_KINDS = frozenset({"deal", "lead", "contact", "person", "company"})
+#: The order in which the edges of one hit take its places, one of each edge
+#: in a round. The mail comes first, then the lead and a contact. So a deal
+#: with a lead, contacts and a company still shows its mail.
+LANES: tuple[str, ...] = (
+    "mail_from", "lead_of", "contact_of", "mail_to", "company_of", "mail_domain", "deal_of",
+)
+
+#: One candidate of a hit: the linked ref, its edge, and the record edge that
+#: led to the key of a mail (``via``), or ``None``.
+Candidate = tuple[str, str, str | None]
+
+
+def split_ref(value: Any) -> tuple[str, str] | None:
+    """``(kind, id)`` of a ref ``<kind>:<id>``, or ``None``. Pure."""
+    if not isinstance(value, str):
+        return None
+    kind, sep, ident = value.partition(":")
+    if not sep or not kind or not ident:
+        return None
+    return kind, ident
+
+
+def kind_of(ref: Any) -> str:
+    """The kind of a ref, or ``""``. Pure."""
+    parts = split_ref(ref)
+    return parts[0] if parts is not None else ""
+
+
+def ref_of(hit: Any) -> str:
+    """The ref of a hit: ``<kind>:<id>``, as ``full_id`` prints it."""
+    return f"{hit.kind}:{hit.id}"
+
+
+def related_chosen(hits: Iterable[Any], most: int) -> list[str]:
+    """The refs of the first *most* hits that are a deal, lead, contact,
+    person or company, in the order of the answer: the words, then the rung,
+    then the score (§3.4). Pure."""
+    out: list[str] = []
+    for hit in hits:
+        ref = ref_of(hit)
+        if hit.kind in RELATED_KINDS and ref not in out:
+            out.append(ref)
+        if len(out) >= most:
+            break
+    return out
+
+
+def _triple(value: Any) -> tuple[str, str, str] | None:
+    """*value* as a triple of a ref, an edge or key, and a ref, else ``None``."""
+    if not isinstance(value, (tuple, list)) or len(value) != 3:
+        return None
+    left, edge, right = value
+    if split_ref(left) is None or split_ref(right) is None or not isinstance(edge, str):
+        return None
+    return left, edge, right
+
+
+def sort_links(
+    chosen: list[str], triples: Iterable[Any],
+) -> tuple[dict[str, list[tuple[str, str]]], dict[str, list[str]]]:
+    """The record links of each chosen ref, and the keys of each record.
+
+    A record link is ``(edge, ref)`` from a chosen ref, with an edge of
+    :data:`RECORD_EDGES`, to a record of the kind of that edge. A key is an
+    ``address:`` or ``domain:`` ref, under its own edge name, of a chosen ref
+    or of a record that one links. Every other triple is dropped: an unknown
+    edge, a record or key of the wrong kind, or a link from a ref that was
+    not asked. Pure.
+    """
+    valid = [t for t in map(_triple, triples) if t is not None]
+    asked = set(chosen)
+    out: dict[str, list[tuple[str, str]]] = {ref: [] for ref in chosen}
+    for left, edge, right in valid:
+        if left in asked and RECORD_EDGES.get(edge) == kind_of(right) \
+                and right not in asked and (edge, right) not in out[left]:
+            out[left].append((edge, right))
+    reached = asked | {ref for links in out.values() for _e, ref in links}
+    keys: dict[str, list[str]] = {}
+    for left, edge, right in valid:
+        if edge in KEYS and kind_of(right) == edge and left in reached:
+            mine = keys.setdefault(left, [])
+            if right not in mine:
+                mine.append(right)
+    return out, keys
+
+
+def sort_mail(keys: Iterable[str], triples: Iterable[Any]) -> dict[str, list[tuple[str, str]]]:
+    """The mail of each key, as ``(edge, ref)``, in the order given.
+
+    A mail edge must start at a key of its own kind: ``mail_from`` and
+    ``mail_to`` at an address, ``mail_domain`` at a domain. Each other triple
+    is dropped. Pure.
+    """
+    asked = set(keys)
+    out: dict[str, list[tuple[str, str]]] = {}
+    for left, edge, right in (t for t in map(_triple, triples) if t is not None):
+        if left not in asked or MAIL_EDGES.get(edge) != kind_of(left) or kind_of(right) in KEYS:
+            continue
+        mine = out.setdefault(left, [])
+        if (edge, right) not in mine:
+            mine.append((edge, right))
+    return out
+
+
+def only_opened(
+    chosen: list[str], links: dict[str, list[tuple[str, str]]], keys: dict[str, list[str]],
+    opened: set[str],
+) -> tuple[dict[str, list[tuple[str, str]]], dict[str, list[str]]]:
+    """The links to the records of *opened* only, and the keys of a chosen
+    ref or of an opened record only. So the mail of a record that the member
+    cannot open is never asked, and no "mail from a contact of" names a
+    contact that the member cannot see. Pure."""
+    kept = {ref: [(e, r) for e, r in links.get(ref, []) if r in opened] for ref in chosen}
+    owners = set(chosen) | opened
+    return kept, {owner: mine for owner, mine in keys.items() if owner in owners}
+
+
+def key_refs(chosen: list[str], links: dict[str, list[tuple[str, str]]],
+             keys: dict[str, list[str]]) -> list[str]:
+    """Every key that a chosen ref reaches, its own first. Pure."""
+    out: list[str] = []
+    for ref in chosen:
+        for owner in [ref, *(linked for _e, linked in links.get(ref, []))]:
+            out += [k for k in keys.get(owner, []) if k not in out]
+    return out
+
+
+def lanes(ref: str, links: dict[str, list[tuple[str, str]]], keys: dict[str, list[str]],
+          mail: dict[str, list[tuple[str, str]]]) -> dict[str, list[Candidate]]:
+    """The candidates of the chosen *ref* in each lane of :data:`LANES`.
+
+    A record lane holds the records that *ref* links. A mail lane holds the
+    mail of the keys of *ref* itself first, then the mail of the keys of each
+    record that it links, in the order of :data:`LANES` (the lead before a
+    contact). Pure.
+    """
+    out: dict[str, list[Candidate]] = {lane: [] for lane in LANES}
+    linked = links.get(ref, [])
+    for edge, record in linked:
+        out[edge].append((record, edge, None))
+    owners: list[tuple[str, str | None]] = [(ref, None)]
+    owners += sorted(((record, edge) for edge, record in linked),
+                     key=lambda pair: LANES.index(pair[1]))
+    for owner, via in owners:
+        for key in keys.get(owner, []):
+            for edge, record in mail.get(key, []):
+                out[edge].append((record, edge, via))
+    return out
+
+
+def pick_related(
+    chosen: list[str], lanes_of: dict[str, dict[str, list[Candidate]]],
+    opened: dict[str, Any], shown: set[str], per_hit: int,
+    kept: Callable[[Any], bool],
+) -> dict[str, list[tuple[Any, str, str | None]]]:
+    """The records of each chosen ref, at most *per_hit*, after ``open``.
+
+    Each round takes the next candidate of each lane, in the order of
+    :data:`LANES`. A candidate that the member cannot open (not in *opened*),
+    a record of the answer's hits (*shown*), a record that an earlier ref
+    took, and a record that *kept* refuses (``after``) take no place. So a
+    record that the member cannot open leaves the answer as if it did not
+    exist.
+
+    One conversation takes one place (fix round, P2-1). A mail whose
+    ``thread`` an earlier pick holds takes no place, over every lane and key
+    of a hit and over the hits, as a record does. So the lead's mail and the
+    member's answer in one thread show once. Pure.
+    """
+    taken: set[str] = set()
+    out: dict[str, list[tuple[Any, str, str | None]]] = {}
+    for ref in chosen:
+        lanes_now = lanes_of.get(ref, {})
+        queues = [list(lanes_now.get(lane, [])) for lane in LANES]
+        mine: list[tuple[Any, str, str | None]] = []
+        while len(mine) < per_hit and any(queues):
+            for queue in queues:
+                if len(mine) >= per_hit:
+                    break
+                picked = _next_pick(queue, opened, shown, taken, kept)
+                if picked is not None:
+                    mine.append(picked)
+        out[ref] = mine
+    return out
+
+
+def _conversation(hit: Any) -> str | None:
+    """The key of the conversation of an opened hit, or ``None``. Its prefix
+    is no kind of ref, so it never equals a record in ``taken``."""
+    thread = getattr(hit, "thread", None)
+    return f"thread:{hit.app}:{thread}" if thread else None
+
+
+def _next_pick(
+    queue: list[Candidate], opened: dict[str, Any], shown: set[str], taken: set[str],
+    kept: Callable[[Any], bool],
+) -> tuple[Any, str, str | None] | None:
+    """The next candidate of *queue* that may take a place, or ``None``. It
+    adds the record, and its conversation, to *taken*."""
+    while queue:
+        record, edge, via = queue.pop(0)
+        hit = opened.get(record)
+        if hit is None or record in shown or record in taken or not kept(hit):
+            continue
+        conversation = _conversation(hit)
+        if conversation is not None and conversation in taken:
+            continue
+        taken.add(record)
+        if conversation is not None:
+            taken.add(conversation)
+        return hit, edge, via
+    return None
