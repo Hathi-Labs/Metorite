@@ -163,6 +163,19 @@ describe("the resumed event opens a NEW run, even with no run key (C1)", () => {
     expect(replayIdOf(null, r.resumedAt > 0 ? r.messageId : null, () => "mint")).toBe("reply-r2");
   });
 
+  it("a late `resumed` for a run the list already bound changes only resumedAt", () => {
+    const listed = reduceRun(reloaded(), server(T0 + 9_000, R2));
+    const bound = reduceRun(listed, { type: "attach", at: T0 + 9_500, messageId: "reply-r2" });
+    expect(bound.messageId).toBe("reply-r2");
+    expect(bound.staleTail).toBe(false);
+    const r =reduceRun(bound, { type: "resumed", at: T0 + 10_000, runId: "r2" });
+    expect(r.messageId).toBe(bound.messageId);
+    expect(r.staleTail).toBe(bound.staleTail);
+    expect(r.seq).toBe(bound.seq);
+    expect(r.runKey).toBe(bound.runKey);
+    expect(r.resumedAt).toBe(T0 + 10_000);
+  });
+
   it("an empty run id is no continuation", () => {
     const p = reloaded();
     expect(reduceRun(p, { type: "resumed", at: T0 + 5_000, runId: "" })).toBe(p);
@@ -265,6 +278,8 @@ describe("the answer POST reads `resumed` (RESUME-3a)", () => {
     expect(res.reason).toBe("You have 5 assistants running. Wait for one to finish or stop one, then answer the card again.");
     expect(runCapAnswerReason(429, JSON.stringify({ error: "too_many_runs" })))
       .toBe("You have too many assistants running. Wait for one to finish or stop one, then answer the card again.");
+    expect(runCapAnswerReason(429, JSON.stringify({ error: "too_many_runs", limit: 1 })))
+      .toBe("You have 1 assistant running. Wait for one to finish or stop one, then answer the card again.");
   });
 
   it("any other 429 drops as before, and the status alone decides `respondFailure`", async () => {

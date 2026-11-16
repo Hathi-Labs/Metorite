@@ -373,6 +373,9 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
       // over, and the parked reply is never its target.
       const key = runKeyOf({ runId: e.runId });
       if (!key) return s;
+      // The live-run list may have bound and attached this run before the
+      // 200 arrived. Do not reset it: keep its reply id and stale-tail flag.
+      if (s.runKey === key) return s.resumedAt === e.at ? s : { ...s, resumedAt: e.at };
       return to(s, "working", e.at, {
         messageId: e.messageId || null,
         doneMessageId: s.messageId ?? s.doneMessageId,

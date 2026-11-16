@@ -184,7 +184,8 @@ export function runCapAnswerReason(status: number, body: string): string | null 
   const cap = runCapFromRaw(body);
   if (!cap) return null;
   const limit = cap.limit > 0 ? String(cap.limit) : "too many";
-  return `You have ${limit} assistants running. Wait for one to finish or stop one, then answer the card again.`;
+  const count = limit === "1" ? "1 assistant" : `${limit} assistants`;
+  return `You have ${count} running. Wait for one to finish or stop one, then answer the card again.`;
 }
 
 /**

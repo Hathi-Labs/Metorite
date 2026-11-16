@@ -29,7 +29,7 @@ release keeps the work.
 | §4.12 — a chat picks up exactly where it left off (RESUME, task 3255) | **SPEC** 2026-11-14, branch `mt-7c00040b-resume-design`. RESUME-0a to RESUME-8 on rungs 0 to 3. The owner accepted D-RES-1 to D-RES-8 on 2026-11-14 (§4.12.8). PR 2304 merged RESUME-0a. RESUME-1a, RESUME-2a and RESUME-3a are built (the rows below) |
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. Do not flip it before RESUME-3. No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
-| §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words, the quiet end of a park and the cap reason show where `CHAT_DURABLE_ASKS` is on. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
+| §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words and the quiet end of a park show where `CHAT_DURABLE_ASKS` is on. Only the resume route (`_resume_from_row`, with both resume flags on) sends the 429 cap reason. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1956,13 +1956,21 @@ replays the new run into the OLD reply. So the run state
   It marks that run new, even with no run key. A list taken before the
   Approve, or within `START_GRACE_MS` after it with no row, changes nothing.
 - After a park, a run that the server lists as running, or as waiting live,
-  is always a new run. It never replays into a reply that shows
-  (`staleTail`). A park is the phase `parked`, or the quiet rest after it.
+  with another run key is a new run. It never replays into a reply that
+  shows (`staleTail`). A list that names the SAME run key is the old run. A
+  park is the phase `parked`, or the quiet rest after it.
+- A `resumed` event for the run key that the list already bound and attached
+  changes only `resumedAt`. It keeps the reply id and `staleTail`.
 
 The attach replays into the `messageId` of the event when the server names
 one (C2). Else it takes the server's own reply row of the run, from the saved
 rows. Else it draws a placeholder. In each case one bubble shows after the
 fold (`chatResume.test.ts`, `e2e/chat-card-restart.spec.ts`).
+
+The `messageId` branch of `replayIdOf` does nothing yet, because the server does
+not send `messageId` in the 200. A task for RESUME-2b adds the reply id to
+the 200. Today one bubble rests on the minted row of S14 and on the poll,
+which skips identical text.
 
 The same bubble of case A belongs to RESUME-2b and RESUME-3b. RESUME-3a
 changes the chat in these places:
