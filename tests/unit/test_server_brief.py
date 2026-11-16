@@ -57,3 +57,18 @@ def test_a_long_tool_list_is_capped_and_says_how_many_more() -> None:
 def test_the_same_input_gives_the_same_bytes_in_any_tool_order() -> None:
     a = sb.server_brief("S", "s", "d", ["b", "a", "c"])
     assert a == sb.server_brief("S", "s", "d", ["c", "a", "b", "a"])
+
+
+def test_the_reasons_are_a_closed_list_with_fixed_text() -> None:
+    """CSY-5 (§3.6). A new reason moves this test in the same PR (R7)."""
+    assert sb.REASONS == ("mail", "unreachable", "reconnect", "no_card", "asks_each_call")
+    assert sb.REASON_TEXT["mail"].startswith("This system is off in this message, because this chat reads mail.")
+    assert "A new chat asks none." in sb.REASON_TEXT["asks_each_call"]
+    assert sb.reason_line("S", "s", "weird") == ""
+    assert sb.reason_line("S App", "s", "unreachable").startswith("- S App (s): ")
+
+
+def test_a_block_of_notes_alone_holds_no_standing_rule() -> None:
+    text = sb.block([], [("s", sb.reason_line("S", "s", "mail"))])
+    assert text.startswith(sb.BLOCK_HEADER) and sb.STANDING_RULE not in text
+    assert sb.block([], []) == ""
