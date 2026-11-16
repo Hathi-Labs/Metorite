@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 199
+-- Tables in this phase: 200
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -266,6 +266,18 @@ ALTER TABLE calendar_task_links ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE calendar_task_links ADD CONSTRAINT calendar_task_links_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS calendar_task_links_org_idx ON calendar_task_links (organization_id);
+
+-- chat_card_record
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM chat_card_record WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: chat_card_record still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE chat_card_record ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE chat_card_record ADD CONSTRAINT chat_card_record_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS chat_card_record_org_idx ON chat_card_record (organization_id);
 
 -- chat_message
 DO $$
