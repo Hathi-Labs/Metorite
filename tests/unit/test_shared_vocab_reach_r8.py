@@ -341,7 +341,7 @@ def test_the_tenant_seed_has_teeth(world) -> None:
     the space. A walk with no organization fence counts them (12). The real
     SQL counts 10 even there, because its recursive arm names the root's
     organization (M4). So the route's 10 holds by two fences."""
-    from gateway.routes.projects.core import MAX_DEPTH, _TREE_PROJECTS_SQL
+    from gateway.routes.projects.core import _TREE_PROJECTS_SQL, MAX_DEPTH
 
     w = world
     fence = "c.organization_id = t.organization_id AND "
