@@ -3563,6 +3563,24 @@ def _studio_open() -> bool:
         return False
 
 
+def _chat_tools_open() -> bool:
+    """True when ``STUDIO_CHAT_TOOLS_ORGS`` holds the org of this run (TOF-1b).
+
+    The reader is ``gateway.routes.studio.flags.chat_tools_allowed``, the one
+    that the catalog route uses. The org is the run's own
+    (:func:`_run_org_or_none`), never an argument (R5). It fails closed: no
+    org, no gateway or an error reads as closed. :func:`_turn_with_skills`
+    asks it once for a turn with a skill to build, so with the flag off a
+    ``tool:`` action fails with ``chat_tools_off`` and brings no pack.
+    """
+    try:
+        from gateway.routes.studio.flags import chat_tools_allowed
+        return bool(chat_tools_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_chat_tools_flag_unread", error=str(exc)[:200])
+        return False
+
+
 async def _studio_member_open() -> bool:
     """True when the org is open (:func:`_studio_open`) AND the member of the
     run holds ``feature:studio`` (STU-J1-1).
@@ -4004,7 +4022,8 @@ def _pack_base_names(
 ) -> set[str]:
     """The names of the tools that :func:`_pack_base_count` counts. WS-STU F3
     reads them too: a skill pack loads only when the run holds each of its
-    tools (:func:`_skills_present`)."""
+    tools (:func:`_skills_present`). TOF-1b: a chat tool that these names
+    hold brings no pack (``skill_packs.pack_needs``)."""
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
@@ -4129,8 +4148,13 @@ async def _apply_tool_packs(
     if search_on:
         base += 1
     specialists = _specialist_counts(pool)
+    # TOF-1b: the code packs that each skill of the turn brings. A turn with no
+    # skill makes no map, and ``choose`` then gives the choice of F3.
+    skill_map = _skill_pack_map(turn, agent, agent_name=agent_name, tool_scope=tool_scope,
+                                agent_config=agent_config, disabled=disabled)
     choice = tool_packs.choose(
-        turn, allowed=allow, base_tools=base, specialists=specialists)
+        turn, allowed=allow, base_tools=base, specialists=specialists,
+        skill_packs=skill_map)
     loader_counted = False
     if offer_loader and tool_packs.loadable(allow, choice.slugs):
         # OA-7e: the load tool rides in the request too, so the cap counts
@@ -4143,7 +4167,9 @@ async def _apply_tool_packs(
         base += 1
         loader_counted = True
         choice = tool_packs.choose(
-            turn, allowed=allow, base_tools=base, specialists=specialists)
+            turn, allowed=allow, base_tools=base, specialists=specialists,
+            skill_packs=skill_map)
+    _log_skills_refused(choice.skills_refused)
     await tool_packs.drop_sticky(turn, choice.evicted)
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
@@ -4163,6 +4189,12 @@ async def _apply_tool_packs(
     skills = _skills_present(
         choice.skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
         agent_config=agent_config, disabled=disabled)
+    # TOF-1b: a skill that failed here leaves the run as it was without it.
+    builds, skills, holds = _keep_skill_packs(
+        builds, skills, holds, skill_map=skill_map, layers=choice.layers, pool=pool,
+        agent=agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled)
+    choice = await _evict_unheld_skill_packs(turn, choice, builds)
     if not builds and not offer_loader and not skills:
         return None
     loaded = [(build.slug, build.held) for build in builds]
@@ -4264,6 +4296,11 @@ async def _apply_tool_packs(
 # ``STUDIO_ORGS`` names the org and the member holds ``feature:studio``
 # (:func:`_studio_member_open`). Fences: ``tests/unit/test_skill_packs.py``
 # and ``tests/unit/test_skill_packs_r8.py`` (R8).
+# TOF-1b (``ai_studio_rows/TOF-1b.md``): a ``tool:`` action of a skill brings
+# the pack of its tool when the run base does not hold the tool. The action
+# loads only while ``STUDIO_CHAT_TOOLS_ORGS`` names the org
+# (:func:`_chat_tools_open`). ``tool_packs.choose`` adds the pack last, and
+# :func:`_apply_tool_packs` logs each skill that cannot bring its packs.
 
 
 async def _turn_with_skills(turn: Any) -> Any:
@@ -4305,10 +4342,13 @@ async def _turn_with_skills(turn: Any) -> Any:
         _log.warning("executor.skills_unread", error_type=type(exc).__name__)
         return turn
     packs: list[Any] = []
+    # TOF-1b: one read of the flag, and only for a turn with a skill to build.
+    chat_tools = _chat_tools_open() if pairs else False
     for skill, version in pairs:
         built = skill_packs.build(
             skill.id, skill.name, skill.description, version.version,
-            version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS)
+            version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS,
+            chat_tools=chat_tools)
         if isinstance(built, str):
             _log.info("executor.skill_refused", skill=skill.id, version=version.version,
                       reason=built)
@@ -4324,11 +4364,12 @@ def _skills_present(
 ) -> tuple[Any, ...]:
     """The skill packs of *skills* whose every tool the run holds.
 
-    A skill pack adds no tool. Its tools are the agent's own tools, the
-    platform tools that the injection adds (:func:`_pack_base_names`), or the
-    tools of a code pack of this turn (*holds*). A skill that names a tool
-    the run does not hold fails to load, so Mira gets no rule for a tool
-    that she cannot call."""
+    A skill pack adds no tool of its own. Its tools are the agent's own
+    tools, the platform tools that the injection adds
+    (:func:`_pack_base_names`), or the tools of a code pack of this turn
+    (*holds*). TOF-1b: a code pack that a skill brings is one of them. A
+    skill that names a tool the run does not hold fails to load, so Mira
+    gets no rule for a tool that she cannot call."""
     if not skills:
         return ()
     present = set(holds) | _pack_base_names(
@@ -4345,6 +4386,79 @@ def _skills_present(
     return tuple(kept)
 
 
+def _skill_pack_map(
+    turn: Any, agent: Any, *, agent_name: str | None, tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None, disabled: frozenset[str],
+) -> dict[str, tuple[str, ...]]:
+    """TOF-1b. The code packs that each skill of *turn* brings, by the slug of
+    the skill (``skill_packs.pack_needs``), or an empty map. The held tools
+    are the run base (:func:`_pack_base_names`), so a tool that the base
+    holds brings no pack. A turn with no skill reads nothing."""
+    skills = tuple(getattr(turn, "skills", ()) or ())
+    if not skills:
+        return {}
+    from acb_skills import skill_packs
+
+    return skill_packs.pack_needs(skills, _pack_base_names(
+        agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled))
+
+
+def _keep_skill_packs(
+    builds: list[PackBuild], skills: tuple[Any, ...], holds: set[str], *,
+    skill_map: Mapping[str, Sequence[str]], layers: Mapping[str, str],
+    pool: Sequence[Any], agent: Any, agent_name: str | None,
+    tool_scope: list[str] | None, agent_config: dict[str, Any] | None,
+    disabled: frozenset[str],
+) -> tuple[list[PackBuild], tuple[Any, ...], set[str]]:
+    """TOF-1b. The builds, the kept skills and the held names, less each build
+    of the layer "skill" (``Choice.layers``) that no kept skill needs.
+
+    :func:`_skills_present` can refuse a skill with ``tool_absent``, for
+    example when the guarded build dropped its tool. Then a pack that came
+    only for that skill leaves, so the run is as it was without the skill.
+    The need is the full map of ``skill_packs.pack_needs`` (*skill_map*). The
+    kept skills are checked again after each removal, because a removed pack
+    may hold a tool of one. With no map, the inputs come back as they were."""
+    while skill_map:
+        needed = {p for s in skills for p in skill_map.get(str(s.slug), ())}
+        gone = {b.slug for b in builds
+                if layers.get(b.slug) == "skill" and b.slug not in needed}
+        if not gone:
+            break
+        builds = [b for b in builds if b.slug not in gone]
+        holds = {_tool_name(t) for t in pool} | {
+            _tool_name(t) for b in builds for t in b.tools}
+        skills = _skills_present(
+            skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
+            agent_config=agent_config, disabled=disabled)
+    return builds, skills, holds
+
+
+async def _evict_unheld_skill_packs(turn: Any, choice: Any, builds: Sequence[PackBuild]) -> Any:
+    """TOF-1b. *choice*, with each pack of the layer "skill" that came out of
+    the sticky state and that the run holds no tool of back in ``evicted``.
+
+    ``tool_packs.choose`` takes a pack that a skill brings back out of
+    ``evicted``, so ``drop_sticky`` keeps its state. When its build then gives
+    no tool, or :func:`_keep_skill_packs` removes it, the run is as it was
+    without the skill: the pack leaves the sticky state, and
+    ``PackRun.gone`` names it, so ``left_line`` tells the model not to call
+    its tools. A pack of the layer "skill" that is in the sticky state of the
+    turn came out of ``evicted``, because a live sticky pack keeps the layer
+    "sticky". With no such pack, *choice* comes back as it was."""
+    from acb_skills import tool_packs
+
+    built = {b.slug for b in builds}
+    stuck = {str(getattr(e, "slug", "")) for e in getattr(turn, "sticky", ()) or ()}
+    lost = tuple(slug for slug in choice.slugs if choice.layers.get(slug) == "skill"
+                 and slug in stuck and slug not in built)
+    if not lost:
+        return choice
+    await tool_packs.drop_sticky(turn, lost)
+    return dataclasses.replace(choice, evicted=(*choice.evicted, *lost))
+
+
 def _log_skills_loaded(skills: Sequence[Any], skipped: Sequence[str]) -> None:
     """One ``executor.skill_loaded`` line for each skill pack of the run, in
     load order (§11.1, "model-visible means logged"). It names the skill,
@@ -4358,6 +4472,17 @@ def _log_skills_loaded(skills: Sequence[Any], skipped: Sequence[str]) -> None:
             place=place)
     if skipped:
         _log.info("executor.skills_skipped", skills=list(skipped), reason="cap")
+
+
+def _log_skills_refused(refused: Sequence[tuple[Any, str, Sequence[str]]]) -> None:
+    """TOF-1b. One ``executor.skill_refused`` line for each skill that could
+    not bring its packs (``Choice.skills_refused``). It names the skill, the
+    version, the reason (``pack_cap`` or ``pack_off``) and the packs that it
+    lacked, and never the text of the skill."""
+    for found, reason, packs in refused:
+        _log.info("executor.skill_refused", skill=getattr(found, "skill_id", ""),
+                  version=getattr(found, "version", None), reason=reason,
+                  packs=list(packs))
 
 
 def _loader_agent_ok(agent: Any) -> bool:
