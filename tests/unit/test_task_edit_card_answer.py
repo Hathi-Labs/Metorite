@@ -21,24 +21,39 @@ The rules, each with its fence below (R7):
 6. ``parse_task_edit_answer`` is the ONE parser of the ``edit`` key, and
    ``request_confirmation`` reads ``edit`` nowhere else (a source fence).
 
-Mutations (R7), each turned the named test red:
+Mutations (R7), run on 2026-11-16. Each turned the named tests red:
 
-* M1. ``task_card._values_ok``: ``set(values) <= TASK_EDIT_KEYS`` for ``!=``.
+* M1. ``task_card._values_ok``: allow an extra key (``>=`` for ``!=``).
+  ``test_an_extra_key_is_no_answer``.
+* M1b. ``task_card._values_ok``: allow a missing key (``<=`` for ``!=``).
   ``test_a_missing_key_is_no_answer``.
-* M2. ``task_card.parse_task_edit_answer``: ``set(body) >= {EDIT_KEY}``.
-  ``test_an_extra_key_beside_edit_is_no_answer``,
-  ``test_a_reply_key_on_an_edit_card_is_a_reject``.
-* M3. ``task_card._one_line``: strip the value before the check.
+* M2. ``task_card.parse_task_edit_answer``: take ``edit`` beside other keys.
+  ``test_an_extra_key_beside_edit_is_no_answer``.
+* M3. ``task_card.parse_task_edit_answer``: strip the description.
   ``test_whitespace_is_not_trimmed``.
 * M4. ``task_card.task_edit_card_on``: ``return True`` for an empty list.
   ``test_the_flag_is_empty_by_default_and_reads_off``.
 * M5. ``ask_tools._task_edit_form``: drop the ``task_edit_card_channel_open``
   test. ``test_a_whatsapp_run_gets_no_edit_form``,
   ``test_off_the_card_is_the_card_of_before``.
-* M6. ``writes._card_edit``: send the edited values with no second prepare
-  step. ``test_an_edited_status_is_resolved_again_after_the_card``.
+* M6. ``writes._card_edit``: keep the task of the card, with no second
+  prepare step. ``test_an_edited_due_date_and_assignee_are_written_as_edited``,
+  ``test_an_edited_status_is_resolved_again_after_the_card``.
 * M7. ``ask_tools._verdict``: read a plain ``APPROVE`` on an edit card as a
   REJECT. ``test_a_plain_approve_writes_the_original_values``.
+* M8. ``ask_tools._verdict``: approve an answer that does not parse.
+  ``test_a_reply_key_on_an_edit_card_is_a_reject``,
+  ``test_a_forged_project_id_writes_nothing``.
+* M9. ``ask_tools._task_edit_form``: keep the form with no bound member.
+  ``test_a_card_with_no_member_bound_gets_no_form``.
+* M10. ``writes._new_task_form``: drop the held and repeating test.
+  ``test_a_held_chat_whatsapp_and_a_repeating_task_get_no_edit_form``.
+* M11. ``ask_tools._verdict``: read ``result.get("edit")`` too.
+  ``test_request_confirmation_reads_edit_nowhere_else``.
+* M12. ``writes._card_edit``: no stranger warning.
+  ``test_a_stranger_is_written_and_warned_as_the_card_warns``.
+* M13. ``ask_tools._block_on``: give ``True`` for an edited answer.
+  ``test_an_edited_due_date_and_assignee_are_written_as_edited``.
 """
 from __future__ import annotations
 

@@ -25,15 +25,17 @@ Run (a private ladder database, one R8 suite at a time)::
     eval "$(bash scripts/dev_db.sh --export)"
     uv run pytest tests/unit/test_task_edit_card_r8.py -v -rs
 
-**The mutations (R7).** Each turned the named test red.
+**The mutations (R7)**, run on 2026-11-16 on a private ladder database. Each
+turned the named test red.
 
-* M1. ``writes._card_edit``: return *new* with no change.
-  ``test_r8_an_edited_due_status_and_assignee_are_written_as_edited``.
-* M2. ``writes._card_changes``: read a ``True`` answer as the form's values
-  with no change. No test turned red, so the plain approve path stays whole.
-  ``test_r8_a_plain_approve_writes_the_original_values`` holds it.
-* M3. ``ask_tools._verdict``: approve any answer that starts with APPROVE.
+* R-M6. ``writes._card_edit``: keep the task of the card, with no second
+  prepare step. ``test_r8_an_edited_due_status_and_assignee_are_written_as_edited``.
+* R-M7. ``ask_tools._verdict``: read a plain ``APPROVE`` on an edit card as a
+  REJECT. ``test_r8_a_plain_approve_writes_the_original_values``.
+* R-M8. ``ask_tools._verdict``: approve an answer that does not parse.
   ``test_r8_a_forged_project_id_writes_nothing``.
+* R-M12. ``writes._card_edit``: no stranger warning.
+  ``test_r8_a_stranger_is_written_and_warned_as_the_card_warns``.
 """
 
 from __future__ import annotations
