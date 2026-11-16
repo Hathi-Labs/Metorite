@@ -864,6 +864,10 @@ ships dark behind `CHAT_CONSTRAINTS`, default off.
 - Fences: `tests/unit/test_chat_constraints.py` and
   `evals/trajectories/test_chat_constraints_trajectory.py`.
 - Open: the visible chip in the chat is a later slice.
+- HRD-12a (`chat_failure_modes.md` §6, 2026-11-16) adds the kind
+  `decision`, under the same flag. Each item is `{kind, text}`, and a plain
+  string of the old shape reads as a limit. Decisions show on their own line,
+  after the limits, and they hold for the rest of the chat.
 
 **OA-3 is built and dark (2026-10-25).** The flag `ATTACHMENT_OCR` turns it
 on, and it is off by default. §4.1 records what was built, and the three
