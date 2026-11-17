@@ -32,6 +32,10 @@ Mira, and never the current chat. A hit names the title, the date of the last
 change of the chat and the link that opens the chat. With the flag empty, the
 answer is the answer of before, byte for byte, and so is the 422 of an unknown
 app, `chat` too. The flip waits for the owner's preview.
+**FIND-5 is built** (task 3242, 2026-11-16). Behind `FIND_ORGS`, the core tool
+`resolve_name` reads the new route `GET /search/names`. It gives each person,
+contact, lead, company and mail sender that holds one name, exact or near.
+§5.2 holds the shape as built.
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -590,6 +594,138 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
 `GET /search/names` asks each source that can `near`, with the lookups of rung
 3. So a near name is the same in the ladder and in the tool.
 
+**As built (FIND-5, task 3242, 2026-11-16, with its two fix rounds).**
+
+- **The route.** `gateway/retrieval/names.py` holds it. An org off
+  `FIND_ORGS` gets 404 before any check of the input. The route takes `name`
+  and `kinds` only, and the org and the member come from the session.
+- **The name.** One name of 2 to 60 characters and at most 3 words. `kinds` is
+  a comma list from the closed list person, contact, lead, company and sender.
+  An unknown kind gets a 422 with fixed text.
+- **A word that the matcher reads.** The name must hold one word of 2 letters
+  or more in the letters a to z or the digits 0 to 9. Else the route answers
+  a 422 with its own fixed sentence, before any read. Initials alone ("A B")
+  and a name in another script get it. The tool tells the model to ask the
+  member for the name in those letters.
+- **The sources.** The CRM gives contact, lead and company. People gives
+  person. Email gives sender. No source gives a member yet, so `resolve_person`
+  keeps the members until FIND-6.
+- **The reads.** Each source has the ability `named` (`Source.named_records`).
+  It calls the app's own search. Each source runs `named` with the name and
+  `Source.near_names` at once. Then it runs `named` once more, with each word
+  replaced by its best near spelling.
+- **One word for People and Email.** Their own search matches its text as one
+  phrase, and the directory never reads the preferred name. So the route asks
+  them with one word: the longest word of the name. The near read asks the
+  longest word of the respelled name. When that word is the word of the name
+  read, the app gets no second read, and the near test reads the same page.
+  The CRM matches word by word, so it gets the whole name. "Kumar Sharath"
+  finds «Sharath Kumar» in each app.
+- **The name test is code.** A record is `exact` when one form of its name
+  holds each word of the name. It is `near` when one form holds each word of
+  the near spelling. Each form counts on its own, never the union of two
+  forms. Each asked word takes its own stored word of that form, once. A word
+  of one letter takes a stored word that starts with it, after the full words
+  take theirs. A record that matched by another field gives no row.
+- **The forms of a name.** A CRM record has its name. A person with a preferred
+  name has two forms: the full name, and the full name with its first word
+  replaced by the preferred name. So «Gitanjali Rao», preferred «Gita», holds
+  "Gitanjali Rao", "Gita Rao" and "Gita". It does not hold "Gitanjali G". A
+  sender has two forms: the display name, and the part of the address before
+  the `@`. `sources.person_forms` builds the forms of a person.
+- **An initial reads the first form only (round 4).** The invariant: no
+  initial is met by the second spelling of one given name. The second form of
+  a person guesses that the first word of the full name is the given name.
+  A full name can start with an initial, a title or a surname. Then that form
+  holds two spellings of one given name: «K Sharath Kumar», preferred
+  «Sharath», gives "Sharath Sharath Kumar". So an ask that holds a word of one
+  letter reads the full name only, and a sender's display name only. "Sharath
+  S" is then no exact match for «K Sharath Kumar». An ask with no initial
+  reads each form. The fence is `test_resolve_name_tool.py`.
+- **An apostrophe joins.** An apostrophe between two letters joins them into
+  one word, in the name and in each form. So "O'Brien" is one word, and
+  «Oscar Brien» does not hold it.
+- **A sender row.** The Email app's own read `search.named_mail` gives it. The
+  read uses the mailbox scope of the search, drops the outbound mail (sent,
+  drafts, outbox) and sets a LOCAL `statement_timeout` of 1.5 s first. A `%`
+  or a `_` in the word is plain text. The id of the row is the address, and
+  its link opens the newest mail of the sender. An address that holds a
+  hidden character gives no row, and a joiner counts as one.
+- **A person row** says the status of the person (active, contractor, alumni
+  or invited), because the directory shows each status.
+- **The time.** One deadline of 1 s for every read, and each read takes a
+  slot of `FIND_SESSIONS`.
+- **A failed read.** A failed name read gives no row, and `skipped` names the
+  app with `timed_out`, `failed` or `refused`. `refused` is a 401 or a 403 of
+  the app only. A statement that Postgres cancelled (SQLSTATE 57014) reads
+  `timed_out`. A failed near read keeps the exact rows, and `near_skipped`
+  names the app. `full` names each app whose name read or near read gave a
+  full page of 20. A none answer does not count such an app as one where no
+  name matched.
+- **The caps.** At most 5 rows of each kind and 15 in all, the exact rows
+  first. `cut` says when a cap left a row out.
+- **The tool.** `resolve_name(name, kinds)` in `company_search_tools.py`
+  answers with the header of `search_company`. Two values come from data: a
+  stored name in guillemets, and a sender address that passed the address
+  check. Every other word comes from a closed list. The last line is the
+  fixed instruction of the verdict (`NAME_NEXT`).
+- **The flag.** The orchestrator holds the tool only for an org of
+  `FIND_ORGS`, with `COMPANY_SEARCH_ENABLED` on. So the tool list of each
+  other org does not change.
+
+**The verdict (fix round, P2-c).** The rule "One exact match: use it" holds
+only for a sure match. One exact row beside a near row repeats the failure of
+§1.1. There «Sharath BMS» is exact, and the near «Sharat» is the man that the
+member means. A mail sender writes its own display name, so it is no known
+person.
+
+| Verdict | When | The last line of the tool |
+|---|---|---|
+| `one` | One exact record that is no mail sender, no near row, and each app answered in full | "One exact match: use it." |
+| `partial` | The same, but an app gave no answer or a full page, did not try its near spellings, or a cap cut a row | "Ask the member to confirm it before you act." |
+| `several` | Two exact records or more, or one exact record beside a near row | "Ask the member which one they mean." |
+| `near` | Near rows only, or one exact mail sender alone | "Ask the member to confirm one, and never act on it without a yes." |
+| `none` | No row | "Ask the member for the full name or the address." |
+
+**Limits of FIND-5.** Each limit below is known, and no test hides it.
+
+- **A preferred name that the full name does not hold.** The People read asks
+  the longest word of the name, and the directory matches it in the full
+  name only. When that word is a preferred name that the full name does not
+  hold, the read misses the person. "Sharu Kumar" asks "Sharu" (the first of
+  two words of 5 letters), and «Sharath Kumar», preferred «Sharu», gives no
+  row. The search does not know that it missed. So a `one` from another app
+  can then be wrong. When the full name holds the longest word, the read
+  finds the person, and the forms test the name.
+- **The page of Email holds the newest 20 mails, not 20 senders.** Twenty
+  newer mails from other senders that hold the word can hide a sender. Then
+  `full` names Email, and the answer is no `one`.
+- **The page of People holds the first 20 rows of the directory read**, in
+  the order of the department, before the name test. A full page reads in
+  `full` too.
+- A sender with 20 mails or more fills the page of Email, so the answer reads
+  `partial` and not `one`.
+- A sender that is only in the sender rollup, with no mail, gives no row.
+- An address with an apostrophe gives no row, because the address check
+  refuses quote marks. An address with a joiner of an Indian script gives no
+  row either, because the check refuses each character of category C.
+- An apostrophe joins, so "D'Souza" does not hold «D Souza», written with no
+  apostrophe.
+- **An initial loses some recall, by choice (round 4).** "Gita R" does not
+  hold «Gitanjali Rao», preferred «Gita», because an ask with an initial
+  reads the full name only. "Gitanjali R" holds it. A sender loses the same
+  way: "Sharath K" does not hold «S Kumar» <sharath.kumar@…>. No answer
+  claims a wrong match for it. The answer can only miss a record.
+- **A display name that is the address itself.** Some mail gives the address
+  as the display name. Then the first form of the sender holds the words of
+  the domain too, so a word of the domain can match the sender exactly. A
+  sender alone never gives `one`.
+- **The cap of a request.** The pack cap counts the orchestrator's own tools.
+  For an org of `FIND_ORGS`, a Studio turn with the email words drops the pack
+  `studio-more`, and keeps email and studio. Nothing fails. FIND-6 gives the
+  place back when `resolve_person` leaves the core list. The fence is
+  `test_resolve_name_tool.py`.
+
 ### 5.3 How the app search tools wrap the engine
 
 | Tool (where) | What stays | What changes | Slice |
@@ -774,7 +910,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
 | **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
-| **FIND-5** | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
+| **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
 | **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |

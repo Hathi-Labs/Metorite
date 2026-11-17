@@ -179,9 +179,10 @@ def _filler_tool(i: int, calls: list[str]) -> Any:
 def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
     """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
 
-    * ``echo`` says it is read-only, so it runs with no card (H-299).
-    * ``delete_record`` says it is destructive, so it needs the card.
-    * ``plain_note`` sends no hints, so it needs the card too.
+    * ``echo`` says it is read-only, so it runs in every run (H-299).
+    * ``delete_record`` says it is destructive. A member's run calls it with
+      no card (MCP-NC1), and a run with no member refuses it.
+    * ``plain_note`` sends no hints, so it counts as not read-only too.
 
     *filler* adds that many read-only tools ``bulk_00``, ``bulk_01`` and so
     on, each with a long description and five arguments. With 10 or more,
