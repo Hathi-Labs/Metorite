@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
+
 > **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
 
 > **Product:** Metorite · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
@@ -21592,6 +21594,61 @@ Fix round 6 adds a card that came back with no kept edits, and a change of tab o
   - `npx vitest run src/components/redraftCard.test.ts src/components/newMailCard.test.ts src/lib/cardTabs.test.ts src/lib/confirmationQueue.test.ts src/lib/chatCardConformance.test.ts`
   - the focused strict tsc on the changed files
   - `npx playwright test e2e/email-redraft.spec.ts e2e/approval-stack.spec.ts --project=chromium`
+
+### 18.12 A chat mail is Markdown (2026-11-17, owner)
+
+**Status:** built, not merged. Metorite task 3605 (RC-CHAT). No flag and no migration. It
+ships ahead of the rich composer (epic 2640, WS-RC), and it adds no toolbar.
+
+**Origin.** Owner, 2026-11-17: a mail that the chat writes must go out with its formatting,
+such as headings of different sizes, bullet lists, bold and italics. A chat mail went out as
+plain text, with `- ` and `1.` lines.
+
+**The rule.** The email assistant writes the body of a mail in Markdown. The tool text of
+`send_email` and of `compose_reply` says it in the same words: "The body is Markdown. HTML
+tags show as text." `gateway/routes/email/markdown_mail.py` is the one converter. It makes the
+text part and the HTML part of the mail.
+
+- The parser is `markdown-it-py`, which the gateway already holds for the PDF seam. Raw HTML,
+  character references, Setext headings, indented code and link reference definitions are off.
+- The HTML holds only tags that the mail allowlist keeps, and each tag has an inline style.
+  The block tags are `h1` to `h3`, `p`, `ul`, `ol`, `li`, `table`, `thead`, `tbody`, `tr`,
+  `th`, `td`, `hr`, `br` and `div`. The inline tags are `strong`, `em`, `s`, `a` and `span`.
+  A quote and a code block are a `div`, and inline code is a `span`. A heading of level 4 to
+  6 is a level 3 heading.
+- The HTML goes through `signature.clean_signature_html`, the one mail sanitizer (D-EM-70).
+  Each link asks it first. An `https:`, `mailto:` or `tel:` link stays a link. Any other link
+  shows its words and its address as text. A Markdown image shows its alt text and loads
+  nothing.
+- A body with no formatting keeps its own text and gets no HTML, so it sends as before.
+- `signature.build_signed_bodies` adds the signature once to each part, below the text.
+
+**Where the HTML goes.**
+
+- `POST /email/send` takes `body_markdown`. The plain card of `send_email`, the act of the
+  new-mail card and the act of the reply card set it. A request with `body_markdown` and
+  `body_html` gets 422.
+- A held chat read outside mail, so it sends the text part only, with no HTML. Each link then
+  shows its address. The act of the reply card sends HTML only when the record of the card
+  says `held: false`.
+- A draft holds text only. A save from the chat keeps the text part, with no Markdown marks.
+  This includes the Save of each card and a new text of `edit_draft`. The save answers
+  `formatting: "text_only"`, and the tool tells the member.
+- The card shows the Markdown, and the member edits the Markdown. So an edit on the card keeps
+  the formatting. The card of a body with a Markdown mark says so in one line.
+
+**Not done.**
+
+- A capture of a sent mail in Gmail and in Outlook web. It needs a real mailbox, and outbound
+  mail is off on the dev stack. A golden test holds the HTML of a fixed sample instead.
+- A formatted preview on the card, and a toolbar. Epic 2640 owns both.
+- A draft that keeps its formatting. A draft holds text only until the composer holds HTML.
+- The tool text of `edit_draft` and of `draft_reply` does not change. `draft_reply` has no
+  body, because the server drafter writes the text.
+
+**Fence:** `tests/unit/test_email_markdown_mail.py`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_markdown_mail.py -q`
 
 ## 19. Send later (2026-10-21)
 

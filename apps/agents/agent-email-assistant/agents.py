@@ -133,6 +133,36 @@ def _lookalike_check(texts: dict[str, Any]) -> tuple[str | None, str | None]:
     return None, lookalike_warning(clean)
 
 
+# ── The body of a chat mail is Markdown (task 3605) ─────────────────────────
+#
+# The gateway makes the text part and the HTML part of a sent mail from the
+# Markdown (``gateway/routes/email/markdown_mail.py``). The card shows the
+# Markdown, and an edit on the card keeps it. A draft and a held chat keep
+# the text only. These helpers only add words for the member and the model.
+
+#: The card line of a body with a Markdown mark.
+_FORMATTED_NOTICE = ("This text is Markdown. The sent email shows its headings, lists, "
+                     "bold and links.")
+#: The line of a draft save of a body whose formatting did not go into it.
+_DRAFT_TEXT_ONLY = (" The draft holds the text without its formatting, because a "
+                    "draft holds text only. A send from this chat keeps the formatting.")
+#: A Markdown mark: a heading, a list item, a quote or a table row at a line
+#: start, or bold, code or a link anywhere. It only decides the card line.
+_MARKDOWN_MARK = re.compile(r"(?m)^ {0,3}(?:#{1,6} |[-*+] |\d{1,9}[.)] |> |\|)|\*\*|__|`|\]\(")
+
+
+def _formatted_notice(body: str) -> str:
+    """:data:`_FORMATTED_NOTICE` for a body with a Markdown mark, else ""."""
+    return _FORMATTED_NOTICE if _MARKDOWN_MARK.search(body or "") else ""
+
+
+def _draft_text_note(res: Any) -> str:
+    """:data:`_DRAFT_TEXT_ONLY` when the gateway says that a saved draft lost
+    the formatting of its text (``formatting: "text_only"``), else ""."""
+    lost = isinstance(res, dict) and res.get("formatting") == "text_only"
+    return _DRAFT_TEXT_ONLY if lost else ""
+
+
 def _egress_held_answer(act: str) -> str:
     """The answer of a rule tool that refuses its outward part in a held run.
     It starts "Nothing changed.", so the chat card draws an act that did not
@@ -2875,8 +2905,9 @@ async def compose_reply(
 
     ``draft`` is the reply text that you and the member already agreed in
     the chat, or that the request to you contains. Pass it WORD FOR WORD,
-    with its greeting and sign-off. The card then shows that text, and not
-    a new one. Leave ``draft`` empty only when no text exists yet, and the
+    with its greeting and sign-off.
+    The body is Markdown. HTML tags show as text.
+    The card then shows that text, and not a new one. Leave ``draft`` empty only when no text exists yet, and the
     server then writes one from the email. Then put what the member wants the
     reply to say in ``instruction``, in the member's words ("accept, but move
     it to Friday"), so the server's text follows it. The card shows the text in full,
@@ -2953,6 +2984,9 @@ async def compose_reply(
         return refusal
     if warning:
         _add_card_notice(form, warning)
+    if not _egress_held() and _formatted_notice(form["body"]):
+        # Task 3605: a held chat sends the text only, so it gets no such line.
+        _add_card_notice(form, _FORMATTED_NOTICE)
     kept = _KEPT_DRAFT if prep.get("kept_draft") else ""
     card_id = str(prep.get("card_id") or "")
     gone = _left_out_text(form)
@@ -3009,7 +3043,7 @@ async def compose_reply(
     ref = f" (draft_id {did})" if did else ""
     line = _draft_line(did, res.get("subject") or form["subject"])
     return (f"Saved in Drafts of {box}, to {to}{copy}{ref}. Nothing was sent.{kept}"
-            + (f"\n{line}" if line else ""))
+            + _draft_text_note(res) + (f"\n{line}" if line else ""))
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────
@@ -6387,7 +6421,7 @@ async def send_email(
     The confirmation card names the From mailbox as "label · address".
 
     Args:
-        body: plain-text body.
+        body: the text. The body is Markdown. HTML tags show as text.
         to: recipient address(es) — required for a new message; derived from the
             original for a reply if omitted.
         subject: subject line — derived as 'Re: …' for a reply if omitted.
@@ -6459,6 +6493,8 @@ async def send_email(
         return refusal
     if warning:
         reply_notices.insert(0, warning)
+    if _formatted_notice(body):  # task 3605: the card shows the Markdown
+        reply_notices.append(_FORMATTED_NOTICE)
     # Task 2491: each workspace file resolves BEFORE either card, through the
     # resolver of the send. A file that the send would refuse shows no card,
     # so it costs the member no approval. A Metorite file resolves before
@@ -6481,6 +6517,8 @@ async def send_email(
         "to": to,
         "subject": subject,
         "body_text": body,
+        # Task 3605: the gateway makes the text and the HTML of the mail.
+        "body_markdown": True,
     }
     if cc:
         payload["cc"] = cc
@@ -6838,7 +6876,8 @@ def _new_mail_result(res: dict[str, Any], sender: str, usual: str = "") -> str:
         did = str(res.get("draft_id") or "")
         ref = f" (draft_id {did})" if did else ""
         return (f"Saved in Drafts of {sender}{note}, to {_new_mail_people(res)}{ref}. "
-                f"Nothing was sent.{_new_mail_left(res)}{_new_mail_text_line(res)}")
+                f"Nothing was sent.{_new_mail_left(res)}{_draft_text_note(res)}"
+                f"{_new_mail_text_line(res)}")
     tail = f" {usual}" if usual else ""
     return (f"Sent email to {_new_mail_people(res)} from {sender}{note} "
             f"(id={res.get('id', '')}).{_new_mail_left(res)}{tail}{_new_mail_text_line(res)}")
@@ -6975,7 +7014,8 @@ async def _held_new_mail(
         # No "Draft:" line, as in ``_new_mail_result``.
         did = str(res.get("draft_id") or "")
         return (_held_sent_text(res, f"Saved in Drafts{note}, nothing was sent")
-                + (f" (draft_id {did})." if did else "") + _new_mail_text_line(res))
+                + (f" (draft_id {did})." if did else "") + _draft_text_note(res)
+                + _new_mail_text_line(res))
     return (_held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
             + _new_mail_text_line(res))
 
@@ -7883,11 +7923,14 @@ async def edit_draft(
             "subject": new_subject, "body": text,
             "keep_html": keep_body, "keep_body": keep_body,
             "from_chat": True,
+            # Task 3605: a new text is Markdown, and the draft keeps its text.
+            **({} if keep_body else {"body_markdown": True}),
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
     lost = (" Its formatting and its images could not be kept, so it now "
             "holds the text only.") if res.get("html") == "lost" else ""
+    lost += _draft_text_note(res)
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
                   if lists[key] and lists[key] != before[key])
     cancelled = await _cancel_schedules(pending)
@@ -7968,14 +8011,14 @@ async def _new_draft(
         res = await _put("/email/drafts", {
             "account_id": account_id, "to": lists["to"], "cc": lists["cc"],
             "bcc": lists["bcc"], "subject": subject or "", "body": body,
-            "from_chat": True,
+            "from_chat": True, "body_markdown": True,  # task 3605
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
     line = _draft_line(res.get("id"), subject)
     return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
             "Nothing was sent. Send it with send_draft when the member asks."
-            + (f"\n{line}" if line else ""))
+            + _draft_text_note(res) + (f"\n{line}" if line else ""))
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:

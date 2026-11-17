@@ -3702,6 +3702,16 @@ class DraftUpsertRequest(BaseModel):
     # are normalised before the save. The Email app's composer sends False,
     # so its saves are as before.
     from_chat: bool = False
+    # Task 3605: True when ``body`` is Markdown, as the email assistant writes
+    # it. A draft holds text only, so the save keeps the text part of
+    # ``markdown_mail.mail_bodies``: the words with no Markdown marks. The
+    # answer then says ``formatting: "text_only"`` when the body had any.
+    body_markdown: bool = False
+
+
+#: The ``formatting`` key of the answer of a save of a Markdown body that had
+#: formatting (task 3605). The draft holds the text only.
+FORMATTING_TEXT_ONLY = "text_only"
 
 
 #: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
@@ -3799,6 +3809,22 @@ def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
     return req.model_copy(update={"body": visible_spacing(req.body), "subject": subject})
 
 
+def _markdown_draft_text(req: DraftUpsertRequest) -> tuple[DraftUpsertRequest, dict[str, str]]:
+    """A save of a Markdown body (task 3605): the request with the text part
+    of ``markdown_mail.mail_bodies`` as its body, and the ``formatting`` key
+    of the answer. A draft holds text only, so a body with Markdown marks
+    loses its formatting, and the answer says so. A plain body and a save
+    that keeps the stored body do not change."""
+    if not req.body_markdown or req.keep_body:
+        return req, {}
+    from gateway.routes.email.markdown_mail import draft_text
+
+    body, lost = draft_text(req.body)
+    if not lost:
+        return req, {}
+    return req.model_copy(update={"body": body}), {"formatting": FORMATTING_TEXT_ONLY}
+
+
 @router.put("/drafts")
 async def upsert_draft(
     req: DraftUpsertRequest,
@@ -3814,6 +3840,7 @@ async def upsert_draft(
     _refuse_bad_draft_id(req.draft_id)
     if req.from_chat:
         req = _chat_draft_text(req)
+    req, formatting = _markdown_draft_text(req)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         # The signature lives IN the draft body so the upstream (provider)
@@ -3925,8 +3952,10 @@ async def upsert_draft(
                 clear_html=gmail and not req.keep_html,
             )
         if gmail:
-            return {**await _fetch_message_dict(db, local_id), "html": html_state}
-        return await _fetch_message_dict(db, local_id)
+            return {**await _fetch_message_dict(db, local_id), "html": html_state,
+                    **formatting}
+        saved = await _fetch_message_dict(db, local_id)
+        return {**saved, **formatting} if formatting else saved
 
 
 class DraftExpect(BaseModel):
