@@ -10,7 +10,8 @@ connection registry. ``McpPermissionGate`` reads it (the gate half is in
 Postgres, as the NON-privileged role of the phase-4 rehearsal, with two orgs:
 
 - **A31** a new server is NOT set to always confirm, unless the POST says
-  so (MCP-NC1, owner directive 2026-11-17, task 3603). The tests that
+  so (MCP-NC1, owner directive 2026-11-16, task 3603). A re-register that
+  names no switch keeps the stored one (F7 of the review). The tests that
   flip the switch post a server with it on;
 - **A32** a row with no key (written before H-300) and a row that the move
   of an old ``mcp_servers`` row wrote both read as false, so each keeps its
@@ -131,6 +132,31 @@ async def test_a_new_server_defaults_to_no_always_confirm(ns, app_engine) -> Non
     await mcp.save(ns.org_a, name=direct, url="https://mcp.example.com/mcp",
                    headers={}, connected_by="r8")
     assert _meta(ns, ns.org_a, direct)["always_confirm"] is False
+
+
+async def test_a_re_register_with_no_switch_keeps_always_confirm(ns, audit) -> None:  # noqa: F811
+    """F7 of the MCP-NC1 review. A register with ``always_confirm`` true, then
+    a re-register that names no switch: the row still reads true, through the
+    route and through the writer. The audit event records the switch as
+    saved. A re-register that names false still turns it off."""
+    from gateway.connections import mcp
+
+    user = _user(ADMIN_A, ns.org_a)
+    name = _name("keep")
+    await _post(user, name, always_confirm=True)
+    audit.clear()
+    await _post(user, name)
+    assert _meta(ns, ns.org_a, name)["always_confirm"] is True, "a re-register cleared it"
+    assert (await _listed(user, name))["always_confirm"] is True
+    (event,) = audit
+    assert event.payload["always_confirm"] is True and event.payload["outcome"] == "updated"
+
+    await mcp.save(ns.org_a, name=name, url="https://mcp.example.com/mcp",
+                   headers={"Authorization": SENTINEL}, connected_by="r8")
+    assert _meta(ns, ns.org_a, name)["always_confirm"] is True, "the writer cleared it"
+
+    await _post(user, name, always_confirm=False)
+    assert _meta(ns, ns.org_a, name)["always_confirm"] is False
 
 
 # ── A32: an older row reads as false ────────────────────────────────────────

@@ -550,8 +550,9 @@ async def test_a_loaded_tool_keeps_its_rule_at_the_gate(monkeypatch):
 @pytest.mark.parametrize("writes", [False, True], ids=["reads-only", "writes-on"])
 async def test_on_whatsapp_a_loader_runs_and_a_loaded_tool_that_needs_a_card_is_refused(
         monkeypatch, writes):
-    """A member's WhatsApp run calls a loaded write with no card (MCP-NC1). A
-    loaded tool of an always-confirm server needs a card, so it is refused."""
+    """WhatsApp keeps the H-299 refusal (MCP-NC1 review, P1): a member's
+    WhatsApp run refuses a loaded write, and a loaded tool of an
+    always-confirm server. A loader and a read-only tool still run."""
     tools = [_tool("wiper", hints={"destructiveHint": True}),
              _tool("reader", hints={"readOnlyHint": True}), *_many(12, params=1)]
     agent, opened, _fleet, _logs = await _attach(
@@ -571,7 +572,8 @@ async def test_on_whatsapp_a_loader_runs_and_a_loaded_tool_that_needs_a_card_is_
                 await asyncio.wait_for(gate.process(ctx, ran), timeout=5)
                 results[label] = (ran.count, ctx.result)
         assert results["list"][0] == 1
-        assert results["wiper"] == (1, None), "a member's WhatsApp run refused a write"
+        assert results["wiper"] == (0, _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="wa_wiper")), (
+            "a member's WhatsApp run ran a write")
         assert results["reader"][0] == 1
         assert results["strict"] == (0, _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="ac_wiper"))
         assert _cards(queue) == [] and run.parked is None
@@ -613,6 +615,9 @@ def _offered(body: dict[str, Any], prefix: str = "probe-srv_") -> list[str]:
 
 def _drive(monkeypatch, srv, model, *, payload=None, answer: str = "REJECT",
            always_confirm: bool | None = None):
+    # MCP-NC1 review (F2): the payload's member comes in as the session's
+    # member too, as the web chat sends it. A body's claim alone is no member.
+    session_user = str((payload or {}).get("user_email") or "") or None
     set_flag(monkeypatch, _ORG)
     RegistrySpy([row("probe-srv", org=_ORG, url=srv.url,
                      always_confirm=always_confirm)]).install(monkeypatch)
@@ -629,7 +634,8 @@ def _drive(monkeypatch, srv, model, *, payload=None, answer: str = "REJECT",
     with structlog.testing.capture_logs() as logs:
         events, _built = drive_native(
             _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
-            thread_id="thread-mcp-budget", extra_payload=payload, on_event=_on_event)
+            thread_id="thread-mcp-budget", extra_payload=payload, on_event=_on_event,
+            session_user=session_user)
     return events, seen, logs
 
 

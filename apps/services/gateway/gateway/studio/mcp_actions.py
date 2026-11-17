@@ -20,11 +20,12 @@ The CALLER gives it two things:
 confirmation AND its server has no ``always_confirm``. Each other tool is
 class B. A ``destructiveHint`` tool is a write, so it is B, and no MCP tool
 is class C. The class is a read test, and the preview reads class A only, so
-a preview sends nothing (I11). ⚠️ MCP-NC1 (owner directive, 2026-11-17, task
-3603): the gate of a member's run (``orchestrator._maf_mcp``) runs a class B
-tool with no card, unless its server is set to always confirm. The admin's
-read-only key (``read_only_key``) lets a run with no member skip the refusal,
-but it never makes a catalog row class A. The class of a row comes from the
+a preview sends nothing (I11). ⚠️ MCP-NC1 (owner directive, 2026-11-16, task
+3603): the gate of a verified member's run in Metorite
+(``orchestrator._maf_mcp``) runs a class B tool with no card, unless its
+server is set to always confirm. WhatsApp still refuses it. The admin's
+read-only key (``read_only_key``) lets such a refused run use the tool, but
+it never makes a catalog row class A. The class of a row comes from the
 hints and "always confirm" only, so the catalog can be stricter than the gate
 and never looser.
 

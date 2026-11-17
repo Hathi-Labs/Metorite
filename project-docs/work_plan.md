@@ -4019,12 +4019,24 @@ WS-8c, item 32. It narrows H-299 by the admin's statement about the key, not by
 trust in the server. Item 31 wins when both are set. H-236 and step 3a of
 `decide()` do not change. Metorite task 1584.
 
+**Recorded 2026-11-16, not a decision of its own (MCP-NC1).** The owner removed
+the card for the tools of an external app in a member's run: "remove the aproval
+cards as well, its not needed anymore for accessing external MCPs". Metorite
+task 3603. It is built as `specs/agent_architecture.md` §12.2 WS-8c, item 33. It
+widens point 3: a member can now read AND change, through an agent, what the
+admin can reach at that provider, with no card. It limits D131.7 and D164.4 for
+the tools of an external app in a member's own run. The remaining control is
+the admin's "always confirm" switch (item 31) on each server. WhatsApp still
+refuses a tool that does not say read-only, until the owner decides otherwise.
+A run with no member, and step 3a of `decide()`, do not change.
+
 **What it extends.** D96.4: an MCP server is a connection. D98 adds the
 connections that need an OAuth consent.
 
 **What it does not change.** D56 keeps operator keys in the operator plane, and
 a pre-registered OAuth client is one of them. H-236 stays: every MCP tool is
 egress. H-299 stays: a tool that can change data waits for the member's card.
+MCP-NC1 (2026-11-16, above) amends this for a member's run in Metorite.
 
 **Fences:** the rows of `specs/integrations_console.md` §3.6.11. All are new and
 none exists yet.

@@ -151,11 +151,12 @@ def _is_within(path: str, root: str) -> bool:
 # A native MAF agent calls the tools of an org's MCP servers. The server sends
 # its own hints in ``tools/list`` (``annotations``, MCP 2025-03-26).
 #
-# MCP-NC1 (owner directive, 2026-11-17, task 3603) amends H-299: in a run that
-# a member started, an MCP tool runs with no card, whatever its hints say. The
-# gate passes the fact ``mcp_member_present``, and only a real ``True`` counts.
-# A run with no member (a batch run, a scheduled run) cannot show a card. So
-# there the H-299 rule stays: a tool that does not say read-only AND not
+# MCP-NC1 (owner directive, 2026-11-16, task 3603) amends H-299: in a run that
+# a verified member started in Metorite, an MCP tool runs with no card,
+# whatever its hints say. The gate passes the fact ``mcp_member_present``, and
+# only a real ``True`` counts. The fact is false with no verified member, in a
+# WhatsApp run, and in a run that no person watches. So there the H-299 rule
+# stays: a tool that does not say read-only AND not
 # destructive gets ``mcp_confirm``, and the gate refuses it. A missing hint, a
 # hint that is not a JSON boolean, and no annotations at all each count as not
 # read-only, so that rule fails closed. The hints are the server's own claim,

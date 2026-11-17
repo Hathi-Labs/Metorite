@@ -631,7 +631,7 @@ contract test pins these names, so an upgrade of `mcp` fails loud.
 - **The Connect dialog** says, before the consent, that the agents of every
   member use this connection as the admin. It also says that each tool runs
   with no card, so every member can read and change what the admin can read
-  and change at the provider (MCP-NC1, owner directive 2026-11-17).
+  and change at the provider (MCP-NC1, owner directive 2026-11-16).
 - **The card** (`agent_architecture.md` §12.2 WS-8c, item 14) shows "acts as
   <admin email> at <provider>" for each tool of an OAuth server. The line sits
   under the hint line, and the card escapes it as it escapes the names (item
@@ -639,7 +639,8 @@ contract test pins these names, so an upgrade of `mcp` fails loud.
 - **A tool of a member's run asks no card** (MCP-NC1, `agent_architecture.md`
   §12.2 WS-8c item 33, which amends H-299). So a member can read and change,
   through an agent, what the admin can read and change at that provider. The
-  console says so, and this spec says so. The H-300 setting `always_confirm`
+  console says so, and this spec says so. WhatsApp still refuses a tool that
+  does not say read-only. The H-300 setting `always_confirm`
   puts a card on every tool of one server, and a new server has it off
   (item 31 as item 33 amends it). D98.3 says "read" only, and item 33 widens
   it.

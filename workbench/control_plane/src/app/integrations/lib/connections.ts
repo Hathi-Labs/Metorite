@@ -498,8 +498,10 @@ export function mcpName(row: Connection): string | null {
 // ── The "always confirm" switch of an MCP server (H-300) ──────────────────
 //
 // With the switch on, every tool of the server waits for a member to approve
-// it. With it off, a member's chat runs each tool with no card (MCP-NC1, owner
-// directive 2026-11-17). It is off for a new server. The gateway sends it as
+// it. With it off, a member's chat in Metorite runs each tool with no card
+// (MCP-NC1, owner directive 2026-11-16). WhatsApp still runs only the tools
+// that the server marks as read-only. It is off for a new server, and a
+// re-register keeps it unless the admin ticks it. The gateway sends it as
 // `detail.always_confirm`, "true" or "false". A row with no key reads as off,
 // which is what the gateway reads too.
 
@@ -516,7 +518,7 @@ export function mcpDescription(row: Connection): string {
 }
 
 export const ALWAYS_CONFIRM_HELP =
-  "With this off, the chat runs each tool of this server without asking. " +
+  "With this off, the chat in Metorite runs each tool of this server without asking. " +
   "With this on, every tool of this server waits for a member to approve it.";
 
 /** The switch of an MCP row. `null` on a row that is not an MCP server. */
@@ -529,16 +531,18 @@ export function mcpAlwaysConfirm(row: Connection): boolean | null {
 //
 // The admin says that the key of the server can only read, so the server
 // refuses each write at the source. With the switch on, no tool of the
-// server waits for a member to approve it. After MCP-NC1 a member's chat asks
-// for no tool anyway, so the switch changes only a run that no member starts:
-// that run then uses each tool. The gateway sends it as
+// server waits for a member to approve it. After MCP-NC1 a member's chat in
+// Metorite asks for no tool anyway. So the switch changes only a chat that
+// cannot ask, such as WhatsApp: that chat then uses each tool. No scheduled
+// run gets an MCP server, so the words claim nothing about one. The gateway
+// sends it as
 // `detail.read_only_key`, "true" or "false", and a row with no key reads as
 // off. The two switches are never both on: a tick of one clears the other,
 // and the console sends both keys in one PATCH.
 
 export const READ_ONLY_KEY_LABEL = "This key can only read";
 export const READ_ONLY_KEY_HELP =
-  "Runs that no member starts, such as scheduled runs, can then use every tool of this server. " +
+  "Chats that cannot ask for approval, such as WhatsApp, can then use every tool of this server. " +
   "Turn this on only when the key cannot change data at the source.";
 /** The extra line under the tick on a row that acts as an admin through OAuth. */
 export const READ_ONLY_KEY_OAUTH_NOTE =
@@ -588,11 +592,10 @@ export function tickSwitch(current: McpSwitches, which: McpSwitch, next: boolean
  */
 export function switchesSavedText(s: McpSwitches): string {
   if (s.always_confirm) return "New chats will ask before any tool runs.";
-  // MCP-NC1: with the switch off, a member's chat asks before no tool.
-  if (s.read_only_key) {
-    return "New chats, and runs that no member starts, will run every tool of this server without asking.";
-  }
-  return "New chats will run every tool of this server without asking.";
+  // MCP-NC1: with the switch off, a member's chat in Metorite asks before no
+  // tool, and WhatsApp runs only the tools that the server marks as read-only.
+  if (s.read_only_key) return "New chats, WhatsApp too, will run every tool of this server without asking.";
+  return "New chats in Metorite will run every tool of this server without asking. WhatsApp will run only its read-only tools.";
 }
 
 /**
@@ -649,8 +652,14 @@ export interface McpForm {
   /** Write-only. It goes out in the POST and is never drawn again. */
   headerValue: string;
   agentScope: string;
-  /** H-300. OFF for a new server (MCP-NC1, owner directive 2026-11-17). */
+  /** H-300. OFF for a new server (MCP-NC1, owner directive 2026-11-16). */
   alwaysConfirm: boolean;
+  /**
+   * True once the admin ticks "always confirm" (F7 of the MCP-NC1 review).
+   * Until then the POST names no switch, so a re-register of a server that
+   * exists keeps its stored switch.
+   */
+  alwaysConfirmTouched: boolean;
   /** MCP-C2. OFF for a new server. Never on with `alwaysConfirm`. */
   readOnlyKey: boolean;
 }
@@ -664,13 +673,19 @@ export const EMPTY_MCP_FORM: McpForm = {
   headerValue: "",
   agentScope: "*",
   alwaysConfirm: false,
+  alwaysConfirmTouched: false,
   readOnlyKey: false,
 };
 
 /** One tick in the Add form. It follows `tickSwitch`, so a tick of one clears the other. */
 export function tickFormSwitch(f: McpForm, which: McpSwitch, next: boolean): McpForm {
   const s = tickSwitch({ always_confirm: f.alwaysConfirm, read_only_key: f.readOnlyKey }, which, next);
-  return { ...f, alwaysConfirm: s.always_confirm, readOnlyKey: s.read_only_key };
+  return {
+    ...f,
+    alwaysConfirm: s.always_confirm,
+    alwaysConfirmTouched: f.alwaysConfirmTouched || which === "always_confirm",
+    readOnlyKey: s.read_only_key,
+  };
 }
 
 export function mcpFormReady(f: McpForm): boolean {
@@ -730,7 +745,11 @@ export function mcpBody(f: McpForm): Record<string, unknown> {
     headers,
     agent_scope: scope.length ? scope : ["*"],
     enabled: true,
-    always_confirm: f.alwaysConfirm,
+    // F7 of the MCP-NC1 review: the switch goes out only when the admin ticked
+    // it, or when the read-only key is on (then it must be off). Else the
+    // gateway keeps the stored switch of a server that exists, and a new one
+    // gets off.
+    ...(f.alwaysConfirmTouched || f.readOnlyKey ? { always_confirm: f.alwaysConfirm } : {}),
     // MCP-C2: always sent. A register is a full register, so a body with no
     // key turns it off.
     read_only_key: f.readOnlyKey,

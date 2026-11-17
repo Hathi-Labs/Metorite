@@ -28,12 +28,16 @@ The rules:
    (:class:`McpPermissionGate`). The tools keep the ``approval_mode`` of MAF.
 6. **The confirmation card** (H-299, amended by MCP-NC1). The gate gives
    ``decide()`` the hints that the server sent in ``tools/list``, and the
-   fact ``mcp_member_present``. **MCP-NC1** (owner directive, 2026-11-17,
-   task 3603): in a run that a member started, a tool runs with no card,
-   whatever its hints say (``mcp_member_run``). In a run with no member (a
-   batch run, a scheduled run), a tool that does not say read-only and not
-   destructive is refused, because nobody can confirm it. So a tool with no
-   hints is refused there. The card is ``ask_tools.request_confirmation``,
+   fact ``mcp_member_present``. **MCP-NC1** (owner directive, 2026-11-16,
+   task 3603): in a run that a verified member started and watches, a tool
+   runs with no card, whatever its hints say (``mcp_member_run``). The fact
+   is false with no verified member, inside ``no_person_scope``, for a
+   server that the gate cannot find, and in a run that refuses cards (a
+   WhatsApp run, a stream with no cards, :func:`_refuses_cards`). There a
+   tool that does not say read-only and not destructive is refused, as
+   before. So a tool with no hints is refused there. A batch, scheduled,
+   webhook or headless run gets no MCP server at all (``executor``,
+   ``_batch_thread``). The card is ``ask_tools.request_confirmation``,
    the one card seam, and it now shows only for "always confirm", for an
    untrusted answer (step 3a of ``decide()``), and for a gate fault. Deny and
    a timeout return a refusal, and the tool never runs. A run with no member,
@@ -51,8 +55,9 @@ The rules:
    **The read-only key** (MCP-C2, item 32): an admin can say that the key
    of a server can only read (``provider_meta.read_only_key``). Then NO tool
    of that server waits for the card, whatever its hints say, also in a run
-   with no member. After MCP-NC1 the key changes only a run with no member,
-   which then runs each tool. The registry parses the key once
+   with no member. After MCP-NC1 the key changes only a run where the
+   member fact is false, such as a WhatsApp run, which then runs each tool.
+   The registry parses the key once
    (``StoredServer.read_only_key``), and the flag goes the same path:
    :class:`McpServer`, the tool (:func:`server_read_only_key`), and
    ``decide()`` as the fact ``mcp_read_only_key``. ``decide()`` answers
@@ -1337,6 +1342,25 @@ def _card_refusal(member_present: bool) -> tuple[str, str] | None:
     return None
 
 
+def _refuses_cards() -> bool:
+    """True in a run that refuses each card: a WhatsApp run, and a stream that
+    does not show cards (``ask_tools.cards_refused``). A fault reads as True.
+
+    MCP-NC1 keeps WhatsApp as it was until the owner decides: such a run is
+    not a member's run for the MCP rule. ``decide()`` then answers
+    ``mcp_confirm`` for a tool that does not say read-only, and
+    :func:`_card_refusal` refuses it with ``no_card_channel``. A Redis fault
+    of the session mark reads as clear there (``egress._card_can_show``), so
+    this check, not step 3a, keeps a write out of WhatsApp."""
+    try:
+        from acb_skills.ask_tools import cards_refused
+        from acb_skills.whatsapp_ui import current_run
+
+        return current_run() is not None or bool(cards_refused())
+    except Exception:
+        return True
+
+
 def _tool_functions(tool: Any) -> list[Any]:
     return list(getattr(tool, "_functions", None) or getattr(tool, "functions", None) or [])
 
@@ -1480,8 +1504,10 @@ def _make_gate_class() -> type:
                        "mcp_read_only_key": read_only_key,
                        # MCP-NC1: a member's run needs no card. A server
                        # that the gate cannot find keeps the card, because
-                       # its "always confirm" cannot be read.
-                       "mcp_member_present": self.member_present and owner is not None},
+                       # its "always confirm" cannot be read. A run that
+                       # refuses cards (WhatsApp) keeps the H-299 refusal.
+                       "mcp_member_present": (self.member_present and owner is not None
+                                              and not _refuses_cards())},
                 after_untrusted_answer=await session_is_marked(),
             )
             if not allowed:

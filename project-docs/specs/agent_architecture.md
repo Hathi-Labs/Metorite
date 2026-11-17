@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-11-17. §12.2 WS-8c item 33 (MCP-NC1, task 3603, owner directive) amends H-299. A run that a member started calls an MCP tool with no card. A run with no member still refuses a tool that does not say read-only. A new server has "always confirm" off. Item 33 is BUILT on branch `mt-7b0b9e6d-mcp-cards-off`, and it waits for the verifier and the merge. 2026-11-04: §12.2 WS-8c adds the admin's read-only key for each MCP server (MCP-C2, item 32, owner request). Item 32 is built on branch `mcp-c2-read-only-key`, and it waits for the verifier and the merge. 2026-10-12: §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-11-17. §12.2 WS-8c item 33 (MCP-NC1, task 3603, owner directive) amends H-299. A run that a verified member started in Metorite calls an MCP tool with no card. A run with no member, and a WhatsApp run, still refuse a tool that does not say read-only. A new server has "always confirm" off, and a re-register keeps the stored switch. Item 33 is BUILT on branch `mt-7b0b9e6d-mcp-cards-off`, and it waits for the verifier and the merge. 2026-11-04: §12.2 WS-8c adds the admin's read-only key for each MCP server (MCP-C2, item 32, owner request). Item 32 is built on branch `mcp-c2-read-only-key`, and it waits for the verifier and the merge. 2026-10-12: §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -973,9 +973,10 @@ nothing.
 that gap, and items 18 to 21 harden them (review of PR #888). The first production flip of
 `MAF_MCP_ORGS` waits for them.
 
-> **Amended by item 33 (MCP-NC1, owner directive 2026-11-17).** In a run that a member
-> started, no MCP tool waits for the card. Items 13 to 17 now bind a run with no member, a
-> server that is set to always confirm, and a chat that read an untrusted answer.
+> **Amended by item 33 (MCP-NC1, owner directive 2026-11-16).** In a run that a verified
+> member started in Metorite, no MCP tool waits for the card. Items 13 to 17 now bind a run
+> with no member, a WhatsApp run, a server that is set to always confirm, and a chat that read
+> an untrusted answer.
 
 13. **When the gate asks for a card.** `RunScopedMCPTool` keeps the `annotations` of each tool from
     `tools/list` (MCP 2025-03-26), because MAF drops them. `McpPermissionGate` gives the hints
@@ -1229,7 +1230,7 @@ Item 32 is the switch. Metorite task 1584.
     - **The log.** Each attach logs `mcp.attached` with `read_only_key`, the names of the
       servers that have the switch on.
 
-**No card in a member's run (MCP-NC1, owner directive 2026-11-17).** Metorite task 3603. On
+**No card in a member's run (MCP-NC1, owner directive 2026-11-16).** Metorite task 3603. On
 2026-11-16 a member of Shaurrya Teleservices approved 12 cards in 20 minutes, each for a read
 in the Shaurrya app. The one tool of that server, `call_operation`, says that it is
 destructive, so `decide()` answered `mcp_confirm` for each call. The owner's words sit in a
@@ -1245,26 +1246,37 @@ block that the linter does not read:
       after always confirm, the read-only key and the hints, a real `True` gives the new code
       `MCP_MEMBER_RUN` (`"mcp_member_run"`). The gate runs that code with no card, as it runs
       `mcp_read_only`. `decide()` stays the one gate.
-    - **A run with no member.** A batch run, a scheduled run and a webhook run cannot show a
-      card. There the fact is false, `decide()` still answers `mcp_confirm` for a tool that
-      does not say read-only and not destructive, and the gate refuses it with `no_member`.
-      A read-only tool and a tool of a read-only-key server still run there.
-    - **Who counts as a member.** The fact is the `member_present` of the attach (item 16):
-      an authority from `_integration_authorizer`, in a run that is not a batch run. That is
-      the web chat, a member's WhatsApp run, and a member's own `POST /agent/run` with a
-      thread. A cron, webhook, Projects dispatch or headless run gets no MCP server, or no
-      member. A run inside `no_person_scope` (AUTO-7a, D131 rule 4: a job, an unattended
-      workflow, a Studio run with no viewer) counts as a run with no member, also when it
-      names one (`_maf_mcp._person_present`, a listed reader in `test_no_person_present.py`).
-      A function whose server the gate cannot find keeps the fact false, because the gate
-      cannot read the "always confirm" of that server.
+    - **Who counts as a member.** The fact is true only in a run that a verified member started
+      and watches in Metorite: the web chat, and a member's own `POST /agent/run` with a
+      thread. The executor passes `member_present` only with an authority from
+      `_integration_authorizer`, a verified member of the run binding
+      (`_verified_run_member`), and no batch run. A body's claim of a member (`user_email`
+      with no session) is not verified, so it keeps `mcp_confirm`. The gate sets the fact
+      false inside `no_person_scope` (AUTO-7a, D131 rule 4, `_maf_mcp._person_present`, a
+      listed reader in `test_no_person_present.py`), and on a fault of that check. It also
+      sets it false for a function whose server it cannot find, because it cannot read the
+      "always confirm" of that server.
+    - **WhatsApp keeps the H-299 refusal** until the owner decides otherwise. The owner's
+      directive does not name WhatsApp. A run that refuses cards (a WhatsApp run, and a stream
+      with `shows_cards=False`) counts as a run with no member (`_maf_mcp._refuses_cards`).
+      So a member's WhatsApp run refuses a tool that does not say read-only, with
+      `no_card_channel`, as before. This also holds when a Redis fault reads the session mark
+      as clear there. A read-only tool and a tool of a read-only-key server still run on
+      WhatsApp. `SCOPE_RULE` of `bot_run.py` and `whatsapp_assistant_channel.md` stay true.
+    - **No MCP server in an unattended run.** A batch, scheduled, webhook, Projects dispatch or
+      headless run gets no MCP server at all (`executor._batch_thread`, the H-236 `no_egress`,
+      fenced in `test_wac_channel_parity.py`). So this item changes none of them.
     - **What still asks the card.** A server that is set to always confirm (item 31). A chat
       that read an untrusted answer (step 3a of `decide()`, EM-G11d). A gate fault
       (`gate_error`). Item 32's order stays: step 3a, always confirm, the read-only key, the
       hints, then the member.
     - **The default.** A new server has always confirm off: `connections/mcp.save()`, the
-      `POST /integrations/mcp` body and the Add form all start `false`. A row stored `true`
-      keeps `true` until an admin turns it off.
+      `POST /integrations/mcp` body and the Add form all start off. A row stored `true` keeps
+      `true` until an admin turns it off. A re-register whose body names no
+      `always_confirm` keeps the stored switch, and the Add form sends the switch only when
+      the admin ticks it, or as off with the read-only key on (review F7).
+    - **The read-only key.** It now changes only a run where the member fact is false, such
+      as a WhatsApp run. There it runs each tool of the server.
     - **The audit.** Each attach still logs `mcp.tool_annotations` with the hints of each
       tool. Each call still logs `permission.decision` with the tool and the code, so a call
       that ran with no card shows as `mcp_member_run`.
@@ -1275,19 +1287,25 @@ block that the linter does not read:
       no member, the Studio class of an action, the `read_only` field of the index (item
       25), the guard against a relaxed list, and the live read of a Studio preview. A preview
       sends nothing (STU-I11), so it stays stricter than the gate.
-    - **What the directive changes.** A delete or a send through an external app now runs
-      with no card in a member's run, unless an admin sets the server to always confirm.
-      D131.7 and D164.4 say that a delete and a send to outside people always ask. Those
-      decisions bind Mira's automations and the CRM ladder, and their acts on platform data.
-      This item takes the tools of an external app out of the card for a member's own run.
-      An OAuth row acts as the admin who connected it (D98), so each member's run can now
-      write at that app as that admin, with no card.
+    - **What the directive changes.** In a member's run in Metorite, each act of an external
+      app now runs with no card, unless an admin sets its server to always confirm. D131.7
+      names five acts that always ask: money, a member or role write, a delete, a bulk change,
+      and a send to an outside person that the scope does not name. D164.4 names four of
+      them. Those decisions bind Mira's automations, the CRM ladder and their acts on
+      platform data. This item takes the tools of an external app out of the card in a
+      member's own run, for each of those five acts.
+    - **What a member can reach.** An OAuth row acts as the admin who connected it (D98). So
+      each member's run can now write at that app as that admin, with no card.
+    - **Known limit: an injected instruction.** Text from a web page or from an MCP result
+      does not mark the session. Only an answer of an agent that reads mail marks it (step
+      3a). So text that a stranger wrote can lead the model to an external write with no
+      card. The always-confirm switch is the control for a server that can do damage.
     - **What stays.** Step 3a and `_holds_untrusted_pack` (task 3604 holds an open owner
       question). OA-7b. D-CSY-5. The read-only key switch and its one parse. No schema change.
     - **Fences.** `test_maf_mcp_confirm.py` (A12 to A22, A31, A35, A36 and A39),
-      `test_maf_mcp_budget.py` (A25), `test_mcp_always_confirm_r8.py` (A32),
-      `test_mcp_read_only_key_r8.py` (A37), `test_no_person_present.py` (the reader list),
-      `alwaysConfirm.test.ts`, `mcpConnect.test.ts`, and the golden trajectory
+      `test_maf_mcp_budget.py` (A25), `test_mcp_always_confirm_r8.py` (A32 and the
+      re-register), `test_mcp_read_only_key_r8.py` (A37), `test_no_person_present.py` (the
+      reader list), `alwaysConfirm.test.ts`, `mcpConnect.test.ts`, and the golden trajectory
       `evals/trajectories/test_permission_trajectory.py::test_the_mcp_rule_is_the_contract`.
 
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
@@ -1351,7 +1369,7 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A36 | With both switches true on a row, every tool waits for the card. After an untrusted answer, a tool of a read-only-key server still waits for the card. The list loader shows `read_only` true for each tool of a read-only-key server. | `test_maf_mcp_confirm.py`, `test_maf_mcp_budget.py` |
 | A37 | `PATCH` sets the switch, keeps the headers, and writes one audit event. A body with both switches true gets 422, and so does a string value. `PATCH {"read_only_key": true}` on a row with `always_confirm` true gets 422, and so does a PATCH on an OAuth row. `PATCH {"always_confirm": true}` on a row with `read_only_key` true gets 422. On a row with both stored true, `PATCH {"always_confirm": false}` leaves the key off. A body with only `always_confirm` behaves as A33. A re-POST with no `read_only_key` turns it off, and its audit event records both flags. A member without `integrations:manage` gets 403. Another org's name is 404. A new server reads as false. R8, two orgs, the app role. | `test_mcp_read_only_key_r8.py` |
 | A38 | `GET /integrations/mcp` and the read model return the flag. The console tick sends `read_only_key`, and a tick of one switch clears the other. | `test_mcp_read_only_key_r8.py`, `alwaysConfirm.test.ts` |
-| A39 | Item 33. In a member's run, each MCP tool runs with no card, whatever its hints say. Only a real `True` member fact counts. Always confirm and an untrusted answer still ask the card. A function of no known server still asks. A run with no member, and a run inside `no_person_scope`, still refuses a tool that does not say read-only. | `test_maf_mcp_confirm.py` |
+| A39 | Item 33. In a verified member's run in Metorite, each MCP tool runs with no card, whatever its hints say. Only a real `True` member fact counts. Always confirm and an untrusted answer still ask the card. A function of no known server still asks. A run with no member, a body's claim of a member, a run inside `no_person_scope`, and a WhatsApp run still refuse a tool that does not say read-only. | `test_maf_mcp_confirm.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.

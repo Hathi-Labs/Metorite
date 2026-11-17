@@ -6175,7 +6175,10 @@ async def _run_agent_inner(
                 _batch_mcp = _BatchMcp(
                     organization_id=organization_id,
                     is_authorized=_authorizer,
-                    member_present=_authorizer is not None,
+                    # MCP-NC1: only a VERIFIED member counts. A body's
+                    # claim never runs an MCP write with no card.
+                    member_present=(_authorizer is not None
+                                    and bool(_verified_run_member())),
                 )
             # The one batch assembly. The self-anneal retry calls it too.
             agents, _batch_md_spec, _run_tools = await _assemble_batch_agents(
@@ -7515,17 +7518,18 @@ async def run_agent_stream(
             # no_egress run gets none. WS-8c: the org is the gateway's
             # server-side stamp (never the payload), a native agent's servers
             # pass the run's grant check, and the finally closes them.
-            # MCP-NC1 (amends H-299): in a member's run, an MCP tool that can
-            # change data runs with no card. A run with no member (no
-            # authority) or a batch run has nobody behind it, so such a tool
-            # is refused there.
+            # MCP-NC1 (amends H-299): in a VERIFIED member's run, an MCP tool
+            # that can change data runs with no card. A run with no member
+            # (no authority), a body's claim of a member, or a batch run has
+            # nobody behind it, so such a tool is refused there.
             for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(
                     _a, agent_name,
                     organization_id=organization_id,
                     is_authorized=_authorizer,
                     opened=_mcp_opened,
-                    member_present=_authorizer is not None and not _batch_thread,
+                    member_present=_authorizer is not None and not _batch_thread
+                    and bool(_verified_run_member()),
                 )
             _laps.lap("mcp")
 

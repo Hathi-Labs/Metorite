@@ -1,7 +1,7 @@
 // H-300: the "always confirm" switch of an MCP server, in the console.
 //
 // With the switch on, every tool of the server waits for a member's card,
-// whatever hints the server sends. MCP-NC1 (owner directive 2026-11-17, task
+// whatever hints the server sends. MCP-NC1 (owner directive 2026-11-16, task
 // 3603): a new server starts with it OFF, and then a member's chat runs each
 // tool with no card. The panel reads it from the row's `detail.always_confirm`
 // and sends a PATCH.
@@ -95,16 +95,23 @@ function tick(tree: unknown, type: unknown, next: boolean) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the switch in the Add form", () => {
-  it("starts OFF for a new server (MCP-NC1)", () => {
+  it("starts OFF and untouched for a new server (MCP-NC1)", () => {
     expect(EMPTY_MCP_FORM.alwaysConfirm).toBe(false);
+    expect(EMPTY_MCP_FORM.alwaysConfirmTouched).toBe(false);
   });
 
-  it("sends always_confirm, off by default and on when the admin turns it on", () => {
+  it("sends always_confirm only when the admin ticked it, so a re-register keeps the stored switch (F7)", () => {
     const base = { ...EMPTY_MCP_FORM, name: "n", url: "https://x" };
-    expect(mcpBody(base).always_confirm).toBe(false);
-    expect(mcpBody({ ...base, alwaysConfirm: true }).always_confirm).toBe(true);
+    expect("always_confirm" in mcpBody(base)).toBe(false);
+    const on = tickFormSwitch(base, "always_confirm", true);
+    expect(mcpBody(on).always_confirm).toBe(true);
+    const off = tickFormSwitch(on, "always_confirm", false);
+    expect(mcpBody(off).always_confirm).toBe(false);
     // A real boolean, never a string: the gateway takes a strict bool.
-    expect(typeof mcpBody(base).always_confirm).toBe("boolean");
+    expect(typeof mcpBody(off).always_confirm).toBe("boolean");
+    // With the read-only key on, the switch goes out as off, so the gateway
+    // never reads both switches on.
+    expect(mcpBody(tickFormSwitch(base, "read_only_key", true)).always_confirm).toBe(false);
   });
 
   it("draws one labelled, unchecked toggle with the help line", () => {
@@ -114,7 +121,7 @@ describe("the switch in the Add form", () => {
     expect(html).toContain(ALWAYS_CONFIRM_LABEL);
     expect(ALWAYS_CONFIRM_LABEL).toBe("Always ask before any tool runs");
     expect(ALWAYS_CONFIRM_HELP).toBe(
-      "With this off, the chat runs each tool of this server without asking. " +
+      "With this off, the chat in Metorite runs each tool of this server without asking. " +
         "With this on, every tool of this server waits for a member to approve it.",
     );
     expect(html).toContain(ALWAYS_CONFIRM_HELP);
@@ -144,7 +151,7 @@ describe("the read-only key in the Add form (MCP-C2)", () => {
   it("draws a second labelled tick with the help line of the spec", () => {
     expect(READ_ONLY_KEY_LABEL).toBe("This key can only read");
     expect(READ_ONLY_KEY_HELP).toBe(
-      "Runs that no member starts, such as scheduled runs, can then use every tool of this server. " +
+      "Chats that cannot ask for approval, such as WhatsApp, can then use every tool of this server. " +
         "Turn this on only when the key cannot change data at the source.",
     );
     const html = renderToStaticMarkup(
@@ -206,10 +213,19 @@ describe("one tick clears the other", () => {
       "New chats will ask before any tool runs.",
     );
     expect(switchesSavedText({ always_confirm: false, read_only_key: true })).toBe(
-      "New chats, and runs that no member starts, will run every tool of this server without asking.",
+      "New chats, WhatsApp too, will run every tool of this server without asking.",
     );
-    // MCP-NC1: with both switches off, a member's chat asks before no tool.
-    expect(switchesSavedText(off)).toBe("New chats will run every tool of this server without asking.");
+    // MCP-NC1: with both switches off, a member's chat in Metorite asks before
+    // no tool, and WhatsApp keeps to the read-only tools. No word names a
+    // scheduled run, because no scheduled run gets an MCP server.
+    expect(switchesSavedText(off)).toBe(
+      "New chats in Metorite will run every tool of this server without asking. " +
+        "WhatsApp will run only its read-only tools.",
+    );
+    for (const s of [off, { always_confirm: false, read_only_key: true }]) {
+      expect(switchesSavedText(s)).not.toMatch(/schedul/i);
+    }
+    expect(READ_ONLY_KEY_HELP).not.toMatch(/schedul/i);
   });
 });
 

@@ -460,7 +460,7 @@ choose it.
 | **D-CSY-4** | May an admin list match words for a server? | Yes, optional. With none, the label and name words count | A label such as "Shaurrya App" misses a question about a circuit or a ticket |
 | **D-CSY-5** | May a server with a read-only key stay beside the email pack? | No. Keep OA-7b | A read-only key stops a write on the server. It does not stop mail text from steering the model to send mailbox data in a search argument. D-CSY-2 covers the common case |
 | **D-CSY-6** | Who asks Shaurrya's admin to tick the read-only key? | The owner. Shaurrya must confirm that the key can only read | The tick is the customer's statement about their key. MCP-C2 built the switch for this case |
-| **Owner directive, 2026-11-17 (task 3603)** | Does an external app's tool ask a card? | No. An external app's tool asks no card. D-CSY-6 (the read-only key tick) is no longer needed for cards | A member of Shaurrya approved 12 cards in 20 minutes for reads. `agent_architecture.md` §12.2 WS-8c item 33 (MCP-NC1) holds the rule: a member's run asks no card, "always confirm" and the mark of §1.2 still ask, and a run with no member still refuses a write |
+| **Owner directive, 2026-11-16 (task 3603)** | Does an external app's tool ask a card? | No. An external app's tool asks no card. D-CSY-6 (the read-only key tick) is no longer needed for cards | A member of Shaurrya approved 12 cards in 20 minutes for reads. `agent_architecture.md` §12.2 WS-8c item 33 (MCP-NC1) holds the rule: a member's run in Metorite asks no card, "always confirm" and the mark of §1.2 still ask, and a run with no member and a WhatsApp run still refuse a write |
 
 ## 10. Agreements with other sessions (2026-11-15)
 

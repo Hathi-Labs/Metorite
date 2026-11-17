@@ -9,10 +9,12 @@ it did not know as ``unknown_allowed``. So a server tool that deletes or sends
 ran with no card. H-299 gave ``decide()`` an MCP rule, and the gate showed the
 one card seam, ``ask_tools.request_confirmation``.
 
-**MCP-NC1** (owner directive, 2026-11-17, task 3603, item 33) amends H-299.
-In a run that a member started, an MCP tool runs with no card, whatever its
-hints say: ``decide()`` answers ``mcp_member_run``. In a run with no member,
-a tool that does not say read-only is still refused. The admin's "always
+**MCP-NC1** (owner directive, 2026-11-16, task 3603, item 33) amends H-299.
+In a run that a verified member started and watches in Metorite, an MCP
+tool runs with no card, whatever its hints say: ``decide()`` answers
+``mcp_member_run``. With no verified member, inside ``no_person_scope``, and
+in a run that refuses cards (WhatsApp, a stream with no cards), a tool that
+does not say read-only is still refused. The admin's "always
 confirm" (H-300) and step 3a (an untrusted answer) still ask the card, so
 the card tests below use a server that is set to always confirm.
 
@@ -24,15 +26,18 @@ Each fence names the acceptance item it covers:
 * **A39** The rule with a member (MCP-NC1): each tool runs with no card,
   unless its server is set to always confirm or the chat read an untrusted
   answer. Only a real ``True`` member fact counts. A function whose server
-  the gate cannot find still asks the card.
+  the gate cannot find still asks the card. A body's claim of a member, a
+  run that no person watches, and a fault of that check count as no member
+  (review F2 and F4).
 * **A13** Approve runs the tool. Deny and a timeout return a refusal, and the
   tool never runs.
 * **A14** A run with no member and a batch run refuse a tool that does not
   say read-only. A run with no card channel refuses a tool that needs a
   card. No card is shown.
 * **A15** A WhatsApp run never shows a card. A tool that needs one is
-  refused there, and nothing parks. A member's WhatsApp run calls a tool
-  with no card (MCP-NC1).
+  refused there, and nothing parks. A member's WhatsApp run keeps that
+  refusal for a tool that does not say read-only, also when the session
+  mark cannot be read (review P1).
 * **A16** The card shows the server, the tool, the arguments with sensitive
   values redacted, and the server's description under a label.
 * **A17** Each attach logs ``mcp.tool_annotations`` with the server, the tool
@@ -59,7 +64,7 @@ Only the model wire is scripted, and the card is answered the way
 
 Mutation table. Each mutation was made by hand, and the named test failed.
 Rows M1 to M48 were measured at their own slices, and their test names were
-updated for MCP-NC1. Rows M11, M36a, M36b and M49 to M55 were measured on
+updated for MCP-NC1. Rows M11, M36a, M36b and M49 to M58 were measured on
 2026-11-17.
 
 | # | Mutation | Test that fails |
@@ -140,6 +145,9 @@ R8 half is ``tests/unit/test_mcp_read_only_key_r8.py``.
 | M53 | the gate passes the member fact for a function of no known server | ``test_a_function_of_no_known_server_waits_for_the_card`` |
 | M54 | the gate passes ``mcp_member_present=True`` in every run | ``test_a_run_with_no_member_refuses_and_shows_no_card`` |
 | M55 | the attach ignores ``no_person_scope`` (AUTO-7a) | ``test_a_run_that_no_person_watches_counts_as_no_member[no-person]`` |
+| M56 | the gate ignores a run that refuses cards (WhatsApp) | ``test_a_member_whatsapp_run_still_refuses_a_write``, ``test_a_redis_fault_of_the_mark_on_whatsapp_still_refuses_a_write`` |
+| M57 | ``_person_present`` reads a fault as a person | ``test_a_fault_of_the_presence_check_counts_as_no_member`` |
+| M58 | the executor takes an unverified claim as a member | ``test_a_claimed_member_that_is_not_verified_keeps_mcp_confirm_end_to_end`` |
 """
 from __future__ import annotations
 
@@ -562,6 +570,91 @@ async def test_a_run_that_no_person_watches_counts_as_no_member(monkeypatch, mar
         await _maf_mcp.close_mcp_tools(opened)
 
 
+async def test_a_fault_of_the_presence_check_counts_as_no_member(monkeypatch) -> None:
+    """A39, F4 of the MCP-NC1 review: ``_person_present`` fails closed. A
+    fault of the mark read gives the gate no member, so a write is refused."""
+    from acb_common import no_person
+
+    from tests.unit._maf_mcp_fakes import install_offline, native_agent
+
+    def _broken() -> bool:
+        raise RuntimeError("the mark cannot be read")
+
+    monkeypatch.setattr(no_person, "no_person_present", _broken)
+    assert _maf_mcp._person_present() is False
+    install_offline(monkeypatch)
+    agent = native_agent()
+    opened: list[Any] = []
+    await _maf_mcp.attach_mcp_tools(agent, [
+        _maf_mcp.McpServer(name="srv", url="https://a.example.com/mcp")], opened,
+        member_present=True)
+    try:
+        (tool,) = agent.mcp_tools
+        write = _function()
+        tool._functions = [write]
+        tool.__dict__["_ws8c_tool_meta"] = {
+            "delete_record": _maf_mcp.ToolMeta(hints={"destructiveHint": True}, description="d")}
+        gate = next(m for m in agent.middleware if isinstance(m, _maf_mcp.McpPermissionGate))
+        assert gate.member_present is False
+        ran, ctx = _Ran(), _ctx(write)
+        with _card_channel() as queue:
+            await _bounded(gate.process(ctx, ran))
+        assert ran.count == 0 and queue.empty()
+        assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
+    finally:
+        await _maf_mcp.close_mcp_tools(opened)
+
+
+@pytest.mark.parametrize("answer", ["APPROVE", "REJECT"])
+async def test_after_an_untrusted_answer_a_member_s_write_waits_for_the_card(
+        monkeypatch, answer) -> None:
+    """A39, F5 of the MCP-NC1 review: step 3a comes before the member rule at
+    the gate too. A member's run, no switch on the server, and a session that
+    read an untrusted answer: the write waits for the card, and only Approve
+    runs it."""
+    from acb_skills import egress
+
+    async def _marked(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(egress, "session_is_marked", _marked)
+    fn = _function()
+    ran = _Ran()
+    ctx = _ctx(fn)
+    with _card_channel() as queue, structlog.testing.capture_logs() as logs:
+        task = asyncio.create_task(_gate(fn, {"destructiveHint": True}).process(ctx, ran))
+        card = await _next_card(queue)
+        await asyncio.sleep(0.05)
+        assert ran.count == 0, "a member's write ran before the card of step 3a"
+        _answer(card["request_id"], answer)
+        await asyncio.wait_for(task, timeout=5)
+    assert [e["reason"] for e in logs if e["event"] == "permission.decision"] == [
+        "untrusted_answer_confirm"]
+    if answer == "APPROVE":
+        assert ran.count == 1
+    else:
+        assert ran.count == 0
+        assert ctx.result == _maf_mcp.DENIED_TEXT.format(tool="srv_delete_record")
+
+
+async def test_after_an_untrusted_answer_a_member_s_write_with_no_card_channel_is_refused(
+        monkeypatch) -> None:
+    """F5: where no card can show, the step 3a card is refused, and the write
+    never runs."""
+    from acb_skills import egress
+
+    async def _marked(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(egress, "session_is_marked", _marked)
+    fn = _function()
+    ran = _Ran()
+    ctx = _ctx(fn)
+    await _bounded(_gate(fn, {"destructiveHint": True}).process(ctx, ran))
+    assert ran.count == 0
+    assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
+
+
 async def test_a_no_member_run_still_runs_a_read_only_tool() -> None:
     fn = _function("srv_echo", "echo")
     ran = _Ran()
@@ -606,22 +699,70 @@ async def test_a_whatsapp_profile_with_no_refuse_scope_still_refuses() -> None:
     assert ran.count == 0 and queue.empty()
 
 
-@pytest.mark.parametrize("member", [True, False], ids=["member", "no-member"])
-async def test_a_member_whatsapp_run_calls_a_write_with_no_card(member) -> None:
-    """A39 (MCP-NC1): a member's WhatsApp run calls the tool with no card,
-    and parks nothing. A WhatsApp run with no member still refuses it."""
+@pytest.mark.parametrize("refuse_scope", [True, False], ids=["refuse-cards", "profile-only"])
+@pytest.mark.parametrize("writes", [False, True], ids=["reads-only", "writes-on"])
+async def test_a_member_whatsapp_run_still_refuses_a_write(writes, refuse_scope) -> None:
+    """A39 (MCP-NC1 review, P1): WhatsApp keeps the H-299 refusal until the
+    owner decides. A member's WhatsApp run refuses a tool that does not say
+    read-only with ``no_card_channel``, parks nothing and runs nothing. The
+    stale sweep and the WAC-13 hold run a message again, so a write there
+    could repeat, and ``WHATSAPP_ASSISTANT_WRITES`` would not hold it."""
     fn = _function()
     ctx = _ctx(fn)
     ran = _Ran()
-    with _card_channel() as queue, ask_tools.refuse_cards(), \
-            wui.whatsapp_run("apis-config", writes=True) as run:
-        await _bounded(_gate(fn, {"destructiveHint": True}, member=member).process(ctx, ran))
+    refuse = ask_tools.refuse_cards() if refuse_scope else contextlib.nullcontext()
+    with _card_channel() as queue, structlog.testing.capture_logs() as logs, refuse, \
+            wui.whatsapp_run("apis-config", writes=writes) as run:
+        await _bounded(_gate(fn, {"destructiveHint": True}, member=True).process(ctx, ran))
+    assert ran.count == 0, "a member's WhatsApp run ran a write"
     assert queue.empty() and run.parked is None
-    if member:
-        assert ran.count == 1 and ctx.result is None
-    else:
-        assert ran.count == 0
-        assert ctx.result == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
+    assert ctx.result == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
+    decided = [e["reason"] for e in logs if e["event"] == "permission.decision"]
+    assert decided == ["mcp_confirm"], decided
+
+
+async def test_a_member_whatsapp_run_still_runs_a_read_only_tool() -> None:
+    """The WhatsApp rule refuses only a tool that does not say read-only."""
+    fn = _function("srv_echo", "echo")
+    ran = _Ran()
+    with ask_tools.refuse_cards(), wui.whatsapp_run("apis-config", writes=False):
+        await _bounded(_gate(fn, {"readOnlyHint": True}, member=True).process(_ctx(fn), ran))
+    assert ran.count == 1
+
+
+async def test_a_redis_fault_of_the_mark_on_whatsapp_still_refuses_a_write(monkeypatch) -> None:
+    """MCP-NC1 review (P1, second finding). On WhatsApp with writes off, a
+    Redis fault reads the session mark as clear (``egress._card_can_show``),
+    so step 3a does not ask. The WhatsApp rule of the gate still refuses
+    the write, so a fault never opens it."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills import egress
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    class _Down:
+        async def exists(self, *_a: Any) -> int:
+            raise ConnectionError("redis is down")
+
+    monkeypatch.setattr(egress, "get_tenant_redis", lambda: _Down())
+    with egress._MARKED_LOCK:
+        egress._MARKED_SESSIONS.clear()
+    fn = _function()
+    ctx = _ctx(fn)
+    ran = _Ran()
+    token = bind_tenant("00000000-0000-0000-0000-00000000c0de")
+    try:
+        with artifact_context_scope():
+            bind_artifact_context(session_id="wa-thread-1", member="member@h299.test")
+            with structlog.testing.capture_logs() as logs, ask_tools.refuse_cards(), \
+                    wui.whatsapp_run("apis-config", writes=False) as run:
+                await _bounded(
+                    _gate(fn, {"destructiveHint": True}, member=True).process(ctx, ran))
+    finally:
+        release_tenant(token)
+    faults = [e for e in logs if e["event"] == "egress.untrusted_answer_read_failed"]
+    assert faults and faults[0]["fail_closed"] is False, "the probe never reached the fault"
+    assert ran.count == 0 and run.parked is None
+    assert ctx.result == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
 
 
 # ── A16: what the card shows ─────────────────────────────────────────────────
@@ -800,7 +941,12 @@ def _tool_results(model: ScriptedModel) -> list[str]:
 def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
            thread: str = "thread-h299-e2e", shows_cards: bool = True,
            always_confirm: bool | None = None, read_only_key: bool | None = None,
-           session_user: str | None = None):
+           session_user: str | None = None, verified: bool = True):
+    """*verified* (F2 of the MCP-NC1 review): the payload's member comes in as
+    the session's member too, as the web chat sends it. False keeps it a
+    body's claim, which never counts as a member's run."""
+    if session_user is None and verified and payload and payload.get("user_email"):
+        session_user = str(payload["user_email"])
     set_flag(monkeypatch, _ORG)
     RegistrySpy([row("probe-srv", org=_ORG, url=srv.url,
                      always_confirm=always_confirm,
@@ -852,6 +998,43 @@ def test_a_destructive_tool_runs_with_no_card_for_a_member_end_to_end(monkeypatc
                and e.get("surface") == "mcp_tool"]
     assert [(e["tool"], e["reason"]) for e in decided] == [
         ("probe-srv_delete_record", "mcp_member_run")]
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_claimed_member_that_is_not_verified_keeps_mcp_confirm_end_to_end(monkeypatch):
+    """A39, F2 of the MCP-NC1 review. A service caller can put a member in the
+    body (``user_email``) with no session. The access check finds that member,
+    but the claim is not verified, so the run is not a member's run. The write
+    keeps ``mcp_confirm``, and the run refuses it with no card."""
+    with local_mcp_server() as srv:
+        model = ScriptedModel([
+            tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("ok"),
+        ])
+        events, _built, seen, logs = _drive(
+            monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="APPROVE",
+            verified=False)
+    assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
+    assert seen["cards"] == []
+    assert srv.calls == [], "a body's claim of a member ran a write with no card"
+    decided = [e for e in logs if e["event"] == "permission.decision"
+               and e.get("surface") == "mcp_tool"]
+    assert [e["reason"] for e in decided] == ["mcp_confirm"]
+    assert any("no member can confirm" in r for r in _tool_results(model))
+
+
+def test_the_executor_requires_a_verified_member_at_both_mcp_sites() -> None:
+    """F2: both sites that pass ``member_present`` read the verified member
+    of the run binding, so a body's claim never counts."""
+    import ast
+    import inspect
+
+    src = inspect.getsource(executor)
+    calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)]
+    member_args = [kw.value for c in calls for kw in c.keywords if kw.arg == "member_present"]
+    # ``_assemble_batch_agents`` passes on ``mcp.member_present`` of the batch site.
+    shown = [s for s in (ast.unparse(v) for v in member_args) if s != "mcp.member_present"]
+    assert len(shown) == 2, shown
+    assert all("_verified_run_member()" in s for s in shown), shown
 
 
 @pytest.mark.usefixtures("_a_tenant")
@@ -971,14 +1154,15 @@ def test_the_mcp_library_turns_a_string_hint_into_true() -> None:
 def test_a_stream_that_shows_no_cards_refuses_end_to_end(monkeypatch):
     """The email chat (``email-chat:...``) forwards no CUSTOM event. Before
     the fix its card waited 3600 s with no output. Now the run refuses. A
-    card shows only for an always-confirm server after MCP-NC1."""
+    stream that refuses cards keeps the H-299 refusal after MCP-NC1, so a
+    destructive tool is refused there with no switch on the server."""
     with local_mcp_server() as srv:
         model = ScriptedModel([
             tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("ok"),
         ])
         events, _built, seen, _logs = _drive(
             monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="APPROVE",
-            thread="email-chat:member@h299.test:s1", shows_cards=False, always_confirm=True)
+            thread="email-chat:member@h299.test:s1", shows_cards=False)
     assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
     assert seen["cards"] == [], "a stream that shows no cards emitted a card"
     assert srv.calls == []
