@@ -1809,10 +1809,11 @@ these steps:
 
 The continuation run does these steps, in order:
 
-1. It marks the thread active with no stream reset
-   (`stream_relay.mark_active(reset=False)`), and keeps the run id of the
-   parked run. It deletes the parked `RUN_FINISHED` from the stream (XDEL).
-   So a replay reads one run with a pause in it.
+1. It keeps the run id of the parked run. It deletes the parked
+   `RUN_FINISHED` from the stream (XDEL). Then it marks the thread active with
+   no stream reset (`stream_relay.mark_active(reset=False)`). So a replay
+   reads one run with a pause in it. RESUME-2b put the XDEL first, because a
+   subscriber stops at the first `RUN_FINISHED`.
 2. It pushes `confirmation_resolved` for the old request id. Each tab and
    device closes the card as "Approved".
 3. It runs the stored call with no model, as the member, inside the one
