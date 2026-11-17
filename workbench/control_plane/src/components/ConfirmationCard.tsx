@@ -54,6 +54,7 @@ import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
+import { ASSIGNEE_ROW_MARK, assigneeWarningText, fieldsWithoutStrangers, rowIsStranger, strangerAddresses } from "@/lib/assigneeWarning";
 import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
@@ -375,6 +376,11 @@ export default function ConfirmationCard({
   // The form draws the rows that it edits (the due date, the people), so those rows go.
   const formRows = taskForm ? withoutFormRows(parsed.fields) : parsed.fields;
   const body = { ...parsed, fields: withoutRepeats(formRows, [rest, summary]) };
+  // Task 3597: an assignee who is not a member draws as a warning, first. The
+  // stranger row and the stranger in "gives access to" leave the rows below it.
+  const strangers = strangerAddresses(body.fields);
+  const strangerWarning = assigneeWarningText(strangers);
+  const shownFields = fieldsWithoutStrangers(body.fields, strangers);
   // A note that ends with a colon leads into the rows ("Each recipient of
   // this draft:"), so it draws above them. Any other note draws after them
   // (the screenshots of follow-up 5 of #766).
@@ -499,6 +505,12 @@ export default function ConfirmationCard({
       )}
       {!slot && !isReply && hasBody && (
         <div className="space-y-2">
+          {strangerWarning && (
+            <p className="flex items-start gap-1 break-words text-xs text-warning" role="status" data-assignee-warning="">
+              <Icon name="AlertTriangle" size={12} className="mt-0.5 shrink-0" />
+              {strangerWarning}
+            </p>
+          )}
           {hasRows && (
             <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
               {rows.length === 0 && (
@@ -540,6 +552,13 @@ export default function ConfirmationCard({
                           {r.warning}
                         </span>
                       )}
+                      {rowIsStranger(r.hint, strangers) && (
+                        <span data-assignee-row-mark="">
+                          <Badge tone="warning" size="xs" icon="AlertTriangle">
+                            {ASSIGNEE_ROW_MARK}
+                          </Badge>
+                        </span>
+                      )}
                       {r.hint && r.hint !== rowMark(r.cls) && (
                         <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
                           <CardText text={r.hint} fenced={fenced} />
@@ -556,9 +575,9 @@ export default function ConfirmationCard({
               <CardText text={note} fenced={fenced} />
             </p>
           ))}
-          {body.fields.length > 0 && (
+          {shownFields.length > 0 && (
             <dl className="@container space-y-1">
-              {body.fields.map((f, i) => {
+              {shownFields.map((f, i) => {
                 const spec = fieldSpec(f.key);
                 // A long value stacks at any width. A short one stacks only in
                 // a narrow card (container query, below 24rem).
