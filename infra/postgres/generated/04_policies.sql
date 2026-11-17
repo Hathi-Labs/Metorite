@@ -173,6 +173,13 @@ CREATE POLICY calendar_task_links_tenant_isolation ON calendar_task_links
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE chat_card_record ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_card_record FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chat_card_record_tenant_isolation ON chat_card_record;
+CREATE POLICY chat_card_record_tenant_isolation ON chat_card_record
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE chat_message ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_message FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chat_message_tenant_isolation ON chat_message;

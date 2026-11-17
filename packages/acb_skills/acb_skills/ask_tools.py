@@ -1578,6 +1578,79 @@ def card_not_done_text(act: str = "") -> str:
     return card_outcome_text(outcome, act)
 
 
+#: CO-17: the card id of the last card that the member approved on this frame,
+#: and the chat it was in, or None. :func:`note_record_link` reads it.
+#: ⚠️ The default is None, never a mutable object.
+_LAST_APPROVED: _contextvars.ContextVar[tuple[str, str] | None] = (
+    _contextvars.ContextVar("acb_last_approved_card", default=None))
+
+
+async def _record_approved_card(request_id: str | None, responder: str = "") -> None:
+    """CO-17 (``chat_organization.md`` §16.3): write the card record of the
+    card *request_id* that the member just approved. The record holds the
+    chat, the member, the card id and the act kind (the tool's own name), and
+    no text of the card. Dark behind ``CHAT_CARD_RECORD_ORGS``. A fault is no
+    fault of the card: it writes nothing and the answer stands. Never raises.
+
+    *responder* is the gateway's session member who answered the card, never
+    a field of the answer. In a room it can be another member than the run's
+    own, and the row then names the member who approved. A path with no card
+    id of its own (a late approve, a stored call, a WhatsApp reply code)
+    passes None, and a new id is made."""
+    _LAST_APPROVED.set(None)
+    try:
+        import uuid as _uuid
+
+        from orchestrator.card_record import act_kind_of, record_approved
+        from orchestrator.executor import resolve_relay_thread_id
+
+        request_id = request_id or _uuid.uuid4().hex
+
+        tid = resolve_relay_thread_id() or ""
+        if not tid:
+            return
+        _LAST_APPROVED.set((tid, request_id))
+        await record_approved(tid, request_id, act_kind_of(_CARD_TOOL.get()),
+                              responder=responder)
+    except Exception:  # noqa: BLE001
+        return
+
+
+async def note_sent_message(message_id: str) -> bool:
+    """CO-17 and task 3594: a send tool says the id of the message that went,
+    after its approved card. The card record of the last approved card of this
+    frame takes it once, so the chat can answer "did it go?" from the record
+    (``orchestrator.card_record.was_sent``). Only a token counts, never mail
+    text. False with no approved card, with the flag off and on a fault.
+    Never raises."""
+    held = _LAST_APPROVED.get()
+    if held is None:
+        return False
+    try:
+        from orchestrator.card_record import set_message_id
+
+        return await set_message_id(held[0], held[1], message_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def note_record_link(link: str) -> bool:
+    """CO-17: a tool that made a record after an approved card says its app
+    path, such as ``/projects?task=<id>``. The card record of the last
+    approved card of this frame takes it once. Only an app path counts, never
+    free text. False with no approved card, with the flag off and on a fault.
+    Never raises."""
+    held = _LAST_APPROVED.get()
+    if held is None:
+        return False
+    try:
+        from orchestrator.card_record import set_link
+
+        return await set_link(held[0], held[1], link)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _noted(outcome: str, answer: Any) -> Any:
     """Record *outcome* for :func:`last_card_outcome`, and give *answer*."""
     _LAST_OUTCOME.set(outcome)
@@ -2488,6 +2561,8 @@ async def request_confirmation(
         answered. A raise (a park, a stop) records no outcome.
     """
     _LAST_OUTCOME.set(None)
+    # CO-17: a new card ends the hold on the link slot of an earlier one.
+    _LAST_APPROVED.set(None)
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
@@ -2517,6 +2592,8 @@ async def request_confirmation(
         _title, _detail, _context, _rows, _reply, request_id, _with_answer,
         cut=_clipped)
     if _email is not _NOT_EMAIL:
+        if _email:
+            await _record_approved_card(None)
         return _noted(CARD_APPROVED if _email else CARD_NOT_SHOWN, _email)
     if _reply is not None:
         if _rows is not None:
@@ -2532,6 +2609,8 @@ async def request_confirmation(
         # A held send card (§21) never takes an answer from a profile. A park
         # shows no card: the tool reads ``whatsapp_acts.parked_line``.
         _by_profile = None if _with_answer else _profile
+        if _by_profile:
+            await _record_approved_card(None)
         return _noted(CARD_APPROVED if _by_profile else CARD_NOT_SHOWN, _by_profile)
     if cards_refused():
         # A deny, never an approve: a channel with no card is no consent.
@@ -2553,6 +2632,7 @@ async def request_confirmation(
         # is gone, so this is its one use. It shows no card, and it takes the
         # place of a closed card with the same act (task 3130).
         _card_opened(_CARD_CALL.get())
+        await _record_approved_card(None)
         return _noted(CARD_APPROVED, True)
     # HRD-6: the card is the sign of the wait. The tool call that shows it
     # gets no "Please wait" line, and a line that shows goes.
@@ -2591,9 +2671,13 @@ async def request_confirmation(
     #: EAC-1: the member's edited values of an edit card.
     _edited: list[TaskEdit] = []
 
+    #: CO-17: the gateway's session member who answered the card.
+    _responded: list[str] = []
+
     def _verdict(result: dict, rid: str = "") -> tuple[str, frozenset[str] | None]:
         """The card's closing answer, and the ticked ids of a rows card."""
         said = str(result.get("answer", "")).strip()
+        _responded.append(str(result.get("responder") or "").strip().lower())
         if result.get("revised") is True:
             return REVISED_ANSWER, None
         if _member and str(result.get("responder") or "").strip().lower() != _member:
@@ -2713,6 +2797,9 @@ async def request_confirmation(
             else CARD_TIMED_OUT if _answer == "TIMEOUT"
             else CARD_OTHER_MEMBER if _other_member
             else CARD_DECLINED)
+        if _answer == "APPROVE":
+            # CO-17: the durable record of an approved card. No card text.
+            await _record_approved_card(_rid, _responded[-1] if _responded else "")
         if _answer == REVISED_ANSWER:
             # Task 3130: the run's answer ends with the "Not done" line.
             _card_closed_by_message(_title, _act)

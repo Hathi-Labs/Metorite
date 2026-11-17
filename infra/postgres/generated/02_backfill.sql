@@ -81,6 +81,9 @@ UPDATE calendar_entry_attendees SET organization_id = (SELECT id FROM organizati
 UPDATE calendar_task_links SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE chat_card_record SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE chat_message SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
