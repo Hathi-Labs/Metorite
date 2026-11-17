@@ -328,6 +328,8 @@ async def test_the_tool_text_passes_against_a_stub_gateway() -> None:
 def test_each_tool_check_fails_on_a_broken_text() -> None:
     assert checks.check_zero_text("Invoices, count: no values recorded for Total.")
     assert checks.check_zero_text("Invoices, count: No record matches these filters.") == []
+    # The first clause alone: a bare zero names no cause, so it fails.
+    assert checks.check_zero_text("Total: 0")
     assert checks.check_zero_text("No record matches these filters. no values recorded for X")
     assert checks.check_refusal_budget(["Refused: x"] * 3, 3, 1)
     assert checks.check_refusal_budget(["Refused: x"] * 3, 0, 1) == []
