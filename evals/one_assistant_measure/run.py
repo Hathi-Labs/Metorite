@@ -46,8 +46,9 @@ import httpx
 from acb_skills import tier_policy
 
 from evals.one_assistant_measure import checks as ck
+from evals.one_assistant_measure import checks_2874 as ck_2874
 from evals.one_assistant_measure import compare as cmp
-from evals.one_assistant_measure import fanout, pack, spend, splits
+from evals.one_assistant_measure import fanout, mirror, pack, scenarios_2874, spend, splits
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
@@ -108,7 +109,11 @@ def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
     (delegation holds no spawn tool), a Studio chat on ``pack`` and ``search``
     (``studio-builder`` takes no hand-off), any other chat on ``delegation`` and
     ``pack``. The ``search`` arm drops out when :func:`search_built` is False."""
-    if sc.set == "fanout":
+    if "t2874" in sc.tags:
+        # Task 2874: the chats replay one owner chat on the real packs. The delegation
+        # arm has no such chat, and ``resolve_person`` is no tool of a specialist.
+        want = (ARMS[1],)
+    elif sc.set == "fanout":
         want = (ARMS[1], SPAWN_ARM)
     elif sc.set == "studio":
         want = (ARMS[1], SEARCH_ARM)
@@ -159,7 +164,7 @@ def owners_of(sc: Scenario) -> tuple[str, ...]:
     return (EA,) if sc.set == "email" else pack.OWNERS
 
 
-def flag_for(sc: Scenario, arm: str) -> dict[str, Any]:
+def flag_for(sc: Scenario, arm: str, mirror_prod: bool = False) -> dict[str, Any]:
     """The settings that *arm* adds for *sc*, set in the eval process only.
 
     The pack arms get the packs of the owners (:func:`pack_flag`). A Studio chat
@@ -169,8 +174,13 @@ def flag_for(sc: Scenario, arm: str) -> dict[str, Any]:
     if arm not in PACK_ARMS:
         return {}
     flag = pack_flag(owners_of(sc))
+    if mirror_prod:
+        # Task 2874 part 3: the chat flags of production (``prod_flags.json``), set in the
+        # eval process only. The arm flags below come after, so the search arm keeps its own.
+        flag.update(mirror.settings_for(ds.ORG))
     if sc.set == "studio":
-        flag["tool_packs"] = ",".join([flag["tool_packs"], *STUDIO_PACKS])
+        have = flag["tool_packs"].split(",")
+        flag["tool_packs"] = ",".join([*have, *(p for p in STUDIO_PACKS if p not in have)])
         flag["studio_orgs"] = ds.ORG
     if arm == SPAWN_ARM:
         # In the eval process only. The tool leaves the request of any
@@ -178,6 +188,8 @@ def flag_for(sc: Scenario, arm: str) -> dict[str, Any]:
         flag["spawn_subagents_orgs"] = ds.ORG
     if arm == SEARCH_ARM:
         flag["tool_search_orgs"] = ds.ORG
+    # Task 2874: a chat that needs a flag beyond the packs (``resolve_person`` needs the profile).
+    flag.update(scenarios_2874.FLAGS.get(sc.id, {}))
     return flag
 
 
@@ -292,7 +304,10 @@ def call_row(c: ModelCall) -> dict[str, Any]:
 
 
 #: Tools of the orchestrator's base that no pack owner holds.
-BASE_DIRECT = frozenset({"web_search", "fetch_page", "spawn_subagents"})
+BASE_DIRECT = frozenset({"web_search", "fetch_page", "spawn_subagents",
+                         # Task 2874: ``resolve_person`` is the orchestrator's own tool
+                         # (``orchestrator/agents.py``, ``profile_on``), not a tool of the pack.
+                         "resolve_person"})
 
 
 def pack_tool_names() -> frozenset[str]:
@@ -511,19 +526,45 @@ class LogTap:
 
 
 class Member:
-    """Answers each card as the member does, and keeps each card's value."""
+    """Answers each card as the member does, and keeps each card's value.
+
+    The answer grammar is the one that production reads. ``ask_tools._verdict``
+    (``packages/acb_skills/acb_skills/ask_tools.py:2594-2639``) turns the answer string
+    of a card into the verdict:
+
+    * ``APPROVE`` alone approves a plain card (line 2632).
+    * ``APPROVE {"reply": {...}}`` answers a reply card (``reply_card.REPLY_ANSWER_PREFIX``,
+      ``reply_card.py:91``). Its ``action`` is ``send`` or ``save`` (``REPLY_ACTIONS``,
+      ``reply_card.py:94``). An answer that does not parse is a REJECT (line 2613-2614).
+    * ``APPROVE {"rows": [ids]}`` answers a rows card, the held card (line 2633-2639). No
+      ticked row is a REJECT.
+    * ``REJECT`` is the Discard button (``reply_card.py:93``, "Discard is ``REJECT``").
+    * A revise is NOT an answer string. ``{"revised": True}`` comes from a steer, a chat message
+      that the member writes while the card is open (``ask_tools.py:1398`` and ``1408``,
+      ``_close_on_new_steer``). The harness cannot post a steer in the middle of a run, so the
+      measure does not replay a revise.
+
+    ``mode`` is the ``Turn.card`` of the turn that runs: ``approve``, ``send`` or ``discard``.
+    A Discard on a reply card also trashes the card's draft, as the browser does
+    (``ReplyCardForm``), through ``on_discard``."""
 
     def __init__(self) -> None:
         self.cards: list[dict[str, Any]] = []
+        self.mode = "approve"
+        self.on_discard: Any = None
 
     def __call__(self, _record: RunRecord, value: dict[str, Any]) -> str:
         self.cards.append(dict(value))
         form = value.get("reply")
+        if self.mode == "discard":
+            if isinstance(form, dict) and self.on_discard is not None:
+                self.on_discard(str(form.get("draft_id") or ""))
+            return "REJECT"
         if isinstance(form, dict):
             mode = "reply_all" if form.get("reply_all") else "reply"
             ticked = (form.get("ticked") or {}).get(mode) or {}
             return "APPROVE " + json.dumps({"reply": {
-                "action": "save", "reply_all": bool(form.get("reply_all")),
+                "action": "send" if self.mode == "send" else "save", "reply_all": bool(form.get("reply_all")),
                 "body": form.get("body") or "Thanks", "to": list(ticked.get("to") or []),
                 "cc": list(ticked.get("cc") or []), "message_id": form.get("message_id") or "",
             }})
@@ -758,7 +799,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
              tier: str | None = None, timeout: float = 60.0, repeat: int = 1,
              models: dict[str, ReplyModel] | None = None,
              on_turn: Any = None, should_stop: Any = None,
-             tier_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
+             tier_map: dict[str, str] | None = None,
+             mirror_prod: bool = False) -> list[dict[str, Any]]:
     """One chat of *sc* on *arm*: each turn through the real orchestrator run.
 
     *tier_map* is the eval-only rewrite of the tier a request names (see
@@ -833,7 +875,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
 
         harness._mp.setattr(crm_tools, "crm_mode", crm_mode)
         settings = get_settings()
-        flag = flag_for(sc, arm)
+        flag = flag_for(sc, arm, mirror_prod)
         web = fanout.WebFixtures()
         web.install(harness._mp)
         for name, value in {**PRODUCTION, **flag}.items():
@@ -850,6 +892,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         if not live:
             harness.models = models if models is not None else scripted_models(sc, arm)
         member = Member()
+        member.on_discard = gateway.trash_draft
         history = [dict(h) for h in sc.history]
         thread: str | None = None
         marked = False  # the chat read outside mail: its packs are held (TS-5a)
@@ -860,6 +903,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                      len(tap.events), len(harness.sent), len(harness.passed),
                      len(store.calls), len(work.calls), len(refused))
             turn_at[:] = [marks[2], marks[5]]
+            member.mode = turn.card
             # The gateway binds the app that the member is in, for this turn.
             with tool_packs.surface_scope(sc.surface):
                 record = asyncio.run(harness.drive(
@@ -904,6 +948,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 schema_tokens=max((int(getattr(c, "schema_tokens", 0) or 0) for c in orch_calls),
                                   default=0),
                 held=marked,
+                ordered=ck_2874.ordered_calls_of(record.events),
             )
             result = ck.check_turn(turn, obs)
             find_requests = find_requests_of(orch_calls)
@@ -1040,11 +1085,12 @@ def runnable(scenarios: tuple[Scenario, ...]) -> tuple[Scenario, ...]:
 
 def run_scripted(scenarios: tuple[Scenario, ...] = SCENARIOS,
                  arms: tuple[str, ...] = ALL_ARMS,
-                 tier_map: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+                 tier_map: dict[str, str] | None = None,
+                 mirror_prod: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     for sc in runnable(scenarios):
         for arm in arms_for(sc, arms):
-            rows += run_chat(sc, arm, tier_map=tier_map)
+            rows += run_chat(sc, arm, tier_map=tier_map, mirror_prod=mirror_prod)
     return rows, scripted_problems(rows)
 
 
@@ -1671,7 +1717,8 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
              *, repeat: int, tier: str, budget: float, out: Path, timeout: float,
              first_repeat: int = 1, spent_before: float = 0.0,
              allow_peak: bool = True, clock: Any = None,
-             tier_map: dict[str, str] | None = None) -> dict[str, Any]:
+             tier_map: dict[str, str] | None = None,
+             mirror_prod: bool = False) -> dict[str, Any]:
     """The live chats. *budget* caps the spend, counted from *spent_before*,
     so a run in chunks keeps one cap. The check runs before each chat AND
     before each turn after the first, so one long chat cannot pass the cap by
@@ -1691,6 +1738,8 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
         "started_utc": started.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "member": ds.MEMBER,
         "tier_map": dict(tier_map or {}),
+        # Task 2874 part 3: the production flags that this run set (None: none).
+        "mirror_prod": mirror.header() if mirror_prod else None,
         "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
         "repeat": repeat, "budget_usd": budget,
         "rate_card": {name: m["usd_per_1m"] for name, m in RATE_CARD["models"].items()},
@@ -1746,7 +1795,7 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
                 rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
                                 repeat=rep, on_turn=on_turn,
                                 should_stop=lambda extra=0.0: bool(over(extra)),
-                                tier_map=tier_map)
+                                tier_map=tier_map, mirror_prod=mirror_prod)
                 if _lost_the_router(rows) or not router_up(router[0]):
                     data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
                                             "usd": round(sum(turn_totals(r)["cost_usd"]
@@ -1768,6 +1817,8 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     because the chunks of one run can run on different code (fix round 1).
     ``sha`` is the one SHA when all chunks agree, else ``"mixed"``."""
     parts = [splits.load(p) for p in paths]
+    if len({json.dumps(p.get("mirror_prod"), sort_keys=True) for p in parts}) > 1:
+        raise ValueError("the chunks ran with different --mirror-prod settings. Do not merge them.")
     data = {k: v for k, v in parts[0].items()
             if k not in ("rows", "summary", "stopped", "sha", "tier_map")}
     maps: dict[str, dict[str, str]] = {}
@@ -1918,6 +1969,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     mode.add_argument("--compare", default="",
                       help="B.json,A.json: the win margin of A over B (task 3649). The sibling "
                            "files of the held-out rows are read too")
+    parser.add_argument("--mirror-prod", action="store_true",
+                        help="EVAL ONLY. Set the chat flags of production (prod_flags.json) in the "
+                             "eval process, for each chat of the pack arms. Default off")
     parser.add_argument("--split", default=splits.ALL, choices=splits.SPLITS,
                         help="run the tune chats, the held-out chats, or all (default)")
     parser.add_argument("--t-tag", default=cmp.DEFAULT_T_TAG,
@@ -2003,7 +2057,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print(report(public_view(data)))
         return EXIT_PASS
     if args.scripted:
-        rows, problems = run_scripted(scenarios, arms, tier_map)
+        rows, problems = run_scripted(scenarios, arms, tier_map, args.mirror_prod)
         for r in rows:
             print(f"  {'pass' if r['passed'] else 'FAIL'}  {r['arm_label']:<10} {r['scenario']}#{r['turn']}"
                   f"  {len(r['model_calls'])} calls  {r['email_tools']}")
@@ -2033,7 +2087,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     data = run_live(router, scenarios, arms, repeat=max(1, args.repeat), tier=args.tier,
                     budget=args.budget_usd, out=out, timeout=args.timeout,
                     first_repeat=args.first_repeat, spent_before=before,
-                    allow_peak=args.allow_peak, tier_map=tier_map)
+                    allow_peak=args.allow_peak, tier_map=tier_map, mirror_prod=args.mirror_prod)
     print(report(public_view(data)))
     print(f"results: {out}")
     return EXIT_PASS

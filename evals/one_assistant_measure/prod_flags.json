@@ -1,0 +1,18 @@
+{
+  "read": "2026-11-17 04:35 UTC",
+  "source": "read from /opt/acb/app/.env on the production box",
+  "flags": {
+    "TOOL_PACKS": "email,email-setup,crm-records,projects,projects-plan,projects-structure,projects-bulk,projects-reminders,studio",
+    "TOOL_PACKS_ORGS": "*",
+    "HELD_CARD_WRITES_ORGS": "*",
+    "STUDIO_ORGS": "*",
+    "CHAT_TOOL_AUTOLOAD": "true",
+    "ORCHESTRATOR_FLOOR_TRIM": "true",
+    "AI_TURN_KIND_PARALLEL": "orchestrator",
+    "TOOL_RESULT_SPILL": "shadow",
+    "MAF_NATIVE_SESSIONS": "true",
+    "TOOL_SEARCH_ORGS": ""
+  },
+  "org_lists": ["TOOL_PACKS_ORGS", "HELD_CARD_WRITES_ORGS", "STUDIO_ORGS"],
+  "note": "An org list that holds * becomes the eval org (ds.ORG) in the eval process. TOOL_SEARCH_ORGS names one org on the box, not the eval org, so it stays empty here."
+}

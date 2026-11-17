@@ -202,6 +202,11 @@ NODES = {NODE_SPACE: _node(NODE_SPACE, _SPACE_NAME),
          NODE_MOBILE: _node(NODE_MOBILE, "Mobile App", NODE_SPACE)}
 
 
+#: The route of ``resolve_person`` (``acb_skills.profile_tools.ROUTE``) and its prefix.
+PROFILE_PREFIX = "/auth/me/assistant-profile/"
+PROFILE_RESOLVE_ROUTE = "/auth/me/assistant-profile/resolve-person"
+
+
 class WorkGateway:
     """Answers the ``/crm``, ``/projects`` and ``/studio`` routes of the measure's chats."""
 
@@ -230,7 +235,7 @@ class WorkGateway:
             url = str(request.url)
             if url.startswith(fake.base() + "/"):
                 path = request.url.path
-                if path.startswith(("/crm/", "/projects/", "/studio/")):
+                if path.startswith(("/crm/", "/projects/", "/studio/", PROFILE_PREFIX)):
                     return fake.answer(request, path)
             return await previous(transport, request)
 
@@ -266,7 +271,20 @@ class WorkGateway:
             return self._crm(method, path, params, body)
         if path.startswith("/studio/"):
             return self._studio(method, path, params)
+        if path.startswith(PROFILE_PREFIX):
+            return self._profile(method, path)
         return self._projects(method, path, params, body)
+
+    @staticmethod
+    def _profile(method: str, path: str) -> Any:
+        """``GET /auth/me/assistant-profile/resolve-person`` (task 2874, case 6). The People
+        directory and the mail hold no person of the exact name, so the tool says nobody. The
+        gateway's answer for a name that matches no row has this shape
+        (``profile_tools.format_answer``)."""
+        if method == "GET" and path == PROFILE_RESOLVE_ROUTE:
+            return {"matches": [], "total": 0, "directory": True, "mail_searched": True,
+                    "truncated": False}
+        return None
 
     @staticmethod
     def _studio(method: str, path: str, params: dict[str, Any]) -> Any:

@@ -182,6 +182,11 @@ class Turn:
     words: str
     checks: tuple[Check, ...]
     plan: Plan
+    #: Task 2874. How the member answers a card of this turn: ``approve`` (the default: a
+    #: reply card saves, a rows card ticks every row), ``send`` (a reply card sends), or
+    #: ``discard`` (the answer ``REJECT``, as the Discard button posts it). See
+    #: ``run.Member`` for the grammar and its source.
+    card: str = "approve"
 
 
 @dataclass(frozen=True)
