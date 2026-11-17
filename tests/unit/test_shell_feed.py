@@ -1286,6 +1286,71 @@ class TestTheAnswerBeforeMD3b:
         assert answer["source_apps"]["calendar"] == "calendar"
 
 
+class TestTheLearningFlagOff:
+    """LOOP-4a P5 (``proactive_loop.md`` §7.2, §11.1): with the member's org
+    off ``MY_DAY_LEARN_ORGS``, the answer keeps its bytes, also when the
+    member has stored mutes and counts that would change it. The learned
+    path makes no read at all: no prefs row, no count and no Redis key.
+
+    Mutations, each killed here: a join that reads the mutes with the flag
+    off, a flag reader that takes another org's entry, and a reader that
+    treats an empty list as every org."""
+
+    @staticmethod
+    def _store(monkeypatch) -> tuple[list[str], list[str]]:
+        """Stored mutes of every kind, and counts that would lower each kind
+        by 20. Answers the learned reads made, and the Redis keys named."""
+        from acb_common import tenant_redis
+        from acb_common.tenant_redis import TenantRedis
+        from gateway.routes.shell import feed_decide, prefs
+
+        from tests.unit.test_feed_decide import FakeRedis
+
+        made: list[str] = []
+        redis = FakeRedis()
+        kinds = sorted(feed_rank.BASE)
+
+        async def _read(db, uid):
+            made.append("prefs")
+            return (json.dumps({"mutes": kinds}),)
+
+        async def _habits(db, m):
+            made.append("counts")
+            return {k: {"shown": 9, "acted": 0, "not_useful": 9} for k in kinds}
+
+        monkeypatch.setattr(prefs, "_read", _read)
+        monkeypatch.setattr(feed_decide, "_habits", _habits)
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(redis))
+        return made, redis.names
+
+    @staticmethod
+    def _user() -> UserContext:
+        return UserContext(email=ME, role=UserRole.EMPLOYEE, organization_id=ORG,
+                           access=EffectiveAccess(role_granted=frozenset(
+                               f"feature:{f}" for f in FULL)))
+
+    @pytest.mark.parametrize("listed", ["", "org-other", "org-other, org-third"])
+    def test_the_answer_keeps_its_bytes(self, fakes, monkeypatch, listed):
+        from acb_common.settings import get_settings
+
+        user = self._user()
+        monkeypatch.setattr(get_settings(), "my_day_learn_orgs", "")
+        before = json.dumps(run_feed(user), default=str)
+        made, keys = self._store(monkeypatch)
+        monkeypatch.setattr(get_settings(), "my_day_learn_orgs", listed)
+        assert json.dumps(run_feed(user), default=str) == before
+        assert (made, keys) == ([], [])
+        # Non-vacuity: the same store, with the org listed, changes the answer.
+        monkeypatch.setattr(get_settings(), "my_day_learn_orgs", ORG)
+        assert json.dumps(run_feed(user), default=str) != before
+        assert made == ["prefs", "counts"] and keys
+
+    def test_the_score_of_a_provider_card_holds_no_affinity(self):
+        """Only the state join adds the member's term, so a card with no
+        state keeps the score it had before LOOP-4a."""
+        assert "affinity(" not in inspect.getsource(feed_rank.score)
+
+
 # ── MD-3b done-whens 2 and 3: the seam of the new sources (§5.8) ────────────
 
 REPO = Path(__file__).resolve().parents[2]

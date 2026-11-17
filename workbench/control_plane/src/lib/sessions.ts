@@ -45,10 +45,29 @@ export interface ChatSession {
    */
   hasUserMessage?: boolean;
   /**
+   * Task 3564: whether the chat holds the day's brief, from the server's list
+   * (`_IS_BRIEF_SQL` in `routes/chat.py`). Only the server knows it, so only
+   * the merge below sets it. No save sends it: `_syncSessionToDb` and
+   * `_patchSessionInDb` name their fields (fence: `sessionsIsBrief.test.ts`).
+   * Undefined for a chat the server has not listed yet.
+   *
+   * The mark belongs to the chat, not to the reader. A room, or a chat that
+   * the org sees, that holds another member's brief reads true for each
+   * viewer. So a fold of brief chats needs `isOwner` true as well.
+   */
+  isBrief?: boolean;
+  /**
    * D99 (migration 254): when the member archived the chat, or null. An
    * archived chat stays, and the assistant lists it under "Archived".
    */
   archivedAt?: string | null;
+  /**
+   * WS-CO CO-11: when THIS member pinned the chat, or null. The server sends
+   * it only while `CHAT_PIN_ORGS` holds the org, and only the caller's own
+   * pin, so a colleague in the same room never reads it. An archived chat
+   * reads null.
+   */
+  pinnedAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -822,6 +841,58 @@ export function setSessionArchived(id: string, archived: boolean): boolean {
   return true;
 }
 
+/**
+ * The member pins a chat, or unpins it (CO-11, `chat_organization.md` §18).
+ * The pin is the member's own, on the server, so it shows on each device. Any
+ * member who can read the chat may pin it. The server refuses an archived
+ * chat (409), and a chat the member cannot read (404). Then the local mark
+ * goes back, so the list never shows what the server refused, and
+ * `onUndo` runs so the list draws again. Returns whether the mark changed here.
+ */
+export function setSessionPinned(id: string, pinned: boolean, onUndo?: () => void): boolean {
+  const sessions = getSessions();
+  const s = sessions.find((x) => x.id === id);
+  if (!s || Boolean(s.pinnedAt) === pinned) return false;
+  if (pinned && s.archivedAt) return false;
+  const before = s.pinnedAt ?? null;
+  s.pinnedAt = pinned ? new Date().toISOString() : null;
+  writeList(sessions);
+  // Two literal requests, so the chat parity fence reads each verb.
+  let sent: Promise<Response>;
+  if (pinned) {
+    sent = fetch(`/api/chat/sessions/${encodeURIComponent(id)}/pin`, { method: "PUT" });
+  } else {
+    sent = fetch(`/api/chat/sessions/${encodeURIComponent(id)}/pin`, { method: "DELETE" });
+  }
+  void sent
+    .then(async (res) => {
+      const now = getSessions();
+      const row = now.find((x) => x.id === id);
+      if (!row) return;
+      if (res.ok) {
+        // The server's time of the pin, so each device orders Pinned alike.
+        const body = (await res.json().catch(() => null)) as { pinnedAt?: string | null } | null;
+        if (body && body.pinnedAt !== undefined && Boolean(row.pinnedAt) === pinned) {
+          row.pinnedAt = body.pinnedAt;
+          writeList(now);
+        }
+        return;
+      }
+      row.pinnedAt = before;
+      writeList(now);
+      onUndo?.();
+    })
+    .catch(() => {
+      const now = getSessions();
+      const row = now.find((x) => x.id === id);
+      if (!row) return;
+      row.pinnedAt = before;
+      writeList(now);
+      onUndo?.();
+    });
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Postgres API helpers (all async, all fire-and-forget safe)
 // ---------------------------------------------------------------------------
@@ -883,7 +954,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       isOwner?: boolean;
       participantCount?: number;
       hasUserMessage?: boolean;
+      isBrief?: boolean;
       archivedAt?: string | null;
+      pinnedAt?: string | null;
     }>;
 
     const local = readList(key);
@@ -902,10 +975,16 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       // CF-5: a member turn seen here stays true. The server's answer can
       // lag a save by one list, and the fact never goes back to false.
       if (r.hasUserMessage !== undefined) s.hasUserMessage = s.hasUserMessage || r.hasUserMessage;
+      // Task 3564: the server alone knows the brief mark, so its answer wins.
+      if (r.isBrief !== undefined) s.isBrief = r.isBrief;
       // D99: an archive and a name made on another device reach this one.
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
       s.archivedAt = r.archivedAt ?? null;
+      // CO-11: a pin made on another device reaches this one. The server
+      // sends the key only with the switch on. Off, the local mark stays,
+      // and the list draws no pin.
+      if (r.pinnedAt !== undefined) s.pinnedAt = r.pinnedAt;
       if (r.title && shellChatOn()) s.title = r.title;
     }
 
@@ -936,7 +1015,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           isOwner: r.isOwner,
           participantCount: r.participantCount,
           hasUserMessage: r.hasUserMessage,
+          isBrief: r.isBrief,
           archivedAt: r.archivedAt ?? null,
+          pinnedAt: r.pinnedAt ?? null,
         });
       }
     }
