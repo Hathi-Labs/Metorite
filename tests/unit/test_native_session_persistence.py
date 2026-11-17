@@ -2264,3 +2264,45 @@ def test_r8_an_unread_steer_drops_the_session(graph_as_app, store_log) -> None:
     nxt = _begin(tid, "yes", org=org)
     assert not nxt.loaded and nxt.outcome == "digest_drop"
     assert store_log.named("native_session.load")[-1]["reason"] == "resume_stale"
+
+
+@_DB_GATE
+def test_r8_return_unconsumed_reaches_the_mark_with_the_runs_org(graph_as_app, store_log, monkeypatch) -> None:
+    """Task 3640, end to end on a real DB: no ``organization_scope`` block (the terminal push
+    runs outside any), the org comes from the run binding read when the steer was buffered,
+    and ``steer.return_unconsumed`` itself marks the session. The next turn drops with
+    ``resume_stale``."""
+    import uuid
+
+    import acb_common
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+    from orchestrator import steer
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    steer_row = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
+                              timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
+    assert _upsert_messages(tid, [steer_row], actor_email=_ALICE, organization_id=org) == []
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, _ASK)
+
+    class _Settings:
+        maf_native_sessions = True
+
+    async def _stored(thread_id: str, signal: dict) -> bool:
+        return True
+
+    monkeypatch.setattr(acb_common, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(steer, "persist_signal", _stored)
+    monkeypatch.setattr(executor, "_RUN_ORG", {tid: org})
+    monkeypatch.setattr(steer, "_PENDING_GUIDANCE", {})
+    monkeypatch.setattr(steer, "_CLOSED", set())
+    assert steer.buffer_guidance(tid, _ALICE, _STEER, signal_id="s1")  # the run never reads it
+    assert asyncio.run(steer.return_unconsumed(tid)) == 1
+    _user_row(org, tid, "yes")
+    nxt = _begin(tid, "yes", org=org)
+    assert not nxt.loaded and nxt.outcome == "digest_drop"
+    assert store_log.named("native_session.load")[-1]["reason"] == "resume_stale"
