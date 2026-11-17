@@ -955,6 +955,10 @@ DEBT: dict[str, str] = {
     "GET /api/chat/pending-asks": "P-7",
     "GET /api/chat/sessions": "P-7",
     "GET /api/chat/sessions/{}/room": "P-7",
+    # CO-2b (task 3588): the topic chip reads the topics, makes a private
+    # topic, and moves a chat. No chat tool lists or moves chats today, so P-7
+    # pays the three with the chat tool of the chat list, as for the pin.
+    "GET /api/chat/topics": "P-7",
     "GET /api/models/all": "P-7",
     "PATCH /api/agent/workspace/{}": "P-7",
     "PATCH /api/chat/sessions/{}": "P-7",
@@ -967,10 +971,12 @@ DEBT: dict[str, str] = {
     "POST /api/chat/sessions/{}/agents": "P-7",
     "POST /api/chat/sessions/{}/participants": "P-7",
     "POST /api/chat/suggestions": "P-7",
+    "POST /api/chat/topics": "P-7",
     "POST /api/documents/pdf": "P-7",
     "POST /api/feedback": "P-7",
     "PUT /api/agent/workspace/{}/file": "P-7",
     "PUT /api/chat/sessions/{}/pin": "P-7",
+    "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
     "DELETE /api/push/subscriptions": "P-7",
     "GET /api/actions/pending": "P-7",
@@ -1120,7 +1126,7 @@ DEBT_CEILING: dict[str, int] = {
     "workflows": 18,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18).
     "apps": 28,
     "agents": 20,
-    "chat": 27,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). P-7 pays them with the chat tool of the chat list, a separate slice. Paid by task 3115.
+    "chat": 30,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). P-7 pays them with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it. Paid by task 3115.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 36,

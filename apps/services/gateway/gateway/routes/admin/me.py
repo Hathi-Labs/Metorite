@@ -26,6 +26,7 @@ from acb_common.app_manifests.shell_manifest import load_vocabulary
 from acb_common.guide_flags import guide_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException
 from gateway.chat_session_member import pin_allowed
+from gateway.chat_topic import topics_allowed
 from gateway.module_runs import module_runs_allowed
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
@@ -547,7 +548,8 @@ _SET_BY_MODE = {
 #: Fields of the ANSWER that are facts of the server, not of the layout. A
 #: tab on an older bundle spreads the whole answer back into its save, so the
 #: PUT drops these before it validates, and never stores them.
-READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide", "module_runs", "skill_offer", "chat_pin")
+READ_ONLY_ANSWER_KEYS: tuple[str, ...] = (
+    "guide", "module_runs", "skill_offer", "chat_pin", "chat_topics")
 
 
 def _server_stamp() -> str:
@@ -599,7 +601,7 @@ def stored_shell(raw: Any, installs: bool = False) -> dict[str, Any]:
 
 
 def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
-    """The layout, and four facts of the server about the session's org.
+    """The layout, and five facts of the server about the session's org.
 
     ``guide`` is true when ``GUIDE_ORGS`` holds it (WS-OB GD-5a).
     ``module_runs`` is true when ``MODULE_RUN_ORGS`` holds it (WS-STU
@@ -608,8 +610,11 @@ def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
     true when ``STUDIO_SKILL_OFFER_ORGS`` and ``STUDIO_ORGS`` both hold the org
     (WS-TOF TOF-1d), and the chat draws the skill offer only then.
     ``chat_pin`` is true when ``CHAT_PIN_ORGS`` holds it (WS-CO CO-11), and the
-    chat list shows Pin and the Pinned group only then. None of the four is a
-    fact of the layout, so ``ShellPrefs`` refuses each in a body."""
+    chat list shows Pin and the Pinned group only then. ``chat_topics`` is
+    true when ``CHAT_TOPICS_ORGS`` holds it (WS-CO CO-2b), and the chat list
+    shows the topic groups and the chat shows the topic chip only then. None
+    of the five is a fact of the layout, so ``ShellPrefs`` refuses each in a
+    body."""
     org = getattr(user, "organization_id", None)
     bound = str(org) if org else None
     return {
@@ -618,6 +623,7 @@ def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
         "module_runs": module_runs_allowed(bound),
         "skill_offer": studio_allowed(bound) and skill_offer_allowed(bound),
         "chat_pin": pin_allowed(bound),
+        "chat_topics": topics_allowed(bound),
     }
 
 
@@ -722,8 +728,8 @@ async def get_my_shell(user: UserContext = Depends(get_current_user)) -> dict[st
     A failed read answers 503, never an empty layout. All-null means "ask the
     first sign-in question", and a database fault must not ask it again.
     The answer also carries ``guide`` (WS-OB GD-5a), ``module_runs``
-    (WS-STU STU-Q15a), ``skill_offer`` (WS-TOF TOF-1d) and ``chat_pin``
-    (WS-CO CO-11), through ``_answer``.
+    (WS-STU STU-Q15a), ``skill_offer`` (WS-TOF TOF-1d), ``chat_pin``
+    (WS-CO CO-11) and ``chat_topics`` (WS-CO CO-2b), through ``_answer``.
     """
     from gateway.package_host.flags import package_host_allowed
 
@@ -791,7 +797,7 @@ async def put_my_shell(
     keep: tuple[str, ...] = ()
     if body is not None:
         # An old tab sends back the answer it read, ``guide``, ``module_runs``,
-        # ``skill_offer`` and ``chat_pin`` included.
+        # ``skill_offer``, ``chat_pin`` and ``chat_topics`` included.
         body = {k: v for k, v in body.items() if k not in READ_ONLY_ANSWER_KEYS}
         # The hello route is the ONLY writer of ``buddy_hello_at`` (BUD-1).
         # A client PUT never claims it, so it never blocks the hello.
