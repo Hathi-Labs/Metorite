@@ -78,18 +78,19 @@ that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 (`chat_run_continuity.md` §4.12.4 item 1, RESUME-1a). For each listed org, the
 row of a plain confirmation card of a listed write keeps the call that the
 card guards. RESUME-2a: a late Approve of such a card then runs that call
-once, in a new reply, with no member turn. RESUME-2b: when the parked turn is
-the last turn, the call goes on in the same reply. For an org on both lists, a
-park keeps the stream of the run 24 hours (D-RES-7). `*` lists every org, and
-the default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
+once, in a new reply, with no member turn. `*` lists every org, and the
+default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
+
+RESUME-2b: when the parked turn is the last turn, the call goes on in the
+same reply. For an org on both lists, a park keeps the stream of the run 24
+hours (D-RES-7). The same reply needs the chat side of RESUME-3b (task 3475).
+So do not add an org to `CHAT_RESUME_ORGS` before RESUME-3b merges.
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
 a late Approve takes the path of before. The SPENT mark stops the stored call
 of a twin card from writing twice. Since task 3467, either flag writes that
 mark. No client reads the answer `resumed` before RESUME-3, so do not add an
-org to `CHAT_RESUME_ORGS` before RESUME-3 merges. The same reply of RESUME-2b
-needs the chat side of RESUME-3b (task 3475). So do not add an org to
-`CHAT_RESUME_ORGS` before RESUME-3b merges.
+org to `CHAT_RESUME_ORGS` before RESUME-3 merges.
 
 ⚠️ Keep this order for each org (`chat_run_continuity.md` §4.12.4 item 2).
 Put the org in `CHAT_LATE_APPROVE_ORGS` BEFORE you put it in
@@ -102,8 +103,8 @@ write its act a second time.
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
 it at each card, and the injection asks it at the start of each run. The late
 answer route asks it at each late Approve, and the park asks it at each park.
-So a reload applies to the next card, the next park and the next Approve, and
-the call id applies from the next run.
+So a reload applies to the next card, park and Approve. The call id applies
+from the next run.
 
 `CHAT_RUN_PHASE_ORGS` turns on the phase of a streamed run
 (`chat_failure_modes.md` §6 row CS-3, CS-3a). For each listed org, a

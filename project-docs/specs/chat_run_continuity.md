@@ -30,7 +30,7 @@ release keeps the work.
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 — the retention of a waiting card's row (task 3435) | **BUILT** 2026-11-16, branch `stu-pa-prune`, no new flag and no migration. A prune hook of the job worker clears the stored call of each expired row and deletes a row 7 days after it expires. The member purge deletes the rows that asked a leaver. The prune runs only with `JOB_QUEUE` on, and `JOB_QUEUE` is off on production (§4.12.6, step 1a) |
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. RESUME-2b (task 3460, the row below) builds case A. RESUME-2c (task 3461) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
-| §4.12 RESUME-2b — a late Approve goes on in the same reply, case A (task 3460) | **BUILT** 2026-11-17, branch `stu-resume2b`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. No migration and no new flag. The stored call names its reply row. A parked turn that is the last turn keeps its run id, its stream and its reply row. D-RES-7: a park keeps its stream 24 h. Each doubt gives case B. The flip waits for RESUME-3b (task 3475), the chat side of case A. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2b — a late Approve goes on in the same reply, case A (task 3460) | **BUILT** 2026-11-17, branch `stu-resume2b`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with no migration and no new flag. A parked turn that is the last turn keeps its run id, its stream and its reply row. D-RES-7: a park keeps its stream 24 h. Each doubt gives case B. The flip waits for RESUME-3b (task 3475). The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words and the quiet end of a park show where `CHAT_DURABLE_ASKS` is on. Only the resume route (`_resume_from_row`, with both resume flags on) sends the 429 cap reason. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
 | §4.12 RESUME-4a-1 — a continuation marks the stored native session stale (task 3478) | **BUILT** 2026-11-16, branch `stu-resume4a`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `MAF_NATIVE_SESSIONS` on. No migration and no new flag. RESUME-4a-2 (the late decline) waits for D-RES-9. RESUME-4b (task 3479) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 
@@ -1546,9 +1546,11 @@ names (`bot_run.long_reads_on`). Every other org keeps 240 s and 300 s.
 
 **Status: 📋 SPEC, 2026-11-14. RESUME-1a (2026-11-15) and RESUME-2a
 (2026-11-16) are built and dark, and so are the RESUME-2a follow-ups (task
-3467). RESUME-3a (2026-11-16) is built. RESUME-4a-1 (2026-11-16) and RESUME-2b
-(2026-11-17, branch `stu-resume2b`) are built and dark. Nothing else is
-built.** Metorite task 3255
+3467). RESUME-3a (2026-11-16) is built, and RESUME-4a-1 (2026-11-16) and
+RESUME-2b (2026-11-17, branch `stu-resume2b`) are built and dark. Nothing else
+is built.**
+
+Metorite task 3255
 (RESUME-0). Verified against code at `origin/main` `3040ac9e4`. HRD-22 (task
 3231) is on `main`, and this section read its commits too.
 
@@ -1969,20 +1971,21 @@ the same reply. It needs no migration and no new flag.
   reader allows a call with no key. A call stored before RESUME-2b has none,
   so it takes case B.
 - **The choice.** After the claim, `_same_reply_of` gives case A only when
-  each test holds. The row was `parked` and names its run. The stored call
-  names its reply row. The stream still ends in the parked `RUN_FINISHED` of
-  that run (`stream_relay.parked_end_of`), so no Stop and no new run came
-  after it. The reply row is the last turn of the chat
+  each test holds. The row was `parked` and names its run, and the stored
+  call names its reply row. The stream still ends in the parked
+  `RUN_FINISHED` of that run (`stream_relay.parked_end_of`), so no Stop and
+  no new run came after it. The reply row is the last turn of the chat
   (`routes.chat.reply_is_last_turn`, under the session's org). Each doubt and
   each fault give case B.
 - **The start.** Case A starts the run with the parked run's id and its
-  reply row. The mint then changes nothing. `start_detached(keep_stream=True)`
+  reply row, so the mint changes nothing. `start_detached(keep_stream=True)`
   checks the parked end again before any state changes. It deletes that entry
   (XDEL) BEFORE it marks the thread active with no reset, because a
   subscriber stops at the first `RUN_FINISHED`. The fold reads the whole
-  stream and writes it into the same row. A row of case A has no
-  `run_interrupted` mark, because a dead run puts other events after the
-  park. So the clear of step 5 needs no code of its own.
+  stream and writes it into the same row.
+- **The mark of step 5.** A row of case A has no `run_interrupted` mark,
+  because a dead run puts other events after the park. So the clear of step 5
+  needs no code of its own.
 - **A parked end that goes before the start.** `start_detached` raises
   `ParkedStreamGone` before any state changes. The run route raises
   `_SameReplyGone`, and `_resume_from_row` starts case B under the same claim
