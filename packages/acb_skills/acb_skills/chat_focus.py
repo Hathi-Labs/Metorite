@@ -587,6 +587,7 @@ __all__ = [
     "RunFocus",
     "binding",
     "bound_focus",
+    "carry_focus",
     "clean_focus",
     "drop_focus",
     "focus_of",
