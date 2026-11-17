@@ -182,6 +182,18 @@ export interface RunStatus {
    * clear it. Never saved, and never a server string (`RUN_PHASE_WORDS` in `runStep.ts`).
    */
   phaseWord: string | null;
+  /**
+   * RESUME-3a: the chat rests after a park (`parked`, or the quiet rest that
+   * follows it). A run that the server lists next is a continuation, never
+   * the parked run, so it never replays into the parked reply.
+   */
+  afterPark: boolean;
+  /**
+   * RESUME-3a: when this tab's Approve started a continuation run (the 200
+   * `resumed`), epoch ms, else 0. A list taken before it says nothing about
+   * that run.
+   */
+  resumedAt: number;
 }
 
 export const IDLE_RUN: RunStatus = Object.freeze({
@@ -208,6 +220,8 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   writesDone: [],
   restBlind: false,
   phaseWord: null,
+  afterPark: false,
+  resumedAt: 0,
 }) as RunStatus;
 
 /** One server row, as `lib/liveRuns.ts` reads it. */
@@ -229,8 +243,13 @@ export type RunEvent =
   | { type: "attach"; at: number; messageId: string }
   /** A stream event arrived. `step` is the step after it, in words. */
   | { type: "event"; at: number; step: string | null }
-  /** A reader loop ended. `terminal`: it saw `done`. */
-  | { type: "stream_end"; at: number; terminal: boolean }
+  /** A reader loop ended. `terminal`: it saw `done`. `parked`: that `done`
+   *  was a park (RESUME-3a). The card waits, and the run is not done. */
+  | { type: "stream_end"; at: number; terminal: boolean; parked?: boolean }
+  /** RESUME-3a: an Approve of a parked card started a continuation run (the
+   *  200 `resumed` of `respond-input`). `messageId`: its reply row, when the
+   *  server names it. */
+  | { type: "resumed"; at: number; runId: string; messageId?: string | null }
   /** The turn failed: the error card shows. */
   | { type: "failed"; at: number }
   /** The send left no run: a refusal, the run cap, a held send. */
@@ -343,6 +362,35 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
         staleTail: false,
         // CS-3b: a joined run has no phase until a new one arrives.
         phaseWord: null,
+        afterPark: false,
+      });
+    }
+
+    case "resumed": {
+      // RESUME-3a (§4.12.4 item 5): this tab's Approve started a NEW run. It
+      // is new even when no run key is known, as after a reload, where the
+      // parked row has no run id (C1). Nothing of the parked run carries
+      // over, and the parked reply is never its target.
+      const key = runKeyOf({ runId: e.runId });
+      if (!key) return s;
+      // The live-run list may have bound and attached this run before the
+      // 200 arrived. Do not reset it: keep its reply id and stale-tail flag.
+      if (s.runKey === key) return s.resumedAt === e.at ? s : { ...s, resumedAt: e.at };
+      return to(s, "working", e.at, {
+        messageId: e.messageId || null,
+        doneMessageId: s.messageId ?? s.doneMessageId,
+        step: null, seq: 0, terminalAt: 0, cardOpen: false, phaseWord: null,
+        writesAsked: [], writesDone: [],
+        startedAt: e.at,
+        lastEventAt: e.at,
+        serverGoneAt: 0,
+        runKey: key,
+        staleTail: true,
+        attach: false,
+        attachedAt: 0,
+        attachFails: 0,
+        afterPark: false,
+        resumedAt: e.at,
       });
     }
 
@@ -374,6 +422,15 @@ export function reduceRun(s: RunStatus, e: RunEvent): RunStatus {
     }
 
     case "stream_end":
+      if (e.terminal && e.parked) {
+        // RESUME-3a: the run parked on its card (D-RES-6). It ended, but it
+        // is not done: the card stays, and the row says the run waits.
+        if (!isLivePhase(s.phase) && s.phase !== "parked") return { ...s, terminalAt: e.at, attach: false };
+        return to(s, "parked", e.at, {
+          step: null, terminalAt: e.at, attach: false, afterPark: true,
+          doneMessageId: s.messageId ?? s.doneMessageId,
+        });
+      }
       if (e.terminal) {
         if (!isLivePhase(s.phase) && s.phase !== "parked") return { ...s, terminalAt: e.at, attach: false };
         return to(s, "done", e.at, {
@@ -466,6 +523,8 @@ function reduceServer(
     if (s.phase === "stopped" && at - s.stoppedAt < STOP_HOLD_MS) return s;
     // A list from before this tab's send cannot hold its run.
     if (s.phase === "starting" && s.startedAt !== null && at < s.startedAt) return s;
+    // Nor a list from before the Approve that started a continuation.
+    if (s.resumedAt > 0 && at < s.resumedAt) return s;
     const key = runKeyOf(run);
     // ANOTHER identity than the run this chat knows is a new run, in every
     // phase (re-review of #1171): another tab, a phone or a room member
@@ -478,25 +537,34 @@ function reduceServer(
       key.slice(0, 3) === s.runKey.slice(0, 3) &&
       !(streamOpen && key.startsWith("at:"));
     const same = key !== null && key === s.runKey;
-    if (!other && (s.phase === "done" || s.phase === "failed") && at - s.terminalAt < DONE_HOLD_MS) return s;
+    // A park's own `done` (RESUME-3a) holds a lagging list as a `done` does.
+    const ended = s.phase === "done" || s.phase === "failed" || (s.phase === "parked" && s.terminalAt > 0);
+    if (!other && ended && at - s.terminalAt < DONE_HOLD_MS) return s;
     const seen = { serverSeenAt: Math.max(s.serverSeenAt, at), serverGoneAt: 0, runKey: key ?? s.runKey };
     const resting = !isLivePhase(s.phase) && s.phase !== "parked";
+    // RESUME-3a (C1): after a park, a run that the server lists as running or
+    // as waiting live is a continuation, never the parked run. After a reload
+    // the parked row has no run id, so the keys cannot tell the two apart.
+    const parkedRow = run.state === "needs_input" && run.live === false;
+    const afterPark = (s.phase === "parked" || s.afterPark) && !parkedRow && !same;
     // A list that names a run while this chat rests names a NEW run too,
     // unless its identity says it is the same one (review of #1171, P1).
     // A new run gets its own bubble: nothing of the last run (its reply, its
     // step, its start) carries over.
-    const isNew = other || (resting && !same);
+    const isNew = other || (resting && !same) || afterPark;
     const fresh: Partial<RunStatus> = isNew
       ? {
         messageId: null, step: null, seq: 0, terminalAt: 0, cardOpen: false, phaseWord: null,
         writesAsked: [], writesDone: [],
         startedAt: parseTime(run.startedAt) ?? at,
-        // The old run's streaming reply, if any, is not this run's.
-        staleTail: other,
+        // The old run's streaming reply, if any, is not this run's. After a
+        // park, no reply that shows is this run's.
+        staleTail: other || afterPark,
         // The old run's failed re-attaches say nothing about this one
         // (review of #1171, P2): it may attach at once.
         attachFails: 0,
         attachedAt: 0,
+        afterPark: false,
       }
       : {};
     const startedAt = isNew ? fresh.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
@@ -505,7 +573,7 @@ function reduceServer(
     if (run.state === "needs_input") {
       if (run.live === false) {
         // No run runs. The card waits, and an answer starts a new run.
-        return to(s, "parked", at, { ...fresh, ...seen, step: null, attach: false, startedAt });
+        return to(s, "parked", at, { ...fresh, ...seen, step: null, attach: false, startedAt, afterPark: true });
       }
       return to(s, "waiting_for_you", at, { ...fresh, ...seen, step: null, startedAt, attach: canAttach });
     }
@@ -525,8 +593,18 @@ function reduceServer(
   // The server does not name this thread: no run, and no question waits.
   // A blind rest is now a known one (§18.11, fix round 5).
   if (s.restBlind) return { ...s, restBlind: false };
-  if (s.phase === "parked") return settled(s, at);
+  if (s.phase === "parked") {
+    // RESUME-3a: the card was answered or closed elsewhere. A park never
+    // reads "Done": the run had ended already, so the row goes quiet. The
+    // rest keeps `afterPark`, so a continuation listed next is a new run.
+    return to(s, "idle", at, {
+      step: null, attach: false, serverGoneAt: 0, cardOpen: false, afterPark: true,
+      doneMessageId: s.messageId ?? s.doneMessageId,
+    });
+  }
   if (!isLivePhase(s.phase)) return s;
+  // The list can lag a continuation that this tab's Approve started.
+  if (s.resumedAt > 0 && at < s.resumedAt + START_GRACE_MS) return s;
   if (!streamOpen) {
     // A list taken before this phase began says nothing about it.
     if (at < s.changedAt) return s;
@@ -593,6 +671,9 @@ export function formatElapsed(ms: number): string {
  */
 export const FIRST_STEP = "Reading your message";
 
+/** The words of a card that waits, live or parked (D-RES-6, §4.12.4 item 5). */
+export const WAITING_LABEL = "Waiting for your answer";
+
 /**
  * What the status row says, or null for nothing. `done` and `stopped` show
  * for `RESTING_SHOW_MS`, then the row goes quiet. `failed` draws nothing
@@ -606,9 +687,11 @@ export function runView(s: RunStatus, now: number): RunView | null {
     case "working":
       return { tone: "working", label: s.step || s.phaseWord || "Working", elapsed };
     case "waiting_for_you":
-      return { tone: "waiting", label: "Waiting for your answer", elapsed };
+      return { tone: "waiting", label: WAITING_LABEL, elapsed };
     case "parked":
-      return { tone: "parked", label: "Paused. Answer the card to go on", elapsed: null };
+      // D-RES-6: a park is a server detail. The member reads the words of a
+      // live wait, with no clock. The tone stays, so the composer sends.
+      return { tone: "parked", label: WAITING_LABEL, elapsed: null };
     case "finishing":
       return { tone: "finishing", label: "Checking the run", elapsed };
     case "done":

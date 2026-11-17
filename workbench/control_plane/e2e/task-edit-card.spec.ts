@@ -28,6 +28,7 @@ const DIRECTORY = [
   { assignee: BOB, name: "Bob Lee" },
   { assignee: CAT, name: "Cat Jones" },
 ];
+const LANES = ["Todo", "Doing", "Review", "Done"];
 const CONTEXT = [
   "Check each field, then approve.",
   "project: «Launch»",
@@ -106,6 +107,11 @@ async function install(page: Page, withEdit = true) {
       .map((p) => ({ ...p, kind: "person", has_login: true, top_skills: [], warnings: [] }));
     return r.fulfill({ json: { people: rows, agents: [], hr_visible: false } });
   });
+  // The lanes of the project of the card (`projectsApi.statuses`). `Doing` is the lane of the card.
+  await page.route("**/api/projects/nodes/*/statuses**", (r) => r.fulfill({ json: {
+    rows: LANES.map((name, position) => ({ id: `lane-${position}`, project_id: PID, name, color: "", position, category: "active" })),
+    total: LANES.length, counts: {}, owner_id: PID,
+  } }));
   await page.route("**/api/projects/people/names**", (r) => {
     const emails = (new URL(r.request().url()).searchParams.get("emails") ?? "").split(",").filter(Boolean);
     const names: Record<string, string> = {};
@@ -148,7 +154,9 @@ test.describe("the edit card of a new task", () => {
     await expect(page.locator("[data-task-edit-card]")).toBeVisible();
     await expect(page.locator("[data-task-edit-due]")).toHaveValue("2026-12-01");
     await expect(page.locator('[data-card-field="due_at"]')).toHaveCount(0);
-    await expect(page.locator('[data-card-field="status"]')).toBeVisible();
+    // EAC-3a: the form draws the status too, so the card's own row is gone, and the project row stays.
+    await expect(page.locator('[data-card-field="status"]')).toHaveCount(0);
+    await expect(page.locator('[data-card-field="project"]')).toBeVisible();
 
     await page.locator("[data-task-edit-due]").fill("2027-03-15");
     await page.getByRole("button", { name: `Unassign ${ANN}` }).click();
@@ -169,6 +177,56 @@ test.describe("the edit card of a new task", () => {
     } })}`);
     // No id leaves the browser.
     expect(sent.answer).not.toContain(PID);
+  });
+
+  test("edit the start date, the status, a priority flag and the description: the answer holds the seven keys (EAC-3a)", async ({ page }) => {
+    await openCard(page);
+    await expect(page.locator("[data-task-edit-start]")).toHaveValue("");
+    await expect(page.getByRole("button", { name: /Status/ })).toContainText("Doing");
+    await expect(page.locator("[data-task-edit-description-field]")).toHaveValue(DESCRIPTION);
+    await page.locator("[data-task-edit-start]").fill("2026-11-20");
+    await page.getByRole("button", { name: /Status/ }).click();
+    await page.getByRole("option", { name: "Review" }).click();
+    await page.getByRole("button", { name: /Important/ }).click();
+    await page.getByRole("option", { name: "Important", exact: true }).click();
+    await page.getByRole("switch", { name: "Leveraged" }).click();
+    const text = "  New text.\n\tIndented, with spaces at the end  ";
+    await page.locator("[data-task-edit-description-field]").fill(text);
+    await expect(page.locator("[data-task-edit-edited]")).toContainText("start 2026-11-20 · status Review · important · leveraged · new description");
+    expect(await answers(page)).toHaveLength(0);
+    const sent = await approve(page);
+    expect(sent.answer).toBe(`APPROVE ${JSON.stringify({ edit: {
+      due: "2026-12-01", start: "2026-11-20", status: "Review", important: true, leveraged: true,
+      description: text, assignees: [ANN, BOB],
+    } })}`);
+  });
+
+  test("a start date after the due date warns and leaves Approve on (EAC-3a)", async ({ page }) => {
+    await openCard(page);
+    await page.locator("[data-task-edit-start]").fill("2026-12-09");
+    await expect(page.locator("[data-task-edit-date-order]")).toContainText("start date is after the due date");
+    await expect(page.locator("[data-confirmation-approve]")).toBeEnabled();
+  });
+
+  test("Back to the card resets the new fields, and the answer is the plain APPROVE (EAC-3a)", async ({ page }) => {
+    await openCard(page);
+    await page.locator("[data-task-edit-start]").fill("2026-11-20");
+    await page.getByRole("switch", { name: "Leveraged" }).click();
+    await page.locator("[data-task-edit-reset]").click();
+    await expect(page.locator("[data-task-edit-start]")).toHaveValue("");
+    await expect(page.getByRole("switch", { name: "Leveraged" })).toHaveAttribute("aria-checked", "false");
+    expect((await approve(page)).answer).toBe("APPROVE");
+  });
+
+  test("a change of ONLY the leveraged flag sends an edit answer, not the plain APPROVE (EAC-3a)", async ({ page }) => {
+    await openCard(page);
+    await page.getByRole("switch", { name: "Leveraged" }).click();
+    await expect(page.locator("[data-task-edit-card]")).toHaveAttribute("data-task-edit-state", "edited");
+    const sent = await approve(page);
+    expect(sent.answer).toBe(`APPROVE ${JSON.stringify({ edit: {
+      due: "2026-12-01", start: "", status: "Doing", important: null, leveraged: true,
+      description: DESCRIPTION, assignees: [ANN, BOB],
+    } })}`);
   });
 
   test("a card that nobody changed sends the plain APPROVE", async ({ page }) => {
@@ -202,6 +260,16 @@ test.describe("the edit card of a new task", () => {
     await expect(page.locator("[data-confirmation-approve]")).toBeEnabled();
     const sent = await approve(page);
     expect(JSON.parse(sent.answer.slice("APPROVE ".length)).edit.assignees).toEqual([ANN, BOB, "typo@acme.tset"]);
+  });
+
+  test("a typed person with a tab gets a plain line, is not added, and holds Approve", async ({ page }) => {
+    await openCard(page);
+    const person = page.getByRole("textbox", { name: "Add a person" });
+    await person.fill("a\tb@acme.test");
+    await person.press("Enter");
+    await expect(page.locator("[data-task-edit-line]")).toContainText("That text holds a tab or line break");
+    await expect(page.getByRole("button", { name: /Unassign a\sb@acme\.test/ })).toHaveCount(0);
+    await expect(page.locator("[data-confirmation-approve]")).toBeDisabled();
   });
 
   test("Back to the card puts each original value back, and the answer is the plain APPROVE again", async ({ page }) => {
