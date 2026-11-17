@@ -136,6 +136,12 @@ Its one reader is `gateway.chat_topic.topics_allowed`, and each topic route
 asks it first. So a reload applies at the next request. The flip stays
 OWNER-GATE (`enforcement-flip`), after the owner preview.
 
+CO-2b adds three readers of the same flag. `PUT /chat/sessions/{id}/topic`
+moves a chat, and answers 404 with the org off. The chat list sends
+`topicId` and `topicName` only with the org on. `GET /auth/me/shell` gives
+the answer to the client as `chat_topics`, so a tab shows a change at its
+next shell read.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
@@ -203,6 +209,14 @@ person, contact, lead, company and mail sender that holds one name. An org
 off the list gets 404. The orchestrator gives the tool only to an org on the
 list, so the tool list of each other org does not change. That part needs no
 `CONTEXT_RECENCY`. The next chat turn after a reload reads the change.
+
+The flag also opens the family of FIND-6 (`find_engine.md` §5.3, §5.4). Each
+find tool of the core list answers a failure as text, and that part needs no
+`CONTEXT_RECENCY`. Two parts act only with `CONTEXT_RECENCY` on, because the
+search runs its ladder only then. The persona ends its grounding paragraph
+with the standing rule. A zero of `search_crm`, `query_inbox` and
+`find_tasks` ends with a pointer to `search_company`. The next chat turn
+after a reload reads the change.
 
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
