@@ -914,7 +914,7 @@ no text. The note reads the row again as the member. CO-17 checks its overlap
 with HRD-12 before it builds.
 
 **Status (2026-11-16, task 3516).** The store is built, dark behind
-`CHAT_CARD_RECORD_ORGS`, in migration 454 (`chat_card_record`) and
+`CHAT_CARD_RECORD_ORGS`, in migration 459 (`chat_card_record`) and
 `orchestrator/card_record.py`. HRD-12 does not overlap: it keeps typed words,
 and this table keeps none. The row names the member who answered the card, and
 it has two nullable slots: `record_link` (an app path) and `message_id` (a
