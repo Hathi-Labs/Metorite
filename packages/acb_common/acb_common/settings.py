@@ -1105,6 +1105,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_focus_item.py.
     chat_focus_orgs: str = ""
 
+    # ── The per-turn budget of a read tool (HRD-5, chat_failure_modes.md B5) ─
+    #
+    # TOOL_TURN_BUDGET_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and each run is as before. On, the next call to a read
+    # tool in a turn does not run after 3 empty or refused answers from that
+    # tool. Its answer is "Stop. You tried: ..." and tells the chat to ask the
+    # member one question. A write tool is never counted or stopped. The one
+    # reader is `orchestrator.tool_turn_budget.tool_turn_budget_on`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_tool_turn_budget.py.
+    tool_turn_budget_orgs: str = ""
+
     # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
     #
     # CHAT_RUN_PHASE_ORGS: a comma list of organization ids, or `*`. Empty:
