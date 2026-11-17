@@ -1288,6 +1288,11 @@ async def purge_member_rows(
     # WS-53 CRM-Q33: the member's address in the CRM state that no delete
     # above reaches, in this transaction, and the member's CRM keys.
     await purge_crm_member(db, org_id, addr)
+    # Task 3639: the cached habits of the member hold the addresses of their
+    # acts, so a purge clears them at once, best effort, as the CRM keys do.
+    from acb_common import member_habits
+
+    await member_habits.forget_member(str(org_id), addr)
     # WS-61 KB-9a: the member's address in the Knowledge gaps. KC-1a: the
     # member's Drive sources, with their token and their tree.
     revokes = await purge_knowledge_member(db, org_id, addr)
