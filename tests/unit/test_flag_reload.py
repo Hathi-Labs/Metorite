@@ -341,6 +341,22 @@ def test_studio_live_preview_orgs_reloads_and_its_reader_follows(env, monkeypatc
     assert not live_preview_on("globex")
 
 
+def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-2a, chat_organization.md §6. The reload list holds the key, and
+    the one reader of the topic switch sees a change with no restart."""
+    from gateway.chat_topic import topics_allowed
+
+    assert fr.reloadable("CHAT_TOPICS_ORGS")
+    monkeypatch.setenv("CHAT_TOPICS_ORGS", "")
+    get_settings.cache_clear()
+    assert not topics_allowed("acme")
+    env(**{**_START, "CHAT_TOPICS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_TOPICS_ORGS",)
+    assert topics_allowed("ACME ")
+    assert not topics_allowed("globex")
+    assert not topics_allowed(None)
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""

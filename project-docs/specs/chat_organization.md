@@ -3,7 +3,11 @@
 **Status:** ACTIVE (D163, 2026-11-02). CO-0 is BUILT (PR 1607, 2026-11-02).
 CO-11, the pin, is BUILT and dark behind `CHAT_PIN_ORGS` (task 3510,
 2026-11-16). Its chat tool `pin_chat` is BUILT and dark behind the same flag
-(CO-11b, task 3563, 2026-11-17, §18). The rest of D163 is not built.
+(CO-11b, task 3563, 2026-11-17, §18). CO-2a, the topic store and
+its routes, is BUILT and dark behind `CHAT_TOPICS_ORGS` (task 3501,
+2026-11-16). CO-2b adds `topic_id` and `set_by`, the move, the pass that
+never overrides a member, the rail and the chip. The rest of D163 is not
+built.
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions.
@@ -214,6 +218,12 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 
 - `chat_topic`: `id`, `organization_id`, `name`, `scope` (`company` or `member`),
   `owner_email`, `hidden_at`. A member reads company topics and their own.
+  CO-2a built it (migration 451) with `created_at` and UNIQUE
+  `(organization_id, id)`, the key of the CO-2b foreign key. One name is unique
+  in each list, in any case: the org, the scope and the owner. RLS covers the
+  org. `gateway/chat_topic.py` is the one module that runs SQL on it, and it
+  holds the member rule in each statement. The member purge deletes the member
+  topics of a leaver.
 - `chat_session_member`: `(session_id, member_email)` PK, `organization_id`,
   `topic_id` (nullable), `set_by` (`auto` or `member`), `pinned_at` (nullable).
   It is the per-member row of a chat: its topic (CO-2) and its pin (CO-11). The
@@ -260,7 +270,7 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 |---|---|---|---|---|---|
 | CO-0 | none | — | The full-screen chat (§9). **BUILT**, PR 1607 | AGENT-SAFE | The four captures pass, and `/chat` and the dock's full view match |
 | CO-1 | 3500 | 2 | The pass (§5), metered to the platform | **OWNER-GATE** for the flip. HIGH tier: money | A test run on Fracktal reports the real cost per chat, and no `usage_event` debits the company |
-| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
+| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. CO-2b: the topic of a chat, the move, the rail, the chip and the seed. It waits for CO-11 (task 3510, not merged) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
 | CO-3 | 3502 | Later | One search of chats and files, on MEM-2. Reconcile first (§10.1) | AGENT-SAFE, dark | A word inside a chat and a word inside a file both return, and a colleague's private chat does not |
 | CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log` | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
 | CO-5 | 3504 | 3 | The chip with a preview, join, carry and undo (§7, §17.1) | **OWNER-GATE** for the flip | Each row of §7.1 and each bar of §7.2 has a test, and the override rate is under 10 % on Fracktal |
@@ -346,6 +356,19 @@ CO-11 adds two fences:
   They are a second device, a colleague in the same room, an archive and a
   chat that the member cannot read. They are also two orgs, an unpin, a
   Delete and the member purge.
+
+CO-2a adds two fences:
+
+- `tests/unit/test_chat_topic.py`: only `chat_topic.py` and the member purge
+  name `chat_topic` in Python, and no TypeScript file names it. Each read holds
+  the member rule, and each write holds the write rule. The seed names are the
+  teams of `centers.ts` plus General. With `CHAT_TOPICS_ORGS` off, each route
+  answers 404 before any SQL. A body that names an owner, a scope or an org
+  gets 422.
+- `tests/unit/test_chat_topic_r8.py` (R8): no colleague and no admin reads the
+  topic of a member. Org B never reads org A, and only an admin changes a
+  company topic. The store refuses a duplicate in one list, and the purge
+  deletes the member topics. FORCE RLS holds, and the flag off gives 404.
 
 CO-11b adds two fences:
 

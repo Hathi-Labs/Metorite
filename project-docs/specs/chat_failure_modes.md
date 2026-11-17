@@ -154,7 +154,36 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 |---|---|---|---|---|
 | G1 | A double tap or a retried answer | The prompt save is idempotent. No write key on a card answer. A steer can repeat | Each card answer has a one-use key. A steer seen twice counts once | HRD-16 |
 | G2 | The phone sleeps during a stream | Live: detached runs, replay by `lastEventId`, durable asks on | No change | none |
-| G3 and G4 | Two devices, a send while offline, a send while the history loads | No design | An outbox sends once. A send waits for the load. The server's copy wins the fold | HRD-17 |
+| G3 and G4 | Two devices, a send while offline, a send while the history loads | Designed in §4.7a (2026-11-16). Not built | An outbox sends once. A send waits for the load. The server's copy wins the fold | HRD-17a to HRD-17f |
+
+### 4.7a The design of G3 and G4 (HRD-17, PROPOSED 2026-11-16)
+
+**What the code does today** (read on `origin/main`, 2026-11-16):
+
+- The browser makes the id of the member's message. It sends it as `userMessageId`, and the gateway reads it as `user_message_id` (`routes/agent.py`, near line 2984).
+- The server saves the member's turn under that id at run start. The browser's later save updates the same row. So the saved row is already written once.
+- The run is not deduped. A second send with the same id starts a second run, and that run cancels the first.
+- A browser network error settles the send as sent (`isDisconnect` in `useAgentChat.ts`). The send may never have reached the server, and nothing sends it again.
+- A send while the history loads is dropped. The send wrapper returns false (`AgentChat.tsx`, `loadingHistory`).
+- The history load keeps the server list when it has more messages. The slow poll lets content only grow. Nothing says that the server's copy of a message wins.
+- `projects_ai_chat.md` §19.6 says that a second tab can write older content before the fold.
+
+**The rules.**
+
+1. **One key for each send.** The key is the existing `user_message_id`. No second id exists. The server keys a send on organization, thread and `user_message_id`. A repeat joins the first run by replay and starts no run. A repeat while a run is live is a steer of that run, so it adds no second run either. A send with no id works as it does today. The key comes from the session and the run binding, never from the body alone. Slice HRD-17a.
+2. **The outbox.** A send that the server did not acknowledge waits in `src/lib/chatOutbox.ts`. The server acknowledges a send with its first stream event, or when a poll finds the row by id. The outbox releases entries in order, once, on the `online` event and after the history fold. Slices HRD-17b and HRD-17d.
+3. **Where it lives.** The outbox lives in memory, and `sessionStorage` keeps a copy for a reload of the same tab. It never uses `localStorage`. It clears on sign-out and on a member switch. A fence reads the source and refuses a `localStorage` write of message text. This is the proposed default of D-HRD-17-1.
+4. **The waiting state.** A waiting entry shows in the existing run-status line (`runStatus.ts`) with a Cancel. It adds no banner. A send while a run is live is a steer, and it stays on the steer path (`chatSteer.ts`). It never enters the outbox.
+5. **A send while the history loads** goes to the outbox. It goes out after the load settles. The composer stays open for typing. Slice HRD-17c.
+6. **The fold rule.** The client merges by message id. For an id on the server, the server copy wins. A local row whose id is not on the server stays only as an outbox entry. Order stays as the server sets it. Slice HRD-17e.
+7. **A second device** sees a sent message through the slow poll. It needs no new channel. A thread revision is not needed while the merge is by id.
+8. **No shrink before the seal.** HRD-17e first reads `_upsert_messages`. It checks whether a client write can shorten a stored row before the seal (`run_final_at`). If it can, the slice refuses the shorter write. That change is HIGH.
+
+**What this does not change.** The card-answer key stays in HRD-16. The steer path stays in `chat_run_continuity.md` §4.9. Replay by `lastEventId` stays as it is (G2).
+
+**Order and builders.** HRD-17a is a server slice. It is HIGH, because it changes the write path of the run start. It ships dark behind a new flag. The client slices HRD-17b to HRD-17f are STANDARD, and lane-ui builds them. They wait for RESUME-3a (PR 2443), which edits the same hook and stream. HRD-17d waits for HRD-17a, so that a resend is safe.
+
+A client slice that changes the look needs the owner's Visual review: light mode, compact density, a changed accent and 390 px.
 
 ### 4.8 Outbound safety and limits (H, I)
 
@@ -203,7 +232,13 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | **HRD-14** | 2993 | A paste is framed as data | `tests/unit/test_paste_frame.py` | HIGH |
 | **HRD-15** | 2994 | The member's own words are obeyed | `evals/member_words/` | STANDARD |
 | **HRD-16** | 2995 | A card answer acts once | `tests/unit/test_card_answer_once.py` | HIGH |
-| **HRD-17** | 2996 | Offline, loading and two devices | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17** | 2996 | Offline, loading and two devices. The design is in §4.7a. The slices are HRD-17a to HRD-17f below. Not built | none (this is the parent row) | STANDARD |
+| **HRD-17a** | 3483 | The server runs one send once. A repeat of the same `user_message_id` in a thread joins the first run. Dark, behind a new flag | `tests/unit/test_send_once.py` | HIGH |
+| **HRD-17b** | 3484 | The chat outbox: in memory, with `sessionStorage` for a reload. It releases once and in order. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17c** | 3485 | A send while the history loads waits for the load. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17d** | 3486 | A send that lost its connection before the server answered is not marked sent. Builder: lane-ui | `src/hooks/useAgentChatDisconnect.test.ts` | STANDARD |
+| **HRD-17e** | 3487 | The server's copy wins the fold of a second device, and a shorter write before the seal is refused if the check says so. Builder: lane-ui, with a HIGH server part | `src/lib/chatFold.test.ts`, `tests/unit/test_chat_upsert_no_shrink_r8.py` | STANDARD |
+| **HRD-17f** | 3488 | The e2e test with the network off, and the Visual review. Builder: lane-ui | `e2e/chat_outbox.spec.ts` | STANDARD |
 | **HRD-18** | 2997 | Names as people say them. HRD-18a, BUILT 2026-11-14: the one matcher, the CRM search word by word with its near pass (`crm_platform.md` §19.5), `resolve_person` and `find_contact`. HRD-18b: the company search and the mail sender match | `tests/unit/test_name_variants.py`, `tests/unit/test_crm_near_search_r8.py` (R8) | STANDARD |
 | **HRD-19** | 2998 | Start clean | `tests/unit/test_continue_carries.py` | STANDARD |
 | **HRD-22** | 3231 | A late approve acts once. BUILT dark behind `CHAT_LATE_APPROVE_ORGS`, 2026-11-14 (`chat_run_continuity.md` S2, item 8). The flag flip on production is OWNER-GATE (`enforcement-flip`) | `tests/unit/test_late_approve_grant.py`, `tests/unit/test_late_approve_grant_r8.py` (R8 and a private real Redis) | HIGH |
@@ -261,6 +296,13 @@ decided them. They take no D number in `work_plan.md` §3.
 | **Q3** | Does the card show a line when N is 1? | No, as in PST-4 |
 | **Q4** | What do org-wide rows show? | HRD-9b adds the count only. A copy for one space waits for an owner ruling |
 | **Q5** | What shows when the member cannot see the space? | No name. The card says "the space above it", plus N |
+
+**D-HRD-17-1 is PROPOSED** (HRD-17, 2026-11-16). The owner has not decided it.
+It takes no D number in `work_plan.md` §3.
+
+| # | Question | Proposed default |
+|---|---|---|
+| **D-HRD-17-1** | Does an unsent message survive a closed tab? | No. It survives a reload of the same tab, in `sessionStorage`, and it clears on sign-out. A closed tab keeps no message text on a shared computer. The cost: a message typed offline is lost when the member closes the tab |
 
 Two limits wait for the owner, and the build keeps them as they are
 (`chat_run_continuity.md` S2 item 8). The 30 minutes start at the tap, not at
