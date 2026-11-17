@@ -11326,8 +11326,9 @@ HTTP 400, not 402, so the walk stopped and the DeepSeek steps never ran.
   appears, because a vendor 400 can quote the request back.
 - `walk_chain` calls the function in one place. `on_refusal` gets 402, so
   `provider_balance` shows the vendor `out` with cause `payment`.
-- A vendor with no balance probe (Anthropic, OpenAI) clears a 402 when a call
-  it served is newer than the 402. A vendor with a probe keeps the probe rule.
+- A vendor with no balance probe (Anthropic, OpenAI) clears a 402 or a 401 when
+  a call it served is newer than the refusal. A vendor with a probe keeps the
+  probe rule.
 - Native handlers send fixed text and are never lifted. Their own status holds.
 - The refusal log line adds the hint `billing` when the status is 402. The
   message is matched and never logged, stored or returned.

@@ -568,8 +568,10 @@ def _live_refusals(
     """The refusal statuses that still count.
 
     Every status: inside the window. 401 and 402: not cleared by a healthy
-    probe after them. 403 and 429: at least ``repeat`` of them inside the
-    window, and no SERVED call on this vendor since the latest one.
+    probe after them. For a vendor with no probe (``probe_status`` None or
+    ``not_exposed``), a SERVED call after them clears them too (AO-1).
+    403 and 429: at least ``repeat`` of them inside the window, and no SERVED
+    call on this vendor since the latest one.
     """
     healthy_probe_at = (
         h.balance_checked_at
@@ -652,8 +654,10 @@ def assess(
 
       * ``out`` (cause ``payment``) — the vendor says the account cannot
         serve, or the balance is zero or less, or ONE recent 402 with no
-        healthy probe after it.
-      * ``refusing`` (cause ``key``) — ONE recent 401, or ``repeat`` 403s in
+        healthy probe after it. A vendor with no probe clears it with a
+        served call after it instead.
+      * ``refusing`` (cause ``key``) — ONE recent 401 (cleared as a 402 is),
+        or ``repeat`` 403s in
         the window with no served call since, or the balance probe itself was
         refused with 401.
       * ``rate_limited`` (cause ``rate_limit``, amber) — ``repeat`` 429s in
