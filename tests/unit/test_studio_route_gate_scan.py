@@ -83,7 +83,12 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     path of a delete, which reads `admin:members:manage` (the seam of
     `routes/admin/members.py`) and no other right. No route gains a
     dependency, so the gate stays one gate. No file reads `.access.has(`,
-    the other door to the same check."""
+    the other door to the same check.
+
+    WS-STU B1b-3 adds one reader of another right: `approve_mcp_tool` reads
+    `integrations:manage` (`routes/integrations.MANAGE_PERMISSION`), the right
+    that connects and edits an MCP server. It reads no share verb. The test
+    takes out its one entry first."""
     import ast
 
     from gateway.routes.studio import packages
@@ -120,6 +125,11 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
         assert names.count(share_name) == 1 and calls.count(share_call) == 1, (names, calls)
         names.remove(share_name)
         calls.remove(share_call)
+    # WS-STU B1b-3: the approval of an MCP tool reads the connections right once.
+    approve_call = ("actions.py", "approve_mcp_tool",
+                    "user.has_permission(_integrations.MANAGE_PERMISSION)")
+    assert calls.count(approve_call) == 1, calls
+    calls.remove(approve_call)
 
     assert verbs == [("packages.py", "<module>", "constant")], verbs
     assert sorted(names) == [("packages.py", "<module>", "Store"),
