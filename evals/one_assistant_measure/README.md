@@ -409,6 +409,10 @@ and the key. Close the tunnel with Ctrl+C in that shell.
      --out evals/one_assistant_measure/results_<date>.json
    ```
 
+### Mirror the chat flags of production (`--mirror-prod`)
+
+`--mirror-prod` sets the chat flags of production for each chat of the pack arms, in the eval process only. `prod_flags.json` holds the values, the read date (2026-11-17) and the source (`/opt/acb/app/.env` on the production box). An org list of `*` becomes the eval org. `TOOL_SEARCH_ORGS` stays empty. The switch is off by default, so the old results stay comparable. The results header records `mirror_prod`. `--merge` and `--compare` refuse files that ran with different values. Each key must be a real settings field, and the unit test checks it.
+
 ### Test one tier on another model (`--tier-map`)
 
 `--tier-map` is for the eval only. It changes no product code and no flag.
@@ -561,7 +565,9 @@ A fix can pass its own chats and still fix only those chats. So the chats have t
 
 Each result row keeps `split` and `tags`. A row of an old file has no stamp, so it reads the tags of its chat today. A chat that no longer exists reads as tune. `--split tune|holdout|all` (default `all`) picks the chats of a run.
 
-**Sealed results.** `--out X.json` keeps the tune rows in full. For the held-out rows it keeps counts only. The block `sealed` holds the passes and fails of each check name, and the turn passes of each repeat. The full held-out rows go to `X.holdout.json`. A fixer brief never names that file. No answer, tool argument, card or word of a held-out turn reaches `X.json` or the console.
+**Sealed results.** `--out X.json` keeps the tune rows in full. For the held-out rows it keeps counts only. The block `sealed` holds the passes and fails of each check name, and the turn passes of each repeat. The full held-out rows go to `X.holdout.json`.
+
+A fixer brief never names that file. No answer, tool argument, card or word of a held-out turn reaches `X.json` or the console.
 
 The live console line of a held-out turn shows its cost only. `--report`, `--merge` and `--rescore` read the sibling file and seal their output the same way. A scripted run plays known-good plans and holds no model output, so it prints in full.
 
@@ -577,6 +583,32 @@ The **noise** `n` counts the turns whose pass or fail differs between repeat 1 a
 The passes of rules 2 to 4 are sums over both repeats. The report prints `H: 0 turns` when no held-out chat ran, because rule 3 then holds with no evidence. The compare refuses two files with different `mirror_prod` headers. Exit 0 is a win. Exit 3 is a loss. Exit 2 means the two files do not compare.
 
 The fence is `tests/unit/test_one_assistant_measure_split.py`. The rule lives in `compare.py`. The split and the seal live in `splits.py`.
+
+## The seven chats of task 2874
+
+**Status.** Built 2026-11-17. Scripted only. The chats live in `scenarios_2874.py`.
+
+Each has the tags `t2874` and `case:<k>`. They are in the `email` set, so the E set of the compare rule leaves them out. They run on the `pack` arm only.
+
+| Case | The defect of the owner chat of 2026-11-11 | New check |
+|---|---|---|
+| 1 | A forward became a new mail | `act_kept` |
+| 2 | "I'll check the thread", and no check | `no_promise` |
+| 3 | A doubt of a send that the tool called "Sent" | `no_doubt`, `result_has` |
+| 4 | A card that the member discarded still "waits" | `states_discard` |
+| 5 | "Mark it done" on an email went to Projects | `done_direct` |
+| 6 | A first name that `resolve_person` missed | `tried_closest` |
+| 7 | `send_email` for a reply | `reply_by_compose` |
+
+Every new check has a unit test. The behaviour of 11-11 fails it, and the right behaviour passes it. The checks read `Observation.ordered`, which holds every tool call of the turn in order. `checks_2874.py` holds them.
+
+**What the harness gained.**
+
+1. A turn has `card`: `approve`, `send` or `discard`. `run.Member` answers the card with the grammar of production. The docstring of `Member` cites the lines of `ask_tools.py` and `reply_card.py`. A revise is a steer, and the harness cannot post a steer in a run, so no chat replays one.
+2. The mailbox fake answers the held forward card, `/email/forward`, `/email/reply-zero/resolve` and `/email/reply-card/draft-state`. It scores a near spelling as `closest`, with `acb_common.name_match`. A Discard trashes the card's draft, as the browser does.
+3. `workgateway.py` answers `resolve_person`. Case 6 turns on the profile flag in the eval process only. The flag is not in `prod_flags.json`.
+
+Case 5 fails the 11-11 way only when the Projects packs are on. Run it live with `--mirror-prod`.
 
 ## Fix round 2 (after the first live run)
 

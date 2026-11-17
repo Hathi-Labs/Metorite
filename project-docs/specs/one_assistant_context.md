@@ -10,6 +10,8 @@ TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `
 
 A wins when each `case:<k>` chat passes both repeats of A and the tune gain on `t2874` is at least `max(2, n + 1)`. Neither the held-out count nor the email count may fall by more than the noise `n`. The README of `evals/one_assistant_measure` holds the rule.
 
+Task 2874 adds seven chats of the owner chat of 2026-11-11, with their checks, in `evals/one_assistant_measure`. The switch `--mirror-prod` sets the chat flags of production in the eval process only. Scripted only, no live run, no spend.
+
 §9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-1b and WT-4 to WT-6 are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.

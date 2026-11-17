@@ -875,7 +875,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
 
         harness._mp.setattr(crm_tools, "crm_mode", crm_mode)
         settings = get_settings()
-        flag = flag_for(sc, arm, mirror_prod)
+        flag = flag_for(sc, arm, True) if mirror_prod else flag_for(sc, arm)
         web = fanout.WebFixtures()
         web.install(harness._mp)
         for name, value in {**PRODUCTION, **flag}.items():
@@ -2057,7 +2057,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print(report(public_view(data)))
         return EXIT_PASS
     if args.scripted:
-        rows, problems = run_scripted(scenarios, arms, tier_map, args.mirror_prod)
+        # A run with no --mirror-prod calls as before, so a test double of the old shape still fits.
+        rows, problems = (run_scripted(scenarios, arms, tier_map, mirror_prod=True)
+                          if args.mirror_prod else run_scripted(scenarios, arms, tier_map))
         for r in rows:
             print(f"  {'pass' if r['passed'] else 'FAIL'}  {r['arm_label']:<10} {r['scenario']}#{r['turn']}"
                   f"  {len(r['model_calls'])} calls  {r['email_tools']}")
