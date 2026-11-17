@@ -60,6 +60,7 @@ from acb_common.mentions import mention_targets, new_mentions
 from skill_projects import choices, task_files
 from skill_projects.client import (
     GatewayRefusal,
+    PreconditionFailed,
     data,
     delete,
     get,
@@ -1955,6 +1956,9 @@ async def update_task(
     and no answer, the tool asks first. The card shows each change as before
     → after, and the timeline records every change."""
     tid, task = await _task(task_id)
+    # HRD-10a: the version of the read that the card shows. Taken BEFORE the
+    # card, from the same read, so a change while the card waits is a 412.
+    version = _card_version(task)
     plan = await _plan_task_edit(
         task,
         title=title,
@@ -1983,7 +1987,18 @@ async def update_task(
         context=_fields_block(plan.card, before=plan.before),
     ):
         return _not_confirmed()
-    updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
+    try:
+        if version:
+            updated = await patch(
+                f"/projects/tasks/{tid}", plan.payload, params=plan.params,
+                headers={"If-Match": version},
+            )
+        else:
+            # The flag is off: the request of before, byte for byte.
+            updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
+    except PreconditionFailed as exc:
+        # A 412 writes nothing. Each other refusal keeps its own path.
+        return _changed_since_card(tid, task, plan.payload, exc.current)
     updated["assignees"] = task.get("assignees") or []
     lane = plan.lane
     return "\n".join(
@@ -1994,6 +2009,105 @@ async def update_task(
             *_subtask_receipt(updated, "subtasks_completed", "complete"),
         ]
     )
+
+
+# ── HRD-10a: changed since the card ─────────────────────────────────────────
+#
+# `chat_failure_modes.md` §4 class C3. Behind `CHAT_CARD_PRECONDITION_ORGS`
+# (`ask_tools.card_precondition_on`), `update_task` sends the `updated_at` of
+# the read that the card shows as `If-Match`. A change while the card waits is
+# a 412, and the write does not happen. Owner decision A (2026-11-16): the
+# tool answers with text, and no new card shows unless the member asks.
+
+#: The name of each wire key of an edit, as a member reads it.
+_CHANGED_LABELS = {
+    "status_id": "status (id)",
+    "type_id": "type (id)",
+    "due_at": "due",
+    "start_date": "start",
+    "estimate_mins": "estimate",
+    "importance": "priority level",
+}
+
+
+def _card_version(task: dict[str, Any]) -> str:
+    """The ``If-Match`` token of *task*: its ``updated_at``, or ``""`` when
+    the flag is off for the run's org, or the row has no stamp. The org comes
+    from the run binding inside the reader, never from an argument (R5)."""
+    try:
+        from acb_skills.ask_tools import card_precondition_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return ""
+    if not card_precondition_on():
+        return ""
+    return str(task.get("updated_at") or "").strip()
+
+
+def _changed_value(value: Any) -> str:
+    """One value of the changed-since text. A task value can hold the words of
+    a stranger (a title, a tag, a custom value), so it goes through the same
+    fence as the card text (`data()`, «guillemets», one line). `_brief` also
+    caps it at `_DETAIL_NAME_MAX` characters, so a long description never
+    fills the answer."""
+    if value is None or value == "" or value == [] or value == {}:
+        return "(empty)"
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(v) for v in value)
+    elif isinstance(value, dict):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return _brief(value)
+
+
+def _changed_rows(
+    payload: dict[str, Any], before: dict[str, Any], now: dict[str, Any]
+) -> list[str]:
+    """One line for each field that the edit was going to change and that
+    another writer changed: the value that the card read, then the value now.
+    Only those fields. The rest of the task is never shown."""
+    rows: list[str] = []
+    for key in payload:
+        if key == "custom_fields":
+            old_cf = before.get("custom_fields") or {}
+            new_cf = now.get("custom_fields") or {}
+            for name in payload.get("custom_fields") or {}:
+                if old_cf.get(name) != new_cf.get(name):
+                    rows.append(
+                        f"  field {_brief(name)}: {_changed_value(old_cf.get(name))} → "
+                        f"{_changed_value(new_cf.get(name))}"
+                    )
+            continue
+        if before.get(key) != now.get(key):
+            rows.append(
+                f"  {_CHANGED_LABELS.get(key, key)}: {_changed_value(before.get(key))} → "
+                f"{_changed_value(now.get(key))}"
+            )
+    return rows
+
+
+def _changed_since_card(
+    tid: str, task: dict[str, Any], payload: dict[str, Any], current: dict[str, Any]
+) -> str:
+    """The answer of `update_task` to a 412 (HRD-10a). Nothing was written.
+
+    The words come from the HRD-7 table (``CARD_CHANGED_SINCE``). Then one
+    line for each field on the card that changed, from the row that the card
+    read (*task*) and the row of the 412 (*current*, ``detail.current``)."""
+    from acb_skills.ask_tools import CARD_CHANGED_SINCE, card_outcome_text
+
+    lines = [card_outcome_text(CARD_CHANGED_SINCE, f"The task {_ref(task)} was not updated.")]
+    if not current:
+        lines.append("The new values could not be read.")
+    else:
+        rows = _changed_rows(payload, task, current)
+        if rows:
+            lines.append("These fields on the card changed (on the card → now):")
+            lines.extend(rows)
+        else:
+            lines.append(
+                "No field on the card changed. Another part of the task changed."
+            )
+    lines.append(f"  full_id: {tid}")
+    return "\n".join(lines)
 
 
 class _EditPlan:
