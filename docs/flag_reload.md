@@ -33,6 +33,15 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`AI_TURN_KIND_NOWAIT_ORGS` stops the turn-kind wait of a delegated run
+(`ai_tier_routing.md` §4.3, task 3592). For each listed org, a delegated run
+asks no turn-kind question. It starts at once on the `chat` kind, and it does
+not wait up to 3 s. A `plan`, `analysis` or `code` task then keeps the
+agent's own tier. `*` lists every org, and the default is empty. Its one
+reader is `acb_skills.tier_policy.turn_kind_nowait_on`. Each delegated run asks
+it at its start, so a reload applies to the next run. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The

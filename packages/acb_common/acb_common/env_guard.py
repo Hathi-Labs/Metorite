@@ -152,6 +152,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # starts before the turn-kind answer. A restart can bill a prompt twice,
     # so only the operator writes it (ai_tier_routing.md §13.1).
     "AI_TURN_KIND_PARALLEL",
+    # Chat speed (task 3592): the orgs whose delegated runs ask no turn-kind
+    # question. It moves the tier that such a run pays for, so only the
+    # operator writes it (ai_tier_routing.md §4.3).
+    "AI_TURN_KIND_NOWAIT_ORGS",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).

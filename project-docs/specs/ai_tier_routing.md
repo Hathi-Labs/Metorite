@@ -65,6 +65,13 @@ turn starts on the `chat` tier while the turn-kind question runs. §4.3, §4.5
 and the box in §4.4 carry it. `AI_TURN_KIND_PARALLEL` ships empty, and a value
 on a box is the owner's (§13.1).
 
+**The delegated wait is built and dark (2026-11-17, task 3592).** A
+delegated run waited up to 3 s for the turn kind before its first request.
+With `AI_TURN_KIND_NOWAIT_ORGS` naming the org, such a run asks no question
+and starts at once on the `chat` kind. The flag ships empty, and a value on
+production is the owner's (§13.1). `ai_route.turn_kind` now also logs
+`waited_ms`. §4.3 carries the detail.
+
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
 
@@ -234,6 +241,7 @@ joins the flag on a box.
   `PROJECTS_AGENT_MODEL`. `copilot_chat_model` does not count (§8).
 - `ai_route.turn_kind` logs the kind, the source and `latency_ms`, so the
   median that Q8 asks for can be read on a box. S2 did not measure it live.
+  Task 3592 adds `waited_ms` (§4.3).
 - With the flag unset, a dump of three projects-assistant runs (six requests
   and every event) was byte-identical on main and on the branch.
 - **Not built in S2:** a sub-agent runs no policy of its own (§4.5, last
@@ -687,7 +695,30 @@ flag removes the wait for a native agent in the member's own web chat.
   reads the old request again.
 - A timeout reads as `chat`, as before, so it moves nothing.
 - The batch path, a sub-agent, a delegated run and a Copilot SDK agent still
-  wait for the answer, as before.
+  wait for the answer, as before. The next part changes that for a delegated
+  run.
+
+**The wait of a delegated run (task 3592), dark behind
+`AI_TURN_KIND_NOWAIT_ORGS`.** Production measured 20 `timeout` answers in 31
+turns on 2026-11-17, each at 3,000 ms. The flagged turn of the web chat does
+not wait for them. A delegated run does wait, and it has no seam to start again
+with a late answer.
+
+- With the flag naming the org of the run, a delegated run asks no question.
+  The source is `nowait`, and the kind is `chat`. The run starts at once.
+- A delegated run is a batch run under a parent run, or a Copilot SDK
+  sub-agent. A top-level batch run, for example WhatsApp, still asks.
+- The cheap sources stay as they are: `max`, `short` and `pinned`. The
+  keyword check still reads the effort from the member's words.
+- The cost: a `plan`, `analysis` or `code` task of a delegated run keeps the
+  agent's own tier. So a value on production is the owner's (§13.1).
+- The flagged turn of the web chat still asks the question. A late answer
+  moves nothing. A skip there would change the tier and the packs of the
+  main chat, so this part does not skip it.
+- `ai_route.turn_kind` logs `waited_ms`: the time that the run waited for
+  the answer before its first request. It is 0 when the run did not wait.
+  The other fields stay, so a count of `source=timeout` still works.
+- Fence: `tests/unit/test_turn_kind_nowait.py`.
 
 ### 4.3a The size of the work (owner, 2026-10-22)
 
@@ -1225,6 +1256,10 @@ needs restoring.
 - **`AI_TURN_KIND_PARALLEL`**, setting `ai_turn_kind_parallel: str = ""`. It
   is a comma list of agent names, or `*`. Empty means OFF. The one reader is
   `tier_policy.turn_kind_parallel_on`, and it fails closed (§4.3).
+- **`AI_TURN_KIND_NOWAIT_ORGS`**, setting `ai_turn_kind_nowait_orgs: str = ""`
+  (task 3592). It is a comma list of organization ids, or `*`. Empty means
+  OFF. The one reader is `tier_policy.turn_kind_nowait_on`, and it fails
+  closed. A reload applies a change (`docs/flag_reload.md`).
 - The UI flag must not turn on before the backend flag covers the agents the
   chat shows. A member with no picker and no policy gets Balanced for every
   step, which is today's real behaviour (§2.2). So the wrong order is safe,
@@ -1273,6 +1308,7 @@ needs restoring.
 | An existing `/chat` conversation keeps its own agent, and `?agent=` stays | `src/lib/tierRoutingControls.test.ts` | vitest |
 | The member's words give `thinking`, never `max`, in the SAME turn-kind request. A short message sends no request | `tests/unit/test_tier_policy_effort_from_text.py` | pytest |
 | The parallel start restarts only before the first output, cancels the first request cleanly, and changes nothing with the flag off | `tests/unit/test_turn_kind_parallel.py` | pytest |
+| A delegated run of a listed org asks no turn kind, every other run asks as before, and `ai_route.turn_kind` logs `waited_ms` | `tests/unit/test_turn_kind_nowait.py` | pytest |
 
 ---
 
@@ -1452,7 +1488,7 @@ uv run pytest tests/unit/test_system_one_tool.py tests/unit/test_tier_policy.py 
   tests/unit/test_no_direct_ai_vendor_calls.py \
   tests/unit/test_agent_list_tier_routed.py \
   tests/unit/test_tier_policy_effort_from_text.py \
-  tests/unit/test_turn_kind_parallel.py -q
+  tests/unit/test_turn_kind_parallel.py tests/unit/test_turn_kind_nowait.py -q
 
 # The gateway embeddings door (S5 item 2, task 3553)
 uv run pytest tests/unit/test_gateway_embeddings_console.py \
@@ -1482,6 +1518,7 @@ source `system_one`.
 |---|---|
 | Put an agent in `AI_TIER_ROUTING` on production | It changes what a live organization is charged |
 | Put an agent in `AI_TURN_KIND_PARALLEL` on production | A restart can bill a prompt twice, so it changes what a live organization pays |
+| Put an org in `AI_TURN_KIND_NOWAIT_ORGS` on production | A delegated `plan`, `analysis` or `code` task keeps the agent's own tier, so it changes the answer and what the org pays |
 | Turn on `NEXT_PUBLIC_AI_TIER_ROUTING` in production | It is build-time and reaches every organization at once |
 | Bind `tier-fast` to a vendor that is not yet a sub-processor | §6.6. A covered run would send content to it |
 
