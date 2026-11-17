@@ -23,8 +23,10 @@ OFF), when the act is in a shared mailbox (§19.4), or when the member turned
 ``learning`` off (D-PZ-7).
 
 **``via`` is the seam's word.** A route seam says ``app``. A chat card that
-calls the same route is also recorded as ``app`` until MM-1b (task 3614) adds
-a card marker, so that one yes is one row.
+calls the same route is also recorded as ``app`` by the route, and the card
+answer is its own row (``card_approve``, ``via=card``, ``gateway/card_act.py``,
+MM-1b). The two rows are by design. The card row has no features, so a habit
+never counts it with the route row.
 
 **Tenancy (R5).** The caller opens ``acb_common.db.tenant_session(org)`` and
 passes the session. The INSERT writes no ``organization_id``: the column
