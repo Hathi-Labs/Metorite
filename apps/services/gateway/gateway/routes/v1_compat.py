@@ -8,6 +8,7 @@ Serves both /v1/chat/completions (OpenAI standard) and /chat/completions (some S
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -670,10 +671,24 @@ async def _serve_via_router_stream(
     first: bytes | None = None
     try:
         first = await frames.__anext__()
+        if _is_lone_done(first):
+            # AO-3: a Console from before AO-3 answers a stream that no step
+            # opened with 200 and a lone `[DONE]`. Read it as the 503 that
+            # a newer Console sends, so the agent never reads an empty
+            # stream as a finished turn. The two units restart apart.
+            with contextlib.suppress(Exception):
+                await frames.aclose()
+            raise ConsoleRouterUnavailable("stream_never_opened")
     except StopAsyncIteration:
-        # The Router answered 200 and sent nothing. Rare, and not an error we
-        # can improve on: relay the empty stream.
-        first = None
+        # AO-3: the Router answered 200 and sent nothing. That is no answer,
+        # so it fails as an outage. Before AO-3 this relayed the empty
+        # stream, and the member saw an empty reply.
+        _router_failed()
+        _log.error(
+            "v1.router_unavailable", error="stream_empty", stream=True,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return _router_unavailable()
     except ConsoleRouterVerdict as verdict:
         # A VERDICT, relayed with its own status: 402 out of credits, 400 a
         # bare model id, 403 the breaker. Flattening these into one 502 would
@@ -775,6 +790,17 @@ async def _serve_via_router(
         # a customer to support instead of to the top-up they need.
         return JSONResponse(status_code=status, content=payload)
     return payload
+
+
+def _is_lone_done(chunk: bytes | None) -> bool:
+    """True for a first chunk that is only the SSE end, ``data: [DONE]``.
+
+    A real stream's first chunk holds a frame of the answer. The Console
+    pulls that frame before it answers 200 (``main._open_stream_chain``).
+    """
+    if not chunk:
+        return False
+    return chunk.strip() == b"data: [DONE]"
 
 
 def _router_unavailable() -> JSONResponse:

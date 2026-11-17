@@ -181,7 +181,6 @@ from customer_console.reasoning import (
     sampling_params_for,
 )
 from customer_console.router import (
-    SSE_DONE,
     ExtractedUsage,
     ResolvedTier,
     TierUnknown,
@@ -9043,9 +9042,9 @@ def _open_stream_or_release(
 
     🔴 **Every way the stream fails to open returns the hold (2026-09-28).**
     No body generator runs after a failed open, so nothing else would settle
-    it. A vendor refusal answers ``None`` and the route sends the closed-stream
-    sentinel. Any other error (an anyio error, a bug building the call) also
-    returns the hold, then propagates unchanged.
+    it. A vendor refusal answers ``None`` and the route answers
+    :func:`_stream_unavailable` (AO-3). Any other error (an anyio error, a bug
+    building the call) also returns the hold, then propagates unchanged.
 
     📌 Split out of `chat_completions` for C901, like `_preflight_gates`.
     """
@@ -9088,24 +9087,31 @@ def _open_stream_chain(
     )
 
 
-async def _stream_closed() -> AsyncIterator[bytes]:
-    """Every step refused before a frame existed. Close cleanly, meter nothing.
+#: The reason of a stream that no step could open (AO-3). OUR word, never the
+#: vendor's. A spend refusal keeps its own reasons and statuses.
+STREAM_UNAVAILABLE = "unavailable"
 
-    A client that never sees the sentinel waits for its own timeout, so it
-    gets the sentinel and nothing else.
 
-    ⚠️ **The 200 here is a CHOICE now, and it was a constraint before.** While
-    the open lived inside the body generator the status line had already gone
-    out, and a 502 could not be expressed at all. The walk moved into the
-    route, so that 502 became reachable — and this slice still does not raise
-    it, because changing what a streaming caller is answered WITH is not a
-    failover change. ``test_a_stream_that_never_starts_writes_no_usage_row``
-    pins the 200 and the sentinel.
+def _stream_unavailable() -> HTTPException:
+    """Every step refused before a frame existed. Say so with a status.
+
+    🔴 **A 503, not a 200 with a lone ``[DONE]`` (AO-3, 2026-11-17).** The
+    Anthropic account ran out of credits on production, and every chat turn
+    got the old sentinel. The gateway relayed it, and the agent read an empty
+    stream as a finished turn. The member saw an empty reply. The walk runs
+    before the response starts, so a status is still possible here.
+
+    The body is ``{"detail": {"reason": "unavailable"}}``. It holds no vendor
+    text, because a vendor message can quote the request. The gateway reads
+    the 5xx class (``ConsoleRouterUnavailable``), and the chat shows the
+    ``ai_unavailable`` card.
 
     ⚠️ **No usage row, and no refusal row either.** The wall was the vendor's,
-    not the customer's, and ``_REFUSAL_REASONS`` stays closed (§8.1).
+    not the customer's, and ``_REFUSAL_REASONS`` stays closed (§8.1). So this
+    is raised directly, never through ``_raise_spend_refusal``. Fence:
+    ``test_a_stream_that_never_starts_writes_no_usage_row``.
     """
-    yield SSE_DONE
+    return HTTPException(status_code=503, detail={"reason": STREAM_UNAVAILABLE})
 
 
 async def _streamed_completion(
@@ -9509,14 +9515,11 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
             watch=_chain_watch(credentials),
         )
         if opened is None:
-            # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
-            # raises. `_stream_closed` holds the reason this stayed a 200 once
-            # the walk moved out of the body generator and made a 502
-            # reachable. The meter writes nothing, and `_REFUSAL_REASONS`
+            # 🔴 AO-3: a 503 with the reason `unavailable`, before any frame.
+            # `_stream_unavailable` holds why it is no longer a 200 with a
+            # lone sentinel. The meter writes nothing, and `_REFUSAL_REASONS`
             # stays closed: an upstream outage is not a customer wall (§8.1).
-            return StreamingResponse(
-                _stream_closed(), media_type="text/event-stream", headers=headers
-            )
+            raise _stream_unavailable()
         head, source, resolved = opened
 
         return StreamingResponse(

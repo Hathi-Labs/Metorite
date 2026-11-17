@@ -772,14 +772,41 @@ class TestStreaming:
         before = TestMetering._count(db, slug)
         router_mod.set_provider_call(_streaming_provider(fail_before_first=True))
 
-        with client.stream("POST", "/v1/chat/completions", headers=key, json={
-                "model": "tier-balanced", "stream": True,
-                "messages": [{"role": "user", "content": "x"}]}) as r:
-            body = b"".join(r.iter_bytes())
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
 
         assert TestMetering._count(db, slug) == before
-        # The stream still closes cleanly, or the client waits for a timeout.
-        assert body == b"data: [DONE]\n\n"
+        # AO-3 (2026-11-17): a status, not a 200 with a lone `[DONE]`. The
+        # old sentinel read as an empty answer, and the member saw an empty
+        # reply. The body names our class and no vendor text.
+        assert r.status_code == 503, r.text
+        assert not r.headers["content-type"].startswith("text/event-stream")
+        assert r.json() == {"detail": {"reason": "unavailable"}}
+        # The wall was the vendor's, so the meter records no refusal (§8.1).
+        assert TestMetering._refusals(db, slug) == []
+
+    def test_a_vendor_refusal_of_the_stream_names_no_vendor_text(
+            self, client, org_key):
+        """AO-3. A vendor's own words can quote the request, so the 503
+        carries our reason only. Mutation: answer ``detail=str(failed)``, and
+        the secret word reaches the body."""
+        _, key = org_key
+
+        class _Billing(Exception):
+            status_code = 400
+
+        async def _stub(**kwargs):
+            raise _Billing("SECRETWORD9 Your credit balance is too low")
+
+        router_mod.set_provider_call(_stub)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert r.status_code == 503, r.text
+        assert r.json() == {"detail": {"reason": "unavailable"}}
+        assert "SECRETWORD9" not in r.text
 
     def test_an_empty_stream_writes_no_usage_row(self, client, org_key, db):
         # A provider that opens the stream and sends nothing has delivered
@@ -962,16 +989,16 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         router_mod.set_provider_call(
             self._provider(seen, primary_fails=_BadRequest("malformed")))
 
-        with client.stream("POST", "/v1/chat/completions", headers=key, json={
-                "model": tier, "stream": True,
-                "messages": [{"role": "user", "content": "x"}]}) as r:
-            body = b"".join(r.iter_bytes())
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
 
         assert seen == [self.PRIMARY]
-        # Clause 5: a walk that ends with nothing still closes cleanly, and
-        # writes no row. `_REFUSAL_REASONS` stays closed — this wall was the
-        # vendor's, not the customer's.
-        assert body == b"data: [DONE]\n\n"
+        # Clause 5, as AO-3 replaced it: a walk that ends with nothing answers
+        # 503 `unavailable`, and writes no row. `_REFUSAL_REASONS` stays
+        # closed — this wall was the vendor's, not the customer's.
+        assert r.status_code == 503, r.text
+        assert r.json() == {"detail": {"reason": "unavailable"}}
         assert TestMetering._count(db, slug) == before
 
     # ── the other side of the boundary ──
