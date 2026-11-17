@@ -6026,25 +6026,36 @@ def _chat_file_refs(attachments: list[str] | None) -> list[str]:
     ``make_document`` and ``write_artifact`` give the path
     ``outputs/<thread slug>/<file>``. The gateway takes such a file only as
     ``artifact:<agent>:<path>``, the one form that pins a digest of the bytes
-    that the card showed. So the tool writes the ref, with the agent of the
-    chat that holds the folder: ``write_artifact._destination``, which gives
-    the chat at the top for a delegated run. The gateway still checks the
-    room and the digest, and still refuses a bare path. With no bound run,
-    nothing changes. ``agent_paths.thread_file_parts`` is the one shape
-    rule, and any other spec stays as it is."""
+    that the card showed. So the tool writes the ref.
+
+    The agent of the ref is the agent whose working dir holds the folder:
+    the dir that ``make_document`` wrote to. It comes from the
+    ``workspace_root`` of ``write_artifact._destination`` (the chat at the
+    top for a delegated run), as ``agent_paths.workspace_blob_key`` reads
+    it: ``state/<agent>/<slug>``. It never comes from ``agent_name``: a pack
+    call runs in ``tool_packs.owner_scope``, which sets ``agent_name`` to the
+    owner of the pack (``email-assistant``) and keeps ``workspace_root``.
+
+    The gateway still checks the room and the digest, and still refuses a
+    bare path. With no bound run, or a working dir outside ``state/`` (an
+    app's own dir), nothing changes. ``agent_paths.thread_file_parts`` is the
+    one shape rule, and any other spec stays as it is."""
     if not attachments:
         return attachments
     try:
         import importlib
 
-        from acb_skills.agent_paths import thread_file_parts
+        from acb_skills.agent_paths import state_root, thread_file_parts, workspace_blob_key
 
         # The package exports the tool under the module's own name, so the
         # module comes through importlib, as ``acb_skills.documents`` does.
         wa = importlib.import_module("acb_skills.write_artifact")
     except ImportError:
         return attachments
-    agent = str(wa._destination(wa.artifact_context())[0].get("agent_name") or "").strip()
+    root = str(wa._destination(wa.artifact_context())[0].get("workspace_root") or "").strip()
+    if not root or Path(root).parent.parent != state_root():
+        return attachments
+    agent = workspace_blob_key(root)[0]
     if not agent or ":" in agent:
         return attachments
     out: list[str] = []
@@ -6100,6 +6111,37 @@ def _not_attachable(paths: list[str], why: str = "") -> str:
         head = f"The files {listed} are not ones this mail can attach."
         why = why or "They are not files in your own workspace."
     return f"Not sent. {head} {why} {_FILE_NEXT_STEP}"
+
+
+#: The heads of a gateway refusal that is about a file of the send (task
+#: 3598). The gateway's own words for a file that cannot go: a workspace or
+#: chat file (``send._artifact_refused``), a Metorite file that the member
+#: cannot see, files over the cap, and a reference of no known form.
+_FILE_REFUSAL_HEADS = (
+    "The attachment '", "A named Metorite file", "The files are larger than",
+    "A task file is too large", "Name at most", "A file of a mail goes on",
+)
+
+
+def _refused_text(detail: object) -> str:
+    """``Not sent.`` and the gateway's words. When the words refuse a file,
+    the next step of task 2491 follows, so the model asks the member before
+    a send without the file (task 3598, an ``artifact:`` ref too)."""
+    text = str(detail or "").strip()
+    heads: tuple[str, ...] = _FILE_REFUSAL_HEADS
+    try:
+        from acb_skills.held_card import (
+            HELD_WORKSPACE_REFUSED,
+            METORITE_FILE_REFUSED,
+            WORKSPACE_FILE_REFUSED,
+        )
+
+        heads += (HELD_WORKSPACE_REFUSED, METORITE_FILE_REFUSED, WORKSPACE_FILE_REFUSED)
+    except ImportError:
+        pass
+    if text.startswith(heads):
+        return f"Not sent. {text} {_FILE_NEXT_STEP}"
+    return f"Not sent. {text}"
 
 
 async def _unattachable_files(refs: list[dict[str, Any]]) -> str | None:
@@ -6535,7 +6577,7 @@ async def send_email(
                                        {"refs": metorite}) or {}).get("files") or [])
         except GatewayError as exc:
             if exc.status in (404, 409, 422):
-                return f"Not sent. {str(getattr(exc, 'detail', '') or exc)}"
+                return _refused_text(getattr(exc, "detail", "") or exc)
             raise
         payload["metorite_files"] = [{"ref": f["ref"], "digest": f["digest"]} for f in shared]
     card_files: list[tuple[str, str]] = (
@@ -6902,7 +6944,7 @@ async def _new_mail_card(
         }) or {}
     except GatewayError as exc:
         if exc.status in (404, 409, 422):
-            return f"Not sent. {getattr(exc, 'detail', '') or exc!s}"
+            return _refused_text(getattr(exc, "detail", "") or exc)
         raise
     card_id = str(prep.get("card_id") or "")
     if not card_id:

@@ -47,8 +47,12 @@ Mutations this suite catches (R7):
 * the email tool drops its rewrite of a bare chat path
   (``agents._chat_file_refs``):
   ``test_a_bare_make_document_path_sends_through_the_digest_door`` goes red;
-* the rewrite takes the run's own agent, not the chat that holds the folder:
-  ``test_a_delegated_run_names_the_agent_of_the_chat_at_the_top`` goes red.
+* the rewrite takes the agent from ``agent_name``, which a pack call sets to
+  the owner of the pack: the ``test_a_pack_call_*`` tests go red;
+* the rewrite reads the run's own working dir, not the chat at the top:
+  ``test_a_delegated_run_names_the_agent_of_the_chat_at_the_top`` goes red;
+* the rewrite runs before the held branch:
+  ``test_a_held_chat_gets_no_rewrite_and_no_chat_file`` goes red.
 
 Run::
 
@@ -809,6 +813,15 @@ def tool(monkeypatch, disk, routes) -> dict[str, Any]:
             if path == "/email/send":
                 return await send.send_email(
                     send.SendEmailRequest(**(body or {})), BackgroundTasks(), user=alice)
+            if path == "/email/new-card":
+                from gateway.routes.email.automation import new_mail_card as nm
+
+                return await nm.new_mail_card(nm.NewMailCardRequest(**(body or {})), alice)
+            if path == "/email/new-card/act":
+                from gateway.routes.email.automation import new_mail_card as nm
+
+                return await nm.new_mail_card_act(
+                    nm.NewMailActRequest(**(body or {})), BackgroundTasks(), alice)
         except HTTPException as exc:
             raise agents.GatewayError(f"Email POST failed ({exc.status_code})",
                                       exc.status_code, detail=exc.detail) from None
@@ -855,19 +868,27 @@ async def test_the_failing_turn_sends_the_file_by_its_artifact_ref(tool, disk) -
     assert att["content"] == b"%PDF-DEEP" and att["filename"] == "deep.pdf"
 
 
-def _bind_run(disk: _Disk, agent: str, **extra: Any) -> None:
-    """Bind the artifact context of a chat run, as the executor binds it."""
+def _bind_run(disk: _Disk, agent: str, root: Path | None = None, **extra: Any) -> None:
+    """Bind the artifact context of a chat run, as the executor binds it:
+    the run's agent, its session and its working dir (``disk.a``, the
+    orchestrator's tenant dir of org A, unless *root* names another)."""
     from acb_skills.write_artifact import bind_artifact_context
 
     bind_artifact_context(session_id=disk.s_alice, agent_name=agent,
-                          workspace_root=str(disk.a), **extra)
+                          workspace_root=str(root or disk.a), **extra)
+
+
+#: The ref that the tool writes for a file of ``disk.a``: the agent part is
+#: the agent dir of that working dir (``state/<agent>/<slug>``).
+def _ref(rel: str) -> str:
+    return f"artifact:{_ORCH}:{rel}"
 
 
 async def test_a_bare_make_document_path_sends_through_the_digest_door(tool, disk) -> None:
     """Opus round 2, P1: the model passes the path that ``make_document``
-    gave, in the bare form. The tool writes the artifact ref of the chat
-    that holds the folder, so the card and the send check its digest, and
-    the file goes. ``/email/send`` carries no ``artifacts``.
+    gave, in the bare form. The tool writes the artifact ref of the agent
+    whose working dir holds the folder, so the card and the send check its
+    digest, and the file goes. ``/email/send`` carries no ``artifacts``.
     Mutation: drop ``_chat_file_refs`` → "Not sent." → red."""
     from acb_skills.write_artifact import artifact_context_scope
 
@@ -879,34 +900,145 @@ async def test_a_bare_make_document_path_sends_through_the_digest_door(tool, dis
     assert out.startswith("Sent email to"), out
     [sent] = [b for p, b in tool["bodies"] if p == "/email/send"]
     assert "artifacts" not in sent
-    assert [m["ref"] for m in sent["metorite_files"]] == [f"artifact:orchestrator:{rel}"]
+    assert [m["ref"] for m in sent["metorite_files"]] == [_ref(rel)]
     [[att]] = tool["sent"]
     assert att["content"] == b"%PDF-DEEP"
 
 
+async def test_a_pack_call_rewrites_a_bare_path_and_sends_it(tool, disk) -> None:
+    """Opus round 3, P0. On the one assistant's pack path, ``send_email``
+    runs inside ``tool_packs.owner_scope("email-assistant", False)``, which
+    sets ``agent_name`` to the owner of the pack. The ref still names the
+    agent whose working dir holds the folder, and the file goes.
+    Mutation: take the agent from ``agent_name`` → ``artifact:email-
+    assistant:...``, which the gateway refuses → red."""
+    from acb_skills.tool_packs import owner_scope
+    from acb_skills.write_artifact import artifact_context, artifact_context_scope
+
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    with artifact_context_scope():
+        _bind_run(disk, "orchestrator")
+        with owner_scope("email-assistant", False):
+            assert artifact_context()["agent_name"] == "email-assistant"
+            out = await agents.send_email(F.BOX, body="The report is attached.",
+                                          to=[F.KNOWN], subject="Report", attachments=[rel])
+    assert out.startswith("Sent email to"), out
+    [sent] = [b for p, b in tool["bodies"] if p == "/email/send"]
+    assert [m["ref"] for m in sent["metorite_files"]] == [_ref(rel)]
+    [[att]] = tool["sent"]
+    assert att["content"] == b"%PDF-DEEP"
+
+
+@pytest.fixture
+def new_card_world(monkeypatch, tool) -> dict[str, Any]:
+    """The REAL new-mail card routes behind ``tool``: the record and the
+    answer in a fake Redis, and the mailbox checks as stand-ins. The act
+    sends through the REAL ``POST /email/send``, so its digest check runs."""
+    from acb_common import get_settings
+    from acb_skills import ask_tools
+    from acb_skills import reply_card as rcard
+    from gateway.routes.email import core
+    from gateway.routes.email.automation import held_card as hc
+    from gateway.routes.email.automation import new_mail_card as nm
+
+    monkeypatch.setattr(get_settings(), "email_edit_card_orgs", "*")
+    monkeypatch.setattr(nm, "ANSWER_WAIT_S", 0.0)
+    F.install_redis(monkeypatch)
+    F.install_db(monkeypatch)
+
+    async def owner(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(core, "_assert_account_owner", owner)
+    monkeypatch.setattr(nm, "_tenant_session", hc._tenant_session)
+    monkeypatch.setattr(nm, "resolve_self", hc.resolve_self)
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: True)
+    thread = "th-3598"
+
+    async def card(**kw: Any) -> Any:
+        """Alice presses Send on the card, as it shows."""
+        mail = {"kind": "new", "action": "send", "subject": "Report",
+                "body": "The report is attached.", "to": [F.KNOWN], "cc": [], "bcc": []}
+        answer = "APPROVE " + json.dumps({"reply": mail})
+        cid = str(kw.get("request_id") or "")
+        await rcard.record_reply_answer(ORG_A, cid, ALICE, answer, thread)
+        return ask_tools.ReplyAnswer(cid, answer, rcard.parse_new_mail_answer(answer),
+                                     ALICE, thread)
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    return tool
+
+
+async def test_a_pack_call_sends_a_bare_path_through_the_new_mail_card(
+    new_card_world, disk,
+) -> None:
+    """The one email card, on the pack path. The tool writes the ref, the
+    REAL ``POST /email/new-card`` resolves it and records its digest, and the
+    REAL act sends it through ``POST /email/send``, which checks the digest
+    again. Mutation: take the agent from ``agent_name`` → red."""
+    from acb_skills.tool_packs import owner_scope
+    from acb_skills.write_artifact import artifact_context_scope
+
+    tool = new_card_world
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    with artifact_context_scope():
+        _bind_run(disk, "orchestrator")
+        with owner_scope("email-assistant", False):
+            out = await agents.send_email(F.BOX, body="The report is attached.",
+                                          to=[F.KNOWN], subject="Report", attachments=[rel])
+    [card] = [b for p, b in tool["bodies"] if p == "/email/new-card"]
+    assert card["metorite_files"] == [_ref(rel)] and card["artifacts"] == []
+    assert "/email/new-card/act" in tool["posts"], (out, tool["posts"])
+    [[att]] = tool["sent"]
+    assert att["content"] == b"%PDF-DEEP" and att["filename"] == "deep.pdf"
+
+
 async def test_a_delegated_run_names_the_agent_of_the_chat_at_the_top(tool, disk) -> None:
-    """A sub-run of the email assistant carries the chat at the top in
-    ``deliver_to``. The ref names that chat's agent, never the sub-run's own.
-    Mutation: read the run's own ``agent_name`` → red."""
+    """A sub-run of the email assistant works in the member's own folder, and
+    carries the chat at the top in ``deliver_to``. The ref names the agent of
+    the top chat's working dir, never the sub-run's own.
+    Mutation: read the sub-run's own ``workspace_root`` → red."""
     from acb_skills.write_artifact import DELIVER_TO, artifact_context_scope
 
     rel = disk.rel(disk.s_alice, "q3/deep.pdf")
     top = {"workspace_root": str(disk.a), "session_id": disk.s_alice,
            "agent_name": "orchestrator", "instance": ""}
     with artifact_context_scope():
-        _bind_run(disk, "email-assistant", **{DELIVER_TO: top})
+        _bind_run(disk, "email-assistant", disk.alice_ea, **{DELIVER_TO: top})
         out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
                                       attachments=[rel])
     assert out.startswith("Sent email to"), out
     [sent] = [b for p, b in tool["bodies"] if p == "/email/send"]
-    assert [m["ref"] for m in sent["metorite_files"]] == [f"artifact:orchestrator:{rel}"]
+    assert [m["ref"] for m in sent["metorite_files"]] == [_ref(rel)]
+
+
+async def test_a_held_chat_gets_no_rewrite_and_no_chat_file(tool, disk, monkeypatch) -> None:
+    """A held run sends only through the held card, which takes no bare
+    path and no chat file. The rewrite runs after the held branch, so the
+    held card's own refusal comes back and nothing is posted.
+    Mutation: call the rewrite before the held branch → a post → red."""
+    from acb_skills.write_artifact import artifact_context_scope
+
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: True)
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    with artifact_context_scope():
+        _bind_run(disk, "orchestrator")
+        out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
+                                      attachments=[rel])
+    assert out.startswith("Not sent."), out
+    import acb_skills.held_card as H
+
+    assert H.WORKSPACE_FILE_REFUSED in out
+    assert tool["posts"] == [] and tool["sent"] == []
 
 
 async def test_the_rewrite_reaches_the_new_mail_card_and_keeps_other_files(
     tool, disk, monkeypatch,
 ) -> None:
     """The one email card gets the ref too. A path of no chat folder, a named
-    ``<agent>:<path>`` and a Metorite ref stay as the model wrote them."""
+    ``<agent>:<path>`` and a Metorite ref stay as the model wrote them. A
+    working dir outside ``state/`` (an app's own dir) gives no rewrite."""
     from acb_skills.write_artifact import artifact_context_scope
 
     seen: dict[str, Any] = {}
@@ -921,12 +1053,15 @@ async def test_the_rewrite_reaches_the_new_mail_card_and_keeps_other_files(
     keep = ["outputs/quote.md", f"orchestrator:{rel}", "knowledge:x"]
     assert agents._chat_file_refs([rel, *keep]) == [rel, *keep]  # no bound run
     with artifact_context_scope():
+        _bind_run(disk, "orchestrator", disk.base / "an-app-dir")
+        assert agents._chat_file_refs([rel]) == [rel]
+    with artifact_context_scope():
         _bind_run(disk, "orchestrator")
-        assert agents._chat_file_refs([rel, *keep]) == [f"artifact:orchestrator:{rel}", *keep]
+        assert agents._chat_file_refs([rel, *keep]) == [_ref(rel), *keep]
         assert agents._chat_file_refs(None) is None
         await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
                                 attachments=[rel])
-    assert seen["attachments"] == [f"artifact:orchestrator:{rel}"]
+    assert seen["attachments"] == [_ref(rel)]
 
 
 @pytest.mark.parametrize("form", ["bare", "agent-path"])
@@ -966,9 +1101,29 @@ async def test_the_root_name_of_the_turn_stays_refused(tool, disk) -> None:
 
 
 async def test_a_colleagues_chat_file_does_not_go(tool, disk) -> None:
+    """Opus round 3, P2: a refused ``artifact:`` ref gets the next step of
+    task 2491 too, so the model asks before a send without the file."""
     rel = disk.rel(disk.s_bob, "bob.pdf")
     for name in (f"artifact:orchestrator:{rel}", rel):
         out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
                                       attachments=[name])
         assert out.startswith("Not sent."), out
+        assert out.endswith(agents._FILE_NEXT_STEP), out
     assert "/email/send" not in tool["posts"] and tool["sent"] == []
+
+
+async def test_a_refused_artifact_ref_on_the_new_mail_card_gets_the_next_step(
+    new_card_world, disk,
+) -> None:
+    """The REAL ``POST /email/new-card`` refuses a colleague's chat file with
+    422. The tool answer names the gateway's reason and the next step, and
+    no card shows. A refusal that is not about a file gets no next step."""
+    tool = new_card_world
+    rel = disk.rel(disk.s_bob, "bob.pdf")
+    out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
+                                  attachments=[f"artifact:orchestrator:{rel}"])
+    assert out.startswith("Not sent. The attachment '"), out
+    assert out.endswith(agents._FILE_NEXT_STEP)
+    assert "/email/new-card/act" not in tool["posts"] and tool["sent"] == []
+    assert agents._refused_text("The email has no text, so nothing was sent.") == (
+        "Not sent. The email has no text, so nothing was sent.")

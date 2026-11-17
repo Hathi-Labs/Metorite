@@ -22078,12 +22078,18 @@ already see. Three stores own such a file. Each reference names its store.
     in them with 422, as before this task.
   - The model often passes the bare path that `make_document` gave. So
     `send_email` writes the artifact ref for it (`agents._chat_file_refs`).
-    The agent of the ref is the chat that holds the folder
-    (`write_artifact._destination`, the chat at the top for a delegated run).
-    The ref then goes through the digest door like any other. A held chat
-    and a run with no bound context keep the bare path, and it is refused.
-    `agent_paths.thread_file_parts` is the one shape rule, for the tool and
-    the gateway.
+    The agent of the ref is the one whose working dir holds the folder. The
+    tool reads it from the `workspace_root` of `write_artifact._destination`
+    (the chat at the top for a delegated run), through
+    `agent_paths.workspace_blob_key`. It never reads `agent_name`, because a
+    pack call (`tool_packs.owner_scope`) sets that to the owner of the pack.
+    The ref then goes through the digest door like any other, on the plain
+    card and on the one email card. A held chat, a run with no bound context
+    and a working dir outside `state/` keep the bare path, and it is
+    refused. `agent_paths.thread_file_parts` is the one shape rule, for the
+    tool and the gateway.
+  - A refused file of a send, an `artifact:` ref too, gets the next step of
+    task 2491: the model asks the member before a send without the file.
   - For an artifact ref, `send.resolve_artifact_path` reads the member's own
     folder first. With no file there, `workspace._chat_thread_file` reads the
     chat folder of the path. The member must have `can_send` in that chat
