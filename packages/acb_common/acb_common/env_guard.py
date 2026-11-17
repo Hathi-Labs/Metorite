@@ -169,6 +169,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # how they matched. It changes the order and the text of each answer, so
     # only the owner writes it (work_plan.md section 6 D4).
     "FIND_ORGS",
+    # WS-FIND HRD-21 (find_engine.md section 8): the orgs whose search reads
+    # the member's own past chats. It puts the text of old chats into a run,
+    # so only the owner writes it. The `CHAT_` prefix covers it too, and the
+    # exact name keeps the fence if that prefix ever narrows.
+    "CHAT_SEARCH_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",

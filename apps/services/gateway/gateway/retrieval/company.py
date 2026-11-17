@@ -11,9 +11,10 @@ answers ``{query, hits, skipped}``. No chat model runs.
   one search costs at most one embedding call and no chat model.
 
 * **The member comes from the session.** The route takes ``q``, ``apps``,
-  ``k`` and ``after`` (a date, CX-1) and nothing else, so no tenant and no
-  member can come from input (R5, R11). Each source passes this request's
-  member to its app.
+  ``k``, ``after`` (a date, CX-1), ``verified``, ``explain`` and
+  ``current_chat`` (HRD-21), and no tenant and no member can come from input
+  (R5, R11). ``current_chat`` only takes a chat away. Each source passes this
+  request's member to its app.
 * **Each source checks its own gate.** The route adds no visibility rule of
   its own. A member without an app gets nothing from it.
 * **The sources run at once, four at most** (HRD-4, D-FIND-6). The pool
@@ -128,13 +129,28 @@ a closed list of :mod:`gateway.retrieval.find`:
   name of the word itself. A low ``covers``, or a first pass with no hit, is
   no proof. While ``find.ABSENCE_CLAIMS`` is off, it is never true;
 * a zero answer gets ``where_else``: at most 3 entries, the skipped apps, the
-  past chats while ``CHAT_SEARCH_ORGS`` does not name the org, then the apps
-  that are not open to the member. No entry names a record;
+  past chats while the search did not ask them (HRD-21), then the apps that
+  are not open to the member. No entry names a record;
 * ``explain`` runs each rung with no early stop and answers the trace of
   :func:`_explained` in place of the hits and the related records;
 * each search writes one ``search.company.ladder`` line: the hits, the ms of
   each rung, ``miss`` and ``explain``. It holds no word, no name, no address
   and no id.
+
+**The past chats, behind ``CHAT_SEARCH_ORGS``** (WS-FIND HRD-21, task 3225,
+``find_engine.md`` §3.1 rung 6, §6 and D-FIND-5). The ``chat`` source reads the
+member's own solo chats with Mira, never the current chat:
+
+* the route asks it only when its switch is open for the member and the
+  request names the current chat (:func:`_chat_current`). Else the source is
+  not in the order at all, and the answer is the one of before HRD-21, byte
+  for byte. With no current chat, no past chat shows;
+* it answers in pass 1 only. Its hits leave ``found`` before the miss rule,
+  the words alone and the near step, and they join the one list again before
+  :func:`by_fusion`. With ``FIND_ORGS`` on, each says ``matched_by`` ``chat``;
+* "Where else" names the past chats only when the search did not ask them,
+  and never names ``chat`` as an app that is not open. The trace gives rung 6
+  one row (``find.trace_rows``).
 
 **A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
 §8.4 door 3). When Knowledge answered with zero hits, the route hands the
@@ -390,17 +406,28 @@ def _kept(hit: Hit, after: datetime) -> bool:
     return stamped is None or stamped >= after
 
 
-def _order(apps: str | None) -> list[str]:
+def _known(user: UserContext) -> list[str]:
+    """The source keys that the route knows for *user*, in the order of the
+    registry. ``chat`` is known only while ``CHAT_SEARCH_ORGS`` names the org
+    (HRD-21). So with the flag off, ``apps=chat`` and the 422 of an unknown
+    app are the ones of before HRD-21, byte for byte, and no text names a
+    dark source."""
+    named = find.chat_search_named(user.organization_id)
+    return [key for key in REGISTRY if key != find.CHAT_KEY or named]
+
+
+def _order(apps: str | None, user: UserContext) -> list[str]:
     """The source keys to ask, the named ones first. An unknown key is a 422."""
+    known = _known(user)
     named = [a.strip().lower() for a in (apps or "").split(",") if a.strip()]
-    unknown = [a for a in named if a not in REGISTRY]
+    unknown = [a for a in named if a not in known]
     if unknown:
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown app {unknown[0]!r}. One of: {', '.join(REGISTRY)}.",
+            detail=f"Unknown app {unknown[0]!r}. One of: {', '.join(known)}.",
         )
     first = list(dict.fromkeys(named))
-    return first + [key for key in REGISTRY if key not in first]
+    return first + [key for key in known if key not in first]
 
 
 def _meaning_allowed(user: UserContext) -> bool:
@@ -1168,10 +1195,13 @@ async def _find_tail(
     answer: dict[str, Any], user: UserContext, ladder: _Ladder, *, shown: list[Hit],
     found: dict[str, list[Hit]], words_of: list[str], skipped: list[str],
     answered: list[str], limited: bool, hybrid: bool, since: datetime | None, until: float,
-    near: list[dict[str, Any]], first_zero: bool,
+    near: list[dict[str, Any]], first_zero: bool, chat_asked: bool = False,
 ) -> dict[str, Any]:
     """The end of an answer with ``FIND_ORGS`` on: rung 4 (FIND-3), then the
     log line, and the honest zero or the trace (FIND-4).
+
+    *chat_asked* is true when this search asked the ``chat`` source (HRD-21).
+    Only then does "Where else" leave out the line of the past chats.
 
     FIND-3: rung 4 runs after every other pass, so a related record never
     counts in the hits, the coverage, ``near`` or ``broadened``. The log line
@@ -1189,6 +1219,9 @@ async def _find_tail(
                        notes=ladder.notes["related"])
     ladder.ms["related"] = _ms_since(loop, started)
     why = ladder.skip_reasons(skipped)
+    # The miss of the FINAL answer: every hit, a past chat too (HRD-21). A past
+    # chat holds every word (`find.stamp_first`), so it makes no miss. The
+    # trigger of pass 2 read the records only (`company_search`).
     miss = bool(find.missed(found, words_of))
     _events.info(
         "search.company.ladder", hits=len(shown), exact_ms=ladder.ms["exact"],
@@ -1209,8 +1242,7 @@ async def _find_tail(
         miss=miss, shown=shown_text, looked=ladder.looked)
     if not shown and not answer.get("related"):
         answer["where_else"] = find.where_else(
-            skipped, why, chat_named=find.chat_search_named(user.organization_id),
-            not_open=_not_open(user))
+            skipped, why, chat_named=chat_asked, not_open=_not_open(user))
     return answer
 
 
@@ -1244,9 +1276,62 @@ def _not_open(user: UserContext) -> list[str]:
 
     A source that was never open (a dark ``studio``, :func:`_never_open`) is
     not named, so a member who holds ``feature:studio`` reads the same lines
-    as one who does not."""
+    as one who does not. The past chats have their own line (``past_chats``,
+    HRD-21), so ``chat`` is never named here."""
     return [key for key in REGISTRY
-            if not REGISTRY[key].reaches(user) and not _never_open(user, key)]
+            if key != find.CHAT_KEY and not REGISTRY[key].reaches(user)
+            and not _never_open(user, key)]
+
+
+#: The most characters of ``current_chat`` (HRD-21): the cap of the chat
+#: tool's own read of its thread (``acb_skills.company_search_tools``).
+CURRENT_CHAT_MAX = 200
+
+
+def _chat_current(user: UserContext, current_chat: str | None, words: str) -> str | None:
+    """The id of the chat that the search runs in, when the route asks the
+    ``chat`` source, else ``None`` (HRD-21, ``find_engine.md`` §6, D-FIND-5).
+
+    The route asks the source only when its switch is open for the member
+    (``Source.reaches``: ``feature:chat`` and ``CHAT_SEARCH_ORGS``) and the
+    request names the current chat, in at most :data:`CURRENT_CHAT_MAX`
+    characters. So a closed switch reads no value of the parameter, and with
+    no current chat no past chat shows (fail closed). The id only takes a
+    chat away: it never names a chat to read, a member or an org.
+
+    The query must also give the words that a past chat can prove
+    (``find.chat_words``, the ONE rule that the reader reads too, review
+    P2-2). With none, or more than ``find.CHAT_MAX_WORDS``, the source is not
+    asked. So it is not in ``searched``, "Where else" names the past chats,
+    and rung 6 of the trace reads ``closed``.
+    """
+    source = REGISTRY.get(find.CHAT_KEY)
+    if source is None or not source.reaches(user):
+        return None
+    here = (current_chat or "").strip()
+    if not here or len(here) > CURRENT_CHAT_MAX:
+        return None
+    if find.chat_words(words) is None:
+        return None
+    return here
+
+
+def _options(recency: bool, since: datetime | None, current: str | None) -> dict[str, Any]:
+    """The options of each ask. Off, none, as before CX-1. *current* goes to
+    the ``chat`` source only when the route asks it (HRD-21). A source that
+    does not declare an option ignores it. Pure."""
+    options: dict[str, Any] = {"after": since, "reviewed": True, "vectors": True} if recency else {}
+    if current is not None:
+        options["current"] = current
+    return options
+
+
+def _rejoined(found: dict[str, list[Hit]], past: list[Hit] | None) -> dict[str, list[Hit]]:
+    """*found* with the past chats of pass 1 again, when the route asked them
+    (HRD-21). ``None`` leaves *found* as it is. Pure."""
+    if past is None:
+        return found
+    return {**found, find.CHAT_KEY: past}
 
 
 def _flags_off(user: UserContext, hybrid: bool) -> list[str]:
@@ -1303,6 +1388,10 @@ async def company_search(
     # FIND-4. A plain default, read only with FIND_ORGS on. Set, each rung
     # runs, and the answer is the trace of §3.7 with no hit.
     explain: bool = False,
+    # HRD-21. A plain default, read only when the `chat` source is open for
+    # the member: the id of the chat that the search runs in. It only takes
+    # that chat away from the past chats (D-FIND-5).
+    current_chat: str | None = None,
     # KB-9a. FastAPI gives the route's own tasks, never a request value. A
     # direct call that leaves it out gets None and records no gap.
     background: BackgroundTasks = None,  # type: ignore[assignment]
@@ -1317,14 +1406,19 @@ async def company_search(
             detail=f"Give {MIN_CHARS} to {MAX_CHARS} characters to find.",
         )
     per_app = max(1, min(int(k), MAX_K))
+    # HRD-21: the past chats are asked only with their switch open, the
+    # current chat named and words that a chat can prove. Else the source is
+    # not asked at all, so the answer is the one of before HRD-21, byte for byte.
+    current = _chat_current(user, current_chat, words)
     # An app the member does not hold is not asked, and it is not "skipped":
     # the member has no such app. Each source checks the feature again.
-    order = [key for key in _order(apps) if holds(user, REGISTRY[key].feature)]
+    order = [key for key in _order(apps, user) if holds(user, REGISTRY[key].feature)
+             and (key != find.CHAT_KEY or current is not None)]
     hybrid = _meaning_allowed(user)
     recency = recency_enabled()
     # Off, `after` is not read at all, as before CX-1.
     since = _after(after) if recency else None
-    options: dict[str, Any] = {"after": since, "reviewed": True, "vectors": True} if recency else {}
+    options = _options(recency, since, current)
     if recency:
         turn_vector.begin_turn()
     only_verified = bool(recency and verified)
@@ -1369,7 +1463,11 @@ async def company_search(
 
     words_of = find.content_words(words) if find_on else None
     if words_of is not None:
-        found = {key: [find.stamped(h, words_of, "exact") for h in hits]
+        # HRD-21: a past chat matched by rung 6, `chat`, and holds every word
+        # (its search proved them, its printed text need not show them). Every
+        # other pass-1 hit matched by rung 1, counted on its printed text. A
+        # stamp keeps its lower rung, so this comes first.
+        found = {key: [find.stamp_first(key, h, words_of) for h in hits]
                  for key, hits in found.items()}
     if not recency:
         return {
@@ -1377,6 +1475,13 @@ async def company_search(
             "hits": [h.as_dict() for h in _interleave(order, found)],
             "skipped": skipped,
         }
+    # HRD-21: rung 6 answers in pass 1 only (`find_engine.md` §3.1). The past
+    # chats take no part in the miss rule of pass 2, the words alone or the
+    # near step: the `miss` below reads the RECORDS only, so a chat that holds
+    # every word never stops the search for the records. The chats join the
+    # merge below. The `miss` of the log line (`_find_tail`) reads the final
+    # answer, chats too, so a chat with every word makes no miss there.
+    past = found.pop(find.CHAT_KEY, None)
     # KR-ZERO: every app that answered found nothing. Ask again, each word alone.
     # With FIND_ORGS on, the miss of D-FIND-4 (§3.3): the best hit holds fewer
     # than all the content words, so a hit of 1 word of 3 asks again too.
@@ -1415,7 +1520,7 @@ async def company_search(
             ms=round((loop.time() - started) * 1000),
         )
         ladder.ms["word"] = _ms_since(loop, started)
-    found = _merge_near(found, near_passes, order, per_app)
+    found = _rejoined(_merge_near(found, near_passes, order, per_app), past)
     now = datetime.now(UTC)
     shown = by_fusion(order, found, now, covered=words_of is not None)
     answer: dict[str, Any] = {
@@ -1438,5 +1543,5 @@ async def company_search(
         answer, user, ladder, shown=shown, found=found, words_of=words_of, skipped=skipped,
         answered=answered, limited=limited, hybrid=hybrid, since=since,
         until=min(loop.time() + RELATED_BUDGET_S, began + ANSWER_CAP_S),
-        near=near, first_zero=first_zero,
+        near=near, first_zero=first_zero, chat_asked=current is not None,
     )

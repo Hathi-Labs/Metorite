@@ -55,7 +55,7 @@ from gateway.retrieval import company, find, sources, turn_vector
 from gateway.retrieval.sources import Hit
 
 from tests.unit.test_company_search_recency import recency  # noqa: F401
-from tests.unit.test_company_search_sources import ALL, member
+from tests.unit.test_company_search_sources import ALL, ORG, member
 
 #: A word that no record holds.
 MARKER = "Zqvortex"
@@ -195,24 +195,13 @@ def find_on(monkeypatch):
     return _set
 
 
-class _WithChatOrgs:
-    """The settings, with ``chat_search_orgs`` set. The setting does not exist
-    yet (HRD-21 adds it), and the settings model refuses a new field."""
-
-    def __init__(self, real: Any, value: str) -> None:
-        self._real = real
-        self.chat_search_orgs = value
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
-
-
 @pytest.fixture()
 def chat_orgs(monkeypatch):
+    """``CHAT_SEARCH_ORGS`` on the cached settings (HRD-21 added the field)."""
     def _set(value: str) -> None:
-        real = get_settings()
-        monkeypatch.setattr(find, "get_settings", lambda: _WithChatOrgs(real, value))
+        monkeypatch.setattr(get_settings(), "chat_search_orgs", value, raising=False)
 
+    _set("")
     return _set
 
 
@@ -341,13 +330,29 @@ class TestTheHonestZero:
             {"why": "not_open", "app": "artifacts"},
         ]
 
-    def test_a_named_org_gets_no_past_chats_line(self, on, chat_orgs):
+    def test_a_search_that_asked_the_chats_gets_no_past_chats_line(self, on, chat_orgs):
+        """HRD-21: the line prints only while the search did not ask the
+        ``chat`` source, so it stays true. Here the source is open for the
+        member (``feature:chat``) and the run names its current chat."""
         chat_orgs("*")
-        answer = run(f"{MARKER} Quasar", user=_without("artifacts"))
+        user = member(*(f for f in ALL if f != "artifacts"), "chat")
+        answer = run(f"{MARKER} Quasar", user=user, current_chat="t-here")
         assert answer["where_else"] == [{"why": "not_open", "app": "artifacts"}]
+        # With no current chat the source is not asked, and the line is true.
+        answer = run(f"{MARKER} Quasar", user=user)
+        assert answer["where_else"][0] == {"why": "past_chats"}
 
-    def test_an_absent_setting_reads_as_off(self, on):
-        assert not hasattr(get_settings(), "chat_search_orgs")
+    def test_chat_is_never_named_as_an_app_that_is_not_open(self, on, chat_orgs):
+        """The past chats have their own line. A member without
+        ``feature:chat`` reads it, and no ``not_open`` entry names ``chat``."""
+        chat_orgs("*")
+        where = run(f"{MARKER} Quasar", current_chat="t-here")["where_else"]
+        assert {"why": "past_chats"} in where
+        assert not any(e.get("app") == "chat" for e in where)
+
+    def test_an_empty_setting_reads_as_off(self, on, chat_orgs):
+        assert get_settings().chat_search_orgs == ""
+        assert not find.chat_search_named(ORG)
         assert {"why": "past_chats"} in run(f"{MARKER} Quasar")["where_else"]
 
     def test_another_org_on_the_list_reads_as_off(self, on, chat_orgs):
@@ -1002,15 +1007,42 @@ class TestExplain:
         trace = run("Snowflake printer", user=_without("knowledge"), explain=True)["trace"]
         assert trace["flags_off"] == ["EMAIL_SEMANTIC_SEARCH_ENABLED"]
 
-    def test_a_chat_source_replaces_the_fixed_row(self):
-        """Rung 6 has one fixed ``closed`` row only while no source has the
-        key ``chat`` (HRD-21). A source with the key gives its own rows."""
-        fixed = [r for r in find.trace_rows({}, ["tasks"], set()) if r["rung"] == "chat"]
-        assert fixed == [{"rung": "chat", "source": "chat", "ran": False, "hits": 0,
-                          "ms": 0, "outcome": "closed"}]
-        rows = find.trace_rows({}, ["tasks", "chat"], set())
-        assert not any(r["rung"] == "chat" for r in rows)
-        assert {r["source"] for r in rows} == {"tasks", "chat"}
+    def test_rung_6_is_one_row(self):
+        """HRD-21 (``find_engine.md`` §3.7): the ``chat`` source gives ONE row,
+        in rung 6, from its note of pass 1. It has no row in rungs 1 to 4.
+        Closed, or not asked, the row is the ``closed`` row of before HRD-21,
+        byte for byte, so a dark source changes no trace."""
+        closed_row = {"rung": "chat", "source": "chat", "ran": False, "hits": 0,
+                      "ms": 0, "outcome": "closed"}
+        keys = ["tasks", "chat"]
+        for rows in (find.trace_rows({}, ["tasks"], set()),
+                     find.trace_rows({}, keys, {"chat"}),
+                     find.trace_rows({"exact": {}}, keys, set())):
+            assert [r for r in rows if r["source"] == "chat"] == [closed_row]
+            assert rows[-1] == closed_row
+        notes = {"exact": {"chat": {"ran": True, "hits": 2, "ms": 140, "outcome": "ok"}}}
+        rows = find.trace_rows(notes, keys, set())
+        assert [r for r in rows if r["source"] == "chat"] == [
+            {"rung": "chat", "source": "chat", "ran": True, "hits": 2, "ms": 140,
+             "outcome": "ok"}]
+        assert {r["rung"] for r in rows if r["source"] == "tasks"} == set(find.TRACE_RUNGS)
+
+    def test_a_dark_chat_source_changes_no_trace(self, on, chat_orgs, monkeypatch):
+        """HRD-21: with ``CHAT_SEARCH_ORGS`` empty, a member who holds
+        ``feature:chat`` and names a current chat reads the trace of a member
+        who does not. The world keeps its fake reader, with the real switch."""
+        def bare(answer: dict[str, Any]) -> list[dict[str, Any]]:
+            return [{**r, "ms": 0} for r in answer["trace"]["rungs"]]
+
+        monkeypatch.setitem(sources.REGISTRY, "chat", dataclasses.replace(
+            sources.REGISTRY["chat"], gate=sources._chat_open))
+        plain = run("Snowflake printer", explain=True)
+        with_chat = run("Snowflake printer", user=member(*ALL, "chat"), explain=True,
+                        current_chat="t-here")
+        assert bare(with_chat) == bare(plain)
+        assert bare(plain)[-1] == {"rung": "chat", "source": "chat", "ran": False,
+                                   "hits": 0, "ms": 0, "outcome": "closed"}
+        assert "chat" not in {key for key, _q in on.calls}, "a dark chat source read"
 
     def test_a_dark_studio_source_changes_no_trace(self, on):
         def bare(answer: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1195,15 +1227,17 @@ class TestTheTool:
     def test_the_trace_stays_under_600_tokens(self):
         """The worst case (§7: the count is the characters divided by 4): 8
         sources in 4 rungs, each with ``MAX_K`` hits, the time of the whole
-        answer and a failure. Then 3 near words of 40 letters, each with
-        ``TRACE_SPELLINGS`` spellings of 40 letters, and every flag off."""
+        answer and a failure. The ``chat`` source has its one row of rung 6
+        (HRD-21), with the same worst values. Then 3 near words of 40 letters,
+        each with ``TRACE_SPELLINGS`` spellings of 40 letters, and every flag
+        off."""
         ms = int(company.ANSWER_CAP_S * 1000)
         rows = [
             {"rung": rung, "source": key, "ran": True, "hits": company.MAX_K, "ms": ms,
              "outcome": "timed_out"}
-            for rung in find.TRACE_RUNGS for key in sources.REGISTRY
-        ] + [{"rung": "chat", "source": "chat", "ran": False, "hits": 0, "ms": 0,
-              "outcome": "closed"}]
+            for rung in find.TRACE_RUNGS for key in sources.REGISTRY if key != find.CHAT_KEY
+        ] + [{"rung": "chat", "source": "chat", "ran": True, "hits": company.MAX_K, "ms": ms,
+              "outcome": "timed_out"}]
         near = [{"word": w * name_match.NEAR_MAX_CHARS, "as": f"{w}{s}" * 20, "over_floor": True}
                 for w in "abc" for s in "xyz"[:find.TRACE_SPELLINGS]]
         body = {"trace": {"rungs": rows, "near": near, "meaning": "timed_out",
