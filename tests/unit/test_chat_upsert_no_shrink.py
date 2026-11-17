@@ -30,6 +30,13 @@ Postgres (R8). This file proves the rest:
   ``test_a_save_logs_one_line_with_no_text`` goes red.
 * Add a field to the log call in ``chat_no_shrink.log_shrink``:
   ``test_the_log_line_names_lengths_and_no_text`` goes red.
+* In ``_no_shrink_sql`` drop ``or server_write``:
+  ``test_only_a_client_write_of_an_agent_row_gets_a_variant`` goes red.
+* In ``chat_brief._post_row`` drop ``server_write=True``:
+  ``test_only_the_server_fill_passes_server_write`` goes red.
+* In ``_note_shrink`` use ``contextlib.nullcontext()`` in place of
+  ``contextlib.suppress(Exception)``: ``test_a_fault_of_the_log_never_fails_the_save``
+  goes red.
 """
 from __future__ import annotations
 
@@ -183,6 +190,33 @@ def test_only_a_client_write_of_an_agent_row_gets_a_variant(mode: str) -> None:
                              (None, False, False), ("human", True, False)):
         got = chat._no_shrink_sql(mode, kind=kind, author_from_run=fold, mint=mint)
         assert got is base, (mode, kind, fold, mint)
+    # The server fill of ``chat_brief._post_row`` (fix round 1, F1): the base.
+    got = chat._no_shrink_sql(mode, kind="agent", author_from_run=False, mint=False,
+                              server_write=True)
+    assert got is base, mode
+
+
+def test_only_the_server_fill_passes_server_write() -> None:
+    """``server_write`` is for ``chat_brief._post_row`` ONLY. The message
+    route of the browser never names it, and no other gateway file passes it.
+    A client that could pass it would bypass the guard."""
+    import inspect
+    from pathlib import Path
+
+    from gateway.routes import chat_brief
+
+    assert "server_write=True" in inspect.getsource(chat_brief._post_row)
+    assert "server_write" not in inspect.getsource(chat.save_messages)
+    root = Path(chat.__file__).resolve().parents[1]
+    users = sorted(
+        str(f.relative_to(root)).replace("\\", "/")
+        for f in root.rglob("*.py")
+        if "server_write=True" in f.read_text(encoding="utf-8")
+    )
+    assert users == ["routes/chat_brief.py"], users
+    param = inspect.signature(chat._upsert_messages).parameters["server_write"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is False
 
 
 class _FakeResult:
@@ -304,6 +338,24 @@ def test_the_enforce_line_comes_only_when_the_text_was_kept(monkeypatch) -> None
         chat._upsert_messages("sid-3646", [_agent("a1", "abc")],
                               actor_email="m@x.test", organization_id=ORG_A)
     assert _no_shrink_lines(caps) == []
+
+
+@pytest.mark.parametrize("mode", ["shadow", "enforce"])
+def test_a_fault_of_the_log_never_fails_the_save(monkeypatch, mode: str) -> None:
+    """Fix round 1, F2. The line is written inside the tenant session of the
+    save. A fault of the log must give the save of a working log."""
+    _flags(monkeypatch, **{mode: ORG_A})
+    row = SimpleNamespace(id="a1", inserted=False, kept=True, old_chars=30,
+                          new_chars=3, prefix=True)
+    sess = _hermetic(monkeypatch, row)
+
+    def _broken(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("the log is down")
+
+    monkeypatch.setattr(ns, "log_shrink", _broken)
+    assert chat._upsert_messages("sid-3646", [_agent("a1", "abc")],
+                                 actor_email="m@x.test", organization_id=ORG_A) == []
+    assert len(sess.statements) == 1
 
 
 def test_the_new_module_never_names_the_fold_keyword() -> None:

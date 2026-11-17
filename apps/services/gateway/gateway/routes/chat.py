@@ -38,6 +38,7 @@ writes nothing under an id that exists in another tenant.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from typing import Any, Literal
@@ -1043,42 +1044,52 @@ _NO_SHRINK_ENFORCE_SQL = _replace_once(
 )
 
 
-def _no_shrink_sql(mode: str, *, kind: str | None, author_from_run: bool, mint: bool) -> str:
+def _no_shrink_sql(
+    mode: str, *, kind: str | None, author_from_run: bool, mint: bool,
+    server_write: bool = False,
+) -> str:
     """The upsert text of one write (HRD-17e-1). THE choice of the guard.
 
     Only a client write of an agent row of a listed org gets a variant. The
-    fold (``author_from_run``), the mint, a human row and a system row get
-    ``_MESSAGE_UPSERT_SQL``, the same object, in every mode.
+    fold (``author_from_run``), the mint, the server fill of
+    ``chat_brief._post_row`` (``server_write``), a human row and a system row
+    get ``_MESSAGE_UPSERT_SQL``, the same object, in every mode.
     """
     from gateway.chat_no_shrink import OFF, ON
 
-    if mode == OFF or kind != "agent" or author_from_run or mint:
+    if mode == OFF or kind != "agent" or author_from_run or mint or server_write:
         return _MESSAGE_UPSERT_SQL
     return _NO_SHRINK_ENFORCE_SQL if mode == ON else _NO_SHRINK_SHADOW_SQL
 
 
 def _note_shrink(sql: str, row: Any, *, session_id: str, message_id: str,
                  organization_id: str | None) -> None:
-    """Log a shorter client write that the guard saw (HRD-17e-1). No text."""
+    """Log a shorter client write that the guard saw (HRD-17e-1). No text.
+
+    It never raises. It runs inside the tenant session of the save, so a
+    fault of the log must not fail the save (``gateway/AGENTS.md`` 0e: a
+    shadow never changes the answer).
+    """
     from gateway import chat_no_shrink
 
-    if row is None or getattr(row, "inserted", False) is True:
-        return
-    if sql is _NO_SHRINK_ENFORCE_SQL:
-        if not row.kept:
+    with contextlib.suppress(Exception):
+        if row is None or getattr(row, "inserted", False) is True:
             return
-        event = chat_no_shrink.REFUSED_EVENT
-    elif sql is _NO_SHRINK_SHADOW_SQL:
-        if row.old_chars is None or row.new_chars >= row.old_chars:
+        if sql is _NO_SHRINK_ENFORCE_SQL:
+            if not row.kept:
+                return
+            event = chat_no_shrink.REFUSED_EVENT
+        elif sql is _NO_SHRINK_SHADOW_SQL:
+            if row.old_chars is None or row.new_chars >= row.old_chars:
+                return
+            event = chat_no_shrink.SHADOW_EVENT
+        else:
             return
-        event = chat_no_shrink.SHADOW_EVENT
-    else:
-        return
-    chat_no_shrink.log_shrink(
-        event, session_id=session_id, message_id=message_id,
-        organization_id=organization_id, old_chars=row.old_chars,
-        new_chars=row.new_chars, prefix=bool(row.prefix),
-    )
+        chat_no_shrink.log_shrink(
+            event, session_id=session_id, message_id=message_id,
+            organization_id=organization_id, old_chars=row.old_chars,
+            new_chars=row.new_chars, prefix=bool(row.prefix),
+        )
 
 
 #: A new row moves its chat's ``updated_at`` (WS-63 PZ-33b round 4). The seed
@@ -1128,6 +1139,7 @@ def _upsert_messages(
     author_from_run: bool = False,
     mint: bool = False,
     member_typed: bool | None = None,
+    server_write: bool = False,
     organization_id: str | None,
 ) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
@@ -1182,6 +1194,13 @@ def _upsert_messages(
     variant of the upsert (``_no_shrink_sql``). Shadow logs a shorter write.
     Enforce keeps the stored text, and the id still counts as saved, because
     the other columns merge. Each other write runs ``_MESSAGE_UPSERT_SQL``.
+
+    ``server_write`` is for ``chat_brief._post_row`` ONLY (HRD-17e-1 fix
+    round 1). It is the server fill of a row that the server minted, so it
+    runs ``_MESSAGE_UPSERT_SQL`` in every mode. Without it, a client text
+    saved into the minted row would keep its place over the lead, and the
+    seal would close the row on the client text.
+    ``test_chat_upsert_no_shrink.py`` checks the source of each caller.
 
     🔴 **Every value passes through ``acb_common.pg_text.storable`` before
     the bind** (incident 2026-10-09). A tool result can hold the raw bytes of
@@ -1247,7 +1266,8 @@ def _upsert_messages(
                 "agent_state": m.agent_state, "custom_events": events,
             })
             sql = _no_shrink_sql(shrink_mode, kind=kind,
-                                 author_from_run=bool(author_from_run), mint=bool(mint))
+                                 author_from_run=bool(author_from_run), mint=bool(mint),
+                                 server_write=bool(server_write))
             result = s.execute(
                 text(sql),
                 {

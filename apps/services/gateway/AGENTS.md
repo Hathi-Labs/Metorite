@@ -153,6 +153,8 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - ⚠️ **A new row moves `chat_session.updated_at`** (`_TOUCH_SESSION_SQL`, PZ-33b round 4). `_MESSAGE_UPSERT_SQL` is the one `INSERT INTO chat_message` of the product. An update of a row moves nothing. The summary seed relies on both. Fence: `test_chat_summary_r8.py`.
    - 🔴 **No shrink before the seal** (HRD-17e-1, `chat_failure_modes.md` §6). It is dark behind two per-org lists. `gateway/chat_no_shrink.py` holds their one reader and the log line. `CHAT_NO_SHRINK_SHADOW_ORGS` only logs, and `CHAT_NO_SHRINK_ORGS` keeps the stored text of a shorter write.
      - `_no_shrink_sql` is the one choice. Only a client write of an agent row of a listed org runs a variant. The fold, the mint, a human row and a system row run `_MESSAGE_UPSERT_SQL`, byte for byte, in each mode.
+     - The server fill of `chat_brief._post_row` (the brief, a reminder, the hello) passes `server_write=True`, and runs `_MESSAGE_UPSERT_SQL` too. No other caller passes it.
+     - `_note_shrink` never raises. A fault of the log must not fail the save (item 0e: a shadow never changes the answer).
      - Each variant is `_MESSAGE_UPSERT_SQL` with one line replaced (`_replace_once`). Never write a second copy of the upsert text, because `test_chat_summary.py` pins its `member_typed` line.
      - The log lines `chat_no_shrink_shadow` and `chat_no_shrink_refused` hold lengths in characters and never the text.
      - ⚠️ A healthy tab clears `content` at each tool start (`route.ts`). So enforce keeps the narration until a longer write or the fold. Do not flip `CHAT_NO_SHRINK_ORGS` before the owner reads the shadow counts.

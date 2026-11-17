@@ -32,7 +32,10 @@ What this proves:
   text takes any text. ``content`` is ``NOT NULL``, so no stored NULL exists;
 * the known cost of enforce: one healthy tab clears ``content`` at each tool
   start (``app/api/agent/chat/route.ts``), and enforce keeps the narration
-  until a longer write or the fold.
+  until a longer write or the fold;
+* fix round 1, F1: the server fill of a minted brief, reminder or hello row
+  (``chat_brief._post_row``) wins over a longer client text in each mode;
+* fix round 1, F2: a log that raises never fails the save.
 
 **The mutations (R7).** Copy the file, change it, run, and restore it with
 ``cp`` (``cmp`` then says the file is the same again).
@@ -53,6 +56,13 @@ What this proves:
 * In ``_no_shrink_sql`` give the variant with the flag off (drop
   ``mode == OFF or``): ``test_flag_off_a_shorter_client_write_wins_as_today``
   goes red.
+* In ``_no_shrink_sql`` drop ``or server_write``, or in
+  ``chat_brief._post_row`` drop ``server_write=True`` (fix round 1, F1):
+  the enforce cases of ``test_the_server_fill_of_a_minted_row_wins_in_each_mode``
+  go red.
+* In ``_note_shrink`` use ``contextlib.nullcontext()`` in place of
+  ``contextlib.suppress(Exception)`` (fix round 1, F2):
+  ``test_a_fault_of_the_log_never_fails_the_save`` goes red.
 
 Run, on a pgvector server of your own::
 
@@ -509,9 +519,87 @@ def test_enforce_the_tool_start_clear_of_one_tab(graph_as_app, monkeypatch):
         chat.close()
 
 
+def _server_fill_path(path: str) -> tuple[str, dict[str, Any]]:
+    """The id and the event of one caller of ``chat_brief._post_row``."""
+    from datetime import date
+
+    from gateway.reach import plan
+    from gateway.routes.chat_brief import (
+        HELLO_MESSAGE_ID,
+        brief_event,
+        brief_message_id,
+        hello_event,
+    )
+    from gateway.routes.chat_reminder import reminder_event, reminder_message_id
+
+    if path == "brief":
+        parts = plan.BriefParts(title="Your day, Tue 17 Nov", lines=["Call Priya"], rest=0)
+        return brief_message_id(date(2026, 11, 17)), brief_event(parts)
+    if path == "reminder":
+        return reminder_message_id(uuid.uuid4()), reminder_event({"title": "Call the bank"})
+    return HELLO_MESSAGE_ID, hello_event()
+
+
+@pytest.mark.parametrize("path", ["brief", "reminder", "hello"])
+@pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+def test_the_server_fill_of_a_minted_row_wins_in_each_mode(graph_as_app, monkeypatch,
+                                                           mode, path):
+    """Fix round 1, F1. A client saves 70 characters into the row that the
+    server minted for a brief, a reminder or the hello. Then ``_post_row``
+    fills it with a lead of 11 characters. The lead wins, and the row is
+    sealed on the lead, in each mode. The fill logs no line."""
+    from gateway.routes.agent import _mint_run_row
+    from gateway.routes.chat_brief import DEFAULT_AGENT, _post_row
+
+    ns = graph_as_app
+    _flags(monkeypatch, **({} if mode == "off" else {mode: ns.org_a}))
+    chat = Chat(ns, ns.org_a, f"fill-{path}")
+    client_text = "x" * 70
+    lead = "Call Priya."
+    assert len(lead) == 11
+    try:
+        mid, event_ = _server_fill_path(path)
+        _mint_run_row(chat.sid, mid, member=chat.email, agent_name=DEFAULT_AGENT,
+                      organization_id=ns.org_a)
+        assert chat.save(client_text, mid=mid)["unchanged"] == []
+        assert chat.row(mid).content == client_text
+        with structlog.testing.capture_logs() as caps:
+            assert _post_row(chat.sid, mid, member=chat.email, agent_name=DEFAULT_AGENT,
+                             organization_id=ns.org_a, lead=lead, event=event_,
+                             now_ms=TS) is True
+        row = chat.row(mid)
+        assert (row.content, row.sealed) == (lead, True), (mode, path)
+        assert _lines(caps) == []
+    finally:
+        chat.close()
+
+
+@pytest.mark.parametrize("mode", ["shadow", "enforce"])
+def test_a_fault_of_the_log_never_fails_the_save(graph_as_app, monkeypatch, mode):
+    """Fix round 1, F2. The line goes inside the tenant session of the save.
+    With a log that raises, the save answers as it does with a working log:
+    shadow gives the save of the flag off, and enforce keeps the text."""
+    from gateway import chat_no_shrink
+
+    def _broken(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("the log is down")
+
+    ns = graph_as_app
+    _flags(monkeypatch, **{mode: ns.org_a})
+    monkeypatch.setattr(chat_no_shrink, "log_shrink", _broken)
+    chat = Chat(ns, ns.org_a, f"logfault-{mode}")
+    try:
+        chat.save(SECRET)
+        assert chat.save("Short")["unchanged"] == []
+        want = "Short" if mode == "shadow" else SECRET
+        assert chat.row().content == want
+    finally:
+        chat.close()
+
+
 def test_enforce_a_reminder_post_still_writes_its_lead(graph_as_app, monkeypatch):
-    """``chat_brief._post_row`` writes its lead as a client write over the
-    empty row that the mint made. Enforce leaves it as it was."""
+    """``chat_brief._post_row`` fills the empty row that the mint made, as a
+    server write (``server_write``). Enforce leaves it as it was."""
     from gateway.routes.chat_brief import DEFAULT_AGENT, _post_row
     from gateway.routes.chat_reminder import reminder_event, reminder_message_id
 
