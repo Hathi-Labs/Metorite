@@ -781,8 +781,9 @@ So a customer does not run a tunnel, own a DNS zone, open a port or edit a file.
 
 **What else changes.**
 
-- The three transport lists accept `link`. So do the row filters that test `srv.url`: `connections/mcp.py:337`, and `_mcp_may_attach` and `_maf_servers` in `_tool_injection.py`.
-- `POST /integrations/mcp` still refuses `link`. Only an approval writes a `link` row.
+- One transport list accepts `link`: `_MAF_HTTP_TRANSPORTS` (`_tool_injection.py:4845`). Its two readers, `_mcp_may_attach` and `_maf_servers`, also test `srv.url`. They accept a `link` row with no URL.
+- The other two lists stay as they are. So `POST /integrations/mcp` (`routes/integrations.py:2141`) and the store writer `save` (`connections/mcp.py:93`, `:908`) still refuse `link`.
+- LNK-1 adds one store writer for a `link` row. Only an approval calls it.
 - A run leaves out a `link` row whose program has not polled in the last 60 seconds. So a closed machine never costs a turn its 10-second connect budget.
 - The program serves its MCP layer stateless, with JSON answers. So each request has one answer, and the link carries no stream. The link transport answers a GET for a server stream with 405 itself.
 
@@ -814,7 +815,7 @@ The customer types a code on another screen, so the pairing follows the device g
 - **The org comes only from the approving admin's session.** It never comes from the domain. Nothing verifies `organization.domain`, and two orgs can claim one domain.
 - **The domain grants nothing.** When it differs from `organization.domain`, the approval screen says so and asks the admin to confirm again.
 - **The start names no org.** Its answer has one shape for every domain, so a stranger cannot learn who uses Metorite.
-- **The pending record holds no tenant data.** It holds the two hashes, the display fields, the typed domain and the source address. No tenant row exists before the approval, so R5 does not bend.
+- **The pending record holds no tenant data.** It holds the two hashes, the display fields, the typed domain and the source address. No tenant row exists before the approval. Path B below is still an exception to R5: a table with no tenant, which the EXEMPT map records with its reason.
 - **Rate limits.** The start allows 10 calls an hour from one source address. The approve form allows 5 wrong codes in 15 minutes for one org, and then it locks for 15 minutes.
 - **Remote phishing (RFC 8628 §5.4).** A stranger can start a pairing and ask a real admin to type the code. The screen shows the machine, the source address and the domain warning. The default access is "Only these people", and rung 2 reaches no write tool. Rule (d) treats each answer as outside text.
 
@@ -827,7 +828,7 @@ The customer types a code on another screen, so the pairing follows the device g
 
 **Recommendation: B.** It has the whole precedent, the limits included, and it changes no SAFETY seam. Path A is right only if the audit shows that the sweep costs more than the change to the wrapper.
 
-**The credential store.** The link credential follows the rule of `agent_tokens.lookup_token`. A lookup by hash runs with no tenant bound, and it returns the org and the connection. The caller binds that tenant before it reads anything else. `integration_connections` has FORCE RLS, so it cannot serve that lookup.
+**The credential store.** The link credential follows the rule of `agent_tokens.lookup_token`. A lookup by hash runs with no tenant bound, and it returns the org and the connection. The caller binds that tenant before it reads anything else. `integration_connections` has FORCE RLS, so it cannot serve that lookup. So the credential also needs a table outside RLS, as `agent_token` is.
 
 - **Reused:** `agent_tokens.hash_token`, the shape of the lookup, and the refusals of `bearer.authenticate`. Those are 401 for a missing, long, unknown or revoked token, and 503 for a database outage.
 - **Not reused:** the gates for outside agents in `bearer.authenticate`. Those are `agent_access_orgs`, the box flag and the agent audience. The link checks its own flag, `LINK_CONNECTOR_ORGS`, and its own audience.
@@ -871,29 +872,33 @@ The MCP client keeps speaking Streamable HTTP. Only its transport changes. So `M
 - One blocking reader in each process for many connectors. It needs a wrapper change, because a key of one tenant fails while another tenant is bound (`TenantMismatch`).
 - A separate pool for the link, with a measured ceiling.
 
-The audit measures each choice at 50 and at 500 connectors on one process. It records the Redis connections held and the Redis commands each second. It records the memory of one held poll and the time that the link adds to a call, at p50 and p95. It also records the open connections at Caddy, and how long the programs take to come back after a restart of the door.
+The gateway side waits too. If its wait for a reply blocks in Redis, it takes a connection of the same pool of 16 that the live activity feed uses.
+
+The audit measures each choice at 50 and at 500 connectors on one process. It records the Redis connections held on each side and the Redis commands each second. It records the memory of one held poll and the time that the link adds to a call, at p50 and p95. It times the three round trips of a connect (`initialize`, the initialized notice and `tools/list`) against the 10-second budget. It also records the open connections at Caddy, and how long the programs take to come back after a restart of the door.
 
 **The door.** The recommendation is the agent edge. It is the door for outside programs, with the hashed-bearer check and the tenant-from-row rule. It already reaches the tenant Redis wrapper. It is its own unit, so held polls do not load the one gateway process, and a gateway deploy does not cut them. If the audit refuses the edge, a gateway route serves the link with the same lookup.
 
-The LNK-3 audit decides with four facts:
+The LNK-3 audit decides with five facts:
 
 1. The public host, the Caddy route for `/connectors/*`, and each timeout on that path for a 25 s hold.
 2. What a deploy does to the edge unit, and how soon the programs come back.
 3. Whether the edge can write the health state with no import of the gateway. Its `pyproject.toml` forbids that import.
 4. Whether held polls slow the MCP traffic of outside agents on the same process.
+5. Whether the door sees the real source address behind Caddy. The start limit and the approval screen use it.
 
 The pairing start and the pairing poll use the same door, because they come before the tenant is known. The approval is a console route of the gateway, in the admin's session.
 
 #### 3.8.6 Health and revoke
 
-The door writes the last poll time and the Tally state to a tenant Redis key on each poll. It writes the registry row (`last_sync_at`, `last_error`) only when the state changes. The read model reads the key, and a missing key reads as "no poll". This section adds no status string.
+The door writes the last poll time and the Tally state to a tenant Redis key on each poll. It writes the registry row (`last_sync_at`, `last_error`) only when the state changes. The read model reads the key, and a missing key reads as "no poll". This section adds no status string, and the check of migration 245 allows only three (`245_integration_connections.sql:61-63`).
 
 | What the door saw | Stored status (`store.py:63-69`) | The read model | The state of `building_blocks.md` §4.4 | The admin sees |
 |---|---|---|---|---|
-| A poll in the last 60 s, and Tally up | `connected` | `connected` | connected | "Connected. Last call 2 minutes ago." |
-| A poll in the last 60 s, and Tally down | `connected` | `error`, with the code `link_source_down` | failing | "TallyPrime is closed on OFFICE-PC." |
-| No poll for 5 minutes | `connected` | `error`, with the code `link_no_poll` | failing | "The program on OFFICE-PC has not called for 12 minutes." |
-| The credential is revoked, or no poll took it in 10 minutes | `needs_reconnect` | `needs_reconnect` | needs consent | "Pair this machine again." |
+| A poll in the last 60 seconds, and Tally up | `connected` | `connected` | connected | "Connected. Last call 2 minutes ago." |
+| A poll in the last 60 seconds, and Tally down | `connected` | `error`, with the code `link_source_down` | failing | "TallyPrime is closed on OFFICE-PC." |
+| No poll for 60 seconds. A run then leaves the server out | `connected` | `error`, with the code `link_no_poll` | failing | "The program on OFFICE-PC has not called for 12 minutes." |
+| An admin approved, and the program has not taken its credential yet | `needs_reconnect` | `needs_reconnect` | needs consent | "Waiting for the program on OFFICE-PC." After 10 minutes: "Pair this machine again." |
+| The credential is revoked | `needs_reconnect` | `needs_reconnect` | needs consent | "Pair this machine again." |
 | An admin pressed Disconnect | `disconnected` | `disconnected` | none | The row, with no tools |
 
 "Quiet" in `company_context.md` §6.2 means a source with no new records. A link carries no records, so it never reads as quiet.
@@ -911,11 +916,11 @@ Each rule names its fence, or says advisory. Each fence file is new, except wher
 
 | # | Rule | Fence | Slice |
 |---|---|---|---|
-| a | A `link` row never takes a URL. A URL row never skips `check_mcp_url`. `POST /integrations/mcp` refuses `link` | `test_connector_link_shape.py` | LNK-1, LNK-3 |
+| a | A `link` row never takes a URL. A URL row never skips `check_mcp_url`. `POST /integrations/mcp` and the store writer `save` refuse `link`. Only the approval writes a `link` row | `test_connector_link_shape.py` | LNK-1, LNK-3 |
 | b | A link credential reaches only the queue of its own connection. A reply with the request id of another connection gets 404 | `test_connector_link_r8.py`: R8, two orgs, the app role with NOBYPASSRLS | LNK-2 |
-| c | A run with no member gets no `link` tool. "No member" means that `_integration_authorizer` returns `None` (`executor.py:5518`): a cron, workflow or webhook run. A delegated run keeps the member of its parent (MCP-C3), and a WhatsApp run has a member. **This blocks rung 2.** Without it, "Only these people" is false for each cron and workflow run | `test_connector_link_injection.py` | LNK-3 |
+| c | A run with no member gets no `link` tool. "No member" means that `_integration_authorizer` returns `None` (`executor.py:5518`): a cron, workflow or webhook run. A delegated run keeps the member of its parent (MCP-C3). The LNK-3 audit lists each kind of run and its member. **This blocks rung 2.** Without it, "Only these people" is false for each cron and workflow run | `test_connector_link_injection.py` | LNK-3 |
 | d | The answer of a `link` tool is outside text, and the untrusted frame applies. An MCP tool is always an egress tool (`acb_skills/egress.py:42`). The LNK-3 audit checks that a `link` answer also counts as outside text for the held chat (`HELD_CARD_WRITES_ORGS`) | Advisory until the audit names its test | LNK-3 |
-| e | A write connector (rung 3) has Always confirm on, and the approval sets it. Since MCP-NC1, a new server has it off | `test_connector_link_shape.py` | Rung 3, task 3664 |
+| e | A write connector (rung 3) has Always confirm on, and the approval sets it. Since MCP-NC1, a new server has it off. `PATCH /integrations/mcp/{name}` (`routes/integrations.py:2208`) cannot turn it off for a write connector | `test_connector_link_shape.py` | Rung 3, task 3664 |
 | f | A run that holds the email pack gets no MCP server, so it gets no `link` tool either. This is a stated limit, and this section does not change it | `test_pack_guards.py` (existing) | none |
 | g | "Only these people" also holds for a member who joins later (§3.8.8) | `test_connector_link_access_r8.py` | LNK-3 |
 | h | The pending pairing holds no tenant data. The start answer names no org and has one shape for every domain | `test_connector_pairing.py` | LNK-1 |
@@ -927,7 +932,7 @@ The approval screen asks three things. The program cannot decide them.
 
 | Choice | Default | Notes |
 |---|---|---|
-| **Who may use it** | "Only these people", offered first, with the approving admin chosen | The grant stays `integrations:use:mcp-<name>`. A role holds `integrations:use:*`, so a deny for each other member leaves a later joiner open. LNK-3 marks the row, and the injection then accepts only an exact allow override for that server. A new member holds none. A write of an override needs `admin:access:manage`, as it does today |
+| **Who may use it** | "Only these people", offered first, with the approving admin chosen | The grant stays `integrations:use:mcp-<name>`. A role holds `integrations:use:*`, so a deny for each other member leaves a later joiner open (rule g). **A candidate fix, not verified:** LNK-3 marks the row, and the injection accepts only an exact allow override for that server. A new member holds none. Today `is_authorized` answers yes or no, and a shared session intersects the access of each member. So the LNK-3 audit must show that the check can tell an override from a role grant. A write of an override needs `admin:access:manage`. An approver with `integrations:manage` only cannot pick people. Then the row stays closed to every member, and the screen names an admin who can open it |
 | **The data notice** | The admin must accept it to approve | The words are LNK-Q2 |
 | **Read only** | Fixed in rung 2: `read_only_key` on, Always confirm off | Writes need rung 3, a second connector and Always confirm on |
 
@@ -975,7 +980,7 @@ The local build brief of task 3655 (version 2) holds a draft contract in its §6
 | The door: the edge or a gateway route | The LNK-3 audit | The edge (§3.8.5) |
 | The queue primitive and the capacity ceiling | The LNK-3 audit | Pick by the measures of §3.8.5 |
 | Whether a `link` answer counts as outside text for the held chat (rule d) | The LNK-3 audit | It counts |
-| Whether the exact-override rule of "Only these people" stays inside D12 | The LNK-3 audit, then the owner if it is a third axis | It stays inside D12. It reads the one grant and adds no grant word |
+| Whether the exact-override candidate for "Only these people" works, and stays inside D12 | The LNK-3 audit, then the owner if it is a third axis | Keep the outcome of rule g. Use the candidate only if the check can tell an override from a role grant, also in a shared session |
 | The questions LNK-Q1 to LNK-Q7 | The owner | §10 |
 
 ---
@@ -1096,7 +1101,7 @@ LNK-3 needs both LNK-1 and LNK-2.
 | **LNK-0** | 3653 | This section, §3.8, the questions LNK-Q1 to LNK-Q7 and the INDEX row. Docs only | The owner approves §3.8 on task 3653 and answers LNK-Q1 and LNK-Q7 | `test_index_completeness.py`, `test_doc_names_resolve.py` (existing) | LOW | None |
 | **LNK-1** | 3658 | Pairing (§3.8.4): start, poll and approve, the pending record, the codes, the rate limits and the lockout. The mint and the lookup of the credential. The registry row with the transport `link`, and the refusal of `link` on `POST /integrations/mcp`. The flag `LINK_CONNECTOR_ORGS` | A pairing that an admin of org A approves writes a row in A only. The start names no org. Five wrong codes lock the form. The credential shows once. A different domain shows the warning | `test_connector_pairing.py`, `test_connector_pairing_r8.py`, `test_connector_link_shape.py` | HIGH: identity, a credential, and maybe a migration | LNK-0 |
 | **LNK-2** | 3659 | The door (§3.8.5, §3.8.6): poll, reply and revoke, the reused lookup, the queue keys, the health key and the row write on a change of state | A credential of org A cannot take or answer a request of org B. A revoked credential gets 401 at its next poll. The door drops a reply after its deadline | `test_connector_link_r8.py`, `test_connector_link_door.py` | HIGH: a credential and the tenant boundary | LNK-0 |
-| **LNK-3** | 3660 | The client branch (§3.8.3): the one client function, the link transport, the transport lists, the row filters and the Studio client. Rules c, d and g. The audit of the door, the queue primitive and the capacity | A member asks the chat, and a tool call goes through the link to a test program and back inside 30 seconds. A run with no member gets no `link` tool. A later joiner gets no tool of an "Only these people" row. The audit records the measures of §3.8.5 | `test_connector_link_transport.py`, `test_connector_link_injection.py`, `test_connector_link_access_r8.py` | HIGH: three services and a concurrency path | LNK-1, LNK-2 |
+| **LNK-3** | 3660 | The client branch (§3.8.3): the one client function, the link transport, the transport lists, the row filters and the Studio client. Rules c, d and g, with the check of rule g that the audit picks (§3.8.8). The audit of the door, the queue primitive and the capacity | A member asks the chat, and a tool call goes through the link to a test program and back inside 30 seconds. A run with no member gets no `link` tool. A later joiner gets no tool of an "Only these people" row. The audit records the measures of §3.8.5 | `test_connector_link_transport.py`, `test_connector_link_injection.py`, `test_connector_link_access_r8.py` | HIGH: three services and a concurrency path | LNK-1, LNK-2 |
 | **LNK-4** | 3661 | The console (§3.8.6, §3.8.8): "Pair a local connector" in the Add menu, the code form, and the approval screen with the machine, the domain warning, who may use it and the data notice. The row states and Disconnect | Visual review passes in four contexts. The owner sees the preview and approves it | A vitest under `src/app/integrations` | STANDARD: UI, with an owner preview | LNK-2. It also calls the approve route of LNK-1 |
 | **LNK-5** | 3662 | Distribution: the signed installer, the update file and its signature check, and the address where Metorite serves them | A clean Windows 11 machine installs the program with no SmartScreen block. The program refuses an update with a bad signature | The tests of the program | STANDARD. Owner gate: the code-signing certificate (LNK-Q3) | LNK-0, LNK-Q3, LNK-Q4 |
 | **TLY-1** | 3656 | Rung 1: the Tally program in address mode, through our tunnel, with read tools only. No Metorite code | The owner sees the demo of task 3655. The rung 1 tests of the build brief pass | The tests of the program | STANDARD | None |
