@@ -1047,6 +1047,7 @@ async def _read(
     days: list[tuple[Any, Any, int]] = []
     base, period, statuses, counted = _sense_columns(
         scope, module, day, day_key, pairs, bound, reads=bool(source))
+    more += counted  # the status counts are more columns of the ONE statement
     periods: dict[int, list[_Acc]] = {}
     # One scan, two groupings: the answer's own, and the day. With no group,
     # the empty set gives its one row even when no record matches, as the
@@ -1069,7 +1070,7 @@ async def _read(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, "
                 f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
-                f"count(*) AS c{more}{counted}{grouping} FROM {table}{source}{where_sql}{sets}"
+                f"count(*) AS c{more}{grouping} FROM {table}{source}{where_sql}{sets}"
             ),
             args,
         )).fetchall()

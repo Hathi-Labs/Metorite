@@ -257,7 +257,8 @@ def _scanned(plan: Any) -> int:
         return 0
     own = (int(plan.get("Actual Rows", 0)) + int(plan.get("Rows Removed by Filter", 0))
            if plan.get("Relation Name") == "crm_module_records" else 0)
-    return own + sum(_scanned(p) for p in plan.get("Plans", []))
+    # The top object of EXPLAIN holds its tree in "Plan", each node in "Plans".
+    return own + _scanned(plan.get("Plan")) + sum(_scanned(p) for p in plan.get("Plans", []))
 
 
 async def test_the_baseline_reads_the_module_once(dewin, app_engine) -> None:
