@@ -267,11 +267,12 @@ does not change.
 > member's words name it.
 
 **The token** (PROPOSED, the owner decides on task 2993): one token serves
-each run, and the `PasteFrame` of the run holds it. `untrusted.py` says one token for each model call. A token
-for each request would change each framed earlier turn in each request of a
-run. A vendor that caches by prefix would then miss from that turn on, at each
-tool step. The `fresh` check still holds, because a second run gets a new
-token. HRD-14b writes this exception into the text of `untrusted.py`.
+each run, and the `PasteFrame` of the run holds it. `untrusted.py` says one
+token for each model call. A token for each request would change each framed
+earlier turn in each request of a run. A vendor that caches by prefix would
+then miss from that turn on, at each tool step. The `fresh` check still holds,
+because a second run gets a new token. HRD-14b writes this exception into the
+text of `untrusted.py`.
 
 **The seam** (HRD-14b). ONE per-run MAF chat middleware, `PasteFrame`.
 
