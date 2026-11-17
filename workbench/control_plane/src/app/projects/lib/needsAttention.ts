@@ -9,8 +9,9 @@
  * rule of its own, so the board and the chat read one answer.
  *
  * ⚠️ **`can_act` is the server's.** It is the rule of Release (EA-14a). The
- * run panel's own Release button still reads `access.is_admin` (HANDOFF
- * H-409 item 2), and this list does not add a third rule.
+ * run panel's own Release button reads the same permission slug
+ * (`agentRuns.RELEASE_ADMIN_PERMISSION`, H-409 item 2), and this list does
+ * not add a third rule.
  *
  * Fence: `needsAttention.test.ts`.
  */

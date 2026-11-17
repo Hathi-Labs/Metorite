@@ -25,8 +25,9 @@ CORE = CONTENT_DIR / "kit" / "agents-md.md"
 MAX_LINES = 150
 # The one place the test reads the kit version: a line "kit_version: N" in the core.
 VERSION_LINE = re.compile(r"^kit_version: (\d+)$", re.M)
-# Tools that the playbook names and that the edge does not list yet (PB-6).
-PLANNED_TOOLS = {"read_playbook"}
+# Tools that the playbook names and that the edge does not list yet. None today:
+# read_playbook shipped with PB-3a, so a tool name that is not in TOOLS now fails.
+PLANNED_TOOLS: set[str] = set()
 PROMPTS = {"set_up_agent_team", "plan_slices", "write_brief", "review_my_fleet", "run_retro", "work_on_task"}
 PROTOCOL = [
     ("my_work", "claim_task"),
@@ -69,6 +70,8 @@ def test_the_core_has_one_kit_version():
 def test_every_tool_the_core_names_is_real():
     text = _core()
     for name in re.findall(r"`([a-z]+(?:_[a-z]+)+)`", text):
+        if name == "kit_version":  # a field of the read_playbook index, not a tool
+            continue
         assert name in TOOLS or name in PLANNED_TOOLS or name in PROMPTS, f"unknown tool or prompt: {name}"
     for name in ("my_work", "claim_task", "get_plan", "ask_on_task", "finish_agent_run", "release_task"):
         assert name in TOOLS
@@ -108,3 +111,12 @@ def test_the_kit_core_holds_no_org_term():
 def test_a_banned_token_injected_into_the_core_fails(injected):
     assert hits(_core()) == []
     assert hits(_core() + "\n" + injected), injected
+
+
+def test_the_core_tells_the_agent_to_compare_its_kit_version():
+    """KIT-5. Mutation: delete the section "Keep the kit current"."""
+    text = _core()
+    assert "## Keep the kit current" in text
+    section = text.split("## Keep the kit current")[1].split("\n## ")[0]
+    for needle in ("read_playbook", "kit_version", "Integrations, AI agents"):
+        assert needle in section

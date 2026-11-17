@@ -25,7 +25,11 @@ Mutations this file catches (each run red, then restored):
 * M3 ``run_agent`` stops asking it -> ``test_run_agent_refuses_the_worker_with_no_job``;
 * M4 ``_run_sub_agent_streaming`` stops asking it -> ``test_the_streaming_seam_refuses_...``;
 * M5 the held set keeps a web tool -> ``test_the_held_set_is_the_job_without_the_egress_tools``;
-* M6 the injection scope ignores the job -> ``test_the_open_set_is_exactly_the_job``.
+* M6 the injection scope ignores the job -> ``test_the_open_set_is_exactly_the_job``;
+* M7 (AUTO-8b-2c) ``executor._run_agent_label`` and ``_bind_run_app`` ignore the
+  scope -> ``test_a_headless_round_names_the_turn_on_the_wire``;
+* M8 (AUTO-8b-2c) ``agents._fixed_headers`` keeps ``X-CC-Agent`` under the
+  scope -> ``test_a_headless_round_names_the_turn_on_the_wire``.
 """
 from __future__ import annotations
 
@@ -40,10 +44,12 @@ from acb_skills.write_artifact import artifact_context_scope, bind_artifact_cont
 from tests.unit._subagent_harness import (
     REPO_ROOT,
     WORKER_DIR,
+    HeaderWire,
     WireModel,
     build_worker,
     completion,
     counted,
+    route_worker_runs,
 )
 
 CONFIG = json.loads((Path(REPO_ROOT) / WORKER_DIR / "config.json").read_text(encoding="utf-8"))
@@ -407,3 +413,133 @@ def test_child_tool_scope_follows_the_job_for_the_worker_only(_frame) -> None:
     assert sc.child_tool_scope("worker", None) == ["web_search", "fetch_page"]
     sc.bind_job(_job("remember", "recall_timeline"))
     assert sc.child_tool_scope("worker", None) == ["remember", "recall_timeline"]
+
+
+# ── AUTO-8b-2c: the usage row of a headless round names the turn ────────────
+#
+# ``proactive_agent.md`` §4.4 and §9 row AUTO-8b-2c. Each case runs the REAL
+# ``executor.run_agent`` and the REAL worker. Only the wire under the
+# worker's client is replaced (``HeaderWire``), so the headers asserted are
+# the headers that would reach the gateway's ``/v1``.
+
+ORG = "0d4b8f5e-0000-4000-8000-0000000000c2"
+ANA = "ana@auto8b2c.test"
+SECRET = "test-session-secret"
+
+
+@pytest.fixture()
+def wire(tmp_path, monkeypatch):
+    import structlog
+    from acb_common import get_settings
+
+    structlog.contextvars.clear_contextvars()
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", SECRET, raising=False)
+    headers = HeaderWire()
+    route_worker_runs(monkeypatch, tmp_path, headers)
+    yield headers
+    structlog.contextvars.clear_contextvars()
+
+
+async def _chat_run(run_id: str) -> None:
+    """A run of the worker with no attribution scope, as a spawn child runs."""
+    from orchestrator import executor
+
+    with artifact_context_scope():
+        sc.bind_job(_job("remember"))
+        await executor.run_agent(
+            "worker", {"message": "Read it.", "user_email": ANA},
+            run_id=run_id, organization_id=ORG, solo_room=False,
+        )
+
+
+async def _headless_run(run_id: str) -> None:
+    """One round as ``HeadlessTurn`` runs it: its two scopes, then its
+    default runner ``run_worker``."""
+    from acb_common import job_member_scope, run_attribution_scope
+    from gateway.jobs import headless_turn as ht
+
+    with (job_member_scope(ANA, app=ht.APP, agent=ht.AGENT),
+          run_attribution_scope(app=ht.APP, agent=ht.AGENT)):
+        await ht.run_worker("Read the open deals.", run_id=run_id, org=ORG, member=ANA,
+                            tools=("remember",))
+
+
+def _names(wire: HeaderWire, run_id: str) -> set[tuple[str, str]]:
+    sent = wire.of_run(run_id)
+    assert sent, f"the run {run_id} made no model request"
+    return {(h.get("x-cc-agent", ""), h.get("x-cc-module", "")) for h in sent}
+
+
+def test_a_headless_round_names_the_turn_on_the_wire(wire) -> None:
+    """The agent, the app, the proven member and the run id of the round."""
+    from acb_auth.member_proof import verify_member
+
+    asyncio.run(_headless_run("run-h1"))
+    assert _names(wire, "run-h1") == {("auto.headless", "auto")}
+    for h in wire.of_run("run-h1"):
+        assert h["x-cc-member"] == ANA
+        assert verify_member(h["x-cc-member-proof"], SECRET) == ANA
+
+
+def test_a_chat_run_of_the_worker_keeps_worker_and_chat(wire) -> None:
+    asyncio.run(_chat_run("run-c1"))
+    assert _names(wire, "run-c1") == {("worker", "chat")}
+
+
+def test_a_worker_run_after_a_headless_run_keeps_worker(wire) -> None:
+    """One task, one process: the scope ends with the round."""
+
+    async def both() -> None:
+        await _headless_run("run-h2")
+        await _chat_run("run-c2")
+
+    asyncio.run(both())
+    assert _names(wire, "run-h2") == {("auto.headless", "auto")}
+    assert _names(wire, "run-c2") == {("worker", "chat")}
+
+
+def test_a_scope_that_raised_leaves_nothing_for_the_next_run(wire) -> None:
+    from acb_common import run_attribution, run_attribution_scope
+
+    async def both() -> None:
+        with pytest.raises(RuntimeError), run_attribution_scope(app="auto", agent="auto.headless"):
+            raise RuntimeError("the round failed")
+        assert run_attribution() is None
+        await _chat_run("run-c3")
+
+    asyncio.run(both())
+    assert _names(wire, "run-c3") == {("worker", "chat")}
+
+
+def test_a_concurrent_worker_run_does_not_see_the_scope(wire) -> None:
+    """Both runs wait on the wire for each other, so they overlap."""
+
+    async def scenario() -> None:
+        barrier = asyncio.Barrier(2)
+        met = {"n": 0}
+
+        async def gate() -> None:
+            if met["n"] < 2:
+                met["n"] += 1
+                await asyncio.wait_for(barrier.wait(), 30)
+
+        wire.gate = gate
+        await asyncio.gather(_headless_run("run-h4"), _chat_run("run-c4"))
+
+    asyncio.run(scenario())
+    assert _names(wire, "run-h4") == {("auto.headless", "auto")}
+    assert _names(wire, "run-c4") == {("worker", "chat")}
+
+
+def test_the_worker_sends_its_fixed_agent_only_with_no_scope() -> None:
+    """The build half of M8: under the scope the client has no fixed agent,
+    so the stamp of the run wins (``attribution._stamp`` never overwrites)."""
+    from acb_common import run_attribution_scope
+
+    from tests.unit._native_maf_harness import load_agent_module
+
+    mod = load_agent_module(WORKER_DIR)
+    assert mod._fixed_headers() == {"X-CC-Agent": "worker", "X-CC-Source": "chat"}
+    with run_attribution_scope(app="auto", agent="auto.headless"):
+        assert mod._fixed_headers() == {"X-CC-Source": "chat"}
+    assert mod._fixed_headers()["X-CC-Agent"] == "worker"

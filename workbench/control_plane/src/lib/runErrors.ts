@@ -131,9 +131,10 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     action: "Continue",
   },
   // The chat sends the answer when it draws this notice, so the words say
-  // what HAS happened (owner report, 2026-10-13).
+  // what HAS happened (owner report, 2026-10-13). RESUME-3a (§4.12.4 item 5):
+  // only a card that cannot resume comes here now, and nothing restarted.
   run_restarted: {
-    title: "The assistant restarted",
+    title: "The chat had stopped waiting",
     body: "Your answer went to it as a new message.",
     retry: false,
     tone: "notice",
@@ -141,7 +142,7 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
   // The resend met a live run, so it steered that run (#920, review of
   // #942). The server folded it into the reply that runs now.
   run_restarted_steered: {
-    title: "The assistant restarted",
+    title: "The chat had stopped waiting",
     body: "Your answer went into the current reply.",
     retry: false,
     tone: "notice",

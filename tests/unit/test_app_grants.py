@@ -12,8 +12,8 @@ monkeypatched so every test stays hermetic and fast).
 H2 note: the handlers' seam is the package's ``_tenant_session`` alias
 (``acb_common.db.tenant_session``), swapped in via an ``asynccontextmanager``
 that commits on clean exit — so one-transaction contracts stay observable —
-while ``_common._get_db`` (``record_app_audit``'s H4-deferred seam) keeps its
-plain-coroutine patch.
+while ``_common._get_db`` keeps its plain-coroutine patch. The audit row goes
+through ``record_app_audit_bound`` (task 1317).
 """
 from __future__ import annotations
 

@@ -65,11 +65,14 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # group_field. Every argument that existed keeps its name and type.
     # WS-53 §18.16 part 4: `term`, the member's own word for a figure. A new
     # optional argument, so no call breaks.
+    # WS-53 CRM-Q25e part 2: `fields`, 2 to 5 number fields in ONE statement.
+    # A new optional argument, so no call breaks.
     'crm_aggregate': {'params': {'bucket': 'string',
                                  'close_from': 'string', 'close_to': 'string',
                                  'created_from': 'string', 'created_to': 'string',
                                  'custom': 'object', 'entity': 'string',
                                  'field': 'string', 'field_filters': 'object',
+                                 'fields': 'array',
                                  'group_by': 'string', 'group_field': 'string',
                                  'measure': 'string',
                                  'owner': 'string', 'page': 'integer',

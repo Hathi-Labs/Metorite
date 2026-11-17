@@ -154,9 +154,11 @@ def test_no_record_tool_takes_an_identity() -> None:
                 "member", "member_email", "user", "user_email", "email", "actor", "as_user",
                 "owner", "owner_email", "visibility", "confirm", "confirmed", "action",
                 "action_id", "record"}
-    assert len(st.STUDIO_RECORD_TOOLS) == 5
+    assert len(st.STUDIO_RECORD_TOOLS) == 6
     for fn in st.STUDIO_RECORD_TOOLS:
-        assert not set(inspect.signature(fn).parameters) & identity, fn.__name__
+        # STU-B2b-2c: studio_app_read picks a DECLARED action of the package by its id.
+        bar = identity - {"action"} if fn is st.studio_app_read else identity
+        assert not set(inspect.signature(fn).parameters) & bar, fn.__name__
         assert inspect.iscoroutinefunction(fn)
     # A read takes no body of a write.
     assert [fn.__name__ for fn in READS] == ["studio_package_get", "studio_record_list"]

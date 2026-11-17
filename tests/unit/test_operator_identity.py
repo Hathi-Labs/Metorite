@@ -26,6 +26,7 @@ import uuid
 import pytest
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import apply_ladder
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -776,11 +777,8 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     while the job reports green. That is the CP-3 disarmed-gate failure, and
     this is the closest a hand-list gets to defending itself.
     """
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "tests/unit/test_operator_identity.py" in workflow, (
-        "this suite is not in pr-check.yml's R8 skip-guard list — without the "
+    assert "tests/unit/test_operator_identity.py" in r8_lists.must_run(), (
+        "this suite is not in the `r8` key of tests/fences.json — without the "
         "entry it can skip in CI while the job reports green"
     )
 

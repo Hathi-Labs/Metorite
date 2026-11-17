@@ -16,6 +16,7 @@ from typing import Any
 
 from acb_auth import member_proof, require_llm_api_auth
 from acb_common import get_logger
+from acb_common.secret_shapes import REDACTION_BEARER, REDACTION_SHAPES
 from acb_common.settings import get_settings
 from acb_llm.client import _ensure_keys_loaded
 from fastapi import APIRouter, Depends, Request
@@ -511,10 +512,9 @@ def _sanitize_messages_for_provider(
 # Bearer token, or an ``sk-…`` key fragment. We surface the reason to the
 # operator (it's THEIR Metorite) but redact anything secret first.
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),          # OpenAI-style keys
-    re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.I),  # bearer tokens
+    *REDACTION_SHAPES,                               # keys: list in acb_common.secret_shapes
+    REDACTION_BEARER,                                # bearer tokens
     re.compile(r"https?://\S+"),                     # endpoint URLs
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),      # GitHub tokens
 )
 
 
@@ -588,6 +588,24 @@ def _router_should_serve(body: dict[str, Any]) -> bool:
     return True
 
 
+def _run_ceiling(request: Request) -> str | None:
+    """``X-CC-Run-Ceiling`` EXACTLY as the caller sent it, or None with none.
+
+    AUTO-8b-2b (``proactive_agent.md`` §4.4). Both Router hops call it.
+
+    🔴 **The gateway does not parse or clamp it.** The Console is the one
+    place that does, and it answers 400 ``run_ceiling_invalid`` to a bad
+    value. So an empty value travels as empty. The ``or None`` of the other
+    headers would turn it into "no header", and the call would run at the
+    default ceiling.
+
+    ⚠️ It decides nothing here. ``/v1`` takes the LLM key, and the Console
+    sums the spend of the run for the org that ITS credential resolves. So a
+    forged value can only lower the ceiling of the forger's own run.
+    """
+    return request.headers.get("x-cc-run-ceiling")
+
+
 def _router_outbound(body: dict[str, Any]) -> dict[str, Any]:
     """The body both Router hops send. ONE builder, so they cannot drift.
 
@@ -645,6 +663,8 @@ async def _serve_via_router_stream(
         agent=request.headers.get("x-cc-agent") or None,
         module_slug=request.headers.get("x-cc-module") or None,
         run_id=request.headers.get("x-cc-run") or None,
+        # AUTO-8b-2b: raw, with no `or None`. `_run_ceiling` says why.
+        run_ceiling=_run_ceiling(request),
     )
 
     first: bytes | None = None
@@ -669,14 +689,7 @@ async def _serve_via_router_stream(
             "v1.router_unavailable", error=str(exc), stream=True,
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
-        return JSONResponse(
-            status_code=502,
-            content={"error": {
-                "message": "the AI Router is unavailable",
-                "type": "ConsoleRouterUnavailable",
-                "code": 502,
-            }},
-        )
+        return _router_unavailable()
 
     async def _relay() -> Any:
         if first is not None:
@@ -735,6 +748,8 @@ async def _serve_via_router(
             agent=request.headers.get("x-cc-agent") or None,
             module_slug=request.headers.get("x-cc-module") or None,
             run_id=request.headers.get("x-cc-run") or None,
+            # AUTO-8b-2b: raw, with no `or None`. `_run_ceiling` says why.
+            run_ceiling=_run_ceiling(request),
         )
     except ConsoleRouterUnavailable as exc:
         _router_failed()
@@ -742,14 +757,7 @@ async def _serve_via_router(
             "v1.router_unavailable", error=str(exc),
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
-        return JSONResponse(
-            status_code=502,
-            content={"error": {
-                "message": "the AI Router is unavailable",
-                "type": "ConsoleRouterUnavailable",
-                "code": 502,
-            }},
-        )
+        return _router_unavailable()
 
     # §6B.5 hazard 2: this adds one network hop to the interactive path. The
     # number is LOGGED rather than assumed. On a box where the Console is a
@@ -769,6 +777,38 @@ async def _serve_via_router(
     return payload
 
 
+def _router_unavailable() -> JSONResponse:
+    """The 502 of the Router hops when no answer came. One body, three uses."""
+    return JSONResponse(
+        status_code=502,
+        content={"error": {
+            "message": "the AI Router is unavailable",
+            "type": "ConsoleRouterUnavailable",
+            "code": 502,
+        }},
+    )
+
+
+def _refuse_unrouted() -> JSONResponse | None:
+    """The 502 for a call that the Router did not take, outside a dev box.
+
+    Task 3554 (2449 S3). ``acb_llm.routed.refuse_direct_arm`` is the one
+    rule. On a dev box it allows the local arm, and this returns None.
+    Elsewhere it raises ``ConsoleRouterUnavailable``, and the door answers
+    as for a Router outage: the same 502 body, and :func:`_router_failed`.
+    """
+    from acb_auth.console_resolve import ConsoleRouterUnavailable
+    from acb_llm.routed import refuse_direct_arm
+
+    try:
+        refuse_direct_arm("v1_compat")
+    except ConsoleRouterUnavailable as exc:
+        _router_failed()
+        _log.error("v1.router_unavailable", error=str(exc), unrouted=True)
+        return _router_unavailable()
+    return None
+
+
 async def _handle_chat_completions(request: Request) -> StreamingResponse | dict[str, Any]:
     """OpenAI-compatible chat completions. Supports streaming and tools."""
     body = await request.json()
@@ -782,12 +822,19 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     # need to do. A routed call must touch none of it.
     if _router_should_serve(body):
         # One branch, not two: `_handle_chat_completions` already sits over
-        # ruff's complexity ceiling (C901, 20 > 15) and this must not add to
-        # it. The two hops are NOT interchangeable — the buffered one returns
-        # a dict and would silently de-stream a chat UI.
+        # ruff's complexity ceiling (C901, 21 > 15 with the refusal of task
+        # 3554) and this must not add to it. The two hops are NOT
+        # interchangeable — the buffered one returns a dict and would
+        # silently de-stream a chat UI.
         hop = (_serve_via_router_stream if body.get("stream", False)
                else _serve_via_router)
         return await hop(request, body)
+
+    # Task 3554: the local arm runs on a dev box only. Elsewhere the door
+    # answers the Router's 502, before any key loads (`_refuse_unrouted`).
+    refusal = _refuse_unrouted()
+    if refusal is not None:
+        return refusal
 
     # H4: the provider credential this call sends is process-global and this
     # route has no tenant to scope it with — `_auth` is `require_llm_api_auth`,

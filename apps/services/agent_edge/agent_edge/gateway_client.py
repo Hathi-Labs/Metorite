@@ -36,6 +36,16 @@ buffers more than the cap and one chunk. :attr:`Answer.content` then holds
 at most ``max_bytes + 1`` bytes. More than ``max_bytes`` means "too long".
 It reads the body of a 2xx answer only.
 
+**The one file write (CIV-14b, ``external_agent_access.md`` §12.9).**
+:func:`write_file` sends one image to the upload route of a task as a
+``multipart/form-data`` body with one part, ``file``. It is the only write
+that carries no JSON. The signature covers the bytes of the whole form, and
+the gateway keeps a copy of them for branch 0
+(``routes/projects/agent_upload_body.py``). It takes only
+:data:`FILE_WRITE_ROUTE`, a png, jpeg, gif or webp type and a file name in
+the shape of ``agent_oauth.ATTACHMENT_FILENAME_PATTERN``, so no quote and no
+line break reaches a part header.
+
 This module maps no answer. It returns the status and the parsed body, and
 ``agent_edge.tools`` maps each one to a tool result (§9.6, EA3-16).
 """
@@ -45,6 +55,7 @@ import asyncio
 import contextlib
 import json
 import re
+import secrets
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -54,11 +65,16 @@ import httpx
 from acb_auth import agent_oauth, agent_signing
 from acb_auth.agent_tokens import TokenLookup
 from acb_common import app_manifests, get_logger, get_settings
+from acb_common.image_probe import RASTER_MIMES
 
 _log = get_logger("agent_edge.gateway_client")
 
 #: The limit of each gateway request, in seconds (EA3-17).
 REQUEST_TIMEOUT_S = 10.0
+
+#: CIV-14b. The one route that :func:`write_file` sends, and its form field.
+FILE_WRITE_ROUTE = "/projects/tasks/{task_id}/attachments"
+FILE_FIELD = "file"
 
 #: The method of every read.
 _GET = "GET"
@@ -262,6 +278,54 @@ async def write(
     return await _send(method, url, headers, body, template)
 
 
+def _form(filename: str, content: bytes, content_type: str) -> tuple[bytes, str]:
+    """``(body, Content-Type)`` of a form with the one part :data:`FILE_FIELD`.
+    The boundary is 32 random hex characters, so the bytes of an image hold
+    it by chance with no real chance at all."""
+    boundary = secrets.token_hex(16)
+    head = (f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{FILE_FIELD}"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n").encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    return head + content + tail, f"multipart/form-data; boundary={boundary}"
+
+
+async def write_file(
+    key: str,
+    caller: TokenLookup,
+    *,
+    path_params: Mapping[str, str],
+    filename: str,
+    content: bytes,
+    content_type: str,
+    session: str | None = None,
+) -> Answer:
+    """One signed multipart POST of one image (CIV-14b), or raise
+    :class:`GatewayUnreachable` or :class:`RouteRefused`.
+
+    The pair is ``POST`` :data:`FILE_WRITE_ROUTE`, which is in
+    ``MCP_WRITE_ROUTES``. *content_type* is the type that the tool read from
+    the first bytes, never from the file name. The signature covers the bytes
+    of the whole form and a fresh nonce (EA3-28).
+    """
+    path = _path(FILE_WRITE_ROUTE, path_params, "POST")
+    if content_type not in RASTER_MIMES:
+        raise RouteRefused("the type is not an image type")
+    if not re.fullmatch(agent_oauth.ATTACHMENT_FILENAME_PATTERN, filename):
+        raise RouteRefused("the file name has another shape")
+    try:
+        body, form_type = _form(filename, content, content_type)
+        headers = signed_request_headers(key, caller, path, [], method="POST", body=body,
+                                         session=session)
+        headers["Content-Type"] = form_type
+        url = _url(path, [])
+    except Exception as exc:  # nothing here may become a 500
+        _log.warning("agent_edge.gateway_request_unbuildable", route=FILE_WRITE_ROUTE,
+                     error=type(exc).__name__)
+        raise GatewayUnreachable(FILE_WRITE_ROUTE) from None
+    return await _send("POST", url, headers, body, FILE_WRITE_ROUTE)
+
+
 async def send_call(
     key: str,
     caller: TokenLookup,
@@ -396,6 +460,8 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
 
 
 __all__ = [
+    "FILE_FIELD",
+    "FILE_WRITE_ROUTE",
     "REQUEST_TIMEOUT_S",
     "Answer",
     "GatewayNotSent",
@@ -407,4 +473,5 @@ __all__ = [
     "signed_request_headers",
     "use_transport",
     "write",
+    "write_file",
 ]

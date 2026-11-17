@@ -1523,7 +1523,8 @@ async def test_a_held_send_email_on_revised_goes_through_the_same_route(monkeypa
     out = await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates")
     assert [p for p, _b in gw.posts] == ["/email/held-card", "/email/new-card/revise"]
     assert gw.posts[0][1]["card_thread_id"] == THREAD
-    assert out.startswith(agents._HELD_CARD_REVISED) and BLOCK in out
+    # HRD-8a: a held new mail answers with the text of its act, a new mail.
+    assert out.startswith(agents._closed_by_message("new_mail")) and BLOCK in out
     assert seen[0]["reply"]["revises"] == "b" * 32
 
 
@@ -1543,7 +1544,7 @@ async def test_a_run_that_draws_no_card_to_edit_sends_no_thread_and_revises_noth
     out = await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates")
     assert [p for p, _b in gw.posts] == ["/email/held-card"]
     assert "card_thread_id" not in gw.posts[0][1]
-    assert out == agents._HELD_CARD_REVISED
+    assert out == agents._closed_by_message("new_mail")
 
 
 def _busy() -> Any:
@@ -1594,7 +1595,7 @@ async def test_a_revise_that_did_not_run_shows_the_same_card_again(monkeypatch) 
     assert len(asks) == 2 and asks[1]["request_id"] == asks[0]["request_id"] == "f" * 32
     assert asks[1]["reply"]["reopened"] is True and "reopened" not in asks[0]["reply"]
     assert asks[1]["reply"]["recipients"] == asks[0]["reply"]["recipients"]
-    unsent = agents._unapproved_line() or agents._NEW_MAIL_DISCARDED
+    unsent = agents._unapproved_line() or agents._not_done(agents._NEW_MAIL_NOT_SENT)
     assert out == f"{agents._REVISE_UNREAD}\n\n{unsent}"
     assert "did not reach you" in out and "stayed open" in out
     assert "Jev" not in agents._REVISE_UNREAD

@@ -442,31 +442,108 @@ async def search_crm(
     one type, or omit it to search all four. Returns each match with the id you
     pass to get_record / get_timeline.
 
-    This is substring (ILIKE) matching over each type's own searchable columns —
-    lead name/email/company, deal name and next step, contact names and email,
-    organization name/email/website — not semantic search. Converted leads are
+    Each word of the query must match one searchable column (a substring,
+    ILIKE): lead name/email/company, deal name, next step and company, the
+    names of a deal's contacts and of its source lead, contact names and
+    email, organization name/email/website. So put the person and the thing
+    in one query ("Sharath 3D printer"). It is not semantic search. The
+    answer also lists NEAR SPELLINGS ("Sharat" for "Sharath") after the
+    matches, and says so: they are not matches. Converted leads are
     excluded, matching the app's own lead list."""
     slugs = [_entity_slug(entity)] if entity else list(ENTITY_LABELS)
     # D1 (CRM-C7): a tool answer holds at most 50 rows.
     capped = max(1, min(int(limit or 10), 50))
     sections: list[str] = []
+    near_sections: list[str] = []
+    near_lines: list[str] = []
     total = 0
     for slug in slugs:
-        data = await _get(f"/crm/{slug}", {"q": query, "page_size": capped})
-        rows = (data or {}).get("rows") or []
-        found = int((data or {}).get("total") or len(rows))
-        total += found
-        if not rows:
-            continue
-        header = f"{ENTITY_LABELS[slug]}s ({found}"
-        header += f", showing {len(rows)})" if found > len(rows) else ")"
-        sections.append(
-            header + ":\n" + "\n".join(_row_line(slug, r) for r in rows)
+        # HRD-18a: `also` adds the near spellings after the exact rows, and
+        # answers them alone when nothing matches. A wrong exact hit
+        # ("Sharath .") must not hide the record the member meant ("Sharat").
+        data = await _get(
+            f"/crm/{slug}", {"q": query, "page_size": capped, "near": "also"},
         )
-    if not sections:
+        rows = (data or {}).get("rows") or []
+        exact = [r for r in rows if r.get("near") is not True]
+        near = [r for r in rows if r.get("near") is True]
+        found = int((data or {}).get("total") or len(rows))
+        for shown, r in enumerate(near):
+            if shown == NEAR_SHOWN:
+                # The model reads how many it did not see, so no row is lost silently.
+                near_lines.append(f"• {len(near) - NEAR_SHOWN} more near "
+                                  f"{ENTITY_LABELS[slug].lower()}s. Narrow the words to see them.")
+                break
+            near_lines.append(_near_line(slug, r))
+        if near and not exact:
+            header = f"{ENTITY_LABELS[slug]}s{NEAR_SECTION} ({found}"
+            header += f", showing {len(near)})" if found > len(near) else ")"
+            near_sections.append(
+                header + ":\n" + "\n".join(_row_line(slug, r) for r in near)
+            )
+        if not exact:
+            continue
+        total += found
+        header = f"{ENTITY_LABELS[slug]}s ({found}"
+        header += f", showing {len(exact)})" if found > len(exact) else ")"
+        sections.append(
+            header + ":\n" + "\n".join(_row_line(slug, r) for r in exact)
+        )
+    if not sections and not near_sections:
         scope = ENTITY_LABELS[slugs[0]].lower() + "s" if entity else "the CRM"
         return f"Nothing in {scope} matches '{query}'."
-    return f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
+    if not sections:
+        return _near_answer(query) + "\n\n" + "\n\n".join(near_sections)
+    out = f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
+    if near_lines:
+        out += "\n\n" + NEAR_ALSO + "\n" + "\n".join(near_lines) + "\n" + NEAR_NOTE
+    return out
+
+
+#: The mark of a section of near spellings when nothing matches (HRD-18a).
+NEAR_SECTION = ", near spellings only"
+
+#: The most near rows of one record type in the near section of an answer
+#: that holds matches. The gateway sends 5 at most in the ``also`` mode.
+NEAR_SHOWN = 5
+
+#: The head of the near section after the matches (HRD-18a repair round).
+NEAR_ALSO = "Near spellings (may be the person you mean):"
+
+#: The last line of an answer that holds matches and near spellings.
+NEAR_NOTE = (
+    "The matches above hold the exact spelling. If they do not fit the "
+    "member's words, ask the member which record they mean before you "
+    "answer. A near spelling is not a match."
+)
+
+
+def _near_line(slug: str, row: dict[str, Any]) -> str:
+    """One near spelling: the name, the type and the company, and the id."""
+    title = _row_title(slug, row).replace("«", "").replace("»", "")
+    if slug in ("leads", "deals"):
+        where = row.get("organization_name")
+    elif slug == "contacts":
+        where = row.get("email")
+    else:
+        where = row.get("website")
+    kind = ENTITY_LABELS[slug].lower()
+    label = f"{kind} · {where}" if where else kind
+    return f"• «{title}» ({label}) (id={row.get('id')})"
+
+
+def _near_answer(query: str) -> str:
+    """The first lines of an answer that holds near spellings only (HRD-18a).
+
+    The model must read it as: the exact spelling found nothing, these
+    records hold a near spelling, and the member confirms one when it matters.
+    """
+    asked = " ".join(str(query or "").replace("«", "").replace("»", "").split())
+    return (
+        f"No record holds «{asked}». Near spellings: the records below hold a "
+        "similar spelling, not the exact one. Do not treat one as a match. If "
+        "it matters, ask the member whether one of them is the record they mean."
+    )
 
 
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
@@ -747,6 +824,34 @@ async def _held_fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) ->
     return body
 
 
+def _closed_by_chat(unchanged: str) -> str:
+    """The answer of a card that a chat message of the member closed (task 2494).
+
+    The words are ``ask_tools.CLOSED_BY_YOUR_MESSAGE`` of the one table of card
+    outcomes (HRD-7). It is not a decline: the member did not answer the card,
+    and their words come next as their own turn. *unchanged* says what was not
+    written, for example "No lead was created for Veena Rao."
+    """
+    from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, card_outcome_text
+
+    return card_outcome_text(CLOSED_BY_YOUR_MESSAGE, unchanged)
+
+
+def _not_written(answer: Any, *, unchanged: str) -> str:
+    """The answer of a CRM card that wrote nothing (task 2494, HRD-7).
+
+    :func:`_closed_by_chat` when a chat message of the member closed it
+    (``ask_tools.is_revised``). Else the words of the one table of card
+    outcomes for the last card (``ask_tools.card_not_done_text``): declined,
+    timed out, no card, or another member answered, each with *unchanged*. A
+    closed card is no decline, and a timeout is no "no", so the model must not
+    read "that wasn't approved" and drop the member's change.
+    """
+    from acb_skills.ask_tools import card_not_done_text, is_revised
+
+    return _closed_by_chat(unchanged) if is_revised(answer) else card_not_done_text(unchanged)
+
+
 def _names(rows: Any, field: str) -> list[str]:
     """Each row's human-facing name, verbatim — spacing and casing preserved."""
     return [
@@ -837,12 +942,19 @@ async def create_lead(
 
     from acb_skills.ask_tools import request_confirmation
     _where = f" at {payload['organization_name']}" if organization_name else ""
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Create this CRM lead?",
         detail=f"{name}{_where}" + (f" · {payload['email']}" if email else ""),
         context=await _held_fields_block(payload),
-    ):
-        return f"Cancelled — no lead was created for {name}."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"No lead was created for {name}.",
+        )
     try:
         row = await _post("/crm/leads", payload)
     except _MirrorBlocked as blocked:
@@ -1076,12 +1188,19 @@ async def crm_create_pipeline(
 
     from acb_skills.ask_tools import request_confirmation
     note = _LEAD_PIPELINE_NOTE if which == "lead" else _PIPELINE_NOTE
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Create the {words['pipeline']} {title}?",
         detail=f"{title} · {words['pipeline']} · {start} · {count} {words['stages']}",
         context=await _held_fields_block(card, note=note),
-    ):
-        return f"Cancelled — no pipeline was created. {title} does not exist."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"No pipeline was created. {title} does not exist.",
+        )
     try:
         made = await _post("/crm/pipelines", body)
     except _MirrorBlocked as blocked:
@@ -1230,12 +1349,19 @@ async def update_deal_status(
 
     title = _row_title("deals", deal if isinstance(deal, dict) else {})
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Move this deal to {lane}?",
         detail=f"{title} → {lane}",
         context=await _held_fields_block({"deal": title, "stage": lane, **payload}),
-    ):
-        return f"Cancelled — {title} was not moved to {lane}."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{title} was not moved to {lane}.",
+        )
     try:
         await _patch(f"/crm/deals/{record}", payload)
     except _MirrorBlocked as blocked:
@@ -1306,12 +1432,19 @@ async def log_activity(
 
     from acb_skills.ask_tools import request_confirmation
     label = ENTITY_LABELS[slug].lower()
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Log this {kind} on {target}?",
         detail=f"{target} ({label}) · {kind}: {line}",
         context=await _held_fields_block({label: target, **payload}),
-    ):
-        return f"Cancelled — nothing was logged on {target}: {line}"
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"Nothing was logged on {target}.",
+        )
     try:
         await _post(f"/crm/{slug}/{record}/activities", payload)
     except _MirrorBlocked as blocked:
@@ -1366,12 +1499,19 @@ async def convert_lead(
     payload: dict[str, Any] = {"deal": deal} if deal else {}
 
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Convert this lead into a deal?",
         detail=f"{title} → {deal.get('name') or title}",
         context=await _held_fields_block({"lead": title, **deal}),
-    ):
-        return f"Cancelled — {title} was not converted."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{title} was not converted.",
+        )
     try:
         result = await _post(f"/crm/leads/{record}/convert", payload)
     except _MirrorBlocked as blocked:
@@ -1547,7 +1687,10 @@ async def crm_update_record(
     target = _row_title(slug, current)
     label = ENTITY_LABELS[slug].lower()
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title=f"Change this {label}?",
         detail=f"{target} · " + ", ".join(_human(k) for k in shown),
         context=await _held_fields_block({
@@ -1555,8 +1698,12 @@ async def crm_update_record(
             # `field <Name>` is the card's key for a field it has no line for.
             **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
         }),
-    ):
-        return f"Cancelled — {target} was not changed."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{target} was not changed.",
+        )
     try:
         await _patch(f"/crm/{slug}/{record}", payload)
     except _MirrorBlocked as blocked:
@@ -1635,12 +1782,19 @@ async def crm_update_task(
     link = await _linked_title(task)
     names = {"field Done": "Done", "field Due date": "Due date"}
     from acb_skills.ask_tools import request_confirmation
-    if not await request_confirmation(
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
         title="Change this CRM task?",
         detail=f"{subject} · " + ", ".join(names[k] for k in lines),
         context=await _held_fields_block({"field Task": subject, **link, **lines}),
-    ):
-        return f"Cancelled — {subject} was not changed."
+    )
+    if not answer:
+        return _not_written(
+            answer,
+            unchanged=f"{subject} was not changed.",
+        )
     try:
         await _patch(f"/crm/activities/{record}", payload)
     except _MirrorBlocked as blocked:

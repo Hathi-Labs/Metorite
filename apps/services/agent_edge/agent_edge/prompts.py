@@ -91,6 +91,19 @@ ANSWER_RULE = (
     " Before you act on an answer, post a thought that names the answer id,"
     " because the member may withdraw it until you post."
 )
+#: SW-43c. The same step while the flag is off, so the work steps carry it by
+#: default. It holds no reason, because with the flag off no member takes an
+#: answer back. The flag turns it into :data:`ANSWER_RULE`
+#: (:func:`answer_thought_rule`). Fence: ``test_mcp_edge_agent_runs.py``
+#: ``TestTheAnswerChangeAtTheEdge``.
+ANSWER_THOUGHT_RULE = (
+    "Before you act on an answer, post a thought that names the answer id.")
+
+
+def answer_thought_rule() -> str:
+    """The step of the thought before an act on an answer, by the flag of
+    SW-43. The step shows with the runs flag alone (SW-43c)."""
+    return ANSWER_RULE.strip() if agent_oauth.answer_change_enabled() else ANSWER_THOUGHT_RULE
 
 #: The same words as ``tools._UNTRUSTED_NOTE``, the note of each tool.
 _UNTRUSTED = (
@@ -383,6 +396,21 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
     return _numbered(steps)
 
 
+#: Task 1045a (``agent_coordination.md`` 1045a item 7). The step of the
+#: waiting line. It shows only with the runs flag, as the tool does.
+#: Fence: ``test_mcp_edge_prompts.py`` ``TestTheWaitingRule``.
+WAITING_RULE = (
+    "While your own sub-agents work, you work too. Continue to post a short"
+    " thought at least once a minute, and the run stays working. Post a"
+    " waiting line only before a wait of more than 2 minutes on CI, a deploy,"
+    " a review or a person, or another agent that is not yours: a thought"
+    " with post_agent_activity and waiting {on, until_minutes, note}. on is"
+    " ci, review, deploy, member or agent, and until_minutes is 1 to 120."
+    " The task then shows the run as waiting, not idle. Your next activity"
+    " ends the wait. A wait on a person for longer than 120 minutes is a"
+    " question: call ask_on_task.")
+
+
 def _work_steps(*, runs: bool) -> list[str]:
     """The steps after the context: the work, the progress, the links, the
     review, the done, and the end with one disposition."""
@@ -397,8 +425,9 @@ def _work_steps(*, runs: bool) -> list[str]:
             " When you asked me with ask_on_task and I answer outside Metorite,"
             " such as in this chat, call record_outside_decision at once. The"
             " question then closes, and the task stops waiting on me.")
-        if agent_oauth.answer_change_enabled():
-            steps.append(ANSWER_RULE.strip())
+        steps.append(WAITING_RULE)
+        # SW-43c: on by default, so an agent posts the thought before the flip.
+        steps.append(answer_thought_rule())
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -438,6 +467,7 @@ def _rules() -> str:
 
 __all__ = [
     "ANSWER_RULE",
+    "ANSWER_THOUGHT_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
     "IMAGE_RULE",
@@ -448,7 +478,9 @@ __all__ = [
     "TEXT_EXTRA",
     "TEXT_NO_TASK",
     "TEXT_UNKNOWN",
+    "WAITING_RULE",
     "PromptRefused",
+    "answer_thought_rule",
     "get",
     "listed",
     "logged_name",

@@ -138,6 +138,20 @@ def test_the_pending_ask_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE chat_pending_ask FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_chat_member_row_table_is_tenant_scoped() -> None:
+    """WS-CO CO-11 (``chat_organization.md`` §10 and §18).
+    ``chat_session_member`` holds the pin of one member on one chat. It must
+    never be exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "chat_session_member" in gen.discover_tables()
+    assert "chat_session_member" not in gen.EXEMPT
+    assert "chat_session_member" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE chat_session_member FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_crm_settings_table_is_tenant_scoped() -> None:
     """WS-53 CRM-T5 (``crm_platform.md`` §3.1, §16 Q3). ``crm_settings`` holds
     the CRM mode of an organization and who in it may open the CRM. It must
@@ -431,6 +445,20 @@ def test_the_job_queue_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE jobs FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_chat_topic_table_is_tenant_scoped() -> None:
+    """WS-CO CO-2a (``chat_organization.md`` §6 and §10). ``chat_topic`` holds
+    the company topics of an org and the private topics of its members. It
+    must never be exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "chat_topic" in gen.discover_tables()
+    assert "chat_topic" not in gen.EXEMPT
+    assert "chat_topic" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE chat_topic FORCE  ROW LEVEL SECURITY" in policies
+
+
 @pytest.mark.parametrize("table", ["unattended_runs", "unattended_incidents"])
 def test_the_unattended_ledger_tables_are_tenant_scoped(table: str) -> None:
     """WS-BRIEF AUTO-2 (``docs/job_queue.md`` §9). A ledger row and an
@@ -508,11 +536,15 @@ def test_the_package_field_value_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize(
-    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
+    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot",
+              "studio_record_changes", "studio_batches", "studio_batch_items",
+              "studio_saved_views", "studio_object_counters", "integration_attention"],
 )
 def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
-    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records
-    and their hot rows hold the data of one organization's apps. The tables
+    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records,
+    their hot rows and their change history (C4a-1) hold the data of one
+    organization's apps. The asks of an admin for a connection (I8b-1a) are
+    the asks of one organization's members. The tables
     may not be exempt, and the committed policy phase must carry each (R5)."""
     gen = _generator()
     assert table in gen.discover_tables()
@@ -522,6 +554,20 @@ def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_studio_org_gauge_is_tenant_scoped() -> None:
+    """WS-STU C10a (``ai_studio.md`` §3.1). ``studio_org_usage`` holds the count
+    of the records of one org and their bytes. It may not be exempt, and the
+    committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "studio_org_usage" in gen.discover_tables()
+    assert "studio_org_usage" not in gen.EXEMPT
+    assert "studio_org_usage" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE studio_org_usage FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_the_goal_record_table_is_tenant_scoped() -> None:
@@ -583,6 +629,21 @@ def test_the_template_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_epic_contract_table_is_tenant_scoped() -> None:
+    """SP-8a (``project_management_app.md`` §13.3). The contract of an epic
+    holds the outcome and the checks of one org's work. The table may not be
+    exempt, and the committed policy phase must carry it (R5). The numbered
+    file's own policy is pinned in ``test_epic_contract_r8.py``."""
+    gen = _generator()
+    assert "pm_epic_contracts" in gen.discover_tables()
+    assert "pm_epic_contracts" not in gen.EXEMPT
+    assert "pm_epic_contracts" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE pm_epic_contracts FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:

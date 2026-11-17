@@ -264,9 +264,14 @@ class TestD57_7_ARoutedCallThatFailsFAILS:
 
 
 class TestTheUNROUTEDPathIsUntouched:
+    @pytest.mark.direct_arm_guard
     async def test_with_the_flag_OFF_it_still_uses_litellm(self, monkeypatch):
-        """⚠️ Ship dark. Every box that has not turned billing on behaves
-        exactly as it did before this change."""
+        """⚠️ A dev box with the flag off behaves as before H-171.
+
+        Task 3554: the direct arm runs on a dev box only, so this test says
+        ``ACB_ENV=dev`` and runs the real guard. Outside dev the call raises
+        (``TestFallbackSeamIsClosedOutsideDev``)."""
+        monkeypatch.setenv("ACB_ENV", "dev")
         monkeypatch.setenv("ROUTER_SERVING_ENABLED", "0")
         get_settings.cache_clear()
 
@@ -290,6 +295,182 @@ class TestTheUNROUTEDPathIsUntouched:
         finally:
             get_settings.cache_clear()
         assert seen, "the direct path stopped working"
+
+
+class TestTheSTREAMINGArmIsRouted:
+    """Task 3541. ``acompletion_stream_text`` called litellm directly, always.
+
+    🔴 Production, 2026-11-16 07:20 UTC: the email draft, its one caller,
+    streamed from DeepSeek with the gateway's own key. That account had no
+    balance, so each draft failed, while the Router served chat. With routing
+    on, the streaming arm now asks the Router for one whole answer (the Router
+    cannot stream yet, CP-4b) and hands it to ``on_delta``.
+    """
+
+    @staticmethod
+    def _no_litellm(monkeypatch):
+        import litellm
+
+        async def _boom(*a, **k):
+            raise AssertionError(
+                "the streaming arm reached litellm, so it billed nobody")
+
+        monkeypatch.setattr(litellm, "acompletion", _boom)
+
+    async def test_it_reaches_the_ROUTER_and_hands_the_text_to_on_delta(
+        self, monkeypatch, routed
+    ):
+        from acb_llm.context import acompletion_stream_text
+        from acb_llm.routed import router_tier
+
+        spy = RouterSpy()
+        _spy_on(monkeypatch, spy)
+        self._no_litellm(monkeypatch)
+        seen: list[tuple[str, str]] = []
+
+        async def on_delta(kind, text):
+            seen.append((kind, text))
+
+        text, used = await acompletion_stream_text(
+            model="tier-balanced", messages=MESSAGES, max_tokens=64,
+            on_delta=on_delta, feature="email.draft", job="writing",
+        )
+        assert spy.calls, "the Router was never called"
+        payload, _ = spy.calls[0]
+        assert payload["model"] == router_tier("tier-balanced")
+        assert "stream" not in payload
+        assert text == "hi"
+        assert used == "deepseek/deepseek-v4-flash"
+        assert seen == [("content", "hi")]
+
+    async def test_the_payload_VALIDATES(self, monkeypatch, routed):
+        from acb_llm.context import acompletion_stream_text
+
+        spy = RouterSpy()
+        _spy_on(monkeypatch, spy)
+        self._no_litellm(monkeypatch)
+        await acompletion_stream_text(
+            model=TIER, messages=MESSAGES, max_tokens=64, temperature=0.3,
+            job="writing",
+        )
+        payload, _ = spy.calls[0]
+        TestThePayloadSurvivesTheREALModel._model()(**payload)
+
+    async def test_an_empty_answer_sends_no_delta(self, monkeypatch, routed):
+        from acb_llm.context import acompletion_stream_text
+
+        body = json.loads(json.dumps(OK_BODY))
+        body["choices"][0]["message"]["content"] = ""
+        _spy_on(monkeypatch, RouterSpy(body=body))
+        self._no_litellm(monkeypatch)
+        seen: list[tuple[str, str]] = []
+
+        async def on_delta(kind, text):
+            seen.append((kind, text))
+
+        text, _used = await acompletion_stream_text(
+            model=TIER, messages=MESSAGES, max_tokens=64, on_delta=on_delta)
+        assert text == ""
+        assert seen == []
+
+    @pytest.mark.parametrize("status", [402, 400, 403])
+    async def test_a_refusal_RAISES_and_never_falls_back_to_litellm(
+        self, monkeypatch, routed, status
+    ):
+        from acb_llm.context import acompletion_stream_text
+        from acb_llm.routed import RoutedRefusal
+
+        _spy_on(monkeypatch, RouterSpy(status, {"detail": "no"}))
+        self._no_litellm(monkeypatch)
+        with pytest.raises(RoutedRefusal) as caught:
+            await acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64)
+        assert caught.value.status == status
+
+    async def test_an_OUTAGE_also_never_falls_back(self, monkeypatch, routed):
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+        from acb_llm.context import acompletion_stream_text
+
+        async def _down(*a, **k):
+            raise ConsoleRouterUnavailable("unreachable")
+
+        _spy_on(monkeypatch, _down)
+        self._no_litellm(monkeypatch)
+        with pytest.raises(ConsoleRouterUnavailable):
+            await acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64)
+
+    async def test_an_answer_past_the_TOTAL_bound_is_a_total_timeout(
+        self, monkeypatch, routed
+    ):
+        """The member waits at the composer, so the total bound still holds."""
+        import asyncio
+
+        from acb_llm.context import StreamTotalTimeout, acompletion_stream_text
+
+        async def _slow(*a, **k):
+            await asyncio.sleep(5)
+            return 200, OK_BODY
+
+        _spy_on(monkeypatch, _slow)
+        self._no_litellm(monkeypatch)
+        with pytest.raises(StreamTotalTimeout):
+            await acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64, total_s=0.05)
+
+    @pytest.mark.direct_arm_guard
+    async def test_with_the_flag_OFF_it_still_streams_from_litellm(
+        self, monkeypatch
+    ):
+        """⚠️ A dev box with the flag off streams as before task 3541.
+
+        Task 3554: outside dev the call raises
+        (``TestStreamSeamIsClosedOutsideDev``)."""
+        monkeypatch.setenv("ACB_ENV", "dev")
+        monkeypatch.setenv("ROUTER_SERVING_ENABLED", "0")
+        get_settings.cache_clear()
+        import litellm
+        from acb_llm import client as llm_client
+        from acb_llm import context as ctx
+
+        class _Stream:
+            def __init__(self):
+                self._chunks = [
+                    type("C", (), {"choices": [type("Ch", (), {
+                        "delta": type("D", (), {"content": "hi",
+                                                "reasoning_content": None})()
+                    })()]})()
+                ]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self._chunks:
+                    raise StopAsyncIteration
+                return self._chunks.pop(0)
+
+        streamed: list[bool] = []
+
+        async def _fake(*, stream=False, **k):
+            streamed.append(stream)
+            return _Stream()
+
+        async def _keys():
+            return None
+
+        monkeypatch.setattr(litellm, "acompletion", _fake)
+        monkeypatch.setattr(litellm, "stream_chunk_builder", lambda *a, **k: None)
+        monkeypatch.setattr(llm_client, "_ensure_keys_loaded", _keys)
+        monkeypatch.setattr(llm_client, "ensure_model_registered", lambda _m: None)
+        monkeypatch.setattr(ctx, "resolve_underlying_model", lambda m: m)
+        try:
+            text, _used = await ctx.acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64)
+        finally:
+            get_settings.cache_clear()
+        assert streamed == [True], "the direct streaming path stopped working"
+        assert text == "hi"
 
 
 # ── The fence the stub could not be ─────────────────────────────────────────
@@ -542,11 +723,15 @@ class TestTheAgentPathsBillToo:
         )
         CompletionRequest(**spy2.calls[0][0])
 
+    @pytest.mark.direct_arm_guard
     async def test_with_the_flag_OFF_the_agent_paths_are_untouched(
         self, monkeypatch
     ):
-        """⚠️ Ship dark. A box that has not turned billing on behaves exactly
-        as before."""
+        """⚠️ A dev box with the flag off behaves as before H-171.
+
+        Task 3554: outside dev the call raises
+        (``TestCompleteIsClosedOutsideDev``)."""
+        monkeypatch.setenv("ACB_ENV", "dev")
         monkeypatch.setenv("ROUTER_SERVING_ENABLED", "0")
         get_settings.cache_clear()
 
@@ -634,3 +819,436 @@ class TestTheSystemOneDecideIsRouted:
         seen = self._wire(monkeypatch)
         assert await system_one_decide(question="Is it?", context="x") == UNAVAILABLE
         assert seen == []
+
+
+# ── Task 3554 (2449 S3): the direct arm is closed outside dev ───────────────
+#
+# 🔴 With routing off, each of the five seams called a vendor with the
+# gateway's own key, and nobody billed the call. Outside ``ACB_ENV=dev`` each
+# seam now raises ``ConsoleRouterUnavailable("unrouted")`` (the ``/v1`` door
+# answers the Router's 502), before any key loads or litellm runs.
+#
+# ⚠️ Each class carries ``direct_arm_guard``, so the autouse fixture
+# ``_allow_the_direct_ai_arm`` (``tests/conftest.py``) leaves the real guard.
+
+CONSOLE_URL = "https://console.test"
+ORG_KEY = "cc_live_fixture_notarealsecret"
+
+#: The states of a box in which the Router does not take a call:
+#: ``(ROUTER_SERVING_ENABLED, CUSTOMER_CONSOLE_URL)``.
+_UNROUTED = [
+    pytest.param("0", CONSOLE_URL, id="flag-off-wired"),
+    pytest.param("0", "", id="flag-off-unwired"),
+    pytest.param("1", "", id="flag-on-unwired"),
+]
+#: Production. An unset ``ACB_ENV`` reads as ``prod`` (H-90).
+_PRODUCTION = [pytest.param(None, id="env-unset"), pytest.param("prod", id="env-prod")]
+
+
+def _box(monkeypatch, tmp_path, *, env: str | None, flag: str, url: str) -> None:
+    """Configure the box. The settings read ``.env`` from the working folder,
+    so a production case runs in an empty folder: a developer's ``.env`` with
+    ``ACB_ENV=dev`` must not decide the case."""
+    if env is None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ACB_ENV", raising=False)
+    else:
+        monkeypatch.setenv("ACB_ENV", env)
+    monkeypatch.setenv("ROUTER_SERVING_ENABLED", flag)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_URL", url)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", ORG_KEY)
+    monkeypatch.delenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", raising=False)
+    get_settings.cache_clear()
+
+
+class _Spies:
+    """Counts the vendor calls, the key loads and the Router calls."""
+
+    def __init__(self) -> None:
+        self.litellm_calls = 0
+        self.keys_loaded = 0
+        self.router = RouterSpy()
+
+
+@pytest.fixture
+def _fresh_settings():
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+class _ClosedOutsideDev:
+    """The cases of one seam. A subclass names the seam and calls it."""
+
+    seam = ""
+
+    async def _call(self) -> Any:
+        raise NotImplementedError
+
+    def _local_answer(self, stream: bool) -> Any:
+        return {"choices": [{"message": {"role": "assistant", "content": "direct"}}]}
+
+    def _spies(self, monkeypatch) -> _Spies:
+        import litellm
+        from acb_llm import client
+        from acb_llm import context as ctx
+
+        spies = _Spies()
+
+        async def _vendor(*_a, stream=False, **_k):
+            spies.litellm_calls += 1
+            return self._local_answer(stream)
+
+        async def _keys() -> None:
+            spies.keys_loaded += 1
+
+        # `client.py` binds `acompletion` at import, and `context.py` takes
+        # it from litellm at call time. Both names are spied.
+        monkeypatch.setattr(litellm, "acompletion", _vendor)
+        monkeypatch.setattr(client, "acompletion", _vendor)
+        monkeypatch.setattr(client, "_ensure_keys_loaded", _keys)
+        monkeypatch.setattr(litellm, "stream_chunk_builder", lambda *a, **k: None)
+        monkeypatch.setattr(client, "ensure_model_registered", lambda _m: None)
+        monkeypatch.setattr(ctx, "resolve_underlying_model", lambda m: m)
+        _spy_on(monkeypatch, spies.router)
+        return spies
+
+    @pytest.mark.parametrize(("flag", "url"), _UNROUTED)
+    @pytest.mark.parametrize("env", _PRODUCTION)
+    async def test_production_refuses_with_no_vendor_call_and_no_key(
+        self, monkeypatch, tmp_path, _fresh_settings, env, flag, url
+    ):
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+
+        _box(monkeypatch, tmp_path, env=env, flag=flag, url=url)
+        spies = self._spies(monkeypatch)
+        with pytest.raises(ConsoleRouterUnavailable, match="unrouted"):
+            await self._call()
+        assert spies.litellm_calls == 0, "the call reached a vendor, unbilled"
+        assert spies.keys_loaded == 0, "the call loaded a vendor key"
+        assert spies.router.calls == []
+
+    async def test_one_log_line_over_two_calls_with_no_secret(
+        self, monkeypatch, tmp_path, _fresh_settings
+    ):
+        import structlog
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+        from acb_llm import routed as routed_mod
+
+        monkeypatch.setattr(routed_mod, "_REFUSAL_LOGGED", False)
+        _box(monkeypatch, tmp_path, env=None, flag="0", url=CONSOLE_URL)
+        self._spies(monkeypatch)
+        with structlog.testing.capture_logs() as logs:
+            for _ in range(2):
+                with pytest.raises(ConsoleRouterUnavailable):
+                    await self._call()
+        lines = [e for e in logs if e.get("event") == "ai.route_refused_unwired"]
+        assert len(lines) == 1, lines
+        line = lines[0]
+        assert line["seam"] == self.seam
+        assert line["router_serving"] is False
+        assert line["router_wired"] is True
+        assert line["acb_env"] == "prod"
+        assert ORG_KEY not in repr(line), "the log line holds a secret"
+
+    async def test_a_wired_production_box_reaches_the_Router(
+        self, monkeypatch, tmp_path, _fresh_settings
+    ):
+        """🔴 The guard sits AFTER the Router branch. Production with the flag
+        on and a wired Console sends the call to the Router, with no refusal,
+        no vendor call and no key load. Mutation: move ``refuse_direct_arm``
+        above ``if routing_is_on():`` → this case raises → red."""
+        _box(monkeypatch, tmp_path, env=None, flag="1", url=CONSOLE_URL)
+        spies = self._spies(monkeypatch)
+        await self._call()
+        assert len(spies.router.calls) == 1, "the Router did not get the call"
+        assert spies.litellm_calls == 0, "a routed call reached a vendor"
+        assert spies.keys_loaded == 0, "a routed call loaded a vendor key"
+
+    async def test_a_dev_box_still_takes_the_direct_arm(
+        self, monkeypatch, tmp_path, _fresh_settings
+    ):
+        _box(monkeypatch, tmp_path, env="dev", flag="0", url="")
+        spies = self._spies(monkeypatch)
+        await self._call()
+        assert spies.litellm_calls == 1, "the dev box lost its direct arm"
+        assert spies.keys_loaded == 1
+        assert spies.router.calls == []
+
+    async def test_a_settings_read_that_fails_refuses(self, monkeypatch, _fresh_settings):
+        """🔴 ``routing_is_on`` reads a failure as "off". The guard must not
+        read it as "dev"."""
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+        from acb_common import settings as settings_mod
+        from acb_llm import routed as routed_mod
+
+        def _unreadable():
+            raise RuntimeError("the settings do not read")
+
+        monkeypatch.setattr(routed_mod, "routing_is_on", lambda: False)
+        spies = self._spies(monkeypatch)
+        monkeypatch.setattr(settings_mod, "get_settings", _unreadable)
+        with pytest.raises(ConsoleRouterUnavailable, match="unrouted"):
+            await self._call()
+        assert spies.litellm_calls == 0
+        assert spies.keys_loaded == 0
+
+
+@pytest.mark.direct_arm_guard
+class TestFallbackSeamIsClosedOutsideDev(_ClosedOutsideDev):
+    seam = "acompletion_with_fallback"
+
+    def _local_answer(self, stream: bool) -> Any:
+        from litellm import ModelResponse
+
+        return ModelResponse(**OK_BODY)
+
+    async def _call(self) -> Any:
+        from acb_llm.context import acompletion_with_fallback
+
+        return await acompletion_with_fallback(
+            model=TIER, fallback_model="tier-powerful", messages=MESSAGES,
+            max_tokens=64,
+        )
+
+
+@pytest.mark.direct_arm_guard
+class TestStreamSeamIsClosedOutsideDev(_ClosedOutsideDev):
+    seam = "acompletion_stream_text"
+
+    def _local_answer(self, stream: bool) -> Any:
+        assert stream, "the streaming arm asked for no stream"
+        chunk = type("C", (), {"choices": [type("Ch", (), {
+            "delta": type("D", (), {"content": "direct",
+                                    "reasoning_content": None})()
+        })()]})()
+
+        class _Stream:
+            def __init__(self):
+                self._chunks = [chunk]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self._chunks:
+                    raise StopAsyncIteration
+                return self._chunks.pop(0)
+
+        return _Stream()
+
+    async def _call(self) -> Any:
+        from acb_llm.context import acompletion_stream_text
+
+        return await acompletion_stream_text(
+            model=TIER, messages=MESSAGES, max_tokens=64)
+
+
+@pytest.mark.direct_arm_guard
+class TestCompleteIsClosedOutsideDev(_ClosedOutsideDev):
+    seam = "complete"
+
+    async def _call(self) -> Any:
+        from acb_llm import client
+
+        return await client.complete(
+            tier=client.LLMTier.TIER_1, messages=MESSAGES, max_tokens=64)
+
+
+@pytest.mark.direct_arm_guard
+class TestCompleteWithToolsIsClosedOutsideDev(_ClosedOutsideDev):
+    seam = "complete_with_tools"
+
+    async def _call(self) -> Any:
+        from acb_llm import client
+
+        return await client.complete_with_tools(
+            tier=client.LLMTier.TIER_1, messages=MESSAGES,
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            max_tokens=64,
+        )
+
+
+class _V1Request:
+    """The two things ``_handle_chat_completions`` reads off a request."""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self._body = body
+        self.headers: dict[str, str] = {}
+
+    async def json(self) -> dict[str, Any]:
+        return self._body
+
+
+#: The body of the Router's 502 (``v1_compat._router_unavailable``).
+_ROUTER_502 = {"error": {
+    "message": "the AI Router is unavailable",
+    "type": "ConsoleRouterUnavailable",
+    "code": 502,
+}}
+
+
+@pytest.mark.direct_arm_guard
+class TestTheV1DoorIsClosedOutsideDev:
+    """The gateway ``/v1`` door answers the Router's 502, and calls nothing."""
+
+    seam = "v1_compat"
+
+    @staticmethod
+    def _v1():
+        pytest.importorskip("fastapi")
+        from gateway.routes import v1_compat
+
+        return v1_compat
+
+    def _spies(self, monkeypatch, v1) -> _Spies:
+        import litellm
+        from acb_auth import console_resolve
+
+        spies = _Spies()
+
+        async def _vendor(*_a, **_k):
+            spies.litellm_calls += 1
+            return {"choices": [{"message": {"role": "assistant", "content": "direct"}}]}
+
+        async def _keys() -> None:
+            spies.keys_loaded += 1
+
+        def _no_stream(*_a, **_k):
+            raise AssertionError("the door streamed from the Router, unrouted")
+
+        monkeypatch.setattr(litellm, "acompletion", _vendor)
+        monkeypatch.setattr(v1, "_ensure_keys_loaded", _keys)
+        monkeypatch.setattr(v1, "ROUTER_FAILED_AT", 0.0)
+        monkeypatch.setattr(console_resolve, "stream_completion_on_console", _no_stream)
+        _spy_on(monkeypatch, spies.router)
+        return spies
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize(("flag", "url"), _UNROUTED)
+    @pytest.mark.parametrize("env", _PRODUCTION)
+    async def test_production_answers_the_router_502(
+        self, monkeypatch, tmp_path, _fresh_settings, env, flag, url, stream
+    ):
+        v1 = self._v1()
+        _box(monkeypatch, tmp_path, env=env, flag=flag, url=url)
+        spies = self._spies(monkeypatch, v1)
+        body = {"model": "tier-balanced", "messages": MESSAGES, "stream": stream}
+        got = await v1._handle_chat_completions(_V1Request(body))
+        assert got.status_code == 502
+        assert json.loads(got.body) == _ROUTER_502
+        assert spies.litellm_calls == 0, "the door reached a vendor, unbilled"
+        assert spies.keys_loaded == 0, "the door loaded a vendor key"
+        assert spies.router.calls == []
+        assert v1.ROUTER_FAILED_AT > 0, "WAC-13 reads the refusal as an outage"
+
+    async def test_one_log_line_over_two_calls_with_no_secret(
+        self, monkeypatch, tmp_path, _fresh_settings
+    ):
+        import structlog
+        from acb_llm import routed as routed_mod
+
+        v1 = self._v1()
+        monkeypatch.setattr(routed_mod, "_REFUSAL_LOGGED", False)
+        _box(monkeypatch, tmp_path, env=None, flag="0", url=CONSOLE_URL)
+        self._spies(monkeypatch, v1)
+        body = {"model": "tier-balanced", "messages": MESSAGES}
+        with structlog.testing.capture_logs() as logs:
+            for _ in range(2):
+                got = await v1._handle_chat_completions(_V1Request(body))
+                assert got.status_code == 502
+        lines = [e for e in logs if e.get("event") == "ai.route_refused_unwired"]
+        assert len(lines) == 1, lines
+        assert lines[0]["seam"] == self.seam
+        assert lines[0]["router_wired"] is True
+        assert ORG_KEY not in repr(lines[0]), "the log line holds a secret"
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_a_wired_production_box_reaches_the_Router(
+        self, monkeypatch, tmp_path, _fresh_settings, stream
+    ):
+        """🔴 The refusal sits AFTER the Router hop. Production with the flag
+        on and a wired Console serves through the Router: no 502, no vendor
+        call, no key load."""
+        from acb_auth import console_resolve
+
+        v1 = self._v1()
+        _box(monkeypatch, tmp_path, env=None, flag="1", url=CONSOLE_URL)
+        spies = self._spies(monkeypatch, v1)
+        streamed: list[dict[str, Any]] = []
+
+        async def _frames(payload, **_kw):
+            streamed.append(payload)
+            yield b'data: {"choices": []}\n\n'
+
+        monkeypatch.setattr(console_resolve, "stream_completion_on_console", _frames)
+        body = {"model": "tier-balanced", "messages": MESSAGES, "stream": stream}
+        got = await v1._handle_chat_completions(_V1Request(body))
+        assert getattr(got, "status_code", 200) == 200, "a routed call got a refusal"
+        sent = len(streamed) if stream else len(spies.router.calls)
+        assert sent == 1, "the Router did not get the call"
+        assert spies.litellm_calls == 0, "a routed call reached a vendor"
+        assert spies.keys_loaded == 0, "a routed call loaded a vendor key"
+        assert v1.ROUTER_FAILED_AT == 0.0
+
+    async def test_a_dev_box_still_takes_the_local_arm(
+        self, monkeypatch, tmp_path, _fresh_settings
+    ):
+        v1 = self._v1()
+        _box(monkeypatch, tmp_path, env="dev", flag="0", url="")
+        spies = self._spies(monkeypatch, v1)
+        body = {"model": "tier-balanced", "messages": MESSAGES}
+        got = await v1._handle_chat_completions(_V1Request(body))
+        assert isinstance(got, dict), got
+        assert spies.litellm_calls == 1, "the dev box lost its local arm"
+        assert spies.keys_loaded == 1
+        assert spies.router.calls == []
+
+    async def test_a_settings_read_that_fails_refuses(self, monkeypatch, _fresh_settings):
+        from acb_common import settings as settings_mod
+
+        v1 = self._v1()
+
+        def _unreadable():
+            raise RuntimeError("the settings do not read")
+
+        spies = self._spies(monkeypatch, v1)
+        monkeypatch.setattr(v1, "_router_should_serve", lambda _body: False)
+        monkeypatch.setattr(settings_mod, "get_settings", _unreadable)
+        got = await v1._handle_chat_completions(
+            _V1Request({"model": "tier-balanced", "messages": MESSAGES}))
+        assert got.status_code == 502
+        assert spies.litellm_calls == 0
+        assert spies.keys_loaded == 0
+
+
+@pytest.mark.direct_arm_guard
+class TestTheGuardItself:
+    """``refuse_direct_arm`` and ``direct_arm_allowed``, with no seam."""
+
+    @pytest.mark.parametrize("env", ["dev", "prod", "staging", None, "development"])
+    def test_only_dev_allows(self, monkeypatch, tmp_path, _fresh_settings, env):
+        """An unknown value fails the settings read, and that refuses too."""
+        from acb_llm.routed import direct_arm_allowed
+
+        monkeypatch.chdir(tmp_path)
+        if env is None:
+            monkeypatch.delenv("ACB_ENV", raising=False)
+        else:
+            monkeypatch.setenv("ACB_ENV", env)
+        get_settings.cache_clear()
+        assert direct_arm_allowed() is (env == "dev")
+
+    def test_the_refusal_is_the_router_outage_type(self, monkeypatch, tmp_path, _fresh_settings):
+        """So a caller that reads an outage (``is_router_outage``, the email
+        draft of task 3541) reads this refusal too."""
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+        from acb_llm.routed import is_router_outage, refuse_direct_arm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ACB_ENV", raising=False)
+        get_settings.cache_clear()
+        with pytest.raises(ConsoleRouterUnavailable) as caught:
+            refuse_direct_arm("a-test")
+        assert is_router_outage(caught.value)
+        assert str(caught.value) == "unrouted"

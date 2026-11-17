@@ -85,6 +85,49 @@ class AgentRunRequest(BaseModel):
     default path is unchanged."""
 
 
+class ResumeLaunch(BaseModel):
+    """RESUME-2a: the stored call that a continuation run calls once.
+
+    SERVER-ONLY. :func:`_resume_from_row` builds it from the row that it
+    claimed (``pending_ask.claim_stored_call``), and passes it to the run
+    route as ``_continuation``. No request field reaches it (R11): the
+    route's HTTP value is :func:`_no_continuation`, which reads no input.
+    """
+
+    stored: dict[str, Any]
+    request_id: str
+    title: str = ""
+    #: Where the start stands (RESUME-2a review, P2). The run route sets it:
+    #: ``new`` (nothing began), ``refused`` (``start_detached`` refused before
+    #: it began), ``starting`` (``start_detached`` runs, so the run may be
+    #: live) and ``started``. :func:`_resume_from_row` gives the claim back
+    #: only for ``new`` and ``refused``.
+    phase: str = "new"
+
+    def as_kwarg(self) -> dict[str, Any]:
+        """The ``resume_call`` kwarg of ``executor.run_agent_stream``."""
+        return {"stored": dict(self.stored), "request_id": self.request_id,
+                "title": self.title}
+
+
+class _ContinuationStarted(BaseModel):
+    """What the run route gives back to :func:`_resume_from_row` when it
+    started a continuation run, which no request reads."""
+
+    run_id: str
+    thread_id: str
+
+
+def _no_continuation() -> None:
+    """The HTTP value of the run route's server-only ``_continuation``.
+
+    Always None. It takes no parameter, so no query, body or header of a
+    request can set a continuation (R11). Only :func:`_resume_from_row`
+    passes one, by a direct call. Fence:
+    ``tests/unit/test_resume_continuation.py``."""
+    return None
+
+
 #: Reasoning depths the chat UI can request.  Anything else falls back to auto.
 _THINK_MODES: frozenset[str] = frozenset({"auto", "thinking", "max"})
 
@@ -170,6 +213,33 @@ async def _refuse_if_another_run_is_active(thread_id: str, actor: str) -> None:
             "holder": owner,
         },
     )
+
+
+async def _refuse_if_any_run_is_active(thread_id: str) -> None:
+    """409 ``run_in_progress`` when ANY run is live on *thread_id*.
+
+    RESUME-2a review, P2: the run route asks it for a continuation run only,
+    after :func:`_refuse_if_another_run_is_active`. A continuation is no
+    member turn, so it never supersedes a run, not even a run of its own
+    member in another tab. It fails CLOSED: a check that fails refuses, and
+    the claim of the card goes back (:func:`_resume_from_row`)."""
+    try:
+        from orchestrator.stream_relay import is_active
+
+        busy = await is_active(thread_id)
+    except Exception:  # fail closed: the card can be answered again
+        _log.warning("agent.continuation_active_check_failed", thread_id=thread_id[:12])
+        busy = True
+    if busy:
+        _log.info("agent.continuation_refused_active_run", thread_id=thread_id[:12])
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "run_in_progress",
+                "message": "A run is in progress on this conversation.",
+                "threadId": thread_id,
+            },
+        )
 
 
 async def _route_incoming_turn(
@@ -2851,6 +2921,7 @@ async def run_agent_stream_endpoint(
     _request: Request,
     user: UserContext = Depends(get_current_user),
     background_tasks: BackgroundTasks = BackgroundTasks(),
+    _continuation: Any = Depends(_no_continuation),
 ) -> Response:
     """Stream a named-agent run as AG-UI Server-Sent Events.
 
@@ -2864,11 +2935,22 @@ async def run_agent_stream_endpoint(
 
     Use this instead of ``POST /agent/run`` whenever the caller wants live
     tool-call visibility (e.g. the control-plane chat UI).
+
+    RESUME-2a: this route is also the ONE starter of a continuation run.
+    :func:`_resume_from_row` calls it with ``_continuation``, a
+    :class:`ResumeLaunch`. Then no member turn shows, the cap slot is the one
+    that ``_resume_from_row`` took, the executor gets ``resume_call``, and
+    the run starts with no reader (``stream_relay.start_detached``).
     """
     _route_started = time.monotonic()
     import asyncio
 
     from orchestrator.executor import run_agent_stream  # noqa: PLC0415
+
+    # RESUME-2a: only a direct call of `_resume_from_row` passes a launch. The
+    # HTTP value is None (`_no_continuation`), and a direct call that names
+    # none gets the Depends marker, which is not a launch.
+    _resume_launch = _continuation if isinstance(_continuation, ResumeLaunch) else None
 
     # Room guard: sending is a contributor's act. A viewer invited to WATCH a
     # conversation must not be able to drive its agents — otherwise "add them
@@ -2978,7 +3060,8 @@ async def run_agent_stream_endpoint(
             "agentName": agent_name,
             "content": _room_preview(req),
         }
-        if room is not None and room.is_shared else None
+        # RESUME-2a: a continuation run has no member turn to show.
+        if room is not None and room.is_shared and _resume_launch is None else None
     )
 
     # ── Steer instead of 409 (§4.6, §QM-1) ────────────────────────────────────
@@ -3009,7 +3092,12 @@ async def run_agent_stream_endpoint(
     from orchestrator.steer import TurnDecision as _FuDecision  # noqa: PLC0415
 
     _followup = bool(req.payload.pop("steer_followup", None)) and not _supersedes
-    if _followup:
+    if _resume_launch is not None:
+        # RESUME-2a: `_resume_from_row` found the thread at rest and claimed
+        # the row, so this run ENGAGEs. Its message stays empty: the
+        # executor writes the server's note after the stored call.
+        _decision = _FuDecision(_FuRoute.ENGAGE, "resume_call")
+    elif _followup:
         _room_event = None
         _gate = await _steer_followup_gate(req.thread_id or "")
         if _gate is not None:
@@ -3054,7 +3142,9 @@ async def run_agent_stream_endpoint(
         admit_member_run,
         release_member_slot,
     )
-    if _decision.route.name == "ENGAGE":
+    # RESUME-2a: `_resume_from_row` took the slot of a continuation run
+    # before its claim, under the same thread key, so it is not taken twice.
+    if _decision.route.name == "ENGAGE" and _resume_launch is None:
         _admission = await admit_member_run(
             organization_id=_room_org, member=_session_member(user),
             thread_id=_cap_thread,
@@ -3341,6 +3431,16 @@ async def run_agent_stream_endpoint(
     _actor = (getattr(user, "email", "") or "").strip()
     try:
         await _refuse_if_another_run_is_active(thread_id, _actor)
+        if _resume_launch is not None:
+            # RESUME-2a review, P2: `_resume_from_row` found the thread at
+            # rest, then claimed the row. A run that any party started since
+            # then keeps the thread, and the claim goes back. This check
+            # comes before the mint, so ITS refusal writes no reply row. The
+            # exclusive refusal of `start_detached` below comes AFTER the
+            # mint, so it leaves one empty reply row. The mint stays before
+            # the start: the run, its checkpoints and the restart sweep
+            # (`record.messageId`) write into that row.
+            await _refuse_if_any_run_is_active(thread_id)
     except HTTPException:
         # The run will not start, so its cap reservation goes too.
         await _release_cap_slot()
@@ -3433,6 +3533,8 @@ async def run_agent_stream_endpoint(
         # chat, so the worst case is one extra greeting for this member. The
         # read stays bound to the run's org, member and session.
         turn_row_ids=(_persist_message_id, _new_user_id),
+        # RESUME-2a: the claimed stored call, from the server only (R11).
+        resume_call=_resume_launch.as_kwarg() if _resume_launch is not None else None,
     )
 
     # The roster this run's authority intersection is folded over, recorded so a
@@ -3447,6 +3549,65 @@ async def run_agent_stream_endpoint(
     )
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
 
+    # The detached run of this turn: the same arguments for a run that this
+    # request reads (`run_detached` below) and for a continuation run that no
+    # request reads (`start_detached`, RESUME-2a).
+    # `organization_id` stays an explicit keyword at each call below, so the
+    # fence of test_executor_org_threading reads it. It is the server-side
+    # tenant only, never req.payload (R11).
+    _detached: dict[str, Any] = {
+        "tee": False,
+        "on_complete": _persist_on_complete,
+        "actor": _actor or None,
+        "source": str(req.payload.get("source") or "chat"),
+        "floor": _floor,
+        # What the restart sweep needs to save this run's partial
+        # reply if this process dies (orchestrator.run_liveness).
+        "record": {
+            "messageId": _persist_message_id,
+            "agent": agent_name,
+            "runId": run_id,
+            "model": req.model,
+        },
+    }
+
+    if _resume_launch is not None:
+        # RESUME-2a: no request reads a continuation run, so it starts with
+        # no subscriber. The drain task copies the scope that `_serve` opens
+        # for a turn, so the run reads no typed or sent words.
+        from orchestrator.stream_relay import start_detached
+
+        # A continuation has no app of the dock, so it binds no surface.
+        with member_typed(_typed, sent=_sent_text), surface_scope(None):
+            count_member_steers(_actor, _taken_steers)
+            # Review, P2: `exclusive` refuses while ANY run is live on the
+            # thread, so a continuation never cancels a run of this member
+            # in another tab. A refusal raises before the run began. The
+            # reply row minted above stays, empty (the note at
+            # `_refuse_if_any_run_is_active` says why).
+            _resume_launch.phase = "starting"
+            try:
+                await start_detached(
+                    thread_id, agent_gen, exclusive=True,
+                    organization_id=_organization_id, **_detached,
+                )
+            except SupersedeRefused:
+                _resume_launch.phase = "refused"
+                await _release_cap_slot()
+                await _give_back_taken()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "run_in_progress",
+                        "message": "A run is in progress on this conversation.",
+                        "threadId": thread_id,
+                    },
+                ) from None
+            _resume_launch.phase = "started"
+        _log.info("agent.continuation_started", agent=agent_name, run_id=run_id,
+                  thread_id=thread_id[:12])
+        return _ContinuationStarted(run_id=run_id, thread_id=thread_id)  # type: ignore[return-value]
+
     async def _serve():
         timing = _RunTiming(_route_started)
         try:
@@ -3458,7 +3619,7 @@ async def run_agent_stream_endpoint(
             with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
                 # PZ-31: the session's member is the run member. Their own
                 # typed steers that ENGAGE took count now, and a tool result
-                # that carries one later adds it (`steer.decorate_tool_result`).
+                # that reads one later adds it (`steer.take_steer_turns`).
                 count_member_steers(_actor, _taken_steers)
                 async for chunk in _serve_run(timing):
                     yield chunk
@@ -3469,23 +3630,8 @@ async def run_agent_stream_endpoint(
     async def _serve_run(timing: _RunTiming):
         try:
             async for evt in run_detached(
-                thread_id, agent_gen, tee=False,
-                on_complete=_persist_on_complete,
-                actor=_actor or None,
-                source=str(req.payload.get("source") or "chat"),
-                floor=_floor,
-                # Server-side tenant only (see the run_agent_stream call above) —
-                # never req.payload. Binds the detached drain task's own scope so
-                # the on_complete persist hook sees the right tenant (R11).
-                organization_id=_organization_id,
-                # What the restart sweep needs to save this run's partial
-                # reply if this process dies (orchestrator.run_liveness).
-                record={
-                    "messageId": _persist_message_id,
-                    "agent": agent_name,
-                    "runId": run_id,
-                    "model": req.model,
-                },
+                thread_id, agent_gen,
+                organization_id=_organization_id, **_detached,
             ):
                 timing.see(evt)
                 yield f"data: {json.dumps(evt)}\n\n"
@@ -3561,6 +3707,10 @@ async def _late_answer_from_row(
     The row moves to ``answered`` in one statement, so two late answers to
     one card resend once. The loser gets ``(None, True)``, the old 409.
     Fence: ``tests/unit/test_pending_ask_flow.py``.
+
+    HRD-22: only after the move, a late APPROVE of a parked plain card writes
+    a grant of one use (``acb_skills.late_approve.grant_from_offer``), and the
+    resend says so. Fence: ``tests/unit/test_late_approve_grant.py``.
     """
     import asyncio  # noqa: PLC0415
 
@@ -3606,6 +3756,18 @@ async def _late_answer_from_row(
     from gateway.routes.crm.questions import record_late_answer
 
     await record_late_answer(org, me, str(row.get("kind") or ""), row.get("payload"), req.answer)
+    # HRD-22 (chat_run_continuity.md S2 item 8): a late APPROVE of a parked
+    # plain card is the member's own consent. It opens the gate of the SAME
+    # card once, in this thread, for this member. The org and the member are
+    # the session's, and the thread and the request id are the row's (R5,
+    # R11). With CHAT_LATE_APPROVE_ORGS off it writes nothing, and the
+    # message is as before. It never raises.
+    from acb_skills.late_approve import grant_from_offer
+
+    if await grant_from_offer(org, me, row, req.answer):
+        from gateway.chat_recovery import with_late_approve_note
+
+        resend = with_late_approve_note(resend)
     # The question no longer waits, so its My Day card leaves at once (WS-58
     # MD-3f fix round 1, §5.9 item 14). `bump_member_safe` waits 0.5 seconds
     # at most and never raises, so the answer stands.
@@ -3618,6 +3780,253 @@ async def _late_answer_from_row(
         state=str(row.get("state") or ""),
     )
     return resend, True
+
+
+def _plain_409() -> HTTPException:
+    """The plain 409 of an answer that no run takes."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="No pending question matches that request_id "
+        "(the run may have already finished).",
+    )
+
+
+async def _resumable_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
+    """``(org, member, row, stored call)`` of a late Approve that may resume
+    (RESUME-2a), or None. With ``CHAT_DURABLE_ASKS`` off, or
+    ``CHAT_RESUME_ORGS`` or ``CHAT_LATE_APPROVE_ORGS`` off for the session's
+    org, it reads nothing. RESUME needs both flags: only the late-approve
+    scope writes and reads the SPENT mark that keeps the stored call of a
+    twin row from writing twice (review, P1-A). The org and the member are
+    the session's (R5, R11)."""
+    import asyncio
+
+    from orchestrator import pending_ask
+
+    if not pending_ask.durable_asks_enabled():
+        return None
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org or not req.thread_id:
+        return None
+    from acb_skills.late_approve import APPROVE, late_approve_on
+    from acb_skills.stored_call import chat_resume_on
+
+    if not chat_resume_on(org) or not late_approve_on(org):
+        return None
+
+    me = (getattr(user, "email", "") or "").strip().lower()
+    if req.declined or str(req.answer or "").strip().upper() != APPROVE or not me:
+        return None
+    try:
+        row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
+        if row is None or (
+                str(row.get("actor_email") or "") != me
+                or str(row.get("thread_id") or "") != req.thread_id
+                or str(row.get("kind") or "") != "confirmation"):
+            return None
+        stored = await asyncio.to_thread(pending_ask.read_stored_call, org, req.request_id)
+    except Exception:  # today's path still answers
+        _log.warning("agent.resume_read_failed", exc_info=True)
+        return None
+    if not _stored_call_resumes(stored, row):
+        return None
+    return org, me, row, stored
+
+
+async def _thread_at_rest(thread_id: str) -> bool:
+    """True when no run is live on *thread_id* (RESUME-2a). A dead run is
+    closed and saved first (``chat_recovery.recover_dead_run``). A live run,
+    and a recovery that another party holds, read False: case C keeps
+    today's path."""
+    from orchestrator.run_liveness import run_liveness
+
+    liveness = await run_liveness(thread_id)
+    if liveness == "dead":
+        from gateway.chat_recovery import recover_dead_run
+
+        if await recover_dead_run(thread_id, why="card_resume") is None:
+            return False
+        liveness = await run_liveness(thread_id)
+    return liveness == "idle"
+
+
+async def _resume_from_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> dict[str, Any] | Response | None:
+    """A late Approve of a parked plain card runs its stored call ONCE.
+
+    RESUME-2a, ``chat_run_continuity.md`` §4.12.4 item 2, case B: a NEW run,
+    with a new reply row, and no member turn. ``None`` means "take today's
+    path", byte for byte (the 409 ``run_restarted`` and the rest). It runs
+    only with ``CHAT_DURABLE_ASKS`` on and ``CHAT_RESUME_ORGS`` naming the
+    session's org. With the flag off it reads nothing, so
+    ``read_stored_call`` is never called.
+
+    Each of these must hold, or it answers None and changes nothing:
+
+    * The answer is ``APPROVE``, and not a decline (RESUME-4a-2, task 3478, owns the
+      late decline and waits for D-RES-9).
+    * The row of the session's org (RLS) waits, the session's member is its
+      ``actor_email``, the request's thread is its thread, and its kind is
+      ``confirmation``.
+    * The stored call is version 1 of kind ``confirmation``, its tool is on
+      ``egress.HELD_CARD_WRITE_TOOLS``, and its agent is the row's agent (a
+      card of a delegated child run, C8, takes the old path).
+    * No run is live on the thread (case C, RESUME-2c, keeps today's path).
+      An open row whose run is dead is closed and saved first.
+    * The member may run the agent.
+
+    Then the run cap admits the run (a refusal is the 429 ``too_many_runs``,
+    and the row waits). The claim (``pending_ask.claim_stored_call``) moves
+    the row once: no row back releases the slot and answers the plain 409.
+    The HRD-22 offer goes. The run route starts the continuation, and the
+    answer is ``{"ok": true, "resumed": true, "threadId", "runId"}``.
+
+    **A refusal after the claim** (review, P2). The run route refuses when
+    another member's run started since the check above, and when ANY run is
+    live on the thread (``_refuse_if_any_run_is_active``, and
+    ``start_detached(exclusive=True)``). A refusal, or any raise before
+    ``start_detached`` began, gives the claim back
+    (``pending_ask.restore_stored_call``): the row is ``parked`` with its
+    stored call again, and the slot goes. So the card can be answered again.
+
+    **At most once.** The claim comes before the call. A process crash
+    between the claim and the start of the run leaves an answered row with
+    no stored call, no write and no run. No notice shows, because no run
+    record exists yet. A second Approve of that card gets the plain 409, so
+    the member asks again.
+    """
+    import asyncio
+
+    from orchestrator import pending_ask
+
+    found = await _resumable_row(req, user)
+    if found is None:
+        return None
+    org, me, row, _stored = found
+    agent_name = str(row.get("agent_name") or "")
+    # Case C (RESUME-2c): a live run on the thread keeps today's path.
+    if not await _thread_at_rest(req.thread_id or ""):
+        return None
+    try:
+        await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
+    except HTTPException:
+        return None
+    from orchestrator.run_cap import admit_member_run, release_member_slot
+
+    admission = await admit_member_run(
+        organization_id=org, member=_session_member(user), thread_id=req.thread_id,
+    )
+    if not admission.admitted:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "error": "too_many_runs",
+                "limit": admission.limit,
+                "running": list(admission.running),
+            },
+        )
+    try:
+        claimed = await asyncio.to_thread(
+            pending_ask.claim_stored_call, org, req.request_id,
+            member=me, thread_id=req.thread_id, answer=req.answer,
+        )
+    except Exception:
+        _log.warning("agent.resume_claim_failed", exc_info=True)
+        claimed = None
+    if claimed is None:
+        await release_member_slot(organization_id=org, thread_id=req.thread_id)
+        raise _plain_409()
+    # HRD-22: the row left `parked` through the claim, so its offer goes.
+    from acb_skills.late_approve import drop_offer
+
+    await drop_offer(org, me, req.thread_id, req.request_id)
+    run_id = str(uuid.uuid4())
+    launch = ResumeLaunch(
+        stored=claimed, request_id=req.request_id,
+        title=str(row.get("question") or ""),
+    )
+    # A new run with a new reply row, and no prompt row: the payload carries
+    # no message id and no words, and no `typed` mark.
+    cont = AgentRunRequest(
+        agent=agent_name, thread_id=req.thread_id, run_id=run_id,
+        payload={"message": "", "source": "chat"},
+    )
+    try:
+        started = await run_agent_stream_endpoint(
+            cont, None,  # type: ignore[arg-type]
+            user=user, background_tasks=BackgroundTasks(), _continuation=launch,
+        )
+    except BaseException:
+        await _give_back_claim(org, me, req, claimed, launch)
+        await release_member_slot(organization_id=org, thread_id=req.thread_id)
+        raise
+    if not isinstance(started, _ContinuationStarted):  # pragma: no cover — a defect
+        await _give_back_claim(org, me, req, claimed, launch)
+        await release_member_slot(organization_id=org, thread_id=req.thread_id)
+        raise _plain_409()
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, me)
+    _log.info(
+        "agent.pending_ask_resumed",
+        request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+        state=str(row.get("state") or ""),
+    )
+    return {"ok": True, "resumed": True, "threadId": started.thread_id,
+            "runId": started.run_id}
+
+
+async def _give_back_claim(
+    org: str, me: str, req: UserInputResponseRequest, claimed: dict[str, Any],
+    launch: ResumeLaunch,
+) -> None:
+    """Give back the claim of a continuation that never began (review, P2).
+
+    Only for the phases ``new`` and ``refused`` of *launch*: then nothing
+    ran, so the row goes back to ``parked`` with its stored call
+    (``pending_ask.restore_stored_call``). In ``starting`` or ``started`` the
+    run may be live, so the claim stays and the call runs at most once. It
+    never raises, so the error of the run route stays the answer."""
+    import asyncio
+
+    if launch.phase not in ("new", "refused"):
+        _log.warning("agent.resume_claim_kept", request_id=req.request_id[:12],
+                     phase=launch.phase)
+        return
+    try:
+        from orchestrator import pending_ask
+
+        back = await asyncio.to_thread(
+            pending_ask.restore_stored_call, org, req.request_id,
+            member=me, thread_id=req.thread_id or "", stored=claimed,
+        )
+    except BaseException:  # never mask the refusal of the route
+        _log.warning("agent.resume_claim_restore_failed", exc_info=True)
+        return
+    _log.info("agent.resume_claim_restored", request_id=req.request_id[:12], restored=back)
+
+
+def _stored_call_resumes(stored: Any, row: dict[str, Any]) -> bool:
+    """True when *stored* may resume for *row* (RESUME-2a): version 1 of kind
+    ``confirmation``, a tool on ``egress.HELD_CARD_WRITE_TOOLS``, the row's
+    agent, and arguments that are an object. A fault reads False."""
+    try:
+        from acb_skills.egress import HELD_CARD_WRITE_TOOLS
+
+        return (
+            isinstance(stored, dict)
+            and stored.get("v") == 1
+            and stored.get("kind") == "confirmation"
+            and str(stored.get("tool") or "") in HELD_CARD_WRITE_TOOLS
+            and bool(row.get("agent_name"))
+            and str(stored.get("agent") or "") == str(row.get("agent_name") or "")
+            and isinstance(stored.get("arguments"), dict)
+        )
+    except Exception:
+        return False
 
 
 async def _late_decline_from_row(
@@ -3675,6 +4084,11 @@ async def _late_decline_from_row(
         return False
     if moved is None:
         return False
+    # HRD-22: the row left `parked` with no approve, so its late-approve
+    # offer goes too. It writes no grant, and it never raises.
+    from acb_skills.late_approve import drop_offer
+
+    await drop_offer(org, me, str(row.get("thread_id") or ""), req.request_id)
     from gateway.routes.shell import cache as feed_cache
 
     await feed_cache.bump_member_safe(org, me)
@@ -3788,6 +4202,14 @@ async def respond_user_input(
 
         from gateway.chat_recovery import card_answer_after_restart  # noqa: PLC0415
 
+        # RESUME-2a: a late Approve of a parked plain card with a stored call
+        # runs that call once, in a new reply, with no member turn. Dark
+        # behind CHAT_RESUME_ORGS. None takes the path below, as before.
+        _resumed = await _resume_from_row(req, user)
+        if isinstance(_resumed, Response):
+            return _resumed  # type: ignore[return-value]
+        if _resumed is not None:
+            return _resumed
         # WS-51 S2: the card's durable row, when it has one. A PARKED run
         # ended on purpose, so its answer always starts a new run, and the
         # question comes from the row, which outlives the stream.
@@ -4215,13 +4637,20 @@ async def run_agent_async(
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:
+        from acb_common.no_person import no_person_scope  # noqa: PLC0415
+
         try:
             # H-201 part 3: the caller's tenant, never the thread's (see
             # run_agent_sync).
-            await run_agent(agent, req.payload, run_id=run_id,
-                            thread_id=req.thread_id, model=req.model,
-                            organization_id=getattr(user, "organization_id", None),
-                            session_user=_session_member(user))
+            # MCP-NC1 review: the caller has the 202 and left, so no person
+            # watches this run (AUTO-7a). The mark makes the MCP gate count
+            # no member, so a write of an outside app is refused, never run
+            # with no card, and no card waits for an answer.
+            with no_person_scope():
+                await run_agent(agent, req.payload, run_id=run_id,
+                                thread_id=req.thread_id, model=req.model,
+                                organization_id=getattr(user, "organization_id", None),
+                                session_user=_session_member(user))
         except Exception as exc:  # noqa: BLE001
             _log.error(
                 "agent.async_run_error",

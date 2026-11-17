@@ -308,8 +308,15 @@ chat_session  (already exists — becomes the room)
   + cc:room:{thread_id}  (new Redis stream — room events that outlive runs)
 ```
 
-> **Update 2026-08-01 (doc-truth pass):** the proposed `chat_session_member`
-> shipped as **`chat_session_participant`** (migration 138).
+> **Update 2026-08-01 (doc-truth pass):** the room membership that this
+> sketch calls `chat_session_member` shipped as **`chat_session_participant`**
+> (migration 138).
+>
+> **Update 2026-11-16 (WS-CO CO-11):** a table named `chat_session_member` now
+> exists, and it is not the membership. Migration 450 holds the per-member row
+> of a chat: the pin of one member today, and the topic of CO-2 later
+> (`chat_organization.md` §10). Room membership stays in
+> `chat_session_participant`.
 
 Why this and not a new abstraction:
 
@@ -489,6 +496,11 @@ always steers it, and the composer has no stop-and-send. A steer that arrives af
 tool boundary goes back to `cc:steer:` at the run's terminal event, and the chat asks for one
 follow-up turn that replays it through ENGAGE. `project-docs/specs/chat_run_continuity.md`
 §4.9 owns the rule and its fences.
+
+**Changed 2026-11-09 (task 2494).** Step 3 above is no longer a note on a tool result. The
+model read member text inside a tool result as a possible prompt injection. Now the run's next
+model call gets each steer as a user message (`orchestrator.steer.SteerTurns`). The text below
+that says "a steer rides the next tool result" is history.
 
 ---
 

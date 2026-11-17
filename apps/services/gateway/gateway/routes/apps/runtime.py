@@ -32,7 +32,7 @@ from gateway.routes.apps._common import (
     parse_db_manifest,
     publish_app_activity,
     read_workspace_manifest,
-    record_app_audit,
+    record_app_audit_bound,
     require_app_user,
     require_app_viewer,
     resolve_ai_budget,
@@ -253,7 +253,7 @@ async def put_storage_row(
             {"app_id": str(row.id), "table": table, "key": key,
              "value": encoded, "scope": partition, "by": _uid(user)},
         )).fetchone()
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="storage",
         detail={"table": table, "key": key, "op": "put"},
     )
@@ -282,7 +282,7 @@ async def delete_storage_row(
         )
     deleted = bool(getattr(result, "rowcount", 0))
     if deleted:
-        await record_app_audit(
+        await record_app_audit_bound(
             app_id=str(row.id), user_email=_uid(user), kind="storage",
             detail={"table": table, "key": key, "op": "delete"},
         )
@@ -398,7 +398,7 @@ async def ai_complete(
         content = ""
     tokens_in, tokens_out = _usage_from_response(resp)
     cost = _cost_from_response(used_model, resp)
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="ai",
         app_version=row.live_version,
         tokens_in=tokens_in, tokens_out=tokens_out,

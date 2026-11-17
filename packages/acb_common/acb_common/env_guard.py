@@ -161,6 +161,19 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # only the owner writes them (work_plan.md §6 D4). The `TOOL_` prefix
     # covers both too.
     "TOOL_PACKS", "TOOL_PACKS_ORGS",
+    # WS-67 TS-2a (D222): the orgs whose chat holds `find_tools`. A found tool
+    # moves what the chat can do and spends model tokens, so only the owner
+    # writes it (work_plan.md §6 D4). The `TOOL_` prefix covers it too.
+    "TOOL_SEARCH_ORGS",
+    # WS-FIND FIND-2 (find_engine.md section 8): the orgs whose search hits say
+    # how they matched. It changes the order and the text of each answer, so
+    # only the owner writes it (work_plan.md section 6 D4).
+    "FIND_ORGS",
+    # WS-FIND HRD-21 (find_engine.md section 8): the orgs whose search reads
+    # the member's own past chats. It puts the text of old chats into a run,
+    # so only the owner writes it. The `CHAT_` prefix covers it too, and the
+    # exact name keeps the fence if that prefix ever narrows.
+    "CHAT_SEARCH_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
@@ -181,6 +194,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
+    # new task as a form that the member edits. It changes what a card writes,
+    # so only the operator writes it.
+    "PROJECT_EDIT_CARD_ORGS",
     # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
     # what Microsoft sends to the box, so only the operator writes it.
     "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
@@ -226,6 +243,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # WS-MCP SW-94: AGENT_POLICY_ORGS opens the policy store of agent work. A
+    # policy can pause the agents of an org and set how strict a refusal is,
+    # so a tenant must not open it for another org.
+    "AGENT_POLICY_ORGS",
     # WS-MCP PB-2: PLAYBOOK_ORGS opens the orchestration playbook prompts,
     # resources and the default guidance block. It is Metorite's own text and
     # it reaches every agent session of the org, so only the operator writes it.
@@ -249,6 +270,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # An update reaches each member who sees the project, so a tenant must not
     # open it for another org.
     "PROJECTS_UPDATES_ORGS",
+    # SP-8a: EPIC_CONTRACT_ORGS opens the contract of an epic for an org. A
+    # tenant must not open it for another org, so only the owner writes it.
+    "EPIC_CONTRACT_ORGS",
     # WS-KG KG-4: GRAPH_SWEEP_ORGS opens the nightly sweep that writes graph
     # edges into kb_links for an org. A tenant must not open it for another
     # org, so only the operator writes it.
@@ -269,10 +293,18 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.
     "APP_REQUESTS_ORGS",
+    # WS-STU STU-Q15a: MODULE_RUN_ORGS lets the code modules of an org run as
+    # a child process on the box. A tenant that set it could run member code
+    # for every org, so only the owner writes it.
+    "MODULE_RUN_ORGS",
     # WS-55 EA-18a: AGENT_QUESTIONS_ORGS narrows who may answer an agent's
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-55 CIV-14b: MCP_IMAGE_UPLOAD_ORGS lets an outside agent upload an
+    # image to a task and show it on a question. A tenant must not open it
+    # for another org, so only the owner writes it.
+    "MCP_IMAGE_UPLOAD_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact
@@ -286,6 +318,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WS-AGA AGA-6: AGENTS_VIEW_ORGS opens the member view of agents for an
+    # org. The view reads the agent runs of the org, so only the owner writes it.
+    "AGENTS_VIEW_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.
@@ -320,6 +355,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).
     "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # WS-58 LOOP-4a: the orgs whose feed learns from the member's acts. It
+    # changes what each member of the org sees, so only the operator writes
+    # it (proactive_loop.md §7.2).
+    "MY_DAY_LEARN_ORGS",
     # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
     # moves what an org pays, so only the operator writes it.
     "PROJECTS_DECIDE_ORGS",
@@ -336,6 +375,17 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # CIV-31: the auto-revert pass of the home box (scripts/home_server). It
+    # reads its mode, its files and the merge bot log. A tenant must never save these.
+    "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",
+    "AUTO_REVERT_STATE", "MERGE_LOG",
+    # CIV-31b: the pass reads the merge bot queue for a hand-over that waits.
+    "MERGE_QUEUE",
+    # CIV-31c: the pass reads the lock of the merge bot, and it starts one
+    # headless session that opens the culprit's task again.
+    "MERGE_BOT_STATE", "AUTO_REVERT_CLAUDE_CMD", "AUTO_REVERT_REOPEN_TIMEOUT_S",
+    # CIV-34a: the conflict rules of the merge bot. It names the ruff command.
+    "CONFLICT_RULES_RUFF",
     # Deploy, backup and watchdog scripts (variables they read).
     "APP_DIR", "ENV_FILE", "ACTIONS", "CURRENT", "DEST", "DRY_RUN", "EUID",
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
@@ -443,6 +493,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-CAL CE-4: events. CALENDAR_EVENTS is the switch of the event store,
     # so a tenant that set it could turn it on for every org.
     "CALENDAR_EVENTS",
+    # WS-CAL CE-10, CE-11: the calendar sync. CALENDAR_SYNC_READ and
+    # CALENDAR_SYNC_WRITE are the switches, and CALENDAR_SYNC_MEMBERS narrows
+    # them. A tenant that set one could start the sync for every org.
+    "CALENDAR_SYNC_",
     # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
     # worker, so a tenant that set it could start the worker for every org.
     "JOB_QUEUE",
@@ -465,6 +519,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
+    # tenant that set it could open them for every org on the box.
+    "CORE_",
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",

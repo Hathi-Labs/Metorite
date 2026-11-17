@@ -327,7 +327,7 @@ describe("the page wires the lens", () => {
   });
 
   it("selects no view mode while the lens is on, on both switches", () => {
-    expect(src).toMatch(/const shownMode: ViewMode \| null = attentionLens \? null : mode;/);
+    expect(src).toMatch(/const shownMode: ViewMode \| null = attentionLens \|\| agentsLens \? null : mode;/);
     expect(src.match(/mode=\{shownMode\}/g)?.length).toBe(2);
     const html = renderToStaticMarkup(
       createElement(ModeSwitch<"board" | "list">, {
