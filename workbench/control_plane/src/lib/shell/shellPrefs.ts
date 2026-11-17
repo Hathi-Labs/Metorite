@@ -93,6 +93,8 @@ onClear(() => {
   setSkillOffer(false);
   // A new member: the chat pin is off until their own read says so (CO-11).
   setChatPin(false);
+  // A new member: the chat topics are off until their own read says so (CO-2b).
+  setChatTopics(false);
 });
 
 /** Tests only: start a new page. */
@@ -284,6 +286,55 @@ export function __setChatPinForTests(on: boolean): void {
   setChatPin(on);
 }
 
+// ── The chat topics (WS-CO CO-2b, `chat_organization.md` §6) ───────────────
+//
+// `chat_topics` is a fact of the server, as `chat_pin` is: `CHAT_TOPICS_ORGS`
+// on the gateway holds the member's org. The chat list shows the topic
+// groups, and the chat shows the topic chip, only when it is true. The shell
+// read is the one writer. Before the read answers, after a failed read and
+// after a member change, it reads as off.
+
+let chatTopicsHere = false;
+const chatTopicsListeners = new Set<() => void>();
+
+function setChatTopics(on: boolean): void {
+  if (chatTopicsHere === on) return;
+  chatTopicsHere = on;
+  chatTopicsListeners.forEach((l) => l());
+}
+
+/**
+ * The chat topics switch in an answer: true only when the gateway says
+ * `chat_topics: true`. A missing field, as from an older gateway, is off.
+ */
+export function chatTopicsOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { chat_topics?: unknown }).chat_topics === true;
+}
+
+/** What the last shell read of this page said about the chat topics. */
+export function chatTopicsAllowed(): boolean {
+  return chatTopicsHere;
+}
+
+/** Live: whether the member's chats sort into topics (CO-2b). */
+export function useChatTopicsOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      chatTopicsListeners.add(l);
+      return () => {
+        chatTopicsListeners.delete(l);
+      };
+    },
+    chatTopicsAllowed,
+    () => false,
+  );
+}
+
+/** Tests only: set what the shell read said about the chat topics. */
+export function __setChatTopicsForTests(on: boolean): void {
+  setChatTopics(on);
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
@@ -303,6 +354,8 @@ export async function readShellPrefs(): Promise<StoredShell> {
   setSkillOffer(skillOfferOn(body));
   // And it tells the chat list whether it shows Pin and the Pinned group (CO-11).
   setChatPin(chatPinOn(body));
+  // And it tells the chat whether it shows the topic groups and chip (CO-2b).
+  setChatTopics(chatTopicsOn(body));
   return layout;
 }
 
