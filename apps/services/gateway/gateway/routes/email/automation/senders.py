@@ -476,7 +476,7 @@ async def bulk_action(
         if req.action == "archive" and req.message_ids:
             for r in rows[:20]:
                 await member_actions.record_act(
-                    db, org=user.organization_id or "", member=user.email or "",
+                    db, org=member_actions.org_of(user), member=user.email or "",
                     app="email", act="archive", via="app", item_kind="email",
                     item_id=str(r.id), mailbox_id=str(r.account_id),
                     features=act_features.of_address(r.from_address))
