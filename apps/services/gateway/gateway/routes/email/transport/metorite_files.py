@@ -10,7 +10,8 @@ Metorite file, each named by a reference (``acb_skills.held_card``):
   a send (``workspace._member_agent_workspace``, H-201). Task 3598: a file
   of a chat folder of a shared agent, such as the path that
   ``make_document`` gives, when the member may write to that chat
-  (``workspace._chat_thread_file``). A held chat takes no such file.
+  (``workspace._chat_thread_file``). Only this ref takes a chat file,
+  because only this ref pins a digest. A held chat takes no such file.
 * ``knowledge:<page id>`` — a Knowledge page that the member can read, as
   its Markdown. The page comes through ``knowledge.core.load_page``, the
   visibility read of the Knowledge routes, behind the same two gates
@@ -141,9 +142,11 @@ async def _artifact(user: UserContext, spec: str, *, held: bool) -> tuple[str, b
     agent, _, path = spec.partition(":")
     if held and _is_held_workspace(agent, path, user.email):
         raise HTTPException(status_code=422, detail=HELD_WORKSPACE_REFUSED)
-    # Task 3598: a held run can write the folder of its own chat, so a held
-    # send takes no chat file. The room check reads the database, so the
-    # resolver runs in a thread. The tenant is the member's own.
+    # Task 3598: this ref is the ONE door of a chat file, because the card
+    # and the send check its digest (``check_digests``). A held run can write
+    # the folder of its own chat, so a held send takes no chat file. The room
+    # check reads the database, so the resolver runs in a thread. The tenant
+    # is the member's own.
     [got] = await asyncio.to_thread(
         load_artifact_attachments, [ArtifactAttachment(path=path, agent=agent)],
         user.email, organization_id=user.organization_id, chat_files=not held)
@@ -261,8 +264,6 @@ async def resolve_metorite_files_route(
     card for a file that cannot go. It reads no bytes."""
     from gateway.routes.email.transport.send import refused_artifacts
 
-    refused = await asyncio.to_thread(
-        refused_artifacts, list(req.artifacts), user.email,
-        organization_id=user.organization_id)
+    refused = refused_artifacts(list(req.artifacts), user.email)
     files = await resolve_metorite_files(user, list(req.refs))
     return {"files": [f.shown() for f in files], "refused": refused}

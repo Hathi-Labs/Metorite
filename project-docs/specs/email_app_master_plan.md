@@ -22040,7 +22040,7 @@ already see. Three stores own such a file. Each reference names its store.
 
 | Reference | Store | The read, as the member |
 |---|---|---|
-| `artifact:<agent>:<path>` | The member's own workspace of that agent, as the Artifacts app shows it. Since task 3598, also a chat folder of a shared agent, for a chat that the member can write to | `send.load_artifact_attachments` |
+| `artifact:<agent>:<path>` | The member's own workspace of that agent, as the Artifacts app shows it. Since task 3598, also a chat folder of a shared agent, for a chat that the member can write to. Only this ref takes a chat file, because only this ref pins a digest | `send.load_artifact_attachments` |
 | `knowledge:<page id>` | A Knowledge page, sent as its Markdown | `knowledge.core.load_page`, behind `KNOWLEDGE_ENABLED` and `feature:knowledge` |
 | `task-file:<attachment id>` | A file on a task | `projects.attachments.visible_task_attachment`, behind `feature:projects` |
 
@@ -22062,21 +22062,30 @@ already see. Three stores own such a file. Each reference names its store.
   A file that does not resolve shows no card. The tool answer names the file
   and the next step. Before, the member approved a card, and then the send
   refused the file (production, 2026-11-09).
-- **A file that a chat made attaches (task 3598).** Status: built on
-  2026-11-17 on the branch `mail-attach`, not merged. The owner asked on
+- **A file that a chat made attaches by an artifact ref (task 3598).**
+  Status: built on 2026-11-17, branch `mail-attach`. The owner asked on
   2026-11-17 that a PDF report of the chat go with an email. The orchestrator
   is a shared agent. It writes the files of a chat to `outputs/<thread slug>/`
   and `inputs/<thread slug>/` in the tenant dir of the org. The resolver read
   only a personal agent's own folder, so it refused each such file with 422.
-  Now `send.resolve_artifact_path` reads the member's own folder first. With
-  no file there, `workspace._chat_thread_file` reads the chat folder of the
-  path. The member must have `can_send` in that chat
-  (`rooms.resolve_room_access`): an owner or a member of the room. A viewer, a
-  reader of an org chat, a member who left and a chat with no row get 422. A
-  failed lookup gets 503. The tenant dir comes from the member's session,
-  never from the request. The file opens with no link at any depth. The held
-  card takes no chat file, because a held run can write the folder of its
-  own chat. A path that names no chat folder, such as `x.pdf`, stays refused.
+  - **A chat file attaches only by an `artifact:<agent>:<path>` ref, because
+    only that ref pins a digest.** A room member or a container of the chat
+    can change the file after the card. Then the digest no longer matches,
+    and the send answers 409 with nothing sent. The bare path and the
+    `<agent>:<path>` form carry no digest, so they refuse a chat file with
+    422, as before this task.
+  - For an artifact ref, `send.resolve_artifact_path` reads the member's own
+    folder first. With no file there, `workspace._chat_thread_file` reads the
+    chat folder of the path. The member must have `can_send` in that chat
+    (`rooms.resolve_room_access`): an owner or a member of the room. A viewer,
+    a reader of an org chat, a member who left and a chat with no row get
+    422. A failed lookup gets 503.
+  - The tenant dir comes from the member's session, never from the request.
+    The file opens with no link at any depth, up to the cap of a send. The
+    held card takes no chat file, because a held run can write the folder of
+    its own chat.
+  - A path that names no chat folder, such as `x.pdf`, stays refused. Open: a
+    bare file name does not find the folder of the current chat.
 
 **The tick boxes of the reply card.** Each To and Cc on the reply card has a
 tick box. The gateway stays the only source of the lists.

@@ -10,8 +10,9 @@ the room read binds the tenant (R8).
 
 The cases:
 
-* Alice's own chat attaches, by ``artifact:orchestrator:<path>`` and by the
-  bare path;
+* Alice's own chat attaches by ``artifact:orchestrator:<path>``, the one
+  door of a chat file, because only that ref pins a digest. The bare path
+  and the ``<agent>:<path>`` form refuse it;
 * Bob's private chat in the same org does not attach for Alice, nor hers for
   him;
 * Carol in org B reads none of org A's chats, and her own chat reads org B's
@@ -162,31 +163,45 @@ def _org_of(email: str, w: _World) -> str:
     return w.promoted.org_b if email == _CAROL else w.promoted.org_a
 
 
-def _get(w: _World, email: str, path: str, agent: str | None = "orchestrator") -> bytes | None:
-    """The bytes that a send attaches, or ``None`` when it answers 422. The
-    check before a card must agree."""
+def _get(w: _World, email: str, path: str, agent: str = "orchestrator") -> bytes | None:
+    """The bytes of the chat door (``metorite_files._artifact``), or ``None``
+    when it answers 422. The path rule must agree with the read."""
     from gateway.routes.email.transport import send
 
     org = _org_of(email, w)
     ref = send.ArtifactAttachment(agent=agent, path=path)
-    checked = send.refused_artifacts([ref], email, organization_id=org)
     try:
-        [got] = send.load_artifact_attachments([ref], email, organization_id=org)
+        send.resolve_artifact_path(ref, email, organization_id=org, chat_files=True)
+        checked = True
     except HTTPException as exc:
         assert exc.status_code == 422, exc.detail
-        assert checked == [path]
+        checked = False
+    try:
+        [got] = send.load_artifact_attachments(
+            [ref], email, organization_id=org, chat_files=True)
+    except HTTPException as exc:
+        assert exc.status_code == 422, exc.detail
+        assert not checked
         return None
-    assert checked == []
+    assert checked
     return got["content"]
+
+
+def _bare_refused(email: str, path: str) -> bool:
+    """True when the ``artifacts`` door refuses *path* in both forms."""
+    from gateway.routes.email.transport import send
+
+    refs = [send.ArtifactAttachment(path=path),
+            send.ArtifactAttachment(agent="orchestrator", path=path)]
+    return send.refused_artifacts(refs, email) == [path, path]
 
 
 def test_own_chat_attaches_and_a_colleagues_does_not(world: _World) -> None:
     w = world
     mine = w.rel(w.s_alice, "alice.pdf")
     assert _get(w, _ALICE, mine) == b"A:alice.pdf"
-    assert _get(w, _ALICE, mine, None) == b"A:alice.pdf"   # the bare path
+    assert _bare_refused(_ALICE, mine)   # no digest, so not the bare forms
     assert _get(w, _BOB, mine) is None
-    assert _get(w, _BOB, mine, None) is None
     assert _get(w, _ALICE, w.rel(w.s_bob, "bob.pdf")) is None
     assert _get(w, _BOB, w.rel(w.s_bob, "bob.pdf")) == b"A:bob.pdf"
 
@@ -208,7 +223,7 @@ def test_a_room_member_attaches_and_a_viewer_does_not(world: _World) -> None:
     assert _get(w, _ALICE, room) == b"A:room.pdf"
     assert _get(w, _BOB, room) == b"A:room.pdf"
     assert _get(w, _DAN, room) is None
-    assert _get(w, _DAN, room, None) is None
+    assert _bare_refused(_BOB, room)
 
 
 def test_a_member_who_left_is_refused(world: _World) -> None:
@@ -233,7 +248,8 @@ def test_an_org_chat_reader_and_a_chat_with_no_row_are_refused(world: _World) ->
 
 def test_the_check_route_answers_as_the_member(world: _World) -> None:
     """``POST /email/metorite-files/resolve`` names the files of the card and
-    each path that the send refuses, as the member."""
+    each path that the send refuses, as the member. A chat file goes only as
+    an ``artifact:`` ref, so each bare path is refused, her own too."""
     from gateway.routes.email.transport import metorite_files as mf
     from gateway.routes.email.transport import send
 
@@ -243,7 +259,7 @@ def test_the_check_route_answers_as_the_member(world: _World) -> None:
         refs=[f"artifact:orchestrator:{mine}"],
         artifacts=[send.ArtifactAttachment(path=mine), send.ArtifactAttachment(path=bobs)])
     out = asyncio.run(mf.resolve_metorite_files_route(req, user=_user(_ALICE, w.promoted.org_a)))
-    assert out["refused"] == [bobs]
+    assert out["refused"] == [mine, bobs]
     [f] = out["files"]
     assert f["name"] == "alice.pdf" and f["size"] == len(b"A:alice.pdf")
     bad = mf.MetoriteFilesRequest(refs=[f"artifact:orchestrator:{bobs}"])

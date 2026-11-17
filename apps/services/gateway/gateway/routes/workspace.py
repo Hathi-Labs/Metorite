@@ -1067,34 +1067,33 @@ def _chat_thread_file(
       the server-side identity, never from the request (R5);
     * the file opens with no link at any depth (``acb_skills.safe_open``).
 
-    *agent_name* is the agent that the ref names. ``None`` takes the chat's own
-    agent. A ``personal`` or ``team`` agent gives ``None``. The call is sync
-    and reads the database, so an async caller runs it in a thread.
+    *agent_name* is the agent that the ref names, as in
+    ``artifact:<agent>:<path>``. No name, or a ``personal`` or ``team``
+    agent, gives ``None``. The one caller is ``send._resolve_artifact`` for an
+    ``artifact:`` ref (``metorite_files._artifact``), because only that ref
+    pins a digest. The call is sync and reads the database, so an async
+    caller runs it in a thread.
     """
     from acb_skills import safe_open
     from acb_skills.agent_paths import is_valid_agent_name
     from gateway.rooms import resolve_room_access
 
     email = str(user_email or "").strip()
-    if "@" not in email or not organization_id:
+    named = str(agent_name or "").strip()
+    if "@" not in email or not organization_id or not named:
         return None
     found = _chat_path_parts(rel)
     if found is None:
         return None
     parts, session_id = found
     own = parts[1]
-    named = str(agent_name or "").strip()
-    if named:
-        named = _chat_agent_name(named)
-        if not is_valid_agent_name(named) or _agent_instance_for(named, email):
-            return None
+    agent = _chat_agent_name(named)
+    if not is_valid_agent_name(agent) or _agent_instance_for(agent, email):
+        return None
     room = resolve_room_access(session_id, email, organization_id=organization_id)
     if room.resolve_failed:
         raise HTTPException(status_code=503, detail=room.denied("attach its files"))
     if room.unknown_session or not room.can_send:
-        return None
-    agent = named or _chat_agent_name(room.agent_name)
-    if _agent_instance_for(agent, email):
         return None
     ws = _tenant_agent_workspace(agent, organization_id)
     if ws is None:

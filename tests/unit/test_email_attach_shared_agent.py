@@ -1,4 +1,4 @@
-"""A file that a chat made attaches to an email (task 3598).
+"""A file that a chat made attaches to an email, by an artifact ref (task 3598).
 
 The owner asked on 2026-11-17: a PDF report that the chat made must go with
 an email. In a real turn ``make_document`` gave
@@ -10,16 +10,20 @@ with 422 "is not a file in your own workspace". The resolver read only a
 ``shared`` agent, and it writes into the TENANT dir that every member of the
 org shares, one folder for each chat.
 
-The rule now (``workspace._chat_thread_file``, called by
-``send.resolve_artifact_path`` when the member's own folder has no such
-file):
+The rule now (``workspace._chat_thread_file``):
 
+* a chat file goes ONLY as an ``artifact:<agent>:<path>`` ref
+  (``metorite_files._artifact``). Only that ref pins a digest of the bytes
+  that the card showed (H-392), so a file that a room member or a container
+  changes after the card sends nothing (review P1 of 209adc111);
+* the bare path and the ``<agent>:<path>`` form refuse a chat file, as
+  before this task;
 * the path is ``<inputs|outputs>/<thread slug>/<file>`` in the tenant dir of
   the shared agent, for the CALLER's org;
 * the slug names one chat, and ``resolve_room_access`` must give the caller
   ``can_send`` in it: an owner or a member of the room;
-* the file opens with no link at any depth;
-* a held send takes no such file, because a held run can write its folder.
+* the file opens with no link at any depth, and up to the cap of a send;
+* a held send takes no chat file, because a held run can write its folder.
 
 This file is hermetic: the room rows come from a fake ``rooms._load_room``,
 so the REAL ``resolve_room_access`` decides each role. The R8 twin
@@ -30,15 +34,14 @@ Mutations this suite catches (R7):
 
 * the room check in ``_chat_thread_file`` dropped:
   ``test_another_members_chat_is_refused`` and the role tests go red;
-* the tenant root taken from the request (a field of the ref) and not from
-  the verified org: ``test_another_org_is_refused_and_the_root_is_the_callers``
-  goes red;
+* the tenant root found from the request path and not from the verified
+  org: ``test_another_org_is_refused_and_the_root_is_the_callers`` goes red;
 * ``chat_files`` ignored in a held send: ``test_a_held_send_takes_no_chat_file``;
 * the head rule dropped (a slug folder under any head):
-  ``agent-data/<own slug>/x.md`` attaches, and
   ``test_a_path_out_of_a_chat_folder_is_refused`` goes red;
-* a route that drops ``organization_id=user.organization_id``:
-  ``test_each_route_passes_the_verified_tenant`` goes red.
+* the send route turns ``chat_files`` on for ``artifacts``:
+  ``test_the_bare_and_agent_path_forms_refuse_a_chat_file`` and
+  ``test_only_the_artifact_door_takes_a_chat_file`` go red.
 
 Run::
 
@@ -57,7 +60,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from gateway import rooms
 from gateway.routes.email.transport import metorite_files as mf
 from gateway.routes.email.transport import send
@@ -72,6 +75,7 @@ _ORCH = "agent-orchestrator"
 _OTHER_SHARED = "agent-h3598s"
 _EA = "email-assistant"
 _REPO = Path(__file__).resolve().parents[2]
+_GATEWAY = _REPO / "apps/services/gateway/gateway"
 
 
 def _user(email: str, org: str | None) -> Any:
@@ -158,7 +162,6 @@ class _Disk:
         self.a = _tenant_agent_workspace(_ORCH, ORG_A)
         self.b = _tenant_agent_workspace(_ORCH, ORG_B)
         assert self.a and self.b and self.a != self.b
-        self.files: dict[str, bytes] = {}
         for sid, name, data in (
             (self.s_alice, "report.pdf", b"%PDF-ALICE"),
             (self.s_bob, "bob.pdf", b"%PDF-BOB-PRIVATE"),
@@ -190,13 +193,14 @@ class _Disk:
         self._put(self.alice_ea, "outputs/quote.md", b"QUOTE")
         self._put(self.alice_ea, f"outputs/{_slug(self.s_alice)}/report.pdf", b"%PDF-PERSONAL")
 
-    def _put(self, root: Path, rel: str, data: bytes) -> None:
+    @staticmethod
+    def _put(root: Path, rel: str, data: bytes) -> None:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
-        self.files[f"{root.name}:{rel}"] = data
 
-    def rel(self, sid: str, name: str, head: str = "outputs") -> str:
+    @staticmethod
+    def rel(sid: str, name: str, head: str = "outputs") -> str:
         return f"{head}/{_slug(sid)}/{name}"
 
 
@@ -230,26 +234,33 @@ def disk(short, monkeypatch, room_rows) -> _Disk:
     return _Disk(short, room_rows)
 
 
-def _attach(email: str, org: str | None, path: str, agent: str | None = None,
-            **kw: Any) -> bytes:
+def _attach(email: str, org: str | None, path: str, agent: str = "orchestrator") -> bytes:
+    """The bytes of the chat door, as ``metorite_files._artifact`` calls it."""
     [got] = send.load_artifact_attachments(
         [send.ArtifactAttachment(agent=agent, path=path)], email,
-        organization_id=org, **kw)
+        organization_id=org, chat_files=True)
     return got["content"]
 
 
-def _refused(email: str, org: str | None, path: str, agent: str | None = None) -> bool:
-    """True when the send refuses the file with 422, and the check agrees."""
+def _refused(email: str, org: str | None, path: str, agent: str = "orchestrator") -> bool:
+    """True when the chat door refuses the file with 422. The read and the
+    path rule must agree."""
     ref = send.ArtifactAttachment(agent=agent, path=path)
-    try:
-        send.load_artifact_attachments([ref], email, organization_id=org)
-        sent = False
-    except HTTPException as exc:
-        assert exc.status_code == 422, exc.detail
-        sent = True
-    checked = send.refused_artifacts([ref], email, organization_id=org) == [path]
-    assert sent is checked, (path, agent, email)
-    return sent
+
+    def status(call: Any) -> int:
+        try:
+            call()
+        except HTTPException as exc:
+            assert exc.status_code == 422, exc.detail
+            return 422
+        return 200
+
+    sent = status(lambda: send.load_artifact_attachments(
+        [ref], email, organization_id=org, chat_files=True))
+    checked = status(lambda: send.resolve_artifact_path(
+        ref, email, organization_id=org, chat_files=True))
+    assert sent == checked, (path, agent, email)
+    return sent == 422
 
 
 async def _metorite(email: str, org: str | None, ref: str, *, held: bool = False) -> bytes:
@@ -257,36 +268,125 @@ async def _metorite(email: str, org: str | None, ref: str, *, held: bool = False
     return f.content
 
 
-# ── (a) the owner of the chat attaches its file ─────────────────────────────
+@pytest.fixture
+def routes(monkeypatch) -> dict[str, Any]:
+    """The REAL ``POST /email/send`` route function. Only the mailbox session,
+    the provider and the signature are stand-ins. ``sent`` records each call
+    of the provider."""
+    sent: dict[str, Any] = {"calls": []}
+
+    class _Provider:
+        last_refused = ()
+
+        async def send_message(self, **kw: Any) -> str:
+            sent["calls"].append(kw.get("attachments"))
+            return "m-3598"
+
+    @asynccontextmanager
+    async def _session() -> AsyncIterator[Any]:
+        yield SimpleNamespace()
+
+    @asynccontextmanager
+    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield SimpleNamespace(provider=_Provider())
+
+    async def _no_signature(*_a: Any, **_k: Any) -> str:
+        return ""
+
+    from gateway.routes.email import signature
+
+    monkeypatch.setattr(send, "_tenant_session", _session)
+    monkeypatch.setattr(send, "provider_session", _provider_session)
+    monkeypatch.setattr(signature, "resolve_signature_for_send", _no_signature)
+    return sent
 
 
-async def test_a_make_document_path_attaches_for_the_owner_of_the_chat(disk) -> None:
-    """Both forms of the failing turn's full path, and the aliases of the
-    default agent. Before the fix each one was a 422."""
+async def _send_route(user: Any, **fields: Any) -> Any:
+    req = send.SendEmailRequest(account_id=F.BOX, to=[F.KNOWN], subject="Report",
+                                body_text="The report is attached.", **fields)
+    return await send.send_email(req, BackgroundTasks(), user=user)
+
+
+# ── (a) the owner of the chat attaches its file by an artifact ref ──────────
+
+
+async def test_a_make_document_path_attaches_by_an_artifact_ref(disk) -> None:
+    """The failing turn's full path, as an ``artifact:`` ref, and the aliases
+    of the default agent. Before the fix each one was a 422."""
     rel = disk.rel(disk.s_alice, "report.pdf")
     assert await _metorite(ALICE, ORG_A, f"artifact:orchestrator:{rel}") == b"%PDF-ALICE"
+    deep = disk.rel(disk.s_alice, "q3/deep.pdf")
+    assert await _metorite(ALICE, ORG_A, f"artifact:orchestrator:{deep}") == b"%PDF-DEEP"
+    up = disk.rel(disk.s_alice, "upload.png", "inputs")
+    assert await _metorite(ALICE, ORG_A, f"artifact:metorite:{up}") == b"PNG-UPLOAD"
     for alias in ("orchestrator", "metorite", "default", _ORCH):
         assert _attach(ALICE, ORG_A, rel, alias) == b"%PDF-ALICE", alias
-    # The bare form: Alice's own email-assistant folder has no such file at
-    # this path... it has one at the report's path, so use another file.
-    deep = disk.rel(disk.s_alice, "q3/deep.pdf")
-    assert _attach(ALICE, ORG_A, deep) == b"%PDF-DEEP"
-    assert _attach(ALICE, ORG_A, disk.rel(disk.s_alice, "upload.png", "inputs")) == b"PNG-UPLOAD"
-    assert send.refused_artifacts(
-        [send.ArtifactAttachment(path=deep),
-         send.ArtifactAttachment(agent="orchestrator", path=rel)],
-        ALICE, organization_id=ORG_A) == []
+    # A chat of another shared agent reads that agent's tenant dir.
+    plan = disk.rel(disk.s_other_agent, "plan.pdf")
+    assert await _metorite(ALICE, ORG_A, f"artifact:h3598s:{plan}") == b"%PDF-OTHER-AGENT"
+    assert _refused(ALICE, ORG_A, plan, "orchestrator")
 
 
-async def test_a_bare_path_takes_the_chats_own_agent(disk) -> None:
-    """A ref with no agent takes the agent of the chat that its slug names,
-    never a fixed one. A chat of another shared agent reads that agent's
-    tenant dir."""
-    rel = disk.rel(disk.s_other_agent, "plan.pdf")
-    assert _attach(ALICE, ORG_A, rel) == b"%PDF-OTHER-AGENT"
-    assert await _metorite(ALICE, ORG_A, f"artifact:h3598s:{rel}") == b"%PDF-OTHER-AGENT"
-    # The orchestrator's tenant dir has no such file.
-    assert _refused(ALICE, ORG_A, rel, "orchestrator")
+# ── (2) the bare and the agent:path forms refuse a chat file ────────────────
+
+
+async def test_the_bare_and_agent_path_forms_refuse_a_chat_file(disk, routes) -> None:
+    """Review P1 of 209adc111: these forms carry no digest. So the check
+    before a card, the check route and the REAL send route each refuse a
+    chat file, and the provider is never called. Mutation: the send route
+    turns ``chat_files`` on for ``artifacts`` → red."""
+    alice = _user(ALICE, ORG_A)
+    for path in (disk.rel(disk.s_alice, "q3/deep.pdf"),
+                 disk.rel(disk.s_alice, "upload.png", "inputs"),
+                 disk.rel(disk.s_room, "room.pdf")):
+        refs = [send.ArtifactAttachment(path=path),
+                send.ArtifactAttachment(agent="orchestrator", path=path)]
+        assert send.refused_artifacts(refs, ALICE) == [path, path]
+        out = await mf.resolve_metorite_files_route(
+            mf.MetoriteFilesRequest(refs=[], artifacts=refs), user=alice)
+        assert out["refused"] == [path, path]
+        for ref in refs:
+            with pytest.raises(HTTPException) as exc:
+                await _send_route(alice, artifacts=[ref])
+            assert exc.value.status_code == 422
+            assert "is not a file in your own workspace" in str(exc.value.detail)
+    assert routes["calls"] == []
+
+
+# ── (1) the digest of an artifact ref holds for a chat file ─────────────────
+
+
+async def test_a_chat_file_that_changes_after_the_card_sends_nothing(disk, routes) -> None:
+    """H-392 holds for a chat file. The card check gives the digest of the
+    bytes it showed. A room member then writes new bytes (the PUT of the file
+    route, or a container). The REAL send route answers 409, and the provider
+    is never called. The same send with the bytes unchanged goes."""
+    alice = _user(ALICE, ORG_A)
+    rel = disk.rel(disk.s_room, "room.pdf")
+    ref = f"artifact:orchestrator:{rel}"
+    card = await mf.resolve_metorite_files_route(mf.MetoriteFilesRequest(refs=[ref]), user=alice)
+    [shown] = card["files"]
+    pinned = [{"ref": shown["ref"], "digest": shown["digest"]}]
+    (disk.a / rel).write_bytes(b"%PDF-BOBS-SWAPPED-BYTES")
+    with pytest.raises(HTTPException) as exc:
+        await _send_route(alice, metorite_files=pinned)
+    assert exc.value.status_code == 409 and exc.value.detail == mf.FILE_CHANGED
+    assert routes["calls"] == []
+    (disk.a / rel).write_bytes(b"%PDF-ROOM")
+    res = await _send_route(alice, metorite_files=pinned)
+    assert res["ok"] is True
+    [[att]] = routes["calls"]
+    assert att["content"] == b"%PDF-ROOM"
+
+
+async def test_a_chat_file_over_the_cap_is_refused_unread(disk, monkeypatch) -> None:
+    """The read of a chat file stops at the cap of a send."""
+    from gateway.routes.email.automation import held_card
+
+    monkeypatch.setattr(held_card, "MAX_FILES_BYTES", 4)
+    with pytest.raises(HTTPException) as exc:
+        _attach(ALICE, ORG_A, disk.rel(disk.s_alice, "report.pdf"))
+    assert exc.value.status_code == 422 and "larger than" in str(exc.value.detail)
 
 
 # ── (b) another member's chat in the same org ───────────────────────────────
@@ -296,15 +396,13 @@ async def test_another_members_chat_is_refused(disk) -> None:
     """Mutation: drop the room check in ``_chat_thread_file`` → red."""
     alices = disk.rel(disk.s_alice, "report.pdf")
     bobs = disk.rel(disk.s_bob, "bob.pdf")
-    assert _refused(BOB, ORG_A, alices, "orchestrator")
     assert _refused(BOB, ORG_A, alices)
-    assert _refused(ALICE, ORG_A, bobs, "orchestrator")
     assert _refused(ALICE, ORG_A, bobs)
     with pytest.raises(HTTPException) as exc:
         await _metorite(BOB, ORG_A, f"artifact:orchestrator:{alices}")
     assert exc.value.status_code == 422
     # Each one still attaches the file of the own chat.
-    assert _attach(BOB, ORG_A, bobs, "orchestrator") == b"%PDF-BOB-PRIVATE"
+    assert _attach(BOB, ORG_A, bobs) == b"%PDF-BOB-PRIVATE"
 
 
 # ── (c) another org: the root is the caller's own ───────────────────────────
@@ -315,7 +413,7 @@ async def test_another_org_is_refused_and_the_root_is_the_callers(
 ) -> None:
     """Carol is in org B. Org A's chats are not hers, and her own chat reads
     org B's tenant dir, never org A's, whatever the request names.
-    Mutation: take the root from a field of the ref → red."""
+    Mutation: find the root from the request path → red."""
     from gateway.routes import workspace
 
     seen: list[str | None] = []
@@ -326,10 +424,10 @@ async def test_another_org_is_refused_and_the_root_is_the_callers(
         return real(agent, organization_id)
 
     monkeypatch.setattr(workspace, "_tenant_agent_workspace", spy)
-    assert _refused(CAROL, ORG_B, disk.rel(disk.s_alice, "report.pdf"), "orchestrator")
+    assert _refused(CAROL, ORG_B, disk.rel(disk.s_alice, "report.pdf"))
     # Her own chat: org B's file, and never the file planted in org A's dir.
     planted = disk.rel(disk.s_carol, "planted.pdf")
-    assert _refused(CAROL, ORG_B, planted, "orchestrator")
+    assert _refused(CAROL, ORG_B, planted)
     assert _attach(CAROL, ORG_B, disk.rel(disk.s_carol, "carol.pdf")) == b"%PDF-CAROL"
     # A request that names a tenant changes nothing: the model has no such
     # field, and the root comes from the session's org.
@@ -339,23 +437,25 @@ async def test_another_org_is_refused_and_the_root_is_the_callers(
     assert not any(k in send.ArtifactAttachment.model_fields
                    for k in ("organization_id", "org", "tenant"))
     with pytest.raises(HTTPException) as exc:
-        send.load_artifact_attachments([ref], CAROL, organization_id=ORG_B)
+        send.load_artifact_attachments([ref], CAROL, organization_id=ORG_B, chat_files=True)
     assert exc.value.status_code == 422
     assert seen and set(seen) == {ORG_B}, seen
     with pytest.raises(ValidationError):
         mf.MetoriteFilesRequest(refs=[], artifacts=[], organization_id=ORG_A)
     # Org A's member reads org A's planted file only through a chat of org A,
     # and that slug is Carol's chat of org B: no row in org A, so refused.
-    assert _refused(ALICE, ORG_A, planted, "orchestrator")
+    assert _refused(ALICE, ORG_A, planted)
 
 
-def test_no_tenant_reads_no_chat_file(disk, room_rows) -> None:
-    """A caller with no org, or with no email, gets no chat file, and no
-    room lookup runs."""
+def test_no_tenant_no_email_or_no_agent_reads_no_chat_file(disk, room_rows) -> None:
+    """A caller with no org or no email, and a ref that names no agent, get
+    no chat file, and no room lookup runs."""
     rel = disk.rel(disk.s_alice, "report.pdf")
-    assert _refused(ALICE, None, rel, "orchestrator")
-    assert _refused("", ORG_A, rel, "orchestrator")
-    assert _refused("default", ORG_A, rel, "orchestrator")
+    deep = disk.rel(disk.s_alice, "q3/deep.pdf")
+    assert _refused(ALICE, None, rel)
+    assert _refused("", ORG_A, rel)
+    assert _refused("default", ORG_A, rel)
+    assert _refused(ALICE, ORG_A, deep, "")
     assert room_rows.calls == []
 
 
@@ -364,40 +464,43 @@ def test_no_tenant_reads_no_chat_file(disk, room_rows) -> None:
 
 def test_a_room_member_attaches_and_a_viewer_does_not(disk) -> None:
     room = disk.rel(disk.s_room, "room.pdf")
-    assert _attach(ALICE, ORG_A, room, "orchestrator") == b"%PDF-ROOM"   # owner
-    assert _attach(BOB, ORG_A, room, "orchestrator") == b"%PDF-ROOM"     # member
-    assert _refused(DAN, ORG_A, room, "orchestrator")                    # viewer
-    assert _refused(DAN, ORG_A, room)
+    assert _attach(ALICE, ORG_A, room) == b"%PDF-ROOM"   # owner
+    assert _attach(BOB, ORG_A, room) == b"%PDF-ROOM"     # member
+    assert _refused(DAN, ORG_A, room)                    # viewer
 
 
 def test_a_reader_a_leaver_and_a_chat_with_no_row_are_refused(disk) -> None:
     """An org chat gives Bob read and no send. Bob left the chat that he
     made. A folder whose chat has no row belongs to no one."""
-    assert _refused(BOB, ORG_A, disk.rel(disk.s_org, "org.pdf"), "orchestrator")
-    assert _refused(BOB, ORG_A, disk.rel(disk.s_left, "left.pdf"), "orchestrator")
+    assert _refused(BOB, ORG_A, disk.rel(disk.s_org, "org.pdf"))
+    assert _refused(BOB, ORG_A, disk.rel(disk.s_left, "left.pdf"))
     assert _attach(ALICE, ORG_A, disk.rel(disk.s_left, "left.pdf")) == b"%PDF-LEFT"
     for email in (ALICE, BOB):
-        assert _refused(email, ORG_A, disk.rel(disk.s_norow, "norow.pdf"), "orchestrator")
+        assert _refused(email, ORG_A, disk.rel(disk.s_norow, "norow.pdf"))
 
 
-def test_a_failed_room_lookup_answers_503(disk, room_rows) -> None:
+async def test_a_failed_room_lookup_answers_503(disk, room_rows) -> None:
     """An outage is not a refusal: 503, so the tool says "try again" and no
-    card shows. The check raises it too."""
+    card shows."""
     room_rows.fail = True
-    ref = send.ArtifactAttachment(agent="orchestrator", path=disk.rel(disk.s_alice, "report.pdf"))
-    for call in (lambda: send.load_artifact_attachments([ref], ALICE, organization_id=ORG_A),
-                 lambda: send.refused_artifacts([ref], ALICE, organization_id=ORG_A)):
+    rel = disk.rel(disk.s_alice, "report.pdf")
+    ref = send.ArtifactAttachment(agent="orchestrator", path=rel)
+    for call in (lambda: send.load_artifact_attachments(
+                     [ref], ALICE, organization_id=ORG_A, chat_files=True),
+                 lambda: send.resolve_artifact_path(
+                     ref, ALICE, organization_id=ORG_A, chat_files=True)):
         with pytest.raises(HTTPException) as exc:
             call()
         assert exc.value.status_code == 503
+    with pytest.raises(HTTPException) as exc:
+        await _metorite(ALICE, ORG_A, f"artifact:orchestrator:{rel}")
+    assert exc.value.status_code == 503
 
 
 # ── (e) paths that leave a chat folder ──────────────────────────────────────
 
 
 def _bad_paths(disk: _Disk) -> list[str]:
-    """Each file here is only in the tenant dir, never in Alice's own
-    folder, so only the chat rule can decide it."""
     a, b = _slug(disk.s_alice), _slug(disk.s_bob)
     return [
         f"outputs/{a}/../{b}/bob.pdf",                 # climbs into Bob's folder
@@ -425,8 +528,7 @@ def test_a_path_out_of_a_chat_folder_is_refused(disk) -> None:
     """Mutation: drop the head rule (``parts[0] in THREAD_HEADS``) →
     ``agent-data/<own slug>/x.md`` attaches → red."""
     for path in _bad_paths(disk):
-        for agent in ("orchestrator", None):
-            assert _refused(ALICE, ORG_A, path, agent), (path, agent)
+        assert _refused(ALICE, ORG_A, path), path
 
 
 def test_no_disk_change_and_no_lookup_for_a_path_of_no_chat(disk, room_rows) -> None:
@@ -463,39 +565,42 @@ def test_a_link_out_of_the_chat_folder_is_refused(disk) -> None:
     _link(outside, disk.a / "outputs" / a / "to-host.pdf")
     _link(disk.a / "outputs" / b, disk.a / "outputs" / a / "bobdir", is_dir=True)
     for name in ("to-bob.pdf", "to-host.pdf", "bobdir/bob.pdf"):
-        assert _refused(ALICE, ORG_A, f"outputs/{a}/{name}", "orchestrator"), name
+        assert _refused(ALICE, ORG_A, f"outputs/{a}/{name}"), name
 
 
 # ── held: a held run can write the folder of its own chat ───────────────────
 
 
 async def test_a_held_send_takes_no_chat_file(disk) -> None:
-    """The held card resolves with ``held=True``. The answer is today's 422,
-    word for word. Mutation: ignore ``chat_files`` → red."""
+    """The held card resolves with ``held=True``. The answer is the 422 of
+    before, word for word. Mutation: ignore ``chat_files`` → red."""
     ref = f"artifact:orchestrator:{disk.rel(disk.s_alice, 'report.pdf')}"
     assert await _metorite(ALICE, ORG_A, ref) == b"%PDF-ALICE"
     with pytest.raises(HTTPException) as exc:
         await _metorite(ALICE, ORG_A, ref, held=True)
     assert exc.value.status_code == 422
     assert "is not a file in your own workspace" in str(exc.value.detail)
-    with pytest.raises(HTTPException):
-        _attach(ALICE, ORG_A, disk.rel(disk.s_alice, "q3/deep.pdf"), chat_files=False)
 
 
 # ── (f) a personal agent keeps its rule ─────────────────────────────────────
 
 
 def test_a_personal_agent_keeps_its_own_rule(disk, room_rows) -> None:
-    """The member's own folder comes first, with no room lookup. A ref that
-    names a personal agent never falls to a tenant dir."""
-    assert _attach(ALICE, ORG_A, "outputs/quote.md") == b"QUOTE"
+    """The member's own folder comes first, with no room lookup, on both
+    doors. A ref that names a personal agent never falls to a tenant dir."""
+    def plain(email: str, path: str, agent: str | None = None) -> bytes:
+        [got] = send.load_artifact_attachments(
+            [send.ArtifactAttachment(agent=agent, path=path)], email)
+        return got["content"]
+
+    assert plain(ALICE, "outputs/quote.md") == b"QUOTE"
     rel = disk.rel(disk.s_alice, "report.pdf")
-    assert _attach(ALICE, ORG_A, rel) == b"%PDF-PERSONAL"
+    assert plain(ALICE, rel) == b"%PDF-PERSONAL"
     assert _attach(ALICE, ORG_A, rel, _EA) == b"%PDF-PERSONAL"
     assert room_rows.calls == []
-    deep = disk.rel(disk.s_alice, "q3/deep.pdf")
-    assert _refused(ALICE, ORG_A, deep, _EA)
-    assert _refused(BOB, ORG_A, "outputs/quote.md")
+    assert _refused(ALICE, ORG_A, disk.rel(disk.s_alice, "q3/deep.pdf"), _EA)
+    assert send.refused_artifacts([send.ArtifactAttachment(path="outputs/quote.md")], BOB) \
+        == ["outputs/quote.md"]
     assert room_rows.calls == []
 
 
@@ -503,64 +608,77 @@ def test_a_personal_agent_keeps_its_own_rule(disk, room_rows) -> None:
 
 
 def test_the_check_and_the_send_refuse_the_same_files(disk) -> None:
-    """``_refused`` asserts that the send and the check agree on each case."""
+    """On the ``artifacts`` door, ``refused_artifacts`` refuses exactly what
+    ``load_artifact_attachments`` refuses: each chat file too. On the chat
+    door, ``_refused`` asserts that the read and the path rule agree."""
+    paths = [disk.rel(disk.s_alice, "report.pdf"), disk.rel(disk.s_alice, "q3/deep.pdf"),
+             disk.rel(disk.s_room, "room.pdf"), "outputs/quote.md", "outputs/loose.pdf"]
+    for path in paths:
+        for agent in (None, "orchestrator"):
+            ref = send.ArtifactAttachment(agent=agent, path=path)
+            try:
+                send.load_artifact_attachments([ref], ALICE)
+                bad = False
+            except HTTPException as exc:
+                assert exc.status_code == 422
+                bad = True
+            assert send.refused_artifacts([ref], ALICE) == ([path] if bad else []), (path, agent)
     cases = [
-        (ALICE, disk.rel(disk.s_alice, "report.pdf"), "orchestrator", False),
-        (ALICE, disk.rel(disk.s_alice, "q3/deep.pdf"), None, False),
-        (BOB, disk.rel(disk.s_room, "room.pdf"), None, False),
-        (BOB, disk.rel(disk.s_alice, "report.pdf"), "orchestrator", True),
-        (DAN, disk.rel(disk.s_room, "room.pdf"), None, True),
-        (CAROL, disk.rel(disk.s_alice, "report.pdf"), None, True),
-        (ALICE, "outputs/loose.pdf", "orchestrator", True),
-        (ALICE, f"outputs/{_slug(disk.s_alice)}/../{_slug(disk.s_bob)}/bob.pdf", None, True),
+        (ALICE, disk.rel(disk.s_alice, "report.pdf"), False),
+        (BOB, disk.rel(disk.s_room, "room.pdf"), False),
+        (BOB, disk.rel(disk.s_alice, "report.pdf"), True),
+        (DAN, disk.rel(disk.s_room, "room.pdf"), True),
+        (CAROL, disk.rel(disk.s_alice, "report.pdf"), True),
+        (ALICE, "outputs/loose.pdf", True),
     ]
-    for email, path, agent, bad in cases:
+    for email, path, bad in cases:
         org = ORG_B if email == CAROL else ORG_A
-        assert _refused(email, org, path, agent) is bad, (email, path, agent)
+        assert _refused(email, org, path) is bad, (email, path)
 
 
-# ── the routes pass the verified tenant ─────────────────────────────────────
+# ── one door: only an artifact ref turns chat files on ──────────────────────
 
 
-_CALLERS = {
-    "apps/services/gateway/gateway/routes/email/transport/send.py",
-    "apps/services/gateway/gateway/routes/email/transport/metorite_files.py",
-    "apps/services/gateway/gateway/routes/email/automation/drafting.py",
-}
-_RESOLVERS = {"resolve_artifact_path", "refused_artifacts", "load_artifact_attachments",
-              "_resolve_draft_attachments", "_resolve_artifact", "_chat_thread_file"}
-
-
-def _callee(call: ast.Call) -> tuple[str, ast.Call]:
-    """The resolver that *call* runs, directly or through ``asyncio.to_thread``."""
-    fn = call.func
-    name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-    if name == "to_thread" and call.args:
-        inner = call.args[0]
-        return getattr(inner, "id", getattr(inner, "attr", "")), call
-    return name, call
-
-
-def test_each_route_passes_the_verified_tenant() -> None:
-    """Each call of the resolver passes the tenant: ``user.organization_id``
-    in a route, or the ``organization_id`` parameter in a helper. Mutation:
-    drop it at one call → red."""
-    found = 0
-    for rel in sorted(_CALLERS):
-        tree = ast.parse((_REPO / rel).read_text(encoding="utf-8"))
+def _calls(name: str) -> list[tuple[str, ast.Call]]:
+    out: list[tuple[str, ast.Call]] = []
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            name, call = _callee(node)
-            if name not in _RESOLVERS or name in ("_resolve_artifact", "_chat_thread_file"):
-                continue
-            found += 1
-            org = [k.value for k in call.keywords if k.arg == "organization_id"]
-            assert org, f"{rel}:{node.lineno} {name} passes no organization_id"
-            src = ast.unparse(org[0])
-            assert src in ("user.organization_id", "organization_id"), (
-                f"{rel}:{node.lineno} {name} takes the tenant from {src}")
-    assert found >= 6, found
+            fn = node.func
+            called = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if called == "to_thread" and node.args:
+                inner = node.args[0]
+                called = getattr(inner, "id", getattr(inner, "attr", ""))
+            if called == name:
+                out.append((path.relative_to(_REPO).as_posix(), node))
+    return out
+
+
+def test_only_the_artifact_door_takes_a_chat_file() -> None:
+    """Review P1 of 209adc111. Only ``metorite_files._artifact`` passes
+    ``chat_files``, and it passes ``not held`` with ``user.organization_id``.
+    No other caller of the resolver passes ``chat_files``, so the bare and
+    the ``<agent>:<path>`` forms keep the default, off. ``_chat_thread_file``
+    has one caller. Mutation: the send route passes ``chat_files=True`` →
+    red."""
+    door = "apps/services/gateway/gateway/routes/email/transport/metorite_files.py"
+    on: list[str] = []
+    for name in ("load_artifact_attachments", "resolve_artifact_path"):
+        for rel, call in _calls(name):
+            kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
+            if "chat_files" in kw:
+                on.append(f"{rel}:{call.lineno}")
+                assert rel == door, f"{rel}:{call.lineno} turns chat files on"
+                assert kw["chat_files"] == "not held"
+                assert kw.get("organization_id") == "user.organization_id"
+    assert len(on) == 1, on
+    users = [rel for rel, _c in _calls("_chat_thread_file")]
+    assert users == ["apps/services/gateway/gateway/routes/email/transport/send.py"], users
+    for name in ("resolve_artifact_path", "load_artifact_attachments"):
+        default = send.__dict__[name].__kwdefaults__["chat_files"]
+        assert default is False, name
 
 
 # ── the agent tool: the failing turn, end to end ────────────────────────────
@@ -570,46 +688,20 @@ agents = F.load_email_agent("ea_attach_shared_agent")
 
 
 @pytest.fixture
-def tool(monkeypatch, disk) -> dict[str, Any]:
+def tool(monkeypatch, disk, routes) -> dict[str, Any]:
     """``send_email`` on the plain card, with ``_post`` wired to the REAL
     gateway routes: the check route and ``POST /email/send``. Only the
     mailbox session and the provider are stand-ins."""
     alice = _user(ALICE, ORG_A)
-    sent: dict[str, Any] = {"attachments": None, "posts": []}
-
-    class _Provider:
-        last_refused = ()
-
-        async def send_message(self, **kw: Any) -> str:
-            sent["attachments"] = kw.get("attachments")
-            return "m-3598"
-
-    @asynccontextmanager
-    async def _session() -> AsyncIterator[Any]:
-        yield SimpleNamespace()
-
-    @asynccontextmanager
-    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
-        yield SimpleNamespace(provider=_Provider())
-
-    async def _no_signature(*_a: Any, **_k: Any) -> str:
-        return ""
-
-    from gateway.routes.email import signature
-
-    monkeypatch.setattr(send, "_tenant_session", _session)
-    monkeypatch.setattr(send, "provider_session", _provider_session)
-    monkeypatch.setattr(signature, "resolve_signature_for_send", _no_signature)
+    state: dict[str, Any] = {"posts": [], "before_send": None}
 
     async def post(path: str, body: dict[str, Any] | None = None, **_k: Any) -> Any:
-        sent["posts"].append(path)
+        state["posts"].append(path)
         try:
             if path == "/email/metorite-files/resolve":
                 return await mf.resolve_metorite_files_route(
                     mf.MetoriteFilesRequest(**(body or {})), user=alice)
             if path == "/email/send":
-                from fastapi import BackgroundTasks
-
                 return await send.send_email(
                     send.SendEmailRequest(**(body or {})), BackgroundTasks(), user=alice)
         except HTTPException as exc:
@@ -627,6 +719,8 @@ def tool(monkeypatch, disk) -> dict[str, Any]:
         return cc, []
 
     async def approve(**_kw: Any) -> bool:
+        if state["before_send"] is not None:
+            state["before_send"]()
         return True
 
     monkeypatch.setattr(agents, "_post", post)
@@ -639,22 +733,47 @@ def tool(monkeypatch, disk) -> dict[str, Any]:
     monkeypatch.setattr(agents, "_edit_card_open", lambda: False)
     monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", approve)
-    return sent
+    state["sent"] = routes["calls"]
+    return state
 
 
-@pytest.mark.parametrize("form", ["artifact", "bare"])
-async def test_the_failing_turn_now_sends_the_file(tool, disk, form) -> None:
+async def test_the_failing_turn_sends_the_file_by_its_artifact_ref(tool, disk) -> None:
     """The turn of 2026-11-17: ``make_document`` gave the path, and
-    ``send_email`` named it. The file goes, and no 422 text comes back."""
+    ``send_email`` named it as ``artifact:orchestrator:<path>``. The card
+    and the send check its digest, and the file goes."""
     rel = disk.rel(disk.s_alice, "q3/deep.pdf")
-    name = f"artifact:orchestrator:{rel}" if form == "artifact" else rel
     out = await agents.send_email(F.BOX, body="The report is attached.", to=[F.KNOWN],
-                                  subject="Report", attachments=[name])
+                                  subject="Report", attachments=[f"artifact:orchestrator:{rel}"])
     assert out.startswith("Sent email to"), out
     assert "not a file in your own workspace" not in out
-    assert "/email/send" in tool["posts"]
-    [att] = tool["attachments"]
+    [[att]] = tool["sent"]
     assert att["content"] == b"%PDF-DEEP" and att["filename"] == "deep.pdf"
+
+
+@pytest.mark.parametrize("form", ["bare", "agent-path"])
+async def test_the_bare_and_agent_path_forms_of_a_chat_file_show_no_card(
+    tool, disk, form,
+) -> None:
+    """These forms pin no digest, so a chat file is refused before any card,
+    and nothing goes."""
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    name = rel if form == "bare" else f"orchestrator:{rel}"
+    out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
+                                  attachments=[name])
+    assert out.startswith("Not sent."), out
+    assert tool["posts"] == ["/email/metorite-files/resolve"] and tool["sent"] == []
+
+
+async def test_a_file_that_changes_while_the_card_is_open_does_not_go(tool, disk) -> None:
+    """A room member writes new bytes while Alice's card is open. The send
+    answers 409, and nothing goes from her mailbox."""
+    rel = disk.rel(disk.s_room, "room.pdf")
+    tool["before_send"] = lambda: (disk.a / rel).write_bytes(b"%PDF-BOBS-INVOICE")
+    with pytest.raises(agents.GatewayError) as exc:
+        await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
+                                attachments=[f"artifact:orchestrator:{rel}"])
+    assert exc.value.status == 409
+    assert tool["sent"] == []
 
 
 async def test_the_root_name_of_the_turn_stays_refused(tool, disk) -> None:
@@ -663,7 +782,7 @@ async def test_the_root_name_of_the_turn_stays_refused(tool, disk) -> None:
     out = await agents.send_email(F.BOX, body="The report is attached.", to=[F.KNOWN],
                                   subject="Report", attachments=["artifact:orchestrator:x.pdf"])
     assert out.startswith("Not sent."), out
-    assert "/email/send" not in tool["posts"] and tool["attachments"] is None
+    assert "/email/send" not in tool["posts"] and tool["sent"] == []
 
 
 async def test_a_colleagues_chat_file_does_not_go(tool, disk) -> None:
@@ -672,4 +791,4 @@ async def test_a_colleagues_chat_file_does_not_go(tool, disk) -> None:
         out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
                                       attachments=[name])
         assert out.startswith("Not sent."), out
-    assert "/email/send" not in tool["posts"] and tool["attachments"] is None
+    assert "/email/send" not in tool["posts"] and tool["sent"] == []
