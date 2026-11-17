@@ -817,7 +817,7 @@ def _record_uuid(record_id: str) -> str:
     except (AttributeError, TypeError, ValueError):
         raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use an "
-            "id that another CRM tool returned, not a name."
+            "id that another CRM tool returned, not a name. crm_list_records gives it."
         ) from None
 
 

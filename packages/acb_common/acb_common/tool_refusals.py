@@ -130,7 +130,7 @@ class GatewayRefusal(RuntimeError):
 #: line (``task:<id>``). ``gateway/retrieval/sources.py`` makes them.
 SEARCH_KINDS = frozenset(
     {"task", "email", "person", "lead", "deal", "contact", "company",
-     "artifact", "whatsapp", "page"}
+     "artifact", "whatsapp", "page", "studio"}
 )
 
 
@@ -149,7 +149,7 @@ def strip_kind_prefix(value: Any, *own: str, read_tool: str = "search_company") 
         return raw
     if kind in own:
         return rest.strip()
-    takes = f"a {own[0]} id" if own else "another kind of id"
+    takes = f"a {' or '.join(own)} id" if own else "another kind of id"
     raise GatewayRefusal(
         f"{raw[:60]!r} is the id of a {kind}, and this tool takes {takes}. "
         f"Get the right id from {read_tool}."

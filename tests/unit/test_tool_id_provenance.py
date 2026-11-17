@@ -12,9 +12,11 @@ model cannot give an id it never read. This file holds three claims:
 2. **Named.** A refusal of an id names a read tool that gives it.
 3. **Near forms.** A ``kind:`` prefix of the tool's own kind is stripped, and a
    prefix of another kind is refused with a clear text.
+4. **Task numbers.** The Projects tool wrapper resolves ``244`` or ``#244``
+   through the member's own search route. A number that two visible tasks
+   share (a number is unique per root project) is a refusal, never a guess.
 
-Scope: the Projects pack and the CRM agent. The email reads are named in DEFERRED
-of the HRD-2 report.
+Scope: the Projects pack, the CRM agent and pack, and the email reads.
 """
 
 from __future__ import annotations
@@ -71,6 +73,9 @@ PRINTED: dict[str, tuple[str, list[str]]] = {
     "template_id": ("template_id", ["skill_projects.inbox:list_templates"]),
     "page_id": ("page_id", ["skill_projects.inbox:project_authorities"]),
     "pin_id": ("pin_id", ["skill_projects.inbox:project_authorities"]),
+    # Agent questions: the run and the option ids that answer_agent_question takes.
+    "run_id": ("run_id:", ["skill_projects.reads:_question_lines"]),
+    "option_ids": ("option['id']", ["skill_projects.reads:_option_text"]),
 }
 
 #: Ids that have their own resolver or a second reader. Each entry has a reason.
@@ -160,10 +165,13 @@ def _uuid_of_labels() -> set[str]:
 
 @pytest.mark.parametrize("what", sorted(_uuid_of_labels() | {"id"}))
 def test_each_uuid_refusal_names_a_read_tool(what: str) -> None:
+    from skill_projects.client import read_tool_for
+
+    tool = read_tool_for(what)
+    assert tool in skill_projects.__all__, f"{what!r} maps to {tool!r}, which is not a tool"
     with pytest.raises(GatewayRefusal) as caught:
         uuid_of("not-an-id", what)
-    words = set(re.findall(r"[a-z_]+", str(caught.value)))
-    assert words & set(skill_projects.__all__), (
+    assert f"{tool} gives it" in str(caught.value), (
         f"the refusal for {what!r} names no read tool: {caught.value}"
     )
 
@@ -188,6 +196,10 @@ def test_crm_record_uuid_strips_its_own_kind_and_refuses_another() -> None:
     assert crm_tools._record_uuid(f"deal:{real}") == real
     with pytest.raises(GatewayRefusal):
         crm_tools._record_uuid(f"email:{real}")
+    for record_uuid, tool in ((crm._record_uuid, "search_crm"), (crm_tools._record_uuid, "crm_list_records")):
+        with pytest.raises(GatewayRefusal) as named:
+            record_uuid("Acme Corp")
+        assert tool in str(named.value)
     with pytest.raises(GatewayRefusal) as caught:
         crm._record_uuid(f"task:{real}")
     assert "task" in str(caught.value)
@@ -229,4 +241,34 @@ async def test_the_tool_wrapper_resolves_a_task_number_through_the_search_route(
     assert await wrapped("#244", task_ids=f"244, {real}", note="7") == f"{real}|{real}, {real}|7"
     assert calls[0][0] == "/projects/search"  # the existing route, member-scoped
     missed = await wrapped("999")
-    assert missed.startswith("Refused:") and "find_tasks" in missed
+    assert missed.startswith("Refused:") and "No open task #999" in missed and "find_tasks" in missed
+
+
+@pytest.mark.asyncio
+async def test_a_task_number_that_two_root_projects_share_is_refused(monkeypatch) -> None:
+    """A task number is unique per root project (migration 146), not per org.
+
+    Two visible matches are a refusal that names each full_id. The wrapper
+    never takes the first one.
+    """
+    from skill_projects import client
+    from skill_projects.refusals import refusals_as_text
+
+    one = "3f2b8f7e-1c1d-4f55-9a3e-0f6f1b7a2c11"
+    two = "9a1c2d3e-4f50-4a6b-8c7d-0e1f2a3b4c5d"
+
+    async def fake_get(path, params=None):
+        return {"rows": [
+            {"task_number": 7, "id": one, "project_name": "Alpha"},
+            {"task_number": 7, "id": two, "project_name": "Beta"},
+        ]}
+
+    monkeypatch.setattr(client, "get", fake_get)
+
+    async def tool(task_id: str) -> str:
+        return f"wrote {task_id}"
+
+    answer = await refusals_as_text(tool)("7")
+    assert answer.startswith("Refused:"), answer
+    assert one in answer and two in answer and "find_tasks" in answer
+    assert "wrote" not in answer

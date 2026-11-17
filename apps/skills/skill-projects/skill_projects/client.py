@@ -129,6 +129,7 @@ _READ_TOOL_FOR: tuple[tuple[str, str], ...] = (
     ("reminder", "list_reminders"),
     ("decision", "my_decisions"),
     ("update", "list_project_updates"),
+    ("before", "list_project_updates"),
     ("template", "list_templates"),
     ("view", "project_views"),
     ("page", "project_authorities"),
@@ -136,7 +137,7 @@ _READ_TOOL_FOR: tuple[tuple[str, str], ...] = (
     ("grant", "project_access"),
     ("area", "my_areas"),
     ("notification", "notifications"),
-    ("run", "waiting_agent_requests"),
+    ("run", "agent_questions"),
     ("answer", "waiting_agent_requests"),
     ("tag", "vocabulary"),
     ("type", "vocabulary"),
@@ -185,14 +186,29 @@ async def _task_uuid_of_number(number: int) -> str:
     The route is the one ``find_tasks`` uses. It answers only tasks that the
     member may see, so a number outside their visibility is "not found" and
     never an id. No new database read exists here.
+
+    A task number is unique in ONE root project, not in the org
+    (``UNIQUE (root_project_id, task_number)``, migration 146). Two visible
+    tasks with the number are a refusal that names each, and never a guess.
+    Both refusals carry no status, so the model reads this text as it is.
     """
     payload = await get("/projects/search", {"q": f"#{number}", "limit": 5})
-    for row in (payload or {}).get("rows") or []:
-        if str(row.get("task_number")) == str(number) and row.get("id"):
-            return str(row["id"])
+    hits = [
+        row for row in (payload or {}).get("rows") or []
+        if str(row.get("task_number")) == str(number) and row.get("id")
+    ]
+    if len(hits) == 1:
+        return str(hits[0]["id"])
+    if hits:
+        where = ", ".join(
+            f"full_id {row['id']} in {data(row.get('project_name') or '?')}" for row in hits
+        )
+        raise GatewayRefusal(
+            f"More than one task you can see has the number #{number}: {where}. "
+            "Give the full_id of the task you mean. find_tasks shows each one."
+        )
     raise GatewayRefusal(
-        f"No task #{number} is visible to you. find_tasks searches by words or by number.",
-        status=404,
+        f"No open task #{number} is visible to you. find_tasks searches by words or by number."
     )
 
 

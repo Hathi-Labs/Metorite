@@ -22,6 +22,15 @@ with no flag. HRD-8b (task 3459) is open.**
 root-local tag, custom field or task type names the space and N, the count
 of projects that the change reaches. HRD-9b and HRD-9c are not built.**
 
+**HRD-2 (task 2981) is BUILT, 2026-11-16, with no flag. `task_detail` prints
+the comment, activity and attachment ids. The CRM `get_timeline` prints the
+activity id.**
+
+**A Projects task id of HRD-2 takes a task number (`244` or `#244`) and a
+`task:` prefix. A number that two visible tasks share is a refusal that names
+both. The CRM ids and the email reads cut their own `kind:` prefix. The fence
+is `tests/unit/test_tool_id_provenance.py`.**
+
 Owner ask of 2026-11-12, in chat. Epic task 2978 (project AI Chat Interface).
 It is part of WS-CHAT.
 
