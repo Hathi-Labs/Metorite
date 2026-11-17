@@ -960,10 +960,11 @@ def _split(scope: FieldScope, name: str) -> tuple[FieldRef, str | None]:
     """The field and the range end of one filter name."""
     if name not in scope.fields:
         for end in RANGE_ENDS:
-            base = name[: -len(end)]
-            if name.endswith(end) and (base in scope.fields or base in KEY_WORDS):
+            if name.endswith(end):
                 # A key word with no key field is the 422 `no_key_field`.
-                return scope.ref(base), end
+                # Task 3690: an unknown base is the 422 `unknown_field` of
+                # the base, so its hint names the field, not `<key>.from`.
+                return scope.ref(name[: -len(end)]), end
     return scope.ref(name), None
 
 
