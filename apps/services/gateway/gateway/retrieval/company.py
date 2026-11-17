@@ -99,7 +99,8 @@ for a query with no operator:
   Email asks for the mail from that sender (``sender=``), because a full
   text word never matches inside an address;
 * each hit found so says ``matched_by`` ``near``, with ``word`` and ``as``.
-  A hit that two rungs found keeps the lower rung. ``near`` in the answer
+  A hit that two rungs found keeps the copy with more words, then the lower
+  rung (FIND-2b). ``near`` in the answer
   names each word, its spelling, its hits and ``held``: true when the word
   has a hit of its own (:func:`find.near_report`). The log line is
   ``search.company.near``, with no word.
