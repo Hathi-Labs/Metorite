@@ -28,6 +28,9 @@ show_guide = _mod.show_guide
 # WS-67 OA-7c: the persona text of each pack owner's delegation, so that a
 # pack swaps the exact text out (``acb_skills.tool_packs.persona_for``).
 PACK_DELEGATION_BULLETS = _mod.PACK_DELEGATION_BULLETS
+# WS-FIND FIND-6: the standing rule of the persona (find_engine.md §5.4), for
+# its fences (tests/unit/test_find_tools.py, evals/trajectories).
+FIND_STANDING_RULE = _mod.FIND_STANDING_RULE
 # Private by convention, but it is the ONE gateway-/v1/ client factory — the
 # declarative builder (orchestrator.declarative) is a second legitimate consumer
 # inside this package, and re-exporting beats duplicating the token-precedence
