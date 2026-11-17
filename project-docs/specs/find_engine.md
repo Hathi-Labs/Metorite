@@ -932,7 +932,7 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
     The cost is one more model request in each such turn, and one more
     search when the model obeys the retry text.
 17. In `on`, a true empty list after an app's search tool costs the retry,
-    for example "I could not find any overdue tasks" after `find_tasks`. The
+    for example "I couldn't find any tasks due today" after `find_tasks`. The
     line then says `armed` false. The planner accepted this cost, and the
     owner reads 20 shadow lines before the flip (decision 1).
 18. The check acts only for an org of `FIND_ORGS`. In any other org it adds

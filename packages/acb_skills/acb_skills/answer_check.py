@@ -330,7 +330,7 @@ FIND_TOOLS: frozenset[str] = frozenset({
 #: ``resolve_name`` of FIND-5). The claim line says ``armed`` true when one of
 #: them answered in the run, so the retry is a fair request to run pass 2.
 #: With ``armed`` false, only an app's search tool ran: an empty list ("no
-#: overdue tasks") may be a true answer, and the owner reads such lines first.
+#: tasks due today") may be a true answer, and the owner reads such lines first.
 CLAIM_ARM_TOOLS: frozenset[str] = frozenset({CLAIM_SEARCH_TOOL, "resolve_name"})
 
 #: The most characters of an answer that :func:`not_found_claim` reads. A
