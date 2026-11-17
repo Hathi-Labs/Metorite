@@ -800,8 +800,12 @@ def test_a_refusal_after_the_claim_gives_the_row_back(scene, monkeypatch):
 # ---------------------------------------------------------------------------
 
 _TITLE_A = "Move this deal to Payment Complete?"
+_CAROL_A = "carol@pa-a.test"
 #: The events of each stand-in continuation run, by thread.
 RUNS: dict[str, list[dict[str, Any]]] = {}
+#: Each entry makes ONE stand-in continuation drop the head entry of its
+#: stream first, as a MAXLEN trim does (review of 2026-11-17, P2-1).
+TRIM_HEAD: list[bool] = []
 
 
 @pytest.fixture
@@ -809,6 +813,9 @@ def relay_scene(as_app, monkeypatch):
     """The flags on, and the real run route with stand-ins for the agent
     check, the memory and the executor. The relay and the late-approve
     records go to the PRIVATE Redis that :func:`_real_relay` binds."""
+    import types
+
+    import acb_auth
     import gateway.memory_preread as mp
     from acb_common import get_settings
     from acb_skills import egress
@@ -856,10 +863,33 @@ def relay_scene(as_app, monkeypatch):
                 {"type": "RUN_FINISHED", "threadId": thread_id},
             ]
             RUNS.setdefault(thread_id, []).append({"run_id": run_id, "resume": resume_call})
+            if TRIM_HEAD:
+                TRIM_HEAD.pop()
+                r = await stream_relay._get_client()
+                head = await r.xrange(f"cc:stream:{thread_id}", count=1)
+                assert head and await r.xdel(f"cc:stream:{thread_id}", head[0][0]) == 1
             for evt in events:
                 await stream_relay.push_event(thread_id, evt)
                 yield f"data: {json.dumps(evt)}\n\n"
         return _gen()
+
+    async def _session_access(session_id, actor):
+        # The real `resolve_session_access` opens the async engine of
+        # DATABASE_URL, which is not this suite's database. This is its email
+        # branch on the REAL participant rows, under RLS, as the app role.
+        from acb_graph import tenant_session
+
+        emails = {str(actor or "").strip().lower()} - {""}
+        for org in (as_app.org_a, as_app.org_b):
+            with tenant_session(org) as s:
+                for (subject,) in s.execute(text(
+                        "SELECT subject FROM chat_session_participant WHERE session_id = :sid"),
+                        {"sid": session_id}):
+                    if "@" in str(subject):
+                        emails.add(str(subject).strip().lower())
+        return types.SimpleNamespace(allowed=frozenset()), sorted(emails)
+
+    monkeypatch.setattr(acb_auth, "resolve_session_access", _session_access)
 
     monkeypatch.setattr(agent_routes, "assert_can_run_agent_in_session", _ok)
     monkeypatch.setattr(agent_routes, "_prepare_if_new_thread", _ok)
@@ -871,6 +901,7 @@ def relay_scene(as_app, monkeypatch):
     monkeypatch.setattr(executor, "run_agent_stream", _run_agent_stream)
     pending_ask._reset_for_tests()
     RUNS.clear()
+    TRIM_HEAD.clear()
     yield as_app
     pending_ask._reset_for_tests()
 
@@ -892,6 +923,16 @@ def _new_chat(w, org: str, member: str = _ALICE) -> str:
             "INSERT INTO chat_session (id, user_id, agent_name, title, organization_id) "
             "VALUES (:id, :u, 'orchestrator', 'a chat', :o)"), {"id": tid, "u": member, "o": org})
     return tid
+
+
+def _room_rows(w, tid: str, org: str, *members: str) -> None:
+    """Participant rows: the first member is the owner, the rest members."""
+    with w.admin_engine.begin() as c:
+        for i, m in enumerate(members):
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, role, organization_id) "
+                "VALUES (:s, :m, :r, CAST(:o AS uuid))"),
+                {"s": tid, "m": m, "r": "owner" if i == 0 else "member", "o": org})
 
 
 def _chat_row(w, tid: str, org: str, mid: str, *, role: str, content: str, ts: int,
@@ -1013,7 +1054,11 @@ def test_case_a_goes_on_in_the_same_reply(relay_scene, monkeypatch):
 
 def test_the_case_a_checks_on_real_rows(relay_scene, monkeypatch):
     """``reply_is_last_turn`` under RLS, and ``parked_end_of`` on the real
-    stream, through ``_same_reply_of``."""
+    stream, through ``_same_reply_of``. P2-2: a shown row with the same
+    ``timestamp_ms`` and a larger id comes after the reply, as
+    ``_get_messages`` orders it. Mutation: ``>=``, or the id left out of the
+    order -> red."""
+    import functools
     import time
 
     from gateway.routes import agent as agent_routes
@@ -1030,7 +1075,22 @@ def test_the_case_a_checks_on_real_rows(relay_scene, monkeypatch):
             row = pending_ask.read_ask(w.org_a, rid)
             stored = pending_ask.read_stored_call(w.org_a, rid)
             assert stored is not None and stored["message_id"] == mid
-            same = agent_routes._same_reply_of
+            same = functools.partial(agent_routes._same_reply_of, member=_ALICE)
+            assert reply_is_last_turn(tid, mid, organization_id=w.org_a) is True
+
+            # P2-2, the tie: the same millisecond as the reply.
+            with w.admin_engine.connect() as c:
+                ts = int(c.execute(text("SELECT timestamp_ms FROM chat_message WHERE id = :m"),
+                                   {"m": mid}).scalar_one())
+            _chat_row(w, tid, w.org_a, "a-tie", role="user", content="Before, in display order",
+                      ts=ts, kind="human")
+            assert reply_is_last_turn(tid, mid, organization_id=w.org_a) is True, "a smaller id"
+            _chat_row(w, tid, w.org_a, "zz-tie", role="user", content="After, in display order",
+                      ts=ts, kind="human")
+            assert reply_is_last_turn(tid, mid, organization_id=w.org_a) is False, "a larger id"
+            assert await same(w.org_a, tid, row, stored) is None
+            with w.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM chat_message WHERE id IN ('a-tie', 'zz-tie')"))
             assert reply_is_last_turn(tid, mid, organization_id=w.org_a) is True
             assert reply_is_last_turn(tid, mid, organization_id=w.org_b) is False, "RLS"
             assert reply_is_last_turn(tid, "m-none", organization_id=w.org_a) is False
@@ -1064,12 +1124,16 @@ def test_the_case_a_checks_on_real_rows(relay_scene, monkeypatch):
     asyncio.run(go())
 
 
-def test_a_lost_parked_end_keeps_the_old_row_and_opens_a_new_reply(relay_scene, monkeypatch):
-    """The stream goes after ``_same_reply_of`` read it and before the
-    start. The real ``start_detached`` refuses before any state changes, and
-    the same claim opens a NEW reply. The old row keeps its words."""
+@pytest.mark.parametrize("how", ["expired", "taken"])
+def test_a_lost_parked_end_keeps_the_old_row_and_opens_a_new_reply(how, relay_scene, monkeypatch):
+    """The parked end goes after ``_same_reply_of`` read it. ``expired``: the
+    stream goes before the start. ``taken`` (P2-1): another party takes the
+    entry after the check of the start, so the XDEL deletes 0. The real
+    ``start_detached`` refuses before the thread reads as active, and the
+    same claim opens a NEW reply. The old row keeps its words."""
     w = relay_scene
     real_start = stream_relay.start_detached
+    real_end = stream_relay.parked_end_of
 
     async def go() -> None:
         client = await _client()
@@ -1077,12 +1141,25 @@ def test_a_lost_parked_end_keeps_the_old_row_and_opens_a_new_reply(relay_scene, 
         lost: list[str] = []
 
         async def _start(thread_id, gen, **kw):
-            if kw.get("keep_stream") and not lost:
+            if kw.get("keep_stream") and not lost and how == "expired":
                 lost.append(thread_id)
                 await client.delete(f"cc:stream:{thread_id}")  # it expired just now
             return await real_start(thread_id, gen, **kw)
 
+        reads: list[str] = []
+
+        async def _end_then_taken(thread_id, run_id):
+            end = await real_end(thread_id, run_id)
+            reads.append(thread_id)
+            if how == "taken" and end is not None and len(reads) == 2 and not lost:
+                # The second read is the start's own check. Another party
+                # takes the entry right after it.
+                assert await client.xdel(f"cc:stream:{thread_id}", end) == 1
+                lost.append(thread_id)
+            return end
+
         monkeypatch.setattr(stream_relay, "start_detached", _start)
+        monkeypatch.setattr(stream_relay, "parked_end_of", _end_then_taken)
         try:
             tid = _new_chat(w, w.org_a)
             rid, run_id, mid = await _parked_turn(w, tid, w.org_a)
@@ -1097,6 +1174,91 @@ def test_a_lost_parked_end_keeps_the_old_row_and_opens_a_new_reply(relay_scene, 
             assert "Let me move it." in rows[mid] and "The deal moved." not in rows[mid]
             assert "The deal moved." in rows[res["messageId"]]
             assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True), "ONE claim"
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize(("at_park", "now", "same"), [
+    ((_ALICE,), (_ALICE, _CAROL_A), False),
+    ((_ALICE, _BOB), (_ALICE, _BOB, _CAROL_A), False),
+    ((_ALICE, _BOB), (_ALICE,), False),
+    ((_ALICE, _BOB), (_ALICE, _BOB), True),
+], ids=["solo-then-joined", "shared-then-joined", "shared-then-left", "shared-same"])
+def test_a_changed_room_gives_a_new_reply(at_park, now, same, relay_scene, monkeypatch):
+    """P1 on the real rows. A member who joined after the park has a
+    waterline after part one, and a member who left must not shape the
+    label. So each change of the members gives case B under the same claim:
+    a new run, a new row, and the old row keeps part one. The same members
+    give case A (non-vacuity). Mutation: drop the member check of
+    ``_same_reply_of`` -> the joined and left cases resume in the old reply
+    -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            _room_rows(w, tid, w.org_a, *at_park)
+            rid, run_id, mid = await _parked_turn(w, tid, w.org_a)
+            with w.admin_engine.connect() as c:
+                label = c.execute(text("SELECT authority FROM chat_message WHERE id = :m"),
+                                  {"m": mid}).scalar_one()
+            if len(at_park) > 1:
+                assert label["members"] == sorted(at_park), "the park wrote the label"
+            else:
+                assert label is None, "a solo park writes no label"
+            with w.admin_engine.begin() as c:
+                for m in set(at_park) - set(now):
+                    c.execute(text("DELETE FROM chat_session_participant "
+                                   "WHERE session_id = :s AND subject = :m"), {"s": tid, "m": m})
+            _room_rows(w, tid, w.org_a, *[m for m in now if m not in at_park])  # joined
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict), res
+            assert res["resumed"] is True and res["sameReply"] is same, res
+            await _run_ends(tid)
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            if same:
+                assert res["runId"] == run_id and set(rows) == {mid}
+            else:
+                assert res["runId"] != run_id and set(rows) == {mid, res["messageId"]}
+                assert "The deal moved." not in rows[mid], "part one is kept as it was"
+                assert [r["run_id"] for r in RUNS[tid]] == [res["runId"]], "ONE run"
+            assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True), "ONE claim"
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_trimmed_head_never_writes_over_part_one(relay_scene, monkeypatch):
+    """P2-1 on the real stream and rows. Case A starts, then a trim takes the
+    head of the stream (part one's ``RUN_STARTED``). The fold then holds one
+    ``RUN_STARTED`` of the run, so it writes part two into a NEW row, and the
+    reply row keeps part one. Mutation: fold a same-reply run with no
+    fallback -> the reply row loses part one -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            rid, _run_id, mid = await _parked_turn(w, tid, w.org_a)
+            TRIM_HEAD.append(True)
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["sameReply"] is True, res
+            await _run_ends(tid)
+            assert TRIM_HEAD == [], "non-vacuity: the head went"
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            assert len(rows) == 2 and mid in rows, rows
+            assert "Let me move it." in rows[mid] and "The deal moved." not in rows[mid]
+            (other,) = set(rows) - {mid}
+            assert "The deal moved." in rows[other] and "Let me move it." not in rows[other]
         finally:
             await client.flushdb()
             await client.aclose()

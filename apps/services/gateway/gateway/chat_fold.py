@@ -497,6 +497,26 @@ async def _run_holds_mail(
         release_tenant(token)
 
 
+def same_reply_events(
+    events: list[dict[str, Any]], run_id: str, message_id: str, fallback_id: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """``(events, row id)`` that the fold of a same-reply run writes
+    (RESUME-2b, case A, review of 2026-11-17, P2-1).
+
+    Part one and each continuation start with a ``RUN_STARTED`` of *run_id*.
+    With two or more, the replay holds part one, so the whole replay goes
+    into *message_id*. With fewer, a trim or a reset took part one: only the
+    events from the last ``RUN_STARTED`` of the run go, into *fallback_id*.
+    So part one in *message_id* stays as the fold at the park wrote it."""
+    starts = [
+        i for i, e in enumerate(events)
+        if e.get("type") == "RUN_STARTED" and str(e.get("runId") or "") == run_id
+    ]
+    if run_id and len(starts) >= 2:
+        return events, message_id
+    return (events[starts[-1]:] if starts else list(events)), fallback_id
+
+
 async def persist_final_assistant_message(
     thread_id: str,
     message_id: str,
@@ -508,8 +528,18 @@ async def persist_final_assistant_message(
     organization_id: str | None,
     expect_run_id: str | None = None,
     holds_mail: bool | None = None,
+    same_reply_fallback_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Replay the run's event log and upsert the authoritative message row.
+
+    ``same_reply_fallback_id`` (RESUME-2b, case A, review of 2026-11-17,
+    P2-1) marks the fold of a run that went on in the SAME reply. *message_id*
+    then holds part one, which the fold at the park wrote. The fold writes it
+    again only when the replay still holds part one: two or more
+    ``RUN_STARTED`` of the run (:func:`same_reply_events`). Else a trim took
+    the head, and the fold writes the events from the last ``RUN_STARTED`` of
+    the run into the fallback row. So a partial replay never writes over part
+    one. Fence: ``tests/unit/test_resume_continuation.py``.
 
     ``holds_mail`` is the answer of ``acb_skills.egress.run_holds_mail`` for
     this run (WS-17 EM-G11f3, ``email_app_master_plan.md`` section
@@ -566,6 +596,12 @@ async def persist_final_assistant_message(
                     thread_id=thread_id[:12], message_id=message_id[:40],
                 )
                 return None
+        if same_reply_fallback_id:
+            events, message_id = same_reply_events(
+                events, expect_run_id or run_id, message_id, same_reply_fallback_id,
+            )
+            if message_id == same_reply_fallback_id:
+                _log.warning("chat_fold.same_reply_partial", thread_id=thread_id[:12])
         # Head-trim visibility (audit R1): the stream is MAXLEN-capped, and
         # Redis trims the OLDEST entries — so a very long turn can lose its
         # head (RUN_STARTED + the start of the answer) before this replay

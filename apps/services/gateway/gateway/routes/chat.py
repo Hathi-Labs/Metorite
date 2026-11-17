@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
@@ -687,45 +688,87 @@ _SHOWN_ROW_SQL = (
 )
 
 #: RESUME-2b (``chat_run_continuity.md`` §4.12.4 item 2, case A): the reply
-#: row *mid* is the last turn of its chat. One row back means it exists, and
-#: its column is True when no row that a reader sees comes after it. "After"
-#: is a larger ``timestamp_ms``, the order of :func:`_get_messages`. A row
-#: with the same ``timestamp_ms`` is not after it: the member's own turn and
-#: its reply can share one millisecond. The org stands beside RLS (R5).
+#: row *mid*, and whether it is the last turn of its chat. One row back means
+#: it exists. Its first column is True when no row that a reader sees comes
+#: after it. "After" is the order of :func:`_get_messages`: a larger
+#: ``(timestamp_ms, id)``. So a row with the same ``timestamp_ms`` and a
+#: larger ``id`` shows after the reply, and it counts (review of 2026-11-17,
+#: P2-2). The second column is the ``authority`` label of the reply, which the
+#: fold at the park wrote. The org stands beside RLS (R5).
 _LAST_TURN_SQL = (
     "SELECT NOT EXISTS ("
     "  SELECT 1 FROM chat_message "
     "  WHERE session_id = r.session_id AND organization_id = r.organization_id "
-    "    AND id <> r.id AND timestamp_ms > r.timestamp_ms AND " + _SHOWN_ROW_SQL
-    + ") FROM chat_message r "
+    "    AND (timestamp_ms, id) > (r.timestamp_ms, r.id) AND " + _SHOWN_ROW_SQL
+    + "), r.authority FROM chat_message r "
     "WHERE r.organization_id = CAST(:org AS uuid) AND r.session_id = :sid "
     "  AND r.id = :mid"
 )
 
 
-def reply_is_last_turn(
+@dataclass(frozen=True)
+class ReplyTurn:
+    """The reply row of a parked turn, as RESUME-2b reads it (:func:`reply_turn`).
+
+    *last* is True when no row that a reader sees comes after it. *members* is
+    the sorted, lower-case ``authority.members`` of the row: the members of a
+    shared room when the fold at the park wrote the row. It is None when the
+    row has no label, which is a solo run at the park. A label of another
+    shape gives ``()``, which equals no room (fail closed)."""
+
+    last: bool
+    members: tuple[str, ...] | None
+
+
+def _label_members(authority: Any) -> tuple[str, ...] | None:
+    """The members of an ``authority`` label, or None for no label."""
+    if authority is None:
+        return None
+    if isinstance(authority, str):
+        try:
+            authority = json.loads(authority)
+        except ValueError:
+            return ()
+    members = authority.get("members") if isinstance(authority, dict) else None
+    if not isinstance(members, list) or not all(isinstance(m, str) for m in members):
+        return ()
+    return tuple(sorted({m.strip().lower() for m in members if m.strip()}))
+
+
+def reply_turn(
     session_id: str, message_id: str, *, organization_id: str | None,
-) -> bool:
-    """True when the reply row *message_id* is the last turn of the chat
-    *session_id* (RESUME-2b, case A), else False.
+) -> ReplyTurn | None:
+    """The reply row *message_id* of the chat *session_id* (RESUME-2b, case A),
+    or None when it is not there.
 
     ``gateway.routes.agent._same_reply_of`` is the one caller. A late Approve
-    goes on in the same reply only when nothing shows after it. The org is the
+    goes on in the same reply only when nothing shows after the row, and when
+    the members of the room did not change since the park. The org is the
     session's: the read opens ``tenant_session(organization_id)``, and the SQL
     names the org beside RLS. A missing row, another org and no org give
-    False. Sync: call it through ``asyncio.to_thread``. Fence:
+    None. Sync: call it through ``asyncio.to_thread``. Fence:
     ``tests/unit/test_resume_continuation_r8.py`` (R8)."""
     from acb_graph import tenant_session
     from sqlalchemy import text
 
     if not organization_id or not session_id or not message_id:
-        return False
+        return None
     with tenant_session(organization_id) as s:
         row = s.execute(
             text(_LAST_TURN_SQL),
             {"org": organization_id, "sid": session_id, "mid": message_id},
         ).first()
-    return row is not None and bool(row[0])
+    if row is None:
+        return None
+    return ReplyTurn(last=bool(row[0]), members=_label_members(row[1]))
+
+
+def reply_is_last_turn(
+    session_id: str, message_id: str, *, organization_id: str | None,
+) -> bool:
+    """True when :func:`reply_turn` finds the row and it is the last turn."""
+    turn = reply_turn(session_id, message_id, organization_id=organization_id)
+    return turn is not None and turn.last
 
 
 def _get_messages(

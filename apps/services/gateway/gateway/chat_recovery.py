@@ -687,6 +687,10 @@ async def persist_interrupted(records: list[dict[str, Any]]) -> int:
         org = rec.get("org")
         if not (tid and mid and org):
             continue
+        # RESUME-2b, P2-1: a same-reply run that died never writes over part
+        # one with a replay that lost it. Only its record names the key.
+        fallback = str(rec.get("sameReplyFallbackId") or "")
+        extra = {"same_reply_fallback_id": fallback} if fallback else {}
         try:
             folded = await persist_final_assistant_message(
                 tid, mid,
@@ -697,6 +701,7 @@ async def persist_interrupted(records: list[dict[str, Any]]) -> int:
                 organization_id=str(org),
                 # Never fold another run's stream into this row.
                 expect_run_id=str(rec.get("runId") or "") or None,
+                **extra,
             )
             if folded is not None:
                 done += 1

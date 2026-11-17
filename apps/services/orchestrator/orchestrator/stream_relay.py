@@ -1513,8 +1513,9 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
             own, so it does not start. With *exclusive*, when any run is in
             flight. It raises before any state changes.
         ParkedStreamGone: with *keep_stream*, when the stream has no parked
-            end of the run, or the check fails. It raises before any state
-            changes.
+            end of the run, when the XDEL does not delete exactly that one
+            entry, or when a check fails. It raises before the thread reads
+            as active.
     """
     # ── §5.2, the inner layer: the destructive reset is UNREACHABLE by anyone
     # but a legitimate superseder. ────────────────────────────────────────────
@@ -1577,13 +1578,20 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
     if _parked_end is not None:
         # RESUME-2b, case A: delete the parked end BEFORE the thread reads as
         # active. A subscriber stops at the first RUN_FINISHED, so a tab that
-        # attaches once the run is active must not find it. A fault keeps the
-        # entry: the fold and the replay still read the whole run.
+        # attaches once the run is active must not find it. The XDEL must
+        # delete exactly that one entry (review of 2026-11-17, P2-1). A count
+        # of 0 means that a trim or another party took it after the check,
+        # so the stream is not the parked run's any more. That, and a fault,
+        # refuse before the thread reads as active: the gateway starts a new
+        # reply.
         try:
             r = await _get_client()
-            await r.xdel(_stream_key(thread_id), _parked_end)
+            _deleted = await r.xdel(_stream_key(thread_id), _parked_end)
         except Exception:
-            _log.warning("stream_relay.parked_end_xdel_failed", thread_id=thread_id[:12])
+            _deleted = 0
+        if _deleted != 1:
+            _log.info("stream_relay.parked_end_taken", thread_id=thread_id[:12])
+            raise ParkedStreamGone(thread_id, "no parked stream", actor or "")
 
     # Fresh run boundary: clear previous events so replay-from-0 is exact.
     # NOTE this DELETES the previous run's event log — reaching this line means

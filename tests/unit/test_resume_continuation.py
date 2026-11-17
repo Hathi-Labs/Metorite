@@ -1847,19 +1847,27 @@ def _case_a_row(db: _ResumeDb, tid: str, **over: Any) -> str:
 
 @pytest.fixture
 def last_turn(monkeypatch):
-    """``routes.chat.reply_is_last_turn`` as a recorder. ``answer`` sets what
-    it gives, and an exception raises."""
+    """``routes.chat.reply_turn`` and the member check as recorders.
+    ``answer`` sets ``last`` (an exception raises), ``label`` the members of
+    the label at the park, and ``same_members`` what the member check gives."""
+    from gateway.routes import agent as agent_routes
     from gateway.routes import chat as chat_routes
 
-    state: dict[str, Any] = {"answer": True, "calls": []}
+    state: dict[str, Any] = {"answer": True, "label": None, "same_members": True,
+                             "calls": [], "members": []}
 
-    def _last(session_id, message_id, *, organization_id):
+    def _turn(session_id, message_id, *, organization_id):
         state["calls"].append((session_id, message_id, organization_id))
         if isinstance(state["answer"], BaseException):
             raise state["answer"]
-        return state["answer"]
+        return chat_routes.ReplyTurn(last=state["answer"], members=state["label"])
 
-    monkeypatch.setattr(chat_routes, "reply_is_last_turn", _last)
+    async def _members(org, thread_id, member, at_park):
+        state["members"].append((org, thread_id, member, at_park))
+        return state["same_members"]
+
+    monkeypatch.setattr(chat_routes, "reply_turn", _turn)
+    monkeypatch.setattr(agent_routes, "_same_members_as_park", _members)
     return state
 
 
@@ -1884,12 +1892,13 @@ def test_case_a_goes_on_in_the_same_reply(
     assert req.run_id == _RUN and req.assistant_message_id == _REPLY
     assert req.payload == {"message": "", "source": "chat"}, "no words, no prompt id"
     assert last_turn["calls"] == [(tid, _REPLY, _ORG_A)]
+    assert last_turn["members"] == [(_ORG_A, tid, _ALICE, None)], "the session's member"
     assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
 
 
 @pytest.mark.parametrize("case", [
     "not_last_turn", "no_message_id", "stream_gone", "other_run", "stopped",
-    "open_row", "no_run_id", "check_fault",
+    "open_row", "no_run_id", "check_fault", "members_changed",
 ])
 def test_each_doubt_gives_a_new_reply(
     case, resume_on, ask_db, streams, no_persist, launches, last_turn, monkeypatch,
@@ -1916,6 +1925,8 @@ def test_each_doubt_gives_a_new_reply(
         last_turn["answer"] = False
     if case == "check_fault":
         last_turn["answer"] = RuntimeError("db down")
+    if case == "members_changed":
+        last_turn["same_members"] = False
     res = _approve(monkeypatch, tid, rid)
     assert res.status_code == 200, res.text
     body = res.json()
@@ -1931,10 +1942,22 @@ def test_the_run_route_keeps_the_stream_only_in_case_a(monkeypatch, liveness):
     """The run route passes ``keep_stream`` from the launch only, keeps the
     request's reply row, and answers it. Mutation: pass ``keep_stream=True``
     always -> red."""
+    from gateway import chat_fold
     from gateway.routes import agent as agent_routes
     from starlette.background import BackgroundTasks
 
     seen = _stream_world(monkeypatch)
+    folds: list[dict[str, Any]] = []
+
+    async def _persist(tid, mid, **kw):
+        folds.append({"mid": mid, **kw})
+        return None
+
+    async def _no_extract(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(chat_fold, "persist_final_assistant_message", _persist)
+    monkeypatch.setattr(agent_routes, "_extract_run_memory", _no_extract)
     for same in (True, False):
         launch = agent_routes.ResumeLaunch(stored=_stored(message_id=_REPLY), request_id="a" * 32,
                                            title=_TITLE, same_reply=same)
@@ -1948,12 +1971,21 @@ def test_the_run_route_keeps_the_stream_only_in_case_a(monkeypatch, liveness):
         assert kw["keep_stream"] is same and kw["exclusive"] is True
         assert kw["organization_id"] == _ORG_A
         assert started.same_reply is same
+        asyncio.run(kw["on_complete"]())
+        fold = folds[-1]
         if same:
             assert started.message_id == _REPLY and kw["record"]["messageId"] == _REPLY
             assert started.run_id == _RUN and kw["record"]["runId"] == _RUN
+            # P2-1: the fold of case A gets a fresh fallback row, and so does
+            # the sweep of a run that dies (the record).
+            back = fold["same_reply_fallback_id"]
+            assert fold["mid"] == _REPLY and back and back != _REPLY
+            assert kw["record"]["sameReplyFallbackId"] == back
         else:
             assert started.message_id and started.message_id != _REPLY
             assert kw["record"]["messageId"] == started.message_id
+            assert fold["same_reply_fallback_id"] is None
+            assert "sameReplyFallbackId" not in kw["record"]
 
 
 def test_a_lost_parked_end_starts_a_new_reply_under_the_same_claim(
@@ -2001,6 +2033,13 @@ def test_the_case_a_checks_read_server_facts_only():
     same = inspect.getsource(agent_routes._same_reply_of)
     assert "req." not in same and "payload" not in same
     assert 'row.get("run_id")' in same and 'stored.get("message_id")' in same
+    assert "await _same_members_as_park(org, thread_id, member, turn.members)" in same
+    assert "member=me)" in inspect.getsource(agent_routes._resume_from_row)
+    from gateway.routes import chat as chat_routes
+
+    last_sql = " ".join(chat_routes._LAST_TURN_SQL.split())
+    assert "(timestamp_ms, id) > (r.timestamp_ms, r.id)" in last_sql, "the order of a reader"
+    assert "r.authority" in last_sql
     route = inspect.getsource(agent_routes._resume_from_row)
     assert route.index("pending_ask.claim_stored_call, org") < route.index(
         "await _same_reply_of(")
@@ -2011,3 +2050,190 @@ def test_the_case_a_checks_read_server_facts_only():
     park = inspect.getsource(pending_ask.park)
     assert park.index('"parked": True') < park.index("keep_parked_stream(thread_id)")
     assert "chat_resume_on(org) and late_approve_on(org)" in park
+
+
+# ---------------------------------------------------------------------------
+# 13. The review of RESUME-2b (2026-11-17): P1, P2-1 and P2-2
+# ---------------------------------------------------------------------------
+
+class _RoomNow:
+    def __init__(self, *, shared: bool, failed: bool = False) -> None:
+        self.is_shared = shared
+        self.resolve_failed = failed
+
+
+@pytest.mark.parametrize(("at_park", "room", "now", "same"), [
+    (None, "solo", [_ALICE], True),
+    (None, "solo", [], True),
+    (None, "shared", [_ALICE], False),
+    (None, "solo", [_ALICE, _BOB], False),
+    ((_ALICE, _BOB), "shared", [_BOB, _ALICE.upper()], True),
+    ((_ALICE, _BOB), "shared", [_ALICE, _BOB, "carol@ask-a.test"], False),
+    ((_ALICE, _BOB), "solo", [_ALICE], False),
+    ((), "solo", [_ALICE], False),
+    (None, "failed", [_ALICE], False),
+    (None, "none", [_ALICE], False),
+], ids=["solo", "solo-empty", "solo-label-shared-room", "solo-label-joined",
+        "shared-same", "shared-joined", "shared-left", "bad-label", "room-failed", "no-room"])
+def test_the_member_check_compares_the_room_now_with_the_label(
+    at_park, room, now, same, monkeypatch,
+):
+    """P1. Case A only when the members now equal the members at the park.
+    No label means solo at the park, so the room must still be solo. The read
+    of the members fails open, so a failed room read and a shared room with no
+    label refuse. Mutation: return True for a solo label with a shared room
+    -> red. Compare sets with a member less -> red."""
+    import acb_auth
+    from gateway.routes import agent as agent_routes
+
+    rooms = {"solo": _RoomNow(shared=False), "shared": _RoomNow(shared=True),
+             "failed": _RoomNow(shared=False, failed=True), "none": None}
+    seen: list[tuple[Any, ...]] = []
+
+    def _room(thread_id, email, org):
+        seen.append(("room", thread_id, email, org))
+        return rooms[room]
+
+    async def _access(session_id, actor):
+        seen.append(("access", session_id, actor))
+        return None, list(now)
+
+    monkeypatch.setattr(agent_routes, "_resolve_room", _room)
+    monkeypatch.setattr(acb_auth, "resolve_session_access", _access)
+    label = tuple(sorted(at_park)) if at_park else at_park
+    got = asyncio.run(agent_routes._same_members_as_park(_ORG_A, "t-m", _ALICE, label))
+    assert got is same
+    assert seen[0] == ("room", "t-m", _ALICE, _ORG_A), "the session's member and org"
+
+
+def test_the_label_of_a_row_reads_as_its_members():
+    from gateway.routes import chat as chat_routes
+
+    lbl = chat_routes._label_members
+    assert lbl(None) is None
+    assert lbl({"members": ["B@x.test", "a@x.test", "a@x.test"], "caps": []}) == (
+        "a@x.test", "b@x.test")
+    assert lbl(json.dumps({"members": ["a@x.test"]})) == ("a@x.test",)
+    assert lbl({"caps": []}) == () and lbl("not json") == () and lbl({"members": [1]}) == ()
+
+
+def test_an_xdel_that_takes_nothing_refuses_before_the_run_is_active(streams, monkeypatch):
+    """P2-1. A trim or another party takes the parked end after the check.
+    The XDEL then deletes 0 entries, and the start refuses before the thread
+    reads as active. A fault of the XDEL refuses too. Mutation: drop the
+    count test -> ``cc:active`` is set -> red."""
+    real = stream_relay.parked_end_of
+
+    async def _then_taken(thread_id, run_id):
+        end = await real(thread_id, run_id)
+        key = f"cc:stream:{thread_id}"
+        streams.store[key] = [(e, f) for e, f in streams.store[key] if e != end]
+        return end
+
+    async def go(tid: str) -> None:
+        await stream_relay.start_detached(
+            tid, _gen_lines(), exclusive=True, keep_stream=True, actor=_ALICE,
+            organization_id=_ORG_A, record={"runId": _RUN})
+
+    _parked_stream(streams, "t-taken")
+    monkeypatch.setattr(stream_relay, "parked_end_of", _then_taken)
+    with pytest.raises(stream_relay.ParkedStreamGone):
+        asyncio.run(go("t-taken"))
+    assert "cc:active:t-taken" not in streams.store
+    assert ("xdel", "cc:stream:t-taken") in streams.ops, "non-vacuity: the XDEL ran"
+
+    async def _xdel_down(*_a, **_k):
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(stream_relay, "parked_end_of", real)
+    _parked_stream(streams, "t-xdel-down")
+    streams.xdel = _xdel_down
+    with pytest.raises(stream_relay.ParkedStreamGone):
+        asyncio.run(go("t-xdel-down"))
+    assert "cc:active:t-xdel-down" not in streams.store
+
+
+def _evt(kind: str, **kw: Any) -> dict[str, Any]:
+    return {"type": kind, **kw}
+
+
+def test_same_reply_events_keep_part_one_or_go_to_the_fallback_row():
+    """P2-1. Two ``RUN_STARTED`` of the run: the replay holds part one, so it
+    goes whole into the reply. One: a trim took part one, so only part two
+    goes, into the fallback row. Mutation: ``>= 1`` -> a trimmed replay writes
+    over part one -> red."""
+    from gateway.chat_fold import same_reply_events
+
+    whole = [_evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
+             _evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta="two")]
+    assert same_reply_events(whole, _RUN, _REPLY, "fb") == (whole, _REPLY)
+    trimmed = [_evt("TEXT_MESSAGE_CONTENT", delta="ne"), _evt("RUN_STARTED", runId=_RUN),
+               _evt("TEXT_MESSAGE_CONTENT", delta="two")]
+    assert same_reply_events(trimmed, _RUN, _REPLY, "fb") == (trimmed[1:], "fb")
+    other = [_evt("RUN_STARTED", runId="run-x"), _evt("RUN_STARTED", runId=_RUN)]
+    assert same_reply_events(other, _RUN, _REPLY, "fb") == (other[1:], "fb")
+    assert same_reply_events([], _RUN, _REPLY, "fb") == ([], "fb")
+
+
+def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
+    """P2-1, the real fold with the writes as recorders. A whole replay
+    writes the reply row. A trimmed one writes ONLY the fallback row, with
+    part two. With no fallback id the fold is as before."""
+    from gateway import chat_fold, run_trace
+    from gateway.routes import chat as chat_routes
+
+    writes: list[tuple[str, str]] = []
+    events: list[dict[str, Any]] = []
+
+    async def _replay(*_a, **_k):
+        return [dict(e) for e in events]
+
+    async def _none(*_a, **_k):
+        return None
+
+    def _upsert(thread_id, records, **_kw):
+        writes.extend((r.id, r.content) for r in records)
+        return []
+
+    monkeypatch.setattr(stream_relay, "replay_events", _replay)
+    monkeypatch.setattr(run_trace, "record_run_trace", _none)
+    monkeypatch.setattr(chat_fold, "_run_authority", _none)
+    monkeypatch.setattr(chat_routes, "_ensure_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(chat_routes, "_upsert_messages", _upsert)
+
+    def fold(fallback: str | None) -> None:
+        asyncio.run(chat_fold.persist_final_assistant_message(
+            "t-fold", _REPLY, user_id=_ALICE, run_id=_RUN, organization_id=_ORG_A,
+            expect_run_id=_RUN, holds_mail=False, same_reply_fallback_id=fallback))
+
+    events[:] = [_evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta="Part one."),
+                 _evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta=" Part two."),
+                 _evt("RUN_FINISHED")]
+    fold("fb-row")
+    assert writes == [(_REPLY, "Part one. Part two.")]
+    writes.clear()
+    events[:] = events[2:]  # a trim took part one
+    fold("fb-row")
+    assert writes == [("fb-row", " Part two.")], "part one is never written over"
+    writes.clear()
+    fold(None)
+    assert writes == [(_REPLY, " Part two.")], "with no fallback the fold is as before"
+
+
+def test_the_sweep_passes_the_fallback_of_a_same_reply_run(monkeypatch):
+    """P2-1: a same-reply run that died folds with its fallback row too. A
+    record with none sends the call of before."""
+    from gateway import chat_fold, chat_recovery
+
+    calls: list[dict[str, Any]] = []
+
+    async def _persist(tid, mid, **kw):
+        calls.append({"mid": mid, **kw})
+        return {"content": "x"}
+
+    monkeypatch.setattr(chat_fold, "persist_final_assistant_message", _persist)
+    base = {"threadId": "t-s", "messageId": _REPLY, "org": _ORG_A, "runId": _RUN}
+    assert asyncio.run(chat_recovery.persist_interrupted(
+        [{**base, "sameReplyFallbackId": "fb-1"}, base])) == 2
+    assert calls[0]["same_reply_fallback_id"] == "fb-1"
+    assert "same_reply_fallback_id" not in calls[1]
