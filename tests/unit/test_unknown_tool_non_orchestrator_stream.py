@@ -150,7 +150,14 @@ def _no_network(monkeypatch) -> Iterator[list[str]]:
     with contextlib.suppress(ImportError):
         import psycopg
 
+        async def _async_db(_cls: Any, *_a: Any, **_k: Any) -> Any:
+            attempts.append("db:psycopg.AsyncConnection.connect")
+            raise ConnectionRefusedError("tripwire: psycopg.AsyncConnection.connect")
+
         monkeypatch.setattr(psycopg, "connect", _db("psycopg.connect"))
+        monkeypatch.setattr(psycopg.Connection, "connect",
+                            classmethod(lambda _cls, *a, **k: _db("psycopg.Connection.connect")()))
+        monkeypatch.setattr(psycopg.AsyncConnection, "connect", classmethod(_async_db))
     with contextlib.suppress(ImportError):
         import asyncpg
 
@@ -168,7 +175,14 @@ def test_the_tripwire_catches_a_connect(_no_network) -> None:
         sock.connect(("127.0.0.1", 9))
     with pytest.raises(socket.gaierror):
         socket.getaddrinfo("api.deepseek.com", 443)
-    assert _no_network == ["connect:('127.0.0.1', 9)", "dns:'api.deepseek.com'"]
+    psycopg = pytest.importorskip("psycopg")
+    with pytest.raises(ConnectionRefusedError):
+        psycopg.connect("postgresql://acb@127.0.0.1:9/acb")
+    with pytest.raises(ConnectionRefusedError):
+        psycopg.Connection.connect("postgresql://acb@127.0.0.1:9/acb")
+    assert _no_network == [
+        "connect:('127.0.0.1', 9)", "dns:'api.deepseek.com'", "db:psycopg.connect",
+        "db:psycopg.Connection.connect"]
     _no_network.clear()
 
 
