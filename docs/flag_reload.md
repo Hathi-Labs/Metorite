@@ -33,6 +33,17 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_FOCUS_ORGS` turns on the item in focus of a chat
+(`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
+the email or the Projects task that a tool call read or acted on last. The
+per-turn context then shows its kind, its id and its link, with the rule for
+"it", "this" and "mark it done". `*` lists every org, and the default is
+empty. Empty gives each prompt of before, byte for byte.
+
+Its one reader is `acb_skills.chat_focus.focus_on`. The executor asks it at
+the start of each turn, and each write and each block ask it again. So a
+reload applies to the next turn. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.
@@ -182,6 +193,13 @@ The flag also opens the sender near spelling of `GET /email/messages`, for a
 caller that sends `near_sender`. Only `query_inbox` sends it. When
 `from_email` finds no mail, the tool tries the near spelling of the sender and
 names it. That part needs no `CONTEXT_RECENCY`.
+
+The flag also opens the chat tool `resolve_name` and its route
+`GET /search/names` (FIND-5, `find_engine.md` §5.2). The route gives each
+person, contact, lead, company and mail sender that holds one name. An org
+off the list gets 404. The orchestrator gives the tool only to an org on the
+list, so the tool list of each other org does not change. That part needs no
+`CONTEXT_RECENCY`. The next chat turn after a reload reads the change.
 
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
