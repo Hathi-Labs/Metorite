@@ -61,6 +61,25 @@ call passes the three tests of ``egress.is_card_write_tool``: the name is on
 parameters are the pinned set. So ``bulk_update``, a send, an egress card, an
 email card, a card of ticked rows and a WhatsApp run never take one.
 
+**One act, once, across chats and faults** (HRD-22b, task 3294). Three more
+rules close the gaps of the second review:
+
+* **Across chats.** The SPENT mark also has a member-level copy
+  (:data:`SPENT_NAMESPACE`, keyed by member and digest, no thread). A twin card
+  that parked in chat A takes no grant after the member approved its twin in
+  chat B (:func:`grant_from_offer` and :func:`take_grant` read it).
+* **A fault of Redis.** The SPENT mark is best effort, so :func:`grant_from_offer`
+  also asks Postgres (:func:`_twin_approved`, ``pending_ask.twin_approved_since``):
+  a confirmation row of the same member, in any thread, with the same title,
+  detail and context, answered ``APPROVE`` after this row was asked, means that
+  the act ran. It refuses then, and on a fault of the read (fail closed). This
+  also closes the case of a mark that expired and a new twin that wrote a fresh
+  offer.
+* **The race.** :func:`take_grant` takes the grant, then marks the act with ONE
+  ``SET … GET`` on the offer key and on the member key. A live approve that
+  landed between the offer read and the grant write left SPENT there, so the
+  use refuses.
+
 **The safe side.** A missing record, a mismatch, a Redis fault, a run with no
 verified member and a run with no card channel each show the normal card. The
 org, the member and the thread come from the session, the row or the run,
@@ -90,6 +109,10 @@ OFFER_NAMESPACE = "chat-late-offer"
 #: The tenant Redis namespace that leads from a parked card's request id to
 #: the digest of its act.
 ASK_NAMESPACE = "chat-late-ask"
+#: The tenant Redis namespace of the member-level SPENT mark (HRD-22b): one
+#: key for each member and digest, in no thread, so an act that ran in chat B
+#: is seen by a twin card of chat A.
+SPENT_NAMESPACE = "chat-late-spent"
 #: The tenant Redis namespace of a grant: one late approve, for one use.
 GRANT_NAMESPACE = "chat-late-approve"
 #: How long a grant waits for the run that uses it (30 minutes). The time
@@ -404,17 +427,40 @@ async def _call(coro: Any) -> Any:
 
 async def _spend(redis: Any, member: str, thread: str, digest: str) -> bool:
     """Mark the act *digest* as run: no offer of it, and no grant. True when
-    the act was SPENT already.
+    the act was SPENT already, in this thread or (HRD-22b) in any chat of the
+    member.
 
-    ONE ``SET … GET`` writes the mark and gives back the old value (Redis
+    ONE ``SET … GET`` writes each mark and gives back the old value (Redis
     6.2 or later). So of two writers at the same moment, exactly one reads a
-    value that is not SPENT (RESUME-2a review, P1-A)."""
+    value that is not SPENT (RESUME-2a review, P1-A). The member-level mark
+    has no thread in its key, so a twin card of another chat sees it."""
     from acb_common.tenant_redis import key
 
+    ttl = spent_ttl_s()
     old = await _call(redis.set(key(OFFER_NAMESPACE, member, thread, digest), _SPENT,
-                                ex=spent_ttl_s(), get=True))
+                                ex=ttl, get=True))
+    old_member = await _call(redis.set(key(SPENT_NAMESPACE, member, digest), _SPENT,
+                                       ex=ttl, get=True))
     await _call(redis.delete(key(GRANT_NAMESPACE, member, thread, digest)))
-    return _is_spent(old)
+    return _is_spent(old) or _is_spent(old_member)
+
+
+async def _twin_approved(org: str, member: str, row: Mapping[str, Any]) -> bool:
+    """True when Postgres says that a twin of *row* was approved after *row*
+    was asked, or when it cannot say (fail closed). The SPENT mark of Redis
+    is best effort, so this read is the second witness (HRD-22b item 2). A
+    seam, so a test passes a fake."""
+    try:
+        import asyncio as _asyncio
+
+        from orchestrator import pending_ask
+
+        return bool(await _asyncio.wait_for(
+            _asyncio.to_thread(pending_ask.twin_approved_since, org, member, dict(row)),
+            _OP_TIMEOUT_S * 2))
+    except Exception as exc:
+        _log.warning("late_approve.twin_read_failed", error_type=type(exc).__name__)
+        return True
 
 
 # ── Step 1: the offer (the run, at the park) ─────────────────────────────────
@@ -531,6 +577,10 @@ async def grant_from_offer(org: str, member: str, row: Mapping[str, Any], answer
             if not digest:
                 _log.info("late_approve.no_offer", request_id=_short(rid))
                 return False
+            # HRD-22b item 1: the act ran in another chat of this member.
+            if _is_spent(await _call(redis.get(key(SPENT_NAMESPACE, who, digest)))):
+                _log.info("late_approve.act_spent_elsewhere", request_id=_short(rid))
+                return False
             okey = key(OFFER_NAMESPACE, who, thread, digest)
             seen = await _call(redis.get(okey))
             offer = _record(seen)
@@ -538,6 +588,10 @@ async def grant_from_offer(org: str, member: str, row: Mapping[str, Any], answer
                 # No offer, or a SPENT mark: the act ran, or it never may.
                 _log.info("late_approve.no_offer", request_id=_short(rid),
                           spent=_is_spent(seen))
+                return False
+            # HRD-22b items 2 and 3: the second witness, in Postgres.
+            if await _twin_approved(org, who, row):
+                _log.info("late_approve.twin_approved", request_id=_short(rid))
                 return False
             taken = await _call(redis.getdel(okey))
             if _text(taken) != _text(seen):
@@ -698,6 +752,7 @@ __all__ = [
     "GRANT_NAMESPACE",
     "GRANT_TTL_S",
     "OFFER_NAMESPACE",
+    "SPENT_NAMESPACE",
     "Act",
     "act_of",
     "card_text_of",

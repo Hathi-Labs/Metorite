@@ -234,6 +234,48 @@ def late_on(monkeypatch, flag_on, store):
     return store
 
 
+@pytest.fixture(autouse=True)
+def _twin_witness(ask_db, monkeypatch):
+    """The in-memory table has the second witness of HRD-22b
+    (``pending_ask.twin_approved_since``). A row is stamped with the order in
+    which it was asked and answered, and the witness reads that order, as the
+    SQL reads ``asked_at`` and ``answered_at``. The SQL itself is
+    ``test_late_approve_twin_r8.py``."""
+    seq = iter(range(1, 10_000))
+    insert, move = ask_db.insert_ask, ask_db.move_ask
+
+    def insert_ask(org, row):
+        ok = insert(org, row)
+        if ok:
+            ask_db.rows[(org, row["request_id"])]["_asked"] = next(seq)
+        return ok
+
+    def move_ask(org, rid, *, to, from_states, answer=None):
+        out = move(org, rid, to=to, from_states=from_states, answer=answer)
+        if out is not None and to == "answered":
+            ask_db.rows[(org, rid)]["_answered"] = next(seq)
+        return out
+
+    def twin_approved_since(org, member, row):
+        card = (row.get("payload") or {})
+        if not card.get("title") or row.get("_asked") is None:
+            return True
+        for (o, rid), other in ask_db.rows.items():
+            other_card = other.get("payload") or {}
+            if (o == org and rid != row["request_id"] and other["actor_email"] == member
+                    and other["kind"] == "confirmation" and other["state"] == "answered"
+                    and str(other.get("answer") or "").strip().upper() == "APPROVE"
+                    and other.get("_answered", 0) > row["_asked"]
+                    and all(str(other_card.get(k) or "") == str(card.get(k) or "")
+                            for k in ("title", "detail", "context"))):
+                return True
+        return False
+
+    monkeypatch.setattr(pending_ask, "insert_ask", insert_ask)
+    monkeypatch.setattr(pending_ask, "move_ask", move_ask)
+    monkeypatch.setattr(pending_ask, "twin_approved_since", twin_approved_since)
+
+
 def _run(r, tid: str, fn: Any = update_deal_status, *, member: str = _ALICE,
          org: str = _ORG_A, verified: bool = True, keyed: bool = True,
          agent: str = "orchestrator", live: str | None = None,
@@ -461,7 +503,9 @@ def test_the_spent_mark_is_one_set_get_and_one_writer_wins():
         return first, second
 
     assert asyncio.run(go()) == (False, True)
-    assert [c.split(" ")[0] for c in store.calls] == ["set", "delete", "set", "delete"]
+    # The offer key, the member-level key (HRD-22b), then the grant.
+    assert [c.split(" ")[0] for c in store.calls] == [
+        "set", "set", "delete", "set", "set", "delete"]
     src = inspect.getsource(late_approve._spend)
     assert "get=True" in src and ".get(" not in src
     assert "if await _spend(" in inspect.getsource(late_approve.take_grant)
@@ -836,8 +880,10 @@ def test_only_a_parked_plain_confirmation_row_turns_its_offer_into_a_grant(late_
         ask = key(late_approve.ASK_NAMESPACE, _ALICE, tid, rid).value
         offer = key(late_approve.OFFER_NAMESPACE, _ALICE, tid, digest).value
         grant = key(late_approve.GRANT_NAMESPACE, _ALICE, tid, digest).value
+    # A comparable card, for the second witness of HRD-22b (``_asked`` is the
+    # stand-in of ``asked_at`` in the in-memory table).
     row = {"kind": "confirmation", "state": "parked", "thread_id": tid,
-           "request_id": rid, "payload": {}}
+           "request_id": rid, "payload": {"title": "card"}, "_asked": 1}
 
     def seed() -> None:
         late_on.data.update({ask: digest, offer: late_approve._encode(rid, "card", keys)})
@@ -1100,3 +1146,169 @@ def test_the_use_comes_before_the_card_and_reads_once():
     take = inspect.getsource(late_approve.take_grant)
     assert "redis.getdel(\n                key(GRANT_NAMESPACE, member, thread, act.digest))" in take
     assert ".get(" not in take.replace(".getdel(", ""), "a GET would leave the grant for a replay"
+
+
+# ---------------------------------------------------------------------------
+# HRD-22b (task 3294): one act, once, across chats, a Redis fault and the race
+# ---------------------------------------------------------------------------
+
+_CALL = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+
+
+def test_an_approve_in_another_chat_stops_the_stale_twin(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 1 (reviewer P2). C1 parks in chat A. The member approves its twin
+    live in chat B (write 1). A late tap on C1 writes no grant, and the new
+    run in chat A asks again. Mutation: drop the member-level mark -> the
+    grant is written and the act runs twice."""
+    assert _run(liveness, "t-hrd22b-a", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-a")[0]["request_id"]
+    out = _run(liveness, "t-hrd22b-b", live="APPROVE", **_CALL)
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert late_on.keys(late_approve.SPENT_NAMESPACE), "the member-level mark is written"
+
+    res = _approve_late(monkeypatch, "t-hrd22b-a", c1)
+    assert res.status_code == 409
+    assert res.json()["detail"]["resumeMessage"] == _envelope(
+        "Move this deal to Payment Complete?"), "no grant, so no paragraph"
+    assert _grants(late_on) == []
+    assert _run(liveness, "t-hrd22b-a", **_CALL).get("parked"), "chat A asks again"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_the_member_level_mark_is_keyed_by_member_and_digest_only(late_on):
+    """It has no thread and no org of the other member in its key."""
+    async def go():
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(_ORG_A):
+            await late_approve._spend(late_on, _ALICE, "t-1", "d" * 32)
+            await late_approve._spend(late_on, _BOB, "t-1", "e" * 32)
+            return (key(late_approve.SPENT_NAMESPACE, _ALICE, "d" * 32).value,
+                    key(late_approve.SPENT_NAMESPACE, _BOB, "e" * 32).value)
+
+    mine, theirs = asyncio.run(go())
+    assert late_on.data[mine] == late_on.data[theirs] == late_approve._SPENT
+    assert "t-1" not in mine and mine.endswith(":" + "d" * 32)
+    assert late_on.ttl[mine] == late_approve.spent_ttl_s()
+
+
+def test_a_redis_fault_during_the_live_approve_leaves_no_second_run(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 2 (reviewer P2). The SPENT mark is best effort: here the live
+    approve of C2 writes none (a stall of Redis). The row of C2 is in Postgres,
+    answered APPROVE, so the late tap on C1 still writes no grant. Mutation:
+    drop the Postgres read -> the stale offer is valid and the act runs twice."""
+    assert _run(liveness, "t-hrd22b-f", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-f")[0]["request_id"]
+
+    async def stalled(*_a: Any, **_k: Any) -> bool:
+        raise TimeoutError
+
+    monkeypatch.setattr(late_approve, "_spend", stalled)
+    out = _run(liveness, "t-hrd22b-f2", live="APPROVE", **_CALL)
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    monkeypatch.undo()  # Redis is back, and no mark was ever written
+    assert late_on.keys(late_approve.SPENT_NAMESPACE) == []
+    assert _offers(late_on), "the stale offer is still valid in Redis"
+
+    res = _approve_late(monkeypatch, "t-hrd22b-f", c1)
+    assert res.status_code == 409
+    assert _grants(late_on) == [], "Postgres says the act ran"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_a_mark_that_expired_and_a_new_twin_cannot_serve_the_stale_tap(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 3 (verifier F1, probe test_p1e2: writes = 2). C1 parks. C2 is
+    approved live (write 1). The marks expire. A new twin C3 parks and writes a
+    fresh offer. The late tap on the STALE C1 takes that offer by digest. The
+    Postgres read refuses: C2 was answered APPROVE after C1 was asked."""
+    assert _run(liveness, "t-hrd22b-x", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-x")[0]["request_id"]
+    _run(liveness, "t-hrd22b-x", live="APPROVE", **_CALL)
+    for k in list(late_on.data):
+        if late_on.data[k] == late_approve._SPENT:
+            del late_on.data[k]
+    assert _run(liveness, "t-hrd22b-x", **_CALL).get("parked"), "C3 parks"
+    assert _offers(late_on), "C3 wrote a fresh offer"
+
+    res = _approve_late(monkeypatch, "t-hrd22b-x", c1)
+    assert res.status_code == 409
+    assert _grants(late_on) == []
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_a_live_approve_between_the_grant_and_its_use_makes_the_use_refuse(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 4 (reviewer P3, verifier F3). The grant is written. Before its use,
+    the member approves a twin live in another chat. The use finds SPENT and
+    shows the card. Mutation: drop the SPENT read of the use -> a second write."""
+    _park_and_approve(liveness, monkeypatch, "t-hrd22b-r", **_CALL)
+    assert len(_grants(late_on)) == 1
+    out = _run(liveness, "t-hrd22b-r2", live="APPROVE", **_CALL)
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    # The new run in the original chat takes the grant: the act is SPENT.
+    again = _run(liveness, "t-hrd22b-r", **_CALL)
+    assert again.get("parked"), "the card shows"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert _grants(late_on) == []
+
+
+def test_an_unreadable_postgres_refuses_the_grant(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Fail closed: a fault of the second witness gives no grant."""
+    def boom(*_a: Any, **_k: Any) -> bool:
+        raise RuntimeError("db down")
+
+    assert _run(liveness, "t-hrd22b-d", **_CALL).get("parked")
+    rid = _cards(liveness, "t-hrd22b-d")[0]["request_id"]
+    monkeypatch.setattr(pending_ask, "twin_approved_since", boom)
+    res = _approve_late(monkeypatch, "t-hrd22b-d", rid)
+    assert res.status_code == 409
+    assert _grants(late_on) == []
+
+
+def test_a_repeat_of_the_act_after_it_ran_shows_one_more_card_and_no_more(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The documented cost of the safe side: after the act ran, the member
+    repeats it on purpose. Its late approve shows one more card."""
+    _run(liveness, "t-hrd22b-c", live="APPROVE", **_CALL)
+    assert _run(liveness, "t-hrd22b-c", **_CALL).get("parked")
+    rid = _cards(liveness, "t-hrd22b-c")[-1]["request_id"]
+    res = _approve_late(monkeypatch, "t-hrd22b-c", rid)
+    assert res.status_code == 409 and _grants(late_on) == []
+
+
+def test_a_card_that_the_guard_refuses_leaves_no_facts_for_the_next_card():
+    """Item 5 (verifier F2). ``card_facts`` binds the ids of the next card. A
+    card that ``_check_card`` refuses never takes them, so they were stale.
+    Mutation: drop the clear in ``_confirm`` -> the facts stay."""
+    skill = pytest.importorskip("skill_projects.writes")
+    from acb_common.tool_refusals import GatewayRefusal
+    from acb_skills import whatsapp_acts
+
+    async def go() -> tuple[Any, Any]:
+        # One task, one context: the tool binds the facts, then the card.
+        skill._bind_card_facts(task_id="t-1")
+        with pytest.raises(GatewayRefusal):
+            await skill._confirm("Change it?", "d", "x" * (skill.CARD_CONTEXT_LIMIT + 5))
+        after_refusal = whatsapp_acts._NEXT_FACTS.get()
+        skill._bind_card_facts(task_id="t-2")  # a card that goes out still takes facts
+        return after_refusal, whatsapp_acts.take_card_facts()
+
+    after_refusal, taken = asyncio.run(go())
+    assert after_refusal is None
+    assert taken == {"task_id": "t-2"}
+
+
+def test_the_second_witness_is_read_before_the_offer_is_taken():
+    src = inspect.getsource(late_approve.grant_from_offer)
+    assert src.index("_twin_approved(") < src.index("redis.getdel(okey)")
+    assert src.index("SPENT_NAMESPACE") < src.index("redis.getdel(okey)")

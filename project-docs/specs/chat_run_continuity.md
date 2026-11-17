@@ -13,7 +13,7 @@ release keeps the work.
 |---|---|
 | S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
 | S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
-| S2 item 8 — a late approve acts once (HRD-22, task 3231) | **BUILT** 2026-11-14, branch `mt-1740009c-late-approve`, dark behind `CHAT_LATE_APPROVE_ORGS`. The production flip is OWNER-GATE (`enforcement-flip`) |
+| S2 item 8 — a late approve acts once (HRD-22, task 3231, HRD-22b, task 3294) | **BUILT** 2026-11-14, branch `mt-1740009c-late-approve`. HRD-22b closes the gaps of its second review (across chats, a Redis fault, the grant race). Dark behind `CHAT_LATE_APPROVE_ORGS`. The production flip is OWNER-GATE (`enforcement-flip`), and waits on D-HRD-7 |
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
@@ -327,14 +327,25 @@ default. OFF writes no row, parks no run, and reports every run as
      the member and the thread come from the run, never from input. A miss, a
      mismatch and a Redis fault each show the normal card.
    - **An act runs once.** Each approve of a plain card marks the act SPENT
-     on its offer key, and removes its grant. That covers a live approve and
-     a used grant. The mark lasts 30 minutes, and longer than the park
-     window. So, while the mark lives, a stale twin card in the same thread
-     writes nothing on a late tap, and a twin that parks later records no
-     offer. ⚠️ Three gaps stay open, and task 3294 (HRD-22b) closes them
-     before `CHAT_LATE_APPROVE_ORGS` flips. The mark covers one thread only.
-     The mark is best effort, so a Redis stall leaves the stale offer valid.
-     After the mark expires, a new twin's offer can serve a stale tap.
+     on its offer key, and in a member-level key (`chat-late-spent`, with no
+     thread), and removes its grant. That covers a live approve and a used
+     grant. The marks last as long as a row (7 days by default). The rule
+     after HRD-22b (task 3294):
+     1. **Across chats.** A twin card in chat A takes no grant after the
+        member approved its twin in chat B, because the member-level mark
+        reads SPENT. A use also marks both keys with one `SET … GET` each, so
+        a live approve that lands between the grant and its use makes the
+        use refuse.
+     2. **A fault of Redis.** The grant also asks Postgres. A confirmation
+        row of the same member, in any thread, with the same title, detail
+        and context, answered `APPROVE` after this row was asked, means that
+        the act ran. The grant refuses then, and when the read fails or the
+        row cannot be compared.
+     3. **A mark that expired.** The Postgres read also stops a stale card
+        that finds the offer of a new twin.
+     Each refusal shows the normal card (the safe side). The cost: when the
+     member repeats an identical act within the life of the marks, its late
+     approve shows one more card.
    - **The new message.** When the gateway writes a grant, the late answer
      gets one more paragraph after `My answer: APPROVE`. It says that the
      member approved after the chat stopped waiting. It tells the model not

@@ -380,6 +380,50 @@ def read_ask(organization_id: str, request_id: str) -> dict[str, Any] | None:
         return _row(r) if r is not None else None
 
 
+#: The second witness of the late approve (HRD-22b item 2). A confirmation row
+#: of the member, in ANY thread, with the same visible card, answered APPROVE
+#: after the row was asked. The org predicate stands beside RLS, as in
+#: ``move_ask``.
+_TWIN_APPROVED_SQL = (
+    "SELECT 1 FROM chat_pending_ask "
+    "WHERE organization_id = CAST(:org AS uuid) AND actor_email = :actor "
+    "  AND kind = 'confirmation' AND state = 'answered' "
+    "  AND upper(btrim(coalesce(answer, ''))) = 'APPROVE' "
+    "  AND answered_at > CAST(:asked AS timestamptz) AND request_id <> :rid "
+    "  AND coalesce(payload->>'title', '') = :title "
+    "  AND coalesce(payload->>'detail', '') = :detail "
+    "  AND coalesce(payload->>'context', '') = :context "
+    "LIMIT 1"
+)
+
+
+def twin_approved_since(organization_id: str, member: str, row: dict[str, Any]) -> bool:
+    """True when a twin of *row* (the same member, the same title, detail and
+    context) moved to ``answered`` with ``APPROVE`` after *row* was asked, in
+    any thread. It is also True when *row* cannot be compared (no card text
+    or no ``asked_at``), the fail-closed side: the grant then waits for the
+    normal card. Sync: callers run it in a thread. R8 fence:
+    ``tests/unit/test_late_approve_twin_r8.py``."""
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    payload = row.get("payload")
+    asked = row.get("asked_at")
+    if not isinstance(payload, dict) or payload.get("truncated") or not asked:
+        return True
+    title = str(payload.get("title") or "")
+    if not title:
+        return True
+    params = {
+        "org": organization_id, "actor": (member or "").strip().lower(),
+        "asked": str(asked), "rid": str(row.get("request_id") or ""),
+        "title": title, "detail": str(payload.get("detail") or ""),
+        "context": str(payload.get("context") or ""),
+    }
+    with tenant_session(organization_id) as s:
+        return s.execute(text(_TWIN_APPROVED_SQL), params).first() is not None
+
+
 def waiting_asks(
     organization_id: str,
     *,
