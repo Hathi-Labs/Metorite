@@ -61,7 +61,33 @@ DARK. ``CHAT_FOCUS_ORGS`` (a comma list of organization ids, or ``*``) turns
 it on, and :func:`focus_on` is the one reader. Empty is off, the default. Off,
 no read starts, nothing is bound or written, and each prompt keeps its bytes.
 
-Fences (R7): ``tests/unit/test_focus_item.py`` and
+THE NEXT ONE (HRD-11b, task 3480). The chat also keeps the LAST LIST that a
+tool read, under the same flag, at its own key
+``cc:<org>:chat-focus-list:<session>:<member hash>``. A second key, so the
+item and the list each write with no read back, and a drop of the item keeps
+the list.
+
+* :data:`LIST_TOOLS` is the closed table of the list reads, as ``tool ->
+  kind``. A list holds only the ids that the tool result printed, in the
+  printed order: the ``• id=<id> `` lines of an email list and the
+  ``  full_id: <uuid>`` lines of a task list (:data:`_LIST_LINES`). Each id
+  passes :func:`_valid_id`. The list keeps the first :data:`LIST_MAX` ids.
+* A list read that acted REPLACES the stored list, of any kind, and puts the
+  cursor before the first item. A list read that printed no id deletes it.
+* THE CURSOR is the highest place in the list of an item that the calls of
+  ONE run read or acted on (:data:`FOCUS_TOOLS`). So after "mark it done" on
+  item 3, the cursor is at 3, and the next item is 4. The server moves it from
+  the tool calls only, never from the text of the model.
+* The block shows the place of the cursor and the NEXT item, as ``3 of 7``,
+  the kind, the id and the link. At the end of the list it says that no next
+  item exists. It never goes back to the first item. When the model then
+  calls a tool of :data:`FOCUS_TOOLS` on the next id, that call moves the
+  item and the cursor.
+* A list older than :data:`FOCUS_FRESH_S` after its read shows nothing. A
+  move of the cursor keeps the time of the read.
+
+Fences (R7): ``tests/unit/test_focus_item.py``,
+``tests/unit/test_focus_list.py`` and
 ``evals/trajectories/test_focus_item_trajectory.py``.
 """
 from __future__ import annotations
@@ -69,6 +95,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import threading
 import time
 import uuid
@@ -161,6 +188,35 @@ NO_ACT: tuple[str, ...] = (
     *_NO_ACT, "[blocked by permission policy", "until is a date",
     "A comment needs a body",
 )
+
+#: THE closed table of the list reads (HRD-11b), as ``tool -> kind``. Each
+#: one prints one line for each item, with its id. The owner of the kind
+#: (:data:`OWNERS`) must make the call. Fence: ``tests/unit/test_focus_list.py``
+#: reads each name in the real packs of its owner.
+LIST_TOOLS: Mapping[str, str] = MappingProxyType({
+    "find_priority": EMAIL, "query_inbox": EMAIL,
+    "find_tasks": TASK, "list_tasks": TASK, "my_work": TASK,
+})
+#: The line of one item in a list result, by kind. The email lists print
+#: ``• id=<id> `` at the start of a line (``agent-email-assistant``
+#: ``query_inbox`` and ``find_priority``). The task lists print
+#: ``  full_id: <uuid>`` on a line of its own (``skill_projects.reads
+#: ._task_line``). An id that a cut result ends in has no space or no end of
+#: line after it, so it does not match.
+_LIST_LINES: Mapping[str, re.Pattern[str]] = MappingProxyType({
+    EMAIL: re.compile(r"^\u2022 id=(\S{1,200}) ", re.MULTILINE),
+    TASK: re.compile(r"^  full_id: ([0-9A-Fa-f-]{36})$", re.MULTILINE),
+})
+#: The most ids that a stored list keeps.
+LIST_MAX = 10
+#: The Redis namespace of the lists.
+LIST_NAMESPACE = "chat-focus-list"
+#: The version of a stored list.
+LIST_VERSION = 1
+#: The cursor before the first item.
+BEFORE_FIRST = -1
+#: The most bytes of a stored list. A larger value is not written.
+LIST_MAX_BYTES = 4096
 
 #: The artifact-context key of the binding of ONE run:
 #: ``(run_id, org, session, member, item or None, RunFocus)``. Only the
@@ -303,6 +359,74 @@ def focus_of(owner: str, calls: Iterable[Mapping[str, Any]]) -> dict[str, str] |
     return items[0] if len(items) == 1 and not cleared else None
 
 
+# ── The last list (HRD-11b) ─────────────────────────────────────────────────
+
+
+def clean_list(raw: Any) -> dict[str, Any] | None:
+    """*raw* as ``{"kind", "ids", "cursor", "cut"}``, or None. THE check of a
+    list.
+
+    The kind must be one of :data:`KINDS`. Each id must pass
+    :func:`_valid_id`, and a bad id makes the whole list None. The ids are
+    different, at least one and at most :data:`LIST_MAX`. The cursor is
+    :data:`BEFORE_FIRST` or a place in the list. Any other key is dropped."""
+    if not isinstance(raw, Mapping):
+        return None
+    kind = raw.get("kind")
+    ids = raw.get("ids")
+    if not isinstance(kind, str) or kind not in KINDS or not isinstance(ids, list):
+        return None
+    out: list[str] = []
+    for value in ids:
+        fid = _valid_id(kind, value)
+        if not fid or fid in out:
+            return None
+        out.append(fid)
+    if not out or len(out) > LIST_MAX:
+        return None
+    cursor = raw.get("cursor", BEFORE_FIRST)
+    if isinstance(cursor, bool) or not isinstance(cursor, int):
+        return None
+    if not BEFORE_FIRST <= cursor < len(out):
+        return None
+    return {"kind": kind, "ids": out, "cursor": cursor, "cut": raw.get("cut") is True}
+
+
+def list_of(owner: str, call: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The list that one list read of *owner* printed, or None when *call* is
+    no list read that acted.
+
+    ``{"kind", "ids", "cursor", "cut"}`` with the cursor before the first
+    item. ``ids`` is empty when the result printed no id. Only the lines of
+    :data:`_LIST_LINES` count, and each id passes :func:`_valid_id`. A line
+    with a bad id is skipped."""
+    kind = LIST_TOOLS.get(str(call.get("name") or ""))
+    if kind is None or OWNERS.get(kind) != owner or not _acted(call):
+        return None
+    ids: list[str] = []
+    cut = False
+    for match in _LIST_LINES[kind].finditer(str(call.get("result") or "")):
+        fid = _valid_id(kind, match.group(1))
+        if not fid or fid in ids:
+            continue
+        if len(ids) == LIST_MAX:
+            cut = True
+            break
+        ids.append(fid)
+    return {"kind": kind, "ids": ids, "cursor": BEFORE_FIRST, "cut": cut}
+
+
+def next_of(listing: Any) -> tuple[int, str] | None:
+    """``(place, id)`` of the item after the cursor, or None at the end of
+    the list. The place counts from 1. It never goes back to the first
+    item."""
+    lst = clean_list(listing)
+    if lst is None:
+        return None
+    at = lst["cursor"] + 1
+    return (at + 1, lst["ids"][at]) if at < len(lst["ids"]) else None
+
+
 # ── The record of one run ───────────────────────────────────────────────────
 
 
@@ -314,11 +438,23 @@ class RunFocus:
     :attr:`lock` puts the decision and the Redis act of each write in one
     order, so calls in parallel always end in the same stored state."""
 
-    __slots__ = ("_guard", "_lock", "cleared", "items")
+    __slots__ = ("_guard", "_lock", "bound_list", "cleared", "items", "listing", "top")
 
-    def __init__(self) -> None:
+    def __init__(self, listing: Any = None) -> None:
         self.items: list[dict[str, str]] = []
         self.cleared = False
+        #: HRD-11b. The list that the run read at its start, for the block.
+        #: It does not change in the run.
+        self.bound_list: dict[str, Any] | None = clean_list(listing)
+        #: The list as the calls of this run left it, for the writes. It
+        #: holds the time of its list read under ``"at"``.
+        self.listing: dict[str, Any] | None = None
+        at = listing.get("at") if isinstance(listing, Mapping) else None
+        if self.bound_list is not None and isinstance(at, int) and not isinstance(at, bool):
+            self.listing = {**self.bound_list, "at": at}
+        #: The highest place of an item of :attr:`listing` that the calls of
+        #: this run named, or :data:`BEFORE_FIRST`.
+        self.top = BEFORE_FIRST
         self._guard = threading.Lock()
         self._lock: asyncio.Lock | None = None
 
@@ -343,6 +479,38 @@ class RunFocus:
                 return None
             return dict(self.items[0])
 
+    def note_list(self, owner: str, calls: list[Mapping[str, Any]]) -> str:
+        """Add the list reads and the items of some calls, in their order
+        (HRD-11b). Returns ``"save"`` when :attr:`listing` changed and must be
+        written, ``"drop"`` when the run read a list with no id, else ``""``.
+
+        A list read replaces the list and puts the cursor before the first
+        item. An item of the list moves the cursor to the highest place that
+        the calls of this run named."""
+        out = ""
+        with self._guard:
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    continue
+                read = list_of(owner, call)
+                if read is not None:
+                    self.top = BEFORE_FIRST
+                    self.listing = clean_list(read)
+                    if self.listing is not None:
+                        self.listing["at"] = int(_now())
+                    out = "save" if self.listing is not None else "drop"
+                    continue
+                item = _item_of(owner, call)
+                lst = self.listing
+                if item is None or lst is None or item["kind"] != lst["kind"]:
+                    continue
+                if item["id"] in lst["ids"]:
+                    self.top = max(self.top, lst["ids"].index(item["id"]))
+                    if lst["cursor"] != self.top:
+                        lst["cursor"] = self.top
+                        out = "save"
+            return out
+
 
 # ── The binding of a run ────────────────────────────────────────────────────
 
@@ -360,9 +528,14 @@ def _tenant() -> str:
 def binding(run_id: str, org: str, session: str, member: str,
             item: Any) -> dict[str, Any]:
     """The change of the run context that binds the item of ONE run, with a
-    new :class:`RunFocus`. Only the executor calls it, after its own gates."""
+    new :class:`RunFocus`. Only the executor calls it, after its own gates.
+
+    *item* is the record that :func:`read_record` gave. Its ``"list"`` key, if
+    any, is the last list of the chat (HRD-11b), and the :class:`RunFocus`
+    keeps it."""
+    listing = item.get("list") if isinstance(item, Mapping) else None
     return {FOCUS_KEY: (str(run_id), str(org), str(session),
-                        str(member).strip().lower(), clean_focus(item), RunFocus())}
+                        str(member).strip().lower(), clean_focus(item), RunFocus(listing))}
 
 
 def open_binding(ctx: Mapping[str, Any] | None) -> tuple[str, str, str] | None:
@@ -403,6 +576,17 @@ def bound_focus(ctx: Mapping[str, Any] | None, member: str) -> dict[str, str] | 
     if entry[3] != str(member or "").strip().lower():
         return None
     return clean_focus(entry[4])
+
+
+def bound_list(ctx: Mapping[str, Any] | None, member: str) -> dict[str, Any] | None:
+    """The last list that THIS run bound at its start, or None (HRD-11b).
+    The same gates as :func:`bound_focus`."""
+    if open_binding(ctx) is None or ctx is None:
+        return None
+    entry = ctx[FOCUS_KEY]
+    if entry[3] != str(member or "").strip().lower():
+        return None
+    return clean_list(entry[5].bound_list)
 
 
 # ── The store ───────────────────────────────────────────────────────────────
@@ -450,6 +634,113 @@ async def read_focus(org: str, session: str, member: str) -> dict[str, str] | No
     if not isinstance(stored, Mapping) or not _fresh(stored.get("at")):
         return None
     return clean_focus(stored)
+
+
+async def read_list(org: str, session: str, member: str) -> dict[str, Any] | None:
+    """The stored last list of this chat and member, or None (HRD-11b).
+    Never raises.
+
+    The same gates as :func:`read_focus`. The value read back passes
+    :func:`clean_list` again, and the time of its list read must be fresh
+    (:data:`FOCUS_FRESH_S`)."""
+    member = str(member or "").strip().lower()
+    if not (org and session and member) or str(org).lower() != _tenant().lower():
+        return None
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            raw = await asyncio.wait_for(
+                get_tenant_redis().get(key(LIST_NAMESPACE, session, _member_part(member))),
+                timeout=REDIS_TIMEOUT_S,
+            )
+    except Exception as exc:
+        _log.warning("chat_focus.list_read_failed", error=type(exc).__name__)
+        return None
+    if not raw or (isinstance(raw, (str, bytes)) and len(raw) > LIST_MAX_BYTES):
+        return None
+    try:
+        stored = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(stored, Mapping) or not _fresh(stored.get("at")):
+        return None
+    lst = clean_list(stored)
+    if lst is not None:
+        lst["at"] = int(stored["at"])
+    return lst
+
+
+async def read_record(org: str, session: str, member: str) -> dict[str, Any] | None:
+    """The record of this chat and member: the item, and the last list under
+    the key ``"list"`` (HRD-11b). None when neither is stored. Both reads run
+    at once. Never raises. The executor's early read calls it."""
+    item, listing = await asyncio.gather(
+        read_focus(org, session, member), read_list(org, session, member))
+    if item is None and listing is None:
+        return None
+    out: dict[str, Any] = dict(item or {})
+    if listing is not None:
+        out["list"] = listing
+    return out
+
+
+async def save_list(listing: Any, ctx: Mapping[str, Any] | None) -> bool:
+    """Keep *listing* as the last list of the chat of *ctx* (HRD-11b).
+
+    The value holds the time of its list read, the ``"at"`` of *listing*. A
+    move of the cursor keeps that time. The TTL is what is left of
+    :data:`FOCUS_FRESH_S`. Returns False when nothing was kept: no open
+    binding, a bad list, no time or an old one, a value over
+    :data:`LIST_MAX_BYTES`, or a Redis fault. Never raises."""
+    slot = open_binding(ctx)
+    lst = clean_list(listing)
+    if slot is None or lst is None:
+        return False
+    at = listing.get("at") if isinstance(listing, Mapping) else None
+    if isinstance(at, bool) or not isinstance(at, int):
+        return False
+    ttl = FOCUS_TTL_S - max(0, int(_now()) - at)
+    if ttl <= 0 or not _fresh(at):
+        return False
+    value = json.dumps({"v": LIST_VERSION, **lst, "at": at}, sort_keys=True)
+    if len(value) > LIST_MAX_BYTES:
+        return False
+    org, session, member = slot
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            await asyncio.wait_for(
+                get_tenant_redis().setex(
+                    key(LIST_NAMESPACE, session, _member_part(member)), ttl, value),
+                timeout=REDIS_TIMEOUT_S,
+            )
+    except Exception as exc:
+        _log.warning("chat_focus.list_write_failed", error=type(exc).__name__)
+        return False
+    return True
+
+
+async def drop_list(ctx: Mapping[str, Any] | None) -> bool:
+    """Delete the last list of the chat of *ctx* (HRD-11b). Returns False
+    when nothing was deleted. Never raises."""
+    slot = open_binding(ctx)
+    if slot is None:
+        return False
+    org, session, member = slot
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            await asyncio.wait_for(
+                get_tenant_redis().delete(key(LIST_NAMESPACE, session, _member_part(member))),
+                timeout=REDIS_TIMEOUT_S,
+            )
+    except Exception as exc:
+        _log.warning("chat_focus.list_drop_failed", error=type(exc).__name__)
+        return False
+    return True
 
 
 async def save_focus(item: Any, ctx: Mapping[str, Any] | None) -> bool:
@@ -514,11 +805,18 @@ async def record_calls(
     try:
         if open_binding(ctx) is None or ctx is None:
             return False
-        items, cleared = named_items(owner, list(calls))
-        if not items and not cleared:
-            return False
+        calls = list(calls)
+        items, cleared = named_items(owner, calls)
         run: RunFocus = ctx[FOCUS_KEY][5]
         async with run.lock:
+            # HRD-11b: the last list and its cursor, from the same calls.
+            act = run.note_list(owner, calls)
+            if act == "save":
+                await save_list(run.listing, ctx)
+            elif act == "drop":
+                await drop_list(ctx)
+            if not items and not cleared:
+                return False
             item = run.note(items, cleared)
             if item is None:
                 await drop_focus(ctx)
@@ -547,26 +845,76 @@ RULE_LINES: tuple[str, ...] = (
 )
 
 
-def orchestrator_block(item: Any) -> str:
+#: The heading of the list part of the block (HRD-11b).
+LIST_HEAD = "## The last list in this chat"
+#: The lines of the rule of "the next one", after the list lines.
+LIST_RULE_LINES: tuple[str, ...] = (
+    '"The next one" means the item on the "next" line.',
+    'Use the id on the "next" line. Do not guess an id.',
+    'When the "next" line says that no next item exists, say so. '
+    "Do not go back to the first item.",
+    "A list or an item that the member names wins over this list.",
+)
+
+
+def _list_lines(listing: Any) -> list[str]:
+    """The list part of the block, or ``[]``. The kind, the count, the place
+    of the cursor and the next item: ids and links only (HRD-11b)."""
+    lst = clean_list(listing)
+    if lst is None:
+        return []
+    kind, ids, cursor = lst["kind"], lst["ids"], lst["cursor"]
+    total = len(ids)
+    where = ("before the first item" if cursor == BEFORE_FIRST
+             else f"{cursor + 1} of {total}")
+    nxt = next_of(lst)
+    if nxt is not None:
+        place, fid = nxt
+        next_line = (f"- next: {place} of {total}, {ID_ARGS[kind]} {fid}, "
+                     f"in-app link {LINKS[kind].format(id=fid)}")
+    elif lst["cut"]:
+        next_line = (f"- next: no next item in the {total} items that this chat "
+                     "keeps. Read the list again for more.")
+    else:
+        next_line = f"- next: no next item. Item {total} of {total} is the end of the list."
+    return [
+        LIST_HEAD,
+        "The list that a tool of this chat read last, as ids in the order of "
+        "the tool result. It holds no titles.",
+        f"- kind: {kind}",
+        f"- items: {total}",
+        f"- position: {where}",
+        next_line,
+        *LIST_RULE_LINES,
+    ]
+
+
+def orchestrator_block(item: Any, listing: Any = None) -> str:
     """The block of the item for the orchestrator's per-turn context, or
     ``""``. Ids, the kind and the link only: no title and no text that a
-    member or a stranger wrote."""
+    member or a stranger wrote.
+
+    HRD-11b: *listing* is the last list of the chat. With a list, the block
+    adds its part after the item, or shows only that part when no item is
+    in focus. With no list, the text is the text of HRD-11a."""
+    lines: list[str] = []
     focus = clean_focus(item)
-    if focus is None:
-        return ""
-    kind, fid = focus["kind"], focus["id"]
-    return "\n".join([
-        BLOCK_HEAD,
-        "The email or task that a tool of this chat read or acted on last. "
-        "It is an id, not a title.",
-        f"- kind: {kind}",
-        f"- {ID_ARGS[kind]}: {fid}",
-        f"- in-app link: {LINKS[kind].format(id=fid)}",
-        *RULE_LINES,
-    ])
+    if focus is not None:
+        kind, fid = focus["kind"], focus["id"]
+        lines = [
+            BLOCK_HEAD,
+            "The email or task that a tool of this chat read or acted on last. "
+            "It is an id, not a title.",
+            f"- kind: {kind}",
+            f"- {ID_ARGS[kind]}: {fid}",
+            f"- in-app link: {LINKS[kind].format(id=fid)}",
+            *RULE_LINES,
+        ]
+    return "\n".join([*lines, *_list_lines(listing)])
 
 
 __all__ = [
+    "BEFORE_FIRST",
     "BLOCK_HEAD",
     "CLEARS",
     "EMAIL",
@@ -577,6 +925,13 @@ __all__ = [
     "ID_ARGS",
     "KINDS",
     "LINKS",
+    "LIST_HEAD",
+    "LIST_MAX",
+    "LIST_MAX_BYTES",
+    "LIST_NAMESPACE",
+    "LIST_RULE_LINES",
+    "LIST_TOOLS",
+    "LIST_VERSION",
     "NAMESPACE",
     "NO_ACT",
     "OWNERS",
@@ -587,14 +942,22 @@ __all__ = [
     "RunFocus",
     "binding",
     "bound_focus",
+    "bound_list",
     "clean_focus",
+    "clean_list",
     "drop_focus",
+    "drop_list",
     "focus_of",
     "focus_on",
+    "list_of",
     "named_items",
+    "next_of",
     "open_binding",
     "orchestrator_block",
     "read_focus",
+    "read_list",
+    "read_record",
     "record_calls",
     "save_focus",
+    "save_list",
 ]
