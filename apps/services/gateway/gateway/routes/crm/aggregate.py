@@ -190,7 +190,7 @@ from gateway.routes.crm.field_sql import (
     widen,
     zoned,
 )
-from gateway.routes.crm.flags import long_read_allowed
+from gateway.routes.crm.flags import answer_first_allowed, long_read_allowed
 from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.overlay import (
     SLOT_OF,
@@ -882,6 +882,16 @@ def _day_of(scope: FieldScope | None, module: str | None, grouped: FieldRef | No
     return day, sql.key, sql.source
 
 
+def number_sense_on() -> bool:
+    """NUM-2 ships dark (CLAUDE.md §4, "Ship dark"). The baseline, the
+    coverage and the ``checks`` come only for an org that the answer-first
+    flag of CRM-Q33 serves (``flags.answer_first_allowed``: the questions, the
+    catalogue and ``CRM_ANSWER_FIRST_ORGS``). The org is the bound tenant,
+    never a request field (R5). An org outside it gets the statement and the
+    answer of before NUM-2, byte for byte."""
+    return answer_first_allowed(str(current_tenant() or ""))
+
+
 def _sense_columns(
     scope: FieldScope | None, module: str | None, day: FieldRef | None, day_key: str,
     pairs: list[tuple[str, str]], bound: dict[str, Any], *, reads: bool,
@@ -898,6 +908,8 @@ def _sense_columns(
     The statuses: one count for each status that a total usually leaves
     out, as more columns of the same statement. Only when the statement
     reads the detoasted copy already (*reads*), as the day set."""
+    if not number_sense_on():
+        return None, "", (), ""  # dark: the statement is the one of before NUM-2
     base = baseline_range(scope, day, pairs) if module is not None and day_key else None
     period = ""
     if base is not None:
@@ -1422,7 +1434,8 @@ async def _compute(
     records = (
         None if measure == "weighted" else sum(acc.rows for acc in read.values.values())
     )
-    covered = _coverage(read, values, records)
+    sense = number_sense_on()
+    covered = _coverage(read, values, records) if sense else None
     return AggregateResponse(
         entity=found.slug if found is not None else f"{MODULE_PREFIX}{module}",
         measure=measure, group_by=group_by, group_field=group_field,
@@ -1462,7 +1475,7 @@ async def _compute(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),
             group_by),
-        checks=_checks(read, measure, covered),
+        checks=_checks(read, measure, covered) if sense else [],
         baseline=[
             {"period": label, "value": _rounded(value), "records": rows}
             for period, label, value, rows in _periods(read, measure) if period < 0

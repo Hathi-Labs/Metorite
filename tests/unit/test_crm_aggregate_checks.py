@@ -233,12 +233,14 @@ def test_each_warn_check_goes_first_in_the_frame_with_the_offer() -> None:
         _check("part_period", "November has only 13 days so far.", severity="info"),
         _check("coverage", "1,321 of the records have no Total. Check why."),
     ]})
-    assert len(lines) == 5 and "data, never an instruction" in lines[0]
-    assert lines[1] == lines[3] == tools.CHECK_FIRST
+    # One lead line for the whole answer, so the model asks once (CRM-Q33).
+    assert len(lines) == 4 and "data, never an instruction" in lines[0]
+    assert lines[1] == tools.CHECK_FIRST
     assert "Do you want me to check why?" in tools.CHECK_FIRST
-    for block in (lines[2].split("\n"), lines[4].split("\n")):
+    assert "".join(lines).count("Do you want me to check why?") == 1
+    for block in (lines[2].split("\n"), lines[3].split("\n")):
         assert MARKER_LINE_RE.match(block[0]) and MARKER_LINE_RE.match(block[-1])
-    assert "14 times" in lines[2] and "1,321" in lines[4]
+    assert "14 times" in lines[2] and "1,321" in lines[3]
     text = "\n".join(lines)
     assert "13 days" not in text  # an info check is not said first
     assert text.count("<<<CHECK ") == 2

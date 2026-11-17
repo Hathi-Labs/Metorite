@@ -95,10 +95,17 @@ def _dewin_october(org: str) -> list[dict[str, Any]]:
 
 
 @pytest.fixture
-def dewin(ns):
+def dewin(ns, monkeypatch):
     """Org A: DEWiN's October, and 6 calm months before it. Org B: 7 calm
     months, April to October. Both mirror Invoices, with fill rows for the
-    catalogue (it serves no org until a test turns it on)."""
+    catalogue. NUM-2 ships dark behind the answer-first flag of CRM-Q33
+    (``number_sense_on``), so the fixture turns that flag, the questions and
+    the catalogue on for both orgs. ``test_a_dark_org_gets_the_answer_of_before``
+    turns the flag off again."""
+    from acb_common import get_settings
+
+    for name in ("crm_catalogue_orgs", "crm_questions_orgs", "crm_answer_first_orgs"):
+        monkeypatch.setattr(get_settings(), name, "*", raising=False)
     a, b = ns.org_a, ns.org_b
     for org in (a, b):
         _mirror_org(ns, org, [_module("Invoices")])
@@ -326,3 +333,37 @@ async def test_the_drafts_are_a_coverage_check(dewin, app_engine, monkeypatch) -
                                 "statuses": {"draft": 40, "cancelled": 0}}
     [drafts] = body["checks"]
     assert (drafts["kind"], drafts["key"], drafts["records"]) == ("coverage", "status", 40)
+
+
+
+async def test_a_dark_org_gets_the_answer_of_before(dewin, app_engine, monkeypatch) -> None:
+    """Ship dark (CLAUDE.md section 4, owner flag review of task 3135). Outside
+    ``CRM_ANSWER_FIRST_ORGS`` an answer holds no baseline, no coverage and no
+    checks, and its figures are the ones of the flagged answer."""
+    from acb_common import get_settings
+
+    lit = await _agg(dewin, dewin.org_a, entity="module:Invoices", measure="sum",
+                     field=_AMOUNT, **_OCTOBER)
+    assert lit["checks"] and lit["baseline"] and lit["coverage"]
+    monkeypatch.setattr(get_settings(), "crm_answer_first_orgs", "", raising=False)
+    dark = await _agg(dewin, dewin.org_a, entity="module:Invoices", measure="sum",
+                      field=_AMOUNT, **_OCTOBER)
+    for key in ("checks", "baseline", "coverage"):
+        assert key not in dark, key
+    for key in ("total", "records", "values", "groups", "findings", "other", "omitted"):
+        assert dark.get(key) == lit.get(key), key
+
+
+async def test_the_boundary_days_belong_to_their_own_month(dewin, app_engine) -> None:
+    """Verifier F5. Records on 09-30, 10-01, 10-31 and 11-01: October counts
+    its own two and the baseline counts the September one, with and without
+    the baseline."""
+    a = dewin.org_a
+    rows = [_row(a, f"edge{i}", day, 1.0) for i, day in
+            enumerate(("2026-09-30", "2026-10-01", "2026-10-31", "2026-11-01"))]
+    with dewin.admin_engine.begin() as c:
+        c.execute(text(_INSERT), rows)
+    body = await _agg(dewin, a, entity="module:Invoices", measure="count", **_OCTOBER)
+    assert body["total"] == 1431 + 2  # the seeded October, and 10-01 and 10-31
+    september = {row["period"]: row["records"] for row in body["baseline"]}["2026-09"]
+    assert september == 100 + 1  # the seeded September, and 09-30

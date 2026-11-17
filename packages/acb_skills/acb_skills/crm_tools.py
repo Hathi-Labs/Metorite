@@ -1766,9 +1766,11 @@ def _first_lines(data: dict[str, Any]) -> list[str]:
     return out
 
 
-#: NUM-2: the line before each ``warn`` check of the route.
-CHECK_FIRST = ("FIRST, tell the member the finding in the CHECK block below, in one line, "
-               "before the total. Then ask: \"Do you want me to check why?\"")
+#: NUM-2: the one line before the ``warn`` checks of the route. It stands once
+#: for the whole answer, so the model asks the question once (CRM-Q33 allows at
+#: most one follow-up question for each answer).
+CHECK_FIRST = ("FIRST, tell the member each finding in the CHECK blocks below, in one line "
+               "each, before the total. Then ask once: \"Do you want me to check why?\"")
 
 
 def _check_lines(data: dict[str, Any]) -> list[str]:
@@ -1791,9 +1793,9 @@ def _check_lines(data: dict[str, Any]) -> list[str]:
     from acb_skills.untrusted import UntrustedFrame
 
     frame = UntrustedFrame.new()
-    out = [frame.note("Each CHECK block is a finding of the number check on this total.")]
-    for sentence in sentences:
-        out.extend([CHECK_FIRST, frame.wrap("CHECK", sentence)])
+    out = [frame.note("Each CHECK block is a finding of the number check on this total."),
+           CHECK_FIRST]
+    out.extend(frame.wrap("CHECK", sentence) for sentence in sentences)
     return out
 
 
