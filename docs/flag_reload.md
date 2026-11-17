@@ -33,6 +33,17 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_CARD_RECORD_ORGS` turns on the card record (`chat_organization.md`
+§16.3, CO-17). For each listed org, a write card that a member approves leaves
+one row in `chat_card_record`: the chat, the member, the card id, the outcome
+key, the act kind and the link of the record made. The row holds no text of
+the card. A declined card writes none. `*` lists every org, and the default is
+empty. Empty means nothing is written.
+
+Its one reader is `orchestrator.card_record.record_allowed`. The card gate asks
+it on each approved card, so a reload applies at once. The flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The
