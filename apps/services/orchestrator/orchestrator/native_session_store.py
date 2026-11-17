@@ -116,10 +116,18 @@ _CHAT_EXISTS_SQL = (
 _PARTICIPANTS_SQL = (
     "SELECT subject FROM chat_session_participant WHERE session_id = :tid"
 )
+#: Task 2948: the third column is true for a row that the gateway saved as a mid-run
+#: steer (``custom_events`` holds ``{"name": "steered"}``, ``routes/agent.py``
+#: ``_save_steered_prompt``). The run stores that steer INSIDE its own session
+#: (``SessionHistoryProvider``, task 2494), so the digests must not count it as a turn of
+#: its own: the save digest, taken when the run began, never held it.
 _ROWS_SQL = (
-    "SELECT role, content FROM chat_message WHERE session_id = :tid "
+    "SELECT role, content, "
+    "(role = 'user' AND COALESCE(custom_events @> CAST(:steer AS jsonb), false)) "
+    "FROM chat_message WHERE session_id = :tid "
     "AND role IN ('user', 'assistant') ORDER BY timestamp_ms ASC, id ASC"
 )
+_STEER_MARK = json.dumps([{"name": "steered"}])
 _STORED_SQL = (
     "SELECT session_json, transcript_digest, session_fingerprint "
     "FROM maf_agent_session WHERE organization_id = CAST(:org AS uuid) "
@@ -241,6 +249,9 @@ class LoadState:
     participants: list[str] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
     stored: StoredRow | None = None
+    #: Task 2948: the same rows less the steer rows. ``None`` means "no row is a steer"
+    #: (a reader that does not know the mark), and the digests then read ``rows``.
+    digest_rows: list[Row] | None = None
 
 
 @dataclass
@@ -425,9 +436,9 @@ def read_state(organization_id: str, thread_id: str, agent_name: str) -> LoadSta
         participants = [
             str(r[0]) for r in s.execute(text(_PARTICIPANTS_SQL), {"tid": thread_id})
         ]
-        rows = server_rows(
-            [(r[0], r[1]) for r in s.execute(text(_ROWS_SQL), {"tid": thread_id})]
-        )
+        raw = list(s.execute(text(_ROWS_SQL), {"tid": thread_id, "steer": _STEER_MARK}))
+        rows = server_rows([(r[0], r[1]) for r in raw])
+        digest_rows = server_rows([(r[0], r[1]) for r in raw if not r[2]])
         found = s.execute(
             text(_STORED_SQL),
             {"org": organization_id, "tid": thread_id, "agent": agent_name},
@@ -440,7 +451,7 @@ def read_state(organization_id: str, thread_id: str, agent_name: str) -> LoadSta
         stored = StoredRow(dict(body), str(found[1]), str(found[2]))
     return LoadState(
         chat_exists=True, session_user=str(chat[0] or ""),
-        participants=participants, rows=rows, stored=stored,
+        participants=participants, rows=rows, stored=stored, digest_rows=digest_rows,
     )
 
 
@@ -569,6 +580,7 @@ def _log_outcome(
 
 def _decide(
     state: LoadState, *, covered: Sequence[Row], fingerprint: str, browser_history: Any,
+    browser_covered: Sequence[Row] | None = None,
 ) -> tuple[str, str]:
     """(outcome, reason) of one load, before the restore."""
     stored = state.stored
@@ -580,7 +592,8 @@ def _decide(
         return DIGEST_DROP, "resume_stale"
     if stored.transcript_digest != transcript_digest(covered):
         return DIGEST_DROP, "transcript"
-    if not browser_agrees(browser_history, covered):
+    # The browser shows each steer as a user turn, so its check reads the rows WITH them.
+    if not browser_agrees(browser_history, covered if browser_covered is None else browser_covered):
         return DIGEST_DROP, "browser_dropped_turn"
     return HIT, ""
 
@@ -625,8 +638,11 @@ async def begin_turn(
                      reason="shared_room")
         return None
 
-    prior = rows_before_turn(state.rows, current_message)
+    # Task 2948: the digests skip the rows of a mid-run steer. The browser check does not.
+    prior = rows_before_turn(
+        state.digest_rows if state.digest_rows is not None else state.rows, current_message)
     covered = covered_rows(prior)
+    browser_covered = covered_rows(rows_before_turn(state.rows, current_message))
     try:
         fingerprint = session_fingerprint(
             members=room_members(state.participants, state.session_user),
@@ -639,6 +655,7 @@ async def begin_turn(
         return None
     outcome, reason = _decide(
         state, covered=covered, fingerprint=fingerprint, browser_history=browser_history,
+        browser_covered=browser_covered,
     )
     session = AgentSession()
     extra: dict[str, Any] = {}
