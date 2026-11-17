@@ -6019,6 +6019,46 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     return refs
 
 
+def _chat_file_refs(attachments: list[str] | None) -> list[str]:
+    """Each bare path of a file of a chat folder, as the ``artifact:`` ref
+    of that file (task 3598).
+
+    ``make_document`` and ``write_artifact`` give the path
+    ``outputs/<thread slug>/<file>``. The gateway takes such a file only as
+    ``artifact:<agent>:<path>``, the one form that pins a digest of the bytes
+    that the card showed. So the tool writes the ref, with the agent of the
+    chat that holds the folder: ``write_artifact._destination``, which gives
+    the chat at the top for a delegated run. The gateway still checks the
+    room and the digest, and still refuses a bare path. With no bound run,
+    nothing changes. ``agent_paths.thread_file_parts`` is the one shape
+    rule, and any other spec stays as it is."""
+    if not attachments:
+        return attachments
+    try:
+        import importlib
+
+        from acb_skills.agent_paths import thread_file_parts
+
+        # The package exports the tool under the module's own name, so the
+        # module comes through importlib, as ``acb_skills.documents`` does.
+        wa = importlib.import_module("acb_skills.write_artifact")
+    except ImportError:
+        return attachments
+    agent = str(wa._destination(wa.artifact_context())[0].get("agent_name") or "").strip()
+    if not agent or ":" in agent:
+        return attachments
+    out: list[str] = []
+    for item in attachments:
+        s = str(item or "").strip()
+        head = s.split(":", 1)[0]
+        named = ":" in s and "/" not in head and "\\" not in head
+        if s and not named and thread_file_parts(s) is not None:
+            out.append(f"artifact:{agent}:{s}")
+        else:
+            out.append(item)
+    return out if out != list(attachments) else attachments
+
+
 # ── A file of a send resolves before its card (task 2491) ───────────────────
 #
 # Defect of 2026-11-09: a chat upload went to send_email, the member approved
@@ -6396,12 +6436,16 @@ async def send_email(
             ``"knowledge:<page id>"`` (a Knowledge page, as its Markdown), or
             ``"task-file:<attachment id>"`` (a file on a task). The server
             checks that the member can see each one, and the card names each
-            file with its size.
+            file with its size. To attach a file that this chat made, name it
+            as ``"artifact:orchestrator:<path>"``. Use the exact path that
+            make_document or write_artifact gave.
     """
     if _held_card_mode():
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
                                     bcc=bcc, reply_to_email_id=reply_to_email_id,
                                     attachments=attachments, reply_all=reply_all)
+    # Task 3598: a bare path of a file of this chat goes as its artifact ref.
+    attachments = _chat_file_refs(attachments)
     to = list(to or [])
     cc = list(cc or [])
     reply_notices: list[str] = []

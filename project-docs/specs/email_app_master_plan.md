@@ -22072,8 +22072,16 @@ already see. Three stores own such a file. Each reference names its store.
     only that ref pins a digest.** A room member or a container of the chat
     can change the file after the card. Then the digest no longer matches,
     and the send answers 409 with nothing sent. The bare path and the
-    `<agent>:<path>` form carry no digest, so they refuse a chat file with
-    422, as before this task.
+    `<agent>:<path>` form carry no digest, so the gateway refuses a chat file
+    in them with 422, as before this task.
+  - The model often passes the bare path that `make_document` gave. So
+    `send_email` writes the artifact ref for it (`agents._chat_file_refs`).
+    The agent of the ref is the chat that holds the folder
+    (`write_artifact._destination`, the chat at the top for a delegated run).
+    The ref then goes through the digest door like any other. A held chat
+    and a run with no bound context keep the bare path, and it is refused.
+    `agent_paths.thread_file_parts` is the one shape rule, for the tool and
+    the gateway.
   - For an artifact ref, `send.resolve_artifact_path` reads the member's own
     folder first. With no file there, `workspace._chat_thread_file` reads the
     chat folder of the path. The member must have `can_send` in that chat
@@ -22081,9 +22089,9 @@ already see. Three stores own such a file. Each reference names its store.
     a reader of an org chat, a member who left and a chat with no row get
     422. A failed lookup gets 503.
   - The tenant dir comes from the member's session, never from the request.
-    The file opens with no link at any depth, up to the cap of a send. The
-    held card takes no chat file, because a held run can write the folder of
-    its own chat.
+    The file opens with no link at any depth. The read takes at most one byte
+    over the cap of a send, and a larger file gets 422. The held card takes
+    no chat file, because a held run can write the folder of its own chat.
   - A path that names no chat folder, such as `x.pdf`, stays refused. Open: a
     bare file name does not find the folder of the current chat.
 

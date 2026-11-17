@@ -109,7 +109,7 @@ def _artifact_refused(agent: str, rel: str) -> HTTPException:
 
 
 def _resolve_artifact(
-    ref: ArtifactAttachment, user_email: str | None,
+    ref: ArtifactAttachment, user_email: str | None, *,
     organization_id: str | None, chat_files: bool,
 ) -> tuple[Path, tuple[Path, str] | None]:
     """The path of one ref, and ``(tenant dir, path)`` when the file is in a
@@ -148,24 +148,31 @@ def _read_chat_file(ref: ArtifactAttachment, chat: tuple[Path, str]) -> bytes:
     A container can write a chat folder, so a link at any depth, or a file
     that went away after the check, fails the send with the 422 of
     :func:`_artifact_refused`. A file over the cap of a held send
-    (``held_card.MAX_FILES_BYTES``) answers 422 before its bytes are read, and
-    the read stops at that cap too."""
+    (``held_card.MAX_FILES_BYTES``) answers 422. The read takes at most one
+    byte over the cap, so a file that grows after the size check is refused
+    too, and memory never holds more than the cap and one byte."""
+    import os
+
     from acb_skills import safe_open
     from gateway.routes.email.automation.held_card import MAX_FILES_BYTES
 
     agent = (ref.agent or "email-assistant").strip() or "email-assistant"
     rel = (ref.path or "").strip()
+    too_large = HTTPException(status_code=422, detail=(
+        f"The attachment '{rel[:200]}' is larger than "
+        f"{MAX_FILES_BYTES // (1024 * 1024)} MB, so nothing was sent."))
     try:
-        st = safe_open.stat_file(*chat)
-        if st is not None and st.st_size > MAX_FILES_BYTES:
-            raise HTTPException(status_code=422, detail=(
-                f"The attachment '{rel[:200]}' is larger than "
-                f"{MAX_FILES_BYTES // (1024 * 1024)} MB, so nothing was sent."))
-        got = safe_open.read_bytes(*chat, limit=MAX_FILES_BYTES)
+        fh = safe_open.open_read(*chat)
+        if fh is None:
+            raise _artifact_refused(agent, rel)
+        with fh:
+            if os.fstat(fh.fileno()).st_size > MAX_FILES_BYTES:
+                raise too_large
+            got = fh.read(MAX_FILES_BYTES + 1)
     except (safe_open.UnsafePath, OSError):
-        got = None
-    if got is None:
-        raise _artifact_refused(agent, rel)
+        raise _artifact_refused(agent, rel) from None
+    if len(got) > MAX_FILES_BYTES:
+        raise too_large
     return got
 
 
@@ -205,7 +212,8 @@ def resolve_artifact_path(
     so the check and the send keep one rule. Fences:
     ``tests/unit/test_email_files_before_card.py``,
     ``tests/unit/test_email_attach_shared_agent.py``."""
-    return _resolve_artifact(ref, user_email, organization_id, chat_files)[0]
+    return _resolve_artifact(
+        ref, user_email, organization_id=organization_id, chat_files=chat_files)[0]
 
 
 def refused_artifacts(
@@ -248,7 +256,8 @@ def load_artifact_attachments(
 
     out: list[dict] = []
     for ref in refs:
-        full, chat = _resolve_artifact(ref, user_email, organization_id, chat_files)
+        full, chat = _resolve_artifact(
+            ref, user_email, organization_id=organization_id, chat_files=chat_files)
         content = full.read_bytes() if chat is None else _read_chat_file(ref, chat)
         mime, _ = mimetypes.guess_type(full.name)
         out.append({

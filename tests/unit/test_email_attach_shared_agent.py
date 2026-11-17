@@ -41,7 +41,14 @@ Mutations this suite catches (R7):
   ``test_a_path_out_of_a_chat_folder_is_refused`` goes red;
 * the send route turns ``chat_files`` on for ``artifacts``:
   ``test_the_bare_and_agent_path_forms_refuse_a_chat_file`` and
-  ``test_only_the_artifact_door_takes_a_chat_file`` go red.
+  ``test_only_the_artifact_door_takes_a_chat_file`` go red;
+* a call that passes ``**{"chat_files": True}``:
+  ``test_only_the_artifact_door_takes_a_chat_file`` goes red;
+* the email tool drops its rewrite of a bare chat path
+  (``agents._chat_file_refs``):
+  ``test_a_bare_make_document_path_sends_through_the_digest_door`` goes red;
+* the rewrite takes the run's own agent, not the chat that holds the folder:
+  ``test_a_delegated_run_names_the_agent_of_the_chat_at_the_top`` goes red.
 
 Run::
 
@@ -657,28 +664,125 @@ def _calls(name: str) -> list[tuple[str, ast.Call]]:
 
 
 def test_only_the_artifact_door_takes_a_chat_file() -> None:
-    """Review P1 of 209adc111. Only ``metorite_files._artifact`` passes
-    ``chat_files``, and it passes ``not held`` with ``user.organization_id``.
-    No other caller of the resolver passes ``chat_files``, so the bare and
-    the ``<agent>:<path>`` forms keep the default, off. ``_chat_thread_file``
-    has one caller. Mutation: the send route passes ``chat_files=True`` →
-    red."""
+    """Review P1 of 209adc111, and P2 of 567049def.
+
+    * Only ``metorite_files._artifact`` passes ``chat_files`` to a public
+      resolver, and it passes ``not held`` with ``user.organization_id``.
+    * ``_resolve_artifact`` takes ``chat_files`` as a keyword only, and its
+      only callers are the two public resolvers, which pass their own value.
+    * No call of the three names passes ``*`` or ``**``, so no hidden
+      ``chat_files`` can reach them.
+    * The public resolvers default ``chat_files`` to off, and
+      ``_chat_thread_file`` has one caller.
+
+    Mutations: the send route passes ``chat_files=True``, or
+    ``**{"chat_files": True}`` → red."""
+    import inspect
+
     door = "apps/services/gateway/gateway/routes/email/transport/metorite_files.py"
+    home = "apps/services/gateway/gateway/routes/email/transport/send.py"
     on: list[str] = []
-    for name in ("load_artifact_attachments", "resolve_artifact_path"):
+    for name in ("load_artifact_attachments", "resolve_artifact_path", "_resolve_artifact"):
         for rel, call in _calls(name):
+            where = f"{rel}:{call.lineno} {name}"
+            assert all(k.arg is not None for k in call.keywords), f"{where} passes **"
+            assert not any(isinstance(a, ast.Starred) for a in call.args), f"{where} passes *"
             kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
+            if name == "_resolve_artifact":
+                assert rel == home, where
+                assert kw.get("chat_files") == "chat_files", where
+                assert kw.get("organization_id") == "organization_id", where
+                continue
             if "chat_files" in kw:
-                on.append(f"{rel}:{call.lineno}")
-                assert rel == door, f"{rel}:{call.lineno} turns chat files on"
+                on.append(where)
+                assert rel == door, f"{where} turns chat files on"
                 assert kw["chat_files"] == "not held"
                 assert kw.get("organization_id") == "user.organization_id"
     assert len(on) == 1, on
     users = [rel for rel, _c in _calls("_chat_thread_file")]
-    assert users == ["apps/services/gateway/gateway/routes/email/transport/send.py"], users
+    assert users == [home], users
     for name in ("resolve_artifact_path", "load_artifact_attachments"):
         default = send.__dict__[name].__kwdefaults__["chat_files"]
         assert default is False, name
+    param = inspect.signature(send._resolve_artifact).parameters["chat_files"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty
+
+
+async def test_a_draft_save_refuses_a_bare_chat_path(disk, monkeypatch) -> None:
+    """``PUT /email/drafts`` (``upsert_draft``) resolves ``artifacts`` with
+    chat files off, so a bare or ``<agent>:<path>`` chat file is a 422, and
+    no provider draft is written. The Save draft of the new-mail card hands
+    the recorded files to this route (the next test)."""
+    from gateway.routes.email.automation import drafting as dr
+
+    provider_calls: list[str] = []
+
+    class _Provider:
+        def __getattr__(self, name: str) -> Any:
+            async def call(*_a: Any, **_k: Any) -> Any:
+                provider_calls.append(name)
+                return "pm-1"
+            return call
+
+    @asynccontextmanager
+    async def _session() -> AsyncIterator[Any]:
+        yield SimpleNamespace()
+
+    @asynccontextmanager
+    async def _provider_session(*_a: Any, **_k: Any) -> AsyncIterator[Any]:
+        yield SimpleNamespace(provider=_Provider())
+
+    async def nothing(*_a: Any, **_k: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(dr, "_tenant_session", _session)
+    monkeypatch.setattr(dr, "_assert_account_owner", nothing)
+    monkeypatch.setattr(dr, "_account_signature", nothing)
+    monkeypatch.setattr(dr, "provider_session", _provider_session)
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    for ref in ({"path": rel}, {"agent": "orchestrator", "path": rel}):
+        req = dr.DraftUpsertRequest(account_id=F.BOX, to=[F.KNOWN], subject="Report",
+                                    body="The report.", artifacts=[ref], from_chat=True)
+        with pytest.raises(HTTPException) as exc:
+            await dr.upsert_draft(req, _user(ALICE, ORG_A))
+        assert exc.value.status_code == 422, ref
+    assert provider_calls == []
+
+
+async def test_the_new_mail_card_save_hands_the_recorded_bare_path_on(
+    disk, monkeypatch,
+) -> None:
+    """The Save draft act of the new-mail card passes the RECORDED
+    ``artifacts`` to ``upsert_draft`` unchanged, so the refusal above holds
+    on that path too. A chat file goes on a card only as an artifact ref."""
+    from gateway.routes.email.automation import drafting
+    from gateway.routes.email.automation import held_card as hc
+    from gateway.routes.email.automation import new_mail_card as nm
+
+    from tests.unit.test_email_new_mail_card import _act, _answer, _card, edit_card
+
+    F.flag_on(monkeypatch)
+    edit_card(monkeypatch, "*")
+    monkeypatch.setattr(nm, "ANSWER_WAIT_S", 0.0)
+    F.install_redis(monkeypatch)
+    F.install_db(monkeypatch)
+    F.install_sends(monkeypatch)
+    monkeypatch.setattr(nm, "_tenant_session", hc._tenant_session)
+    monkeypatch.setattr(nm, "resolve_self", hc.resolve_self)
+    saves: list[Any] = []
+
+    async def upsert(req: Any, user: Any) -> dict[str, Any]:
+        saves.append(req)
+        return {"id": "draft-new-1"}
+
+    monkeypatch.setattr(drafting, "upsert_draft", upsert)
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    card = await _card(artifacts=[{"path": rel}])
+    await _act(card["card_id"], _answer(action="save"))
+    [req] = saves
+    assert [a.path for a in req.artifacts] == [rel] and not req.attachments
+    assert send.refused_artifacts(list(req.artifacts), F.MEMBER) == [rel]
 
 
 # ── the agent tool: the failing turn, end to end ────────────────────────────
@@ -697,6 +801,7 @@ def tool(monkeypatch, disk, routes) -> dict[str, Any]:
 
     async def post(path: str, body: dict[str, Any] | None = None, **_k: Any) -> Any:
         state["posts"].append(path)
+        state.setdefault("bodies", []).append((path, dict(body or {})))
         try:
             if path == "/email/metorite-files/resolve":
                 return await mf.resolve_metorite_files_route(
@@ -750,12 +855,87 @@ async def test_the_failing_turn_sends_the_file_by_its_artifact_ref(tool, disk) -
     assert att["content"] == b"%PDF-DEEP" and att["filename"] == "deep.pdf"
 
 
+def _bind_run(disk: _Disk, agent: str, **extra: Any) -> None:
+    """Bind the artifact context of a chat run, as the executor binds it."""
+    from acb_skills.write_artifact import bind_artifact_context
+
+    bind_artifact_context(session_id=disk.s_alice, agent_name=agent,
+                          workspace_root=str(disk.a), **extra)
+
+
+async def test_a_bare_make_document_path_sends_through_the_digest_door(tool, disk) -> None:
+    """Opus round 2, P1: the model passes the path that ``make_document``
+    gave, in the bare form. The tool writes the artifact ref of the chat
+    that holds the folder, so the card and the send check its digest, and
+    the file goes. ``/email/send`` carries no ``artifacts``.
+    Mutation: drop ``_chat_file_refs`` → "Not sent." → red."""
+    from acb_skills.write_artifact import artifact_context_scope
+
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    with artifact_context_scope():
+        _bind_run(disk, "orchestrator")
+        out = await agents.send_email(F.BOX, body="The report is attached.", to=[F.KNOWN],
+                                      subject="Report", attachments=[rel])
+    assert out.startswith("Sent email to"), out
+    [sent] = [b for p, b in tool["bodies"] if p == "/email/send"]
+    assert "artifacts" not in sent
+    assert [m["ref"] for m in sent["metorite_files"]] == [f"artifact:orchestrator:{rel}"]
+    [[att]] = tool["sent"]
+    assert att["content"] == b"%PDF-DEEP"
+
+
+async def test_a_delegated_run_names_the_agent_of_the_chat_at_the_top(tool, disk) -> None:
+    """A sub-run of the email assistant carries the chat at the top in
+    ``deliver_to``. The ref names that chat's agent, never the sub-run's own.
+    Mutation: read the run's own ``agent_name`` → red."""
+    from acb_skills.write_artifact import DELIVER_TO, artifact_context_scope
+
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    top = {"workspace_root": str(disk.a), "session_id": disk.s_alice,
+           "agent_name": "orchestrator", "instance": ""}
+    with artifact_context_scope():
+        _bind_run(disk, "email-assistant", **{DELIVER_TO: top})
+        out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
+                                      attachments=[rel])
+    assert out.startswith("Sent email to"), out
+    [sent] = [b for p, b in tool["bodies"] if p == "/email/send"]
+    assert [m["ref"] for m in sent["metorite_files"]] == [f"artifact:orchestrator:{rel}"]
+
+
+async def test_the_rewrite_reaches_the_new_mail_card_and_keeps_other_files(
+    tool, disk, monkeypatch,
+) -> None:
+    """The one email card gets the ref too. A path of no chat folder, a named
+    ``<agent>:<path>`` and a Metorite ref stay as the model wrote them."""
+    from acb_skills.write_artifact import artifact_context_scope
+
+    seen: dict[str, Any] = {}
+
+    async def card(*_a: Any, **kw: Any) -> str:
+        seen.update(kw)
+        return "To kim"
+
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: True)
+    monkeypatch.setattr(agents, "_new_mail_card", card)
+    rel = disk.rel(disk.s_alice, "q3/deep.pdf")
+    keep = ["outputs/quote.md", f"orchestrator:{rel}", "knowledge:x"]
+    assert agents._chat_file_refs([rel, *keep]) == [rel, *keep]  # no bound run
+    with artifact_context_scope():
+        _bind_run(disk, "orchestrator")
+        assert agents._chat_file_refs([rel, *keep]) == [f"artifact:orchestrator:{rel}", *keep]
+        assert agents._chat_file_refs(None) is None
+        await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",
+                                attachments=[rel])
+    assert seen["attachments"] == [f"artifact:orchestrator:{rel}"]
+
+
 @pytest.mark.parametrize("form", ["bare", "agent-path"])
 async def test_the_bare_and_agent_path_forms_of_a_chat_file_show_no_card(
     tool, disk, form,
 ) -> None:
-    """These forms pin no digest, so a chat file is refused before any card,
-    and nothing goes."""
+    """With no bound run (so no chat folder to name), these forms pin no
+    digest. A chat file is refused before any card, and nothing goes. The
+    ``<agent>:<path>`` form is never rewritten."""
     rel = disk.rel(disk.s_alice, "q3/deep.pdf")
     name = rel if form == "bare" else f"orchestrator:{rel}"
     out = await agents.send_email(F.BOX, body="x", to=[F.KNOWN], subject="R",

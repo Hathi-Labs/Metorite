@@ -1022,26 +1022,15 @@ def _chat_path_parts(rel: str) -> tuple[list[str], str] | None:
     """The parts of ``<inputs|outputs>/<thread slug>/<file>`` and the chat id
     that the slug names, else ``None`` (task 3598).
 
-    A loose file, a path with a ``..`` or ``.`` part, an absolute path, a
-    blocked name and a path form that a case-blind disk folds give ``None``. The slug must be the exact slug of its id
-    (``agent_paths.thread_slug``), so one slug names one chat."""
-    from acb_skills import safe_open
-    from acb_skills.agent_paths import THREAD_HEADS, is_thread_slug, thread_slug
+    The shape is the one rule of ``agent_paths.thread_file_parts``. Here a
+    blocked name and a path form that a case-blind disk folds give ``None``
+    too."""
+    from acb_skills.agent_paths import thread_file_parts
 
     clean = str(rel or "").replace("\\", "/")
     if _odd_name_form(clean) or _is_blocked_path(clean):
         return None
-    try:
-        parts = safe_open.split_rel(clean)
-    except safe_open.UnsafePath:
-        return None
-    if len(parts) < 3 or parts[0] not in THREAD_HEADS or not is_thread_slug(parts[1]):
-        return None
-    session_id = parts[1].rsplit("-", 1)[0]
-    try:
-        return (parts, session_id) if thread_slug(session_id) == parts[1] else None
-    except ValueError:
-        return None
+    return thread_file_parts(clean)
 
 
 def _chat_thread_file(
