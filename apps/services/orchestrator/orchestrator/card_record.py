@@ -34,7 +34,7 @@ none. The member purge deletes the rows of a leaver
 **Best effort.** The record never costs a card its answer. :func:`record_approved`
 and :func:`set_link` return False on any fault, and log the type only.
 
-**The sent-mail record (task 3594, migration 458).** A send tool sets the
+**The sent-mail record (task 3594, migration 460).** A send tool sets the
 provider id, the approved addresses and the time on the row of its card, once,
 after the mail went (:func:`set_sent`). The run context of each later turn
 states the last 5 sent acts of the chat (:func:`sent_acts`,
@@ -204,7 +204,7 @@ def update_message_id(organization_id: str, *, session_id: str, member: str,
         return bool(res.rowcount)
 
 
-# ── The sent-mail record (task 3594, migration 458) ─────────────────────────
+# ── The sent-mail record (task 3594, migration 460) ─────────────────────────
 #
 # Run a8ad07f3 (2026-11-16): turn 1 sent a mail after an approved card. Turn 2
 # did not see that tool result, called send_email again, and then told the
@@ -218,7 +218,7 @@ def update_message_id(organization_id: str, *, session_id: str, member: str,
 _RECIPIENT = re.compile(
     r"^[a-z0-9._%+-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+$")
 _RECIPIENT_MAX_LEN = 254
-#: The most addresses that one row keeps (the CHECK of migration 458).
+#: The most addresses that one row keeps (the CHECK of migration 460).
 RECIPIENTS_MAX = 50
 #: The most sent acts that the run context names.
 SENT_ACTS_MAX = 5

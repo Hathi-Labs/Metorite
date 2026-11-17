@@ -148,7 +148,7 @@ def test_1_the_table_has_its_checks_and_force_rls(db) -> None:
             "SELECT qual, with_check FROM pg_policies "
             "WHERE tablename = 'chat_card_record'")).first()
     # No column can hold a title, a detail, a body or a tool output. Task 3594
-    # (migration 458) adds the approved addresses and the time of a send.
+    # (migration 460) adds the approved addresses and the time of a send.
     assert set(cols) == {"organization_id", "id", "session_id", "member_email",
                          "request_id", "outcome_key", "act_kind", "record_link", "message_id",
                          "recipients", "sent_at", "created_at"}
