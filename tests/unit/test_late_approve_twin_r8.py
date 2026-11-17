@@ -28,7 +28,11 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text  # noqa: E402
 
-from tests.unit.test_h3_rls_promotion_rehearsal import _DB_GATE  # noqa: E402
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: E402, F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
 from tests.unit.test_pending_ask_store import (  # noqa: E402, F401
     _ALICE,
     _CAROL,
@@ -37,6 +41,20 @@ from tests.unit.test_pending_ask_store import (  # noqa: E402, F401
 )
 
 pytestmark = _DB_GATE
+
+@pytest.fixture(autouse=True)
+def _clean_rows(world):
+    """The ladder database is shared by the tests of a run: each test starts
+    with no row of these members, so an old twin never answers for a new one."""
+    def wipe() -> None:
+        with world.admin_engine.begin() as c:
+            c.execute(text(
+                "DELETE FROM chat_pending_ask WHERE actor_email = ANY(:who)"),
+                {"who": [_ALICE, _CAROL, "dan@pa-a.test"]})
+    wipe()
+    yield
+    wipe()
+
 
 _TITLE, _DETAIL, _CONTEXT = "Move Neuropeak to Won?", "one deal", "stage: Won"
 
