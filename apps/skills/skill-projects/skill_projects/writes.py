@@ -315,8 +315,10 @@ def _bind_card_facts(**facts: Any) -> None:
     """Bind ids that the next card does not show (WS-47 WAC-4).
 
     ``acb_skills.whatsapp_acts.card_facts``: a stored WhatsApp act matches at
-    Confirm only when these ids match too. Outside a WhatsApp act it does
-    nothing, and the card the member sees never changes.
+    Confirm only when these ids match too. The facts also go into the text
+    that a late approve (HRD-22) and a stored call (RESUME-2a) match on, so
+    a replay of a card whose facts changed gets no grant. The card that the
+    member sees never changes.
     """
     try:
         from acb_skills.whatsapp_acts import card_facts
