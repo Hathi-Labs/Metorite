@@ -68,7 +68,8 @@ def test_only_per_org_and_mode_flags_reload() -> None:
         assert fr.reloadable(key), key
     for key in ("DATABASE_URL", "PGPASSWORD", "PGSSLMODE", "CALENDAR_REMINDERS",
                 "JOB_QUEUE", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE", "DB_POOL_SIZE",
-                "EMAIL_SYNC_ENABLED", "TOOL_RESULT_SPILL", "GATEWAY_INTERNAL_TOKEN"):
+                "EMAIL_SYNC_ENABLED", "TOOL_RESULT_SPILL", "GATEWAY_INTERNAL_TOKEN",
+                "FIND_CLAIM_CHECK"):
         assert not fr.reloadable(key), key
 
 
