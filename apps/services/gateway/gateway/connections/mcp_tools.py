@@ -892,12 +892,18 @@ async def fresh_tool_list(org: str, meta: Any, load: Callable[[], Awaitable[Any]
 
 def _class_a_item(listed: ToolList, meta: Any, tool: str) -> None:
     """Refuse unless *tool* is class A in the list *listed* of the server
-    *meta*, and the permission gate of the run asks no card for it.
+    *meta*, its hints show a read, and its server is not set to always
+    confirm.
 
     The class is the one class rule (``mcp_actions.mcp_tool_class``) on the
     list, never the label of the catalog. A duplicate name takes the
-    stricter item (``unique_tools``). Then the gate seam
-    ``mcp_needs_confirmation`` runs on the same hints, at run time."""
+    stricter item (``unique_tools``). Then the seam
+    ``mcp_needs_confirmation`` runs on the same hints, at run time.
+
+    MCP-NC1 (task 3603): the gate of a member's run no longer asks a card
+    for a tool that can write. A preview sends nothing (I11), so this check
+    stays stricter than the gate and still refuses each tool whose hints do
+    not show a read. The code :data:`LIVE_NEEDS_CARD` keeps its name."""
     item = next((t for t in mcp_actions.unique_tools(listed.tools) if t.get("name") == tool), None)
     if item is None:
         raise LiveRefused(LIVE_NO_TOOL)

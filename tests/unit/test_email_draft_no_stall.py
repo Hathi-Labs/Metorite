@@ -329,6 +329,44 @@ async def test_a_model_error_reaches_the_route_as_an_error_with_copy(
         "a model error became the stock template")
 
 
+async def test_a_routed_draft_reaches_the_composer_word_by_word(monkeypatch) -> None:
+    """Task 3542, end to end through the real ``_compose_assist_run`` and the
+    real ``acompletion_stream_text``, with routing on. The Router's stream
+    reaches the composer as one ``delta`` event for each frame, before
+    ``done``. Task 3541 sent the whole answer as one delta."""
+    from acb_auth import console_resolve
+    from acb_common.settings import get_settings
+
+    monkeypatch.setenv("ROUTER_SERVING_ENABLED", "1")
+    monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "https://console.test")
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", "cc_live_fixture_notarealsecret")
+    get_settings.cache_clear()
+    pieces = ("Hi Alice,", " the pricing", " is attached.")
+
+    async def router_stream(_payload: dict[str, Any], **_kw: Any):
+        for text in pieces:
+            yield b"data: " + json.dumps({"model": "m", "choices": [
+                {"index": 0, "delta": {"content": text}}]}).encode("utf-8") + b"\n\n"
+        yield b"data: [DONE]\n\n"
+
+    monkeypatch.setattr(console_resolve, "stream_completion_on_console", router_stream)
+    spy = _Spy()
+    _wire_real_run(monkeypatch, spy, AsyncMock(return_value="unused"))
+    ctx = dict(_EMAIL, thread_id="", self="me@a.test", self_label="")
+    monkeypatch.setattr(drafting, "_build_reply_context", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(drafting, "_orchestrate_draft", _only_draft)
+    try:
+        resp = await drafting.compose_assist_stream(
+            _req(mode="reply", message_id="m-1"), _USER)
+        events = _events(await _drain(resp.body_iterator))
+    finally:
+        get_settings.cache_clear()
+    deltas = [e["text"] for e in events if e["type"] == "delta" and e["kind"] == "content"]
+    assert deltas == list(pieces), events
+    assert events[-1]["type"] == "done", events
+    assert "the pricing is attached." in events[-1]["draft"]
+
+
 async def _only_draft(email, about, signature, user_email, *, model="tier-fast",
                       interactive_fallback=False, on_delta=None, **_kw):
     """``_orchestrate_draft`` with no memory or consult, so the test reaches the
