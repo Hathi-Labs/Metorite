@@ -26,8 +26,8 @@ Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
 * M1. ``G/claim_scope.py`` ``check_claim_scope`` returns ``None`` at once.
   ``test_warn_claims_names_the_lead_and_writes_one_line``,
   ``test_refuse_answers_403_and_writes_nothing``.
-* M2. ``G/claim_scope.py`` ``check_claim_scope`` drops the ``current`` test.
-  ``test_an_assigned_task_passes_in_every_mode[refuse]``.
+* M2. ``G/claim_scope.py`` ``check_claim_scope`` drops the ``holds_task``
+  test. ``test_an_assigned_task_passes_in_every_mode[refuse]``.
 * M3. ``G/authority.py`` ``app_owner`` reads the project's own lead only, with
   no walk. ``test_a_subproject_of_an_own_app_passes_in_refuse``.
 * M4. ``G/claim_scope.py`` ``_free_sql`` drops the assignee test.
@@ -49,6 +49,16 @@ Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
   ``test_a_pinned_connection_reads_no_app_outside_its_pins``.
 * M12. ``G/claim_scope.py`` ``check_claim_scope`` calls ``app_owner`` with no
   ``vis``. ``test_a_pinned_connection_reads_no_lead_outside_its_pins``.
+
+* M13. ``G/claim_scope.py`` ``check_claim_scope`` passes a task with ANY
+  assignee, as it did before review P1 of 2026-11-17.
+  ``test_assign_an_agent_then_claim_is_refused``,
+  ``test_assign_an_agent_then_start_is_refused``,
+  ``test_assign_an_agent_then_self_add_is_refused``,
+  ``test_assign_a_colleague_with_a_grant_then_claim_is_refused``,
+  ``test_a_self_add_beside_another_member_is_refused``.
+* M14. ``G/tasks.py`` ``set_assignees`` checks only a task with no assignee.
+  ``test_assign_an_agent_then_self_add_is_refused``.
 
 A pinned connection reaches its pins and the projects below them, and no
 parent (review P2). ``pin_mine`` is pinned to ``Mine sub``, and
@@ -417,16 +427,32 @@ class TestTheSecondDoors:
         assert "warning" not in again.json()
         assert len(_scope_lines(live, task)) == 1
 
-    async def test_a_self_add_to_an_assigned_task_passes(self, live, mode):
+    async def test_a_self_add_beside_another_member_is_refused(self, live, mode):
+        """Review P1 of 2026-11-17: another member on the task is not a pass.
+        Only the session member is (§3.10.1)."""
         mode("refuse")
         task = _task(live, live.theirs, "self add assigned")
         _assign(live, task, OTHER)
         r = await _send(live, "PUT", f"/projects/tasks/{task}/assignees",
                         body={"assignees": [OTHER, MEMBER]},
                         headers={"If-Match": await _version(live, task)})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == "outside_apps"
+        assert _assignees(live, task) == [OTHER]
+
+    async def test_a_task_that_holds_the_member_passes_in_refuse(self, live, mode):
+        mode("refuse")
+        task = _task(live, live.theirs, "holds the member")
+        _assign(live, task, MEMBER)
+        r = await _send(live, "PUT", f"/projects/tasks/{task}/assignees",
+                        body={"assignees": [MEMBER, "agent:helper"]},
+                        headers={"If-Match": await _version(live, task)})
         assert r.status_code == 200, r.text
         assert "warning" not in r.json()
-        assert _assignees(live, task) == sorted([OTHER, MEMBER])
+        assert _assignees(live, task) == sorted([MEMBER, "agent:helper"])
+        claim = await _claim(live, task)
+        assert claim["isError"] is False, claim
+        assert _scope_lines(live, task) == []
 
     async def test_an_agent_start_outside_is_refused(self, live, mode, runs_on):
         mode("refuse")
@@ -453,6 +479,87 @@ class TestTheSecondDoors:
         r = await _start(live, task)
         assert r.status_code == 201, r.text
         assert "warning" not in r.json()
+
+
+async def _put(world, task: str, people: list[str]) -> Any:
+    return await _send(world, "PUT", f"/projects/tasks/{task}/assignees",
+                       body={"assignees": people},
+                       headers={"If-Match": await _version(world, task)})
+
+
+def _colleague(world) -> str:
+    """OTHER as an active member with a grant on ``Theirs``, once."""
+    if not getattr(world, "colleague", False):
+        world.seeder.member(OTHER, ["feature:projects"])
+        world.seeder.one(
+            "INSERT INTO pm_project_grants (project_id, subject, created_by,"
+            " organization_id) VALUES (CAST(:p AS uuid), :s, :a, CAST(:o AS uuid))"
+            " RETURNING project_id", p=world.theirs, s=OTHER, a=w.OWNER, o=world.org)
+        world.colleague = True
+    return OTHER
+
+
+class TestTheTwoStepDoors:
+    """Review P1 of 2026-11-17. An agent assigns somebody else first, and
+    then holds the task. Another assignee is never a pass. Only the session
+    member on the task is (§3.10.1 and SW-45)."""
+
+    pytestmark = _DB_GATE
+
+    async def test_assign_an_agent_then_claim_is_refused(self, live, mode):
+        mode("refuse")
+        task = _task(live, live.theirs, "two step claim")
+        first = await _put(live, task, ["agent:x"])
+        assert first.status_code == 200, first.text
+        claim = await _claim(live, task)
+        assert claim["isError"] is True, claim
+        assert claim["content"][0]["text"].startswith("This task is outside your apps.")
+        assert _assignees(live, task) == ["agent:x"]
+        assert _scope_lines(live, task) == []
+
+    async def test_assign_an_agent_then_claim_warns_and_writes_one_line(self, live, mode):
+        mode("warn")
+        task = _task(live, live.theirs, "two step warn")
+        assert (await _put(live, task, ["agent:x"])).status_code == 200
+        claim = await _claim(live, task)
+        assert claim["isError"] is False, claim
+        assert claim["structuredContent"]["warning"] == (
+            f"This task is outside your apps. Its app lead is {LEAD}."
+            " The task timeline records this claim.")
+        assert _assignees(live, task) == sorted(["agent:x", MEMBER])
+        assert len(_scope_lines(live, task)) == 1
+
+    async def test_assign_an_agent_then_start_is_refused(self, live, mode, runs_on):
+        mode("refuse")
+        task = _task(live, live.theirs, "two step start")
+        assert (await _put(live, task, ["agent:x"])).status_code == 200
+        r = await _start(live, task)
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == "outside_apps"
+        assert _runs(live, task) == []
+        assert _scope_lines(live, task) == []
+
+    async def test_assign_an_agent_then_self_add_is_refused(self, live, mode):
+        mode("refuse")
+        task = _task(live, live.theirs, "two step self add")
+        assert (await _put(live, task, ["agent:x"])).status_code == 200
+        r = await _put(live, task, [MEMBER])
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == "outside_apps"
+        assert _assignees(live, task) == ["agent:x"]
+        assert _scope_lines(live, task) == []
+
+    async def test_assign_a_colleague_with_a_grant_then_claim_is_refused(self, live, mode):
+        mode("refuse")
+        task = _task(live, live.theirs, "two step colleague")
+        first = await _put(live, task, [_colleague(live)])
+        assert first.status_code == 200, first.text
+        claim = await _claim(live, task)
+        assert claim["isError"] is True, claim
+        assert _assignees(live, task) == [OTHER]
+        r = await _put(live, task, [OTHER, MEMBER])
+        assert r.status_code == 403, r.text
+        assert _assignees(live, task) == [OTHER]
 
 
 class TestTheReviewReads:

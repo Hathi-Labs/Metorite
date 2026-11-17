@@ -2267,8 +2267,9 @@ async def start_agent_run(
     201 with ``created: true``, or 200 with ``created: false`` and the run
     that the key or the open-run rule found (EA12-6).
 
-    SW-45 (review P1). An agent's start on a task with no assignee gets the
-    scope check of ``claim_task`` (``claim_scope.check_claim_scope``).
+    SW-45 (review P1). An agent's start on a task that does not hold the
+    session member gets the scope check of ``claim_task``
+    (``claim_scope.check_claim_scope``).
     Outside the member's own apps, mode ``warn`` starts the run, writes one
     timeline line for a new run, and the answer has ``warning`` and
     ``outside_apps``. Mode ``refuse`` answers 403 ``outside_apps`` and
@@ -2332,8 +2333,8 @@ async def start_agent_run(
             response.status_code = 200
             return replay
 
-        # SW-45 (review P1): an agent's start on a task with no assignee
-        # holds it as a claim does. So the claim's ONE check runs here, before
+        # SW-45 (review P1): an agent's start on a task that does not hold
+        # the member holds it as a claim does. So the claim's ONE check runs here, before
         # any write, and `refuse` has no second door.
         scope_note = await _start_scope(db, user, via, task, vis)
 
@@ -2408,7 +2409,8 @@ async def start_agent_run(
 async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
                        vis: Any) -> dict[str, Any] | None:
     """SW-45: the scope check of an agent's start, or ``None`` for a member.
-    It reads the assignees of the task, and a task with one passes."""
+    It reads the assignees of the task. Only the session member among them
+    is a pass (review P1 of 2026-11-17)."""
     if via is None:
         return None
     current = {

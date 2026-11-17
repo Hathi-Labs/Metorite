@@ -7894,6 +7894,20 @@ def outside_apps_refusal(detail: Mapping[str, Any]) -> str:
 #: The coded refusals of the claim: the 422 codes and the 403 of SW-45.
 _CLAIM_CODED: Mapping[str, str | Callable[[Mapping[str, Any]], str]] = {
     **CLAIM_TEXTS, CLAIM_OUTSIDE_APPS: outside_apps_refusal}
+#: SW-45 (review P2). The 403 of the two second doors, ``set_assignees`` and
+#: the start of a run. The text is the claim's text.
+_OUTSIDE_CODED: Mapping[str, str | Callable[[Mapping[str, Any]], str]] = {
+    CLAIM_OUTSIDE_APPS: outside_apps_refusal}
+
+
+def outside_apps_note(written: Any) -> str | None:
+    """The edge's warning for a write that the gateway let go in mode
+    ``warn`` (SW-45), or ``None``. The lead leaves only in the shape of an
+    address. The gateway's own text never reaches the agent."""
+    outside = written.get("outside_apps") if isinstance(written, dict) else None
+    if not isinstance(outside, dict):
+        return None
+    return outside_apps_warning(_lead_of(outside.get("lead")))
 
 #: The fixed SW-63 sentence at the start of a claim ``warning``.
 _SUBTASKS_WARNING_RE = re.compile(
@@ -7981,9 +7995,9 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         result["open_subtasks"] = ids
     # SW-45: a claim outside the member's own apps, in mode warn. The edge
     # builds its own text, and the lead leaves only in the shape of an address.
-    outside = written.get("outside_apps")
-    if isinstance(outside, dict):
-        words.append(outside_apps_warning(_lead_of(outside.get("lead"))))
+    outside = outside_apps_note(written)
+    if outside is not None:
+        words.append(outside)
     if words:
         result["warning"] = " ".join(words)
     if guidance is not None:
@@ -8051,8 +8065,9 @@ CLAIM_TASK = Tool(
 
 ASSIGNEES_ROUTE = "/projects/tasks/{task_id}/assignees"
 
-#: The keys of the result of ``set_assignees`` (§9.2).
-SET_ASSIGNEES_KEYS: tuple[str, ...] = ("id", "assignees", "version")
+#: The keys of the result of ``set_assignees`` (§9.2). ``warning`` (SW-45) is
+#: there only for a self-add outside the member's own apps in mode ``warn``.
+SET_ASSIGNEES_KEYS: tuple[str, ...] = ("id", "assignees", "version", "warning")
 
 _SET_ASSIGNEES_INPUT: dict[str, Any] = {
     "type": "object",
@@ -8072,10 +8087,10 @@ _SET_ASSIGNEES_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_SET_ASSIGNEES_OUTPUT: dict[str, Any] = _object({
+_SET_ASSIGNEES_OUTPUT: dict[str, Any] = _optional(_object({
     "id": {"type": "string"}, "assignees": _ASSIGNEES_SCHEMA,
     "version": _NULLABLE_STRING,
-})
+}), "warning", {"type": "string"})
 
 
 async def _set_assignees(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -8093,22 +8108,31 @@ async def _set_assignees(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     answered, and a null version.
 
     It needs no ``_refuse_nul``: each input must match a pattern.
+
+    SW-45 (review P2). A self-add outside the member's own apps gets the
+    claim's text for the 403 ``outside_apps`` (mode ``refuse``), and the
+    claim's ``warning`` in mode ``warn``.
     """
     task_id = str(args["task_id"])
     sent = list(args["assignees"])
     _, after = await _write(
         ctx, "PUT", ASSIGNEES_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body={"assignees": sent},
-        if_match=str(args["expected_version"]), coded=_assignee_codes(sent))
+        if_match=str(args["expected_version"]),
+        coded={**_assignee_codes(sent), **_OUTSIDE_CODED}, coded_statuses=(422, 403))
     if not isinstance(after, dict):
         raise ToolError(TEXT_BUSY)
     written: dict[str, Any] = {"id": task_id, "assignees": after.get("assignees")}
     current = await _after_write(lambda: _reread(ctx, written), written)
-    return {
+    result: dict[str, Any] = {
         "id": task_id,
         "assignees": _assignees(current.get("assignees")),
         "version": _str_or_none(current.get("updated_at")),
     }
+    warning = outside_apps_note(after)
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
 SET_ASSIGNEES = Tool(
@@ -9338,16 +9362,24 @@ async def _start(ctx: Context, task_id: str, key: str,
     """POST the start of a run. ``(created, run)``. The gateway gives the
     open run of this member and client on the task, if one exists (EA12-6).
     SW-7b: *label* is the display name of this session, in the body only."""
+    status, body = await _start_answer(ctx, task_id, key, link, label)
+    return status == 201, _run_body(body)
+
+
+async def _start_answer(ctx: Context, task_id: str, key: str,
+                        link: str | None = None,
+                        label: str | None = None) -> tuple[int, Any]:
+    """The POST of :func:`_start`: ``(status, body)``. SW-45 (review P2): the
+    403 ``outside_apps`` gets the claim's text."""
     payload: dict[str, Any] = {"idempotency_key": key}
     if link is not None:
         payload["external_link"] = link
     if label is not None:
         payload["agent_label"] = label
-    status, body = await _write(
+    return await _write(
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
-        texts={409: TEXT_KEY_USED})
-    return status == 201, _run_body(body)
+        texts={409: TEXT_KEY_USED}, coded=_OUTSIDE_CODED, coded_statuses=(403,))
 
 
 async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], *,
@@ -9387,14 +9419,22 @@ _START_INPUT: dict[str, Any] = {
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
 }
-_START_OUTPUT: dict[str, Any] = _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}})
+#: SW-45: ``warning`` is there only for a start outside the member's own apps
+#: in mode ``warn``.
+_START_OUTPUT: dict[str, Any] = _optional(
+    _object({"run": _RUN_SCHEMA, "created": {"type": "boolean"}}),
+    "warning", {"type": "string"})
 
 
 async def _start_agent_run(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    created, run = await _start(ctx, str(args["task_id"]), str(args["idempotency_key"]),
-                                _str_or_none(args.get("external_link")),
-                                _str_or_none(args.get("agent_label")))
-    return {"run": agent_run(run), "created": created}
+    status, body = await _start_answer(
+        ctx, str(args["task_id"]), str(args["idempotency_key"]),
+        _str_or_none(args.get("external_link")), _str_or_none(args.get("agent_label")))
+    result: dict[str, Any] = {"run": agent_run(_run_body(body)), "created": status == 201}
+    warning = outside_apps_note(body)
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
 START_AGENT_RUN = Tool(

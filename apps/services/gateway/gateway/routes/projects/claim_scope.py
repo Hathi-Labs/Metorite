@@ -24,9 +24,11 @@ with ``app_project``: the id and the name of the nearest own app above it.
 The MCP ``my_work`` lists them after the assigned rows, with the reason
 ``own_app_free``.
 
-**The claim.** Only an agent claim (``UserContext.agent``) of a task with no
-assignee is checked. A task that is assigned to anyone keeps the old claim,
-and a task assigned to the member always passes. Outside the own apps:
+**The claim.** Only an agent claim (``UserContext.agent``) is checked. A
+task that is assigned to the session member always passes, because someone
+chose that member. A task that is assigned only to other people, to a
+colleague with a grant or to an ``agent:<name>`` key, is checked as a free
+task is (review P1 of 2026-11-17). Outside the own apps:
 
 * ``warn``: the claim works. The answer has ``warning`` and
   ``outside_apps`` (``{"lead": <email or null>}``), and the timeline of the
@@ -173,8 +175,12 @@ async def check_claim_scope(db: Any, user: Any, project_id: Any,
 
     The ONE check of three routes, so that ``refuse`` has no second door
     (review P1): ``claim_task``, an agent's ``set_assignees`` that adds its
-    own member to a task with no assignee, and an agent's
-    ``start_agent_run`` on a task with no assignee.
+    own member, and an agent's ``start_agent_run``.
+
+    Only a task that is assigned to the session member passes at once. An
+    assignee that is another member, a colleague with a grant or an
+    ``agent:<name>`` key is not a pass (review P1 of 2026-11-17). Otherwise
+    an agent assigns ``agent:x`` first, and then claims.
 
     ``None`` lets the hold go with no note. A dict is a hold in mode
     ``warn``: the hold goes, and the caller writes
@@ -183,7 +189,7 @@ async def check_claim_scope(db: Any, user: Any, project_id: Any,
     route read before its write. *vis* is the caller's visibility: the lead
     of a project outside it is ``None`` (review P2).
     """
-    if getattr(user, "agent", None) is None or current:
+    if getattr(user, "agent", None) is None or holds_task(user, current):
         return None
     mode = scope_mode(user)
     if mode == "off":
@@ -195,6 +201,12 @@ async def check_claim_scope(db: Any, user: Any, project_id: Any,
         raise HTTPException(status_code=403, detail={
             "error": OUTSIDE_APPS, "message": REFUSED_TEXT, "lead": lead})
     return {"lead": lead}
+
+
+def holds_task(user: Any, current: set[str]) -> bool:
+    """True when the session member is in *current*, in lower case."""
+    me = actor(user).strip().lower()
+    return me in {str(c).strip().lower() for c in current}
 
 
 async def record_outside_claim(db: Any, user: Any, task_id: str,
