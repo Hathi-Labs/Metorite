@@ -163,6 +163,20 @@ def claims_on(monkeypatch):
     monkeypatch.setattr(find, "ABSENCE_CLAIMS", True)
 
 
+@pytest.fixture()
+def declares(monkeypatch):
+    """Each source of ``sources.REGISTRY`` declares ``Source.proves_absence``
+    (FIND-4b). Ask for it after ``world``, so it marks the fake readers."""
+    for key, source in list(sources.REGISTRY.items()):
+        monkeypatch.setitem(sources.REGISTRY, key,
+                            dataclasses.replace(source, proves_absence=True))
+
+
+#: The declarations of a unit test of ``held``: each app that answered
+#: declares ``Source.proves_absence`` (FIND-4b).
+DECLARED = {"crm": True, "email": True}
+
+
 def run(q: str, user: Any = None, k: int = 5) -> dict[str, Any]:
     return asyncio.run(company.company_search(q=q, apps=None, k=k, user=user or member(*ALL)))
 
@@ -660,7 +674,8 @@ class TestThePrint:
         # name of the word itself (`looked`).
         got = {e["word"]: e["held"] for e in find.near_report(
             near, found, broadened, query="Sharath Laxmi Puja", first_zero=False,
-            skipped=[], looked=dict.fromkeys(("sharath", "laxmi", "puja"), True))}
+            skipped=[], looked=dict.fromkeys(("sharath", "laxmi", "puja"), True),
+            declared=DECLARED)}
         # Sharath alone found 2. Laxmi is in a hit of its own words. Puja is
         # only in a near hit, and alone it found nothing in every app.
         assert got == {"Sharath": True, "Laxmi": True, "Puja": False}
@@ -672,7 +687,7 @@ class TestThePrint:
         (entry,) = find.near_report(
             [{"word": "Puja", "as": "Pooja", "hits": 1}], {},
             [{"word": "puja", "hits": 0, "skipped": []}], query="Puja Shah",
-            first_zero=True, skipped=[], looked={"puja": True})
+            first_zero=True, skipped=[], looked={"puja": True}, declared=DECLARED)
         assert entry["held"] is None
 
     def test_held_is_unknown_unless_every_app_searched_the_word_alone(self, claims_on):
@@ -685,7 +700,8 @@ class TestThePrint:
                  query: str = "Puja Shah", limited: bool = False) -> Any:
             (entry,) = find.near_report(near, {}, broadened, query=query,
                                         first_zero=first_zero, skipped=list(skipped),
-                                        limited=limited, looked={"puja": True})
+                                        limited=limited, looked={"puja": True},
+                                        declared=DECLARED)
             return entry["held"]
 
         zero = [{"word": "puja", "hits": 0, "skipped": []}]
@@ -706,10 +722,10 @@ class TestThePrint:
         near = [{"word": "Sharath", "as": "Sharat", "hits": 1}]
         for query in ("Sharath's", "Sharath.", "Sharath\u2019s"):
             (entry,) = find.near_report(near, {}, None, query=query, first_zero=True,
-                                        skipped=[])
+                                        skipped=[], declared=DECLARED)
             assert entry["held"] is None, query
         (entry,) = find.near_report(near, {}, None, query="Sharath", first_zero=True,
-                                    skipped=[], looked={"sharath": True})
+                                    skipped=[], looked={"sharath": True}, declared=DECLARED)
         assert entry["held"] is False
 
     def test_the_route_makes_no_claim_for_a_possessive(
@@ -729,11 +745,11 @@ class TestThePrint:
         zero = [{"word": "puja", "hits": 0, "skipped": []}]
         for broadened, query in ((zero, "Puja Shah"), (None, "Puja")):
             (entry,) = find.near_report(near, {}, broadened, query=query, first_zero=True,
-                                        skipped=[], limited=True)
+                                        skipped=[], limited=True, declared=DECLARED)
             assert entry["held"] is None, query
 
     def test_the_route_limits_held_with_after(
-            self, world, recency, find_on, claims_on):  # noqa: F811
+            self, world, recency, find_on, claims_on, declares):  # noqa: F811
         recency(True)
         find_on("*")
         answer = asyncio.run(company.company_search(
