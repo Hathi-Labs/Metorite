@@ -56,7 +56,7 @@ _RETIRED = ("draft_model", "compose_model", "chat_model")
 
 # Each stored value is the OTHER tier, so a read shows in the call.
 _STORED = SimpleNamespace(
-    draft_model="tier-fast", compose_model="tier-powerful",
+    draft_model="tier-fast", compose_model="tier-fast",
     chat_model="tier-fast", rule_model="tier-powerful",
     draft_confidence="ALL_EMAILS", sensitive_data_protection=False)
 
@@ -87,7 +87,8 @@ def _assert_no_retired_read(db: _StoredTiersDb) -> None:
 def test_the_tier_table() -> None:
     """The best process, written once. A change here is a product decision."""
     assert dict(assistant_mod.EMAIL_TASK_TIERS) == {
-        "draft": "tier-powerful", "compose": "tier-fast", "chat": "tier-powerful"}
+        # compose: the owner chose tier-powerful on 2026-11-16 (task 3541).
+        "draft": "tier-powerful", "compose": "tier-powerful", "chat": "tier-powerful"}
     with pytest.raises(TypeError):
         assistant_mod.EMAIL_TASK_TIERS["draft"] = "tier-fast"  # type: ignore[index]
 
@@ -113,7 +114,7 @@ async def test_draft_reply_ignores_a_stored_tier(monkeypatch) -> None:
     await drafting_mod.draft_reply_smart(
         drafting_mod.DraftReplyRequest(account_id="acc-1", message_id="m1"),
         SimpleNamespace(email="me@example.com"))
-    assert seen["model"] == "tier-fast", (
+    assert seen["model"] == "tier-powerful", (
         "the stored compose tier changed the tier of Draft with AI")
     _assert_no_retired_read(db)
 
@@ -141,7 +142,7 @@ async def test_compose_assist_ignores_a_stored_tier(monkeypatch, mode) -> None:
         account_id="acc-1", mode=mode,
         message_id="m1" if mode == "reply" else None)
     await drafting_mod.compose_assist(req, SimpleNamespace(email="me@example.com"))
-    assert seen["model"] == "tier-fast", mode
+    assert seen["model"] == "tier-powerful", mode
     _assert_no_retired_read(db)
 
 

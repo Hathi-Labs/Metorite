@@ -109,6 +109,17 @@ default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_TOPICS_ORGS` turns on the topics of the chat list
+(`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`
+lists the company topics and the member's own topics. A member makes a
+private topic, and an admin renames, hides or merges a company topic. `*`
+lists every org, and the default is empty. Empty means each topic route
+answers 404.
+
+Its one reader is `gateway.chat_topic.topics_allowed`, and each topic route
+asks it first. So a reload applies at the next request. The flip stays
+OWNER-GATE (`enforcement-flip`), after the owner preview.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
@@ -133,6 +144,15 @@ The flag also opens the related records of FIND-3 (`find_engine.md` §3.1
 rung 4). The search follows the links of its first 5 hits that are a deal,
 lead, contact, person or company. It shows at most 3 records for each hit,
 in the answer key `related`. Each record is one that the member can open.
+
+The flag also opens the honest zero, the explain mode and the log line of
+FIND-4 (`find_engine.md` §3.6, §3.7). The answer names why the search skipped
+each app. A zero answer adds at most 3 "Where else" lines from a closed list,
+and no line names a record. No line says that a record does not exist.
+
+`search_company(explain=true)` answers a trace of each step, with no record.
+Each search writes one `search.company.ladder` log line. It holds counts,
+times, `miss` and `explain`, and no word.
 
 The flag also opens the sender near spelling of `GET /email/messages`, for a
 caller that sends `near_sender`. Only `query_inbox` sends it. When

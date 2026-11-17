@@ -18,6 +18,14 @@ person or company. The CRM, People and Email sources have `related` and
 `open`. The records go to the answer key `related`: 3 for each hit, 15 at
 most, inside one second. A record that the member cannot open leaves no trace.
 
+**FIND-4 is built** (task 3241, 2026-11-16, see "As built" in §3.6 and
+§3.7). Behind `FIND_ORGS`, the answer names why the route skipped each app
+(`skipped_why`). No line says that a record does not exist: the switch
+`find.ABSENCE_CLAIMS` is off. A zero answer names the near spellings that it
+tried, and at most 3 "Where else" lines. `search_company(explain=true)`
+answers the trace of §3.7 with no record. Each search writes one
+`search.company.ladder` line.
+
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
 extends §20 and replaces nothing in it. It adds no second read path and no
@@ -269,6 +277,89 @@ at most 3 lines from a closed list, in this order:
 A "Where else" line never names a record, a count or a name that the member
 cannot open.
 
+**As built (FIND-4).** The route marks its answer with `skipped_why`, and the
+tool prints the new lines only with that mark.
+
+**The claim is off.** `find.ABSENCE_CLAIMS` is `False`, so no line says that
+a record does not exist. This departs from the wording of D-HRD-2 and from
+the example above. The line "No record has all the words. These have most of
+them." does not print. Neither does "No record holds all of the words", nor
+the near line "No record holds «X»".
+
+The reason is that no app can promise that its search reads every field
+that holds a word. Email full text never reads To or Cc. The near lookup
+reads only the newest senders. A task hint prints its project, and the task
+search does not read it. A WhatsApp hit prints a chat name, and the message
+search does not read it. A cut to `k` can also drop the one hit that shows
+the word.
+
+To switch the claim on, each source must first declare
+`Source.proves_absence`, in a later slice. That slice sets the constant to
+`True`, and the claim must read each declaration. The tests set the constant
+to `True`, so the rule below stays fenced.
+
+A zero answer prints these lines, in this order. Each one stays true when a
+record that holds all the words exists:
+
+1. The header, with the apps searched and skipped.
+2. "Each word alone: x (n), y (m)." These are the counts of each search.
+3. "(this search found no records)", in place of "(no matching records)".
+4. "Tried: «the query», with every word in one record, then each word
+   alone." It can end with "Near spellings tried: «x» as «y»."
+5. The meaning line. With `off` it says "No meaning search ran." It names
+   no cause, because `off` also means that the member has no such app.
+6. At most 3 "Where else" lines.
+7. "A zero answer is not proof that no record exists.", then the next step.
+
+An answer with near hits opens with "Near spellings: «x» as «y» (n
+records)." It names the spelling and its records, and nothing about the
+word itself. In `near`, `held` is `true` or `null`, and never `false`.
+
+The rule behind the switch is as follows:
+
+- The line "No record has all the words. These have most of them." needs the
+  proof `none_has_all`, and so does "No record holds all of the words". The
+  proof is the rule of `held` false: one word of 4 letters or more, searched
+  alone in each app that answered, found nothing. The route skipped no app,
+  and no date or verified filter applied. An app may answer nothing for a
+  shorter word, with no error.
+- `find.proves_absence` is the one rule of that word, for `held` false and
+  for `none_has_all`. Three parts must hold.
+- First, the member typed the word as it folds, in ASCII letters and digits
+  (`find.typed_alone`). "Müller" folds to "muller", "acme.com" folds to
+  "acme" and "com", and "Strauß" folds to "strauss". An app with no
+  unaccent, or a full text that keeps "acme.com" as one token, finds nothing
+  for the fold.
+- Second, no hit of any rung and no related record shows the word in its
+  title, hint or snippet. An app can print a field that its search does not
+  read: a preferred name in People, a chat name in WhatsApp.
+- Third, the near lookup ran for the word in each near source, and gave no
+  name that is the word itself. A sender address is such a field: "acme"
+  alone never matches inside «billing@acme.com». A lookup that did not run,
+  failed or ran out of time proves nothing.
+- The answer must also miss: no hit shows every word.
+- The near lookup reads the newest 2000 names of a source, and its scoring
+  stops at 0.5 s with no error. These limits are why the switch is off.
+- A first pass with no hit is no proof. People matches the whole query as
+  one phrase, so a person who holds the words in another order is no hit. A
+  low `covers` is no proof either. A hit can hold a word in its body that its
+  snippet does not show.
+- With no proof, the counts of each word alone print with no claim.
+- A zero answer with no related record prints the honest zero lines. Item 1
+  of "Where else" names each skipped app with its reason. Item 3 names the
+  past chats and each app that is not open to the member. A dark Studio
+  source is never named.
+- Item 2 is not built. `name_match.near_names` keeps no name under the
+  floor, so the route holds no name between 0.4 and the floor.
+- Item 4 waits for FIND-10.
+- Item 5 is not built. The route reads no total of an app, and a list of `k`
+  hits proves no more hits.
+- The meaning search keeps its own line. It is not also a "Where else" line.
+- The last line keeps the words of KR-ZERO: "A zero answer is not proof that
+  no record exists." The tool does not print "Each app needs the words in
+  one record". Knowledge matches any of the words, so that sentence is false
+  for it.
+
 ### 3.7 The explain mode, and the log line
 
 `search_company(query, explain=true)` runs every rung, with no early stop. It
@@ -284,6 +375,26 @@ Each search writes one log line, `search.company.ladder`. The line holds the
 hits and the time of each rung, and `miss` true or false. It holds no word, no
 name, no address and no id. The weekly delivery review reads the zero rate of
 §1.2 from it.
+
+**As built (FIND-4).**
+
+- Only the dated tool takes `explain`. The plain tool runs with
+  `CONTEXT_RECENCY` off, and there the route never reads `explain`.
+- The trace has four keys: `rungs`, `near`, `meaning` and `flags_off`. Each
+  row of `rungs` holds a rung, a source key, `ran`, `hits`, `ms` and an
+  outcome from `find.OUTCOMES`. A closed app has one row, in rung 1.
+- Rung 4 gives a row for each source too. Its hits are the related records
+  that each app gave. Rung 6 has one row, `closed`, until HRD-21 adds the
+  `chat` source.
+- `near` holds at most 3 spellings for each word. `name_match` keeps no name
+  under the floor, so `over_floor` is true for each spelling today.
+- `flags_off` asks the one reader of each flag: `KNOWLEDGE_EMBED`,
+  `EMAIL_SEMANTIC_SEARCH_ENABLED` and `CHAT_SEARCH_ORGS`.
+- An explain call records no Knowledge gap, because it asks the same words
+  again.
+- The log line has seven fields: `hits`, `exact_ms`, `word_ms`, `near_ms`,
+  `related_ms`, `miss` and `explain`. `miss` reads the hits of the final
+  answer. `explain` lets the zero rate leave out an explain call.
 
 ## 4. The source contract: `contributes.search`
 
@@ -544,7 +655,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **HRD-18b** (built) | 3226 | 1 | Rung 3 in the engine: the `near` ability of the CRM, people and email sources, the near lookup of pass 2, the query again with the best spelling, and `matched_by` `near`. `query_inbox` tries the near spelling of a sender | "Sharath 3D printer" finds the Neuropeak deal and the mail from «Sharat Satyanarayana». "nuropeak" finds the deal and the mail from `neuropeek.com`. A sender of member B never shows for member A | `test_find_near.py`, new. `test_find_near_visibility_r8.py`, new. `test_one_name_matcher.py`, new: each `pg_trgm` floor comes from `name_match` | STANDARD · AGENT-SAFE | KR-ZERO, HRD-18a, FIND-2 |
 | **FIND-3** (built) | 3240 | 1 | Rung 4: the `related` and `open` abilities of the CRM, people and email sources, and the step on the best 5 hits, 3 for each hit, in 1.0 s. It builds the step and `Source.open` that KG-6 names. KG-6 then adds the `kb_links` edges to the same step | "Neuropeak order" finds the deal, and the thread from the address of its lead, in one call. A contact's mail in the mailbox of another member never shows. A record that the member cannot open leaves no trace. Org B never shows | `test_find_related.py`, new. `test_find_related_r8.py`, new | HIGH · AGENT-SAFE | FIND-2 |
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
-| **FIND-4** | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
+| **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
 | **HRD-21** | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a `no_egress` session and the current chat never show. The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
