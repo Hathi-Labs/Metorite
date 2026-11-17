@@ -150,6 +150,28 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
+(`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
+the default is `off`. The flag is global, but the check acts only for an org
+of `FIND_ORGS`, because pass 2 exists only there. It is not a `*_ORGS` or
+`*_MODES` key, so a reload does NOT apply it. Set the value, then restart
+`acb-gateway`. Its one reader is `acb_common.settings.find_claim_check_mode`.
+
+In `shadow`, the first answer of a run that says a record does not exist
+writes one `answer_check.claim` line. The outcome is `shadow_miss` when no
+`search_company` answer of the turn shows pass 2, and `shadow_pass` when one
+does. The line holds `mode`, `outcome`, `rule`, `searches`, `finds` and
+`armed`, and no text. `armed` is true when a `search_company` or
+`resolve_name` answer came before the claim, and false when only an app's
+search tool ran, or none.
+
+In `on`, the check holds an answer after the first result of any find tool
+in the turn, an app's search tool too. Then a claim with no pass 2 gets one
+more pass. That pass is the one retry of the run, which the number check of
+`CRM_ANSWER_CHECK` spends too. A claim before any find result is not held,
+and the line says `unheld_miss`. `shadow` is AGENT-SAFE, and `on` is an
+`enforcement-flip` after 7 days of shadow (D-FIND-8).
+
 `FIND_ORGS` turns on the new shape of a `search_company` hit
 (`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says
 how it matched (`matched_by`, `covers`, `of`), and the hit with the most of the
