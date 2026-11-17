@@ -17,41 +17,54 @@ colon and the shape of the key is fixed.
 
 **The value.** JSON with ``run_id``, ``member``, ``sha256`` (the digest of the
 sent words), ``claim`` (a token of the request that holds it, so that a
-compare never mixes two requests) and ``at`` (the time of the last write).
+compare never mixes two requests), ``state`` and ``at`` (the time of the
+write).
 
-**Two states.**
+**Three states.** Each move is ONE compare and set
+(``TenantRedis.replace_if``) from the value that this request wrote, so two
+requests can never both move one key.
 
-1. The claim: ``run_id`` is empty. :func:`begin` writes it with SET NX and
+1. ``claim``: no run id. :func:`begin` writes it with SET NX and
    :data:`CLAIM_TTL_SECONDS`, before the route decides what the send does.
-2. The run: ``run_id`` is set, with :data:`RUN_TTL_SECONDS`. The route
-   writes it with :meth:`SendClaim.start` as the first step of its stream,
-   BEFORE ``run_detached``. The write is ONE compare and set
-   (``TenantRedis.replace_if``) from the claim of this request. A request
-   whose write fails starts nothing. So two runs of one send cannot both
-   start, and a run never starts and then stops.
+2. ``pending``: the run id, with :data:`RUN_TTL_SECONDS`. The route writes it
+   with :meth:`SendClaim.start` right BEFORE ``run_detached``. A request
+   whose move fails starts nothing.
+3. ``run``: the same run id. :meth:`SendClaim.watch` writes it when the
+   executor sends ``RUN_STARTED``, before the load and the model. A run whose
+   move fails stops there, so it does no work.
 
 **A repeat** (SET NX fails) reads the value:
 
 * another digest: :data:`REUSED` (the route answers 409 ``send_id_reused``);
-* a run whose ``RUN_STARTED`` the stream holds, or which is the live run of
-  the thread: :data:`REPLAY` (the route replays it, with ``X-Run-Id``);
-* a run that the stream does not hold: :data:`FINISHED` (the route answers
-  the synthetic ``RUN_FINISHED``, and the client reads the saved row). A run
-  written less than :data:`FRESH_SECONDS` ago may not have reset the stream
-  yet, so the repeat waits for it first;
-* a claim: it polls for :data:`WAIT_SECONDS`. A claim that stays, with no
-  live run on the thread, is stale: a compare and delete removes it, and the
-  repeat claims the key again. A claim that stays while a run is live gives
-  :data:`BUSY` (409 ``send_in_progress``).
+* a run that the first ``RUN_STARTED`` of the stream names, or the live run
+  of the org's live-run index: :data:`REPLAY` (the route replays it, with
+  ``X-Run-Id``);
+* a ``run`` that the stream does not hold: :data:`FINISHED` (the route
+  answers the synthetic ``RUN_FINISHED``, and the client reads the saved
+  row). A value written less than :data:`FRESH_SECONDS` ago may not be in the
+  stream yet, so the repeat waits for it first;
+* a ``claim`` or a ``pending`` run: it waits up to :data:`WAIT_SECONDS`. Then
+  a claim with no live run on the thread is stale (R3), and so is a pending
+  run older than :data:`PENDING_STALE_SECONDS` that nothing names. Its
+  request died or left before its run began. A compare and delete removes
+  it, and the repeat claims the key again. Any other case gives :data:`BUSY`
+  (409 ``send_in_progress``).
+
+Each read of the stream is ``stream_relay.stream_head``: ONE ``XRANGE``,
+which never blocks. Each Redis step has a hard timeout, and :func:`begin` as
+a whole has :data:`BEGIN_TIMEOUT_SECONDS`.
 
 **The end of a run.** :meth:`SendClaim.settle_end` deletes the key after a
 ``RUN_ERROR``, a Stop (``steer.was_stopped``) or a run that never started.
 A deliberate resend can then run. A clean end keeps the key for 24 hours.
+:meth:`SendClaim.release` deletes each value that this request wrote, or
+was about to write, and never a value of another request.
 
 **Fail open.** With Redis down, :func:`begin` gives :data:`OPEN`, and the send
 takes the old path (R10). With the flag off, the route makes no call here.
 
-Fence: ``tests/unit/test_send_once.py``.
+Fence: ``tests/unit/test_send_once.py``, and with a private real Redis
+``tests/unit/test_send_once_real_redis.py``.
 """
 from __future__ import annotations
 
@@ -62,8 +75,8 @@ import json
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable
+from dataclasses import dataclass, field
 from typing import Any
 
 from acb_common import get_logger
@@ -74,27 +87,35 @@ _log = get_logger("orchestrator.send_once")
 NAMESPACE = "send-once"
 #: The life of a claim that has no run yet (§6 HRD-17a, open choice (d)).
 CLAIM_TTL_SECONDS = 60
-#: The life of the key of a run that started.
+#: The life of the key of a run.
 RUN_TTL_SECONDS = 24 * 3600
-#: How long a repeat waits for the first request to start its run (R5,
-#: open choice (c)).
+#: How long a repeat waits for the first request (R5, open choice (c)).
 WAIT_SECONDS = 2.0
-#: A run written to the key less than this long ago may still be on its way
-#: to the stream, so a repeat waits for it before it answers FINISHED.
+#: A value written less than this long ago may still be on its way to the
+#: stream, so a repeat waits for it before it answers FINISHED.
 FRESH_SECONDS = 10.0
-#: The step of that wait.
+#: A pending run that nothing names after this long never began.
+PENDING_STALE_SECONDS = 15.0
+#: The step of a wait.
 POLL_SECONDS = 0.1
+#: The hard limit of one Redis step of this module.
+STEP_TIMEOUT_SECONDS = 3.0
+#: The hard limit of one :func:`begin`. It ends in BUSY, never in a run.
+BEGIN_TIMEOUT_SECONDS = 10.0
 #: The most full waits of one :func:`begin`. Each new value of the key gets
-#: its own wait, so a slow chain of claims cannot hold a request forever.
+#: its own wait, so a slow chain of claims cannot hold a request long.
 MAX_WAITS = 3
-#: The most stale claims that one :func:`begin` deletes before it gives up.
+#: The most stale values that one :func:`begin` deletes before it gives up.
 MAX_STALE_TAKES = 2
+
+CLAIM, PENDING, RUN = "claim", "pending", "run"
 
 
 def _max_rounds() -> int:
     """The most rounds of one :func:`begin`. A round is one SET NX and one
     read. It follows the wait, so the bound is never the normal end."""
     return MAX_WAITS * (int(WAIT_SECONDS / POLL_SECONDS) + 2) + 4
+
 
 #: The release tasks of :meth:`SendClaim.release_soon`, held until each ends.
 _RELEASES: set[asyncio.Task[None]] = set()
@@ -107,7 +128,7 @@ NEW = "new"            # this request holds the key: the send runs
 REPLAY = "replay"      # replay the run of the first send
 FINISHED = "finished"  # the run of the first send is final and its stream gone
 REUSED = "reused"      # the same id with other words
-BUSY = "busy"          # the first send has not started, and a run is live
+BUSY = "busy"          # the first send is starting, or no answer came in time
 OPEN = "open"          # Redis did not answer: the old path, with no key
 
 
@@ -172,12 +193,15 @@ def send_key(org: str, thread_id: str, member: str, sid: str) -> Any:
     return TenantKey(org, NAMESPACE, (thread_id, member_part(member), sid))
 
 
-def _encode(run_id: str, member: str, digest: str, claim: str) -> str:
+def _encode(run_id: str, member: str, digest: str, claim: str, state: str) -> str:
     return json.dumps(
         {"run_id": run_id, "member": _member(member), "sha256": digest, "claim": claim,
-         "at": round(time.time(), 3)},
+         "state": state, "at": round(time.time(), 3)},
         sort_keys=True, separators=(",", ":"),
     )
+
+
+_FIELDS = ("run_id", "member", "sha256", "claim", "state", "at")
 
 
 def _decode(raw: Any) -> dict[str, str] | None:
@@ -187,7 +211,10 @@ def _decode(raw: Any) -> dict[str, str] | None:
         return None
     if not isinstance(held, dict):
         return None
-    return {k: str(held.get(k) or "") for k in ("run_id", "member", "sha256", "claim", "at")}
+    out = {k: str(held.get(k) or "") for k in _FIELDS}
+    if not out["state"]:
+        out["state"] = RUN if out["run_id"] else CLAIM
+    return out
 
 
 def _age(held: dict[str, str]) -> float:
@@ -196,6 +223,11 @@ def _age(held: dict[str, str]) -> float:
         return time.time() - float(held.get("at") or 0)
     except ValueError:
         return float("inf")
+
+
+async def _step[T](aw: Awaitable[T]) -> T:
+    """One Redis step, under :data:`STEP_TIMEOUT_SECONDS`."""
+    return await asyncio.wait_for(aw, STEP_TIMEOUT_SECONDS)
 
 
 async def _client() -> Any:
@@ -232,19 +264,51 @@ class SendClaim:
     token: str
     #: The value that this request wrote last. Each compare uses it.
     value: str
+    #: Each value that this request wrote, or was about to write when a
+    #: cancel came. :meth:`release` deletes each one, and only those.
+    written: list[str] = field(default_factory=list)
     run_id: str = ""
+    #: :meth:`start` moved the claim to the pending run.
     started: bool = False
+    #: :meth:`confirm` moved the pending run to the run.
+    confirmed: bool = False
     errored: bool = False
-    #: Another request holds the key now, so this run must not start.
+    #: Another request holds the key now, so this run must not go on.
     lost: bool = False
-    #: The key is gone or released. No call writes it again.
+    #: The key is released, or a Redis fault opened it. No call writes again.
     closed: bool = False
     #: The run pulled its first line, so a drain owns it and settles the key.
     pulled: bool = False
 
+    def __post_init__(self) -> None:
+        if self.value not in self.written:
+            self.written.append(self.value)
+
+    async def _move(self, new: str, state: str) -> bool | None:
+        """Move the key from :attr:`value` to *new*. True: moved. False:
+        another request holds it. None: a Redis fault (fail open)."""
+        self.written.append(new)  # BEFORE the await: a cancel still releases it
+        try:
+            from acb_common.tenant_redis import organization_scope
+
+            with organization_scope(self.org):
+                r = await _client()
+                k = send_key(self.org, self.thread_id, self.member, self.sid)
+                ok = bool(await _step(r.replace_if(k, self.value, new, RUN_TTL_SECONDS)))
+                if not ok and state == PENDING:
+                    # The claim ran out with no taker: the key is free.
+                    ok = bool(await _step(r.set(k, new, nx=True, ex=RUN_TTL_SECONDS)))
+        except Exception as exc:
+            _log.warning("send_once.move_open", state=state, error=type(exc).__name__)
+            self.closed = True
+            return None
+        if ok:
+            self.value = new
+        return ok
+
     async def start(self, run_id: str) -> bool:
-        """Move the claim to the run. The route calls it right BEFORE
-        ``run_detached``, so nothing has started yet.
+        """Move the claim to the pending run. The route calls it right BEFORE
+        ``run_detached``, inside the guarded part of the stream.
 
         True: the run may start. False: another request took the key, so this
         request starts nothing. A Redis fault gives True, because the key
@@ -252,30 +316,36 @@ class SendClaim:
         """
         if self.closed or self.started:
             return True
-        new = _encode(run_id, self.member, self.digest, self.token)
-        try:
-            from acb_common.tenant_redis import organization_scope
-
-            with organization_scope(self.org):
-                r = await _client()
-                k = send_key(self.org, self.thread_id, self.member, self.sid)
-                ok = bool(await r.replace_if(k, self.value, new, RUN_TTL_SECONDS))
-                if not ok:
-                    # The claim ran out with no taker: the key is free.
-                    ok = bool(await r.set(k, new, nx=True, ex=RUN_TTL_SECONDS))
-        except Exception as exc:
-            _log.warning("send_once.start_open", error=type(exc).__name__)
-            self.closed = True
-            return True
-        if not ok:
+        self.run_id = run_id
+        moved = await self._move(
+            _encode(run_id, self.member, self.digest, self.token, PENDING), PENDING)
+        if moved is False:
             self.lost = True
             _log.warning("send_once.start_lost", thread_id=self.thread_id[:12])
             return False
-        self.value, self.run_id, self.started = new, run_id, True
+        self.started = moved is True
+        return True
+
+    async def confirm(self) -> bool:
+        """Move the pending run to the run, at its ``RUN_STARTED``.
+
+        False: another request took the key, so the run must stop before its
+        work. A Redis fault gives True (fail open).
+        """
+        if self.closed or self.confirmed or not self.started:
+            return True
+        moved = await self._move(
+            _encode(self.run_id, self.member, self.digest, self.token, RUN), RUN)
+        if moved is False:
+            self.lost = True
+            _log.warning("send_once.confirm_lost", thread_id=self.thread_id[:12])
+            return False
+        self.confirmed = moved is True
         return True
 
     async def release(self) -> None:
-        """Delete this request's own value, and never a newer one. Never raises."""
+        """Delete each value that this request wrote, and never a value of
+        another request. Never raises."""
         if self.closed:
             return
         self.closed = True
@@ -284,9 +354,9 @@ class SendClaim:
 
             with organization_scope(self.org):
                 r = await _client()
-                await r.delete_if(
-                    send_key(self.org, self.thread_id, self.member, self.sid), self.value,
-                )
+                k = send_key(self.org, self.thread_id, self.member, self.sid)
+                for value in reversed(self.written):
+                    await _step(r.delete_if(k, value))
         except Exception as exc:
             _log.warning("send_once.release_failed", error=type(exc).__name__)
 
@@ -305,7 +375,7 @@ class SendClaim:
         with contextlib.suppress(Exception):
             from orchestrator.steer import was_stopped
 
-            return bool(await was_stopped(self.thread_id))
+            return bool(await _step(was_stopped(self.thread_id)))
         return False
 
     async def settle_end(self, *, stopped: bool | None = None) -> None:
@@ -315,18 +385,25 @@ class SendClaim:
         send of the thread can clear it."""
         if stopped is None:
             stopped = await self.was_stopped()
-        if self.errored or stopped or not self.started:
+        if self.errored or stopped or not self.started or self.lost:
             await self.release()
 
     async def watch(self, gen: AsyncIterator[str]) -> AsyncIterator[str]:
-        """Pass the run's SSE lines on unchanged, and note a ``RUN_ERROR``
-        (R4). A run that raises counts as one. It writes nothing, so a tier
-        fallback or a parallel restart inside the run never touches the key
-        (R9)."""
+        """Pass the run's SSE lines on unchanged. At the first
+        ``RUN_STARTED`` it confirms the run, and a run that lost the key stops
+        there, before the load and the model. It notes a ``RUN_ERROR`` (R4),
+        and a run that raises counts as one. A tier fallback or a parallel
+        restart stays inside this one run, so it moves nothing more (R9)."""
         self.pulled = True
         try:
             async for line in gen:
-                if _event_type(line) == "RUN_ERROR":
+                kind = _event_type(line)
+                if kind == "RUN_STARTED" and not self.confirmed and not self.closed:
+                    if not await self.confirm():
+                        with contextlib.suppress(Exception):
+                            await gen.aclose()  # type: ignore[attr-defined]
+                        return
+                elif kind == "RUN_ERROR":
                     self.errored = True
                 yield line
         except Exception:
@@ -344,11 +421,12 @@ class Outcome:
 
 
 async def _stream_run_id(thread_id: str) -> str:
-    """The ``runId`` of the first ``RUN_STARTED`` that the thread's stream
-    holds, or ``""``. The same rule as ``chat_fold`` (``expect_run_id``)."""
+    """The ``runId`` of the first ``RUN_STARTED`` at the head of the thread's
+    stream, or ``""``. One ``XRANGE``, which never blocks (the rule of
+    ``chat_fold``'s ``expect_run_id``)."""
     from orchestrator import stream_relay
 
-    events = await stream_relay.replay_events(thread_id, since_id="0-0", count=5)
+    events = await _step(stream_relay.stream_head(thread_id, count=5))
     started = next((e for e in events if e.get("type") == "RUN_STARTED"), None)
     return str((started or {}).get("runId") or "")
 
@@ -358,43 +436,23 @@ async def _live_run_id(r: Any, org: str, thread_id: str) -> str:
     ``start_detached`` writes it before the run sends ``RUN_STARTED``."""
     from orchestrator import stream_relay
 
-    raw = await r.hget(stream_relay._live_runs_key(org), thread_id)
-    held = _decode_any(raw)
-    return str(held.get("runId") or "")
-
-
-def _decode_any(raw: Any) -> dict[str, Any]:
+    raw = await _step(r.hget(stream_relay._live_runs_key(org), thread_id))
     try:
         held = json.loads(raw) if raw else {}
     except (TypeError, ValueError):
-        return {}
-    return held if isinstance(held, dict) else {}
+        return ""
+    return str(held.get("runId") or "") if isinstance(held, dict) else ""
 
 
-async def _run_verdict(
-    r: Any, org: str, thread_id: str, run_id: str, *, fresh: bool, deadline: float,
-) -> str:
-    """:data:`REPLAY` or :data:`FINISHED` for a repeat of the run *run_id*.
-
-    It replays only a run that is provably *run_id*: the first
-    ``RUN_STARTED`` of the stream, or the live run of the index. A stream
-    that holds another run is never replayed (R2). A *fresh* run may still
-    be on its way: its ``start_detached`` has not reset the stream, or its
-    ``RUN_STARTED`` has not landed. So the repeat waits up to *deadline*
-    first. An old run gets its answer at once.
-    """
+async def _named(r: Any, org: str, thread_id: str, run_id: str) -> bool:
+    """True when the stream or the live run of the thread is *run_id*. Only
+    such a run is ever replayed (R1, R2)."""
     from orchestrator import stream_relay
 
-    loop = asyncio.get_running_loop()
-    while True:
-        if await _stream_run_id(thread_id) == run_id:
-            return REPLAY
-        if await stream_relay.is_active(thread_id) and \
-                await _live_run_id(r, org, thread_id) == run_id:
-            return REPLAY  # live, and the head of its stream is trimmed
-        if not fresh or loop.time() >= deadline:
-            return FINISHED
-        await asyncio.sleep(POLL_SECONDS)
+    if await _stream_run_id(thread_id) == run_id:
+        return True
+    return bool(await _step(stream_relay.is_active(thread_id))) and \
+        await _live_run_id(r, org, thread_id) == run_id
 
 
 async def begin(
@@ -404,11 +462,23 @@ async def begin(
 
     The route calls it after the room check and the edit guard, and before
     the route decision and the run cap. *org* and *member* come from the
-    session. It never raises: a Redis fault gives :data:`OPEN`.
+    session. It never raises. A Redis fault gives :data:`OPEN`, and a step
+    past :data:`BEGIN_TIMEOUT_SECONDS` gives :data:`BUSY`, never a run.
     """
+    try:
+        return await asyncio.wait_for(
+            _begin(org, thread_id, member, sid, text), BEGIN_TIMEOUT_SECONDS)
+    except TimeoutError:
+        _log.warning("send_once.timeout", thread_id=thread_id[:12])
+        return Outcome(BUSY)
+
+
+async def _begin(
+    org: str, thread_id: str, member: str, sid: str, text: str,
+) -> Outcome:
     digest = text_digest(text)
     token = uuid.uuid4().hex
-    claim_value = _encode("", member, digest, token)
+    claim_value = _encode("", member, digest, token, CLAIM)
     try:
         from acb_common.tenant_redis import organization_scope
 
@@ -422,16 +492,16 @@ async def begin(
             seen: Any = None
             stale_takes = 0
             for _ in range(_max_rounds()):
-                if await r.set(k, claim_value, nx=True, ex=CLAIM_TTL_SECONDS):
+                if await _step(r.set(k, claim_value, nx=True, ex=CLAIM_TTL_SECONDS)):
                     return Outcome(NEW, claim=SendClaim(
                         org=org, thread_id=thread_id, member=_member(member),
                         sid=sid, digest=digest, token=token, value=claim_value,
                     ))
-                raw = await r.get(k)
+                raw = await _step(r.get(k))
                 if raw is None:
                     continue  # it ran out or its run ended: claim it again
                 if raw != seen:
-                    # Each claim gets its own full wait, also a claim that
+                    # Each value gets its own full wait, also a claim that
                     # another repeat made a moment ago.
                     seen, deadline = raw, loop.time() + WAIT_SECONDS
                 held = _decode(raw)
@@ -442,25 +512,38 @@ async def begin(
                 if held["sha256"] != digest:
                     _log.info("send_once.id_reused", thread_id=thread_id[:12])
                     return Outcome(REUSED)
-                if held["run_id"]:
-                    verdict = await _run_verdict(
-                        r, org, thread_id, held["run_id"],
-                        fresh=_age(held) < FRESH_SECONDS, deadline=deadline,
-                    )
-                    _log.info("send_once.repeat", thread_id=thread_id[:12], verdict=verdict)
-                    return Outcome(verdict, run_id=held["run_id"])
-                if loop.time() < deadline:
+                run_id = held["run_id"]
+                if run_id and await _named(r, org, thread_id, run_id):
+                    _log.info("send_once.repeat", thread_id=thread_id[:12], verdict=REPLAY)
+                    return Outcome(REPLAY, run_id=run_id)
+                waiting = loop.time() < deadline
+                if run_id and held["state"] == RUN:
+                    # R2: a run that began, and that the stream no longer
+                    # holds. A fresh one may be on its way to the stream.
+                    if waiting and _age(held) < FRESH_SECONDS:
+                        await asyncio.sleep(POLL_SECONDS)
+                        continue
+                    _log.info("send_once.repeat", thread_id=thread_id[:12], verdict=FINISHED)
+                    return Outcome(FINISHED, run_id=run_id)
+                if waiting:
                     await asyncio.sleep(POLL_SECONDS)
                     continue
-                # R5 ran out with no run id. R3: with no live run, the
-                # request that claimed it died before its run started.
-                if await stream_relay.is_active(thread_id) or stale_takes >= MAX_STALE_TAKES:
+                # R5 ran out. R3: the request of this value died or left
+                # before its run began.
+                if run_id:
+                    stale = _age(held) >= PENDING_STALE_SECONDS
+                else:
+                    stale = not await _step(stream_relay.is_active(thread_id))
+                if not stale or stale_takes >= MAX_STALE_TAKES:
                     _log.info("send_once.busy", thread_id=thread_id[:12])
                     return Outcome(BUSY)
                 stale_takes += 1
-                await r.delete_if(k, raw)
-                _log.info("send_once.stale_taken", thread_id=thread_id[:12])
+                await _step(r.delete_if(k, raw))
+                _log.info("send_once.stale_taken", thread_id=thread_id[:12],
+                          pending=bool(run_id))
             return Outcome(BUSY)
+    except TimeoutError:
+        raise
     except Exception as exc:
         _log.warning("send_once.open", error=type(exc).__name__)
         return Outcome(OPEN)

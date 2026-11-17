@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import pytest
@@ -123,6 +124,9 @@ def world(monkeypatch) -> World:
     async def _replay(thread_id, since_id="0-0", count=500, **_k):
         return list(w.stream.get(thread_id, []))[:count]
 
+    async def _head(thread_id, count=5):
+        return list(w.stream.get(thread_id, []))[:count]
+
     async def _is_active(thread_id):
         return w.active.get(thread_id, False)
 
@@ -133,6 +137,7 @@ def world(monkeypatch) -> World:
 
     monkeypatch.setattr(send_once, "_client", _client)
     monkeypatch.setattr(stream_relay, "replay_events", _replay)
+    monkeypatch.setattr(stream_relay, "stream_head", _head)
     monkeypatch.setattr(stream_relay, "is_active", _is_active)
     monkeypatch.setattr(steer, "was_stopped", _was_stopped)
     # Wide against a busy CI shard: each event of a wait test lands at
@@ -177,11 +182,20 @@ async def _run_gen(run_id: str, *, error: bool = False, restart: bool = False):
 
 
 async def _first_run(w: World, run_id: str = RUN, **kw: Any) -> Any:
-    """The first send claims, and its run starts (RUN_STARTED moves the key)."""
+    """The first send claims, its route moves the key to the pending run, and
+    its RUN_STARTED confirms the run."""
     first = await _begin(**kw)
     assert first.kind == send_once.NEW
-    await first.claim.start(run_id)
+    assert await first.claim.start(run_id)
+    assert await first.claim.confirm()
     return first.claim
+
+
+def _age_value(w: World, seconds: float, org: str = ORG_A) -> None:
+    """Make the stored value *seconds* old."""
+    held = _held(w, org=org)
+    held["at"] = round(time.time() - seconds, 3)
+    w.raw.kv[_key(org)] = json.dumps(held, sort_keys=True, separators=(",", ":"))
 
 
 # ── The flag and the id (R7, R10) ────────────────────────────────────────────
@@ -249,11 +263,18 @@ async def test_the_first_send_claims_with_set_nx_and_a_60_s_ttl(world) -> None:
 
 
 async def test_the_run_start_moves_the_key_to_the_run_for_24_h(world) -> None:
-    claim = await _first_run(world)
+    first = await _begin()
+    claim = first.claim
+    assert await claim.start(RUN)
     held = _held(world)
-    assert held["run_id"] == RUN and held["claim"] == claim.token
+    assert (held["run_id"], held["state"], held["claim"]) == (RUN, "pending", claim.token)
     assert world.raw.ttl[_key()] == 24 * 3600
-    assert claim.started and claim.run_id == RUN
+    assert await claim.confirm()
+    held = _held(world)
+    assert (held["run_id"], held["state"]) == (RUN, "run")
+    assert claim.started and claim.confirmed and claim.run_id == RUN
+    # Every value that the request wrote is on its list for a release.
+    assert [json.loads(v)["state"] for v in claim.written] == ["claim", "pending", "run"]
 
 
 # ── A repeat (R1, R2) ────────────────────────────────────────────────────────
@@ -519,15 +540,111 @@ async def test_a_release_never_deletes_a_newer_claim(world) -> None:
     assert _held(world)["claim"] == new.claim.token
 
 
-async def test_a_tier_restart_inside_one_run_never_touches_the_key(world) -> None:
-    """R9: a second RUN_STARTED of the same run passes, unchanged, with no
-    Redis call. The watch writes nothing."""
+async def test_a_tier_restart_inside_one_run_moves_the_key_once(world) -> None:
+    """R9: the first RUN_STARTED confirms the run. A second RUN_STARTED of the
+    same run passes, unchanged, with no Redis call."""
     claim = await _started(world)
     before = len(world.raw.calls)
     lines = await _drain(claim.watch(_run_gen(RUN, restart=True)))
-    assert len(lines) == 4 and len(world.raw.calls) == before
     assert lines == [line async for line in _run_gen(RUN, restart=True)]
-    assert await claim.start(RUN) is True and len(world.raw.calls) == before
+    moves = [c for c in world.raw.calls[before:]
+             if c[0] == "eval" and c[1] == tr._REPLACE_IF_LUA]
+    assert len(moves) == 1 and len(world.raw.calls) == before + 1
+    assert _held(world)["state"] == "run"
+    assert await claim.start(RUN) is True and len(world.raw.calls) == before + 1
+
+
+async def test_a_lost_confirm_stops_the_run_before_its_work(world) -> None:
+    """The run's request read as dead for longer than the stale limit, and a
+    repeat took the key. Its RUN_STARTED then fails to confirm, and the run
+    stops before the load and the model."""
+    slow = await _started(world)
+    _age_value(world, send_once.PENDING_STALE_SECONDS + 1)
+    taker = await _begin()
+    assert taker.kind == send_once.NEW
+    closed: list[bool] = []
+
+    async def _gen():
+        try:
+            yield _line({"type": "RUN_STARTED", "runId": RUN})
+            yield _line({"type": "TEXT_MESSAGE_CONTENT", "delta": "work"})
+        finally:
+            closed.append(True)
+
+    assert await _drain(slow.watch(_gen())) == [] and closed == [True]
+    assert slow.lost
+    await slow.settle_end()
+    assert _held(world)["claim"] == taker.claim.token
+
+
+async def test_a_cancel_during_the_move_still_releases_the_pending_run(world) -> None:
+    """The client left while ``start`` waited on its compare and set. The
+    move landed, and the value of this request was never updated. The
+    release still finds the pending run, because it was listed first."""
+    first = await _begin()
+    claim = first.claim
+    gate = asyncio.Event()
+    real_eval = world.raw.eval
+
+    async def _eval_then_hang(script, numkeys, *args):
+        out = await real_eval(script, numkeys, *args)
+        if script == tr._REPLACE_IF_LUA:
+            await gate.wait()  # the reply never comes back
+        return out
+
+    world.raw.eval = _eval_then_hang
+    task = asyncio.create_task(claim.start(RUN))
+    await asyncio.sleep(0.05)
+    assert _held(world)["state"] == "pending"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    world.raw.eval = real_eval
+    assert json.loads(claim.value)["state"] == "claim"  # never updated
+    await claim.release()
+    assert _held(world) is None
+
+
+async def test_a_pending_run_that_nothing_names_goes_stale(world) -> None:
+    """R3 for a run id: the process died between the move and the run's
+    start. After the stale limit, a repeat takes the key and runs as new."""
+    await _started(world)  # pending, and no stream and no live run
+    _age_value(world, send_once.PENDING_STALE_SECONDS + 1)
+    out = await _begin()
+    assert out.kind == send_once.NEW
+    assert _held(world)["state"] == "claim"
+
+
+async def test_a_young_pending_run_that_nothing_names_is_busy(world) -> None:
+    await _started(world)
+    out = await _begin()
+    assert out.kind == send_once.BUSY
+    assert _held(world)["state"] == "pending"
+
+
+async def test_a_pending_run_that_the_live_index_names_is_replayed(world) -> None:
+    await _started(world)
+    world.active[THREAD] = True
+    world.live_index(ORG_A, THREAD, RUN)
+    out = await _begin()
+    assert (out.kind, out.run_id) == (send_once.REPLAY, RUN)
+
+
+async def test_a_stuck_redis_step_ends_in_busy_and_never_in_a_run(world, monkeypatch) -> None:
+    """Each Redis step has a hard timeout, and begin as a whole too."""
+    await _first_run(world)
+    monkeypatch.setattr(send_once, "STEP_TIMEOUT_SECONDS", 0.05)
+
+    async def _never(thread_id, count=5):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(stream_relay, "stream_head", _never)
+    out = await asyncio.wait_for(_begin(), 2)
+    assert out.kind == send_once.BUSY
+    monkeypatch.setattr(send_once, "STEP_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(send_once, "BEGIN_TIMEOUT_SECONDS", 0.1)
+    out = await asyncio.wait_for(_begin(), 2)
+    assert out.kind == send_once.BUSY
 
 
 async def test_an_old_run_gets_finished_at_once(world) -> None:

@@ -3764,20 +3764,22 @@ async def run_agent_stream_endpoint(
                       **timing.fields())
 
     async def _serve_run(timing: _RunTiming):
-        # HRD-17a: the claim of this send moves to its run BEFORE the run
-        # starts, in ONE compare and set. When another request took the key
-        # (it read this claim as stale), this one starts nothing.
-        if _send_claim is not None and not await _send_claim.start(run_id):
-            await _release_cap_slot()
-            await _give_back_taken()
-            timing.outcome = "send_taken"
-            yield "data: " + json.dumps({
-                "type": "RUN_ERROR",
-                "message": "This message is running in another request.",
-                "code": "send_in_progress",
-            }) + "\n\n"
-            return
         try:
+            # HRD-17a: the claim of this send moves to its run BEFORE the run
+            # starts, in ONE compare and set, inside this `try`, so the
+            # `finally` below covers a cancel during the move. When another
+            # request took the key (it read this claim as stale), this one
+            # starts nothing. The cap reservation stays: it is keyed by the
+            # thread, so it is the other request's too, and it lapses.
+            if _send_claim is not None and not await _send_claim.start(run_id):
+                await _give_back_taken()
+                timing.outcome = "send_taken"
+                yield "data: " + json.dumps({
+                    "type": "RUN_ERROR",
+                    "message": "This message is running in another request.",
+                    "code": "send_in_progress",
+                }) + "\n\n"
+                return
             async for evt in run_detached(
                 thread_id, agent_gen,
                 organization_id=_organization_id, **_detached,

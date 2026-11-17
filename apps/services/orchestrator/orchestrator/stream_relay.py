@@ -242,10 +242,13 @@ async def replay_events(
         events: list[dict[str, Any]] = []
         cursor = since_id
         while True:
+            # No BLOCK argument: XREAD then returns at once when no entry
+            # follows the cursor. `block=0` sent BLOCK 0, which waits
+            # forever, so a read past the last entry (a missing stream, or a
+            # stream of exactly `count` entries) never returned (HRD-17a).
             raw = await r.xread(
                 {_stream_key(thread_id): cursor},
                 count=count,
-                block=0,  # don't block — return immediately if no new events
             )
             if not raw:
                 break
@@ -935,6 +938,30 @@ async def latest_step(thread_id: str) -> str | None:
         if isinstance(ev, dict):
             events.append(ev)
     return step_from_events(events)
+
+
+async def stream_head(thread_id: str, count: int = 5) -> list[dict[str, Any]]:
+    """The first *count* events of the thread's stream, oldest first.
+
+    ONE ``XRANGE``, which never blocks. A missing stream gives ``[]``. The
+    send-once check (``orchestrator.send_once``, HRD-17a) reads the
+    ``RUN_STARTED`` of the run that the stream holds here.
+    """
+    r = await _get_client()
+    try:
+        entries = await r.xrange(_stream_key(thread_id), "-", "+", count=count)
+    except aioredis.ResponseError:
+        return []
+    events: list[dict[str, Any]] = []
+    for eid, fields in entries or []:
+        try:
+            evt = json.loads(fields.get("event", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(evt, dict):
+            evt["_stream_id"] = eid
+            events.append(evt)
+    return events
 
 
 async def stream_exists(thread_id: str) -> bool:
