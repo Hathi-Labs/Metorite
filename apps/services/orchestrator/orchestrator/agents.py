@@ -540,6 +540,30 @@ def _spawn_subagents_enabled(org: str | None = None) -> bool:
         return False
 
 
+def _find_enabled(org: str | None = None) -> bool:
+    """True when ``FIND_ORGS`` names this assistant's organization (WS-FIND
+    FIND-5). The rule is ``gateway.retrieval.find.find_allowed``, the one
+    reader. *org* is the organization of the caller's server-side
+    ``UserContext``. With none, the bound tenant and then the run's org
+    answer, as for ``spawn_subagents``. A caller with none of them fails
+    closed. Never raises. ``GET /search/names`` asks the same rule again.
+    """
+    try:
+        from gateway.retrieval.find import find_allowed
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return find_allowed(org)
+    except Exception:
+        return False
+
+
 def _context_recency_enabled() -> bool:
     """The one reader of ``CONTEXT_RECENCY``, in ``acb_skills`` (CX-1)."""
     try:
@@ -1182,6 +1206,13 @@ def build_orchestrator_agent(
         # `after` and prints the stamp.
         company_tool = search_company_dated if recency else search_company
         retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
+        # WS-FIND FIND-5: `resolve_name` after `search_company`, only for an
+        # org of FIND_ORGS. So the tool list and the cached prefix of every
+        # other org stay byte for byte. Fence: tests/unit/test_resolve_name_tool.py.
+        if _find_enabled(organization_id):
+            from acb_skills.company_search_tools import resolve_name
+
+            retrieval_tools.insert(1, resolve_name)
         if proposals:
             retrieval_tools += [propose_page, propose_edit]
     else:
