@@ -13,7 +13,9 @@ who is no admin gets "Only an admin of your organization opens Organisation."
 The Organisation page reads `?tab=` once (`orgTab.ts`), so the chat lands on
 Members & roles. `acb_skills/chat_parity.py` gains `APP_PAGE`: the live page of
 each app, for an act that has no chat tool yet. `None` marks an app with no
-live pane (notes, memory, agents).
+live pane (notes, memory, agents). The right of the admin gate (the chat needs
+`admin:members:manage`, the sidebar shows the page for `admin:members:read`) is
+task 3677 (PAR-1c).
 
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
