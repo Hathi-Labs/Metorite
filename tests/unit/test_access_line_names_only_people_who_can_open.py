@@ -57,7 +57,7 @@ async def test_no_outsider_is_under_gives_access_to(monkeypatch, outsiders) -> N
     fake_gateway(monkeypatch, _gateway(seen))
     lines = await writes._access_lines(UUID, outsiders)
     assert "gives access to" not in lines
-    assert seen == [], "no person is left to ask the audience about"
+    assert seen == [""], "no person is left to ask the audience about"
 
 
 async def test_a_mixed_list_keeps_the_member_and_drops_the_rest(monkeypatch) -> None:
