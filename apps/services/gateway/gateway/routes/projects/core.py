@@ -3980,7 +3980,9 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Four callers, each after its own visibility load, so
+    the lock read it. Task 3648: ``agent_runs._settle_task_lane`` is a fifth
+    caller, in the release of a run (a member's "Close the run" too), after
+    the run lock. Four more callers, each after its own visibility load, so
     the lock reads by id only: ``claim_task``; ``tasks.agent_delete_task``
     (WS-55 EA-6h, so the version and title checks hold until the delete);
     ``activities._load_agent_comment`` (WS-55 MCP-G9 fix round 3, so no new

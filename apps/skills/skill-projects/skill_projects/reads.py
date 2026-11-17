@@ -2171,7 +2171,7 @@ ATTENTION_ACTIONS = {
         "Resume (asks the same agent client to continue, and the run keeps the task)"
         " or Close the run (frees the task for anyone)"
     ),
-    "close_run": "Close the run (frees the task for anyone, and the task keeps its status)",
+    "close_run": "Close the run (frees the task for anyone, and the task moves to its lane)",
     "open_blocker": "open the blocker and give it an owner or move it on",
 }
 

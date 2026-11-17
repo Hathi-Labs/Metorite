@@ -9570,7 +9570,8 @@ ASK_ON_TASK = Tool(
         " The my_work text holds the rule."
         " Send external_link, an https link to your session, when you have one."
         " When the member answers in another place, such as your chat, call"
-        " record_outside_decision at once.[[ASK_IMAGES]]" + _UNTRUSTED_NOTE
+        " record_outside_decision at once.[[ASK_IMAGES]]"
+        + prompts.LANE_ASK_RULE + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ASK_INPUT,
@@ -10166,7 +10167,7 @@ _RELEASE_INPUT: dict[str, Any] = {
 #: reasons are the closed list ``agent_runs.RELEASE_REASONS``, and a pin test
 #: compares the two.
 RELEASE_REASONS: tuple[str, ...] = (
-    "already_released", "not_started_lane",
+    "already_released", "not_started_lane", "archived",
     "open_pull_request", "started_work", "nothing_started", "no_todo_lane",
     "no_status_before_claim", "no_task",
 )

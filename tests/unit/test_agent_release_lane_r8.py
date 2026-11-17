@@ -26,7 +26,6 @@ Against a REAL Postgres (the SQL reads ``pm_activities`` and ``pm_task_refs``),
 through the real router, as the non-privileged role of the phase-4 rehearsal.
 """
 
-# ruff: noqa: F811 - the fixtures come in by import and are used as arguments
 from __future__ import annotations
 
 import uuid
@@ -114,13 +113,12 @@ def _lane_of(p: Any, task: str) -> tuple[str, str]:
 
 
 @pytest.fixture(scope="module")
-def world(promoted):  # noqa: F811
+def world(promoted):  # noqa: F811 - a fixture of the same name
     email = "lanes@release-r8.test"
     conn = _seed_connection(promoted, promoted.org_a, email)
     return SimpleNamespace(
         p=promoted, email=email, org=promoted.org_a,
         agent=_principal(email, promoted.org_a, agent_connection=conn),
-        other=_principal("other@release-r8.test", promoted.org_a, agent_connection=conn),
     )
 
 
@@ -316,3 +314,69 @@ async def test_a_done_task_is_never_moved_by_a_release(w) -> None:
     assert released.status_code == 200, released.text
     assert released.json()["task_status"]["reason"] == "not_started_lane"
     assert _lane_of(w.p, task) == ("Done", "done")
+
+
+# ── 6. A person's own move is never reversed (verifier finding F4) ─────────
+
+
+def _person_move(p: Any, board: SimpleNamespace, task: str, to_lane: str, lane_from: str) -> None:
+    """The task moves by hand in the app: a ``status_change`` of the SAME
+    member, with no ``via`` (a person's move never carries the stamp of a
+    client)."""
+    import json
+
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_tasks SET status_id = CAST(:s AS uuid) "
+                       "WHERE id = CAST(:t AS uuid)"), {"s": board.lanes[to_lane], "t": task})
+        c.execute(text(
+            "INSERT INTO pm_activities (organization_id, task_id, type, body, meta, created_by) "
+            "VALUES (CAST(:o AS uuid), CAST(:t AS uuid), 'status_change', :b, "
+            "CAST(:m AS jsonb), :e)"),
+            {"o": board.org, "t": task, "b": f"{lane_from} → {to_lane}", "e": board.email,
+             "m": json.dumps({"from": lane_from, "to": to_lane,
+                              "from_category": "todo", "to_category": "in_progress"})})
+
+
+async def test_a_move_that_the_member_made_by_hand_before_the_claim_is_not_reversed(w) -> None:
+    board = _board(w.p, w.org, w.email, STANDARD)
+    task = _task(w.p, board, "To do")
+    _person_move(w.p, board, task, "In progress", "To do")
+    # The agent claims a task that is already started (no move), then gives it
+    # back with nothing done.
+    out = await _claim_and_release(w, task)
+    assert out["task_status"]["moved"] is False
+    assert out["task_status"]["reason"] == "no_status_before_claim"
+    assert _lane_of(w.p, task) == ("In progress", "in_progress")
+
+
+async def test_a_move_that_the_member_made_by_hand_after_the_claim_is_not_reversed(w) -> None:
+    board = _board(w.p, w.org, w.email, STANDARD)
+    task = _task(w.p, board, "Backlog")
+    async with _session(w.p) as call:
+        claimed = await call(w.agent, "POST", f"/projects/tasks/{task}/claim", {})
+        run = claimed.json()["agent_run_id"]
+        # After the claim, the member moves it by hand (To do, then In progress).
+        _person_move(w.p, board, task, "In progress", "To do")
+        released = await call(w.agent, "POST", f"/projects/agent-runs/{run}/release", {})
+    assert released.status_code == 200, released.text
+    assert released.json()["task_status"]["reason"] == "no_status_before_claim"
+    assert _lane_of(w.p, task) == ("In progress", "in_progress")
+
+
+# ── 7. An archived task is left alone (verifier finding F8) ────────────────
+
+
+async def test_an_archived_task_does_not_move_on_a_release(w) -> None:
+    board = _board(w.p, w.org, w.email, STANDARD)
+    task = _task(w.p, board, "Backlog")
+    async with _session(w.p) as call:
+        claimed = await call(w.agent, "POST", f"/projects/tasks/{task}/claim", {})
+        run = claimed.json()["agent_run_id"]
+        _ref(w.p, board, task, "branch")
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET archived_at = now() "
+                           "WHERE id = CAST(:t AS uuid)"), {"t": task})
+        released = await call(w.agent, "POST", f"/projects/agent-runs/{run}/release", {})
+    assert released.status_code == 200, released.text
+    assert released.json()["task_status"]["reason"] == "archived"
+    assert _lane_of(w.p, task) == ("In progress", "in_progress")

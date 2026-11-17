@@ -2964,7 +2964,7 @@ _REFS_OF_TASK_SQL = "SELECT kind, state FROM pm_task_refs WHERE task_id = CAST(:
 #: The last status move of a task, with who wrote it: the move that a claim
 #: made, when this agent wrote it.
 _LAST_MOVE_SQL = (
-    "SELECT created_by, meta FROM pm_activities WHERE task_id = CAST(:tid AS uuid)"
+    "SELECT created_by, created_at, meta FROM pm_activities WHERE task_id = CAST(:tid AS uuid)"
     " AND type = 'status_change' ORDER BY created_at DESC, id DESC LIMIT 1"
 )
 
@@ -2975,7 +2975,7 @@ _OPEN_PR_STATES = frozenset({None, "open", "draft"})
 #: Why the release left or moved the task: the closed list of the ``reason``
 #: of ``task_status`` in the answer of the tool.
 RELEASE_REASONS = (
-    "already_released", "not_started_lane",
+    "already_released", "not_started_lane", "archived",
     "open_pull_request", "started_work", "nothing_started", "no_todo_lane",
     "no_status_before_claim", "no_task",
 )
@@ -3013,6 +3013,8 @@ async def _settle_task_lane(
         return {"name": None, "category": None, "moved": False, "reason": "no_task"}, None
     task = await lock_task(db, tid)
     status = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
+    if getattr(task, "archived_at", None) is not None:
+        return _lane_report(status, moved=False, reason="archived"), None
     if status.category != STARTED_CATEGORY:
         return _lane_report(status, moved=False, reason="not_started_lane"), None
     refs = (await db.execute(text(_REFS_OF_TASK_SQL), {"tid": tid})).fetchall()
@@ -3029,8 +3031,16 @@ async def _settle_task_lane(
     else:
         last = (await db.execute(text(_LAST_MOVE_SQL), {"tid": tid})).first()
         meta = from_jsonb(last.meta) if last is not None else None
-        mine = last is not None and last.created_by == actor(user)
-        if mine and isinstance(meta, dict) and meta.get("to_category") == STARTED_CATEGORY:
+        # The move of THIS claim: the same member, through the same client
+        # (`meta.via`, which a person's move in the app never carries), and
+        # written no earlier than this run. A move that a person made by
+        # hand, even the same member's, is never reversed (verifier F4).
+        mine = (
+            last is not None and last.created_by == actor(user)
+            and isinstance(meta, dict) and meta.get("via") == run.client_via
+            and last.created_at >= run.created_at
+        )
+        if mine and meta.get("to_category") == STARTED_CATEGORY:
             target = lane_like(lanes, meta.get("from"), meta.get("from_category"))
         else:
             target = None
@@ -3110,7 +3120,7 @@ async def release_agent_run(
             # A second release of a released run: no write, the lane as it is.
             held = None
             if run.task_id is not None:
-                task = await lock_task(db, str(run.task_id))
+                task = await require_row(db, "pm_tasks", str(run.task_id), "Task")
                 held = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
             lane = (_lane_report(held, moved=False, reason="already_released")
                     if held is not None

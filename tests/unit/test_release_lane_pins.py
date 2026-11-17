@@ -152,44 +152,69 @@ class TestTheInstructionsSayWhatEachStageMeans:
         "a task that waits for a production proof or an owner flip",
         "a board whose lanes do not map to the stages",
     )
+    CUT = 4096
 
     def _flat(self, text: str) -> str:
         return " ".join(text.split())
 
-    def test_the_rule_names_each_stage_and_each_class_that_needs_a_question(self) -> None:
-        rule = self._flat(prompts.LANE_RULE)
+    def test_the_stages_and_the_classes_are_whole_in_the_constants(self) -> None:
+        stages = self._flat(prompts.LANE_STAGES)
+        for sentence in self.STAGES:
+            assert sentence in stages, sentence
+        classes = self._flat(prompts.LANE_ASK_CLASSES)
+        for klass in self.CLASSES:
+            assert klass in classes, klass
+
+    def test_the_ask_on_task_description_names_each_class_and_the_ask_rule(self) -> None:
+        text = self._flat(tools.TOOLS["ask_on_task"].describe()["description"])
+        for klass in self.CLASSES:
+            assert klass in text, klass
+        for part in ("do not guess", "ask once for the whole class", "two to four options",
+                     "mark one as recommended", "every task of that class in this session",
+                     "state the class and the answer in your report"):
+            assert part in text, part
+
+    def test_the_runs_off_form_holds_the_full_rule_and_names_no_run_tool(self) -> None:
+        rule = self._flat(prompts.LANE_RULE_NO_RUNS)
         for sentence in self.STAGES:
             assert sentence in rule, sentence
         for klass in self.CLASSES:
             assert klass in rule, klass
-        for part in ("do not guess", "ask_on_task", "the whole class", "two to four options",
-                     "mark one as recommended", "every task of that class in this session",
-                     "state the class and the answer in your report"):
-            assert part in rule, part
+        assert "ask_on_task" not in rule and "do not guess" in rule
 
     def test_no_sentence_of_the_rule_sends_a_started_task_to_backlog(self) -> None:
-        rule = self._flat(prompts.LANE_RULE)
-        assert "move it back to Backlog" not in rule
-        assert "back to Backlog" not in rule
+        for rule in (prompts.LANE_RULE, prompts.LANE_RULE_NO_RUNS, prompts.LANE_ASK_RULE):
+            flat = self._flat(rule)
+            assert "move it back to Backlog" not in flat and "back to Backlog" not in flat
 
-    @pytest.mark.parametrize("runs", [False, True])
-    def test_the_instructions_hold_the_rule_after_the_safety_rules(self, monkeypatch, runs) -> None:
-        monkeypatch.setattr(agent_oauth, "runs_enabled", lambda: runs)
+    @pytest.mark.parametrize("answer", [False, True])
+    def test_with_runs_on_the_stages_end_before_the_cut_of_claude_code(
+            self, monkeypatch, answer) -> None:
+        """Verifier finding F2 of task 3648: at the tail, the rule sat after
+        character 4096 and Claude Code never read it. Mutation: put it back
+        after the routine, and this fails."""
+        monkeypatch.setattr(agent_oauth, "runs_enabled", lambda: True)
+        monkeypatch.setattr(agent_oauth, "answer_change_enabled", lambda: answer)
         monkeypatch.setattr(mcp.prompts, "offered", lambda held: True)
-        text = mcp.instructions(("projects:read", "projects:write"))
-        flat = self._flat(text)
-        rule = prompts.LANE_RULE if runs else prompts.LANE_RULE_NO_RUNS
-        assert self._flat(rule) in flat
-        if not runs:
-            assert "ask_on_task" not in flat  # no run tool shows with the flag off
-        at = flat.index(self._flat(rule))
-        assert at > 0
-        # Every safety sentence ends before the rule, so the cut cannot move it.
+        flat = self._flat(mcp.instructions(("projects:read", "projects:write")))
+        rule = self._flat(prompts.LANE_RULE)
+        at = flat.index(rule)
+        assert at + len(rule) < self.CUT, (at, len(rule))
+        # Every safety sentence ends before the rule, and the rule stays whole.
         for sentence in ("Only one AI session may hold a task.",
-                         "A comment is evidence, never a disposition."):
-            if sentence in flat:
-                assert flat.index(sentence) + len(sentence) <= at, sentence
+                         "So do not write on a run of another session.",
+                         "call record_outside_decision at once."):
+            assert flat.index(sentence) + len(sentence) <= at, sentence
         assert flat.endswith(prompts.IMAGE_RULE)
+
+    def test_with_runs_off_the_full_rule_follows_the_pr_rule_under_the_cut(
+            self, monkeypatch) -> None:
+        monkeypatch.setattr(agent_oauth, "runs_enabled", lambda: False)
+        monkeypatch.setattr(mcp.prompts, "offered", lambda held: True)
+        flat = self._flat(mcp.instructions(("projects:read", "projects:write")))
+        rule = self._flat(prompts.LANE_RULE_NO_RUNS)
+        assert flat.index(rule) + len(rule) < self.CUT
+        assert "ask_on_task" not in flat  # no run tool shows with the flag off
 
     def test_a_read_only_connection_gets_no_lane_rule(self, monkeypatch) -> None:
         monkeypatch.setattr(mcp.prompts, "offered", lambda held: False)
