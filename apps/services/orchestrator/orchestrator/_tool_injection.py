@@ -1113,12 +1113,13 @@ def _permission_gate(
     actually about to do, not just their name.
 
     ``facts`` are fields that the CALLER knows and the arguments do not
-    carry. The MCP gate passes ``mcp_tool`` and the server's
-    ``mcp_annotations`` (H-299), so ``decide()`` applies its MCP rule. They
-    are set after the argument mapping, so a tool argument cannot write them.
-    A caller that needs a fail-closed answer must not trust ``gate_error``:
-    the MCP gate shows a card for every code but ``mcp_read_only`` and
-    ``mcp_read_only_key`` (MCP-C2).
+    carry. The MCP gate passes ``mcp_tool``, the server's
+    ``mcp_annotations`` (H-299) and ``mcp_member_present`` (MCP-NC1), so
+    ``decide()`` applies its MCP rule. They are set after the argument
+    mapping, so a tool argument cannot write them. A caller that needs a
+    fail-closed answer must not trust ``gate_error``: the MCP gate shows a
+    card for every code but ``mcp_read_only``, ``mcp_read_only_key`` (MCP-C2)
+    and ``mcp_member_run`` (MCP-NC1).
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
@@ -3103,19 +3104,44 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
     plain object are left as they are. The mode is read BEFORE the check is
     imported, so a box with no ``acb_skills`` runs as before while the flag
     is ``off``, and skips the check with a warning while it is on.
+
+    WS-FIND FIND-7 (``find_engine.md`` §5.5): the same provider carries the
+    "not found" check to an agent that holds ``search_company``, while
+    ``FIND_CLAIM_CHECK`` is not ``off``. The flag is global, but the check
+    acts only for an org of ``FIND_ORGS``, because pass 2 exists only there.
+    The org is the run binding's (:func:`_run_org`), and the rule is
+    ``gateway.retrieval.find.find_allowed``, the one reader of ``FIND_ORGS``
+    that ``agents._find_enabled`` wraps for the tool list. No org, or a fault,
+    reads as off. For an org off the list, and with the flag ``off``, this
+    seam does what it did before.
     """
-    from acb_common.settings import crm_answer_check_mode
+    from acb_common.settings import crm_answer_check_mode, find_claim_check_mode
     from acb_skills.subagent_contract import INTERNAL_AGENTS
 
     mode = crm_answer_check_mode()
-    if mode == "off":
+    claim_mode = find_claim_check_mode()
+    if claim_mode != "off":
+        try:
+            from gateway.retrieval.find import find_allowed
+
+            org = _run_org()
+            find_on = bool(org) and find_allowed(org)
+        except Exception:  # a fault never turns the check on
+            find_on = False
+        if not find_on:
+            claim_mode = "off"
+    if mode == "off" and claim_mode == "off":
         return
     if str(agent_name or "") in INTERNAL_AGENTS:
         # WS-67 OA-9b hardening item 5: the check can retry, which adds a
         # model call to the fixed number of a spawn child.
         return
     try:
-        from acb_skills.answer_check import AnswerCheckProvider, holds_crm_tool
+        from acb_skills.answer_check import (
+            AnswerCheckProvider,
+            holds_crm_tool,
+            holds_search_tool,
+        )
         from agent_framework import Agent
     except ImportError as exc:
         _log.warning("executor.answer_check_unavailable", error=str(exc)[:200])
@@ -3126,10 +3152,13 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
         if not isinstance(agent, Agent):
             continue
         held = [_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool]
-        if not holds_crm_tool(held):
+        numbers = mode if mode != "off" and holds_crm_tool(held) else "off"
+        claims = claim_mode if claim_mode != "off" and holds_search_tool(held) else "off"
+        if numbers == "off" and claims == "off":
             continue
-        agents[i] = agent_with_providers(agent, [AnswerCheckProvider(mode)])
-        _log.info("executor.answer_check_on", agent=agent_name, mode=mode)
+        agents[i] = agent_with_providers(agent, [AnswerCheckProvider(numbers, claim_mode=claims)])
+        extra = {"claim_mode": claims} if claims != "off" else {}
+        _log.info("executor.answer_check_on", agent=agent_name, mode=numbers, **extra)
 
 
 def _apply_tool_result_spill(agents: list[Any], agent_name: str | None) -> None:
@@ -3905,7 +3934,11 @@ async def _record_pack_call(
     (:func:`_pack_ws_lock`), so two pack calls at once each see the other's
     update, and none is lost. Condition 5: the mailbox event "Now working on
     <mailbox>" goes to the run's own queue, and a run with no queue gets it on
-    its relay stream (``executor._emit_to_run_or_relay``). Never raises."""
+    its relay stream (``executor._emit_to_run_or_relay``).
+
+    HRD-11a: then, under the same lock, the item in focus of the chat
+    (``executor._record_chat_focus``), for an email or a Projects owner. Only
+    a run with its own binding writes it (``CHAT_FOCUS_ORGS``). Never raises."""
     try:
         from orchestrator import executor as ex
 
@@ -3913,9 +3946,9 @@ async def _record_pack_call(
         call = {"id": "", "name": name, "args": args, "result": str(result), "success": True}
         async with _pack_ws_lock(ctx):
             before, _preamble = await ex._email_working_set_for(owner, ctx)
-            if before is None:
-                return
-            await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            if before is not None:
+                await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            await ex._record_chat_focus(owner, ctx, [call])
     except Exception as exc:  # the working set never costs the call
         _log.warning("executor.pack_ws_unwritten", tool=name, error_type=type(exc).__name__)
 
@@ -4891,10 +4924,11 @@ async def _inject_mcp_servers(
     A registry row always names its org, so there are no org-less "global"
     servers.
 
-    **The card** (H-299). *member_present* is True only when a member can
-    answer a confirmation card in this run. The executor passes it. The
-    default is False, so a caller that does not say refuses each MCP tool
-    that needs a card (``_maf_mcp.McpPermissionGate``).
+    **The card** (H-299, MCP-NC1). *member_present* is True only when a
+    member started this run. The executor passes it. Then a tool runs with no
+    card, unless its server is set to always confirm. The default is False,
+    so a caller that does not say refuses each MCP tool that does not say
+    read-only, and each tool that needs a card (``_maf_mcp.McpPermissionGate``).
 
     **No stdio** (D85). A stdio row starts a process on the host, so both
     paths drop it and log ``mcp.stdio_refused``.
@@ -5196,7 +5230,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
         out.append(_maf_mcp.McpServer(
             name=str(srv.name), url=str(srv.url), headers=_str_map(srv.headers),
             # H-300: the admin's "always confirm" switch. A row with no key
-            # reads as false, so the server keeps its H-299 behaviour.
+            # reads as false, so the gate applies the rule of item 33
+            # (MCP-NC1): no card in a verified member's run in Metorite, and
+            # the H-299 refusal of a write with no member and on WhatsApp.
             always_confirm=getattr(srv, "always_confirm", False) is True,
             # MCP-C2: the admin's read-only key, as the registry parsed it
             # once (``StoredServer.read_only_key``). Nothing parses it again.

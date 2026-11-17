@@ -392,6 +392,16 @@ class Settings(BaseSettings):
     # A value on a box is the grant `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_check.py.
     crm_answer_check: str = "off"
+    # `find_claim_check` (WS-FIND FIND-7, `find_engine.md` §5.5 and §8) is the
+    # "not found" check of a chat answer: `off` (the default), `shadow` (log
+    # one line for an answer that says a record does not exist with no pass 2
+    # of `search_company` in the turn, no hold and no retry) or `on` (hold the
+    # answer and give the chat one more pass, the one retry of the run). Any
+    # other value reads as `off`. The one reader is `find_claim_check_mode`
+    # below. It is not a `*_ORGS` or `*_MODES` key, so a change needs a
+    # restart. `shadow` is AGENT-SAFE. `on` is the grant `enforcement-flip`,
+    # after 7 days of shadow (D-FIND-8). Fence: tests/unit/test_answer_not_found.py.
+    find_claim_check: str = "off"
 
     # `tool_result_spill` (CTX-1, Metorite #825, `one_assistant_context.md`
     # §7.1) keeps a large tool result out of the prompt: the model reads a
@@ -748,10 +758,20 @@ class Settings(BaseSettings):
     # `search_company` says how it matched (`matched_by`, `covers`, `of`), and
     # the hit with the most words comes first. `*` opens every org. Empty
     # opens none, and the answer is the one of KR-ZERO, byte for byte. It acts
-    # only with CONTEXT_RECENCY on. Reader: `gateway.retrieval.find.
-    # find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # only with CONTEXT_RECENCY on. It also opens the chat tool `resolve_name`
+    # and its route `GET /search/names` (FIND-5). Reader: `gateway.retrieval.
+    # find.find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
     # Spec: find_engine.md section 8.
     find_orgs: str = ""
+    # WS-FIND HRD-21: CHAT_SEARCH_ORGS lists the org ids where company search
+    # reads the member's own past chats (the `chat` source, rung 6). `*`
+    # opens every org. Empty opens none, and the answer is the one of before
+    # HRD-21, byte for byte: `apps=chat` and each other unknown app get the
+    # 422 of before, whose list of keys has no `chat`. Reader: `gateway.retrieval.find.
+    # chat_search_named`. A SIGHUP reload applies a change
+    # (docs/flag_reload.md). The flip waits for the owner's preview. Spec:
+    # find_engine.md sections 6 and 8.
+    chat_search_orgs: str = ""
     # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
     # door runs a first-party logic module (`logic:<name>`). `*` opens every
     # org. Empty opens none. Reader: `gateway.routes.studio.flags.
@@ -1070,6 +1090,20 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). It calls no model.
     # Fence: tests/unit/test_progress_notice.py.
     chat_progress_notice_orgs: str = ""
+
+    # ── The item in focus of a chat (HRD-11a, chat_failure_modes.md §6) ─────
+    #
+    # CHAT_FOCUS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default, and each turn keeps the bytes of its prompt. On, the chat
+    # keeps the email or the Projects task that a tool call read or acted on
+    # last, for each chat and member, in tenant Redis. The per-turn context of
+    # the orchestrator then shows its kind, its id and its link, after the
+    # OA-4 block, with the rule for "it", "this" and "mark it done". A shared
+    # room, a WhatsApp run and a delegated run read and write nothing. The one
+    # reader is `acb_skills.chat_focus.focus_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_focus_item.py.
+    chat_focus_orgs: str = ""
 
     # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
     #
@@ -2840,6 +2874,26 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``FIND_CLAIM_CHECK`` (WS-FIND FIND-7).
+FIND_CLAIM_CHECK_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
+
+def find_claim_check_mode() -> str:
+    """The ONE reader of ``FIND_CLAIM_CHECK``: ``off``, ``shadow`` or ``on``.
+
+    Any other value, and a settings load that fails, read as ``off``. It
+    lives here, beside :func:`crm_answer_check_mode`, so that the
+    orchestrator reads the mode before it imports the check
+    (``find_engine.md`` §5.5).
+    """
+    try:
+        raw = str(getattr(get_settings(), "find_claim_check", "off") or "off")
+    except Exception:  # a broken settings load never turns the check on
+        return "off"
+    mode = raw.strip().lower()
+    return mode if mode in FIND_CLAIM_CHECK_MODES else "off"
 
 
 #: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).
