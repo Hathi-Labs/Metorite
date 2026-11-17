@@ -173,6 +173,13 @@ CREATE POLICY calendar_task_links_tenant_isolation ON calendar_task_links
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE chat_card_record ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_card_record FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chat_card_record_tenant_isolation ON chat_card_record;
+CREATE POLICY chat_card_record_tenant_isolation ON chat_card_record
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE chat_join_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_join_log FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chat_join_log_tenant_isolation ON chat_join_log;
@@ -1584,6 +1591,13 @@ ALTER TABLE studio_object_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE studio_object_counters FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS studio_object_counters_tenant_isolation ON studio_object_counters;
 CREATE POLICY studio_object_counters_tenant_isolation ON studio_object_counters
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_mcp_tool_approvals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_mcp_tool_approvals FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_mcp_tool_approvals_tenant_isolation ON studio_mcp_tool_approvals;
+CREATE POLICY studio_mcp_tool_approvals_tenant_isolation ON studio_mcp_tool_approvals
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

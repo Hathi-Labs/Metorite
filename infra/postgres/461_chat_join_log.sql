@@ -1,5 +1,5 @@
 -- ============================================================================
--- 457_chat_join_log.sql - the shadow record of the join match (WS-CO CO-4,
+-- 461_chat_join_log.sql - the shadow record of the join match (WS-CO CO-4,
 -- task 3503).
 --
 -- What: one new table. `chat_join_log` holds one row for each new chat whose
@@ -52,7 +52,7 @@
 -- in tests/unit/test_tenancy_boundary.py matches the two with no comma
 -- between. The generated phases carry the table.
 --
--- The number is taken at build time (R1): 457 was booked for this task.
+-- The number is taken at build time (R1): 461 was booked for this task.
 -- Check it again at merge. The fences find this file by CONTENT, never by
 -- number (R1).
 -- ============================================================================

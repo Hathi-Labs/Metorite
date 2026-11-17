@@ -81,6 +81,9 @@ UPDATE calendar_entry_attendees SET organization_id = (SELECT id FROM organizati
 UPDATE calendar_task_links SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE chat_card_record SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE chat_join_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -685,6 +688,9 @@ UPDATE studio_saved_views SET organization_id = (SELECT id FROM organization WHE
  WHERE organization_id IS NULL;
 
 UPDATE studio_object_counters SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_mcp_tool_approvals SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE studio_object_fields SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

@@ -209,6 +209,22 @@ def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not pin_allowed(None)
 
 
+def test_chat_card_record_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-17, chat_organization.md §16.3. The reload list holds the key,
+    and the one reader of the card record switch sees a change with no restart."""
+    from orchestrator.card_record import record_allowed
+
+    assert fr.reloadable("CHAT_CARD_RECORD_ORGS")
+    monkeypatch.setenv("CHAT_CARD_RECORD_ORGS", "")
+    get_settings.cache_clear()
+    assert not record_allowed("acme")
+    env(**{**_START, "CHAT_CARD_RECORD_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_CARD_RECORD_ORGS",)
+    assert record_allowed("acme")
+    assert not record_allowed("globex")
+    assert not record_allowed(None)
+
+
 def test_chat_join_shadow_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-CO CO-4, chat_organization.md §7. The reload list holds the key, and
     the one reader of the shadow switch sees a change with no restart."""

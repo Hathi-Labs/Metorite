@@ -514,6 +514,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "task_accounts": 1,
         # WS-CO CO-11: the fake holds no chat pin of the member.
         "chat_member_rows": 0,
+        # WS-CO CO-17: the fake holds no approved-card row of the member.
+        "chat_card_rows": 0,
         # WS-CO CO-4: the fake holds no shadow row of the member.
         "chat_join_rows": 0,
         "private_chat_sessions": 2,

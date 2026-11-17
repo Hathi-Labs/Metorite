@@ -267,6 +267,18 @@ ALTER TABLE calendar_task_links ADD CONSTRAINT calendar_task_links_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS calendar_task_links_org_idx ON calendar_task_links (organization_id);
 
+-- chat_card_record
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM chat_card_record WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: chat_card_record still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE chat_card_record ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE chat_card_record ADD CONSTRAINT chat_card_record_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS chat_card_record_org_idx ON chat_card_record (organization_id);
+
 -- chat_join_log
 DO $$
 BEGIN
@@ -2689,6 +2701,18 @@ ALTER TABLE studio_object_counters ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_object_counters ADD CONSTRAINT studio_object_counters_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_object_counters_org_idx ON studio_object_counters (organization_id);
+
+-- studio_mcp_tool_approvals
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_mcp_tool_approvals WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_mcp_tool_approvals still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_mcp_tool_approvals ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_mcp_tool_approvals ADD CONSTRAINT studio_mcp_tool_approvals_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_mcp_tool_approvals_org_idx ON studio_mcp_tool_approvals (organization_id);
 
 -- studio_object_fields
 DO $$

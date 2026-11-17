@@ -789,6 +789,11 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # on her private chats. So the count is each row of the member.
     _PersonRows("chat_member_rows", "chat_session_member",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-17: the cards that the member approved, one row each, with no
+    # card text. The rows are the member's only, so they go with the member.
+    # Same clause as the line above, and the same place: before the chats.
+    _PersonRows("chat_card_rows", "chat_card_record",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-CO CO-4: the shadow rows of the join match of THIS organization. A
     # row holds codes and ids of the member's own chats, and nobody else's,
     # so it goes with the member. The clause names the bound org beside RLS,
