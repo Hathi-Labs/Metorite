@@ -121,13 +121,15 @@ def _shows(ch: str) -> bool:
     return ch not in _UNSEEN_POINTS and unicodedata.category(ch) not in _UNSEEN_CATEGORIES
 
 
-#: The headings that the chat list draws itself: ``PINNED_GROUP`` and
-#: ``DATE_GROUPS`` of ``workbench/control_plane/src/lib/shell/chatHistory.ts``,
-#: in its order. A topic of one of these names would read as a heading of the
+#: The headings that the chat list draws itself: ``PINNED_GROUP``,
+#: ``DATE_GROUPS``, ``RECENT_GROUP`` and ``OTHER_GROUP`` of
+#: ``workbench/control_plane/src/lib/shell/chatHistory.ts``, in that order. A
+#: topic of one of these names would read as a heading of the
 #: list, so :func:`clean_name` refuses it. The fence ``test_chat_topic.py``
 #: reads the TypeScript, so the two lists cannot drift.
 LIST_HEADINGS: tuple[str, ...] = (
-    "Pinned", "Today", "Yesterday", "Previous 7 days", "Previous 30 days", "Older")
+    "Pinned", "Today", "Yesterday", "Previous 7 days", "Previous 30 days", "Older",
+    "Recent", "Other")
 
 #: The words of the topic chip and its menu: ``NO_TOPIC``, ``COMPANY_HEADING``,
 #: ``MINE_HEADING`` and ``NEW_TOPIC`` of
