@@ -25,6 +25,8 @@ export const STUDIO_REDIRECTS = [
   { source: "/workflows/:id", destination: "/studio/workflows/:id", permanent: true },
   { source: "/build/apps", destination: "/studio", permanent: true },
   { source: "/build/agents", destination: "/studio", permanent: true },
+  // STB-1: the old API connector page. It was a client-side redirect.
+  { source: "/apis", destination: "/integrations", permanent: true },
 ];
 
 const nextConfig: NextConfig = {
@@ -32,7 +34,12 @@ const nextConfig: NextConfig = {
     return STUDIO_REDIRECTS;
   },
   async headers() {
-    return [{ source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS }];
+    return [
+      { source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS },
+      // WS-55 EA-19d (§10.9 question 3): the page that makes a box token
+      // shows a secret once, so no other site may frame it either.
+      { source: "/integrations/:path*", headers: CONNECT_FRAME_HEADERS },
+    ];
   },
   // 🔴 **The deploy builds BESIDE the running build, never over it.**
   //

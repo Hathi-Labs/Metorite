@@ -292,6 +292,177 @@ class TestTheUNROUTEDPathIsUntouched:
         assert seen, "the direct path stopped working"
 
 
+class TestTheSTREAMINGArmIsRouted:
+    """Task 3541. ``acompletion_stream_text`` called litellm directly, always.
+
+    🔴 Production, 2026-11-16 07:20 UTC: the email draft, its one caller,
+    streamed from DeepSeek with the gateway's own key. That account had no
+    balance, so each draft failed, while the Router served chat. With routing
+    on, the streaming arm now asks the Router for one whole answer (the Router
+    cannot stream yet, CP-4b) and hands it to ``on_delta``.
+    """
+
+    @staticmethod
+    def _no_litellm(monkeypatch):
+        import litellm
+
+        async def _boom(*a, **k):
+            raise AssertionError(
+                "the streaming arm reached litellm, so it billed nobody")
+
+        monkeypatch.setattr(litellm, "acompletion", _boom)
+
+    async def test_it_reaches_the_ROUTER_and_hands_the_text_to_on_delta(
+        self, monkeypatch, routed
+    ):
+        from acb_llm.context import acompletion_stream_text
+        from acb_llm.routed import router_tier
+
+        spy = RouterSpy()
+        _spy_on(monkeypatch, spy)
+        self._no_litellm(monkeypatch)
+        seen: list[tuple[str, str]] = []
+
+        async def on_delta(kind, text):
+            seen.append((kind, text))
+
+        text, used = await acompletion_stream_text(
+            model="tier-balanced", messages=MESSAGES, max_tokens=64,
+            on_delta=on_delta, feature="email.draft", job="writing",
+        )
+        assert spy.calls, "the Router was never called"
+        payload, _ = spy.calls[0]
+        assert payload["model"] == router_tier("tier-balanced")
+        assert "stream" not in payload
+        assert text == "hi"
+        assert used == "deepseek/deepseek-v4-flash"
+        assert seen == [("content", "hi")]
+
+    async def test_the_payload_VALIDATES(self, monkeypatch, routed):
+        from acb_llm.context import acompletion_stream_text
+
+        spy = RouterSpy()
+        _spy_on(monkeypatch, spy)
+        self._no_litellm(monkeypatch)
+        await acompletion_stream_text(
+            model=TIER, messages=MESSAGES, max_tokens=64, temperature=0.3,
+            job="writing",
+        )
+        payload, _ = spy.calls[0]
+        TestThePayloadSurvivesTheREALModel._model()(**payload)
+
+    async def test_an_empty_answer_sends_no_delta(self, monkeypatch, routed):
+        from acb_llm.context import acompletion_stream_text
+
+        body = json.loads(json.dumps(OK_BODY))
+        body["choices"][0]["message"]["content"] = ""
+        _spy_on(monkeypatch, RouterSpy(body=body))
+        self._no_litellm(monkeypatch)
+        seen: list[tuple[str, str]] = []
+
+        async def on_delta(kind, text):
+            seen.append((kind, text))
+
+        text, _used = await acompletion_stream_text(
+            model=TIER, messages=MESSAGES, max_tokens=64, on_delta=on_delta)
+        assert text == ""
+        assert seen == []
+
+    @pytest.mark.parametrize("status", [402, 400, 403])
+    async def test_a_refusal_RAISES_and_never_falls_back_to_litellm(
+        self, monkeypatch, routed, status
+    ):
+        from acb_llm.context import acompletion_stream_text
+        from acb_llm.routed import RoutedRefusal
+
+        _spy_on(monkeypatch, RouterSpy(status, {"detail": "no"}))
+        self._no_litellm(monkeypatch)
+        with pytest.raises(RoutedRefusal) as caught:
+            await acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64)
+        assert caught.value.status == status
+
+    async def test_an_OUTAGE_also_never_falls_back(self, monkeypatch, routed):
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+        from acb_llm.context import acompletion_stream_text
+
+        async def _down(*a, **k):
+            raise ConsoleRouterUnavailable("unreachable")
+
+        _spy_on(monkeypatch, _down)
+        self._no_litellm(monkeypatch)
+        with pytest.raises(ConsoleRouterUnavailable):
+            await acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64)
+
+    async def test_an_answer_past_the_TOTAL_bound_is_a_total_timeout(
+        self, monkeypatch, routed
+    ):
+        """The member waits at the composer, so the total bound still holds."""
+        import asyncio
+
+        from acb_llm.context import StreamTotalTimeout, acompletion_stream_text
+
+        async def _slow(*a, **k):
+            await asyncio.sleep(5)
+            return 200, OK_BODY
+
+        _spy_on(monkeypatch, _slow)
+        self._no_litellm(monkeypatch)
+        with pytest.raises(StreamTotalTimeout):
+            await acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64, total_s=0.05)
+
+    async def test_with_the_flag_OFF_it_still_streams_from_litellm(
+        self, monkeypatch
+    ):
+        """⚠️ A box that does not bill behaves as it did before this change."""
+        monkeypatch.setenv("ROUTER_SERVING_ENABLED", "0")
+        get_settings.cache_clear()
+        import litellm
+        from acb_llm import client as llm_client
+        from acb_llm import context as ctx
+
+        class _Stream:
+            def __init__(self):
+                self._chunks = [
+                    type("C", (), {"choices": [type("Ch", (), {
+                        "delta": type("D", (), {"content": "hi",
+                                                "reasoning_content": None})()
+                    })()]})()
+                ]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self._chunks:
+                    raise StopAsyncIteration
+                return self._chunks.pop(0)
+
+        streamed: list[bool] = []
+
+        async def _fake(*, stream=False, **k):
+            streamed.append(stream)
+            return _Stream()
+
+        async def _keys():
+            return None
+
+        monkeypatch.setattr(litellm, "acompletion", _fake)
+        monkeypatch.setattr(litellm, "stream_chunk_builder", lambda *a, **k: None)
+        monkeypatch.setattr(llm_client, "_ensure_keys_loaded", _keys)
+        monkeypatch.setattr(llm_client, "ensure_model_registered", lambda _m: None)
+        monkeypatch.setattr(ctx, "resolve_underlying_model", lambda m: m)
+        try:
+            text, _used = await ctx.acompletion_stream_text(
+                model=TIER, messages=MESSAGES, max_tokens=64)
+        finally:
+            get_settings.cache_clear()
+        assert streamed == [True], "the direct streaming path stopped working"
+        assert text == "hi"
+
+
 # ── The fence the stub could not be ─────────────────────────────────────────
 
 

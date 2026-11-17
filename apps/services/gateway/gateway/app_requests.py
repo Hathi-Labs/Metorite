@@ -206,6 +206,11 @@ def _unshowable(value: Any) -> bool:
     * an integer past :data:`MAX_SAFE_INT` either way, which a browser
       parses to another number;
     * a number that is not finite (NaN, Infinity), which is no JSON;
+    * a float with an exponent in its JSON text, or a negative zero
+      (MCP-P1b-2 review P2). JSONB stores a number as ``numeric``, so
+      ``1e+16`` reads back as ``10000000000000000`` and ``-0.0`` as
+      ``0.0``. The body bytes then change, and each send of the approved
+      call gets ``approval_mismatch``;
     * a text, or a key, that holds U+0000, which JSONB refuses;
     * a text, or a key, that holds a character with no glyph (re-review
       P2): a bidi control, the tag block, U+200B, U+2060, U+FEFF, U+00AD
@@ -219,7 +224,8 @@ def _unshowable(value: Any) -> bool:
     if isinstance(value, int):
         return abs(value) > MAX_SAFE_INT
     if isinstance(value, float):
-        return not math.isfinite(value)
+        return (not math.isfinite(value) or "e" in repr(value)
+                or (value == 0 and math.copysign(1.0, value) < 0))
     if isinstance(value, str):
         return "\x00" in value or any(
             is_invisible(ch) and ch not in JOINERS for ch in value)

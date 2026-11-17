@@ -152,6 +152,13 @@ CLASS_C_WRITES: dict[tuple[str, str], str] = {
         " wrote, on a task in its reach, and the tool has destructiveHint true"
         " (spec §9.2)."
     ),
+    ("POST", "/projects/tasks/{task_id}/attachments"): (
+        "CIV-14b (spec §12.9). The chat attaches a file of its own chat through"
+        " attach_to_task and its card, so the chat manifest keeps class C. For an"
+        " outside agent the upload is a class B write: one png, jpeg, gif or webp"
+        " image of 3.75 MB at most, dark behind mcp_image_upload_orgs, and the"
+        " author removes it in the Files tab through the detach route."
+    ),
 }
 
 
@@ -241,6 +248,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/check-result"),
         # MCP-P1b-2: the ask of `app_write` (spec §19.5). It runs nothing.
         ("POST", "/agent-access/apps/{app}/requests"),
+        # CIV-14b: `upload_task_image` (spec §12.9). One image, multipart.
+        ("POST", "/projects/tasks/{task_id}/attachments"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -628,6 +637,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # WS-39 LP-1a. The slot of `add_comment`, keyed by the tool name. The
     # update route takes no such field.
     ("post_project_update", "idempotency_key"),
+    # CIV-14b (spec §12.9). The slot of `add_comment`, keyed by the tool name.
+    # The upload route takes a form with one file and no key.
+    ("upload_task_image", "idempotency_key"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in

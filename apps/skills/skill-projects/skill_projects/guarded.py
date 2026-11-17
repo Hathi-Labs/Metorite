@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -84,7 +85,6 @@ from skill_projects.reads import (
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
     _REOPENING,
-    CANCELLED,
     CARD_CONTEXT_LIMIT,
     FORGED_BATCH_ROWS,
     MAX_BATCH,
@@ -98,6 +98,7 @@ from skill_projects.writes import (
     _int_or_none,
     _my_reminder,
     _node,
+    _not_confirmed,
     _one_named,
     _org_wide,
     _overlay_values,
@@ -109,6 +110,7 @@ from skill_projects.writes import (
     _resolve_assignee,
     _resolve_assignee_name,
     _same_chase,
+    _space_of,
     _split,
     _subtask_counts,
     _subtask_receipt,
@@ -116,9 +118,11 @@ from skill_projects.writes import (
     _subtasks_wanted,
     _task,
     _vocab,
+    _with_line,
     agent_assignee_refusal_as_text,
     ask_about_subtasks,
     shared_set_line,
+    shared_vocab_line,
     status_edit_refusal,
 )
 
@@ -293,7 +297,7 @@ async def archive_project(project_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/nodes/{pid}/archive")) or {}
     return (
         f"Archived {data(node.get('name'))}: {_plural(int(result.get('projects') or 0), 'project')} "
@@ -337,7 +341,7 @@ async def unarchive_project(project_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/nodes/{pid}/unarchive")) or {}
     return (
         f"Restored {data(node.get('name'))}: {_plural(int(result.get('projects') or 0), 'project')} "
@@ -379,7 +383,7 @@ async def delete_project(project_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/nodes/{pid}")) or {}
     gone = result.get("cascaded") or {}
     return (
@@ -464,7 +468,7 @@ async def convert_folder_to_project(project_id: str) -> str:
         detail=f"{name} · the projects inside it become subprojects",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await post(f"/projects/nodes/{pid}/convert", {"to": "project"})
     return (
         f"Converted {name} to a project. The {_plural(len(kids), 'project')} inside it "
@@ -631,12 +635,12 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
         # The task is the first row, so a yes always ticks it. A card where
         # the member cleared it is no yes to the delete.
         if not isinstance(answer, frozenset) or tid not in answer:
-            return CANCELLED
+            return _not_confirmed()
         if not answer <= {r["id"] for r in rows}:
             return FORGED_BATCH_ROWS
         chosen = frozenset(answer - {tid})
     elif not answer:
-        return CANCELLED
+        return _not_confirmed()
     if len(chosen) > DELETE_QUERY_IDS:
         # Only "all" gets here: a card with tick boxes holds under 100 rows,
         # and a wider tree refuses any list above. A flag has no id list to
@@ -814,7 +818,7 @@ async def move_project(
         return card
     title, detail, impact, rest = card
     if not await _confirm(title=title, detail=detail, context=_guard_card(impact, rest)):
-        return CANCELLED
+        return _not_confirmed()
     # The spread first, every row of it, as the tree drag writes it: the
     # node's own position means nothing until its siblings carry one.
     for sid, at in spread:
@@ -949,7 +953,7 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
         detail=f"{_ref(task)} · {impact}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     params = {"include_subtasks": True} if wanted else None
     row = await post(f"/projects/tasks/{tid}/archive", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
@@ -997,7 +1001,7 @@ async def merge_tasks(target_task_id: str, source_task_ids: str) -> str:
         detail=impact,
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/merge", {"sources": ids})
     merged = (row or {}).get("merged") or ids
     out = [f"Merged {len(merged)} into {_ref(target)}:", *_task_line({**target, **(row or {})})]
@@ -1230,7 +1234,7 @@ async def bulk_update(
         detail=impact,
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post("/projects/tasks/bulk", body)) or {}
     out = [f"Applied to {result.get('applied', 0)} of {result.get('requested', len(ids))} tasks."]
     door = ("subtasks_archived", "archive") if body.get("action") else ("subtasks_completed", "complete")
@@ -1308,7 +1312,7 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
         detail=impact,
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     applied, skipped, failed = 0, [], []
     for group_ids, group_values in groups:
         body = {"task_ids": group_ids, "action": "personal", "personal": group_values}
@@ -1389,7 +1393,7 @@ async def delete_comment(task_id: str, comment_id: str) -> str:
         detail=f"on {_ref(task)}",
         context=_guard_card(impact, {"task": _ref(task), "comment": data(row.get("body"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/comments/{aid}")
     return f"Deleted your comment on {_ref(task)}.\n  full_id: {tid}"
 
@@ -1430,7 +1434,7 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
         detail=impact,
         context=_guard_card(impact, {"task": _ref(task), **dict(lines)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/activities/{aid}/revert")) or {}
     reverted = ", ".join(result.get("reverted") or []) or "nothing"
     skipped = result.get("skipped") or []
@@ -1512,7 +1516,7 @@ async def delete_status(
             {"status": data(row.get("name")), "category": row.get("category"), "move to": where},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     params: dict[str, Any] = {}
     if target is not None:
         params["move_to"] = uuid_of(str(target.get("id")), "move_to")
@@ -1575,7 +1579,7 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
         detail=f"{data(node.get('name'))} → {which} · {impact}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/nodes/{pid}/status-set", payload)) or {}
     moved = result.get("moved", moving)
     return (
@@ -1599,16 +1603,20 @@ async def delete_type(project_id: str, type_name: str) -> str:
     if row.get("is_system"):
         return f"{data(row.get('name'))} is a system type and cannot be deleted."
     kid = uuid_of(str(row.get("id")), "type_id")
+    # HRD-9a: the type is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     impact = (
-        f"1 type deleted · every task in {data(node.get('name'))}'s tree that carries it becomes "
+        f"1 type deleted · every task in the tree of {space.words} that carries it becomes "
         "untyped (the receipt carries the count)"
     )
     if not await _confirm(
         title="Delete this task type?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(row.get('name'))} in {space.words}", shared_vocab_line("types", space),
+        ),
         context=_guard_card(impact, {"type": data(row.get("name"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/types/{kid}")) or {}
     return (
         f"Deleted type {data(row.get('name'))}; {_plural(int(result.get('tasks_untyped') or 0), 'task')} "
@@ -1629,18 +1637,23 @@ async def delete_field(project_id: str, field: str) -> str:
     if _org_wide(row):
         return _shared_entry_text(row, "delete")
     fid = uuid_of(str(row.get("id")), "field_id")
+    # HRD-9a: the field is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     impact = (
         f"1 field deleted · every value under key {data(row.get('field_key'))} in "
-        f"{data(node.get('name'))}'s tree is cleared (the receipt carries the count)"
+        f"the tree of {space.words} is cleared (the receipt carries the count)"
     )
     if not await _confirm(
         title="Delete this custom field and its values?",
-        detail=f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {space.words}",
+            shared_vocab_line("fields", space),
+        ),
         context=_guard_card(
             impact, {"field": data(row.get("name")), "type": row.get("field_type")}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/fields/{fid}")) or {}
     cleared = int(((result.get("cascaded") or {}).get("values_cleared")) or 0)
     return (
@@ -1664,12 +1677,17 @@ async def delete_tag(project_id: str, tag: str) -> str:
     hit = (await get(f"/projects/tags/{gid}/impact")) or {}
     tasks = int(hit.get("tasks") or 0)
     impact = f"1 tag deleted · {_plural(tasks, 'task')} untagged"
+    # HRD-9a: the tag is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     if not await _confirm(
         title="Delete this tag?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}",
+        detail=_with_line(
+            f"{data(row.get('name'))} in {space.words} · {impact}",
+            shared_vocab_line("tags", space),
+        ),
         context=_guard_card(impact, {"tag": data(row.get("name"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/tags/{gid}")) or {}
     stripped = int(((result.get("cascaded") or {}).get("tasks_untagged")) or 0)
     return f"Deleted tag {data(row.get('name'))}; {_plural(stripped, 'task')} untagged.\n  tag_id: {gid}"
@@ -1700,14 +1718,19 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
         f"{_plural(worn, 'task')} retagged {data(source.get('name'))} → "
         f"{data(target.get('name'))} · 1 tag deleted"
     )
+    # HRD-9a: both tags are the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     if not await _confirm(
         title="Merge these tags?",
-        detail=f"{data(source.get('name'))} into {data(target.get('name'))} in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(source.get('name'))} into {data(target.get('name'))} in {space.words}",
+            shared_vocab_line("tags", space),
+        ),
         context=_guard_card(
             impact, {"from": data(source.get("name")), "into": data(target.get("name"))}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/tags/{sid}/merge", {"into_tag_id": tid})) or {}
     return (
         f"Merged {data(result.get('merged') or source.get('name'))} into "
@@ -1739,7 +1762,7 @@ async def delete_view(project_id: str, view_name: str) -> str:
         detail=f"{data(row.get('name'))} ({row.get('view_type')}) in {data(node.get('name'))}",
         context=_guard_card(impact, {"view": data(row.get("name")), "type": row.get("view_type")}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/views/{vid}")) or {}
     cascaded = result.get("cascaded") or {}
     return (
@@ -1770,7 +1793,7 @@ async def report_delete(report_id: str) -> str:
         detail=f"{data(row.get('name'))} · {scope}",
         context=_guard_card(impact, {"report": data(row.get("name")), "scope": scope}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/reports/{rid}")
     return f"Deleted report {data(row.get('name'))}.\n  report_id: {rid}"
 
@@ -1794,7 +1817,7 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
         detail=f"{data(row.get('name'))} from {_ref(task)}",
         context=_guard_card(impact, {"file": data(row.get("name")), "task": _ref(task)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/tasks/{tid}/attachments/{aid}")
     return f"Detached {data(row.get('name'))} from {_ref(task)}.\n  full_id: {tid}"
 
@@ -1836,7 +1859,7 @@ async def rename_area(area: str, new_name: str) -> str:
         detail=f"{data(row.get('name'))} → {data(clean)}",
         context=_guard_card(impact, {"area": data(row.get("name")), "name": data(clean)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await patch(f"/projects/my/areas/{aid}", {"name": clean})) or {}
     return f"Renamed the area to {data(result.get('name') or clean)}.\n  area_id: {aid}"
 
@@ -1864,7 +1887,7 @@ async def delete_area(area: str) -> str:
         detail=data(row.get("name")),
         context=_guard_card(impact, {"area": data(row.get("name"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/my/areas/{aid}")) or {}
     tasks = int(result.get("tasks") or 0)
     if result.get("outcome") == "archived":
@@ -1945,7 +1968,7 @@ async def nudge_task(task_id: str) -> str:
         detail=f"{who} about {_ref(task)}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/tasks/{tid}/nudge")) or {}
     if not result.get("notified"):
         skipped = ", ".join(data(x) for x in result.get("skipped") or []) or who
@@ -1992,7 +2015,7 @@ async def attach_to_task(task_id: str, file_name: str) -> str:
              "visible to": "everyone who can open the task"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (
         await post_file(
             f"/projects/tasks/{tid}/attachments", "file", name, content, task_files.mime_of(name)
@@ -2194,7 +2217,7 @@ async def grant_access(project_id: str, subject: str) -> str:
              "covers": "this project and every sub-project under it"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (await post(f"/projects/nodes/{pid}/grants", {"subject": clean})) or {}
     return (
         f"{who} can now see {path} and every sub-project under it."
@@ -2251,7 +2274,7 @@ async def revoke_access(project_id: str, grant: str) -> str:
              "covers": "this project and every sub-project under it"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/nodes/{pid}/grants/{gid}")
     return (
         f"Removed the grant of {who} on {path}."
@@ -2341,7 +2364,7 @@ async def pin_authority(project_id: str, page_id: str) -> str:
              "covers": f"page {page} becomes the source of the rules of this project"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     try:
         row = (await post(f"/projects/nodes/{pid}/authorities", {"page_id": page})) or {}
     except GatewayRefusal as exc:
@@ -2391,7 +2414,7 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
             {"project": path, "covers": f"{name} stops being the authority page of this project"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     try:
         await delete(f"/projects/nodes/{pid}/authorities/{pin}")
     except GatewayRefusal as exc:
@@ -2474,7 +2497,7 @@ async def delete_project_update(project_id: str, update_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/nodes/{pid}/updates/{uid}")
     return (
         f"Deleted the update ({health}) of {name}.\n  project_id: {pid}\n"
@@ -2555,12 +2578,330 @@ async def answer_decision(decision_id: str, answer_key: str) -> str:
             {"question": data(row.get("question")), "answer": data(label), "task": title},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     try:
         await post(f"/projects/decisions/{did}/answer", {"answer_key": key})
     except GatewayRefusal as exc:
         return _decision_refusal(exc)
     return f"Answered {data(row.get('question'))} with {data(label)}.{chr(10)}  decision_id: {did}"
+
+
+# ── The member's own answer to an agent (SW-43c, agent_coordination.md §3.9) ─
+#
+# The member answered an outside agent's question on the task card. Until an
+# agent reads the answer or posts after it, the member may take it back or
+# change it. The two routes decide that window under the lock of the run
+# (`filters.answer_changeable_sql`), so these tools only name the answer on
+# the card and send the member's act. Neither tool answers an open question,
+# and neither touches the answer to an archive request (EA3-40, D-OP-13).
+
+#: The tool text while ``agent_answer_change_enabled`` is off. The gateway then
+#: sends no ``answer`` key on a run, and both routes answer 404.
+ANSWER_CHANGE_OFF = (
+    "Changing an answer to an agent is not on in this organization yet. Nothing was changed."
+)
+#: The tool text while agent runs are off (``require_agent_runs`` answers 404).
+ANSWER_RUNS_OFF = "Agent runs are off in this organization. Nothing was changed."
+#: The words of the routes when an agent already read the answer or posted
+#: after it (``agent_runs._ANSWER_STALE``). A pin test holds the copy.
+ANSWER_READ = "The agent already has your answer. Send a comment instead."
+#: SW-43b. The second step of a costly option on the run card (``agentRuns.ts``
+#: ``ARE_YOU_SURE``). A pin test holds the copy.
+ARE_YOU_SURE = "Are you sure?"
+#: The tool text when the new answer is the answer that already stands.
+ANSWER_SAME = "That is already your answer. Nothing was changed."
+#: The tool text when one call both takes the answer back and gives a new one.
+ANSWER_BOTH = (
+    "Take the answer back, or give a new answer. One call does one of the two. "
+    "Nothing was changed."
+)
+#: The most characters of the agent's question, and of the old answer, on a
+#: card. Both are context: neither route writes them. So each is cut with an
+#: ellipsis, and the card always fits under ``CARD_CLIP``. A long question of
+#: an agent never makes the card refuse (SW-43c review, P2). The new answer
+#: is the write, so it shows whole.
+ANSWER_CARD_CONTEXT_MAX = 600
+
+
+def _clip_context(text: Any) -> str:
+    """*text* as one line of at most :data:`ANSWER_CARD_CONTEXT_MAX`
+    characters, cut with an ellipsis when it is longer."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= ANSWER_CARD_CONTEXT_MAX:
+        return flat
+    return f"{flat[: ANSWER_CARD_CONTEXT_MAX - 1]}…"
+
+
+@dataclass(frozen=True)
+class _LiveAnswer:
+    """The member's live answer on one task: the task, the run, the answer and
+    the question it answers, each as the gateway sent it."""
+
+    task_id: str
+    task: dict[str, Any]
+    run: dict[str, Any]
+    answer: dict[str, Any]
+    question: dict[str, Any]
+
+
+def _answer_words(activity: dict[str, Any]) -> str:
+    """The words of the old answer, fenced and cut to the context size: its
+    option labels, then its text."""
+    content = activity.get("content") or {}
+    parts = [str(label) for label in content.get("labels") or [] if str(label).strip()]
+    body = str(content.get("body") or "").strip()
+    if body:
+        parts.append(body)
+    return data(_clip_context(", ".join(parts))) if parts else "(no words)"
+
+
+def _question_words(question: dict[str, Any]) -> str:
+    """The agent's question, fenced and cut to the context size."""
+    return data(_clip_context((question.get("content") or {}).get("body") or ""))
+
+
+def _options_of(question: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = question.get("signal_metadata") or {}
+    return [o for o in meta.get("options") or [] if isinstance(o, dict) and o.get("id")]
+
+
+def _option_list(options: list[dict[str, Any]]) -> str:
+    return ", ".join(f"{data(o.get('label'))} (id {data(o.get('id'))})" for o in options)
+
+
+async def _live_answer(task_id: str) -> _LiveAnswer | str:
+    """The member's live answer on *task_id*, or the one sentence that says
+    why no change can go. Every call here is a read, and a read of a member
+    closes no window (``agent_runs._reads_for_member``)."""
+    tid, task = await _task(task_id)
+    name = _ref(task)
+    try:
+        page = (await get(f"/projects/tasks/{tid}/agent-runs")) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return ANSWER_RUNS_OFF
+        raise
+    rows = [r for r in page.get("rows") or [] if isinstance(r, dict)]
+    if rows and not any("answer" in r for r in rows):
+        return ANSWER_CHANGE_OFF
+    answered = [r for r in rows if isinstance(r.get("answer"), dict)]
+    if not answered:
+        return f"No answer of a member waits for an agent on {name}. Nothing was changed."
+    me = _client.current_user_email().strip().lower()
+    mine = [r for r in answered if str(r.get("member_email") or "").strip().lower() == me]
+    if not mine:
+        return (
+            f"{REFUSED} The answer on {name} is on the agent run of another member. Only "
+            "that member changes it. Nothing was changed."
+        )
+    run = next((r for r in mine if r["answer"].get("changeable") is True), None)
+    if run is None:
+        return f"{REFUSED} {ANSWER_READ} Nothing was changed."
+    rid = uuid_of(run.get("id"), "run_id")
+    aid = uuid_of(run["answer"].get("id"), "answer_id")
+    got = (await get(f"/projects/agent-runs/{rid}")) or {}
+    acts = {str(a.get("id")).lower(): a for a in got.get("activities") or []
+            if isinstance(a, dict)}
+    answer = acts.get(aid)
+    question = acts.get(str((answer or {}).get("in_reply_to") or "").lower())
+    if answer is None or question is None:
+        return (
+            f"{REFUSED} The agent run of {name} is too long to read here. Change the answer "
+            f"on the task card: /projects?task={tid}. Nothing was changed."
+        )
+    if (question.get("content_metadata") or {}).get("request"):
+        return (
+            f"{REFUSED} This answer is to a request to archive {name}. That answer changes "
+            f"on the task card only: /projects?task={tid}. Nothing was changed."
+        )
+    return _LiveAnswer(tid, task, run, answer, question)
+
+
+def _change_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a 403, 404, 409 or 422 of the two answer routes."""
+    status = getattr(exc, "status", None)
+    said = str(getattr(exc, "detail", "") or "")
+    if status == 404:
+        return f"{REFUSED} The server found no answer to change. Nothing was changed."
+    if status == 403:
+        return (
+            f"{REFUSED} The server says that only the member of this agent run changes "
+            "its answer. Nothing was changed."
+        )
+    if status == 409 and "already has your answer" in said:
+        return f"{REFUSED} {ANSWER_READ} Nothing was changed."
+    if status == 409:
+        return (
+            f"{REFUSED} This answer is no longer the live answer, and the question may "
+            "be open again. Read the task card. Nothing was changed."
+        )
+    if status == 422:
+        return f"{REFUSED} The new answer is not an option of the question. Nothing was changed."
+    raise exc
+
+
+def _new_answer(
+    question: dict[str, Any], option: str, text: str,
+) -> tuple[list[str], list[dict[str, Any]], str] | str:
+    """``(option ids, the options, text)`` of a new answer, or the refusal.
+
+    *option* is an id or a label of the question, matched whole and without
+    case. A question that takes many options also takes a comma list. Each
+    name must match one option, and never the first of two."""
+    options = _options_of(question)
+    wanted = " ".join(str(option or "").split())
+    body = str(text or "").strip()
+    if not wanted and not body:
+        listed = f" The options are: {_option_list(options)}." if options else ""
+        return (
+            f"Give the new answer: an option of the question, a text, or both.{listed} "
+            "Nothing was changed."
+        )
+    if not wanted:
+        return [], [], body
+    if not options:
+        return "This question has no options. Give the new answer as a text. Nothing was changed."
+
+    def named(name: str) -> list[dict[str, Any]]:
+        key = name.lower()
+        return [o for o in options if key in (
+            str(o.get("id")).lower(), " ".join(str(o.get("label") or "").split()).lower())]
+
+    many = bool((question.get("signal_metadata") or {}).get("allow_multiple"))
+    names = [wanted] if named(wanted) or not many else [
+        p.strip() for p in wanted.split(",") if p.strip()]
+    picked: list[dict[str, Any]] = []
+    for name in names:
+        found = named(name)
+        if len(found) != 1:
+            why = "matches no option" if not found else "matches two options"
+            return (
+                f"{data(name)} {why}. The options are: {_option_list(options)}. "
+                "Nothing was changed."
+            )
+        if found[0] not in picked:
+            picked.append(found[0])
+    if len(picked) > 1 and not many:
+        return "This question takes one option. Nothing was changed."
+    return [str(o["id"]) for o in picked], picked, body
+
+
+@dataclass(frozen=True)
+class _ChangeCard:
+    """One card of :func:`change_agent_answer`: what the member reads, what
+    goes on the wire after the approve, and the receipt."""
+
+    title: str
+    detail: str
+    context: str
+    body: dict[str, Any]
+    receipt: str
+
+
+def _withdraw_card(live: _LiveAnswer) -> _ChangeCard:
+    name, words = _ref(live.task), _answer_words(live.answer)
+    impact = (
+        "1 answer leaves the agent run. The question is open again on the task card, "
+        "and the agent sees that you took the answer back"
+    )
+    return _ChangeCard(
+        title="Take back your answer?",
+        detail=f"{name} · {words}",
+        context=_guard_card(impact, {
+            "task": name,
+            "question": _question_words(live.question),
+            "answer": words,
+            "undo": "answer the question again on the task card",
+        }),
+        body={},
+        receipt=(f"Took back your answer {words} on {name}. The question is open again "
+                 "on the task card."),
+    )
+
+
+def _replace_card(live: _LiveAnswer, option: str, text: str) -> _ChangeCard | str:
+    new = _new_answer(live.question, option, text)
+    if isinstance(new, str):
+        return new
+    selected, picked, body = new
+    old = live.answer.get("content") or {}
+    if selected == list(old.get("selected") or []) and body == str(old.get("body") or "").strip():
+        return ANSWER_SAME
+    name = _ref(live.task)
+    words = ", ".join([data(o.get("label")) for o in picked] + ([data(body)] if body else []))
+    rows: dict[str, Any] = {
+        "task": name, "question": _question_words(live.question), "answer": words}
+    costly = [data(o.get("label")) for o in picked if o.get("confirm") is True]
+    if costly:
+        rows["note"] = (
+            f"{ARE_YOU_SURE} The agent marked {', '.join(costly)} as a costly choice, such "
+            "as a stop or a restart. Approve only if you are sure."
+        )
+    impact = (
+        "1 answer changes. The agent reads the new answer and not the old one. You may "
+        "change it again until the agent reads it"
+    )
+    sent: dict[str, Any] = {}
+    if selected:
+        sent["selected"] = selected
+    if body:
+        sent["body"] = body
+    return _ChangeCard(
+        title=f"{ARE_YOU_SURE} Change your answer?" if costly else "Change your answer?",
+        detail=f"{name} · {words}",
+        context=_fields_block(rows, before={"answer": _answer_words(live.answer)},
+                              lead="impact: " + " ".join(impact.split())),
+        body=sent,
+        receipt=f"Changed your answer on {name} to {words}. The agent reads the new answer.",
+    )
+
+
+async def _send_change(live: _LiveAnswer, body: dict[str, Any], withdraw: bool) -> None:
+    """The one write of :func:`change_agent_answer`, after the card. The key is
+    new for each approve, so a second act needs a second card."""
+    rid = uuid_of(live.run.get("id"), "run_id")
+    sent = {"answer_id": uuid_of(live.answer.get("id"), "answer_id"),
+            "idempotency_key": uuid.uuid4().hex, **body}
+    if withdraw:
+        await post(f"/projects/agent-runs/{rid}/answer/withdraw", sent)
+    else:
+        await post(f"/projects/agent-runs/{rid}/answer/replace", sent)
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def change_agent_answer(
+    task_id: str, option: str = "", answer: str = "", withdraw: bool = False,
+) -> str:
+    """Take back or change the member's own answer to an outside agent's
+    question on one task, before the agent reads it. ONE task per call. With
+    withdraw true, the answer goes back, and the question is open again on
+    the task card. Else option names an option of the question by its label
+    or id, and answer is a text that may go with it. With neither, the tool
+    lists the options and changes nothing. A run that no person watches
+    cannot do this, and the tool refuses it before any read. The card shows
+    the question and the answer. An option that the agent marked as costly
+    puts "Are you sure?" on the card. When the agent already read the answer,
+    the server refuses, and the member sends a comment instead."""
+    if no_person_present():
+        return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
+    if _many(task_id):
+        return f"change_agent_answer {ONE_ACT.replace('id', 'task_id')}"
+    if withdraw and (str(option or "").strip() or str(answer or "").strip()):
+        return ANSWER_BOTH
+    live = await _live_answer(task_id)
+    if isinstance(live, str):
+        return live
+    card = _withdraw_card(live) if withdraw else _replace_card(live, option, answer)
+    if isinstance(card, str):
+        return card
+    if not await _confirm(title=card.title, detail=card.detail, context=card.context):
+        return _not_confirmed()
+    try:
+        await _send_change(live, card.body, withdraw)
+    except GatewayRefusal as exc:
+        return _change_refusal(exc)
+    tid = uuid_of(live.task_id, "task_id")
+    return f"{card.receipt}\n  link: /projects?task={tid}\n  full_id: {tid}"
 
 
 # ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
@@ -2646,7 +2987,7 @@ async def add_report_recipient(report_id: str, recipient: str) -> str:
              "schedule": when, "people on the list now": len(held)},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await post(f"/projects/reports/{rid}/recipients", {"recipient": email})
     return (
         f"{who} is now on the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
@@ -2698,7 +3039,7 @@ async def remove_report_recipient(report_id: str, recipient: str) -> str:
              "people on the list now": len(held)},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     tail = _path_address(email)
     await delete(f"/projects/reports/{rid}/recipients/{tail}")
     return (
@@ -2759,7 +3100,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
         detail=f"{data(report.get('name'))} · {'every week' if enabled else 'off'}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (await patch(f"/projects/reports/{rid}/schedule", {"enabled": enabled})) or {}
     if not enabled:
         return f"The schedule of {data(report.get('name'))} is off.\n  report_id: {rid}"
@@ -2800,7 +3141,7 @@ async def promote_reminder(reminder_id: str) -> str:
     if not await _confirm(
         title="Make this reminder a task?", detail=_reminder_named(row), context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     saved = (await post(f"{REMINDERS}/{rid}/promote")) or {}
     task_id = saved.get("promoted_task_id")
     if not task_id:
@@ -2845,6 +3186,7 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "unpin_authority",
     "delete_project_update",
     "answer_decision",
+    "change_agent_answer",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",
@@ -2942,7 +3284,7 @@ async def save_as_template(
         detail=f"{data(node.get('name'))} · {data(title)}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     body: dict[str, Any] = {"project_id": pid, "name": title}
     if about:
         body["description"] = about
@@ -3004,7 +3346,7 @@ async def create_project_from_template(
         detail=f"{data(template.get('name'))} · inside {data(node.get('name'))}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     # One key for each approved card. A retry of this request makes no
     # second project: the gateway returns the first one (TPL-1a).
     body: dict[str, Any] = {

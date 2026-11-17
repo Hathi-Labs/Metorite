@@ -64,6 +64,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit import test_mcp_edge_task_writes as t
 from tests.unit import test_mcp_edge_writes as w
 from tests.unit.test_mcp_edge_context import (  # noqa: F401 — the fixtures
@@ -155,8 +156,7 @@ class TestTheRecords:
         """An R8 suite that CI does not list skips in silence when the database
         gate is disarmed. Match the argument line, not a mention."""
         for name in ("pr-check.yml", "deploy.yml"):
-            workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-            assert re.search(r"^\s+tests/unit/test_task_check_r8\.py \\?$", workflow, re.M), name
+            assert "tests/unit/test_task_check_r8.py" in r8_lists.must_run(), name
 
     def test_check_of_wraps_each_written_value(self):
         value = {"text": "gh pr view 1", "last_run_at": "2026-11-01T00:00:00+00:00",

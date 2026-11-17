@@ -898,8 +898,11 @@ export function TaskBoard({
     // EA-13g: one look for each run state. `globals.css` draws the edge.
     const agentLook = agentCardLook(task.agent_state, {
       clientVia: task.agent_client_via,
+      // SW-7b: the label of the agent session, beside the client name.
+      agentLabel: task.agent_label,
       memberEmail: task.agent_member_email,
       note: task.agent_note,
+      waiting: task.agent_waiting,
       viewerEmail: me,
       labels: personLabels,
     });
@@ -1077,6 +1080,7 @@ export function TaskBoard({
               clientVia={task.agent_client_via}
               memberEmail={task.agent_member_email}
               note={task.agent_note}
+              waiting={task.agent_waiting}
               viewerEmail={me}
               labels={personLabels}
             />

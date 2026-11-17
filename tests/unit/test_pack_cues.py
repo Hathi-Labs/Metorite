@@ -42,7 +42,8 @@ WHEN = {
     "projects": (
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
         "Also for a question on a named project or task."),
-    "projects-plan": "Load for team load, capacity, a timeline, a plan from a goal, task links, repeats or new projects.",
+    # SW-43c: the plan pack holds the change of an answer to an agent.
+    "projects-plan": "Load for team load, capacity, a timeline, a plan from a goal, task links, repeats, new projects or to change an unread answer.",
     "projects-structure": "Load to change statuses, task types, custom fields, tags, project access, saved views or project templates.",
     "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
     "projects-reminders": (
@@ -50,15 +51,24 @@ WHEN = {
         "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
     # SP-8a and WS-39 LP-1a share the authority pack.
-    "projects-authority": "Load for the authority page of a project (read, pin or unpin), a project update, or the contract of an epic.",
+    "projects-authority": "Load for questions that agents ask the member (list or answer), a project's authority page, a project update or an epic contract.",
+    # WS-39 SP-5a: the cycles pack.
+    "projects-cycles": "Load for cycles (sprints): to list them, plan one, add or remove tasks, start one or close one.",
     # CAL-1a: the day planner pack.
     "calendar-day": (
         "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
     # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
-    # so the line says "read and change".
+    # so the line says "read and change". STB-6a adds the workflow reads.
+    # WS-67 TS-1b: the core builds an app, and studio-more holds the rest.
     "studio": (
-        "Load for AI Studio: build an app (manifest, actions), manage your skills, "
+        "Load for AI Studio: build an app from a brief (manifest, actions), check it, "
+        "show the plan card, save and publish it."),
+    "studio-more": (
+        "Load for AI Studio: manage skills, ready apps, delete an app, read workflows, "
         "or read and change the records of a package."),
+    # STB-6b: the small pack of the workflow writes, of the studio owner.
+    "studio-workflows": (
+        "Load to publish a workflow, roll it back to a version, pause it or turn it on again."),
 }
 
 

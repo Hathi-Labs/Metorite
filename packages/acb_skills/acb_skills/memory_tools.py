@@ -36,7 +36,9 @@ Usage by agents:
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
+from collections.abc import Iterator
 
 from acb_common import get_logger
 
@@ -173,6 +175,42 @@ _memory_permission: contextvars.ContextVar = contextvars.ContextVar(
 def _set_memory_permission(predicate) -> None:
     """Install the acting member's permission predicate for this run."""
     _memory_permission.set(predicate)
+
+
+def enter_memory_permission() -> contextvars.Token:
+    """Open a scope of the memory gate. Pass the token to
+    :func:`reset_memory_permission` when the run ends.
+
+    MCP-C3 review: a delegated run awaits on its parent's task, and its own
+    access lookup arms this gate there. Without a scope, the parent kept the
+    child's gate after the hand-off. In a shared room whose participant read
+    failed in the child, that gate was the typer's alone, which is wider than
+    the room. Fence: ``tests/unit/test_delegated_integration_filter.py``.
+    """
+    return _memory_permission.set(_memory_permission.get())
+
+
+def reset_memory_permission(token: contextvars.Token) -> None:
+    """Close a :func:`enter_memory_permission` scope. Never raises.
+
+    A token of another context does not apply. The gate of this frame then
+    goes back to the value that the scope opened with.
+    """
+    try:
+        _memory_permission.reset(token)
+    except (ValueError, RuntimeError):
+        old = token.old_value
+        _memory_permission.set(None if old is contextvars.Token.MISSING else old)
+
+
+@contextlib.contextmanager
+def memory_permission_scope() -> Iterator[None]:
+    """Give this frame its memory gate back when the block ends."""
+    token = enter_memory_permission()
+    try:
+        yield
+    finally:
+        reset_memory_permission(token)
 
 
 def _may(permission: str) -> bool:

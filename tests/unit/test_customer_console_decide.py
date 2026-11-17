@@ -62,6 +62,7 @@ from customer_console.handlers import (  # noqa: E402
 )
 from sqlalchemy import create_engine, text  # noqa: E402
 
+from tests.unit import _r8_lists as r8_lists  # noqa: E402
 from tests.unit._customer_console_ladder import (  # noqa: E402
     DEFAULT_DEPLOYMENT_LABEL,
     apply_ladder,
@@ -1873,5 +1874,4 @@ class TestTryADecisionOnTheReseller:
 def test_this_suite_is_named_in_the_ci_skip_guard():
     """A new R8 suite that CI does not name still SKIPS silently and reports
     green. This reads the hand-list and fails if the entry is gone."""
-    ci = (ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_customer_console_decide.py" in ci
+    assert "tests/unit/test_customer_console_decide.py" in r8_lists.must_run()

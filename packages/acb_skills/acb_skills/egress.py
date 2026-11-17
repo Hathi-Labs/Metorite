@@ -123,6 +123,7 @@ __all__ = [
     "held_param_refusal",
     "hold_is_for_mail",
     "is_card_bound_send",
+    "is_card_write_tool",
     "is_delegation_tool",
     "is_egress_tool",
     "is_held_card_write",
@@ -1103,8 +1104,8 @@ def _register_platform_callable(fn: Any, name: str | None = None) -> Any:
 def _register_platform_wrapper(original: Any, wrapper: Any) -> Any:
     """Trust *wrapper* exactly as far as *original* is trusted. Returns it.
 
-    Our own wrappers call this: the permission gate, the steer wrap of a
-    sandbox tool. A wrapper that another repo made does not, so it stays
+    Our own wrappers call this, for example the permission gate. A wrapper
+    that another repo made does not, so it stays
     untrusted whatever it wraps. A call from outside
     :data:`_PLATFORM_PACKAGES` registers nothing.
     """
@@ -1397,6 +1398,7 @@ CARD_WRITE_KEY = "card_write"
 HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # The Projects core pack.
     "add_subtasks": _pin("task_id titles"),
+    "answer_agent_question": _pin("run_id answer option_ids"),
     "assign": _pin("task_id assignees"),
     "comment": _pin("task_id body reply_to"),
     "complete": _pin("task_id include_subtasks"),
@@ -1439,6 +1441,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # the project, the health and the exact text, and the post writes the
     # one row. It tells nobody and reaches no other system.
     "post_project_update": _pin("project_id health body"),
+    # WS-39 SP-5a: plan a cycle, and put tasks in it or take them out. The card
+    # shows the exact tasks. Both change rows that the app changes back.
+    "create_cycle": _pin("project_id name starts_on ends_on goal"),
+    "plan_cycle": _pin("cycle_id add_task_ids remove_task_ids"),
     "set_recurrence": _pin(
         "task_id freq interval weekdays day_of_month month_of_year anchor until "
         "max_occurrences stop"),
@@ -1574,11 +1580,23 @@ def is_held_card_write(item: Any) -> bool:
     also with a borrowed name and a borrowed annotation. With the org off
     (:func:`held_card_writes_on`), no tool passes.
     """
+    return is_card_write_tool(item) and held_card_writes_on()
+
+
+def is_card_write_tool(item: Any) -> bool:
+    """The three tests of :func:`is_held_card_write`, with no org switch.
+
+    The name is on :data:`HELD_CARD_WRITE_TOOLS`, the tool's own annotation
+    says :data:`CARD_WRITE_KEY`, and the parameters are the pinned set. A tool
+    of an MCP server never passes. The late-approve grant (HRD-22,
+    ``acb_skills.late_approve``) reads it for the tool of a card, because
+    only such a write may skip its card on a grant. Each test fails closed.
+    """
     if not isinstance(item, str) and _from_mcp(item):
         return False
     name = item if isinstance(item, str) else tool_name(item)
     allowed = HELD_CARD_WRITE_TOOLS.get(name)
-    if allowed is None or not held_card_writes_on():
+    if allowed is None:
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
     if not (isinstance(hints, Mapping) and hints.get(CARD_WRITE_KEY) is True):
@@ -1591,14 +1609,16 @@ def is_held_card_write(item: Any) -> bool:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its sixteen tools are the
-#: My Tasks planner tools, the two calendar settings tools and the four day rule
-#: tools, which the Tasks assistant holds too. **The choice.** In a held chat the
+#: slug. The pack is the ``calendar-day`` pack, and its seventeen tools are the
+#: My Tasks planner tools, the two calendar settings tools, the four day rule
+#: tools and the read of the synced events (CE-15). The Tasks assistant holds
+#: the planner tools too. **The choice.** In a held chat the
 #: pack holds off its twelve writes. They have no card: a plan is
 #: proposed in text and applied by a second call, so mail that the chat read
-#: could steer the apply. The pack keeps its four reads (``my_tasks_day_digest``,
-#: ``my_tasks_get_calendar_settings``, ``my_tasks_list_day_rules`` and
-#: ``my_tasks_list_schedule``, ``read_only=True``). **Why a pack-slug table
+#: could steer the apply. The pack keeps its five reads (``my_tasks_day_digest``,
+#: ``my_tasks_get_calendar_settings``, ``my_tasks_list_day_rules``,
+#: ``my_tasks_list_events`` and ``my_tasks_list_schedule``, ``read_only=True``).
+#: **Why a pack-slug table
 #: and not a bare name.** :func:`is_held_off_write` matches on the bare name
 #: before the owner, so naming these tools through the pack family would also
 #: strip them from the Tasks assistant, whose held-chat tool list on main keeps

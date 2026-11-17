@@ -99,7 +99,7 @@ from skill_projects.reads import (
     saved_when,
     when_text,
 )
-from skill_projects.refusals import REFUSED
+from skill_projects.refusals import REFUSED, CardClosedByChat
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -233,41 +233,81 @@ async def _check_card(context: str) -> None:
 
 
 async def _confirm(
-    title: str, detail: str, context: str, rows: list[dict[str, Any]] | None = None
-) -> bool | frozenset[str]:
+    title: str, detail: str, context: str, rows: list[dict[str, Any]] | None = None,
+    edit: dict[str, Any] | None = None,
+) -> Any:
     """One door for every card. Imported inside so a test can stub the gate.
 
     With ``rows`` (WS-46 P13 one-card), the card draws one checkbox per row,
     and the answer is the ``frozenset`` of the ticked row ids: empty when the
     member did not approve. With no rows, the call is exactly as before.
+
+    With ``edit`` (EAC-1, ``projects_ai_chat.md`` §32), the card draws the
+    form of a new task (``acb_skills.task_card.create_task_form``). The card
+    binds the run's own member (``responder``), so only that member's answer
+    counts. The answer is ``True`` for a plain approve (the original values),
+    a ``task_card.TaskEdit`` for edited values, or falsy. With no form, the
+    call is exactly as before.
+
+    Task 2494: a chat message of the member closes the card
+    (``close_on_steer``). Then this raises :class:`CardClosedByChat` with the
+    text of ``ask_tools.CLOSED_BY_YOUR_MESSAGE`` (HRD-7), so no line after the
+    card runs and nothing is written. ``refusals.refusals_as_text`` gives that
+    text to the model, which reads the member's message as a user turn and can
+    show a new card. A card that did nothing else answers
+    :func:`_not_confirmed`.
     """
-    from acb_skills.ask_tools import request_confirmation
+    from acb_skills.ask_tools import (
+        CLOSED_BY_YOUR_MESSAGE,
+        card_outcome_text,
+        is_revised,
+        request_confirmation,
+    )
 
     await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
-    if rows is None:
-        return await request_confirmation(title=title, detail=detail, context=context, fenced=True)
-    return await request_confirmation(
-        title=title, detail=detail, context=context, rows=rows, fenced=True
-    )
+    if edit is not None and rows is None:
+        from skill_projects.client import current_user_email
 
-
-CANCELLED = "Cancelled — nothing was changed."
+        answer = await request_confirmation(
+            title=title, detail=detail, context=context, fenced=True, close_on_steer=True,
+            edit=edit, responder=current_user_email() or None,
+        )
+    elif rows is None:
+        answer = await request_confirmation(
+            title=title, detail=detail, context=context, fenced=True, close_on_steer=True
+        )
+    else:
+        answer = await request_confirmation(
+            title=title, detail=detail, context=context, rows=rows, fenced=True,
+            close_on_steer=True,
+        )
+    if is_revised(answer):
+        raise CardClosedByChat(card_outcome_text(CLOSED_BY_YOUR_MESSAGE))
+    return answer
 
 
 def _not_confirmed() -> str:
-    """:data:`CANCELLED`, or the WhatsApp line for an act that waits (WS-47 WAC-4).
+    """The answer of a tool whose card did nothing (HRD-7).
+
+    The words come from the one table of card outcomes
+    (``ask_tools.card_not_done_text``): declined, timed out, no card, or
+    another member answered. Each says what happened and the next step, so a
+    timeout never reads as the member's no.
 
     On WhatsApp, ``create_task``'s card is parked for the member's Confirm
-    (``acb_skills.whatsapp_acts``). Nothing was written, as with a decline,
-    but the model must not tell the member that it was cancelled.
+    (``acb_skills.whatsapp_acts``, WS-47 WAC-4). Nothing was written, as with a
+    decline, but the model must not tell the member that it was declined, so
+    the WhatsApp line comes first.
     """
+    from acb_skills.ask_tools import card_not_done_text
+
     try:
         from acb_skills.whatsapp_acts import parked_line
     except Exception:  # pragma: no cover — platform package absent in isolation
-        return CANCELLED
-    return parked_line() or CANCELLED
+        return card_not_done_text()
+    return parked_line() or card_not_done_text()
 
 
 def _bind_card_facts(**facts: Any) -> None:
@@ -430,15 +470,17 @@ def _refuse_agent_assignee(assignee: str) -> str:
     return assignee
 
 
-async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
+async def _resolve_assignee(value: str, *, dispatch: bool = True, exact: bool = False) -> str:
     """An email or ``agent:<name>`` passes through. A person's name resolves
     through the picker, and only when exactly one person matches.
 
     With *dispatch* (an assignee to ADD), an agent is refused in a run that
     may not send (:func:`_refuse_agent_assignee`, H-236). A removal passes
     ``dispatch=False``, because taking an agent off a task starts nothing.
+    With *exact* (a name that the member edited on a card, EAC-1), a name
+    that no person has exactly is refused, and no ``decide`` call is made.
     """
-    resolved = await _resolve_assignee_name(value)
+    resolved = await _resolve_assignee_name(value, exact=exact)
     if not dispatch:
         return resolved
     # RX-1: a top-level run in a marked chat binds no `no_egress`.
@@ -447,7 +489,7 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
     return _refuse_agent_assignee(resolved)
 
 
-async def _resolve_assignee_name(value: str) -> str:
+async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise GatewayRefusal("An assignee needs a value.")
@@ -460,20 +502,22 @@ async def _resolve_assignee_name(value: str) -> str:
     # return one person whose title is "Ops Lead". Only an exact name match
     # resolves on its own. Anything looser is a list for the member to pick
     # from, never a silent pick.
-    exact = [p for p in people + agents if str(p.get("name") or "").strip().lower() == raw.lower()]
-    if len(exact) == 1:
-        return str(exact[0].get("assignee")).lower()
-    found = exact or (people + agents)
+    same = [p for p in people + agents if str(p.get("name") or "").strip().lower() == raw.lower()]
+    if len(same) == 1:
+        return str(same[0].get("assignee")).lower()
+    found = same or (people + agents)
     if not found:
         raise GatewayRefusal(f"Nobody matches {data(raw)}. Use people_for to find them.")
     names = ", ".join(f"{data(p.get('name'))} ({data(p.get('assignee'))})" for p in found[:8])
-    if len(exact) > 1:
+    if len(same) > 1:
         raise GatewayRefusal(f"{data(raw)} matches more than one person: {names}. Ask which.")
     # Owner, 2026-10-09: close matches and no exact one. ONE typed question
     # picks the person the name means, by NAME only (no address leaves). An
     # `unsure` or a failure gives the refusal below. The card names the
-    # person and the address before anything is written.
-    picked = await choices.resolve_name(found, raw, "person")
+    # person and the address before anything is written. EAC-1: a name that
+    # the member edited AFTER the card gets no question, because no card
+    # would show the pick.
+    picked = None if exact else await choices.resolve_name(found, raw, "person")
     if picked is not None and str(picked.get("assignee") or "").strip():
         return str(picked.get("assignee")).lower()
     raise GatewayRefusal(
@@ -1138,14 +1182,22 @@ async def create_task(
     # WS-47 WAC-4: a card that names the project by NAME must still bind the
     # project it resolved, and the people, for a Confirm on WhatsApp.
     _bind_card_facts(project_id=pid, assignees=sorted(new.who))
-    if not await _confirm(
+    # EAC-1 (projects_ai_chat.md §32): the form of the card that the member
+    # edits, or None. A held chat and a repeating task keep the card of before.
+    form = _new_task_form(pid, new, held=held, repeats=bool(repeating.rule))
+    answer = await _confirm(
         title=repeating.card_title,
         detail=f"{_brief(name)}{where} · status {new.status_label}"
         + (f" · {', '.join(new.who)}" if new.who else "")
         + repeating.detail(),
         context=_fields_block(card),
-    ):
+        edit=form,
+    )
+    if not answer:
         return _not_confirmed()
+    # The member's changes on the card, each checked AFTER the answer.
+    edit = await _card_edit(pid, new, form, answer)
+    new = edit.new
     task, saved, failed = await _create_new_task(new, repeating)
     status_label = new.status_label
     if "status_id" not in new.payload:
@@ -1153,7 +1205,8 @@ async def create_task(
         # created row, as `add_subtasks` does. The card was a forecast. The
         # read runs after every write, and `_lane_name` never raises.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
-    lines = [*_task_line(task, status_label), *level_note(priority, task)]
+    lines = [*_task_line(task, status_label), *level_note(edit.asked(priority), task),
+             *edit.lines()]
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
     receipt = repeating.receipt(task, lines, saved, failed, new.extra)
@@ -1389,6 +1442,185 @@ async def _prepare_new_task(
     new = _NewTask(pid, payload, status_label, who, extra)
     new.parent = parent
     return new
+
+
+# ── EAC-1: the card of a new task that the member edits ──────────────────────
+#
+# Spec: ``project-docs/specs/projects_ai_chat.md`` §32. ``acb_skills.task_card``
+# builds the form and parses the answer. These helpers tie it to
+# ``create_task``: the form from the values resolved before the card, the
+# values that the member changed, and the task with only those values
+# resolved again, by exact name. Fences: ``tests/unit/test_task_edit_card_answer.py``,
+# ``tests/unit/test_task_edit_card_r8.py`` (R8).
+
+
+def _new_task_form(
+    pid: str, new: _NewTask, *, held: bool, repeats: bool
+) -> dict[str, Any] | None:
+    """The form of the card of *new* that the member edits, or None for the
+    card of before.
+
+    A held chat (*held*) and a repeating task (*repeats*, whose rule reads the
+    due date) get no form. ``ask_tools.task_edit_card_channel_open`` decides
+    the rest: ``PROJECT_EDIT_CARD_ORGS`` for the run's org, a card channel,
+    and no WhatsApp run. A run whose member has no address gets no form. Each
+    value is what a plain Approve writes. A value outside the limits of the
+    form gives None (``create_task_form``)."""
+    if held or repeats:
+        return None
+    try:
+        from acb_skills.ask_tools import task_edit_card_channel_open
+        from acb_skills.task_card import create_task_form
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return None
+    from acb_common.priority import important_from_importance
+
+    from skill_projects.client import current_user_email
+
+    if "@" not in current_user_email() or not task_edit_card_channel_open():
+        return None
+    return create_task_form(
+        project_id=pid,
+        due=str(new.payload.get("due_at") or ""),
+        start=str(new.extra.payload.get("start_date") or ""),
+        # The lane by name, or "" for the default (a subtask: the parent's).
+        status=new.status_label if "status_id" in new.payload else "",
+        important=important_from_importance(new.payload.get("importance")),
+        leveraged=bool(new.payload.get("leveraged", False)),
+        description=str(new.payload.get("description") or ""),
+        assignees=list(new.who),
+    )
+
+
+class _CardEdit:
+    """What the member changed on the edit card of a new task (EAC-1).
+
+    ``new`` is the task that the write sends. With no change, it is the task
+    that the tool resolved before the card. With changes, it starts from that
+    task, and :func:`_edited_task` applies only the changed keys. No second
+    prepare step runs. ``changes`` is empty for a plain approve. ``strangers`` names each
+    address of the changed people that the directory does not know (H-162)."""
+
+    def __init__(self, new: _NewTask, changes: dict[str, Any], strangers: list[str]) -> None:
+        self.new = new
+        self.changes = changes
+        self.strangers = strangers
+
+    def asked(self, priority: str) -> str:
+        """The level that the tool asked for, or ``""`` when the member set a
+        flag on the card: the level of the call no longer holds."""
+        return "" if {"important", "leveraged"} & set(self.changes) else priority
+
+    def lines(self) -> list[str]:
+        """The receipt's line of each stranger, in the words of the card line."""
+        if not self.strangers:
+            return []
+        return [f"  not in the directory: {', '.join(self.strangers)}"]
+
+
+async def _card_edit(
+    pid: str, new: _NewTask, form: dict[str, Any] | None, answer: Any,
+) -> _CardEdit:
+    """The task that the write sends after the card (EAC-1).
+
+    With no change, it is *new*, as the card showed it. With changes, only
+    the changed keys are resolved again, AFTER the answer
+    (:func:`_edited_task`). Each value that the member did not change stays
+    as the card showed it, so no second ``decide`` call can pick another
+    person or lane. The project stays the card's, and no id of the answer is
+    read. The write runs as the member, under the grants of each route. A
+    refusal raises, and nothing is written."""
+    changes = _card_changes(form, answer)
+    if not changes:
+        return _CardEdit(new, {}, [])
+    edited = await _edited_task(pid, new, changes)
+    strangers = await _unknown_addresses(edited.who) if "assignees" in changes else []
+    return _CardEdit(edited, changes, strangers)
+
+
+def _card_changes(form: dict[str, Any] | None, answer: Any) -> dict[str, Any]:
+    """The values that the member changed on the edit card, by key, or ``{}``.
+
+    Only an edited answer (``task_card.TaskEdit``) to a card that showed a
+    form changes a value. A plain approve (``True``) approves the original
+    values, and so does a late approve, which takes the card of the stored
+    call with no answer of its own. The form is the tool's own, never an
+    echo of the answer."""
+    if form is None or answer is True or not answer:
+        return {}
+    from acb_skills.task_card import TaskEdit, changed_values
+
+    if not isinstance(answer, TaskEdit):
+        return {}
+    return changed_values(form, answer)
+
+
+def _flag_fields(name: str, value: bool) -> dict[str, Any]:
+    """The stored field of one priority flag that the member set on the card,
+    through the one adapter (``priority_fields``)."""
+    fields = priority_fields(**{name: "true" if value else "false"})
+    if isinstance(fields, str):  # never for true or false, so fail closed
+        raise GatewayRefusal(fields)
+    return fields
+
+
+def _put(payload: dict[str, Any], key: str, value: Any) -> None:
+    """Set *key* of *payload* to *value*, or take the key out for no value."""
+    if value:
+        payload[key] = value
+    else:
+        payload.pop(key, None)
+
+
+async def _edited_lane(pid: str, new: _NewTask, wanted: str, payload: dict[str, Any]) -> str:
+    """The lane that the member chose on the card, by EXACT name, and its label.
+
+    ``_one_named`` takes each lane whose name is the edited name (case does
+    not count), and it refuses none or two in the tool's own words. No
+    ``decide`` call runs, because no card would show its pick. ``""`` is the
+    default lane, or the parent's lane for a subtask, as at the create."""
+    payload.pop("status_id", None)
+    if not wanted.strip():
+        if new.parent is not None:
+            return await _parent_lane_label(pid, new.parent)
+        return "the default"
+    row = _one_named(await _statuses_of(pid), wanted, "status", "statuses")
+    payload["status_id"] = str(row.get("id"))
+    return str(row.get("name"))
+
+
+async def _edited_task(pid: str, new: _NewTask, changes: dict[str, Any]) -> _NewTask:
+    """*new* with the member's changes, each checked as the tool checks it.
+
+    Only a changed key is resolved again. A date must be a date. A lane and a
+    person resolve by EXACT name only: an edited name that no lane or person
+    has exactly is refused, with no ``decide`` call and no question after the
+    Approve. An address passes, and the receipt warns of a stranger (H-162).
+    Each person goes through ``_resolve_assignee``, so an agent stays refused
+    in a run that may not send. ``important`` of None takes the judgement
+    away. The type, the fields, the tags and the parent stay as resolved."""
+    payload = dict(new.payload)
+    if "due" in changes:
+        _put(payload, "due_at", _date_arg(changes["due"], "due"))
+    if "start" in changes:
+        _put(payload, "start_date", _date_arg(changes["start"], "start"))
+    if "description" in changes:
+        _put(payload, "description", str(changes["description"]).strip())
+    if "important" in changes:
+        payload.pop("importance", None)
+        if changes["important"] is not None:
+            payload.update(_flag_fields("important", changes["important"]))
+    if "leveraged" in changes:
+        payload.update(_flag_fields("leveraged", changes["leveraged"]))
+    label = new.status_label
+    if "status" in changes:
+        label = await _edited_lane(pid, new, str(changes["status"]), payload)
+    who = list(new.who)
+    if "assignees" in changes:
+        who = [await _resolve_assignee(a, exact=True) for a in changes["assignees"]]
+    edited = _NewTask(pid, payload, label, who, new.extra)
+    edited.parent = new.parent
+    return edited
 
 
 async def _create_new_task(
@@ -1750,7 +1982,7 @@ async def update_task(
         detail=plan.detail,
         context=_fields_block(plan.card, before=plan.before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
     updated["assignees"] = task.get("assignees") or []
     lane = plan.lane
@@ -1943,7 +2175,7 @@ async def assign(task_id: str, assignees: str) -> str:
         detail=f"{_ref(task)} → {', '.join(who) or 'nobody'}",
         context=context,
     ):
-        return CANCELLED
+        return _not_confirmed()
     await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
     task["assignees"] = who
     return "\n".join(["Assigned:", *_task_line(task)])
@@ -1979,7 +2211,7 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
         detail=f"on {_ref(task)}",
         context=_fields_block({**payload, **await _comment_tells(tid, text_body)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/comments", payload)
     return f"Commented on {_ref(task)} (comment id {row.get('id')}).\n  full_id: {tid}"
 
@@ -2004,7 +2236,7 @@ async def add_subtasks(task_id: str, titles: str) -> str:
         detail=f"under {_ref(parent)}",
         context=_fields_block({f"{i + 1}": t for i, t in enumerate(parts)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     # No status is sent: the gateway puts each step in the parent's lane
     # when that lane is open (`core.parent_lane_status`, D-PM-38).
     rows = [
@@ -2059,7 +2291,7 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
         detail=f"{_ref(task)} {kind.replace('_', ' ')} {_ref(other)}",
         context=_fields_block({"link_type": kind, "from": _ref(task), "to": _ref(other)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(
         f"/projects/tasks/{tid}/links",
         {"target_task_id": oid, "link_type": kind},
@@ -2090,7 +2322,7 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
         detail=f"{_ref(task)}: {label}",
         context=_fields_block({"link_id": lid, "link": label}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/tasks/{tid}/links/{lid}")
     return f"Removed the link: {label}.\n  full_id: {tid}"
 
@@ -2484,7 +2716,7 @@ async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
         detail=f"{_ref(task)}: {data(link)}",
         context=_fields_block(shown),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/refs", payload, {"refresh": False})
     return (
         f"Linked {_ref_line(row)} to {_ref(task)} (ref id {row.get('id')})."
@@ -2522,7 +2754,7 @@ async def remove_task_ref(task_id: str, url: str) -> str:
         detail=f"{_ref(task)}: {_ref_line(row)}",
         context=_fields_block({"task": _ref(task), "link": f"{_ref_line(row)} {data(row.get('url'))}"}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/tasks/{tid}/refs/{rid}")
     return f"Removed the link {_ref_line(row)} from {_ref(task)}.\n  full_id: {tid}"
 
@@ -2566,7 +2798,7 @@ async def move_task(
     if isinstance(move, str):
         return move
     if not await _confirm(title=move.title, detail=move.detail, context=move.context):
-        return CANCELLED
+        return _not_confirmed()
     return await move.apply()
 
 
@@ -3020,7 +3252,7 @@ async def _ask_batch(
     # refuses an id it did not offer. This checks again, so a door that
     # answers anything else writes nothing.
     if not isinstance(ticked, frozenset) or not ticked:
-        return CANCELLED
+        return _not_confirmed()
     if not ticked <= {r.row_id for r in ready}:
         return FORGED_BATCH_ROWS
     return [r for r in ready if r.row_id in ticked], [r for r in ready if r.row_id not in ticked]
@@ -3986,7 +4218,7 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     if not await _confirm(
         title=f"{verb} this {which}?", detail=label, context=_fields_block({which: label})
     ):
-        return CANCELLED
+        return _not_confirmed()
     if stop:
         await delete(path)
         return f"You no longer watch {label}.\n  full_id: {row.get('id')}"
@@ -4015,7 +4247,7 @@ async def complete(task_id: str, include_subtasks: str = "") -> str:
         detail=_ref(task),
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     params = {"include_subtasks": True} if wanted else None
     row = await post(f"/projects/tasks/{tid}/complete", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
@@ -4061,7 +4293,7 @@ async def defer(task_id: str, until: str) -> str:
             "task": _ref(task), "until": when, "scope": _defer_scope(task),
         }),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await post(f"/projects/tasks/{tid}/defer", {"until": when})
     return f"Deferred {_ref(task)} until {when} in your inbox.\n  full_id: {tid}"
 
@@ -4080,7 +4312,7 @@ async def unarchive_task(task_id: str) -> str:
             {"task": _ref(task), "archived": (task.get("archived_at") or "")[:10]}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/unarchive")
     merged = {**task, **(row if isinstance(row, dict) else {}), "archived_at": None}
     return "\n".join(["Restored:", *_task_line(merged)])
@@ -4127,7 +4359,7 @@ async def create_project(
         detail=f"{data(label)} under {parent_label}",
         context=_fields_block({**payload, "under": parent_label}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post("/projects/nodes", payload)
     return (
         f"Created {which} {data(row.get('name'))} under {parent_label}.\n  full_id: {row.get('id')}"
@@ -4326,7 +4558,7 @@ async def update_project(
         detail=data(node.get("name")),
         context=_fields_block(payload, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await patch(f"/projects/nodes/{pid}", payload)
     shown = [
         f"{key} {'off' if row.get(key) is None else data(row.get(key))}"
@@ -4389,7 +4621,7 @@ async def _report_change(
         detail=data(existing.get("name")),
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await patch(f"/projects/reports/{rid}", payload)
     return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
 
@@ -4438,7 +4670,7 @@ async def report_save(
         detail=f"{data(label)} · {scope}",
         context=_fields_block({**payload, "scope": scope}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post("/projects/reports", payload)
     return f"Saved report {data(row.get('name'))} for {scope}.\n  full_id: {row.get('id')}"
 
@@ -4687,11 +4919,100 @@ async def _root_of(pid: str, node: dict[str, Any]) -> dict[str, Any]:
     return current
 
 
-def _tree_scope(root: dict[str, Any], node: dict[str, Any]) -> str:
+#: The space on a card when the member cannot see the root of the tree
+#: (``chat_failure_modes.md`` §8, Q5). The card names no hidden space.
+HIDDEN_SPACE = "the space above it"
+
+#: The words of each vocabulary kind on the reach line (HRD-9a).
+REACH_WORDS = {"tags": "tags", "fields": "custom fields", "types": "task types"}
+
+
+class _Space:
+    """The root of a tree, which owns a root-local tag, field or type (HRD-9a).
+
+    ``name`` is ``None`` when the member cannot see the root, so the card says
+    :data:`HIDDEN_SPACE`. ``projects`` is N, the projects of the tree that
+    hold tasks, or ``None`` when the read failed.
+    """
+
+    def __init__(self, root_id: str | None, name: Any, projects: int | None) -> None:
+        self.id = root_id
+        self.name = name
+        self.projects = projects
+
+    @property
+    def words(self) -> str:
+        """The space on a card: its fenced name, or :data:`HIDDEN_SPACE`."""
+        return data(self.name) if self.name is not None else HIDDEN_SPACE
+
+
+def _reach_count(body: Any) -> int | None:
+    """N from the reach read, or ``None`` for an answer of another shape."""
+    if not isinstance(body, dict) or not body.get("root_id"):
+        return None
+    n = body.get("projects")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        return None
+    return n
+
+
+async def _space_of(pid: str, node: dict[str, Any]) -> _Space:
+    """The space of ``node``, and N (HRD-9a, ``chat_failure_modes.md`` §6).
+
+    ``GET /projects/nodes/{id}/vocabulary/reach`` gives both, and
+    ``core.vocabulary_reach`` counts. A read that fails gives the space from
+    the walk of :func:`_root_of`, and no N. A walk that fails too gives
+    :data:`HIDDEN_SPACE`. So no read here stops the write: the card always
+    shows, and the route decides the write.
+    """
+    try:
+        node_id = uuid_of(pid, "project_id")
+        body = await get(f"/projects/nodes/{node_id}/vocabulary/reach")
+    except Exception:  # a card detail, never a write
+        body = None
+    n = _reach_count(body)
+    if n is not None:
+        return _Space(str(body["root_id"]), body.get("root_name"), n)
+    try:
+        root = await _root_of(pid, node)
+    except Exception:  # a hidden parent ends the walk: the card names no space
+        return _Space(None, None, None)
+    root_id = root.get("id")
+    return _Space(str(root_id) if root_id else None, root.get("name"), None)
+
+
+def shared_vocab_line(kind: str, space: _Space) -> str:
+    """The card words when a root-local row reaches 2 or more projects, or ``""``.
+
+    HRD-9a: "Changes the task types of «Space» for 5 projects". With N of 1,
+    or with no N, the card has no line (§8, Q3), as PST-4 has none.
+    """
+    if space.projects is None or space.projects < 2:
+        return ""
+    return f"Changes the {REACH_WORDS[kind]} of {space.words} for {_n_projects(space.projects)}"
+
+
+def _with_line(detail: str, line: str) -> str:
+    """``detail``, and the reach line after it when there is one (as PST-4)."""
+    return f"{detail}. {line}" if line else detail
+
+
+def _card_place(space: _Space | None, node: dict[str, Any]) -> str:
+    """The ``project`` row of an edit card: the space of a root-local row.
+
+    An org-wide row has no space (``space`` is ``None``), and its card keeps
+    the node, as before HRD-9a.
+    """
+    return data(node.get("name")) if space is None else space.words
+
+
+def _tree_scope(space: _Space, node: dict[str, Any]) -> str:
     """``«Root» and every project in its tree`` for the card."""
-    if root.get("id") == node.get("id"):
-        return f"{data(root.get('name'))} and every project under it"
-    return f"{data(root.get('name'))}, the root of {data(node.get('name'))}, and its whole tree"
+    if space.id is not None and space.id == str(node.get("id")):
+        return f"{space.words} and every project under it"
+    if space.name is None:
+        return f"the space above {data(node.get('name'))}, and its whole tree"
+    return f"{space.words}, the root of {data(node.get('name'))}, and its whole tree"
 
 
 def _local(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4838,7 +5159,7 @@ async def create_status(
             {**wire, **shown, "project": data(node.get("name")), "status set": set_of}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/statuses", payload)
     where = (
         f"to the statuses of {data(owner.get('owner_name'))}, used by {data(node.get('name'))}"
@@ -4932,7 +5253,7 @@ async def update_status(
         ),
         context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/statuses/{sid}", send)
     return (
         f"Updated status {data(updated.get('name') or row.get('name'))} "
@@ -4968,7 +5289,8 @@ async def create_type(
     rows = await _vocab(pid, "types")
     if _matches_by_name(_local(rows), label):
         return f"{data(label)} already exists here. The types are: {_names(rows)}."
-    root = await _root_of(pid, node)
+    # An org-wide row keeps its card of today, so it reads no space (HRD-9a).
+    space = None if org_wide else await _space_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if icon.strip():
         payload["icon"] = icon.strip()
@@ -4984,13 +5306,14 @@ async def create_type(
         payload["is_epic"] = True
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
+    where = "every project (organization-wide)" if space is None else _tree_scope(space, node)
+    reach = "" if space is None else shared_vocab_line("types", space)
     if not await _confirm(
         title="Add this task type?",
-        detail=f"{data(label)} in {where}",
+        detail=_with_line(f"{data(label)} in {where}", reach),
         context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/types", payload)
     return f"Added type {data(row.get('name') or label)} to {where}.\n  type_id: {row.get('id')}"
 
@@ -5046,7 +5369,11 @@ async def update_type(
             f"{data(row.get('name'))} is organization-wide. Only its name can change "
             "from here. Set an icon, colour or default on a project's own type."
         )
-    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    # HRD-9a: a root-local type is the space's, so the card names the space
+    # and N. An org-wide type keeps its card of today.
+    space = None if _org_wide(row) else await _space_of(pid, node)
+    scope = "organization-wide" if space is None else space.words
+    reach = "" if space is None else shared_vocab_line("types", space)
     card: dict[str, Any] = dict(payload)
     if demoted:
         card["no longer the default"] = demoted
@@ -5054,10 +5381,10 @@ async def update_type(
         card["scope"] = "organization-wide — every project"
     if not await _confirm(
         title="Change this task type?",
-        detail=f"{data(row.get('name'))} in {scope}",
-        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
+        detail=_with_line(f"{data(row.get('name'))} in {scope}", reach),
+        context=_fields_block({**card, "project": _card_place(space, node)}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/types/{tid}", payload)
     return f"Updated type {data(updated.get('name') or row.get('name'))}.\n  type_id: {tid}"
 
@@ -5124,7 +5451,8 @@ async def create_field(
     rows = await _vocab(pid, "fields")
     if _matches_by_name(_local(rows), label):
         return f"A field called {data(label)} already exists here."
-    root = await _root_of(pid, node)
+    # An org-wide row keeps its card of today, so it reads no space (HRD-9a).
+    space = None if org_wide else await _space_of(pid, node)
     payload: dict[str, Any] = {"name": label, "field_type": kind}
     if choices:
         payload["options"] = choices
@@ -5132,7 +5460,8 @@ async def create_field(
         payload["description"] = description.strip()
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
+    where = "every project (organization-wide)" if space is None else _tree_scope(space, node)
+    reach = "" if space is None else shared_vocab_line("fields", space)
     card: dict[str, Any] = {**payload, "project": data(node.get("name")), "scope": where}
     if required:
         # The create route's INSERT carries no `required` column
@@ -5142,10 +5471,12 @@ async def create_field(
         card["required"] = "a task cannot move into this project without a value"
     if not await _confirm(
         title="Add this custom field?",
-        detail=f"{data(label)} ({kind}) in {where}" + (" · required" if required else ""),
+        detail=_with_line(
+            f"{data(label)} ({kind}) in {where}" + (" · required" if required else ""), reach,
+        ),
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/fields", payload)
     fid = uuid_of(str(row.get("id")), "field_id")
     if required:
@@ -5196,16 +5527,22 @@ async def update_field(
         before["field_type"] = row.get("field_type")
     if not payload:
         return "Nothing to change. Pass at least one field."
-    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    # HRD-9a: a root-local field is the space's, so the card names the space
+    # and N. An org-wide field keeps its card of today.
+    space = None if _org_wide(row) else await _space_of(pid, node)
+    scope = "organization-wide" if space is None else space.words
+    reach = "" if space is None else shared_vocab_line("fields", space)
     card: dict[str, Any] = dict(payload)
     if _org_wide(row):
         card["scope"] = "organization-wide — every project"
     if not await _confirm(
         title="Change this custom field?",
-        detail=f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {scope}",
-        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
+        detail=_with_line(
+            f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {scope}", reach,
+        ),
+        context=_fields_block({**card, "project": _card_place(space, node)}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/fields/{fid}", payload)
     return (
         f"Updated field {data(updated.get('name') or row.get('name'))} "
@@ -5233,7 +5570,8 @@ async def create_tag(
     rows = await _vocab(pid, "tags")
     if _matches_by_name(_local(rows), label):
         return f"{data(label)} already exists here. The tags are: {_names(rows)}."
-    root = await _root_of(pid, node)
+    # An org-wide row keeps its card of today, so it reads no space (HRD-9a).
+    space = None if org_wide else await _space_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if color.strip():
         payload["color"] = hue_of(color)
@@ -5241,15 +5579,36 @@ async def create_tag(
         payload["description"] = description.strip()
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
+    where = "every project (organization-wide)" if space is None else _tree_scope(space, node)
+    reach = "" if space is None else shared_vocab_line("tags", space)
     if not await _confirm(
         title="Add this tag?",
-        detail=f"{data(label)} in {where}",
+        detail=_with_line(f"{data(label)} in {where}", reach),
         context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/nodes/{pid}/tags", payload)
     return f"Added tag {data(row.get('name') or label)} to {where}.\n  tag_id: {row.get('id')}"
+
+
+async def _rename_count(gid: str, row: dict[str, Any]) -> int:
+    """How many tasks a rename of a root-local tag rewrites (HRD-9a).
+
+    ``tags._rewrite`` changes each task of the tree that wears the tag, an
+    archived task too. The list's ``task_count`` counts open tasks only, so
+    it is short. ``GET /tags/{id}/impact`` counts with the scope of the
+    rewrite, as ``merge_tags`` reads it. A failed read gives the list's
+    count, so the card always shows.
+    """
+    try:
+        tag_id = uuid_of(gid, "tag_id")
+        hit = await get(f"/projects/tags/{tag_id}/impact")
+    except Exception:  # a card detail, never a write
+        hit = None
+    tasks = hit.get("tasks") if isinstance(hit, dict) else None
+    if isinstance(tasks, int) and not isinstance(tasks, bool):
+        return tasks
+    return int(row.get("task_count") or 0)
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
@@ -5276,30 +5635,35 @@ async def update_tag(
         before["description"] = row.get("description")
     if not payload:
         return "Nothing to change. Pass at least one field."
-    worn = int(row.get("task_count") or 0)
     card: dict[str, Any] = dict(payload)
     size = ""
+    # HRD-9a: a root-local tag is the space's, so the card names the space
+    # and N. An org-wide tag keeps its card of today.
+    space = None if _org_wide(row) else await _space_of(pid, node)
     if "name" in payload and _org_wide(row):
-        # The list's count is scoped to THIS tree on purpose (tags.py
-        # `list_tags`), and an org-wide rename rewrites every project's
-        # tasks. No number the tool can read is the truth, so the card says
-        # the scope and no count (S2b review).
+        # An org-wide rename rewrites the tasks of each space that keeps no
+        # tag of its own with that name (`core.governed_tasks_scope`). The
+        # chat can read that count: `GET /tags/{id}/impact`, a read of
+        # delete_tag in the manifest (PS-3b). HRD-9b puts it on this card.
+        # Until then the card says the scope and no count, as before.
         card = {"scope": "organization-wide — every project's tasks that wear it", **payload}
         size = " · organization-wide"
     elif "name" in payload:
         # The count FIRST on a rename: it is the size of the act. The route
         # rewrites every task that wears the tag (tags.py `_rewrite`).
+        worn = await _rename_count(gid, row)
         card = {"tasks renamed": worn, **payload}
         size = f" · renames {worn} task{'s' if worn != 1 else ''}"
     elif _org_wide(row):
         card["scope"] = "organization-wide — every project"
-    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    scope = "organization-wide" if space is None else space.words
+    reach = "" if space is None else shared_vocab_line("tags", space)
     if not await _confirm(
         title="Change this tag?",
-        detail=f"{data(row.get('name'))} in {scope}{size}",
-        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
+        detail=_with_line(f"{data(row.get('name'))} in {scope}{size}", reach),
+        context=_fields_block({**card, "project": _card_place(space, node)}, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     updated = await patch(f"/projects/tags/{gid}", payload)
     retagged = updated.get("retagged")
     tail = f" on {retagged} task{'s' if retagged != 1 else ''}" if "name" in payload else ""
@@ -5343,7 +5707,7 @@ async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
             before={"body": old.get("body")},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await patch(f"/projects/comments/{aid}", {"body": text_body})
     return f"Edited your comment on {_ref(task)} (comment id {aid}).\n  full_id: {tid}"
 
@@ -5738,7 +6102,7 @@ async def set_recurrence(
                 {"task": _ref(task), "rule": _rule_text(current), "after": "does not repeat"}
             ),
         ):
-            return CANCELLED
+            return _not_confirmed()
         await delete(f"/projects/tasks/{tid}/recurrence")
         return f"{_ref(task)} no longer repeats. Existing occurrences stay.\n  full_id: {tid}"
     clock = await _member_clock()
@@ -5759,7 +6123,7 @@ async def set_recurrence(
         detail=f"{_ref(task)} · {_rule_text(rule)}",
         context=_fields_block(card, before=before),
     ):
-        return CANCELLED
+        return _not_confirmed()
     saved = (await put(f"/projects/tasks/{tid}/recurrence", rule)) or {}
     return f"{_ref(task)} now repeats {_rule_text(saved.get('rule') or rule)}.\n  full_id: {tid}"
 

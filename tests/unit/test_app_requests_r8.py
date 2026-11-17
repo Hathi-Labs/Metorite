@@ -120,7 +120,10 @@ The spend runs on the real database as the app role:
 * b0_06 three sends at once have one winner (TOCTOU);
 * b0_07 the approval of a delete binds its path;
 * b0_08 the ask needs the write scope of an app;
-* b0_09 the wait holds the answer, and reads again after each sleep.
+* b0_09 the wait holds the answer, and reads again after each sleep;
+* b0_10 the ask refuses a call that no send can deliver (review P2): a
+  float that JSONB changes, and a version of another shape. Each float that
+  the ask keeps sends and spends.
 
 The mutations of MCP-P1b-2, each run on the built tree and restored:
 
@@ -131,6 +134,10 @@ The mutations of MCP-P1b-2, each run on the built tree and restored:
   ``test_b0_02_a_decline_or_an_expiry_changes_nothing``.
 * M-R3. ``SPEND_SQL``: drop the digest predicate.
   ``test_b0_03_a_changed_body_changes_nothing``.
+* M-R4. ``gateway.app_requests._unshowable``: drop the float rule of review
+  P2. ``test_b0_10_the_ask_refuses_a_call_that_no_send_can_deliver``.
+* M-R5. ``routes/agent_requests.open_app_request``: drop the ``_IF_MATCH``
+  check. ``test_b0_10_the_ask_refuses_a_call_that_no_send_can_deliver``.
 """
 
 from __future__ import annotations
@@ -1558,7 +1565,8 @@ class _Signed:
         self.org = org
 
     async def __call__(self, conn: str, method: str, path: str, body: bytes = b"",
-                       approval: str | None = None, query: str = "") -> httpx.Response:
+                       approval: str | None = None, query: str = "",
+                       if_match: str | None = None) -> httpx.Response:
         from acb_auth import agent_signing
 
         headers = agent_signing.signed_headers(
@@ -1566,6 +1574,8 @@ class _Signed:
             method=method, path=path, query=query, body=body, approval=approval)
         if method != "GET":
             headers["Content-Type"] = "application/json"
+        if if_match is not None:
+            headers["If-Match"] = if_match
         url = f"{path}?{query}" if query else path
         return await asyncio.create_task(
             self.client.request(method, url, headers=headers, content=body))
@@ -1853,3 +1863,37 @@ class TestBranchZeroSpendsOnARealDatabase:
             too_long = await agent(b0.door_a, "GET", f"/agent-access/requests/{other}",
                                    query="wait_s=21")
             assert too_long.status_code == 422, too_long.text
+
+    async def test_b0_10_the_ask_refuses_a_call_that_no_send_can_deliver(self, b0):
+        """Review P2. JSONB stores a number as ``numeric``. So ``1e+16``
+        reads back as ``10000000000000000`` and ``-0.0`` as ``0.0``, the
+        body bytes change, and each send would get ``approval_mismatch``.
+        The edge sends only an ``If-Match`` of ``IF_MATCH_PATTERN``. The ask
+        refuses each such call with 422 ``bad_args`` and stores nothing. A
+        float that the ask keeps round-trips on the real database, and the
+        stored call with its version sends and spends once."""
+        calls: list[tuple[str, str]] = []
+        async with _branch_zero(b0.p, calls) as (member, agent):
+            for args in ({"name": "x", "f": 1e16}, {"name": "x", "f": -1.5e300},
+                         {"name": "x", "f": -0.0}, {"name": "x", "f": 1e-07},
+                         {"name": "x", "meta": [{"f": 2.5e20}]},
+                         {"name": "x", "expected_version": "v3"}):
+                got = await agent(b0.door_a, "POST", f"/agent-access/apps/{APP_ID}/requests",
+                                  _ask_body(args))
+                assert got.status_code == 422, (args, got.text)
+                assert got.json()["detail"]["error"] == "bad_args", got.text
+            assert _count(b0.p, "SELECT count(*) FROM pm_agent_runs") == 0
+            kept = {"name": "x", "f": 0.30000000000000004, "g": 1234567890123456.8,
+                    "h": 1.0, "i": -2.5, "j": 0.0001,
+                    "expected_version": "2026-11-11T10:00:00.123456+00:00"}
+            rid = (await _ask_signed(agent, b0.door_a, kept))["request_id"]
+            assert (await _decide(member, b0.a, rid, "approve")).status_code == 200
+            stored = (await _stored_call(agent, b0.door_a, rid))["call"]
+            sent_args = {k: v for k, v in kept.items() if k != "expected_version"}
+            assert stored["body"] == sent_args
+            body = store.body_bytes(stored["body"])
+            assert body == store.body_bytes(sent_args), "JSONB kept the bytes"
+            got = await agent(b0.door_a, "POST", "/testreq/items", body, approval=rid,
+                              if_match=stored["if_match"])
+            assert got.status_code == 200, got.text
+        assert calls == [("make_item", b0.a_email)]

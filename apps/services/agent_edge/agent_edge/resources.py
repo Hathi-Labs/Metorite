@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_auth import agent_oauth
-from acb_playbook import PlaybookError, load_all, load_topic
+from acb_playbook import PlaybookError, kit_version, kit_versions, load_all, load_topic
 
 from agent_edge import tools
 
@@ -63,6 +63,9 @@ MIME = "application/json"
 PLAYBOOK_PREFIX = "metorite://playbook/"
 _PLAYBOOK_URI = re.compile(r"metorite://playbook/([A-Za-z0-9]+(?:[/-][A-Za-z0-9]+)*)", re.ASCII)
 PLAYBOOK_SCOPE = agent_oauth.PROJECTS_READ
+#: KIT-5. One small resource with the current kit version of each client. It
+#: is not a topic: no topic file has this slug.
+KIT_VERSION_SLUG = "kit-version"
 
 
 @dataclass(frozen=True)
@@ -134,10 +137,17 @@ def listed(scopes: Iterable[str], organization_id: object) -> list[dict[str, Any
         topics = load_all()
     except PlaybookError:
         return []
-    return [{
+    rows = [{
         "uri": f"{PLAYBOOK_PREFIX}{t.slug}", "name": t.slug, "title": t.title,
         "description": t.summary, "mimeType": MIME,
     } for t in topics]
+    rows.append({
+        "uri": f"{PLAYBOOK_PREFIX}{KIT_VERSION_SLUG}", "name": KIT_VERSION_SLUG,
+        "title": "The current agent kit version",
+        "description": ("The kit_version of the agent kit for each client. Compare it with the"
+                        " kit_version line of your local AGENTS.md."), "mimeType": MIME,
+    })
+    return rows
 
 
 def templates(scopes: Iterable[str], organization_id: object) -> list[dict[str, Any]]:
@@ -172,6 +182,12 @@ def _read_playbook(slug: str, scopes: Iterable[str], organization_id: object) ->
     scope and for an unknown topic: one answer, no echo."""
     if not _playbook_on(scopes, organization_id):
         raise ResourceNotFound(TEXT_NOT_FOUND)
+    if slug == KIT_VERSION_SLUG:
+        body = {"slug": KIT_VERSION_SLUG, "kit_version": kit_version(), "kits": kit_versions()}
+        return {"contents": [{
+            "uri": f"{PLAYBOOK_PREFIX}{KIT_VERSION_SLUG}", "mimeType": MIME,
+            "text": json.dumps(body),
+        }]}
     try:
         topic = load_topic(slug)
     except PlaybookError:

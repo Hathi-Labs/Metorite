@@ -424,6 +424,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.kb_sync_skipped", error=str(exc))
 
+    # Start the calendar sync loop (gateway/calendar_sync/scheduler.py; spec
+    # calendar_events_reminders.md §8.1, WS-CAL CE-10). It READS Google (and
+    # later Outlook) events into calendar_entries. Dark by default: with
+    # CALENDAR_SYNC_READ empty it starts no task and logs once. The gate lives
+    # inside the start function.
+    try:
+        from gateway.calendar_sync.scheduler import start_calendar_sync
+        calendar_sync_started = await start_calendar_sync()
+        _log.info("gateway.calendar_sync", started=calendar_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.calendar_sync_skipped", error=str(exc))
+
     # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
     # WS-58 MD-5b). It trims the active set of each org and sweeps old card
     # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
@@ -522,6 +534,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from gateway import chat_summary_job  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
+    try:
+        # The retention of the waiting chat cards registers its prune hook at
+        # import (task 3435, orchestrator/pending_ask.py). A route imports the
+        # module late, so the import here puts the hook in place before the
+        # first tick. Its own try, as above.
+        from orchestrator import pending_ask as _pending_ask  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.pending_ask_prune_skipped", error=type(exc).__name__)
     try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
@@ -677,6 +697,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.kb_sync.scheduler import stop_kb_sync
         await stop_kb_sync()
+    except Exception:
+        pass
+
+    # Stop the calendar sync loop. Unconditional, like the Knowledge stop.
+    try:
+        from gateway.calendar_sync.scheduler import stop_calendar_sync
+        await stop_calendar_sync()
     except Exception:
         pass
 
@@ -1185,6 +1212,27 @@ async def _db_unavailable(request: Request, exc: Exception):
     return PlainTextResponse("Internal Server Error", status_code=500)
 
 
+# ── A mail provider that did not answer a write is a 503, not a 500 ──────────
+# HRD-20 (task 3224). Graph answered 502 to a reply and a draft, and the
+# route answered 500 with a traceback. The provider raises one typed error, and
+# this handler answers 503 with its words. The words never say "nothing was
+# sent", because a 502 can hide a write that landed. The error holds no URL.
+# Fence: tests/unit/test_outlook_gateway_faults.py.
+from email_ingestion.providers.base import ProviderDidNotAnswer  # noqa: E402
+
+
+@app.exception_handler(ProviderDidNotAnswer)
+async def _provider_did_not_answer(request: Request, exc: ProviderDidNotAnswer):
+    _log.warning(
+        "email.provider_did_not_answer",
+        extra={"mail_path": request.url.path, "mail_kind": exc.kind},
+    )
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "60"},
+        content={"detail": exc.detail, "code": "provider_did_not_answer"},
+    )
+
+
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant
 # scope: opened empty here, filled in by `_with_resolved_access` when the auth
 # dependency resolves the caller's organization, released after the response.
@@ -1216,6 +1264,12 @@ app.add_middleware(TenantScopeMiddleware)
 from gateway.routes.projects.import_body_limit import ImportBodyLimit  # noqa: E402
 
 app.add_middleware(ImportBodyLimit)
+
+# CIV-14b: keep a copy of the body of a SIGNED agent upload while FastAPI
+# parses the form, so branch 0 can check the signature over those bytes.
+from gateway.routes.projects.agent_upload_body import AgentUploadBody  # noqa: E402
+
+app.add_middleware(AgentUploadBody)
 
 # ── CORS ── allow workbench dev server (port 3001) and production origin
 app.add_middleware(
@@ -1929,6 +1983,17 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # chat_organization.md §6 CO-2a — the topics of the chat list. Shares
+    # /chat's prefix, in its own module, as the brief does. Dark behind
+    # CHAT_TOPICS_ORGS. Fence: test_chat_topic.py checks that this app
+    # serves the routes, because a failed import here answers 404 too.
+    from gateway.routes.chat_topics import router as _chat_topics_router
+
+    app.include_router(_chat_topics_router)
+except Exception:  # pragma: no cover
+    pass
+
 # Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
 # The workbench takes one slot here before it starts esbuild. The counter
 # lives in the tenant Redis wrapper. No `try`: the module needs only
@@ -2231,6 +2296,23 @@ try:
     from gateway.routes.agent_guidance import router as _agent_guidance_router
 
     app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
+# KIT-4a — the download of the agent kit (orchestration_playbook.md §6a).
+# Dark: 404 while `PLAYBOOK_ORGS` does not hold the caller's org. A plain
+# import, so a real import error stops the start and does not hide.
+from gateway.routes.agent_kit import router as _agent_kit_router  # noqa: E402
+
+app.include_router(_agent_kit_router)
+
+try:
+    # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md
+    # §3.11.5 and SW-94): the save of a policy row. Ships dark: 404 while
+    # `AGENT_POLICY_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_policies import router as _agent_policies_router
+
+    app.include_router(_agent_policies_router)
 except Exception:  # pragma: no cover
     pass
 

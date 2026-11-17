@@ -846,6 +846,26 @@ class TestTheAsk:
         assert _text(result) == text
         assert _sent(asking, "POST", "/testdoor/items") == []
 
+    @pytest.mark.parametrize("version", ["v3", "2026-11-11 10:00", "123", "2026-11-11T10:00Z\n"])
+    async def test_a_version_that_the_send_refuses_is_refused_before_the_ask(
+            self, asking, version):
+        """Review P2. ``send_call`` sends only an ``If-Match`` of
+        ``IF_MATCH_PATTERN``. ``build_call`` takes any short text, so the ask
+        must refuse each other shape, or the member approves a call that no
+        send can deliver. Mutation: drop the ``_IF_MATCH`` check of
+        ``tools._app_write``, and the ask goes out."""
+        result = await _write({"app": "testdoor", "op": "make_item",
+                               "args": {"name": "x", "expected_version": version},
+                               "idempotency_key": KEY})
+        assert _text(result) == "The input 'args.expected_version' has the wrong form."
+        assert asking.gateway.requests == []
+
+    async def test_a_version_of_the_send_shape_asks(self, asking):
+        _ok(await _write({"app": "testdoor", "op": "make_item",
+                          "args": {"name": "x", "expected_version": "2026-11-11T10:00:00Z"},
+                          "idempotency_key": KEY}))
+        assert len(_sent(asking, *ASK)) == 1
+
 
 class TestTheWaitAndTheSend:
 
@@ -920,6 +940,49 @@ class TestTheWaitAndTheSend:
     async def test_each_refused_spend_has_a_fixed_text(self, asking, status, detail, text):
         asking.gateway.answers[("POST", "/testdoor/items")] = (status, {"detail": detail})
         assert _text(await _write({"app": "testdoor", "request_id": RID})) == text
+
+    async def test_a_send_that_lost_the_race_says_the_change_ran(self, asking):
+        """Review P2. Two waits on one request read ``approved`` and send
+        together. Branch 0 spends the request once, so the other send gets
+        409 ``approval_used``. The change ran, so the loser reads the
+        request again and answers ``TEXT_REQUEST_SPENT``, not "Ask again".
+        Mutation: drop the read again in ``tools._app_wait``, and the text
+        is ``TEXT_APPROVAL_USED``."""
+        reads: list[str] = []
+
+        def read(_request: SimpleNamespace) -> tuple[int, Any]:
+            reads.append("read")
+            return 200, {**_stored(), "state": "approved" if len(reads) == 1 else "done"}
+
+        asking.gateway.answers[READ] = (200, read)
+        asking.gateway.answers[("POST", "/testdoor/items")] = (
+            409, {"detail": agent_oauth.APPROVAL_USED_CODE})
+        assert _text(await _write({"app": "testdoor", "request_id": RID,
+                                   "wait_seconds": 20})) == tools.TEXT_REQUEST_SPENT
+        [first, second] = _sent(asking, *READ)
+        assert first.pairs == {"wait_s": "20"} and second.pairs == {"wait_s": "0"}
+        assert len(_sent(asking, "POST", "/testdoor/items")) == 1
+
+    @pytest.mark.parametrize("again", [
+        (200, {**_stored(), "state": "expired"}),
+        (200, {**_stored(), "state": "declined"}),
+        (503, {"detail": "busy"}),
+    ])
+    async def test_a_used_approval_of_no_send_still_says_ask_again(self, asking, again):
+        """A request that is not done after the 409 keeps the text of
+        ``approval_used``. A failed read again keeps it too."""
+        reads: list[str] = []
+
+        def read(_request: SimpleNamespace) -> tuple[int, Any]:
+            reads.append("read")
+            return (200, _stored()) if len(reads) == 1 else again
+
+        asking.gateway.answers[READ] = (200, read)
+        asking.gateway.answers[("POST", "/testdoor/items")] = (
+            409, {"detail": agent_oauth.APPROVAL_USED_CODE})
+        assert _text(await _write({"app": "testdoor", "request_id": RID})) == (
+            tools.TEXT_APPROVAL_USED)
+        assert len(reads) == 2
 
     async def test_the_writes_flag_off_sends_nothing(self, asking, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
@@ -1396,3 +1459,31 @@ def test_an_approval_with_no_digest_is_none_and_no_approval_is_nothing():
     for bad in ({"if_match": ["a", "b"]}, {"path": "/testdoor/items\nconn:x"},
                 {"template": None}, {"query": "a=1&a=2"}):
         assert deps._approval_of(**{**parts, **bad}) == (RID, None), bad
+
+
+def test_claim_call_takes_the_approval_by_name_only():
+    """Review P2. ``_claim_call`` takes four positional parts of one shape.
+    A positional approval could land in the wrong slot after an edit, so it
+    is keyword-only. Mutation: drop the ``*`` in ``deps._claim_call``."""
+    import inspect
+
+    params = inspect.signature(deps._claim_call).parameters
+    assert params["approval"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.parametrize(("value", "refused"), [
+    (1e16, True), (2.5e20, True), (-1.5e300, True), (1e-07, True), (-0.0, True),
+    ([{"f": 1e16}], True), ({"k": -0.0}, True),
+    (0.0, False), (1.0, False), (-2.5, False), (0.30000000000000004, False),
+    (1234567890123456.8, False), (0.0001, False), (2**53 - 1, False),
+])
+def test_the_ask_refuses_a_float_that_jsonb_changes(value, refused):
+    """Review P2. JSONB stores a number as ``numeric``. ``1e+16`` reads back
+    as ``10000000000000000`` and ``-0.0`` as ``0.0``, so the body bytes of
+    the stored call change and each send gets ``approval_mismatch``. The ask
+    refuses such a float (``test_app_requests_r8.py`` b0_10 checks the
+    rest on a real database). Mutation: drop the float rule in
+    ``gateway.app_requests._unshowable``."""
+    from gateway import app_requests as gateway_requests
+
+    assert gateway_requests._unshowable({"v": value}) is refused

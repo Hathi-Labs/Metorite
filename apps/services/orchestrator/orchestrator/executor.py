@@ -42,6 +42,7 @@ from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
 from acb_llm.run_errors import run_error_event
+from acb_skills import run_phase as _run_phase
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
 from acb_skills.ask_tools import clip_words as _clip_words
@@ -1893,6 +1894,7 @@ def _start_pack_turn(
     solo_room: bool | None,
     batch_thread: bool,
     shows_cards: bool,
+    resume_tool: str = "",
 ) -> asyncio.Future[Any] | None:
     """Start the read of layer (a) beside the load, or None (§4.2.2).
 
@@ -1906,6 +1908,13 @@ def _start_pack_turn(
     org it starts nothing, so it reads and writes no pack state. The task
     counts the turn and reads the sticky packs (``tool_packs.begin_turn``),
     and it gives that turn and the allowed slugs.
+
+    RESUME-2a review, P1-B: *resume_tool* is the tool name of the stored call
+    of a continuation run, from the server's ``resume_call`` kwarg only
+    (R11). The pack that holds it (``tool_packs.pack_of_tool``, within the
+    allowed packs) goes into the turn as a pack used now
+    (``tool_packs.with_resume_pack``), so the run holds the stored tool. It
+    lifts no guard above, and an admin toggle still drops the pack.
     """
     if agent_name != _PACK_AGENT or delegated or solo_room is not True:
         return None
@@ -1931,10 +1940,13 @@ def _start_pack_turn(
     # run, and begin_turn cleans it again. It adds the core pack of that app
     # only when the flag allows it, and it changes no guard.
     surface = tool_packs.current_surface()
+    hold = tool_packs.pack_of_tool(resume_tool, allowed) if resume_tool else ""
 
     async def _read() -> tuple[Any, frozenset[str]]:
         turn = await tool_packs.begin_turn(
             organization_id, thread_id, verified, words, surface)
+        if hold:
+            turn = tool_packs.with_resume_pack(turn, hold)
         return turn, allowed
 
     return asyncio.ensure_future(_read())
@@ -1996,6 +2008,19 @@ def _pack_loader(agent: Any) -> Any | None:
     return None
 
 
+def _pack_finder(agent: Any) -> Any | None:
+    """The ``FindTools`` of the run's view of *agent* (WS-67 TS-2a), or None.
+    Only a run with ``TOOL_SEARCH_ORGS`` on for its org holds one."""
+    try:
+        from acb_skills.tool_packs import FindToolsProvider
+    except ImportError:
+        return None
+    for provider in getattr(agent, "context_providers", None) or []:
+        if isinstance(provider, FindToolsProvider):
+            return provider.finder
+    return None
+
+
 def _pack_loader_offer(agent: Any) -> tuple[str, ...]:
     """The packs that the run still offers to load (layer (b)), for the pack
     items of the turn-kind request (WS-67 OA-7f). Empty when the run has no
@@ -2027,7 +2052,13 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
     each model request (WS-67 OA-8f, ``executor.request_tools``): the count
     actually sent and a short hash of the names, with the tools of a context
     provider and of an MCP server. Only the orchestrator, and never raises.
-    The view comes from ``agent_with_providers``, as the loader's does."""
+    The view comes from ``agent_with_providers``, as the loader's does.
+
+    HRD-1: the same view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
+    the one answer to a call of a tool that the run did not load. It goes
+    after each seam of ``_inject_agent_tools``, so its chat middleware runs
+    inside the hold, steer and number-check middleware, and rewrites the
+    messages that they pass on. Only the tier policy view comes later."""
     if agent_name != _PACK_AGENT or not agents:
         return agents
     try:
@@ -2036,10 +2067,13 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
         if not isinstance(agents[0], Agent):
             return agents
         from acb_skills.tool_guard import LogRequestToolsProvider
+        from acb_skills.unknown_tool import UnknownToolProvider
 
         from orchestrator._native_run_context import agent_with_providers
 
-        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+        # HRD-1: the answer to an unknown tool name rides in the same view.
+        agents[0] = agent_with_providers(
+            agents[0], [LogRequestToolsProvider(agent_name), UnknownToolProvider()])
     except Exception as exc:  # a log never costs the turn
         _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
     return agents
@@ -2059,6 +2093,10 @@ def _log_pack_request_tools(agents: list[Any]) -> None:
     # OA-8f: the load tool rides in a context provider, so no pool holds it.
     # The estimate counts it (``_apply_tool_packs``), so the true count does too.
     if agents and _pack_loader_offer(agents[0]):
+        count += 1
+    # WS-67 TS-2a: ``find_tools`` rides in a context provider too, and the
+    # estimate counts it when the search is on (D222 decision 13).
+    if agents and _pack_finder(agents[0]) is not None:
         count += 1
     log = _log.warning if count > MAX_REQUEST_TOOLS else _log.info
     log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
@@ -2111,6 +2149,45 @@ class _SetupLaps:
                 "executor.setup_steps_ms", agent=agent_name, run_id=run_id,
                 total_ms=sum(self.steps.values()), **self.steps,
             )
+
+
+class _RunPhases:
+    """CS-3a (task 3438): the ``run_phase`` events of ONE streamed run.
+
+    ``acb_skills.run_phase`` holds the vocabulary, the event shape and the
+    flag. This class holds the glue only. :meth:`line` gives the SSE line of
+    a phase once, through :func:`_sse`, and only when the flag named the
+    run's org at the start. The caller yields the line at once. It never puts
+    the event on ``_nq``, so the event is no output: ``_n_emitted`` stays
+    False and nothing seals the tier of the turn. A fault gives no line and
+    never ends the run. Fence: ``tests/unit/test_run_phase_event.py``.
+    """
+
+    __slots__ = ("_on", "_sent")
+
+    def __init__(self, on: bool) -> None:
+        self._on = on
+        self._sent: set[str] = set()
+
+    @classmethod
+    def for_run(cls) -> _RunPhases:
+        """The phases of the run on this frame. The org is the run binding's
+        (:func:`_current_run_org`), never request input (R11)."""
+        try:
+            return cls(_run_phase.run_phase_on(_current_run_org()))
+        except Exception:
+            return cls(False)
+
+    def line(self, phase: str) -> str | None:
+        """The SSE line of *phase*, the first time only. Else None."""
+        if not self._on or phase in self._sent:
+            return None
+        try:
+            event = _run_phase.phase_event(phase)
+        except Exception:
+            return None
+        self._sent.add(phase)
+        return _sse(event)
 
 
 async def _early_crm_facts() -> list[Any]:
@@ -3247,6 +3324,11 @@ async def _run_sub_agent_streaming(
         reset_artifact_context,
     )
     _artifact_token = enter_artifact_context()
+    # MCP-C3 review: this run's access lookup below arms the memory gate on
+    # the PARENT's task. The token gives the parent its own gate back in the
+    # finally, so a child's wider gate never outlives the hand-off.
+    from acb_skills.memory_tools import enter_memory_permission, reset_memory_permission
+    _memory_gate_token = enter_memory_permission()
     # WS-63 PZ-6a: a delegated run never writes the member's profile.
     _sub_writes_token = _bind_profile_writes(False)
     # The parent run's acting member, from the parent's bound context and
@@ -3346,8 +3428,16 @@ async def _run_sub_agent_streaming(
         ) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
+            # 🔴 MCP-C3: the member's filter binds a delegated run too, BEFORE
+            # the env injection below. This run has no session of its own, so
+            # the check reads the parent's member from the run binding, and
+            # folds the room of the chat that asked. A run with no member keeps
+            # None, as before.
+            _sub_authorizer = await _integration_authorizer(
+                None, _delegated_authority_thread(_parent_ctx_sub), session_user=None,
+            )
             integrations, _sub_warnings = build_integrations(
-                mandatory, optional, settings,
+                mandatory, optional, settings, is_authorized=_sub_authorizer,
             )
             # Scope this sub-agent's creds to its run; restored in the finally.
             _integration_env_token = _bind_run_credentials(integrations)
@@ -3730,6 +3820,9 @@ async def _run_sub_agent_streaming(
         # B6 Phase-5 Tier 0: tear down this sub-agent's scoped integration creds
         # so a delegated agent's secrets don't linger for the parent/next run.
         _release_run_credentials(_integration_env_token)
+        # MCP-C3 review: give the parent back its own memory gate, before any
+        # await of this finally, so nothing can skip it.
+        reset_memory_permission(_memory_gate_token)
         # WS-43d (§16.3): a delegated run's run data ends with it too.
         await _end_sandbox_run()
         # Give the parent back its own artifact context (H-201, §21.16).
@@ -3768,10 +3861,11 @@ _ORG_APP_FOLDERS_SQL = (
 def _app_workspace_of_org(resolved: Path, org: str | None) -> bool:
     """True when *resolved* lies in the folder of an app of *org* (task 2462).
 
-    The slug of an app is unique over all orgs, and each app folder is
-    ``apps_root()/<slug>``. So a folder of a deleted app of org A can become
-    the folder of a new app of org B. A path check under the root is not
-    enough. The run's org must own an ``apps`` row whose folder holds the path.
+    The folder of an app made before WS-STU A3b-1 is ``apps_root()/<slug>``.
+    So a stale path to a folder of a deleted app of org A can point at a
+    folder that another app uses later. A new app has its folder at
+    ``apps_root()/<app id>``. A path check under the root is not enough. The
+    run's org must own an ``apps`` row whose folder holds the path.
 
     It fails closed: no org, a read error or no matching row answers False.
     *org* comes from the run binding, never from input (R5). The read always
@@ -5287,8 +5381,19 @@ async def _integration_authorizer(
     started this run" cannot be the reason (review of MCP-C1). Fence:
     ``tests/unit/test_org_access_credentials.py`` and
     ``tests/unit/test_maf_mcp_confirm.py``.
+
+    🔴 **A delegated run acts as the member of its parent** (MCP-C3). A
+    hand-off sends ``{"message", "mode"}``, with no session member and no
+    claim. So a member with a deny on ``integrations:use:zoho-crm`` got the
+    Zoho credential through any agent that the assistant delegated to. When
+    the run names nobody, the check reads the member of the run binding
+    (:func:`_bound_run_member`), which the server binds and a body never
+    sets. A top-level cron or webhook run binds no member, so it keeps
+    ``None``. Fence: ``tests/unit/test_delegated_integration_filter.py``.
     """
     email, verified = _run_member(event_payload, session_user)
+    if not email:
+        email, verified = _bound_run_member()
     if not email or ":" in email:
         return None
 
@@ -5359,6 +5464,45 @@ async def _integration_authorizer(
         return None
 
 
+def _bound_run_member() -> tuple[str, bool]:
+    """The member of the run binding, and True when the binding verified it.
+
+    MCP-C3. ``bind_run_context`` keeps the parent's ``user`` and
+    ``member_verified`` when a nested run binds no user of its own. So a
+    delegated run reads here the member that its parent's filter used. Only
+    the server binds these keys: a run boundary (:func:`_run_member`), the
+    auth layer and ``job_member_scope``. A request body never sets them. An
+    unverified member is the parent's own claim, and the parent was filtered
+    by that claim. So the fallback only narrows, and never widens.
+    """
+    try:
+        from acb_common import get_run_context
+
+        ctx = get_run_context() or {}
+    except Exception:
+        return "", False
+    member = str(ctx.get("user") or "").strip()
+    return member, bool(member) and ctx.get("member_verified") == "1"
+
+
+def _delegated_authority_thread(parent_ctx: Any) -> str | None:
+    """The chat whose room caps a delegated run, or None (MCP-C3).
+
+    In a shared room the parent acts with the intersection of the room
+    (``resolve_session_access``). A delegated run mints a thread of its own,
+    and that thread has no participant. So a fold on it gave the delegated run
+    the typer's whole access, which is wider than the parent's. This answers
+    the chat at the top of the chain (``delegation_target``), else the
+    parent's own session. It reads the parent's bound artifact context only,
+    never the payload (R5).
+    """
+    from acb_skills.write_artifact import delegation_target
+
+    target = delegation_target(parent_ctx) or {}
+    chat = str(target.get("session_id") or "").strip()
+    return chat or str(parent_ctx.get("session_id") or "").strip() or None
+
+
 def _payload_user(event_payload: Any) -> str:
     """The acting user this payload names, or ``""`` when it names nobody.
 
@@ -5417,15 +5561,43 @@ def _run_member(event_payload: Any, session_user: str | None = None) -> tuple[st
     return claimed, False
 
 
+def _run_attribution() -> tuple[str, str] | None:
+    """The ``(app, agent)`` of ``acb_common.run_attribution_scope``, or None.
+
+    AUTO-8b-2c (``proactive_agent.md`` §4.4). Only server code binds the
+    scope (``gateway/jobs/headless_turn.py``), never a request. Never raises.
+    """
+    try:
+        from acb_common import run_attribution
+
+        return run_attribution()
+    except Exception:
+        return None
+
+
+def _run_agent_label(agent_name: str) -> str:
+    """The agent name that a run binds for attribution. Never raises.
+
+    The agent of the attribution scope when one is bound, else
+    ``agent_name``. Only the run context gets it, so the usage stamp and
+    each log line of the run carry it. Each other step of the run keeps
+    ``agent_name``.
+    """
+    scoped = _run_attribution()
+    return scoped[1] if scoped is not None else agent_name
+
+
 def _bind_run_app(config: Any) -> None:
     """Add the app this agent belongs to. Never raises.
 
     The app comes from ``config.json``, which is loaded after the run has
     already bound its other fields. So it is a second, additive bind, the same
-    shape as :func:`_bind_run_instance`.
+    shape as :func:`_bind_run_instance`. AUTO-8b-2c: the app of the
+    attribution scope wins over the config (:func:`_run_attribution`).
     """
     try:
-        app = str((config or {}).get("app") or "").strip()
+        scoped = _run_attribution()
+        app = scoped[0] if scoped is not None else str((config or {}).get("app") or "").strip()
         if app:
             from acb_common import bind_run_context
             bind_run_context(app=app)
@@ -5633,10 +5805,12 @@ async def run_agent(
         # made here reached the Router with no member, no app and no run, and
         # billed nobody by name. Scoped so a NESTED run restores its parent.
         from acb_common import run_context_scope
+        from acb_skills.memory_tools import memory_permission_scope
         from acb_skills.write_artifact import artifact_context_scope
         # H-201 (§21.16): the run's artifact context ends with the run, and a
-        # nested run gives its parent back the parent's exact context.
-        with run_context_scope(), artifact_context_scope():
+        # nested run gives its parent back the parent's exact context. MCP-C3
+        # review: the memory gate too, because this run's lookup arms it here.
+        with run_context_scope(), artifact_context_scope(), memory_permission_scope():
             try:
                 return await _run_agent_inner(
                     agent_name, event_payload,
@@ -5756,7 +5930,7 @@ async def _run_agent_inner(
         from acb_common import bind_run_context
         _batch_user, _batch_verified = _run_member(event_payload, session_user)
         bind_run_context(
-            run_id=run_id, thread_id=thread_id, agent=agent_name,
+            run_id=run_id, thread_id=thread_id, agent=_run_agent_label(agent_name),
             user=_batch_user or None,
             source=(
                 str(event_payload.get("source") or "").strip() or None
@@ -5969,8 +6143,13 @@ async def _run_agent_inner(
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
             # One access lookup for the run, as on the stream path. The
             # integrations and the MCP servers (WAC-P3) read the same answer.
+            # MCP-C3: a delegated run that names no member of its own acts as
+            # its parent, so its room is the parent's chat, not its own thread.
+            _authority_thread = thread_id
+            if session_user is None and _parent_ctx.get("run_id"):
+                _authority_thread = _delegated_authority_thread(_parent_ctx) or thread_id
             _authorizer = await _integration_authorizer(
-                event_payload, thread_id, session_user=session_user,
+                event_payload, _authority_thread, session_user=session_user,
             )
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
@@ -6555,6 +6734,37 @@ def _crm_note_events() -> list[dict[str, Any]]:
         return []
 
 
+def _take_card_line() -> str:
+    """The "Not done" line of this run, once (task 3130), or "".
+
+    A chat message closed a write card that nobody answered. The server adds
+    the line, not the model. Each finished run takes it BEFORE it saves the
+    native session, so the stored session holds it too
+    (:func:`_finish_native_session`). Never raises."""
+    try:
+        from acb_skills.ask_tools import take_closed_card_line
+    except ImportError:
+        return ""
+    try:
+        return take_closed_card_line()
+    except Exception:  # a run never fails on its last line
+        return ""
+
+
+def _closed_card_events(line: str, run_id: str = "") -> list[dict[str, Any]]:
+    """The events of the "Not done" *line* (:func:`_take_card_line`). They go
+    just before RUN_FINISHED, through ``_sse``, so the relay keeps them and
+    the stored message holds the line. Empty for no line. Never raises."""
+    if not line:
+        return []
+    try:
+        from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, closed_card_text_events
+    except ImportError:
+        return []
+    _log.info("executor.card_outcome_line", run_id=run_id, outcome=CLOSED_BY_YOUR_MESSAGE)
+    return closed_card_text_events(line)
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -6605,6 +6815,226 @@ from orchestrator.event_translator import (
 )
 
 
+# ── RESUME-2a: the prologue of a continuation run ───────────────────────────
+# Spec: chat_run_continuity.md §4.12.4 item 2, case B. A late Approve of a
+# parked plain card claims its row once (``pending_ask.claim_stored_call``),
+# and the gateway starts a continuation run with the stored call. The run
+# calls that ONE tool once, inside the stored-call yes, before the model.
+
+#: The longest wait for the one call of a stored call while no card shows.
+#: A card that shows then waits as each card waits (the park ends the run).
+_RESUME_CALL_CAP_S = 60.0
+
+
+def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
+    """The tool *name* of this run's OWN tool list, after the injection and
+    the gate (``_gate_own_maf_tools``), or None. Never a tool that a module
+    import gives: the CRM agent loads for one run as ``_agent_<run>_agents``,
+    so only the run's own list holds the wrapped tool. A pack tool is in that
+    list because ``_start_pack_turn`` holds the pack of the stored tool
+    (review, P1-B). A Copilot agent keeps its tools in ``agent._tools``, which
+    this never reads, so its stored call always gives ``tool_missing`` and
+    runs nothing (fail closed)."""
+    from acb_skills.tool_guard import tool_name as _guard_tool_name
+
+    if not name:
+        return None
+    for ag in agents or []:
+        pools: list[list[Any]] = []
+        opts = getattr(ag, "default_options", None)
+        if isinstance(opts, dict) and isinstance(opts.get("tools"), list):
+            pools.append(opts["tools"])
+        own = getattr(ag, "tools", None)
+        if isinstance(own, list):
+            pools.append(own)
+        for pool in pools:
+            for tool in pool:
+                if _guard_tool_name(tool) == name:
+                    return tool
+    return None
+
+
+def _resume_tool_name(resume_call: dict[str, Any] | None) -> str:
+    """The tool name of the stored call in *resume_call*, the server's kwarg
+    of :func:`run_agent_stream`, or "". Never a key of the event payload
+    (R11)."""
+    stored = resume_call.get("stored") if isinstance(resume_call, dict) else None
+    name = stored.get("tool") if isinstance(stored, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+def _resume_refusal(tool: Any, agent_name: str, stored: Any) -> str | None:
+    """Why this run must not call *tool* for *stored*, or None.
+
+    Each test fails closed: a stored call of another shape, no tool of that
+    name in the run, a stored agent that is not this run's agent (a card of a
+    delegated child run, C8), a tool that fails the three tests of
+    ``egress.is_card_write_tool`` (so an MCP tool with a borrowed name never
+    runs), and a module that is not the stored module."""
+    try:
+        if not isinstance(stored, dict) or stored.get("v") != 1 \
+                or stored.get("kind") != "confirmation":
+            return "shape"
+        if not isinstance(stored.get("arguments"), dict):
+            return "arguments"
+        if tool is None:
+            return "tool_missing"
+        label = _run_agent_label(agent_name)
+        if str(stored.get("agent") or "") != label:
+            return "agent"
+        from acb_skills.egress import is_card_write_tool
+        from acb_skills.stored_call import _module_of
+
+        if not is_card_write_tool(tool):
+            return "not_card_write"
+        if _module_of(tool, label) != str(stored.get("module") or ""):
+            return "module"
+    except Exception:  # fail closed: nothing runs
+        return "check_failed"
+    return None
+
+
+async def _call_stored_tool(tool: Any, arguments: dict[str, Any]) -> Any:
+    """Call the WRAPPED function of *tool* once, with *arguments*. The
+    wrapper (``_tool_injection._agated``) opens ``card_call``, so the B6 gate,
+    the egress hold and the rules of a held chat apply, and the card of the
+    call can take the stored-call yes."""
+    import inspect as _inspect
+
+    fn = getattr(tool, "func", tool)
+    out = fn(**arguments)
+    if _inspect.isawaitable(out):
+        out = await out
+    return out
+
+
+async def _mark_native_session_stale(agent_name: str, thread_id: str | None) -> None:
+    """RESUME-4a-1: drop each stored session of this continuation's thread.
+
+    The bound ones are the run's org from the run binding (R5e) and the
+    caller's thread. *agent_name* is for the log only: the thread holds the
+    sessions of every agent, and each one lacks the reply. With ``MAF_NATIVE_SESSIONS`` off, no thread or no org, it sends
+    no statement. Never raises: a fault logs its type only."""
+    if not _native_sessions_enabled():
+        return
+    thread = str(thread_id or "").strip()
+    org = _current_run_org() if thread else None
+    if not thread or not org:
+        return
+    try:
+        from orchestrator import native_session_store
+
+        await native_session_store.mark_stale(
+            organization_id=str(org), thread_id=thread,
+        )
+    except Exception as exc:
+        _log.warning("native_session.mark_stale_failed", agent=agent_name,
+                     error=type(exc).__name__)
+
+
+async def _resume_prologue(
+    agents: list[Any], agent_name: str, resume_call: dict[str, Any],
+    event_payload: dict[str, Any], *, thread_id: str | None = None,
+) -> AsyncIterator[str]:
+    """Run the stored call of a continuation run, and set the run's input.
+
+    *resume_call* is the SERVER's kwarg of :func:`run_agent_stream`, never a
+    key of *event_payload* (R11): ``{"stored", "request_id", "title"}``. In
+    order, it closes the old card for each tab (``confirmation_resolved``),
+    finds the tool in the run's own list, refuses unless each test of
+    :func:`_resume_refusal` passes, and calls the tool ONCE inside
+    ``stored_call.resuming``. The step shows under the stored call id. Then
+    the run's message is the note of ``chat_recovery.compose_resumed_call_note``,
+    with the title and the result as fenced data. A refused call runs nothing,
+    and the note tells the model to call the tool again, so the card asks
+    again. It never raises a fault of the tool.
+
+    RESUME-4a-1: FIRST, before the stored call and before the model, it
+    marks the stored native session of *thread_id* stale
+    (:func:`_mark_native_session_stale`). The run skips the session
+    (``resume_note``), and its reply has no user row before it, so the next
+    turn would load a session that lacks the reply. A mark before the run
+    fails closed: a crash later in the run still leaves a miss, never a
+    stale hit."""
+    await _mark_native_session_stale(agent_name, thread_id)
+    from acb_skills.stored_call import resuming
+    from gateway.chat_recovery import (
+        RESUMED_APPROVED,
+        RESUMED_CHANGED,
+        RESUMED_NOT_RUN,
+        RESUMED_SPENT,
+        RESUMED_UNKNOWN,
+        compose_resumed_call_note,
+    )
+
+    stored = resume_call.get("stored")
+    request_id = str(resume_call.get("request_id") or "")
+    title = str(resume_call.get("title") or "")
+    if request_id:
+        from acb_skills.ask_tools import CONFIRMATION_RESOLVED
+
+        yield _sse({
+            "type": "CUSTOM", "name": CONFIRMATION_RESOLVED,
+            "value": {"request_id": request_id, "answer": "APPROVE"},
+        })
+    name = str(stored.get("tool") or "") if isinstance(stored, dict) else ""
+    tool = _resume_tool_of(agents, name)
+    why = _resume_refusal(tool, agent_name, stored)
+    if why is not None:
+        _log.info("executor.resume_refused", agent=agent_name, tool=name[:60], reason=why)
+        note = compose_resumed_call_note(title, None, RESUMED_NOT_RUN)
+    else:
+        assert isinstance(stored, dict)
+        arguments = dict(stored["arguments"])
+        call_id = str(stored.get("call_id") or "") or f"call_resume_{uuid.uuid4().hex}"
+        yield _sse({"type": "TOOL_CALL_START", "toolCallId": call_id, "toolCallName": name})
+        try:
+            _args_text = json.dumps(arguments, ensure_ascii=False)
+        except (TypeError, ValueError):
+            _args_text = ""
+        if _args_text:
+            yield _sse({"type": "TOOL_CALL_ARGS", "toolCallId": call_id,
+                        "delta": _args_text})
+        ok = True
+        with resuming(stored) as state:
+            task = asyncio.ensure_future(_call_stored_tool(tool, arguments))
+            try:
+                done, _ = await asyncio.wait({task}, timeout=_RESUME_CALL_CAP_S)
+                if not done and state.card_shown:
+                    # A new card waits on the member. Its own wait holds the
+                    # run, and the park ends it.
+                    await task
+                elif not done:
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
+                    raise TimeoutError
+                result: Any = task.result()
+            except asyncio.CancelledError:
+                task.cancel()
+                raise
+            except TimeoutError:
+                ok = False
+                result = ("The tool did not finish within "
+                          f"{int(_RESUME_CALL_CAP_S)} seconds. Check the record "
+                          "before you act again.")
+            except Exception as exc:  # the tool's fault is its answer
+                ok = False
+                result = f"The tool failed ({type(exc).__name__})."
+        text = "" if result is None else str(result)
+        yield _sse({"type": "TOOL_CALL_RESULT", "toolCallId": call_id,
+                    "content": text[:2000], "success": ok})
+        # P2-3: a claim that could not tell maps to the neutral note, never
+        # to "spent" (which says that the change ran) or "approved".
+        outcome = {"changed": RESUMED_CHANGED, "spent": RESUMED_SPENT,
+                   "unknown": RESUMED_UNKNOWN}.get(state.outcome, RESUMED_APPROVED)
+        _log.info("executor.resume_ran", agent=agent_name, tool=name[:60],
+                  outcome=state.outcome or "no_card", ok=ok)
+        note = compose_resumed_call_note(title, text, outcome)
+    existing = str(event_payload.get("message") or "").strip()
+    event_payload["message"] = f"{note}\n\n{existing}" if existing else note
+
+
 async def run_agent_stream(
     agent_name: str,
     event_payload: dict[str, Any],
@@ -6626,6 +7056,11 @@ async def run_agent_stream(
     #: the gateway route from its own mint. The greeting decision leaves them
     #: out of the gap. Empty means no decision.
     turn_row_ids: tuple[str, ...] = (),
+    #: RESUME-2a: the stored call of a card that the member approved late,
+    #: ``{"stored", "request_id", "title"}``. SERVER-ONLY: only the gateway's
+    #: ``_resume_from_row`` sets it, from the claimed row. A key of
+    #: *event_payload* never sets it (R11). See :func:`_resume_prologue`.
+    resume_call: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -6706,7 +7141,7 @@ async def run_agent_stream(
             _corr_source = str(event_payload.get("source") or "").strip() or "chat"
         bind_run_context(
             run_id=run_id, thread_id=thread_id,
-            agent=agent_name, user=_corr_user or None, source=_corr_source,
+            agent=_run_agent_label(agent_name), user=_corr_user or None, source=_corr_source,
             member_verified=_corr_verified,
         )
     except Exception:
@@ -6815,6 +7250,10 @@ async def run_agent_stream(
     # context still counts. Released in the same finally.
     from acb_skills.crm_tools import open_asks_for_run, release_asks
     _asks_token = open_asks_for_run()
+    # Task 3130: the write cards that a chat message of the member closed.
+    # Released in the same finally.
+    from acb_skills.ask_tools import open_closed_cards_for_run, release_closed_cards
+    _closed_cards_token = open_closed_cards_for_run()
     # H-201 (§21.16): this run's artifact context lives in this token's scope.
     from acb_skills.write_artifact import (
         artifact_context,
@@ -6940,6 +7379,9 @@ async def run_agent_stream(
             agent_name, organization_id, thread_id, member=_corr_user,
             delegated=_delegated_run, solo_room=solo_room,
             batch_thread=_batch_thread, shows_cards=shows_cards,
+            # RESUME-2a review, P1-B: the pack of the stored tool, from the
+            # server's kwarg only (R11).
+            resume_tool=_resume_tool_name(resume_call),
         )
         if _relay_mark_active is not None:
             with contextlib.suppress(Exception):
@@ -6965,6 +7407,13 @@ async def run_agent_stream(
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
         _laps.lap("start")
+        # CS-3a: the setup starts now, so the first phase goes, before the
+        # load, the tier wait, the session load and the compose. The run's org
+        # is bound above. A direct yield, never _nq: the phase is no output.
+        _phases = _RunPhases.for_run()
+        _phase_line = _phases.line(_run_phase.GATHERING)
+        if _phase_line:
+            yield _phase_line
 
         # §15.4: refused as absent unless a first-party admin runs it. The
         # RUN_ERROR then reads like an agent that cannot load.
@@ -7566,6 +8015,19 @@ async def run_agent_stream(
                     )
                     _copilot_session_id = None  # force new session
 
+            # RESUME-2a (chat_run_continuity.md §4.12.4 item 2): a
+            # continuation run calls the stored call of the card that the
+            # member approved, once, with the run's own wrapped tool, and its
+            # input becomes the server's note. After the bind of the org, the
+            # member and the relay thread, after the tool injection and the
+            # gate, and before the compose. Only the kwarg sets it (R11).
+            if resume_call is not None:
+                async for _resume_line in _resume_prologue(
+                    agents, agent_name, resume_call, event_payload,
+                    thread_id=_caller_thread_id,
+                ):
+                    yield _resume_line
+
             # ── Tier 1: native MAF agent live streaming ─────────────────────
             # The intended ``agent_framework.ag_ui.stream_agent_response`` is not
             # exported by the installed ``agent_framework_ag_ui``, and the Tier
@@ -7588,6 +8050,7 @@ async def run_agent_stream(
                     agent, agent_name, event_payload, integrations,
                     run_id=run_id, caller_thread_id=_caller_thread_id,
                     delegated=_delegated_run, instance=_agent_instance,
+                    resumed=resume_call is not None,
                 )
                 _laps.lap("session_load")
                 # WS-43t1: flag OFF returns today's string and no provider.
@@ -7668,6 +8131,17 @@ async def run_agent_stream(
                             _apply_turn_pack_items(agents, _tier_run)
                             _par_task = None
                         _agen = _open_native_stream()
+                        # CS-3a: the model request opens with the first pull
+                        # below, so the second phase goes. A direct yield,
+                        # never _nq. No output can leave between
+                        # `_n_emitted = False` above and here, so the guard is
+                        # a defense only. The `_sent` set of _RunPhases stops a
+                        # second `asking`: a parallel restart opens its stream
+                        # in the loop and `continue`s, and never comes here.
+                        if not _n_emitted:
+                            _phase_line = _phases.line(_run_phase.ASKING)
+                            if _phase_line:
+                                yield _phase_line
                         # Race the agent's next update against the injected-tool
                         # event queue. A BLOCKING tool (ask_questions HITL) puts
                         # its card on _nq then parks awaiting the user; the old
@@ -8007,6 +8481,9 @@ async def run_agent_stream(
                         # WS-43t2: only a run that finished saves its
                         # session, and before RUN_FINISHED, so a quick next
                         # turn finds it. The save never fails the run.
+                        # Task 3130: the session holds the "Not done" line.
+                        _card_line = _take_card_line()
+                        _close_native_session(_session_turn, _card_line)
                         await _finish_native_session(_session_turn)
                         # WS-53 CRM-Q33: the note of a CRM total that the
                         # answer left out goes in before the end.
@@ -8018,6 +8495,9 @@ async def run_agent_stream(
                             yield _sse(_push_ev)
                         for _note_ev in _crm_note_events():
                             yield _sse(_note_ev)
+                        # Task 3130: the "Not done" line comes last.
+                        for _card_ev in _closed_card_events(_card_line, run_id):
+                            yield _sse(_card_ev)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -8743,6 +9223,9 @@ async def run_agent_stream(
                     yield _sse(_push_ev)
                 for _note_ev in _crm_note_events():
                     yield _sse(_note_ev)
+                # Task 3130: the "Not done" line comes last.
+                for _card_ev in _closed_card_events(_take_card_line(), run_id):
+                    yield _sse(_card_ev)
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
@@ -8954,23 +9437,16 @@ async def run_agent_stream(
                         })
                         raise
                     else:
-                        # Mid-run steer (§4.6): a tool boundary is where guidance
-                        # that arrived during the turn enters the model's
-                        # context. No pending steer => `result` is returned
-                        # unchanged, so this path is a dict lookup for every
-                        # ordinary call.
+                        # Task 2494: a mid-run steer never joins a tool
+                        # result. The model reads it as a user turn of its
+                        # next call (`steer.SteerTurns`).
                         from acb_common.tool_refusals import (  # noqa: PLC0415
                             is_refusal,
                         )
-                        from orchestrator.steer import (  # noqa: PLC0415
-                            decorate_tool_result,
-                        )
-                        # Asked BEFORE the steer text joins the result. A
-                        # refused call returns its text for the model, and it
-                        # is still no success for the card (event_translator
-                        # asks the same function).
+                        # A refused call returns its text for the model, and
+                        # it is still no success for the card
+                        # (event_translator asks the same function).
                         refused = is_refusal(result)
-                        result = decorate_tool_result(result, thread_id)
                         result_str = str(result) if result is not None else ""
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",
@@ -9168,6 +9644,9 @@ async def run_agent_stream(
             except Exception as exc:
                 raise exc
             # WS-43t2: the Tier 2 run finished, so its session is saved.
+            # Task 3130: the session holds the "Not done" line.
+            _card_line = _take_card_line()
+            _close_native_session(_session_turn, _card_line)
             await _finish_native_session(_session_turn)
 
             # Strip integration setup tokens (same as batch path)
@@ -9216,6 +9695,9 @@ async def run_agent_stream(
                 yield _sse(_push_ev)
             for _note_ev in _crm_note_events():
                 yield _sse(_note_ev)
+            # Task 3130: the "Not done" line comes last.
+            for _card_ev in _closed_card_events(_card_line, run_id):
+                yield _sse(_card_ev)
             # RUN_FINISHED must be emitted INSIDE the try block — the finally
             # below resets the relay contextvar and marks the thread inactive,
             # so a later yield would never reach Redis (reconnecting clients
@@ -9285,6 +9767,7 @@ async def run_agent_stream(
             _stream_relay_thread_id.reset(_relay_token)
             release_cards_switch(_cards_token)
             release_asks(_asks_token)
+            release_closed_cards(_closed_cards_token)
             _active_run_model.reset(_model_token)
             _release_profile_writes(_writes_token)
             _release_solo_room(_solo_token)
@@ -10211,6 +10694,7 @@ def _native_session_skip(
     run_id: str,
     caller_thread_id: str | None,
     delegated: bool,
+    resumed: bool = False,
 ) -> str | None:
     """Why this native run neither loads nor saves a session, or ``None``.
 
@@ -10218,6 +10702,13 @@ def _native_session_skip(
     ``<agent>:<run>`` default), a delegated run, and an event with no current
     turn. An agent that brings its own history provider keeps it, and gets
     no second one.
+
+    RESUME-2a: a continuation run (*resumed*) gives ``resume_note``. Its
+    input is the server's note, not a member turn, so the session must
+    neither load nor save it. RESUME-4a-1: the prologue marks the stored
+    session of the key stale first (:func:`_mark_native_session_stale`), so
+    the next turn reads the text history that holds the reply. RESUME-4b
+    owns the exact path.
 
     WS-43h: a provider with the store's own source id
     (``native_session_store.HISTORY_SOURCE_ID``) is the store's provider. A
@@ -10231,6 +10722,8 @@ def _native_session_skip(
         return "no_thread"
     if delegated:
         return "delegated"
+    if resumed:
+        return "resume_note"
     current = event_payload.get("message") or event_payload.get("user_query") or ""
     if not str(current).strip():
         return "no_current_turn"
@@ -10257,6 +10750,7 @@ async def _begin_native_session(
     caller_thread_id: str | None,
     delegated: bool,
     instance: str,
+    resumed: bool = False,
 ) -> Any:
     """Load the stored session of a native run (WS-43t2), or ``None``.
 
@@ -10272,6 +10766,7 @@ async def _begin_native_session(
     reason = _native_session_skip(
         agent, agent_name, event_payload,
         run_id=run_id, caller_thread_id=caller_thread_id, delegated=delegated,
+        resumed=resumed,
     )
     org = _current_run_org() if reason is None else None
     if reason is None and not org:
@@ -10328,15 +10823,27 @@ def _verified_run_member() -> str:
     ``run_agent_stream`` binds from the session's member (H-73), never from
     the payload. The store loads a session only for a thread that is this
     member's alone, so a run with no verified member gets none.
-    """
-    try:
-        from acb_common import get_run_context
 
-        ctx = get_run_context() or {}
-    except Exception:
-        return ""
-    member = str(ctx.get("user") or "").strip().lower()
-    return member if member and ctx.get("member_verified") == "1" else ""
+    :func:`_bound_run_member` is the one reader of the binding (MCP-C3).
+    """
+    member, verified = _bound_run_member()
+    return member.lower() if verified else ""
+
+
+def _close_native_session(turn: Any, line: str) -> None:
+    """End the session's last answer with the "Not done" *line* (task 3130).
+
+    Each finished run calls it just before :func:`_finish_native_session`,
+    so the saved session holds the line, as the stored message does. No
+    line, or no usable session, changes nothing. Never raises."""
+    if not line or turn is None or not getattr(turn, "usable", False):
+        return
+    try:
+        from orchestrator import native_session_store
+
+        native_session_store.add_closing_line(turn, line)
+    except Exception as exc:
+        _log.warning("native_session.closing_line_failed", error=str(exc)[:200])
 
 
 async def _finish_native_session(turn: Any) -> None:
@@ -10846,10 +11353,15 @@ def _is_answer_event(event: Any) -> bool:
         return isinstance(todos, list) and bool(todos)
     if kind == "CUSTOM":
         from acb_common.assistant_profile import PROFILE_USED_EVENT
+        from acb_skills.progress_notice import EVENT as PROGRESS_EVENT
 
+        # HRD-6: the line of a slow tool is live only, and the fold drops it.
+        # CS-3a: the phase of the run is no output, and the fold drops it.
         return not (
             _is_route_event(event) or _is_hold_beat(event)
-            or event.get("name") in ("frontend_tool", PROFILE_USED_EVENT)
+            or event.get("name") in (
+                "frontend_tool", PROFILE_USED_EVENT, PROGRESS_EVENT, _run_phase.EVENT,
+            )
         )
     return False
 

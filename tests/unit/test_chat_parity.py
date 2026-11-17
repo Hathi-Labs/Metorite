@@ -391,9 +391,28 @@ def test_every_also_tool_sends_the_route_of_its_action() -> None:
     package page, as the list tool of its ``COVERED`` row does."""
     acts, _ = _read()
     assert cp.ALSO["POST /api/studio/apps/{}/actions/{}"] == (
-        "studio_record_create", "studio_record_update", "studio_record_delete")
+        "studio_record_create", "studio_record_update", "studio_record_delete",
+        "studio_app_read")
     bad = false_also_claims(acts, _tables(), cp.ALSO)
     assert not bad, "these ALSO claims are false:\n  " + "\n  ".join(bad)
+
+
+def test_the_delete_of_a_package_is_covered_by_its_chat_tool() -> None:
+    """STU-A5c-2 pays the two delete requests of the app page (BETA-1): the
+    preview and the DELETE are ``COVERED`` by ``studio_delete_package``, whose
+    own source sends both gateway routes. The debt of AI Studio went from 3
+    to 1. Mutation: drop the DELETE call from the tool -> red."""
+    acts, _ = _read()
+    pairs = {"GET /api/studio/packages/{}/delete-preview": ("GET",
+                                                           "/studio/packages/{}/delete-preview"),
+             "DELETE /api/studio/packages/{}": ("DELETE", "/studio/packages/{}")}
+    for key, (verb, path) in pairs.items():
+        assert key in acts, key
+        assert cp.COVERED[key] == "studio_delete_package" and key not in cp.DEBT
+        assert r.reaches("studio_delete_package", verb, path), (key, verb, path)
+    # 1 after A5c-2 paid the two delete requests, plus Keep and Restore of PKG-10e-2 (task 2971, paid by P-9).
+    # STU-K1a-ui (task 1203) added the template list and the one-step install (3 to 5). STU-K1d (task 2967) pays both with chat tools (5 to 3).
+    assert cp.DEBT_CEILING["studio"] == 3
 
 
 def test_a_false_also_claim_fails() -> None:

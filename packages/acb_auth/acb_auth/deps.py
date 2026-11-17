@@ -422,7 +422,7 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 
 def _verify_signed_request(
-    request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
+    request: Request, keys: dict[str, str], body: bytes | None, nonce: str | None,
 ) -> tuple[str, str, str, str | None, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
     session key, approval)`` of a well-signed, fresh request, or the reason
@@ -439,8 +439,12 @@ def _verify_signed_request(
     refusal. The request id comes ONLY from this signed header.
 
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
-    ``_agent_user`` read and the nonce it checked, and both are signed.
+    ``_signed_body`` read and the nonce it checked, and both are signed.
+    CIV-14b: a write whose body ``_signed_body`` could not give (``None``) is
+    the refusal ``body``.
     """
+    if body is None:
+        return "body"
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
     timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
@@ -696,7 +700,7 @@ async def _claim_door_read(connection: agent_tokens.LiveConnection) -> int | Non
 async def _claim_call(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
     nonce: str | None, via: str, pair: tuple[str, str | None],
-    approval: tuple[str, str | None] | None = None,
+    *, approval: tuple[str, str | None] | None = None,
 ) -> str | None:
     """Steps 5a to 5e of branch 0: :func:`_door_gate` for a door pair, else
     :func:`_claim_write` for a write of ``MCP_WRITE_ROUTES``. A read of
@@ -898,6 +902,27 @@ async def _door_gate(
     return None
 
 
+async def _signed_body(request: Request) -> bytes | None:
+    """The body bytes that the signature of a write covers, or ``None``.
+
+    EA-6a: the ONE reader of the body in branch 0. A JSON route reads its body
+    with ``request.body()``, which keeps the bytes. CIV-14b: a form route
+    parses a multipart body BEFORE any dependency runs, so the stream is gone
+    here. For the upload of ``upload_task_image``, the gateway wrapper
+    ``AgentUploadBody`` puts the whole body in the scope, as ``bytes``, under
+    the key ``agent_signing.SIGNED_BODY_SCOPE_KEY``, and this reads it. A
+    client cannot set a scope key. A consumed stream with no copy gives
+    ``None``, and :func:`_verify_signed_request` refuses it as ``body``.
+    """
+    kept = request.scope.get("acb.agent_signed_body")
+    if isinstance(kept, bytes):
+        return kept
+    try:
+        return await request.body()
+    except RuntimeError:  # "Stream consumed": a form route with no copy
+        return None
+
+
 
 async def _agent_user(request: Request) -> UserContext:
     """Branch 0 of :func:`get_current_user`: the seven steps of spec §10.1.
@@ -976,7 +1001,7 @@ async def _agent_user(request: Request) -> UserContext:
         nonce = _one_header(request, agent_signing.HEADER_NONCE)
         if not agent_signing.nonce_is_well_formed(nonce):
             return _refuse_agent("nonce")
-        body = await request.body()
+        body = await _signed_body(request)
 
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     signed = _verify_signed_request(request, keys, body, nonce)
@@ -1045,7 +1070,8 @@ async def _agent_user(request: Request) -> UserContext:
     # 5b to 5d, a write of MCP_WRITE_ROUTES: its write scope (EA3-29), a
     # fresh nonce (EA3-28) and room under the cap (EA3-30). They run before
     # the resolve, so a refused call binds no tenant.
-    refused = await _claim_call(connection, door, nonce, expected_via, pair, approval)
+    refused = await _claim_call(connection, door, nonce, expected_via, pair,
+                                 approval=approval)
     if refused is not None:
         return _refuse_agent(refused, **ids)
 

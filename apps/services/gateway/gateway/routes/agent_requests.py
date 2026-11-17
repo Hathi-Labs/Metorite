@@ -46,6 +46,7 @@ Fences: ``tests/unit/test_app_requests_r8.py`` (R8) and
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Literal
 
@@ -61,6 +62,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 #: The shape of a request id: the id of its elicitation.
 _ID = r"^[0-9a-fA-F-]{36}$"
+
+#: The one shape of an ``If-Match`` that the edge sends (review P2).
+_IF_MATCH = re.compile(app_manifests.IF_MATCH_PATTERN)
 
 
 async def _require_access(user: UserContext = Depends(get_current_user)) -> None:
@@ -151,6 +155,11 @@ async def open_app_request(
         call = app_manifests.build_call(found, payload.op, payload.args)
     except app_manifests.BadCall as bad:
         raise HTTPException(status_code=422, detail={"error": "bad_args", "name": bad.name}) from None
+    # Review P2: the edge sends only an `If-Match` of this shape. Refuse any
+    # other here, or the member approves a call that no send can deliver.
+    if call.if_match is not None and not _IF_MATCH.fullmatch(call.if_match):
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_args", "name": app_manifests.VERSION_ARG})
     body = json.loads(call.body) if call.body else None
     org = _org(user)
     async with tenant_session() as db:

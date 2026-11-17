@@ -9,6 +9,8 @@ from acb_common._log import (
     get_logger,
     get_run_context,
     job_member_scope,
+    run_attribution,
+    run_attribution_scope,
     run_context_scope,
 )
 from acb_common.activity import (
@@ -41,6 +43,8 @@ __all__ = [
     "read_activity_since",
     "recent_activity",
     "refresh_run_presence",
+    "run_attribution",
+    "run_attribution_scope",
     "run_context_scope",
     "save_org_setting",
 ]

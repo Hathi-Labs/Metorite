@@ -520,7 +520,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "It holds the five analytics reads, the team's capacity, who "
             "fits a task, plan conflicts, the task table, the "
             "timeline, a plan from a goal, links between tasks, repeat "
-            "rules, and a new project with its settings. The reports are in "
+            "rules, and a new project with its settings. It also lists the "
+            "agent requests that wait for the member, and it takes back or "
+            "changes the member's answer to an agent. The reports are in "
             "projects-reports. A run loads a pack "
             "only where tool packs are on, so until then this switch has no "
             "effect."
@@ -532,6 +534,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "analytics_outlook",
             "analytics_stuck",
             "analytics_throughput",
+            # SW-43c: the member takes back or changes an answer to an agent,
+            # beside the list of the agent requests. It takes the last room of
+            # the pack in the sticky-pack case (test_projects_packs.py).
+            "change_agent_answer",
             "create_project",
             "edit_project",
             "find_conflicts",
@@ -740,7 +746,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "The authority page and the updates of a project, and the "
             "contract of an epic: read the pinned pages, pin or unpin one, "
-            "read, post or delete an update, and set the contract of an epic."
+            "read, post or delete an update, set the contract of an epic, and "
+            "list or answer the questions that agents put to the member."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -755,6 +762,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "effect."
         ),
         "tools": (
+            "agent_questions",
+            "answer_agent_question",
             "delete_project_update",
             "list_project_updates",
             "pin_authority",
@@ -797,6 +806,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_edit_day_rule",
             "my_tasks_get_calendar_settings",
             "my_tasks_list_day_rules",
+            "my_tasks_list_events",
             "my_tasks_list_schedule",
             "my_tasks_plan_day",
             "my_tasks_replan_day",
@@ -812,29 +822,65 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
+    # the other Projects packs are full in their measured turns.
+    "projects-cycles": {
+        "label": "Projects cycles",
+        "summary": (
+            "The cycles (sprints) of a project: list them, read one, plan one, "
+            "add or remove tasks, then start or close it."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the cycles "
+            "of a project, for the main assistant to load when a turn names "
+            "a cycle or a sprint. The pack holds the tools to list the "
+            "cycles of a project and to read one with its tasks. It also "
+            "holds the tools to plan a cycle, to add tasks to it or take "
+            "them out, to start it and to close it. Each change asks the "
+            "member first. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "close_cycle",
+            "create_cycle",
+            "cycle_detail",
+            "list_cycles",
+            "plan_cycle",
+            "start_cycle",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
-    # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
-    # G2 the interview and the plan card), three skill tools (F2d) and two package tools (G1c:
-    # save and publish over the A5 routes). A run loads a pack only where tool packs are on, and the pack
-    # builds nothing for an org that STUDIO_ORGS does not hold.
+    # which is NOT a second assistant. The history of the tools, now in two packs: eight
+    # stateless builder tools (G1b added the describe tool, G2 the interview and the plan
+    # card), three skill tools (F2d) and three package tools (G1c: save and publish over the
+    # A5 routes; A5c-2: delete over the A5c-1 routes, after one card). STB-6a (E13a) added ONE
+    # workflow read over the Workflows routes, as the member. No write.
+    # WS-67 TS-1b (one_assistant_context.md section 4.2.9, "The Studio split"): the 23 tools
+    # are two packs. ``studio`` keeps a core of 10 tools, the build of an app. ``studio-more``
+    # holds the other 13, and it follows ``studio`` (tool_packs.FOLLOWS). A Studio turn takes
+    # both by its surface. Beside the email pack that is 110 tools (MAX_REQUEST_TOOLS).
+    # STB-6b put its writes in studio-workflows.
+    # A run loads a pack only where tool packs are on, and the pack builds nothing for an org that
+    # STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save and publish the app, save, publish, pause and list your skills, and read the records of a package."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save and publish the app."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
             "assistant to load in a Studio turn. It holds the tools to draft "
             "an app manifest, patch it, validate it, outline it and list the "
-            "actions an app may use. It also holds the package tools: save "
-            "an app as a draft and publish it. It also holds the skill tools: save, "
-            "publish, pause and list the skills of a member. Two read tools list the "
-            "packages of a member and read the records of an object. Three write tools add, "
-            "change and delete a record, and each asks the member first. The tools keep no "
-            "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
-            "so until then this switch has no effect."
+            "actions an app may use. It also holds the tools to ask the interview "
+            "and to show the plan card, and to save an app as a draft and publish it. "
+            "The tools keep no draft: the chat holds the manifest. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no effect."
         ),
         "tools": (
             "studio_describe",
@@ -845,16 +891,81 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_patch",
             "studio_plan",
             "studio_validate",
+            "studio_save",
+            "studio_publish",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-67 TS-1b: the other 13 Studio tools. The same owner, after ``studio``. It follows
+    # ``studio`` (tool_packs.FOLLOWS), so it is on wherever ``studio`` is on, and the owner
+    # filter (``_tool_injection._PACK_OWNER_FILTERS``) applies to it too: STUDIO_ORGS,
+    # ``feature:studio`` and the drop of the three record writes.
+    "studio-more": {
+        "label": "AI Studio skills, records and workflows",
+        "summary": (
+            "Save, publish, pause and list your AI Studio skills, delete an app, start from a "
+            "ready app, read and change the records of a package, read from another app, and "
+            "list and read the organisation's workflows and the steps of a run."
+        ),
+        "description": (
+            "A tool pack: the other tools of AI Studio, for the main assistant "
+            "to load in a Studio turn. It holds the skill tools: save, publish, "
+            "pause and list the skills of a member. It holds the tools to delete "
+            "an app after one card, and to list the ready apps and make one. Two "
+            "read tools list the packages of a member and read the records of an "
+            "object. Three write tools add, change and delete a record, and each "
+            "asks the member first. One read tool reads from another app through "
+            "an action of a package. One read tool lists the workflows of the "
+            "organization, reads one, or lists the human steps of one run. A run "
+            "loads a pack only where tool packs are on, so until then this switch "
+            "has no effect."
+        ),
+        "tools": (
             "studio_skill_list",
             "studio_skill_save",
             "studio_skill_state",
-            "studio_save",
-            "studio_publish",
+            "studio_delete_package",
+            "studio_template_list",
+            "studio_create_from_template",
             "studio_package_get",
             "studio_record_list",
             "studio_record_create",
             "studio_record_update",
             "studio_record_delete",
+            "studio_app_read",
+            "studio_workflow_read",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # STB-6b (ai_studio.md E13b): the two workflow writes, publish (or roll back)
+    # and live (enable or disable), as the member. The studio pack is full, so
+    # they form a small pack of the same owner, after it. It is NOT in
+    # tool_packs.FOLLOWS: it ships dark, and it is on only where the tool-pack flag
+    # names it (an owner-only line). Fence: test_studio_workflow_write_tools.py.
+    "studio-workflows": {
+        "label": "AI Studio workflow publish",
+        "summary": (
+            "Make a workflow live: publish its draft, roll it back to a version, "
+            "pause it or turn it on again."
+        ),
+        "description": (
+            "A tool pack: the tools that make a workflow live, for the main "
+            "assistant to load when a turn asks to publish, roll back, pause or "
+            "turn on a workflow. Each tool needs the right to publish workflows. "
+            "A publish, a roll back and a turn on show one card with the version, "
+            "the triggers that are on and whether the organization runs workflows "
+            "with no person present. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "studio_workflow_publish",
+            "studio_workflow_live",
         ),
         "owner": "studio-builder",
         "core": False,

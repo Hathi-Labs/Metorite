@@ -84,8 +84,9 @@ from gateway.routes.workflows.engine.handlers import NodeExecutionError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
-from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
+from tests.unit import _r8_lists as r8_lists
+from tests.unit._tenant_ladder import tenant_engine_scope
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GENERATED = _ROOT / "infra" / "postgres" / "generated"
@@ -449,11 +450,17 @@ def _module_child(monkeypatch):
     Windows has neither, so only there a stand-in runs the seeded source in
     this process. The subject of this file is the READ under RLS. CI runs the
     real child, and ``test_workflows_modules.py`` fences that child.
+
+    The runner is dark by org (STU-Q15a), so ``MODULE_RUN_ORGS`` opens every
+    org here. ``test_module_runs_off.py`` fences the switch.
     """
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "module_run_orgs", "*", raising=False)
     if sys.platform != "win32":
         return
 
-    async def _run(code: str, inputs: dict) -> dict:
+    async def _run(code: str, inputs: dict, *, organization_id: str | None) -> dict:
         namespace: dict[str, Any] = {}
         exec(code, namespace)
         return namespace["run"](inputs)
@@ -1415,5 +1422,4 @@ def test_a_schedule_never_starts_a_workflow_with_a_task_node(promoted, monkeypat
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard():
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_workflows_lifecycle_rls_r8.py" in workflow
+    assert "tests/unit/test_workflows_lifecycle_rls_r8.py" in r8_lists.must_run()
