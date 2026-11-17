@@ -1224,9 +1224,11 @@ async def bulk_update(
     # named on the card, as the create cards name it (H-162), so the member sees
     # it before the Approve. The same one lookup as the other cards. A change
     # with no address to add reads nothing.
-    strangers = await _unknown_addresses(list(body.get("assignees_add") or []))
+    # One fence round a comma list, the shape of the create cards
+    # (`_assignee_card_lines`), and each address once.
+    strangers = await _unknown_addresses(list(dict.fromkeys(body.get("assignees_add") or [])))
     if strangers:
-        rest["not in the directory"] = ", ".join(data(a) for a in strangers)
+        rest["not in the directory"] = ", ".join(strangers)
     # Whole titles when the card holds them, and the UI cuts a long one with
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).

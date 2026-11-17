@@ -152,3 +152,19 @@ async def test_a_change_with_no_address_to_add_reads_no_directory(monkeypatch) -
     await skill_projects.bulk_update(UUID, status="done")
     await skill_projects.bulk_update(UUID, assignees_remove=STRANGER)
     assert "/projects/people/names" not in [c["path"] for c in calls]
+
+
+async def test_two_strangers_are_one_fence_as_on_the_create_card(monkeypatch) -> None:
+    """The shape the client reads (`REAL_SHAPES`): ``«a, b»``, each address once."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _no_names)
+    await skill_projects.bulk_update(UUID, assignees_add=f"{STRANGER},z@y.test,{STRANGER.upper()}")
+    context = asked[0]["context"]
+    assert f"not in the directory: «{STRANGER}, z@y.test»" in context
+
+
+async def test_an_agent_assignee_has_no_directory_lookup(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _no_names)
+    await skill_projects.bulk_update(UUID, assignees_add="agent:crm-assistant")
+    assert "/projects/people/names" not in [c["path"] for c in calls]
