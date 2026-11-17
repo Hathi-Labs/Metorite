@@ -22,12 +22,15 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import litellm
 import pytest
 
 from customer_console.router import (
     ResolvedTier,
     UpstreamFailed,
     call_chain,
+    describe_failure,
+    effective_status,
     is_retryable,
     open_stream_chain,
     set_provider_call,
@@ -37,8 +40,8 @@ from customer_console.router import (
 class Upstream(Exception):
     """A provider error, shaped like the ones litellm raises."""
 
-    def __init__(self, status: int | None) -> None:
-        super().__init__(f"upstream {status}")
+    def __init__(self, status: int | None, message: str | None = None) -> None:
+        super().__init__(message or f"upstream {status}")
         if status is not None:
             self.status_code = status
 
@@ -58,7 +61,7 @@ def provider():
         seen.append(model)
         outcome = plan.get(model, {"ok": True})
         if not outcome.get("ok"):
-            raise Upstream(outcome.get("status"))
+            raise Upstream(outcome.get("status"), outcome.get("message"))
         return {"model": model, "answered": True}
 
     set_provider_call(_call)
@@ -214,6 +217,143 @@ class TestTheWalk:
         assert "upstream 500" not in str(exc.value)
 
 
+CREDIT_MSG = (
+    "Your credit balance is too low to access the Anthropic API. "
+    "Please go to Plans & Billing to upgrade or purchase credits."
+)
+
+
+class TestABillingRefusalReadsAs402:
+    """🔴 2026-11-17: Anthropic answered an empty account with a 400."""
+
+    def test_a_billing_400_falls_over_and_the_backup_answers(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
+        response, served = walk([step("anthropic/a"), step("anthropic/b"), step("deepseek/c")])
+        assert seen == ["anthropic/a", "deepseek/c"]
+        assert served.model == "deepseek/c"
+        assert response["model"] == "deepseek/c"
+
+    def test_a_plain_400_still_stops_the_walk(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": "messages: field required"}
+        with pytest.raises(UpstreamFailed) as exc:
+            walk([step("anthropic/a"), step("deepseek/c")])
+        assert exc.value.status == 400
+        assert seen == ["anthropic/a"]
+
+    def test_a_bare_billing_word_in_a_400_does_not_count(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": "billing address is invalid"}
+        with pytest.raises(UpstreamFailed) as exc:
+            walk([step("anthropic/a"), step("deepseek/c")])
+        assert exc.value.status == 400
+        assert seen == ["anthropic/a"]
+
+    def test_the_failed_walk_carries_402_and_the_billing_hint_only(self, provider):
+        plan, _ = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
+        with pytest.raises(UpstreamFailed) as exc:
+            walk([step("anthropic/a")])
+        assert exc.value.status == 402
+        fields = describe_failure(exc.value)
+        assert fields["hints"] == "billing"
+        assert fields["upstream_status"] == 402
+        assert "credit balance" not in repr(fields).lower()
+        assert "credit balance" not in str(exc.value).lower()
+
+    def test_on_refusal_gets_402(self, provider):
+        plan, _ = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
+        got: list[Any] = []
+        asyncio.run(
+            call_chain(
+                [step("anthropic/a"), step("deepseek/c")],
+                lambda s: {"model": s.model},
+                None,
+                lambda s, st: got.append((s.model, st)),
+            )
+        )
+        assert got == [("anthropic/a", 402)]
+
+    @pytest.mark.parametrize(
+        ("vendor", "status", "message", "want"),
+        [
+            ("anthropic", 400, "Your credit balance is too low", 402),
+            ("anthropic", 400, "You have reached your specified API usage limits.", 402),
+            ("openai", 429, "You exceeded your current quota, please check your plan", 402),
+            ("deepseek", 403, "Insufficient Balance", 402),
+            ("openrouter", 402, "anything", 402),
+            ("openrouter", 403, "This request requires more credits", 402),
+            ("openai", 429, "slow down", 429),
+            ("anthropic", 500, "credit balance is too low", 500),
+            ("anthropic", None, "credit balance is too low", None),
+            # Vendor scope: the phrase of one vendor never lifts another's error.
+            ("gemini", 429, "You exceeded your current quota", 429),
+            ("anthropic", 429, "You exceeded your current quota", 429),
+            (None, 400, "credit balance is too low", 400),
+            # A bare word, and a quoted prompt, never lift.
+            ("openrouter", 403, "flagged: I want to purchase credits", 403),
+            ("anthropic", 400, "billing address is invalid", 400),
+        ],
+    )
+    def test_effective_status(self, vendor, status, message, want):
+        assert effective_status(Upstream(status, message), vendor) == want
+
+    def test_a_REAL_litellm_openai_quota_error_lifts(self):
+        """The str(exc) shape litellm builds for ``openai/``. It drops the code."""
+        exc = litellm.RateLimitError(
+            message="OpenAIException - You exceeded your current quota, please "
+            "check your plan and billing details.",
+            model="gpt-4o",
+            llm_provider="openai",
+        )
+        assert "insufficient_quota" not in str(exc)
+        assert effective_status(exc, "openai") == 402
+
+    def test_a_REAL_litellm_anthropic_400_lifts(self):
+        exc = litellm.BadRequestError(
+            message='AnthropicException - {"type":"error","error":{"type":'
+            '"invalid_request_error","message":"Your credit balance is too low"}}',
+            model="claude",
+            llm_provider="anthropic",
+        )
+        assert effective_status(exc, "anthropic") == 402
+
+    def test_a_gemini_per_minute_429_with_the_quota_sentence_stays_429(self, provider):
+        """The Gemini rate limit holds the OpenAI sentence. It must fail over
+        to the next Gemini model and never strike Gemini off."""
+        plan, seen = provider
+        body = (
+            "GeminiException - You exceeded your current quota, please check your "
+            "plan and billing details. RetryInfo retryDelay 21s"
+        )
+        plan["gemini/pro"] = {"ok": False, "status": 429, "message": body}
+        _, served = walk([step("gemini/pro"), step("gemini/flash")])
+        assert seen == ["gemini/pro", "gemini/flash"]
+        assert served.model == "gemini/flash"
+
+    def test_a_billing_400_on_a_STREAM_opens_the_next_vendors_stream(self, stream_provider):
+        plan, seen = stream_provider
+        plan["anthropic/a"] = {"open": 400, "message": CREDIT_MSG}
+        refusals: list[Any] = []
+
+        async def _go():
+            head, _, served = await open_stream_chain(
+                [step("anthropic/a"), step("anthropic/b"), step("deepseek/c")],
+                lambda s: {"model": s.model},
+                None,
+                lambda s, st: refusals.append((s.model, st)),
+            )
+            return head, served
+
+        head, served = asyncio.run(_go())
+        assert refusals == [("anthropic/a", 402)]
+        assert seen == ["anthropic/a", "deepseek/c"]
+        assert served.model == "deepseek/c"
+        assert head == [b"deepseek/c-1"]
+
+
 class TestTheRecord:
     def test_a_failover_is_announced_with_both_ends_and_the_reason(self, provider):
         # 📌 `usage_event` has no column for the step that served, so this
@@ -265,7 +405,7 @@ def stream_provider():
         seen.append(model)
         outcome = plan.get(model, {})
         if "open" in outcome:
-            raise Upstream(outcome["open"])
+            raise Upstream(outcome["open"], outcome.get("message"))
         frames = outcome.get("frames", [f"{model}-1".encode()])
         after = outcome.get("after_open")
 
