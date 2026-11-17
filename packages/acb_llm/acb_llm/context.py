@@ -366,7 +366,7 @@ async def _complete_with_fallback(
     # block runs when routing is on. Falling back to local litellm would
     # restore the unbilled path exactly when the Console is refusing to be
     # paid, which is the one moment it must not.
-    from acb_llm.routed import completion_on_router, routing_is_on
+    from acb_llm.routed import completion_on_router, refuse_direct_arm, routing_is_on
 
     if routing_is_on():
         fitted_for_router, _ = fit_messages_to_context(
@@ -385,6 +385,9 @@ async def _complete_with_fallback(
             job=job,
         )
 
+    # Task 3554: the direct arm runs on a dev box only. Elsewhere this raises
+    # `ConsoleRouterUnavailable`, before a key loads or litellm runs.
+    refuse_direct_arm("acompletion_with_fallback")
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()
@@ -741,8 +744,8 @@ async def _stream_text(
     # still worked. This arm was one of the bypasses of task 2449.
     #
     # ⚠️ The same switch as :func:`_complete_with_fallback`. With routing off,
-    # the stream below runs as before.
-    from acb_llm.routed import routing_is_on
+    # the stream below runs on a dev box only (task 3554).
+    from acb_llm.routed import refuse_direct_arm, routing_is_on
 
     if routing_is_on():
         return await _routed_text(
@@ -752,6 +755,7 @@ async def _stream_text(
             total_s=total_s, job=job,
         )
 
+    refuse_direct_arm("acompletion_stream_text")
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()
