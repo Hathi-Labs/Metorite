@@ -99,3 +99,56 @@ async def test_create_task_writes_two_strangers_as_one_fence(monkeypatch) -> Non
     fake_gateway(monkeypatch, _no_names)
     await skill_projects.create_task(UUID, "Survey the site", assignees="a@x.com,b@x.com")
     assert "not in the directory: «a@x.com, b@x.com»" in asked[0]["context"]
+
+
+# ── bulk_update(assignees_add), task 3634 ───────────────────────────────────
+
+KNOWN = "known@y.test"
+OTHER_TASK = "00000000-0000-4000-8000-000000000002"
+
+
+def _knows_known(call: dict) -> Any:
+    """The directory knows ``KNOWN`` and nobody else."""
+    if call["path"] == "/projects/people/names":
+        return {"names": {KNOWN: "Kim"}}
+    return responder(call)
+
+
+async def test_a_bulk_assign_names_a_stranger_before_any_write(monkeypatch) -> None:
+    """Mutation: drop the stranger line from `bulk_update` -> red."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _no_names)
+    await skill_projects.bulk_update(UUID, assignees_add=STRANGER)
+    assert len(asked) == 1
+    assert f"not in the directory: «{STRANGER}»" in asked[0]["context"]
+    paths = [c["path"] for c in calls]
+    bulk = [c for c in writes(calls) if c["path"] == "/projects/tasks/bulk"]
+    assert bulk, "the change is written after the approval"
+    assert paths.index("/projects/people/names") < calls.index(bulk[0])
+
+
+async def test_a_bulk_assign_of_a_known_member_has_no_such_line(monkeypatch) -> None:
+    """Mutation: name every address as a stranger -> red."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _knows_known)
+    await skill_projects.bulk_update(UUID, assignees_add=KNOWN)
+    assert "not in the directory" not in asked[0]["context"]
+
+
+async def test_a_mixed_bulk_assign_names_only_the_stranger(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _knows_known)
+    await skill_projects.bulk_update(f"{UUID},{OTHER_TASK}", assignees_add=f"{KNOWN},{STRANGER}")
+    context = asked[0]["context"]
+    assert f"not in the directory: «{STRANGER}»" in context
+    assert f"not in the directory: «{KNOWN}»" not in context
+    assert KNOWN in context  # the add line still names the member
+
+
+async def test_a_change_with_no_address_to_add_reads_no_directory(monkeypatch) -> None:
+    """No lookup is spent on a status change, a removal or an agent."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _no_names)
+    await skill_projects.bulk_update(UUID, status="done")
+    await skill_projects.bulk_update(UUID, assignees_remove=STRANGER)
+    assert "/projects/people/names" not in [c["path"] for c in calls]
