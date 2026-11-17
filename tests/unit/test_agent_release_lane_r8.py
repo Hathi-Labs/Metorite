@@ -380,3 +380,30 @@ async def test_an_archived_task_does_not_move_on_a_release(w) -> None:
     assert released.status_code == 200, released.text
     assert released.json()["task_status"]["reason"] == "archived"
     assert _lane_of(w.p, task) == ("In progress", "in_progress")
+
+
+# ── 8. The owner default for F5 (2026-11-17): a release undoes the claim ───
+
+
+async def test_a_task_that_was_already_in_progress_stays_even_with_a_branch(w) -> None:
+    """The live work of a person. An agent claims it as a helper (no move),
+    attaches a branch and releases: the status is not touched."""
+    board = _board(w.p, w.org, w.email, STANDARD)
+    task = _task(w.p, board, "In progress")
+    out = await _claim_and_release(
+        w, task, before=lambda: _ref(w.p, board, task, "branch"),
+        handoff={"done": "A first cut."})
+    assert out["task_status"] == {
+        "name": "In progress", "category": "in_progress", "moved": False,
+        "reason": "no_status_before_claim"}
+    assert _lane_of(w.p, task) == ("In progress", "in_progress")
+
+
+async def test_a_task_that_was_already_in_progress_stays_even_with_an_open_pull_request(w) -> None:
+    board = _board(w.p, w.org, w.email, (*STANDARD, ("In review", "in_progress", 35)))
+    task = _task(w.p, board, "In progress")
+    out = await _claim_and_release(
+        w, task, before=lambda: _ref(w.p, board, task, "pull_request", "open"))
+    # No move to the review lane either: the claim moved nothing.
+    assert out["task_status"]["moved"] is False
+    assert _lane_of(w.p, task) == ("In progress", "in_progress")

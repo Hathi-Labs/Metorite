@@ -133,6 +133,7 @@ class TestTheReleaseSettlesTheLane:
         assert "keeps its status" not in text
         for part in ("task_status", "open pull request keeps it in progress",
                      "To Do", "never goes to Backlog", "add_task_reference",
+                     "undoes your claim", "already In progress before your claim",
                      "a task with neither reads as not started"):
             assert part in text, part
         assert "task_status" in described["outputSchema"]["required"]

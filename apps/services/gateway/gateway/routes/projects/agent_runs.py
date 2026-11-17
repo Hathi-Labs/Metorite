@@ -2995,18 +2995,25 @@ async def _settle_task_lane(
     The owner's stages: Backlog is a task nobody started. To Do is a task
     planned soon AND a started task that is paused or given back. In progress
     is work that moves now: a live run, or an open pull request that waits.
-    So, for a task that sits in a started lane (anything else stays):
 
-    (``pm_agent_runs_one_open_per_task`` allows ONE open run for each task, so
-    no other live run holds the task when this one is released.)
+    **A release undoes what the claim of this agent did (owner default,
+    2026-11-17).** It acts only when the last status move of the task is the
+    claim's own move into a started lane: the same member, through the same
+    client (``meta.via``), and written no earlier than this run. A task that
+    was already in progress before the claim is the live work of a person:
+    the release leaves the status alone, whatever refs it holds. For a task
+    that the claim moved, in this order:
 
     1. An open pull request: it stays in progress, in a review lane if the
        board has one.
     2. Started work (a handoff ``done``, or a branch, a commit or a pull
        request on the task): the To Do lane (:func:`pick_lane`). A board with
        no To Do lane keeps the task where it is. **It never goes to Backlog.**
-    3. Nothing started: the lane that it had before this agent's claim, when
-       this agent made the last move. Else it stays.
+    3. Nothing started: the lane that the claim left (:func:`lane_like`).
+
+    A task that is archived, or not in a started lane, stays.
+    (``pm_agent_runs_one_open_per_task`` allows ONE open run for each task, so
+    no other live run holds the task when this one is released.)
     """
     tid = str(run.task_id) if run.task_id is not None else None
     if tid is None:
@@ -3017,6 +3024,22 @@ async def _settle_task_lane(
         return _lane_report(status, moved=False, reason="archived"), None
     if status.category != STARTED_CATEGORY:
         return _lane_report(status, moved=False, reason="not_started_lane"), None
+    last = (await db.execute(text(_LAST_MOVE_SQL), {"tid": tid})).first()
+    meta = from_jsonb(last.meta) if last is not None else None
+    # The move of THIS claim: the same member, through the same client
+    # (`meta.via`, which a person's move in the app never carries), and
+    # written no earlier than this run. A move that a person made by hand,
+    # even the same member's, is never reversed (verifier F4). A task that was
+    # in progress before the claim has no such move: it is a person's live
+    # work, and the release leaves it alone (owner default, F5).
+    mine = (
+        last is not None and last.created_by == actor(user)
+        and isinstance(meta, dict) and meta.get("via") == run.client_via
+        and last.created_at >= run.created_at
+        and meta.get("to_category") == STARTED_CATEGORY
+    )
+    if not mine:
+        return _lane_report(status, moved=False, reason="no_status_before_claim"), None
     refs = (await db.execute(text(_REFS_OF_TASK_SQL), {"tid": tid})).fetchall()
     lanes = await board_lanes(db, str(task.project_id))
 
@@ -3029,21 +3052,7 @@ async def _settle_task_lane(
         target = pick_lane(lanes, LANE_STAGE_TODO)
         reason = "started_work" if target is not None else "no_todo_lane"
     else:
-        last = (await db.execute(text(_LAST_MOVE_SQL), {"tid": tid})).first()
-        meta = from_jsonb(last.meta) if last is not None else None
-        # The move of THIS claim: the same member, through the same client
-        # (`meta.via`, which a person's move in the app never carries), and
-        # written no earlier than this run. A move that a person made by
-        # hand, even the same member's, is never reversed (verifier F4).
-        mine = (
-            last is not None and last.created_by == actor(user)
-            and isinstance(meta, dict) and meta.get("via") == run.client_via
-            and last.created_at >= run.created_at
-        )
-        if mine and meta.get("to_category") == STARTED_CATEGORY:
-            target = lane_like(lanes, meta.get("from"), meta.get("from_category"))
-        else:
-            target = None
+        target = lane_like(lanes, meta.get("from"), meta.get("from_category"))
         reason = "nothing_started" if target is not None else "no_status_before_claim"
 
     if target is None or str(target.id) == str(status.id):
