@@ -603,7 +603,37 @@ async def return_unconsumed(thread_id: str) -> int:
             continue
     if given:
         _log.info("steer.returned_unconsumed", thread_id=thread_id[:12], count=given)
+    if entries:
+        # Task 3640: the gateway marked each of these rows ``steered`` when it took the
+        # steer, and the session digests skip such rows (task 2948). This run never read
+        # them, so its saved session lacks them. The mark drops that session once, and the
+        # next turn reads the text history, which holds them. The run saved its session
+        # BEFORE its terminal event, so this mark lands after the save.
+        await _mark_session_stale(thread_id)
     return given
+
+
+async def _mark_session_stale(thread_id: str) -> None:
+    """Drop the stored native session of *thread_id*. Never raises.
+
+    Only with ``MAF_NATIVE_SESSIONS`` on and a tenant bound (R5). The org is the run's
+    binding, never a request value. Fence: ``tests/unit/test_steer_unread_stale.py``."""
+    try:
+        from acb_common import get_settings  # noqa: PLC0415
+
+        if not getattr(get_settings(), "maf_native_sessions", False):
+            return
+        from acb_common.tenant_redis import current_organization, organization_bound  # noqa: PLC0415
+
+        if not organization_bound():
+            return
+        from orchestrator import native_session_store  # noqa: PLC0415
+
+        await native_session_store.mark_stale(
+            organization_id=current_organization(), thread_id=thread_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — a run must end whatever happens here
+        _log.warning("steer.session_stale_failed", thread_id=thread_id[:12], error=type(exc).__name__)
 
 
 async def give_back(thread_id: str, signals: list[dict[str, Any]]) -> int:
