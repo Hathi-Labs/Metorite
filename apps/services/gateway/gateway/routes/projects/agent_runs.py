@@ -2961,14 +2961,17 @@ async def may_answer_run(db: Any, run: Any, user: UserContext) -> bool:
 #: The references of a task that show started work.
 _REFS_OF_TASK_SQL = "SELECT kind, state FROM pm_task_refs WHERE task_id = CAST(:tid AS uuid)"
 
+MOVES_SINCE_MAX = 50
+
 #: Every status move of a task since a run began, oldest first, with who wrote
 #: it. The first one is the claim's own move. Later ones are the agent's or a
 #: person's.
 _MOVES_SINCE_SQL = (
     "SELECT created_by, created_at, meta FROM pm_activities"
     " WHERE task_id = CAST(:tid AS uuid) AND type = 'status_change'"
-    " AND created_at >= :since ORDER BY created_at, id"
+    " AND created_at >= :since ORDER BY created_at, id LIMIT " + str(MOVES_SINCE_MAX + 1)
 )
+
 
 #: A pull request in these states is open. A pull request with no state read
 #: (no GitHub token) counts as open: the agent attached it for review.
@@ -3041,11 +3044,16 @@ async def _settle_task_lane(
     # `from` of the first move, also when the agent moved the task again.
     owner = str(run.member_email or "").strip().lower()
     metas = [from_jsonb(m.meta) for m in moves]
-    mine = bool(moves) and all(
+    # A claim moves a task only OUT of backlog or todo into a started lane
+    # (`claim_task`). So the first move must leave a lane that is not started:
+    # the agent's own move from one started lane to another (In progress to In
+    # review, as the routine asks) is never the claim (verifier N2).
+    mine = bool(moves) and len(moves) <= MOVES_SINCE_MAX and all(
         str(m.created_by or "").strip().lower() == owner
         and isinstance(meta, dict) and meta.get("via") == run.client_via
         for m, meta in zip(moves, metas, strict=True)
-    ) and metas[0].get("to_category") == STARTED_CATEGORY
+    ) and metas[0].get("to_category") == STARTED_CATEGORY \
+        and metas[0].get("from_category") not in (None, STARTED_CATEGORY)
     meta = metas[0] if mine else None
     if not mine:
         return _lane_report(status, moved=False, reason="no_status_before_claim"), None

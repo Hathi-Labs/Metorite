@@ -478,3 +478,22 @@ async def test_a_later_move_of_the_agent_itself_does_not_hide_the_lane_of_the_cl
     assert released.status_code == 200, released.text
     assert released.json()["task_status"]["reason"] == "nothing_started"
     assert _lane_of(w.p, task) == ("Backlog", "backlog")
+
+
+async def test_the_agents_own_move_between_started_lanes_is_never_the_claim(w) -> None:
+    """Verifier N2. A person has the task In progress, a helper agent claims it
+    (no move), opens a pull request and moves the task to the review lane as the
+    routine asks, then releases a merged-PR task: the status stays, because the
+    agent's move left a started lane and a claim never does."""
+    board = _board(w.p, w.org, w.email, (*STANDARD, ("In review", "in_progress", 35)))
+    task = _task(w.p, board, "In progress")
+    async with _session(w.p) as call:
+        claimed = await call(w.agent, "POST", f"/projects/tasks/{task}/claim", {})
+        run = claimed.json()["agent_run_id"]
+        _agent_move(w.p, board, task, "In review", "In progress", "in_progress")
+        _ref(w.p, board, task, "pull_request", "merged")
+        released = await call(w.agent, "POST", f"/projects/agent-runs/{run}/release", {})
+    assert released.status_code == 200, released.text
+    assert released.json()["task_status"]["moved"] is False
+    assert released.json()["task_status"]["reason"] == "no_status_before_claim"
+    assert _lane_of(w.p, task) == ("In review", "in_progress")
