@@ -204,6 +204,10 @@ def test_1_the_table_has_its_key_its_check_and_force_rls(db) -> None:
         "session_id": ("text", "NO"),
         "member_email": ("text", "NO"),
         "pinned_at": ("timestamp with time zone", "YES"),
+        # CO-2b adds the topic of the chat in its own migration, nullable.
+        # `test_chat_topic_move_r8.py` holds its checks and its key.
+        "topic_id": ("uuid", "YES"),
+        "set_by": ("text", "YES"),
     }
     assert key == "PRIMARY KEY (session_id, member_email)"
     assert tuple(rls) == (True, True)
