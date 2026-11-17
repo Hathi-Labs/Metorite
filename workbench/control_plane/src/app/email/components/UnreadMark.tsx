@@ -90,7 +90,7 @@ export function ReadToggle({
 }) {
   const label = email.isRead ? "Mark as unread" : "Mark as read";
   return (
-    <span className="absolute right-2 bottom-2 z-10 opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:hidden">
+    <span className="absolute right-2 bottom-2 z-10 reveal-on-hover reveal-on-hover-live pointer-coarse:hidden">
       <Button
         variant="ghost"
         size="icon-sm"
