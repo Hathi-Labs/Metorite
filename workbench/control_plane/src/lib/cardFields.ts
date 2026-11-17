@@ -83,7 +83,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "cannot link N": { label: "Cannot link", plural: "Cannot link" },
   "cannot move N": { label: "Cannot move", plural: "Cannot move" },
   "cannot change N": { label: "Cannot change", plural: "Cannot change" },
-  "cannot open the task": { label: "Cannot open the task yet", kind: "person", many: true },
+  "cannot open the task": { label: "Cannot open the task", kind: "person", many: true },
   "capacity": { label: "Capacity" },
   "carry to": { label: "Carry over to" },
   "category": { label: "Category", kind: "category" },
