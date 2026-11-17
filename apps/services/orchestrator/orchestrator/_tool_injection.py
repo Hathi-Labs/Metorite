@@ -5097,6 +5097,8 @@ async def _mcp_reasons(org: str, maf_servers: list[Any], attached: Any, failures
                 _ok, code, _ = decide({
                     "tool_name": f"{srv.name}_x", "mcp_tool": True, "mcp_annotations": hints,
                     "mcp_always_confirm": srv.always_confirm, "mcp_read_only_key": srv.read_only_key,
+                    # MCP-NC1: a member's run needs no card, so the same fact as the gate.
+                    "mcp_member_present": bool(member_present),
                     "after_untrusted_answer": after_mark,
                 })
                 return code not in (MCP_READ_ONLY, MCP_READ_ONLY_KEY)
