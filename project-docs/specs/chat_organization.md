@@ -240,6 +240,9 @@ with `CHAT_TOPICS_ORGS` on. With it off, the list stays as CO-0 and CO-11 draw i
   group. The newest group comes first. The chats with no topic form Other.
   No day group shows with topics on.
 - **Inside a group.** The newest chat comes first.
+- **Daily briefs.** The Daily briefs fold of task 3564 keeps its place at the
+  end. A folded brief is not in Recent and not in a topic group. Recent and
+  the groups read the list without the folded briefs.
 - **Twice.** A chat in Recent shows again in its own group: Pinned, its topic,
   or Other. It shows in no third place. The copy in Recent has the DOM id
   `recent:<id>`. Both copies show the chat on screen, and both act on the same chat.
