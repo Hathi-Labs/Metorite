@@ -31,7 +31,7 @@ describe("readDecisions", () => {
 
 describe("fetchDecisions", () => {
   it("asks the relay for this chat only", async () => {
-    const f = vi.fn(async () => new Response(JSON.stringify({ enabled: true, items: [] }), { status: 200 }));
+    const f = vi.fn(async (_url: string) => new Response(JSON.stringify({ enabled: true, items: [] }), { status: 200 }));
     await fetchDecisions("thread-1", f as unknown as typeof fetch);
     expect(f.mock.calls[0][0]).toBe("/api/auth/me/chat-decisions?session_id=thread-1");
   });
