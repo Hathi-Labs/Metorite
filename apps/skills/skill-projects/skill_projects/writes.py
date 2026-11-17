@@ -620,7 +620,7 @@ async def _openable(people: list[str]) -> list[str]:
     """The people among *people* who CAN open a task that is given to them
     (task 3633): not an agent, not a stranger to the directory, not a person
     who is suspended or has no login. The card names the others under their own
-    rows (``not in the directory``, ``suspended``, ``no login yet``), so
+    rows (``not in the directory``, ``cannot open the task``), so
     ``gives access to`` never says that access is given to someone who cannot use
     it. Order and case are kept. One lookup, and none for an empty list."""
     humans = [p for p in people if not p.startswith("agent:")]

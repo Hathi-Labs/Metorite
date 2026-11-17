@@ -32,7 +32,7 @@ def _gateway(audience_seen: list[str] | None = None):
             asked = str(call["params"].get("emails", "")).split(",")
             return {"names": {a: "N" for a in asked if a in (KNOWN, OFF, NOLOGIN)}}
         if path == "/projects/people/reach":
-            return {"not_reachable": {OFF: "inactive", NOLOGIN: "no_login"}}
+            return {"not_reachable": [OFF, NOLOGIN]}
         if path.endswith("/audience"):
             people = str(call["params"].get("people", ""))
             if audience_seen is not None:
@@ -93,3 +93,62 @@ async def test_an_open_chat_reads_no_audience(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, _gateway())
     await skill_projects.create_task(UUID, "Survey", assignees=KNOWN)
     assert not any(c["path"].endswith("/audience") for c in calls)
+
+
+# ── the batch card and the plan card, 1, 2 and 3 outsiders ──────────────────
+
+
+@pytest.mark.parametrize("outsiders", [[OUT1], [OUT1, OUT2], [OUT1, OUT2, OUT3]])
+async def test_the_plan_access_line_with_no_parent_names_no_outsider(monkeypatch, outsiders) -> None:
+    """A new space has no parent: the line is built from the owners alone."""
+    from skill_projects import forms
+
+    fake_gateway(monkeypatch, _gateway())
+    lines = await forms._plan_access("", [KNOWN, *outsiders, OFF, "agent:x"])
+    assert lines["gives access to"] == KNOWN
+    alone = await forms._plan_access("", outsiders)
+    assert "gives access to" not in alone and alone["seen by"]
+
+
+@pytest.mark.parametrize("outsiders", [[OUT1], [OUT1, OUT2], [OUT1, OUT2, OUT3]])
+async def test_the_plan_access_line_under_a_parent_names_no_outsider(monkeypatch, outsiders) -> None:
+    from skill_projects import forms
+
+    seen: list[str] = []
+    fake_gateway(monkeypatch, _gateway(seen))
+    lines = await forms._plan_access(UUID, [*outsiders, KNOWN])
+    assert seen == [KNOWN]
+    assert lines["gives access to"] == KNOWN
+
+
+@pytest.mark.parametrize("outsiders", [[OUT1], [OUT1, OUT2], [OUT1, OUT2, OUT3]])
+async def test_the_batch_card_names_each_outsider_once_and_gives_them_no_access(
+    monkeypatch, outsiders,
+) -> None:
+    """create_tasks in a held chat: the strangers and the person who cannot open
+    sit under their own rows, and ``gives access to`` holds the member only."""
+    import json
+
+    import acb_skills.egress as eg
+    from skill_projects import forms
+
+    async def held(_ctx: Any = None) -> bool:
+        return True
+
+    monkeypatch.setattr(eg, "chat_is_held", held)
+    cards: list[dict] = []
+
+    async def ticks_all(*_a: Any, **kw: Any) -> frozenset[str]:
+        cards.append(kw)
+        return frozenset(r["id"] for r in kw["rows"])
+
+    monkeypatch.setattr(forms, "_confirm", ticks_all)
+    fake_gateway(monkeypatch, _gateway())
+    items = [{"title": f"T{i}", "assignees": a} for i, a in enumerate([*outsiders, KNOWN, OFF])]
+    await skill_projects.create_tasks(UUID, json.dumps(items))
+    context = cards[-1]["context"]
+    assert f"not in the directory: «{', '.join(outsiders)}»" in context
+    assert f"cannot open the task: «{OFF}»" in context
+    assert f"gives access to: «{KNOWN}»" in context
+    for o in [*outsiders, OFF]:
+        assert o not in context.split("gives access to")[1].split("\n")[0]
