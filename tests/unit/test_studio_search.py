@@ -116,7 +116,9 @@ def find(user: UserContext | None = None, q: str = "acme", k: int = 10) -> list[
 
 
 def test_the_source_is_last_in_the_registry_with_its_feature() -> None:
-    assert list(sources.REGISTRY)[-1] == "studio"
+    # HRD-21 (task 3225): the `chat` source joins the registry after `studio`, so
+    # `studio` is the last source of the apps and `chat` the one that follows it.
+    assert list(sources.REGISTRY)[-2:] == ["studio", "chat"]
     source = sources.REGISTRY["studio"]
     assert (source.key, source.feature, source.label) == ("studio", "studio", "Studio apps")
     assert source.gate is not None and source.meaning is False
