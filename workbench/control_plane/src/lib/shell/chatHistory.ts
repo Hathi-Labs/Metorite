@@ -127,6 +127,67 @@ export function chatGroups<T extends Pick<ChatSession, "updatedAt" | "pinnedAt" 
 }
 
 /**
+ * A group of the chat list with topics (CO-2b): Pinned, a topic, or a day.
+ * `topicId` is set on a topic group only. It is the group's key, apart from
+ * its label: a company topic and a private topic can share a name, and a
+ * topic can be called "Today".
+ */
+export interface ChatGroup<T> {
+  label: string;
+  items: T[];
+  topicId?: string;
+}
+
+/**
+ * The topic of a chat that the list shows, or null (CO-2b). The server sends
+ * a topic only when it shows to the member, so a chat in a hidden topic comes
+ * with null and sits under its day. A chat with an id and no name sits there
+ * too.
+ */
+export function shownTopic(s: Pick<ChatSession, "topicId" | "topicName">): { id: string; name: string } | null {
+  const id = s.topicId ?? "";
+  const name = s.topicName ?? "";
+  return id && name.trim() ? { id, name } : null;
+}
+
+/**
+ * The chat list's groups with topics (CO-2b, `chat_organization.md` §6).
+ * With the topic switch on: Pinned first, as `chatGroups` orders it, then one
+ * group for each topic, then the day groups of the chats with no topic. The
+ * topics go by name, with no case, then by id, so the order is the same on
+ * each device. Inside a topic the newest chat comes first. A pinned chat
+ * shows once, in Pinned. With the switch off this is `chatGroups`.
+ */
+export function topicGroups<
+  T extends Pick<ChatSession, "updatedAt" | "pinnedAt" | "archivedAt" | "topicId" | "topicName">,
+>(sessions: readonly T[], now: number, topicsOn: boolean, pinsOn: boolean): ChatGroup<T>[] {
+  if (!topicsOn) return chatGroups(sessions, now, pinsOn);
+  const pinned = pinsOn ? sessions.filter(isPinned) : [];
+  const rest = pinsOn ? sessions.filter((s) => !isPinned(s)) : [...sessions];
+  const at = (s: T) => Date.parse(s.updatedAt) || 0;
+  const byTopic = new Map<string, ChatGroup<T>>();
+  const loose: T[] = [];
+  for (const s of [...rest].sort((a, b) => at(b) - at(a))) {
+    const topic = shownTopic(s);
+    if (!topic) {
+      loose.push(s);
+      continue;
+    }
+    const group = byTopic.get(topic.id) ?? { label: topic.name, items: [], topicId: topic.id };
+    group.items.push(s);
+    byTopic.set(topic.id, group);
+  }
+  const topics = [...byTopic.values()].sort(
+    (a, b) =>
+      a.label.localeCompare(b.label, "en", { sensitivity: "base" }) ||
+      (a.topicId! < b.topicId! ? -1 : a.topicId! > b.topicId! ? 1 : 0),
+  );
+  // Pinned keeps the order of CO-11: `chatGroups` of the pinned chats alone.
+  const head: ChatGroup<T>[] = pinned.length > 0 ? chatGroups(pinned, now, true) : [];
+  return [...head, ...topics, ...dateGroups(loose, now)];
+}
+
+/**
  * The words a search matches: the name and the last preview, folded. A
  * blank query keeps every chat.
  */

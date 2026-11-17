@@ -6,7 +6,8 @@
  * and the archived chats folded under their count. A row opens its chat. On
  * hover a row renames and archives, and an archived row restores or deletes.
  * With the pin switch on (CO-11), a row also pins, and the pinned chats come
- * first under "Pinned".
+ * first under "Pinned". With the topic switch on (CO-2b), the chats of each
+ * topic come next, under the name of the topic.
  *
  * One component, in four places: a column of the assistant's full view, a
  * dropdown of its side panel, its whole sheet on a phone, and the chat list
@@ -26,7 +27,7 @@ import { Input } from "@/components/ui/Input";
 import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
-import { BRIEFS_GROUP, type BriefsOpenState, chatGroups, foldBriefs, isPinned, nextBriefsOpen, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
+import { BRIEFS_GROUP, type BriefsOpenState, foldBriefs, isPinned, nextBriefsOpen, relativeAge, sessionTitle, splitSessions, topicGroups } from "./chatHistory";
 
 // ── The session picker ───────────────────────────────────────────────────────
 
@@ -198,6 +199,7 @@ export function SessionPicker({
   onRemove,
   onPin,
   pinsOn = false,
+  topicsOn = false,
   variant,
   autoFocus = false,
 }: {
@@ -211,6 +213,8 @@ export function SessionPicker({
   onPin?: (id: string, pinned: boolean) => void;
   /** CO-11: the shell read says `chat_pin: true` (`useChatPinOn`). */
   pinsOn?: boolean;
+  /** CO-2b: the shell read says `chat_topics: true` (`useChatTopicsOn`). */
+  topicsOn?: boolean;
   variant: "column" | "dropdown" | "sheet" | "list";
   autoFocus?: boolean;
 }) {
@@ -287,9 +291,16 @@ export function SessionPicker({
             <ul className="flex flex-col gap-0.5">{folded.main.map((s) => row(s, false))}</ul>
           ) : (
             // By day, newest first (CO-0), with the pinned chats first
-            // (CO-11). A search shows one list.
-            chatGroups(folded.main, now, pinsOn && Boolean(onPin)).map((g) => (
-              <section key={g.label} aria-label={g.label} data-chat-group={g.label} className="mb-1">
+            // (CO-11), then a group for each topic (CO-2b). A search shows
+            // one list. A topic group keys on its id, never its name.
+            topicGroups(folded.main, now, topicsOn, pinsOn && Boolean(onPin)).map((g) => (
+              <section
+                key={g.topicId ? `topic:${g.topicId}` : g.label}
+                aria-label={g.label}
+                data-chat-group={g.label}
+                data-chat-topic={g.topicId}
+                className="mb-1"
+              >
                 <h3 className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground glass:px-3 glass:text-caption">{g.label}</h3>
                 <ul className="flex flex-col gap-0.5">{g.items.map((s) => row(s, false))}</ul>
               </section>
