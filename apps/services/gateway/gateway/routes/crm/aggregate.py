@@ -101,6 +101,15 @@ the body of ``GET /crm/aggregate``. The weekly digest
 queries, with the org of its run bound. So a digest number and a route
 number are one answer. Fence: ``tests/unit/test_crm_digest.py``.
 
+**Numbers that make sense** (NUM-2, ``project-docs/specs/number_sense.md``
+§4.2). A module answer over 1 to 3 whole months of a date field also reads
+the same measure for the 6 periods before it, in the SAME statement: only
+the start bound widens, and each row names its period. The answer carries
+them in ``baseline``. ``coverage`` counts the records with no value in the
+measure field, and the drafts and cancelled records where the module has a
+catalogue status. ``checks`` holds the ``outlier`` and ``coverage`` findings
+of ``acb_common.number_sense``. A ``concentration`` stays in ``findings``.
+
 **Two reads for My Day** (WS-58 MD-3e). ``my_overdue_deals`` and
 ``my_close_passed_deals`` are not routes. The feed's ``crm`` provider calls
 them with its own session, after the kill switch and the access rule. Each
@@ -122,6 +131,7 @@ from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+from acb_common.number_sense import COVERAGE_STATUSES, coverage, outlier
 from acb_common.number_sense import findings as number_findings
 from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
@@ -140,12 +150,15 @@ from gateway.routes.crm.core import (
 )
 from gateway.routes.crm.currency import CURRENCY_SQL, ordered_currencies
 from gateway.routes.crm.field_sql import (
+    BASELINE_PERIODS,
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
     ZONE_PARAM,
+    Baseline,
     FieldRef,
     FieldScope,
+    baseline_range,
     check_group,
     check_measure,
     check_split,
@@ -169,9 +182,12 @@ from gateway.routes.crm.field_sql import (
     overlay_stage,
     overlay_weighted,
     overlay_where,
+    period_sql,
     split_sql,
+    status_sql,
     text_matches,
     used_keys,
+    widen,
     zoned,
 )
 from gateway.routes.crm.flags import long_read_allowed
@@ -478,6 +494,21 @@ class AggregateResponse(BaseModel):
     #: ``sentence``. Absent with none.
     findings: list[dict[str, Any]] = Field(
         default_factory=list, exclude_if=lambda value: not value)
+    #: NUM-2 (``number_sense.md`` §4.2): the findings of the kinds ``outlier``
+    #: and ``coverage``, as ``Finding.wire()``. A ``concentration`` stays in
+    #: ``findings``, so no finding is in both lists. Absent with none.
+    checks: list[dict[str, Any]] = Field(
+        default_factory=list, exclude_if=lambda value: not value)
+    #: NUM-2: the same measure for each of the 6 periods before the asked
+    #: date range, oldest first, from the same scan. Each has ``period``,
+    #: ``value`` and ``records``. Absent with no date range.
+    baseline: list[dict[str, Any]] = Field(
+        default_factory=list, exclude_if=lambda value: not value)
+    #: NUM-2: ``records``, the records with ``no_value`` in the measure field,
+    #: and the count of each status that a total usually leaves out
+    #: (``statuses``). Absent with no measure field and no status field.
+    coverage: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -664,6 +695,9 @@ class _Acc:
     others: dict[str, float] = dc_field(default_factory=dict)
     #: CRM-Q25e part 2: the group of each field of a split after the first.
     parts: list[_Acc] = dc_field(default_factory=list)
+    #: NUM-2: the count of each status of :data:`COVERAGE_STATUSES` in the
+    #: group. Empty when the statement counts no status.
+    statuses: dict[str, int] = dc_field(default_factory=dict)
 
 
 def _key(value: Any) -> str | None:
@@ -792,6 +826,12 @@ class _Read:
     #: ``(day, value, records)`` rows from the same statement.
     day: FieldRef | None = None
     days: list[tuple[Any, Any, int]] = dc_field(default_factory=list)
+    #: NUM-2: the asked date range in whole months, and the groups of each
+    #: period before it (-1 to -6) from the same statement.
+    base: Baseline | None = None
+    periods: dict[int, list[_Acc]] = dc_field(default_factory=dict)
+    #: NUM-2: the statuses that the statement counted in each group.
+    statuses: tuple[str, ...] = ()
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -842,8 +882,42 @@ def _day_of(scope: FieldScope | None, module: str | None, grouped: FieldRef | No
     return day, sql.key, sql.source
 
 
-def _acc_of(r: Any, fields: int) -> _Acc:
-    """One group of a row, with the part of each other field of a split."""
+def _sense_columns(
+    scope: FieldScope | None, module: str | None, day: FieldRef | None, day_key: str,
+    pairs: list[tuple[str, str]], bound: dict[str, Any], *, reads: bool,
+) -> tuple[Baseline | None, str, tuple[str, ...], str]:
+    """NUM-2: the baseline, its period SQL, the statuses that the statement
+    counts, and their columns. Each bound value goes into *bound*.
+
+    The baseline: a module answer over 1 to 3 whole months of its day field
+    reads the 6 periods before it in the SAME scan. The scan reads every
+    record of the module anyway, because no index serves a date in the
+    jsonb, so the wider window reads no more rows. Only the start bound
+    widens, and each row names its period.
+
+    The statuses: one count for each status that a total usually leaves
+    out, as more columns of the same statement. Only when the statement
+    reads the detoasted copy already (*reads*), as the day set."""
+    base = baseline_range(scope, day, pairs) if module is not None and day_key else None
+    period = ""
+    if base is not None:
+        widen(bound, base)
+        period, period_params = period_sql(day_key, base)
+        bound.update(period_params)
+    statuses: tuple[str, ...] = ()
+    counted = ""
+    if module is not None and reads:
+        columns, status_params = status_sql(scope, COVERAGE_STATUSES)
+        if columns:
+            statuses = tuple(COVERAGE_STATUSES)
+            bound.update(status_params)
+            counted = "".join(f", {column} AS agf_s{i}" for i, column in enumerate(columns))
+    return base, period, statuses, counted
+
+
+def _acc_of(r: Any, fields: int, statuses: tuple[str, ...] = ()) -> _Acc:
+    """One group of a row, with the part of each other field of a split, and
+    the count of each of *statuses* (NUM-2)."""
     acc = _Acc(
         value=None if r.value is None else float(r.value),
         s=float(r.s or 0), n=int(r.n or 0), name=r.label,
@@ -854,19 +928,30 @@ def _acc_of(r: Any, fields: int) -> _Acc:
         acc.parts.append(_Acc(value=None if v is None else float(v),
                               s=float(getattr(r, f"s{i}", 0) or 0),
                               n=int(getattr(r, f"n{i}", 0) or 0)))
+    for i, status in enumerate(statuses):
+        acc.statuses[status] = int(getattr(r, f"agf_s{i}", 0) or 0)
     return acc
 
 
 def _rows_of(rows: Any, fields: int, days: list[tuple[Any, Any, int]],
-             ) -> dict[str | None, _Acc]:
+             periods: dict[int, list[_Acc]] | None = None,
+             statuses: tuple[str, ...] = ()) -> dict[str | None, _Acc]:
     """The groups of the rows of one statement. A row of the day set
-    (``GROUPING()`` is 0 there) goes to *days* as ``(day, value, records)``."""
+    (``GROUPING()`` is 0 there) goes to *days* as ``(day, value, records)``.
+    NUM-2: with a baseline, each row names its period in ``agf_p``. Only the
+    rows of period 0, the asked range, are the answer and its days. A group
+    of an earlier period goes to *periods*, and its days are dropped."""
     out: dict[str | None, _Acc] = {}
     for r in rows:
+        period = getattr(r, "agf_p", None)
+        before = period is not None and int(period) != 0
         if int(getattr(r, "agf_gd", 1) or 0) == 0:
-            days.append((r.agf_day, r.value, int(r.c or 0)))
-        else:
-            out[_key(r.key)] = _acc_of(r, fields)
+            if not before:
+                days.append((r.agf_day, r.value, int(r.c or 0)))
+        elif before and periods is not None:
+            periods.setdefault(int(period), []).append(_acc_of(r, fields, statuses))
+        elif not before:
+            out[_key(r.key)] = _acc_of(r, fields, statuses)
     return out
 
 
@@ -960,14 +1045,23 @@ async def _read(
                                        reads=bool(source))
     source = from_source(source, day_source)
     days: list[tuple[Any, Any, int]] = []
+    base, period, statuses, counted = _sense_columns(
+        scope, module, day, day_key, pairs, bound, reads=bool(source))
+    periods: dict[int, list[_Acc]] = {}
     # One scan, two groupings: the answer's own, and the day. With no group,
     # the empty set gives its one row even when no record matches, as the
-    # plain statement does.
+    # plain statement does. With a baseline, both sets also group by the
+    # period, and only period 0 is the answer (`_rows_of`).
+    lead = f"{period}, " if period else ""
+    answer_set = (f"({lead}{key_sql})" if group_clause
+                  else f"({period})" if period else "()")
     sets = (
-        f" GROUP BY GROUPING SETS ({f'({key_sql})' if group_clause else '()'}, ({day_key}))"
+        f" GROUP BY GROUPING SETS ({answer_set}, ({lead}{day_key}))"
         if day_key else group_clause
     )
     grouping = f", {day_key} AS agf_day, GROUPING({day_key}) AS agf_gd" if day_key else ""
+    if period:
+        grouping += f", {period} AS agf_p"
 
     async def fetch(where_sql: str, args: dict[str, Any]) -> dict[str | None, _Acc]:
         await _keep_deadline(db, deadline)
@@ -975,11 +1069,11 @@ async def _read(
             text(
                 f"SELECT {key_sql} AS key, {label_sql} AS label, "
                 f"{value_sql} AS value, {sum_sql} AS s, {count_sql} AS n, "
-                f"count(*) AS c{more}{grouping} FROM {table}{source}{where_sql}{sets}"
+                f"count(*) AS c{more}{counted}{grouping} FROM {table}{source}{where_sql}{sets}"
             ),
             args,
         )).fetchall()
-        return _rows_of(rows, len(split), days)
+        return _rows_of(rows, len(split), days, periods, statuses)
 
     if money:
         # Task 888: one read for each currency. Never one sum over all of them.
@@ -1008,7 +1102,8 @@ async def _read(
         if module is not None and scope is not None else {}
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
-                 currency=currency, codes=codes, split=split, day=day, days=days)
+                 currency=currency, codes=codes, split=split, day=day, days=days,
+                 base=base, periods=periods, statuses=statuses)
 
 
 async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
@@ -1323,6 +1418,10 @@ async def _compute(
     elif bucketed or group_by in MONTH_GROUPS:
         shown.sort(key=lambda g: (g.key is None, g.key or ""))
     total = None if values == 0 else _rounded(_combine(measure, [acc for _g, acc in groups]))
+    records = (
+        None if measure == "weighted" else sum(acc.rows for acc in read.values.values())
+    )
+    covered = _coverage(read, values, records)
     return AggregateResponse(
         entity=found.slug if found is not None else f"{MODULE_PREFIX}{module}",
         measure=measure, group_by=group_by, group_field=group_field,
@@ -1354,10 +1453,7 @@ async def _compute(
         ],
         zone=read.zone,
         values=values,
-        records=(
-            None if measure == "weighted"
-            else sum(acc.rows for acc in read.values.values())
-        ),
+        records=records,
         overlay=read.overlay,
         matched=read.matched or None,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
@@ -1365,6 +1461,12 @@ async def _compute(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),
             group_by),
+        checks=_checks(read, measure, covered),
+        baseline=[
+            {"period": label, "value": _rounded(value), "records": rows}
+            for period, label, value, rows in _periods(read, measure) if period < 0
+        ],
+        coverage=covered,
     )
 
 
@@ -1435,6 +1537,67 @@ def _findings(read: _Read, measure: str, bucket: str | None,
     found = number_findings(
         [(key, acc.value, acc.rows) for key, acc in read.values.items()],
         label=label, summed=summed, bucket=bucket)
+    return [f.wire() for f in found]
+
+
+# ── NUM-2: the baseline, the coverage and the checks (number_sense.md §4.2) ──
+
+
+def _periods(read: _Read, measure: str) -> list[tuple[int, str, float | None, int]]:
+    """``(period, label, value, records)`` for each period of the baseline,
+    oldest first, and the asked range last (period 0). Empty with no
+    baseline. A field measure with no value in a period has the value None,
+    as the total of an empty field has (CRM-Q25c item 3)."""
+    if read.base is None:
+        return []
+    out = []
+    for period in range(-BASELINE_PERIODS, 1):
+        accs = list(read.values.values()) if period == 0 else read.periods.get(period, [])
+        empty = read.measured is not None and sum(a.n for a in accs) == 0
+        value = None if empty else _combine(measure, accs)
+        out.append((period, read.base.label(period), value, sum(a.rows for a in accs)))
+    return out
+
+
+def _coverage(read: _Read, values: int | None, records: int | None) -> dict[str, Any] | None:
+    """The records of the answer, the records with no value in the measure
+    field, and the count of each status that a total usually leaves out,
+    all from the same statement. None with no measure field and no status
+    field, and for ``weighted``, which counts no records."""
+    if records is None or (read.measured is None and not read.statuses):
+        return None
+    out: dict[str, Any] = {"records": records}
+    if read.measured is not None and values is not None:
+        out["no_value"] = max(0, records - values)
+    if read.statuses:
+        out["statuses"] = {
+            status: sum(acc.statuses.get(status, 0) for acc in read.values.values())
+            for status in read.statuses
+        }
+    return out
+
+
+def _checks(read: _Read, measure: str, covered: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """NUM-2: the ``outlier`` of the asked range against the periods before
+    it, and the ``coverage`` of the answer (``acb_common.number_sense``, the
+    one rule and its thresholds). Each key is a period label that this
+    module makes from the bound dates, or a fixed word, never a record
+    value. A ``concentration`` stays in ``findings`` (:func:`_findings`)."""
+    found = []
+    buckets = _periods(read, measure)
+    if read.base is not None and buckets:
+        asked = read.base.label(0)
+        word = ("month" if read.base.months == 1
+                else "quarter" if read.base.months == 3 and read.base.start.month % 3 == 1
+                else "period")
+        found.extend(
+            f for f in outlier([(label, value, rows) for _p, label, value, rows in buckets],
+                               bucket=word)
+            if f.key == asked)
+    if covered is not None:
+        found.extend(coverage(
+            covered["records"], covered.get("no_value"), covered.get("statuses"),
+            measure=read.measured.label if read.measured is not None else "value"))
     return [f.wire() for f in found]
 
 

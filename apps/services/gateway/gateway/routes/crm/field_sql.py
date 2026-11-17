@@ -828,6 +828,136 @@ def day_sql(scope: FieldScope, ref: FieldRef, *, zone: str) -> GroupSql:
                     source=_source_of(scope.column))
 
 
+# ── The baseline of a date range (NUM-2, number_sense.md §4.2) ──────────────
+
+#: The most periods before the asked range that a baseline reads.
+BASELINE_PERIODS = 6
+#: The longest asked range, in whole months, that gets a baseline. A longer
+#: range would read 6 periods of its own length back, years of records.
+BASELINE_MAX_MONTHS = 3
+#: The bound names of :func:`period_sql`.
+_BASE_START = "agf_bs"
+_BASE_MONTHS = "agf_bk"
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """The asked date range of an answer, in whole months, and the start of
+    the wider window that the one statement reads (NUM-2).
+
+    *index* is the place of the ``.from`` filter in the pairs, so
+    :func:`widen` binds *wide* in place of *start*. Period 0 is the asked
+    range, and periods -1 to -6 are the ones before it, each *months* long."""
+
+    start: date
+    end: date
+    months: int
+    index: int
+    wide: date
+
+    def label(self, period: int) -> str:
+        """The name of one period: ``2026-10``, or ``2026-08 to 2026-10``."""
+        first = _month_add(self.start, period * self.months)
+        last = _month_add(first, self.months - 1)
+        head = f"{first.year:04d}-{first.month:02d}"
+        return head if self.months == 1 else f"{head} to {last.year:04d}-{last.month:02d}"
+
+
+def _month_add(day: date, months: int) -> date:
+    """The first day of the month *months* after the month of *day*."""
+    index = day.year * 12 + day.month - 1 + months
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _plain_date(value: str) -> date | None:
+    """An ISO date, or None. :func:`module_where` gives the 422 of a bad one."""
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except ValueError:
+        return None
+
+
+def baseline_range(scope: FieldScope | None, day: FieldRef | None,
+                   pairs: Sequence[tuple[str, str]]) -> Baseline | None:
+    """The baseline of an answer, or None (NUM-2).
+
+    An answer gets one when its pairs hold exactly one ``.from`` and one
+    ``.to`` filter on the date field *day*, and the range is 1 to
+    :data:`BASELINE_MAX_MONTHS` whole months: it starts on the first day of a
+    month and ends on the last day of a month. No date range gives no
+    baseline. Pure, so the hermetic tests call it."""
+    if scope is None or day is None or day.parts:
+        return None
+    found: dict[str, list[tuple[int, str]]] = {".from": [], ".to": []}
+    for index, (name, value) in enumerate(pairs):
+        for end in RANGE_ENDS:
+            ref = scope.fields.get(name[: -len(end)]) if name.endswith(end) else None
+            if ref is not None and ref.key == day.key:
+                found[end].append((index, value))
+    if len(found[".from"]) != 1 or len(found[".to"]) != 1:
+        return None
+    index, raw_start = found[".from"][0]
+    start, end = _plain_date(raw_start), _plain_date(found[".to"][0][1])
+    if start is None or end is None or start.day != 1 or end < start:
+        return None
+    months = (end.year * 12 + end.month) - (start.year * 12 + start.month) + 1
+    if not 1 <= months <= BASELINE_MAX_MONTHS:
+        return None
+    try:
+        if end.toordinal() + 1 != _month_add(end, 1).toordinal():
+            return None  # the range does not end on the last day of a month
+        wide = _month_add(start, -BASELINE_PERIODS * months)
+    except ValueError:
+        return None  # past the year 9999, or before the year 1
+    return Baseline(start=start, end=end, months=months, index=index, wide=wide)
+
+
+def widen(params: dict[str, Any], base: Baseline) -> None:
+    """Bind the start of the wider window in place of the asked start, in
+    the params of :func:`module_where`. The WHERE text stays the same."""
+    params[f"agf_v{base.index}"] = base.wide
+
+
+def period_sql(day_key: str, base: Baseline) -> tuple[str, dict[str, Any]]:
+    """The period of each record: 0 for the asked range, and -1 to -6 for
+    the periods before it. *day_key* is the calendar day of :func:`day_sql`.
+    Both bounds of the window are in the WHERE clause, so the day is never
+    NULL and the period is never past the range."""
+    sql = (
+        f"CAST(floor((CAST(extract(year FROM {day_key}) AS int) * 12 "
+        f"+ CAST(extract(month FROM {day_key}) AS int) - CAST(:{_BASE_START} AS int)) "
+        f"/ CAST(:{_BASE_MONTHS} AS numeric)) AS int)"
+    )
+    return sql, {_BASE_START: base.start.year * 12 + base.start.month,
+                 _BASE_MONTHS: base.months}
+
+
+# ── The count of each status, for the coverage check (NUM-2) ────────────────
+
+#: The key word of the catalogue status of a module (CRM-Q31-2).
+STATUS_WORD = "@status"
+#: The bound names of :func:`status_sql`.
+_STATUS_KEY = "agf_st"
+
+
+def status_sql(scope: FieldScope | None, statuses: Sequence[str]) -> tuple[list[str], dict[str, Any]]:
+    """One ``count(*) FILTER`` for each of *statuses*, over the catalogue
+    status (``@status``) of a module, and its bound names. Empty when the
+    scope has no such field. The value matches in any case, with no white
+    space at its ends. It reads the detoasted copy."""
+    ref = scope.fields.get(STATUS_WORD) if scope is not None else None
+    if scope is None or ref is None or ref.parts or scope.column != MODULE_COLUMN:
+        return [], {}
+    column = _reads(scope.column)
+    params: dict[str, Any] = {_STATUS_KEY: ref.key}
+    out = []
+    for i, status in enumerate(statuses):
+        p = f"{_STATUS_KEY}{i}"
+        params[p] = str(status).strip().lower()
+        out.append(f"count(*) FILTER (WHERE lower(btrim({column} ->> :{_STATUS_KEY})) = :{p})")
+    return out, params
+
+
 def _when(column: str, ref: FieldRef, p: str) -> str:
     """The value of a date or a datetime field as a ``timestamp``. A
     ``date`` keeps the day that Zoho wrote. A ``datetime`` takes its time on

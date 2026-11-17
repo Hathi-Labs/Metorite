@@ -1,12 +1,14 @@
 # Numbers that make sense — a plausibility check for every total
 
-**Status: PROPOSED, 2026-11-13. NUM-1 is built (2026-11-17, task 3134).**
+**Status: PROPOSED, 2026-11-13. NUM-1 is built (2026-11-17, task 3134).
+NUM-2 is built (2026-11-17, task 3135), stacked on NUM-1.**
 `acb_common/number_sense.py` holds the pure checks `concentration`
 (CRM-Q25e, called by the CRM aggregate), `outlier`, `coverage`, `parts`,
-`part_period` and `grouping`. Only `concentration` has a caller.
+`part_period` and `grouping`. The CRM aggregate calls `concentration`,
+`outlier` and `coverage` (§4.2).
 
-The kinds `jump` (needs NUM-7) and `duplicates` are not built. No tool,
-harness or table exists yet. Epic 3132. NUM-0 is task 3133.
+The kinds `jump` (needs NUM-7) and `duplicates` are not built. No harness
+pass (NUM-3) or table (NUM-7) exists yet. Epic 3132. NUM-0 is task 3133.
 The owner decides D-NUM-1 to D-NUM-5 (§7). The defaults hold
 until the owner answers.
 
@@ -111,6 +113,32 @@ The tool text tells the model to say a `warn` finding first. The CRM
 aggregate is first (NUM-2, after task 3127). Then Projects reports and
 board_stats, email counts, Studio object totals and WhatsApp stats (NUM-9,
 one PR per app).
+
+**Built as (NUM-2, 2026-11-17, task 3135).** `GET /crm/aggregate` does this:
+
+- **The baseline.** A module answer gets one when it has one `.from` and one
+  `.to` filter on its day field, over 1 to 3 whole months. The one statement
+  widens the start bound by 6 periods, and each row names its period. The
+  scan reads every record of the module in both cases, because no index
+  serves a date in the jsonb. So the wider window reads no more rows. The
+  answer gives the 6 periods in `baseline`, oldest first.
+- **Coverage.** `coverage` gives the records, the records with no value in
+  the measure field, and the drafts and cancelled records. The status count
+  needs the catalogue status (`@status`) of a module.
+- **`checks`.** It holds the kinds `outlier` (the asked range against the
+  periods before it) and `coverage`. A `concentration` stays in `findings`
+  (CRM-Q25e), so no finding is in both lists.
+- **The tool text.** `crm_tools._check_lines` puts each `warn` check before
+  the total. The model must say it first and ask "Do you want me to check
+  why?" The sentence can hold a field label, which is org text. So it sits
+  in the one frame of `acb_skills/untrusted.py`, as data and not as an
+  instruction. The text shows the sentence only, never "0 of 0".
+
+NUM-2 gives no baseline to a core entity or to the overlay of an empty core
+slot. A range that is not whole months gets none either. A core entity gets
+the coverage of its measure field only.
+Fences: `tests/unit/test_crm_aggregate_checks.py` and
+`tests/unit/test_crm_aggregate_checks_r8.py`.
 
 ### 4.3 The harness makes sure (NUM-3, NUM-6)
 
@@ -253,6 +281,8 @@ migration).
 Each slice names its fence:
 
 - `tests/unit/test_number_sense.py` (NUM-1).
+- `tests/unit/test_crm_aggregate_checks.py` and
+  `tests/unit/test_crm_aggregate_checks_r8.py` (NUM-2).
 - `tests/unit/test_answer_plausibility.py` (NUM-3).
 - An MCP fixture test of a 10 times jump (NUM-6).
 - An R8 test of `answer_figures` on a private database (NUM-7). Until a slice lands, its rule is advisory (R7).
