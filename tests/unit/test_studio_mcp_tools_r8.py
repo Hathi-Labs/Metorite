@@ -32,6 +32,10 @@ c. A server of one name in both orgs: a refresh of org B gives org A no row.
 d. A refresh of org A never moves the old row of org B into org A.
 e. The cache key of org A cannot be read for org B.
 
+**B1b-3.** The fixture writes REAL approval rows of the text that each
+server lists, so a tool reads as approved. ``test_studio_mcp_approvals_r8.py``
+fences a changed tool.
+
 **The mutations (R7).** Each ran on 2026-11-14, then was restored.
 
 * M1. ``connections/mcp.py::_LEGACY_SQL``: drop ``WHERE organization_id =
@@ -88,6 +92,28 @@ pytestmark = _DB_GATE
 SHARED = "shared"
 
 
+async def _approve_real(p: Any, servers: dict[str, list[str]], tools: Any) -> None:
+    """B1b-3: an admin of each org approved the text that each server lists,
+    as REAL rows of ``studio_mcp_tool_approvals``. *servers* maps an org to
+    its server names, and *tools* gives the list of one url."""
+    from gateway.db import tenant_session
+    from gateway.studio import mcp_actions, mcp_approvals
+
+    for org, names in servers.items():
+        async with tenant_session(org) as db:
+            for name, url in names:
+                for t in tools(url):
+                    await mcp_approvals.upsert(db, server=name, tool=t["name"],
+                                               text_hash=mcp_actions.tool_text_hash(t),
+                                               member="r8-seed@example.test")
+
+
+def _drop_approvals(p: Any) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM studio_mcp_tool_approvals WHERE organization_id IN "
+                       "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": p.org_a, "b": p.org_b})
+
+
 def _seed_legacy(p: Any, org: str, name: str) -> None:
     """One old ``mcp_servers`` row, as the code before IN-4 wrote it."""
     with p.admin_engine.begin() as c:
@@ -129,18 +155,27 @@ async def two_orgs(registry_on_promoted, monkeypatch):  # noqa: F811
     calls: list[str] = []
     monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(raw))
 
-    async def _lister(server: Any) -> list[dict[str, Any]]:
-        calls.append(server.url)
+    def _items(url: str) -> list[dict[str, Any]]:
         return [{"name": "get_issue", "annotations": {"readOnlyHint": True},
-                 "description": f"from {server.url}"},
+                 "description": f"from {url}"},
                 {"name": "delete_repo", "annotations": {"destructiveHint": True}}]
 
+    async def _lister(server: Any) -> list[dict[str, Any]]:
+        calls.append(server.url)
+        return _items(server.url)
+
     monkeypatch.setattr(mcp_tools, "_sdk_list", _lister)
+    await _approve_real(p, {
+        org: [(names[f"reg_{s}"], f"https://{names[f'reg_{s}']}.example.com/mcp"),
+              (names[f"old_{s}"], f"https://{names[f'old_{s}']}.example.com/mcp"),
+              (SHARED, f"https://shared-{s}-{tag}.example.com/mcp")]
+        for org, s in ((p.org_a, "a"), (p.org_b, "b"))}, _items)
     clear_tenant()
     try:
         yield p, names, raw, calls, tag
     finally:
         clear_tenant()
+        _drop_approvals(p)
 
 
 def _user(org: str) -> UserContext:

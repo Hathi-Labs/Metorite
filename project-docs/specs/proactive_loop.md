@@ -719,6 +719,7 @@ An app or a connector declares each kind once, in its manifest point.
 | `group` | The old-path group of `my_day_feed.md` §4.3 |
 | `why` | The template ids of the why line |
 | `source` | The provider id, or the job kind, or the connection |
+| `entity_types` | The entity types the kind may name. The declaration check refuses `person` (ALN-Q5) |
 | `fixtures` | One positive and one negative fixture |
 
 ### 6.3 `nudges` and `insights`
