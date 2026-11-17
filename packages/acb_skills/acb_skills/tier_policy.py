@@ -629,6 +629,10 @@ async def turn_kind(
             system_one.ask(
                 _turn_context(message, tools), items,
                 timeout_s=TURN_KIND_TIMEOUT_S,
+                # The turn never reads a reason. No reason means fewer
+                # output tokens, so the answer comes inside the budget
+                # more often (task 3592).
+                reasons=False,
             ),
             timeout=TURN_KIND_TIMEOUT_S,
         )

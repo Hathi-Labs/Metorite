@@ -203,7 +203,8 @@ _BASELINE: dict[str, _Entry] = {
     "packages/acb_llm/acb_llm/context.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 5},
         "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "
-        "is off (H-171). acompletion_stream_text does the same since task "
+        "is off (H-171), on a dev box only: elsewhere refuse_direct_arm raises "
+        "first (task 3554). acompletion_stream_text does the same since task "
         "3541: with routing on it takes one answer from the Router. Each of "
         "the two calls imports litellm and the verb, and token_counter is the "
         "fifth import [2449 S3]",
@@ -211,15 +212,19 @@ _BASELINE: dict[str, _Entry] = {
     "packages/acb_llm/acb_llm/client.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 8},
         "complete and complete_with_tools call litellm when "
-        "ROUTER_SERVING_ENABLED is off (H-171). Not in §2.10, found 2026-10-06. "
+        "ROUTER_SERVING_ENABLED is off (H-171), on a dev box only: elsewhere "
+        "refuse_direct_arm raises first (task 3554). Found 2026-10-06, and "
+        "§2.10 names them since task 3554. "
         "The eight litellm imports serve those calls, the prompt cache and the "
         "cost lookups (model_cost, completion_cost, cost_per_token) [2449 S3]",
     ),
     "apps/services/gateway/gateway/routes/v1_compat.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 3},
         "The gateway /v1 door calls litellm when its Router hop is off "
-        "(ROUTER_SERVING_ENABLED). Not in §2.10, found 2026-10-06. The third "
-        "litellm import is stream_chunk_builder, for that same stream [2449 S3]",
+        "(ROUTER_SERVING_ENABLED), on a dev box only: elsewhere it answers the "
+        "Router's 502 (task 3554). Found 2026-10-06, and §2.10 names it since "
+        "task 3554. The third litellm import is stream_chunk_builder, for that "
+        "same stream [2449 S3]",
     ),
     # ── Not AI work (§2.10, the last paragraph). They stay.
     "apps/services/gateway/gateway/routes/settings.py": _Entry(
