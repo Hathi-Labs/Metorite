@@ -46,7 +46,8 @@ import httpx
 from acb_skills import tier_policy
 
 from evals.one_assistant_measure import checks as ck
-from evals.one_assistant_measure import fanout, pack, spend
+from evals.one_assistant_measure import compare as cmp
+from evals.one_assistant_measure import fanout, pack, spend, splits
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
@@ -65,6 +66,8 @@ from tests.unit._egress_mark_store import install_memory_mark_store
 
 HERE = Path(__file__).resolve().parent
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
+#: ``--compare``: A does not win on the rule of :mod:`.compare` (task 3649).
+EXIT_LOSS = cmp.EXIT_LOSS
 ARMS = ("delegation", "pack")
 #: The third arm of the spec (OA-8e): the packs with ``spawn_subagents`` on
 #: (OA-9b). It sets ``SPAWN_SUBAGENTS_ORGS`` for the eval org, in the eval
@@ -927,6 +930,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "capped": next(iter(refused[marks[8]:]), None),
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
                 "set": sc.set, "surface": sc.surface,
+                # Task 3649: the split and the tags, so a results file reads on its own.
+                "split": splits.split_of(sc), "tags": list(sc.tags),
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
                 "specialist_handoffs": {k: len(v) for k, v in obs.handoffs.items()},
                 "handoffs_refused": {k: len(v) for k, v in obs.handoffs_refused.items()},
@@ -1435,6 +1440,25 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
     return sorted(out)
 
 
+def sealed_lines(data: dict[str, Any]) -> list[str]:
+    """The counts of the held-out chats (task 3649), as Markdown lines."""
+    arms_sealed = (data.get("sealed") or {}).get("arms", {})
+    if not arms_sealed:
+        return []
+    lines = ["", "Held-out chats (sealed, counts only; the rows are in the sibling file):", "",
+             "| Arm | Repeat | Turns passed | Capped |", "|---|---|---|---|"]
+    for arm_name, v in arms_sealed.items():
+        for rep, c in v["repeats"].items():
+            lines.append(f"| {arm_name} | {rep} | {c['passed']}/{c['turns']} | {c['capped']} |")
+    lines += ["", "| Held-out check | Arm | Pass | Fail |", "|---|---|---|---|"]
+    for arm_name, v in arms_sealed.items():
+        for name, c in v["checks"].items():
+            lines.append(f"| `{name}` | {arm_name} | {c['pass']} | {c['fail']} |")
+    lines += ["", "Held-out spend, USD (in the counted total): "
+              + ", ".join(f"{a} {v['cost_usd']}" for a, v in arms_sealed.items())]
+    return lines
+
+
 def report(data: dict[str, Any]) -> str:
     """The tables of a results file, in Markdown."""
     s = data["summary"]
@@ -1535,7 +1559,16 @@ def report(data: dict[str, Any]) -> str:
                 lines += ["", f"{a}: offered but not called: {s[a].get('offered_not_called')}"]
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
         lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]
+    lines += sealed_lines(data)
     return "\n".join(lines)
+
+
+def public_view(data: dict[str, Any]) -> dict[str, Any]:
+    """*data* as a public file holds it: the tune rows, the counts of the held-out
+    rows, and a summary of the tune rows. Every print of a result reads this."""
+    public, _ = splits.seal(data)
+    public["summary"] = summarise(public["rows"])
+    return public
 
 
 # ── the live run ─────────────────────────────────────────────────────────────
@@ -1573,10 +1606,12 @@ def served_models(rows: list[dict[str, Any]]) -> list[str]:
 def _write(out: Path, data: dict[str, Any]) -> None:
     data["spent_this_chunk_usd"] = round(
         float(data.get("spent_usd") or 0.0) - float(data.get("spent_before_usd") or 0.0), 4)
-    data["summary"] = summarise(data["rows"])
+    # Task 3649: the summary reads the tune rows only. The held-out rows go to the
+    # sibling file, and the public file keeps their counts (:func:`splits.save`).
+    data["summary"] = summarise([r for r in data["rows"] if splits.split_of_row(r) == splits.TUNE])
     data["served_models"] = served_models(data["rows"])
     data["spend_by_agent"] = {k: round(v, 4) for k, v in spend.spend_by_agent(data["rows"]).items()}
-    out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    splits.save(out, data)
 
 
 def utc_now() -> datetime:
@@ -1672,13 +1707,16 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
         t = turn_totals(row)
         spent += t["cost_usd"]
         unpriced.extend(c.get("served") or "" for c in row["model_calls"] if c.get("unpriced"))
-        print(f"[{row.get('arm_label') or row['arm']:<10}] {row['scenario']}#{row['turn']} r{row['repeat']}: "
-              f"{turn_state(row)} first {row['first_text_s']} s, "
+        held = row.get("split") == splits.HOLDOUT
+        # Task 3649: a held-out turn shows its cost and nothing of its result.
+        print(f"[{row.get('arm_label') or row['arm']:<10}] "
+              f"{splits.HIDDEN if held else row['scenario'] + '#' + str(row['turn'])} r{row['repeat']}: "
+              f"{'sealed' if held else turn_state(row)} first {row['first_text_s']} s, "
               f"total {row['total_s']} s, {t['calls']} calls, in {t['prompt']} "
               f"(cached {t['cached']}), out {t['completion']}, USD {t['cost_usd']:.4f}"
               f" | spent USD {spent:.3f} of {budget:.2f}", flush=True)
         bad = [k for k, v in row["checks"].items() if v is False]
-        if bad and not row.get("capped"):
+        if bad and not row.get("capped") and not held:
             print(f"      fails {bad}: {row['answer'][:240]!r}", flush=True)
 
     def finish() -> dict[str, Any]:
@@ -1699,12 +1737,12 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
             order = mine if (rep + i) % 2 else tuple(reversed(mine))
             for arm in order:
                 if why := over():
-                    return stop(f"{why} before {sc.id} {arm} r{rep}")
+                    return stop(f"{why} before {splits.label(sc)} {arm} r{rep}")
                 ok, why = spend.peak_gate(clock(), allow_peak)
                 if not ok:
-                    return stop(f"peak band before {sc.id} {arm} r{rep}. {why}")
+                    return stop(f"peak band before {splits.label(sc)} {arm} r{rep}. {why}")
                 if not router_up(router[0]):
-                    return stop(f"the Router does not answer before {sc.id} {arm} r{rep}")
+                    return stop(f"the Router does not answer before {splits.label(sc)} {arm} r{rep}")
                 rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
                                 repeat=rep, on_turn=on_turn,
                                 should_stop=lambda extra=0.0: bool(over(extra)),
@@ -1713,12 +1751,12 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
                     data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
                                             "usd": round(sum(turn_totals(r)["cost_usd"]
                                                              for r in rows), 4)})
-                    return stop(f"the Router went away during {sc.id} {arm} r{rep}: "
+                    return stop(f"the Router went away during {splits.label(sc)} {arm} r{rep}: "
                                 "the chat is dropped")
                 data["rows"] += rows
                 data["spent_usd"] = round(spent, 4)
                 if inside := stopped_inside(rows, len(sc.turns), over()):
-                    return stop(f"{inside[0]} inside {sc.id} {arm} r{rep}, {inside[1]}")
+                    return stop(f"{inside[0]} inside {splits.label(sc)} {arm} r{rep}, {inside[1]}")
                 _write(out, data)
     return finish()
 
@@ -1729,7 +1767,7 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     Each chunk keeps its own SHA, in ``chunks_run`` and on each of its rows,
     because the chunks of one run can run on different code (fix round 1).
     ``sha`` is the one SHA when all chunks agree, else ``"mixed"``."""
-    parts = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
+    parts = [splits.load(p) for p in paths]
     data = {k: v for k, v in parts[0].items()
             if k not in ("rows", "summary", "stopped", "sha", "tier_map")}
     maps: dict[str, dict[str, str]] = {}
@@ -1877,6 +1915,15 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     mode.add_argument("--merge", default="", help="a comma list of chunk files, into --out")
     mode.add_argument("--rescore", action="store_true",
                       help="run the answer checks again on the stored rows of --out")
+    mode.add_argument("--compare", default="",
+                      help="B.json,A.json: the win margin of A over B (task 3649). The sibling "
+                           "files of the held-out rows are read too")
+    parser.add_argument("--split", default=splits.ALL, choices=splits.SPLITS,
+                        help="run the tune chats, the held-out chats, or all (default)")
+    parser.add_argument("--t-tag", default=cmp.DEFAULT_T_TAG,
+                        help="compare: the tag of the tune chats that the change aims at")
+    parser.add_argument("--compare-arm", default=cmp.DEFAULT_ARM,
+                        help="compare: the arm to read (the arm label, default pack)")
     parser.add_argument("--arms", default=",".join(ALL_ARMS))
     parser.add_argument("--scenarios", default="", help="a comma list of scenario ids")
     parser.add_argument("--repeat", type=int, default=2)
@@ -1920,28 +1967,40 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
               "settings and SEARCH_PLANS on (the plans of TS-5b). One of them is missing.")
         arms = tuple(a for a in arms if a != SEARCH_ARM)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
-    chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)
+    chosen = splits.keep(tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted),
+                         args.split)
     for sc in chosen:
         if sc.skip:
-            print(f"SKIP: {sc.id} ({sc.set}): {sc.skip}")
+            print(f"SKIP: {splits.label(sc)} ({sc.set}): {sc.skip}")
     scenarios = runnable(chosen)
     out = Path(args.out)
 
+    if args.compare:
+        names = [p.strip() for p in args.compare.split(",") if p.strip()]
+        if len(names) != 2:
+            print("NO-GO: --compare takes two files: B.json,A.json")
+            return EXIT_NO_GO
+        text, code = cmp.compare(Path(names[0]), Path(names[1]), t_tag=args.t_tag,
+                                 arm=args.compare_arm)
+        print(text)
+        return code
     if args.report:
-        print(report(json.loads(out.read_text(encoding="utf-8"))))
+        print(report(public_view(splits.load(out))))
         return EXIT_PASS
     if args.merge:
         data = merge([Path(p) for p in args.merge.split(",") if p.strip()], out)
-        print(report(data))
+        print(report(public_view(data)))
         return EXIT_PASS
     if args.rescore:
-        data = json.loads(out.read_text(encoding="utf-8"))
+        data = splits.load(out)
         changes = rescore(data)
-        out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        # Task 3649: _write seals the held-out rows into the sibling file again.
+        _write(out, data)
+        shown = splits.public_lines(changes)
         print(f"{len(changes)} checks changed")
-        for line in changes:
+        for line in shown:
             print(f"  {line}")
-        print(report(data))
+        print(report(public_view(data)))
         return EXIT_PASS
     if args.scripted:
         rows, problems = run_scripted(scenarios, arms, tier_map)
@@ -1975,7 +2034,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
                     budget=args.budget_usd, out=out, timeout=args.timeout,
                     first_repeat=args.first_repeat, spent_before=before,
                     allow_peak=args.allow_peak, tier_map=tier_map)
-    print(report(data))
+    print(report(public_view(data)))
     print(f"results: {out}")
     return EXIT_PASS
 

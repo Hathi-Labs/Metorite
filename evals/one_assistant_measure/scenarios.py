@@ -418,7 +418,20 @@ def all_scenarios() -> tuple[Scenario, ...]:
     """The email chats, then the CRM, Projects, mixed and fan-out chats, then the
     Studio chats (TS-5a). The Studio chats are in no work set: the delegation arm
     never runs them."""
+    from evals.one_assistant_measure.scenarios_2874 import SCENARIOS_2874
     from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS
     from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
 
-    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS)
+    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS, *SCENARIOS_2874, *_held_out())
+
+
+def _held_out() -> tuple[Scenario, ...]:
+    """The held-out chats (task 3649): ``HOLDOUT_SCENARIOS`` of ``scenarios_holdout.py``,
+    each tagged ``holdout``. The file may not exist yet, and then there are none."""
+    try:
+        from evals.one_assistant_measure.scenarios_holdout import HOLDOUT_SCENARIOS
+    except ModuleNotFoundError as exc:
+        if exc.name != "evals.one_assistant_measure.scenarios_holdout":
+            raise
+        return ()
+    return tuple(HOLDOUT_SCENARIOS)

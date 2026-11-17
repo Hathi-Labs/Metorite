@@ -548,7 +548,35 @@ The two Claude cards reproduce the bill of the pilot of 2026-11-15
 |---|---|
 | 0 | The scripted run passed, or the live run finished |
 | 1 | A scripted check failed |
-| 2 | The live run cannot start |
+| 2 | The live run cannot start, or `--compare` cannot read its two files |
+| 3 | `--compare`: A does not win on the rule below |
+
+## Held-out chats and the win margin
+
+**Status.** Task 3649, built 2026-11-17. It runs scripted and offline. It changes no product code.
+
+A fix can pass its own chats and still fix only those chats. So the chats have two splits. Tune chats guide a fix. Held-out chats only show whether the fix generalised.
+
+**The split.** A chat is held out when `"holdout"` is in `Scenario.tags`. `splits.split_of` reads it. The held-out chats live in `scenarios_holdout.py`, in the constant `HOLDOUT_SCENARIOS`. The file may be absent, and then every chat is tune.
+
+Each result row keeps `split` and `tags`. A row of an old file has no stamp, so it reads the tags of its chat today. A chat that no longer exists reads as tune. `--split tune|holdout|all` (default `all`) picks the chats of a run.
+
+**Sealed results.** `--out X.json` keeps the tune rows in full. For the held-out rows it keeps counts only. The block `sealed` holds the passes and fails of each check name, and the turn passes of each repeat. The full held-out rows go to `X.holdout.json`. A fixer brief never names that file. No answer, tool argument, card or word of a held-out turn reaches `X.json` or the console.
+
+The live console line of a held-out turn shows its cost only. `--report`, `--merge` and `--rescore` read the sibling file and seal their output the same way. A scripted run plays known-good plans and holds no model output, so it prints in full.
+
+**The win margin.** `--compare B.json,A.json` reads two files. B ran before a change and A ran after it. Each file needs two repeats of the arm (`--compare-arm`, default `pack`). A turn passes when every check that gives a value passes. A turn that is capped or missing in any of the four runs is left out, and the report counts it.
+
+The **noise** `n` counts the turns whose pass or fail differs between repeat 1 and repeat 2 of B. Tune and held-out turns count together. The report prints these facts for each split: the turns, the passes of each repeat and the flips each way. It names the tune turns that flipped. It counts the held-out turns that flipped. A **wins** when all four rules hold:
+
+1. Each chat tagged `case:<k>` passes in both repeats of A. A case that failed in B is then fixed. A case that passed in both repeats of B stays passed. A case that is missing or capped in A fails.
+2. On T, the tune chats tagged `t2874`, the passes of A minus the passes of B are at least `max(2, n + 1)`. The sum covers both repeats. `--t-tag` changes the tag.
+3. On H, the held-out chats, the passes of A are at least the passes of B minus `n`.
+4. On E, the passes of A are at least the passes of B minus `n`. E is the tune chats of the `email` set that are not T.
+
+The passes of rules 2 to 4 are sums over both repeats. The report prints `H: 0 turns` when no held-out chat ran, because rule 3 then holds with no evidence. The compare refuses two files with different `mirror_prod` headers. Exit 0 is a win. Exit 3 is a loss. Exit 2 means the two files do not compare.
+
+The fence is `tests/unit/test_one_assistant_measure_split.py`. The rule lives in `compare.py`. The split and the seal live in `splits.py`.
 
 ## Fix round 2 (after the first live run)
 
