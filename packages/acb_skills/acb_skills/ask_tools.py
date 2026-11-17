@@ -1516,11 +1516,11 @@ CARD_OUTCOMES: dict[str, CardOutcome] = {
         "done yet.",
         "Tell the member that the card waits for them. Do not say that it is "
         "done."),
+    # Owner decision A (HRD-10a, 2026-11-16): text first. The model tells the
+    # member, and a new card shows only when the member asks for it.
     CARD_CHANGED_SINCE: CardOutcome(
         "Changed since the card",
         "the item changed after the card showed, so nothing was done.",
-        # Owner decision A (HRD-10a, 2026-11-16): text first. The model tells
-        # the member, and a new card shows only when the member asks for it.
         "Tell the member what changed. Show a new card only if the member "
         "asks for it."),
 }

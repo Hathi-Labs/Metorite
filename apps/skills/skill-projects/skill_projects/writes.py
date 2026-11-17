@@ -1981,6 +1981,13 @@ async def update_task(
         return plan
     if plan.question:
         return plan.question
+    if version:
+        # HRD-10a: the version goes into the facts of the card, so the text
+        # of a late approve (HRD-22) or a stored call (RESUME-2a) holds it.
+        # A replay then meets a changed task as a card with another text,
+        # and the grant does not match: a new card shows. Flag off: no fact,
+        # and the card is the card of before.
+        _bind_card_facts(task_version=version)
     if not await _confirm(
         title="Update this task?",
         detail=plan.detail,

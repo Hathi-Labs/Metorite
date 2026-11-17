@@ -221,6 +221,35 @@ def test_on_the_patch_carries_the_version_of_the_read(monkeypatch) -> None:
     assert kinds.index("GET") < kinds.index("PATCH")
 
 
+def test_the_version_goes_into_the_facts_of_the_card_only_when_the_flag_is_on(monkeypatch) -> None:
+    """Verifier F2: a late approve or a stored call replays the tool, and its
+    grant matches on the card text. The version is a fact of the card, so a
+    task that changed gives another text and no grant."""
+    bound: list[dict] = []
+    monkeypatch.setattr(W, "_bind_card_facts", lambda **f: bound.append(f))
+    _flag(monkeypatch, ORG)
+    _gateway(monkeypatch, patch_answer=_task(title="Fix it now", updated_at=LATER))
+    approve(monkeypatch)
+    _run(W.update_task(TID, title="Fix it now"))
+    assert bound == [{"task_version": STAMP}]
+    # Flag off: no fact, the card of before.
+    bound.clear()
+    _flag(monkeypatch, "")
+    _gateway(monkeypatch, patch_answer=_task(title="Fix it now", updated_at=LATER))
+    approve(monkeypatch)
+    _run(W.update_task(TID, title="Fix it now"))
+    assert bound == []
+
+
+def test_a_changed_version_gives_another_text_and_no_late_grant() -> None:
+    from acb_skills.late_approve import card_text_of
+
+    one = card_text_of("Update this task?", "d", "c", {"task_version": "2026-11-17T01:00:00+00:00"})
+    two = card_text_of("Update this task?", "d", "c", {"task_version": "2026-11-17T02:00:00+00:00"})
+    assert one != two
+    assert one == card_text_of("Update this task?", "d", "c", {"task_version": "2026-11-17T01:00:00+00:00"})
+
+
 # ── 4. A 412 ────────────────────────────────────────────────────────────────
 
 
