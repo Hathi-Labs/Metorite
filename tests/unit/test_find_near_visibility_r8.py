@@ -788,3 +788,287 @@ async def test_flag_off_the_name_route_answers_404(world, flags, roomy_names) ->
     flags("")
     status, _body = await _names(p, _member(A, p.org_a, *ALL), "Sharat")
     assert status == 404
+
+
+# ── FIND-6b (task 3665): members, saved names and addresses ─────────────────
+# The name route answers what resolve_person answers, with its rules: the
+# member of `app_user` needs `feature:people`, a saved name is the member's
+# own (tier 1), and an address prints only where resolve_person prints it.
+# Each case also asks the route of resolve_person, so the two agree.
+
+
+def _word(prefix: str) -> str:
+    """A word of letters only that no other row of the scratch database holds."""
+    return prefix + "".join(chr(97 + int(c, 16)) for c in uuid.uuid4().hex[:8])
+
+
+class _Colleagues:
+    """Members and people with an address, made as the admin role."""
+
+    def __init__(self, p: Any) -> None:
+        self.p = p
+        self.made: list[str] = []
+
+    def _address(self, word: str) -> str:
+        email = f"{word.lower()}-{uuid.uuid4().hex[:6]}@fb-{TAG}.test"
+        self.made.append(email)
+        return email
+
+    def login(self, org: str, display: str, *, status: str = "active",
+              directory_name: str | None = None) -> str:
+        """A member. Migration 206 gives it a People row of the same name and
+        address. *directory_name* renames that row."""
+        email = self._address(display.split()[0])
+        with self.p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+                "VALUES (:e, :d, 'employee', :s, CAST(:o AS uuid))"),
+                {"e": email, "d": display, "s": status, "o": org})
+            if directory_name is not None:
+                c.execute(text("UPDATE people SET name = :n WHERE lower(email) = :e "
+                               "AND organization_id = CAST(:o AS uuid)"),
+                          {"n": directory_name, "e": email, "o": org})
+        return email
+
+    def person(self, org: str, name: str, *, status: str = "active") -> tuple[str, str]:
+        email = self._address(name.split()[0])
+        with self.p.admin_engine.begin() as c:
+            ident = c.execute(text(
+                "INSERT INTO people (name, email, status, department, source, organization_id) "
+                "VALUES (:n, :e, :s, 'Ops', :src, CAST(:o AS uuid)) RETURNING id"),
+                {"n": name, "e": email, "s": status, "src": f"near-{TAG}", "o": org}).scalar_one()
+        return str(ident), email
+
+
+@pytest.fixture
+def fb(world):
+    made = _Colleagues(world["p"])
+    yield made
+    with world["p"].admin_engine.begin() as c:
+        for email in made.made:
+            c.execute(text("DELETE FROM people WHERE lower(email) = :e"), {"e": email})
+            c.execute(text("DELETE FROM app_user WHERE email = :e"), {"e": email})
+        c.execute(text("DELETE FROM user_settings WHERE user_id IN (:a, :b, :c)"),
+                  {"a": A, "b": B, "c": C})
+
+
+@pytest.fixture
+def profile(monkeypatch):
+    """The assistant profile on or off for each org (the switch of resolve_person)."""
+    settings = get_settings()
+
+    def _set(on: bool) -> None:
+        monkeypatch.setattr(settings, "assistant_profile_enabled", on, raising=False)
+        monkeypatch.setattr(settings, "assistant_profile_orgs", "", raising=False)
+
+    _set(True)
+    return _set
+
+
+async def _in_tenant(p: Any, org: str, make: Any) -> Any:
+    """*make()* awaited as the app role, with *org* bound, as a request runs."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        token = bind_tenant(org)
+        try:
+            return await make()
+        finally:
+            release_tenant(token)
+
+
+async def _save_alias(p: Any, user: UserContext, alias: str, email: str) -> None:
+    """The member's own write of an alias (``POST .../aliases``)."""
+    from gateway.routes.admin import assistant_profile as ap
+
+    await _in_tenant(p, user.organization_id, lambda: ap.add_alias(
+        body={"alias": alias, "email": email}, user=user, x_profile_via=None))
+
+
+async def _person_route(p: Any, user: UserContext, name: str) -> dict[str, Any]:
+    """The route of ``resolve_person``, as the same member."""
+    from gateway.routes.admin import assistant_profile_people as people
+
+    return await _in_tenant(p, user.organization_id,
+                            lambda: people.resolve_person_for_assistant(name=name, user=user))
+
+
+async def test_a_member_of_org_b_never_shows_in_org_a(world, fb, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    word = _word("Zedmem")
+    theirs = fb.login(p.org_b, word, directory_name=_word("Other"))
+    mine = await _resolve(p, _member(A, p.org_a, *ALL), word)
+    assert mine["rows"] == [] and theirs not in json.dumps(mine)
+    assert (await _person_route(p, _member(A, p.org_a, *ALL), word))["matches"] == []
+    # Non-vacuity: org B gets the member, with its address.
+    got = await _resolve(p, _member(C, p.org_b, *ALL), word)
+    assert _rows(got) == {("people", "member", theirs, "exact")}
+    assert got["rows"][0]["email"] == theirs and got["verdict"] == "one"
+
+
+async def test_a_member_needs_feature_people(world, fb, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    word = _word("Tamem")
+    email = fb.login(p.org_a, word, directory_name=_word("Other"))
+    seen = await _resolve(p, _member(A, p.org_a, *ALL), word)
+    assert _rows(seen) == {("people", "member", email, "exact")}
+    blind = _member(A, p.org_a, "feature:email", "feature:crm", "admin:access:manage")
+    got = await _resolve(p, blind, word)
+    assert got["rows"] == [] and "people" not in got["searched"]
+    assert email not in json.dumps(got)
+    # resolve_person reads no member without the feature either.
+    assert (await _person_route(p, blind, word))["directory"] is False
+
+
+async def test_a_suspended_member_gives_no_row(world, fb, flags, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    word = _word("Gonemem")
+    fb.login(p.org_a, word, status="suspended")
+    got = await _resolve(p, _member(A, p.org_a, *ALL), word)
+    assert got["rows"] == [] and got["verdict"] == "none"
+
+
+async def test_one_address_is_one_colleague(world, fb, flags, roomy_names) -> None:
+    """A member and its People row (migration 206) are one colleague, as in
+    resolve_person. The answer is `one`, with the address."""
+    p = world["p"]
+    flags("*")
+    word = _word("Onemem")
+    email = fb.login(p.org_a, f"{word} Rao")
+    me = _member(A, p.org_a, *ALL)
+    got = await _resolve(p, me, word)
+    (row,) = got["rows"]
+    assert (row["kind"], row["email"], got["verdict"]) == ("person", email, "one")
+    assert [m["email"] for m in (await _person_route(p, me, word))["matches"]] == [email]
+
+
+async def test_a_colleague_who_wrote_to_the_member_is_no_sender(
+        world, fb, flags, roomy_names) -> None:
+    """The mail tier of resolve_person drops each address of the org. A
+    member who sent mail to A is one row, the person, and the answer is one."""
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    word = _word("Mailmem")
+    email = fb.login(p.org_a, f"{word} Rao")
+    _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name=f"{word} Rao",
+          address=email, subject="Hello", body="from a colleague")
+    got = await _resolve(p, me, word)
+    (row,) = got["rows"]
+    assert (row["kind"], row["email"], got["verdict"]) == ("person", email, "one")
+    # Non-vacuity: asked for senders alone, the mail of the member is there.
+    senders = await _resolve(p, me, word, kinds="sender")
+    assert _rows(senders) == {("email", "sender", email, "exact")}
+
+
+async def test_the_member_read_keeps_org_b_out_with_no_rls(world, fb) -> None:
+    """RLS holds the org wall for the app role, so an R8 test through the
+    route cannot see a missing org filter. The admin role reads past RLS:
+    there the WHERE of the member read alone keeps org B out."""
+    from gateway.routes.admin import assistant_profile_people as rp
+
+    p = world["p"]
+    word = _word("Rlsmem")
+    mine = fb.login(p.org_a, word)
+    theirs = fb.login(p.org_b, word)
+    with p.admin_engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": p.org_a})
+        found = {r.email for r in c.execute(text(rp.MEMBERS_SQL), {"cap": rp.DIRECTORY_CAP})}
+    assert mine in found and theirs not in found
+
+
+async def test_an_address_prints_only_where_resolve_person_prints_it(
+        world, fb, flags, roomy_names) -> None:
+    """resolve_person reads the active people only. A contractor row of the
+    name route shows the person and no address."""
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    word = _word("Conname")
+    contractor, hidden = fb.person(p.org_a, f"{word} Iyer", status="contractor")
+    got = await _resolve(p, me, word)
+    assert _rows(got) == {("people", "person", contractor, "exact")}
+    assert got["rows"][0]["status"] == "contractor" and "email" not in got["rows"][0]
+    assert hidden not in json.dumps(got)
+    assert (await _person_route(p, me, word))["matches"] == []
+    # Non-vacuity: the same row, active, prints the address, as resolve_person does.
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE people SET status = 'active' WHERE id = CAST(:i AS uuid)"),
+                  {"i": contractor})
+    shown = await _resolve(p, me, word)
+    assert shown["rows"][0]["email"] == hidden
+    assert [m["email"] for m in (await _person_route(p, me, word))["matches"]] == [hidden]
+
+
+async def test_a_saved_name_wins_over_a_people_match(
+        world, fb, flags, profile, roomy_names) -> None:
+    """The case of `test_the_alias_wins_over_a_people_match`
+    (test_resolve_person_r8.py), through the name route."""
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    word = _word("Rajfb")
+    _other, _ = fb.person(p.org_a, word)
+    _rajesh, rajesh = fb.person(p.org_a, f"Rajesh {_word('Kumar')}")
+    # Non-vacuity: before the alias, the person of the name is the one row.
+    assert _rows(await _resolve(p, me, word)) == {("people", "person", _other, "exact")}
+    await _save_alias(p, me, word, rajesh)
+    got = await _resolve(p, me, word.upper())
+    assert _rows(got) == {("profile", "alias", rajesh, "alias")}
+    assert got["rows"][0]["email"] == rajesh and got["verdict"] == "one"
+    assert "profile" in got["searched"]
+    person = await _person_route(p, me, word)
+    assert (person["source"], [m["email"] for m in person["matches"]]) == ("alias", [rajesh])
+
+
+async def test_a_saved_name_of_another_member_never_shows(
+        world, fb, flags, profile, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    word = _word("Bossfb")
+    _ident, target = fb.person(p.org_a, f"Target {_word('Person')}")
+    await _save_alias(p, _member(B, p.org_a, *ALL), word, target)
+    mine = await _resolve(p, _member(A, p.org_a, *ALL), word)
+    assert mine["rows"] == [] and target not in json.dumps(mine)
+    # A's own address in org B reads no saved name of org A either.
+    await _save_alias(p, _member(A, p.org_a, *ALL), word, target)
+    other_org = await _resolve(p, _member(A, p.org_b, *ALL), word)
+    assert other_org["rows"] == [] and target not in json.dumps(other_org)
+    # Non-vacuity: B, who saved it, gets the row.
+    own = await _resolve(p, _member(B, p.org_a, *ALL), word)
+    assert _rows(own) == {("profile", "alias", target, "alias")}
+
+
+async def test_a_saved_name_of_a_person_who_left_drops(
+        world, fb, flags, profile, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    word = _word("Leftfb")
+    gone, address = fb.person(p.org_a, f"Gone {_word('Person')}")
+    await _save_alias(p, me, word, address)
+    assert _rows(await _resolve(p, me, word)) == {("profile", "alias", address, "alias")}
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE people SET status = 'alumni' WHERE id = CAST(:i AS uuid)"),
+                  {"i": gone})
+    got = await _resolve(p, me, word)
+    assert got["rows"] == [] and got["verdict"] == "none"
+    assert (await _person_route(p, me, word))["source"] is None
+
+
+async def test_the_profile_off_reads_no_saved_name(
+        world, fb, flags, profile, roomy_names) -> None:
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    word = _word("Offfb")
+    _ident, target = fb.person(p.org_a, f"Target {_word('Person')}")
+    await _save_alias(p, me, word, target)
+    profile(False)
+    got = await _resolve(p, me, word)
+    assert got["rows"] == [] and "profile" not in got["searched"]

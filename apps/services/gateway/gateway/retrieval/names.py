@@ -2,9 +2,19 @@
 
 The route of the core tool ``resolve_name``. It asks each source of
 :data:`gateway.retrieval.sources.REGISTRY` that has the ``named`` ability for
-the records that hold one name: a person of the People directory, a contact,
-lead or company of the CRM, and a sender of the member's mail. No chat model
-runs, and no module here writes SQL.
+the records that hold one name: a person or a member of the People
+directory, a contact, lead or company of the CRM, and a sender of the
+member's mail. With the assistant profile on, it also reads the member's own
+saved names. No chat model runs, and no module here writes SQL.
+
+* **Members, saved names and addresses (FIND-6b).** People gives each active
+  member of ``app_user`` too, through the read of ``resolve_person``, behind
+  ``feature:people``. A saved name is tier 1 of ``resolve_person``: the whole
+  name equals it, with no near match, and it needs no feature. Its row has the
+  kind and the match ``alias``, and it counts as an exact record. When it
+  matched, no person or member row stays (:func:`rows_of`). One address is one
+  colleague, and a colleague is no mail sender. A row prints the address only
+  where ``resolve_person`` prints it (:func:`shows_email`).
 
 * **Behind ``FIND_ORGS``.** An org that the flag does not name gets 404,
   before any check of the input, and no source is asked.
@@ -30,13 +40,14 @@ runs, and no module here writes SQL.
   :data:`REASONS`, never with the text of the error. A source whose near read
   fails keeps its exact rows, and ``near_skipped`` names it.
 * **The verdict** is one of :data:`VERDICTS` (:func:`verdict_of`). ``one``:
-  one exact record that is no mail sender, no near row, and every app
-  answered in full. ``partial``: the same, but an app did not answer in full.
-  ``several``: two exact records or more, or one beside near rows. ``near``:
-  near rows only, or a mail sender alone. ``none``: no row. ``full`` names
-  each app whose page was full.
+  one exact record (a saved name too) that is no mail sender, no near row,
+  and every app answered in full. ``partial``: the same, but an app did not
+  answer in full. ``several``: two exact records or more, or one beside near
+  rows. ``near``: near rows only, or a mail sender alone. ``none``: no row.
+  ``full`` names each app whose page was full.
 * **Different records stay different rows.** The lead, the contact and the
-  sender of one person are three rows. At most :data:`ROWS_PER_KIND` rows of
+  sender of one person are three rows. Only a person and a member of one
+  address are one row (FIND-6b). At most :data:`ROWS_PER_KIND` rows of
   each kind and :data:`ROWS_MAX` in all, the exact rows first. ``cut`` is
   true when a cap left a row out.
 * **Logs hold counts and a time only**: no name, no address and no id.
@@ -80,12 +91,23 @@ NAME_CHARS = 80
 #: The most characters of ``kinds``.
 KINDS_MAX_CHARS = 100
 
-#: The kinds of record that hold a name, in the order of the rows. The CRM
-#: gives contact, lead and company, People gives person, and Email gives
-#: sender. No source gives a member yet (``resolve_person`` reads them).
-KINDS: tuple[str, ...] = ("person", "contact", "lead", "company", "sender")
-#: How a row matched.
-MATCHES: tuple[str, ...] = ("exact", "near")
+#: The kinds of record that hold a name, in the order of the rows. The
+#: member's saved names give alias (FIND-6b), People gives person and member,
+#: the CRM gives contact, lead and company, and Email gives sender.
+KINDS: tuple[str, ...] = ("alias", "person", "member", "contact", "lead", "company",
+                          "sender")
+#: How a row matched. ``alias``: the name equals a saved name of the member,
+#: tier 1 of ``resolve_person`` (FIND-6b). Only a row of kind alias has it.
+MATCHES: tuple[str, ...] = ("exact", "near", "alias")
+#: The matches that hold the name exactly. A saved name is exact for the
+#: member who saved it, so it counts as an exact record in the verdict.
+EXACT_MATCHES: tuple[str, ...] = ("exact", "alias")
+#: The kinds of a colleague of the directory tier of ``resolve_person``. A
+#: saved name wins over them (tier 1), and one address is one colleague.
+COLLEAGUE_KINDS: tuple[str, ...] = ("person", "member")
+#: The status of a person whose row prints the address: ``resolve_person``
+#: reads the active people only (``PEOPLE_SQL``).
+ADDRESS_STATUS = "active"
 #: The verdicts of an answer.
 VERDICTS: tuple[str, ...] = ("one", "partial", "several", "near", "none")
 #: Why a source gave no row: it ran out of time, it failed, or the app refused
@@ -400,6 +422,32 @@ async def ask_source(user: UserContext, key: str, typed: str, deadline: float) -
     return answer
 
 
+async def ask_aliases(user: UserContext, typed: str, deadline: float) -> SourceAnswer:
+    """The member's own saved names that equal *typed* (FIND-6b), before
+    *deadline*: tier 1 of ``resolve_person`` (``sources.saved_names``). A
+    saved name never matches nearly, as in ``resolve_person``, so it has no
+    near read. A failed read gives no row and a reason of :data:`REASONS`."""
+    key = sources.ALIAS_KEY
+    try:
+        found = await _timed(lambda: sources.saved_names(user, typed), deadline)
+    except Exception as exc:
+        _note(key, "name", exc)
+        return SourceAnswer(key, skipped=reason_of(exc))
+    return SourceAnswer(key, exact=[r for r in found if r.kind == "alias"])
+
+
+def shows_email(record: Named) -> bool:
+    """True when a row of *record* prints its address: only where
+    ``resolve_person`` prints it (FIND-6b). A saved name and a member always.
+    A person only when active, because ``resolve_person`` reads the active
+    people only. Never a record of another kind. Pure."""
+    if not record.email:
+        return False
+    if record.kind in ("alias", "member"):
+        return True
+    return record.kind == "person" and record.state == ADDRESS_STATUS
+
+
 def _row(key: str, record: Named, match: str, spelt: str = "") -> dict[str, Any]:
     row: dict[str, Any] = {
         "app": key, "kind": record.kind, "id": record.id,
@@ -411,34 +459,71 @@ def _row(key: str, record: Named, match: str, spelt: str = "") -> dict[str, Any]
         # Fix round, P3-c: the directory shows each status, and FIND-3's
         # `open` shows active people only. The row says which.
         row["status"] = record.state
+    if shows_email(record):
+        row["email"] = record.email
     return row
 
 
 def rows_of(answers: list[SourceAnswer], kinds: tuple[str, ...]) -> tuple[list[dict[str, Any]], int]:
     """Every row of *answers* of the kinds of *kinds*, the exact rows first,
     then by kind, then in the order of the sources. One row for each record.
-    It also gives the count of exact records. Pure."""
-    exact: list[dict[str, Any]] = []
-    near: list[dict[str, Any]] = []
+    It also gives the count of exact records (:data:`EXACT_MATCHES`). Pure.
+
+    Two rules of ``resolve_person`` (FIND-6b):
+
+    * **Tier 1 wins.** When a saved name matched, no person or member row
+      stays. The member saved the name for one colleague on purpose. A CRM
+      record stays, because ``resolve_person`` does not read the CRM.
+    * **One address is one colleague.** A person or a member row whose
+      address an earlier row holds gives no row of its own. The exact rows
+      come first, and a person comes before a member. The row that stays
+      prints the address when a row of that address may print it.
+    * **A colleague is no mail sender.** A sender row whose address a saved
+      name, a person or a member of the answer holds gives no row, as the
+      mail tier of ``resolve_person`` drops each address of the org."""
+    exact: list[tuple[str, Named, str, str]] = []
+    near: list[tuple[str, Named, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     for answer in answers:
         for record in answer.exact:
             key = (answer.key, record.kind, record.id)
             if record.kind in kinds and key not in seen:
                 seen.add(key)
-                exact.append(_row(answer.key, record, "exact"))
+                exact.append((answer.key, record,
+                              "alias" if record.kind == "alias" else "exact", ""))
     for answer in answers:
         for record, spelt in answer.near:
             key = (answer.key, record.kind, record.id)
             if record.kind in kinds and key not in seen:
                 seen.add(key)
-                near.append(_row(answer.key, record, "near", spelt))
+                near.append((answer.key, record, "near", spelt))
 
-    def place(row: dict[str, Any]) -> int:
-        return KINDS.index(row["kind"]) if row["kind"] in KINDS else len(KINDS)
+    def place(item: tuple[str, Named, str, str]) -> int:
+        kind = item[1].kind
+        return KINDS.index(kind) if kind in KINDS else len(KINDS)
 
     # `sorted` is stable, so a tie keeps the order of the sources.
-    return sorted(exact, key=place) + sorted(near, key=place), len(exact)
+    ordered = sorted(exact, key=place) + sorted(near, key=place)
+    # The addresses of the colleagues of the answer, before tier 1 drops a row.
+    colleagues = {item[1].email for item in ordered
+                  if item[1].kind in ("alias", *COLLEAGUE_KINDS) and item[1].email}
+    if any(item[1].kind == "alias" for item in ordered):
+        ordered = [item for item in ordered if item[1].kind not in COLLEAGUE_KINDS]
+    rows: list[dict[str, Any]] = []
+    held: dict[str, dict[str, Any]] = {}
+    for key, record, match, spelt in ordered:
+        if record.kind == "sender" and record.id in colleagues:
+            continue
+        address = record.email if record.kind in COLLEAGUE_KINDS else ""
+        if address and address in held:
+            if "email" not in held[address] and shows_email(record):
+                held[address]["email"] = address
+            continue
+        row = _row(key, record, match, spelt)
+        if address:
+            held[address] = row
+        rows.append(row)
+    return rows, sum(1 for row in rows if row["match"] in EXACT_MATCHES)
 
 
 def capped(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -498,10 +583,16 @@ async def resolve_names(
         key for key, source in sources.REGISTRY.items()
         if source.named is not None and set(source.names) & set(wanted) and source.reaches(user)
     ]
+    # FIND-6b: the saved names are read only where `resolve_person` reads
+    # them, with the assistant profile on for the org. They need no feature.
+    aliases = "alias" in wanted and sources.aliases_reach(user)
     loop = asyncio.get_running_loop()
     began = loop.time()
     deadline = began + NAMES_BUDGET_S
-    answers = list(await asyncio.gather(*(ask_source(user, key, typed, deadline) for key in asked)))
+    reads = [ask_source(user, key, typed, deadline) for key in asked]
+    if aliases:
+        reads.append(ask_aliases(user, typed, deadline))
+    answers = list(await asyncio.gather(*reads))
     every, exact = rows_of(answers, wanted)
     rows = capped(every)
     skipped = [{"app": a.key, "reason": a.skipped} for a in answers if a.skipped]
@@ -509,10 +600,10 @@ async def resolve_names(
                     if a.near_skipped and not a.skipped]
     full = [a.key for a in answers if a.more and not a.skipped]
     complete = not (skipped or near_skipped or full or len(rows) < len(every))
-    sure = any(r["match"] == "exact" and r["kind"] != "sender" for r in every)
+    sure = any(r["match"] in EXACT_MATCHES and r["kind"] != "sender" for r in every)
     verdict = verdict_of(exact, len(every) - exact, complete=complete, sure=sure)
     _events.info(
-        "search.names", sources=len(asked), rows=len(rows), exact=exact,
+        "search.names", sources=len(reads), rows=len(rows), exact=exact,
         near=len(every) - exact, skipped=len(skipped), near_skipped=len(near_skipped),
         ms=round((loop.time() - began) * 1000),
     )
