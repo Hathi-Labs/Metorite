@@ -240,14 +240,31 @@ def run(user: UserContext, q: str = "acme", apps: str | None = None, k: int = 5)
 # ── The registry ────────────────────────────────────────────────────────────
 
 class TestTheRegistry:
-    def test_eight_sources_each_with_its_routers_feature(self):
-        # The seven apps of before C5a, then `studio` LAST (C5a). FEATURES stays the
-        # seven, so each old test sees the answer of before C5a.
+    def test_nine_sources_each_with_its_routers_feature(self):
+        # The seven apps of before C5a, then `studio` (C5a), then `chat` LAST
+        # (HRD-21), the feature of the chat router. FEATURES stays the seven, so
+        # each old test sees the answer of before C5a.
         assert {k: s.feature for k, s in sources.REGISTRY.items()} == {
-            **FEATURES, "studio": "studio"}
-        assert list(sources.REGISTRY) == [*FEATURES, "studio"]
+            **FEATURES, "studio": "studio", "chat": "chat"}
+        assert list(sources.REGISTRY) == [*FEATURES, "studio", "chat"]
         for key, source in sources.REGISTRY.items():
             assert source.key == key and source.label
+        # Only the chat source takes the current chat, and it has a switch.
+        assert [k for k, s in sources.REGISTRY.items() if s.current] == ["chat"]
+        assert sources.REGISTRY["chat"].gate is sources._chat_open
+
+    def test_the_chat_routers_feature_is_the_sources_feature(self):
+        """HRD-21: the source checks the feature that the chat router demands."""
+        router = (ROOT / "apps/services/gateway/gateway/routes/chat.py").read_text(
+            encoding="utf-8")
+        feature = sources.REGISTRY["chat"].feature
+        assert f'dependencies=[require_feature_router("{feature}")]' in router
+
+    def test_the_bar_never_asks_the_past_chats(self):
+        """HRD-21: the command bar keeps its five apps (``find_engine.md`` §2)."""
+        from gateway.routes.shell import search as shell
+
+        assert "chat" not in shell.BAR_APPS and "chat" not in shell.PROVIDERS
 
     def test_the_bar_is_a_projection_of_five_sources_in_its_order(self):
         from gateway.routes.shell import search as shell
@@ -423,10 +440,12 @@ class TestTheRouteTakesNoTenant:
         # org and no member. KB-9a added `background`, the route's own
         # BackgroundTasks, which FastAPI fills and no request can set. FIND-4
         # added `explain`, a bool that names no org and no member
-        # (find_engine.md §3.7, §5.2).
+        # (find_engine.md §3.7, §5.2). HRD-21 added `current_chat`, the id of
+        # the chat that the search runs in: it only takes a chat away, and
+        # names no org and no member (find_engine.md §6).
         params = inspect.signature(company.company_search).parameters
-        assert set(params) == {"q", "apps", "k", "after", "verified", "explain", "user",
-                               "background"}
+        assert set(params) == {"q", "apps", "k", "after", "verified", "explain",
+                               "current_chat", "user", "background"}
         assert params["user"].default.dependency is get_current_user
         assert params["background"].annotation in (BackgroundTasks, "BackgroundTasks")
 
@@ -481,6 +500,19 @@ class TestTheAnswer:
         with pytest.raises(HTTPException) as e:
             run(member(*ALL), apps="tasks,ledger")
         assert e.value.status_code == 422 and "ledger" in e.value.detail
+        # HRD-21: the list of keys names `chat` only while CHAT_SEARCH_ORGS
+        # names the org. The flag is empty here, so it is the list of before.
+        keys = [k for k in sources.REGISTRY if k != "chat"]
+        assert e.value.detail.endswith(f"One of: {', '.join(keys)}.")
+        assert "chat" not in e.value.detail
+        assert apps.calls == []
+
+    def test_naming_chat_while_it_is_dark_is_the_422_of_before(self, apps):
+        """HRD-21: with the switch closed, ``apps=chat`` gets the 422 of an
+        unknown app, as before HRD-21. The chat source is never asked."""
+        with pytest.raises(HTTPException) as e:
+            run(member(*ALL, "chat"), apps="chat")
+        assert e.value.status_code == 422 and "chat" not in e.value.detail.split("One of:")[1]
         assert apps.calls == []
 
     @pytest.mark.parametrize("q", ["a", " a ", "x" * 301])
