@@ -2178,9 +2178,11 @@ PASTED_MAIL = f"From: Raj <raj@alpha.example>\nSubject: goals\n{ANSWER}"
 def steer_mod():
     steer = pytest.importorskip("orchestrator.steer")
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
     yield steer
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
 
 
