@@ -516,7 +516,8 @@ def _plain_form_for_changed() -> dict:
 #
 # 21. a forward record with no thread: ``test_a_forward_card_names_its_thread``.
 # 22. a revise that refuses a forward card: ``test_a_revised_forward_writes_the_link_with_its_act``.
-# 23. a forward card that takes the link: ``test_a_forward_card_takes_no_link``.
+# 23. a forward card that leaves a link waiting: ``test_a_chain_of_forwards_leaves_no_stale_link``
+#     and ``test_a_forward_card_takes_a_matching_link_and_shows_nothing``.
 # 24. a snapshot kept for a forward card: ``test_no_snapshot_is_kept_for_a_forward_card``.
 # 25. an agent that never revises a closed forward:
 #     ``test_a_closed_forward_card_is_revised_in_an_edit_run_and_only_there``.
@@ -575,17 +576,65 @@ async def test_a_new_mail_after_a_forward_says_the_act_changed(env):  # noqa: F8
     assert new["changed"] == {"act": {"was": "forward", "now": "new"}}
 
 
-async def test_a_forward_card_takes_no_link(env):  # noqa: F811
-    """It would use the link up and show nothing. The link waits for a card that shows it."""
+async def test_a_forward_card_takes_a_matching_link_and_shows_nothing(env):  # noqa: F811
+    """A forward is a rows card: it draws no "Draft N". It still TAKES a link that fits
+    it, so the link never waits for an unrelated card, and it records the draft number.
+    Mutation: drop ``link_fields`` from ``_forward_card`` -> red."""
     from tests.unit.test_email_redraft_snapshot import _card, _revise
 
     old = await _card()
     await _revise(old["card_id"])
     fwd = await _forward()
-    assert "revises" not in fwd and "draft" not in fwd
+    assert "revises" not in fwd and "draft" not in fwd and "changed" not in fwd  # the answer
     rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{fwd['card_id']}"])
-    assert "revises" not in rec and "draft" not in rec
-    assert (await _card())["revises"] == old["card_id"]  # the link is still there
+    assert rec["revises"] == old["card_id"] and rec["draft"] == 2
+    assert rec["changed"] == {"act": {"was": "new", "now": "forward"}}
+    # The link is spent: it is no longer there for a later card.
+    assert [k for k in env["redis"].keys if ":card_revised:" in k] == []
+    assert "revises" not in await _card()
+
+
+async def test_a_chain_of_forwards_leaves_no_stale_link(env):  # noqa: F811
+    """forward, a chat message, forward again, then a new mail much later: the new mail
+    is not "Draft 2" of the forward. Mutation: drop ``link_fields`` -> red."""
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    first = await _forward()
+    await _revise(first["card_id"])
+    second = await _forward()
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{second['card_id']}"])
+    assert rec["revises"] == first["card_id"] and rec["draft"] == 2
+    assert [k for k in env["redis"].keys if ":card_revised:" in k] == []
+    # A third round counts on: Draft 3.
+    out = await _revise(second["card_id"])
+    assert out["draft"] == 3
+    third = await _forward()
+    assert json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{third['card_id']}"])["draft"] == 3
+    assert "revises" not in await _card()
+
+
+async def test_a_forward_chain_does_not_wipe_a_link_of_other_people(env):  # noqa: F811
+    """Case B of the review: a link of a card to other people stays for that card."""
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    first = await _forward()
+    await _revise(first["card_id"])
+    await _forward()
+    bob = await _card(to=[F.OTHER])
+    await _revise(bob["card_id"])
+    again = await _card(to=[F.OTHER])
+    assert again["revises"] == bob["card_id"] and again["draft"] == 2
+
+
+async def test_a_forward_to_other_people_takes_no_link(env):  # noqa: F811
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    fwd = await _forward(to=[F.OTHER], cc=[])
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{fwd['card_id']}"])
+    assert "revises" not in rec and rec.get("draft", 1) == 1
+    assert (await _card())["revises"] == old["card_id"]  # the link waits for its card
 
 
 async def test_a_forward_of_another_member_or_thread_is_not_revised(env):  # noqa: F811

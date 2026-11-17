@@ -1383,15 +1383,20 @@ async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, An
                          "Your note above it:", note or "(no note)"])
     # HRD-8b-2: the record names its chat thread, so a chat message that closes
     # this card can spend it and link the next card (``redraft.revise_new_mail_card``).
-    # This card takes no link itself: it is a rows card, and it draws no "Draft N"
-    # and no line, so it would only use the link up.
+    # This card draws no "Draft N" and no line (it is a rows card), but it TAKES a
+    # link that fits it, so a link never waits for an unrelated card to pick it up.
+    # The record keeps the draft number, so a chain of forwards counts its drafts.
     from acb_skills.reply_card import edit_card_on
+    from gateway.routes.email.automation.redraft import link_fields
 
-    thread = req.card_thread_id.strip() if edit_card_on(_org_of(user)) else ""
+    edit = edit_card_on(_org_of(user))
+    thread = req.card_thread_id.strip() if edit else ""
+    linked = (await link_fields(user, thread, lists["to"], cc=lists["cc"], act="forward")
+              if thread else {})
     return await _person_card(user, req, rows, context, {
         "kind": "forward", "account_id": account_id, "message_id": req.message_id,
         "note": note, "subject": subject,
-        **({"thread": thread} if thread else {}),
+        **({"thread": thread} if thread else {}), **linked,
     }, title="Forward this email?", mailbox=me)
 
 

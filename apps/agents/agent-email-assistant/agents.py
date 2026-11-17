@@ -6695,6 +6695,12 @@ async def _revise_forward_card(card_id: str, thread: str) -> None:
     so the model still reads the text of the forward and nothing is lost."""
     try:
         await _revise_card(card_id, thread)
+    except GatewayError as exc:
+        if exc.status == 404:
+            # The org does not hold the edit card, or the card has no thread. Normal.
+            _log.info("email.forward_revise_skipped")
+        else:
+            _log.warning("email.forward_revise_failed", error=type(exc).__name__)
     except Exception as exc:  # the class only: the card stays until its TTL
         _log.warning("email.forward_revise_failed", error=type(exc).__name__)
 
