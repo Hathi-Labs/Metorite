@@ -598,3 +598,47 @@ __all__ = [
     "record_calls",
     "save_focus",
 ]
+
+
+async def carry_focus(org: str, source: str, target: str, member: str) -> bool:
+    """Copy the item in focus of *member* in chat *source* to the new chat
+    *target* (HRD-19a, ``chat_failure_modes.md`` E3). True when it copied.
+
+    It copies the member's own record key to key and writes no text into the
+    new chat. The item passes :func:`clean_focus` again, it must still be
+    fresh, and it keeps its ORIGINAL time, so it is no younger in the new
+    chat and its life there is what is left of :data:`FOCUS_FRESH_S`. It
+    copies nothing while ``CHAT_FOCUS_ORGS`` leaves *org* out. It never
+    raises. The caller gives the org and the member from the verified
+    session, never from a request field.
+    """
+    org, source, target = str(org or ""), str(source or ""), str(target or "")
+    member = str(member or "").strip().lower()
+    if not (org and source and target and member) or source == target or not focus_on(org):
+        return False
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        part = _member_part(member)
+        with organization_scope(org):
+            redis = get_tenant_redis()
+            raw = await asyncio.wait_for(
+                redis.get(key(NAMESPACE, source, part)), timeout=REDIS_TIMEOUT_S)
+            if not raw:
+                return False
+            stored = json.loads(raw)
+            if not isinstance(stored, Mapping) or not _fresh(stored.get("at")):
+                return False
+            item = clean_focus(stored)
+            if item is None:
+                return False
+            left = max(1, int(FOCUS_FRESH_S - (_now() - float(stored["at"]))))
+            value = json.dumps({"v": VERSION, "kind": item["kind"], "id": item["id"],
+                                "at": int(float(stored["at"]))}, sort_keys=True)
+            await asyncio.wait_for(
+                redis.setex(key(NAMESPACE, target, part), min(left, FOCUS_TTL_S), value),
+                timeout=REDIS_TIMEOUT_S)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("chat_focus.carry_failed", error=type(exc).__name__)
+        return False
+    return True

@@ -717,3 +717,44 @@ __all__ = [
     "struck",
     "texts",
 ]
+
+
+async def carry_decisions(org: str, source: str, target: str, member: str) -> int:
+    """Copy the DECISIONS of *member* in chat *source* to the new chat *target*
+    (HRD-19a, ``chat_failure_modes.md`` E3). Returns how many it copied.
+
+    It copies the member's own record key to key, in this store, and writes
+    no text into the new chat. Only the ``decision`` kind goes: a limit stays
+    with the old chat until the spec says otherwise. Each item passes
+    :func:`clean` again on the way. It copies nothing while
+    ``CHAT_CONSTRAINTS`` is off, and it never raises: a Redis fault copies
+    nothing, and the caller's route still answers. The caller gives the org
+    and the member from the verified session, never from a request field.
+    """
+    if not chat_constraints_enabled():
+        return 0
+    org, source, target = str(org or ""), str(source or ""), str(target or "")
+    member = str(member or "").strip().lower()
+    if not (org and source and target and member) or source == target:
+        return 0
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        part = _member_part(member)
+        with organization_scope(org):
+            redis = get_tenant_redis()
+            raw = await asyncio.wait_for(
+                redis.get(key(NAMESPACE, source, part)), timeout=REDIS_TIMEOUT_S)
+            if not raw:
+                return 0
+            items = [i for i in clean(json.loads(raw)) if i["kind"] == DECISION]
+            if not items:
+                return 0
+            await asyncio.wait_for(
+                redis.setex(key(NAMESPACE, target, part), TTL_S,
+                            json.dumps(_stored(items), ensure_ascii=False)),
+                timeout=REDIS_TIMEOUT_S)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("chat_constraints.carry_failed", error=type(exc).__name__)
+        return 0
+    return len(items)
