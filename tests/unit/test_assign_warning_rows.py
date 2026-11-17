@@ -30,7 +30,7 @@ def _gateway(not_notified: list[str] | None = None):
             asked = str(call["params"].get("emails", "")).split(",")
             return {"names": {a: "Kim" for a in asked if a in (KNOWN, OFF)}}
         if call["path"] == "/projects/people/reach":
-            return {"not_reachable": {OFF: "inactive"}}
+            return {"not_reachable": [OFF]}
         if call["method"] == "PUT" and call["path"].endswith("/assignees"):
             return {"assignees": [], "not_notified": not_notified or []}
         return responder(call)
@@ -46,14 +46,14 @@ async def test_the_card_names_a_stranger_as_a_keyed_row(monkeypatch) -> None:
     assert "The people directory does not know" not in context
 
 
-async def test_the_card_names_a_suspended_person(monkeypatch) -> None:
+async def test_the_card_names_a_person_who_cannot_open_the_task(monkeypatch) -> None:
     asked = approve(monkeypatch)
     fake_gateway(monkeypatch, _gateway())
     await skill_projects.assign(UUID, f"{KNOWN},{OFF},{STRANGER}")
     context = asked[0]["context"]
-    assert f"suspended: «{OFF}»" in context
+    assert f"cannot open the task: «{OFF}»" in context
     assert f"not in the directory: «{STRANGER}»" in context
-    assert f"suspended: «{KNOWN}»" not in context
+    assert KNOWN not in context.split("cannot open the task")[1]
 
 
 async def test_a_clear_has_no_warning_and_no_lookup(monkeypatch) -> None:
@@ -77,3 +77,16 @@ async def test_a_receipt_with_everybody_notified_is_as_before(monkeypatch) -> No
     fake_gateway(monkeypatch, _gateway([]))
     out = await skill_projects.assign(UUID, KNOWN)
     assert out.startswith("Assigned:") and "will not get a notice" not in out
+
+
+async def test_a_holder_who_stays_is_not_checked(monkeypatch) -> None:
+    """Only the NEW holders are asked about. The fake task holds a@x.io."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway())
+    await skill_projects.assign(UUID, "a@x.io")
+    # Nobody is added, so the directory is not read at all.
+    assert "/projects/people/names" not in [c["path"] for c in calls]
+    calls.clear()
+    await skill_projects.assign(UUID, f"a@x.io,{KNOWN}")
+    asked = [c for c in calls if c["path"] == "/projects/people/names"]
+    assert len(asked) == 1 and asked[0]["params"] == {"emails": KNOWN}
