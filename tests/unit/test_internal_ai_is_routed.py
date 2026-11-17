@@ -1510,6 +1510,18 @@ class TestFallbackSeamIsClosedOutsideDev(_ClosedOutsideDev):
 class TestStreamSeamIsClosedOutsideDev(_ClosedOutsideDev):
     seam = "acompletion_stream_text"
 
+    def _spies(self, monkeypatch) -> _Spies:
+        """The routed streaming arm makes a STREAM call (task 3542), not the
+        buffered one. The Router spy of this seam is a :class:`StreamSpy`, so
+        ``spies.router.calls`` counts the Console streams."""
+        from acb_auth import console_resolve
+
+        spies = super()._spies(monkeypatch)
+        spies.router = StreamSpy([_frame(content="routed"), DONE_FRAME])
+        monkeypatch.setattr(
+            console_resolve, "stream_completion_on_console", spies.router)
+        return spies
+
     def _local_answer(self, stream: bool) -> Any:
         assert stream, "the streaming arm asked for no stream"
         chunk = type("C", (), {"choices": [type("Ch", (), {
