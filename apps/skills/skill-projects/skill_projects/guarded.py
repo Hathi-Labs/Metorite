@@ -90,6 +90,7 @@ from skill_projects.writes import (
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
     REPORT_CHANGE_REFUSED,
+    _assignee_rows,
     _clears,
     _confirm,
     _date_arg,
@@ -1219,6 +1220,12 @@ async def bulk_update(
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
     rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
+    # Task 3634 and 3636: an address to ADD that the people directory does not
+    # know, or whose person cannot open the task (suspended, no login), is named
+    # on the card as the create cards name it (H-162), so the member sees it
+    # before the Approve. One lookup. A change with no address to add reads
+    # nothing. One fence round a comma list, and each address once.
+    rest.update(await _assignee_rows(list(dict.fromkeys(body.get("assignees_add") or []))))
     # Whole titles when the card holds them, and the UI cuts a long one with
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).

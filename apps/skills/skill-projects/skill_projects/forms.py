@@ -60,6 +60,7 @@ from skill_projects.writes import (
     MAX_BATCH,
     AgentAssigneeRefused,
     _access_lines,
+    _address_check,
     _confirm,
     _date_arg,
     _fields_block,
@@ -73,6 +74,7 @@ from skill_projects.writes import (
     _post_new_task,
     _prepare_new_task,
     _project_id,
+    _reach_rows,
     _resolve_assignee,
     _space_of,
     _split,
@@ -81,7 +83,6 @@ from skill_projects.writes import (
     _subtasks_phrase,
     _task,
     _tree_scope,
-    _unknown_addresses,
     _vocab,
     _with_line,
     _yes_no,
@@ -1096,7 +1097,7 @@ async def propose_plan(
         who = row["owner"]
         if who and who not in owners:
             owners[who] = await _resolve_assignee(who)
-    strangers = await _unknown_addresses(sorted(set(owners.values())))
+    strangers, cannot = await _address_check(sorted(set(owners.values())))
     # §13.6 rule 3: the server computes the marks again, for the plan the
     # member submitted, and the confirm card repeats every one.
     checks, warnings, capacity_line = _capacity(final, await _preview(final, owners), {})
@@ -1114,6 +1115,7 @@ async def propose_plan(
         extra={
             "dependency warnings": " ".join(warnings),
             "not in the directory": ", ".join(strangers),
+            **_reach_rows(cannot),
         },
     )
     card["capacity"] = _with_unassigned(capacity_line, final)
