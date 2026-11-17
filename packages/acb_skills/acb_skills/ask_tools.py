@@ -1108,20 +1108,20 @@ def _new_mail_redraft(form: dict) -> dict:
 
 #: The act kinds that a link names (``redraft.ACT_OF_KIND``), and the parts of ``changed``.
 _CHANGED_ACTS = frozenset({"new", "forward", "reply"})
-_CHANGED_PEOPLE = ("to", "cc")
+_CHANGED_PEOPLE = ("to", "cc", "bcc")
 
 
 def _new_mail_changed(value: Any) -> dict:
     """What differs from the card that this card replaces (HRD-8b), checked.
 
     The gateway sets it (``redraft.changed_since``), and the tool copies it. It
-    holds an ``act`` of ``{was, now}`` and the ``to`` and ``cc`` of
+    holds an ``act`` of ``{was, now}`` and the ``to``, ``cc`` and ``bcc`` of
     ``{added, removed}``, each a short list of text. Anything else raises
     ``ValueError``, so no card draws a claim of a model."""
     from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
 
     if not isinstance(value, dict) or not value or set(value) - {"act", *_CHANGED_PEOPLE}:
-        raise ValueError("a new-mail form names what changed as act, to and cc")
+        raise ValueError("a new-mail form names what changed as act, to, cc and bcc")
     out: dict = {}
     if "act" in value:
         act = value["act"]

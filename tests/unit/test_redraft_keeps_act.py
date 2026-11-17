@@ -659,7 +659,7 @@ async def test_no_snapshot_is_kept_for_a_forward_card(env):  # noqa: F811
 
 async def test_a_closed_forward_card_is_revised_in_an_edit_run_and_only_there(gw, monkeypatch):
     """The agent spends a closed forward card in a run that can draw the edit card.
-    Mutation: drop the ``_revise_forward_card`` call in ``_held_card`` -> red."""
+    Mutation: drop the ``_revise_closed_card`` call in ``_held_card`` -> red."""
     monkeypatch.setattr(agents, "_held_card_mode", lambda: True)
     monkeypatch.setattr(agents, "_egress_held", lambda: True)
     posts: list[tuple[str, Any]] = []
@@ -692,3 +692,161 @@ async def test_a_closed_forward_card_is_revised_in_an_edit_run_and_only_there(gw
     fail["revise"] = True
     assert await HELD["forward"]() == agents._closed_by_message("forward")
     assert posts[-1][0] == "/email/new-card/revise"
+
+
+# ═══ HRD-8b-3: a reply card joins the revise path, and Bcc joins the changed line ═══
+#
+# The reply card keeps its own record (``reply-card``). With the edit card on, the
+# record names its chat thread, its To and Cc, and the link that the card took, so
+# a chat message that closes the card can spend it (``revise_new_mail_card``) and
+# link the next card, with ``act: "reply"``. A reply card is a form card with no
+# "Draft N", so it TAKES a link that fits it and shows nothing. The Bcc joins the
+# link and ``changed``. Mutations (R7):
+#
+# 26. a record with no thread: ``test_a_reply_card_names_its_thread_with_the_edit_card_on``.
+# 27. a revise that cannot read a reply record: ``test_a_revised_reply_writes_the_link_with_its_act``.
+# 28. a reply card that leaves a link waiting: ``test_a_chain_of_replies_leaves_no_stale_link``.
+# 29. a Bcc that is left out of ``changed``: ``test_a_changed_bcc_is_named``.
+# 30. a namespace that drifts: ``test_the_reply_namespace_is_the_one_of_the_reply_card``.
+
+
+def test_the_reply_namespace_is_the_one_of_the_reply_card():
+    from gateway.routes.email.automation import reply_card as _rc
+
+    assert _rd.REPLY_NAMESPACE == _rc.REPLY_RECORD_NAMESPACE
+
+
+def test_changed_since_names_a_changed_bcc_and_a_reply_act():
+    link = {"act": "reply", "to": ["a@x.test"], "cc": [], "bcc": ["b@x.test"]}
+    out = _rd.changed_since(link, act="new", to=["a@x.test"], cc=[], bcc=["c@x.test"])
+    assert out == {"act": {"was": "reply", "now": "new"},
+                   "bcc": {"added": ["c@x.test"], "removed": ["b@x.test"]}}
+    assert _rd.act_of({"kind": "reply"}) == "reply"
+    # An old link with no Bcc claims nothing about it.
+    assert _rd.changed_since({"to": ["a@x.test"]}, act="new", to=["a@x.test"], cc=[], bcc=["z@x.test"]) == {}
+
+
+def test_the_form_check_names_a_changed_bcc():
+    from acb_skills.ask_tools import _new_mail_changed
+
+    ok = {"bcc": {"added": ["x@y.test"], "removed": []}}
+    assert _new_mail_changed(ok) == ok
+    with pytest.raises(ValueError):
+        _new_mail_changed({"bcc": {"added": [3], "removed": []}})
+
+
+async def test_a_changed_bcc_is_named(env):  # noqa: F811 — a fixture, by name
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    new = await _card(bcc=[F.COLLEAGUE])
+    assert new["revises"] == old["card_id"]
+    assert new["changed"] == {"bcc": {"added": [F.COLLEAGUE], "removed": []}}
+
+
+def _reply_world(monkeypatch):
+    from tests.unit import test_email_redraft_snapshot as snap
+    from tests.unit.test_recipient_intent import _World
+
+    snap.edit_card(monkeypatch, "*")
+    return _World(monkeypatch)
+
+
+def _reply_key(w: Any, card_id: str) -> str:
+    return next(k for k in w.redis.keys if k.endswith(f":reply-card:{card_id}"))
+
+
+async def test_a_reply_card_names_its_thread_with_the_edit_card_on(monkeypatch):
+    from tests.unit.test_recipient_intent import MAIL, USER
+
+    w = _reply_world(monkeypatch)
+    out = await _rd_reply(w, "chat-thread-1")
+    rec = json.loads(w.redis.keys[_reply_key(w, out["card_id"])])
+    assert rec["kind"] == "reply" and rec["thread"] == "chat-thread-1"
+    assert rec["to"] and isinstance(rec["cc"], list)
+    assert rec["message_id"] == MAIL and rec["owner"] == USER.email
+    # With no thread named, the record is the record of before.
+    plain = await _rd_reply(w, "")
+    rec = json.loads(w.redis.keys[_reply_key(w, plain["card_id"])])
+    assert "thread" not in rec and "kind" not in rec
+    # With the edit card off the thread is not kept either.
+    from tests.unit import test_email_redraft_snapshot as snap
+
+    snap.edit_card(monkeypatch, "")
+    off = await _rd_reply(w, "chat-thread-1")
+    assert "thread" not in json.loads(w.redis.keys[_reply_key(w, off["card_id"])])
+
+
+async def _rd_reply(w: Any, thread: str, **kw: Any) -> dict[str, Any]:
+    from gateway.routes.email.automation import reply_card as _rc
+
+    from tests.unit.test_recipient_intent import MAIL, USER
+
+    return await _rc.reply_card(_rc.ReplyCardRequest(
+        message_id=MAIL, draft="Wednesday 11am works.", card_thread_id=thread, **kw), USER)
+
+
+async def test_a_revised_reply_writes_the_link_with_its_act(monkeypatch):
+    from tests.unit.test_recipient_intent import USER
+
+    w = _reply_world(monkeypatch)
+    card = await _rd_reply(w, "chat-thread-1")
+    key = _reply_key(w, card["card_id"])
+    out = await _rd.revise_new_mail_card(
+        _rd.ReviseRequest(card_id=card["card_id"], card_thread_id="chat-thread-1"), USER)
+    assert out["revised"] is True and out["draft"] == 2
+    assert key not in w.redis.keys  # the record is spent
+    [link] = [json.loads(v) for k, v in w.redis.keys.items() if ":card_revised:" in k]
+    assert link["act"] == "reply" and link["card_id"] == card["card_id"] and link["to"]
+    # A late answer to the spent card finds no record: the act sends nothing new.
+    from gateway.routes.email.automation import reply_card as _rc
+
+    from tests.unit.test_recipient_intent import MAIL
+
+    rec = await _rc._take_reply_record(USER, card["card_id"], MAIL)
+    assert rec.added == [] and rec.draft_id == ""
+
+
+async def test_a_reply_of_another_thread_or_member_is_not_revised(monkeypatch):
+    from tests.unit.test_recipient_intent import USER
+
+    w = _reply_world(monkeypatch)
+    card = await _rd_reply(w, "chat-thread-1")
+    for who, thread in ((USER, "chat-thread-2"), (F.user(F.OTHER), "chat-thread-1")):
+        with pytest.raises(HTTPException) as err:
+            await _rd.revise_new_mail_card(
+                _rd.ReviseRequest(card_id=card["card_id"], card_thread_id=thread), who)
+        assert err.value.status_code == 404
+    assert _reply_key(w, card["card_id"]) in w.redis.keys  # nothing was spent
+
+
+async def test_a_chain_of_replies_leaves_no_stale_link(monkeypatch):
+    """reply, a chat message, reply again, then a new mail: the new mail is not "Draft 2"
+    of the reply. A reply card takes the link that fits it and keeps the draft number."""
+    from tests.unit.test_recipient_intent import USER
+
+    w = _reply_world(monkeypatch)
+    first = await _rd_reply(w, "chat-thread-1")
+    await _rd.revise_new_mail_card(
+        _rd.ReviseRequest(card_id=first["card_id"], card_thread_id="chat-thread-1"), USER)
+    second = await _rd_reply(w, "chat-thread-1")
+    rec = json.loads(w.redis.keys[_reply_key(w, second["card_id"])])
+    assert rec["revises"] == first["card_id"] and rec["draft"] == 2
+    assert [k for k in w.redis.keys if ":card_revised:" in k] == []
+    out = await _rd.revise_new_mail_card(
+        _rd.ReviseRequest(card_id=second["card_id"], card_thread_id="chat-thread-1"), USER)
+    assert out["draft"] == 3
+
+
+async def test_a_new_mail_after_a_reply_says_the_act_changed(monkeypatch):
+    from tests.unit.test_recipient_intent import USER
+
+    w = _reply_world(monkeypatch)
+    card = await _rd_reply(w, "chat-thread-1")
+    await _rd.revise_new_mail_card(
+        _rd.ReviseRequest(card_id=card["card_id"], card_thread_id="chat-thread-1"), USER)
+    [link] = [json.loads(v) for k, v in w.redis.keys.items() if ":card_revised:" in k]
+    got = await _rd.link_fields(USER, "chat-thread-1", link["to"], cc=link["cc"], act="new")
+    assert got["revises"] == card["card_id"] and got["draft"] == 2
+    assert got["changed"] == {"act": {"was": "reply", "now": "new"}}

@@ -325,7 +325,7 @@ async def test_a_request_id_from_another_room_records_nothing(monkeypatch, redis
         request_id="rid-9", answer=_answer(), was_freeform=False, thread_id="th-viewer")
     try:
         await routes_agent.respond_user_input(req, user)
-    except Exception:  # noqa: BLE001 - the 409 or the late-answer path
+    except Exception:
         pass
     assert redis.keys == {}
     assert await _record(ORG, "rid-9", MEMBER, _answer()) is True  # the member's own
@@ -553,7 +553,7 @@ def test_the_parameter_fence_pins_compose_reply() -> None:
 def _variant(extra: str) -> Any:
     """``compose_reply`` with one more parameter, as a careless change adds."""
     ns: dict[str, Any] = {}
-    exec(  # noqa: S102 - a fixed test source
+    exec(
         "async def compose_reply(email_id, account_id, reply_all=False, draft='', "
         f"instruction='', cc=None, bcc=None, {extra}=None):\n"
         "    return ''\n", ns)
@@ -698,6 +698,8 @@ class _Gateway:
             }}
         if path == "/email/reply-card/act":
             return self.act
+        if path == "/email/new-card/revise":  # HRD-8b-3: a closed reply card is spent
+            return {"revised": True, "draft": 2, "snapshot": ""}
         raise AssertionError(f"unexpected POST {path}")
 
 
@@ -748,6 +750,30 @@ async def test_compose_reply_sends_the_members_answer_and_nothing_of_its_own(
     assert act == ("/email/reply-card/act", {
         "message_id": MAIL, "card_request_id": "rid-7", "card_thread_id": "th-7",
         "answer": _answer(body="Edited by Jane.")})
+
+
+async def test_compose_reply_revises_a_closed_card_in_an_edit_run_and_only_there(
+    monkeypatch, gw,
+) -> None:
+    """HRD-8b-3. A reply card that a chat message closed is spent through the revise
+    route in a run that draws the edit card, and then the next card links to it.
+    Mutation: drop the ``_revise_closed_card`` call of ``compose_reply`` -> red."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    gw.card_extra = {"card_id": "c" * 32}
+    _card_answer(monkeypatch, lambda kw: eg_ask.REVISED)
+    # A plain run: no thread, no revise.
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: False)
+    await agents.compose_reply(MAIL, BOX)
+    assert [p for p, _ in gw.posts] == ["/email/reply-card"]
+    assert "card_thread_id" not in gw.posts[0][1]
+    # A run that draws the edit card.
+    gw.posts.clear()
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: True)
+    monkeypatch.setattr(agents, "_run_thread", lambda: "chat-thread-1")
+    await agents.compose_reply(MAIL, BOX)
+    assert [p for p, _ in gw.posts] == ["/email/reply-card", "/email/new-card/revise"]
+    assert gw.posts[0][1]["card_thread_id"] == "chat-thread-1"
+    assert gw.posts[1][1] == {"card_id": "c" * 32, "card_thread_id": "chat-thread-1"}
 
 
 async def test_compose_reply_passes_the_agreed_text_to_the_card(monkeypatch, gw) -> None:
