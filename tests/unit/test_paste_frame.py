@@ -428,7 +428,7 @@ def test_the_closed_lists_of_the_rules() -> None:
         assert tld in LINK_TLDS, tld
     for word in ("md", "py", "it", "is", "js", "ts", "sh", "rs"):
         assert word not in LINK_TLDS, word
-    assert WORD_TLDS == {"in", "ai", "me", "us", "app", "dev", "to"}
+    assert {"in", "ai", "me", "us", "app", "dev", "to"} == WORD_TLDS
     assert not has_link("README.md app.py notes.txt it.it")
     assert has_link("ACME.COM") and has_link("acme.co.uk")
     assert not has_address("meet at noon") and has_address("x AT evil DOT test")
