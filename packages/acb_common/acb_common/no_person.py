@@ -23,10 +23,12 @@ import graph. This module imports the standard library only, so it adds no
 cycle.
 
 **Only server code sets the mark.** :func:`no_person_scope` is the one setter.
-Three modules call it: ``gateway.jobs.worker`` around each handler,
+Four modules call it: ``gateway.jobs.worker`` around each handler,
 ``gateway.routes.workflows.service`` for a run of an unattended trigger and
-for the resume of an elapsed wait, and ``gateway.routes.studio.invoke``
-around a run with no viewer (``run_as_read``, WS-STU B6a). No tool, no tool
+for the resume of an elapsed wait, ``gateway.routes.studio.invoke``
+around a run with no viewer (``run_as_read``, WS-STU B6a), and
+``gateway.routes.agent`` around the background run of ``POST /agent/run/async``
+(MCP-NC1 review, task 3603). No tool, no tool
 argument and no request field reaches it.
 
 **Nothing clears the mark.** This module has no function that sets False. The

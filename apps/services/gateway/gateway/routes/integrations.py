@@ -1975,10 +1975,12 @@ class McpServerRequest(BaseModel):
     agent_scope: list[str] = ["*"]
     enabled: bool = True
     #: H-300: every tool of the server needs the member's card, whatever its
-    #: hints say. A new server is set to always confirm unless the admin
-    #: says no.
+    #: hints say. MCP-NC1 (task 3603): a new server is off unless the admin
+    #: turns it on, so a member's run calls each tool with no card. A body
+    #: with no key keeps the switch of a row that exists (``None``), so a
+    #: re-register never turns a stored ``true`` off.
     #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
-    always_confirm: StrictBool = True
+    always_confirm: StrictBool | None = None
     #: MCP-C2 (item 32): the admin says the key can only read, so no tool of
     #: the server waits for the card. Off for a new server. A register is a
     #: full register, so a body with no key turns it off. Strict too.
@@ -2189,14 +2191,17 @@ async def register_mcp_server(
     # does. The insert sets both stamps to one now(). An update keeps
     # ``created_at``. No header and no url go into the payload.
     # MCP-C2: the event records both switches, because a re-POST with no
-    # ``read_only_key`` turns that switch off too.
+    # ``read_only_key`` turns that switch off too. MCP-NC1 (F7): a body with
+    # no ``always_confirm`` keeps the stored switch, so the event records the
+    # switch as saved, never the body's ``None``.
     stamp = getattr(saved, "created_at", None)
     created = stamp is not None and stamp == getattr(saved, "updated_at", None)
+    always_saved = bool(getattr(saved, "always_confirm", req.always_confirm))
     audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
-                      always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+                      always_confirm=always_saved, read_only_key=req.read_only_key,
                       outcome="created" if created else "updated")
     _log.info("mcp.registered", name=req.name, actor=user.email,
-              always_confirm=req.always_confirm, read_only_key=req.read_only_key)
+              always_confirm=always_saved, read_only_key=req.read_only_key)
     return {"ok": True, "name": req.name}
 
 
