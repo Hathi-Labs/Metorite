@@ -864,6 +864,12 @@ ships dark behind `CHAT_CONSTRAINTS`, default off.
 - Fences: `tests/unit/test_chat_constraints.py` and
   `evals/trajectories/test_chat_constraints_trajectory.py`.
 - Open: the visible chip in the chat is a later slice.
+- HRD-12a (`chat_failure_modes.md` §6, 2026-11-16) adds the kind
+  `decision`, under the same flag. The store keeps a limit as a plain
+  string, the old shape, and only a decision as `{kind, text}`. So a reader
+  from before HRD-12a loses only the decisions. Decisions show on their own
+  line, after the limits, and they hold for the rest of the chat. A decision
+  is not a request, so the model does not act on it.
 
 **OA-3 is built and dark (2026-10-25).** The flag `ATTACHMENT_OCR` turns it
 on, and it is off by default. §4.1 records what was built, and the three
