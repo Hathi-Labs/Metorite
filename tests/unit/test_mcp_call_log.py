@@ -48,11 +48,15 @@ def _function(name: str = "srv_do", remote: str = "do") -> Any:
     )
 
 
-def _gate(fn: Any, hints: dict[str, Any] | None, *, member: bool = True) -> Any:
+def _gate(fn: Any, hints: dict[str, Any] | None, *, member: bool = True,
+          always_confirm: bool = False) -> Any:
+    """*always_confirm* is the admin's switch: since MCP-NC1 a member's run needs no card
+    unless the server asks for one, so the card-path cases turn it on."""
     remote = fn.additional_properties["_mcp_remote_name"]
+    extra = {"_ws8c_always_confirm": True} if always_confirm else {}
     server = SimpleNamespace(
         name="srv", _functions=[fn],
-        _ws8c_tool_meta={remote: _maf_mcp.ToolMeta(hints=hints, description="")})
+        _ws8c_tool_meta={remote: _maf_mcp.ToolMeta(hints=hints, description="")}, **extra)
     return _maf_mcp.McpPermissionGate(tools=[server], member_present=member)
 
 
@@ -116,7 +120,7 @@ async def test_a_read_only_call_logs_one_ok_line() -> None:
 
 async def test_a_card_approved_call_logs_card_approved() -> None:
     fn = _function()
-    calls, _ = await _run(_gate(fn, None), fn, _Ran(), answer="APPROVE")
+    calls, _ = await _run(_gate(fn, None, always_confirm=True), fn, _Ran(), answer="APPROVE")
     assert [c["outcome"] for c in calls] == ["card_approved"]
     assert calls[0]["read_only"] is False
 
@@ -124,7 +128,7 @@ async def test_a_card_approved_call_logs_card_approved() -> None:
 async def test_a_card_denied_call_logs_card_denied_and_never_runs() -> None:
     fn = _function()
     ran = _Ran()
-    calls, _ = await _run(_gate(fn, None), fn, ran, answer="REJECT")
+    calls, _ = await _run(_gate(fn, None, always_confirm=True), fn, ran, answer="REJECT")
     assert [c["outcome"] for c in calls] == ["card_denied"] and ran.count == 0
 
 
