@@ -81,6 +81,7 @@ import {
   interpretSeatAction,
 } from "@/app/settings/billing/lib/manage";
 import SeatsTab from "./SeatsTab";
+import { orgTabFromSearch } from "./lib/orgTab";
 import type {
   AccessRequest,
   Member,
@@ -246,6 +247,12 @@ export default function OrganizationAdmin() {
    */
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState("members");
+  // PAR-1: a link may name the tab (`?tab=seats`). It is read once, after the first
+  // paint, so the server and the client draw the same first tab.
+  useEffect(() => {
+    const named = orgTabFromSearch(window.location.search);
+    if (named) setTab(named);
+  }, []);
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
   // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps

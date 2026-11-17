@@ -43,6 +43,7 @@ __all__ = [
     "ALSO",
     "APPS",
     "APP_OF",
+    "APP_PAGE",
     "COVERED",
     "DEBT",
     "DEBT_CEILING",
@@ -76,6 +77,35 @@ APPS: dict[str, str] = {
     "admin": "Admin, members and billing",
     "integrations": "Integrations",
     "studio": "AI Studio",
+}
+
+#: An app -> the live page where its member does the acts that no chat tool does
+#: yet (PAR-1, ``chat_parity.md`` §6). When a member asks for an act that has no
+#: tool, the chat opens this page with ``show_in_app`` and says what to press.
+#: ``None`` is an app with no live page (its pane is a preview pane in ``nav.ts``),
+#: so the chat says that there is none. ``test_chat_parity.py`` holds each page
+#: equal to ``orchestrator.in_app_path`` (an admin may open it) and holds the
+#: ``None`` apps to the apps with no live pane: an app that goes live needs a page.
+APP_PAGE: dict[str, str | None] = {
+    "projects": "/projects",
+    "tasks": "/projects",  # My work is a section of Projects; /tasks redirects there
+    "calendar": "/calendar",
+    "email": "/email",
+    "crm": "/crm",
+    "notes": None,  # preview in nav.ts
+    "whatsapp": "/whatsapp",
+    "people": "/people",
+    "knowledge": "/knowledge",
+    "memory": None,  # preview in nav.ts
+    "workflows": "/studio",  # apps, workflows and skills are one library (D179)
+    "apps": "/studio",
+    "agents": None,  # the Agent Registry is an operator concern, preview in nav.ts
+    "chat": "/chat",
+    "shell": "/",
+    "settings": "/settings/appearance",
+    "admin": "/settings/organization",
+    "integrations": "/integrations",
+    "studio": "/studio",
 }
 
 #: A BFF path prefix -> its app. The longest prefix that matches wins.

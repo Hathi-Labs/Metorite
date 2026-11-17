@@ -5,6 +5,16 @@
 holds each request of the control plane to one decision. Today's gaps sit in
 a debt list, so CI passes. P-1 (Calendar and Tasks) is the next slice.
 
+**PAR-1 (task 3099, no dead end) is BUILT, 2026-11-17, with no flag.**
+`show_in_app` opens every live page of `nav.ts`, the Admin pages too
+(`orchestrator/in_app_path.py`, `PANES`). `/settings/organization` opens for an
+admin of the org only, by the right of the verified run member, and a member
+who is no admin gets "Only an admin of your organization opens Organisation."
+The Organisation page reads `?tab=` once (`orgTab.ts`), so the chat lands on
+Members & roles. `acb_skills/chat_parity.py` gains `APP_PAGE`: the live page of
+each app, for an act that has no chat tool yet. `None` marks an app with no
+live pane (notes, memory, agents).
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.

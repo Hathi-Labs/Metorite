@@ -664,11 +664,27 @@ async def show_in_app(path: str, why: str) -> dict:
     one sentence. Call it at most once per reply.
 
     Args:
-        path: An in-app path. It starts with one "/" and names a pane:
-            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
-            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
-            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
-            URL, and never another site.
+        path: An in-app path. It starts with one "/" and names a pane. Never a
+            full URL, and never another site. The pages, and what a member
+            does there:
+            /projects (also /projects?project=<id>, /projects?task=<id>):
+            Plan work, boards and tasks, and your own list of tasks.
+            /calendar: Plan your days and time-block tasks.
+            /email (also /email?email=<id>): Read and answer mail.
+            /whatsapp: Your WhatsApp conversations.
+            /crm: Deals, contacts and accounts.
+            /people: The company directory. /people/me: your own profile.
+            /knowledge: The company wiki and its search.
+            /artifacts: Files and documents the assistant made.
+            /chat: Ask the assistant, or have it do the work.
+            /studio: Build apps, workflows and skills for your company.
+            /integrations: Every tool your company has connected.
+            /approvals: Check what the AI will send before it goes out.
+            /settings/organization: Invite members, change roles, assign
+            seats and set your brand. Opens only for an admin of the
+            organization. Add ?tab=members to land on Members & roles
+            (other tabs: seats, branding, requests, email).
+            /settings/appearance: Light or dark, spacing and accent colour.
         why: One short sentence the member reads, such as "Here is the
             board for Website relaunch."
 
@@ -713,7 +729,15 @@ async def show_in_app(path: str, why: str) -> dict:
     # show_in_app must see it. It is pending until the check ends. A refusal
     # gives it back.
     queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
-    reason = _iap.refusal(path, await _iap.member_features())
+    # PAR-1: an admin page opens for an admin of the org only. The right is read for
+    # the verified run member, and only when the pane needs it.
+    pane = _iap.pane_of(path)
+    admin = False
+    if pane is not None and pane.admin:
+        from orchestrator.guide_tools import member_is_admin
+
+        admin = await member_is_admin()
+    reason = _iap.refusal(path, await _iap.member_features(), admin)
     if reason is not None:
         queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}

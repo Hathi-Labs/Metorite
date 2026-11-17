@@ -495,3 +495,47 @@ def test_projects_tools_named_by_f3_are_real() -> None:
     assert projects_debt() == len(pm.UI_PLANNED) + sum(
         1 for t in pm.UI_ACTIONS.values() if t in pm.PLANNED and t not in skill_projects.__all__
     )
+
+
+# ── PAR-1: each app has a page, and the chat can open it ────────────────────
+
+def test_every_app_names_its_page_or_none() -> None:
+    from acb_skills.chat_parity import APP_PAGE, APPS
+
+    assert set(APP_PAGE) == set(APPS)
+
+
+def test_a_page_of_an_app_opens_for_an_admin() -> None:
+    """The fence of PAR-1: each app with a page names a page that the chat may open
+    (``in_app_path.refusal`` accepts it for an admin who holds every feature).
+    Mutation: point an app at a path that is not a live pane -> red."""
+    from acb_skills.chat_parity import APP_PAGE
+    from orchestrator import in_app_path as iap
+
+    every = frozenset(p.feature for p in iap.PANES if p.feature)
+    for app, page in APP_PAGE.items():
+        if page is not None:
+            assert iap.refusal(page, every, True) is None, (app, page)
+
+
+def test_an_app_with_no_page_has_no_live_pane() -> None:
+    """``None`` means that the app is not live. An app that goes live must get a page."""
+    from acb_skills.chat_parity import APP_PAGE
+    from orchestrator import in_app_path as iap
+
+    live = {p.href for p in iap.PANES}
+    none = {app for app, page in APP_PAGE.items() if page is None}
+    assert none == {"notes", "memory", "agents"}
+    for app in none:
+        assert f"/{app}" not in live, app
+    for app in set(APP_PAGE) - none:
+        assert APP_PAGE[app] in live, app
+
+
+def test_each_app_with_debt_has_a_page_or_a_reason() -> None:
+    from acb_skills.chat_parity import APP_PAGE, DEBT_CEILING
+
+    for app, count in DEBT_CEILING.items():
+        assert app in APP_PAGE, app
+        if count and APP_PAGE[app] is None:
+            assert app in {"notes", "memory", "agents"}, app
