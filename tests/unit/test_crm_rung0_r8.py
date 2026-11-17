@@ -133,8 +133,8 @@ def rung(ns):
 def _contact(c: Any, org: str, ext_id: str | None) -> str:
     return str(c.execute(text(
         "INSERT INTO crm_contacts (organization_id, first_name, ext_source, ext_id) "
-        "VALUES (CAST(:o AS uuid), 'Ravi', CASE WHEN :e IS NULL THEN NULL ELSE 'zoho' END, "
-        ":e) RETURNING id"), {"o": org, "e": ext_id}).scalar())
+        "VALUES (CAST(:o AS uuid), 'Ravi', :s, :e) RETURNING id"),
+        {"o": org, "s": "zoho" if ext_id else None, "e": ext_id}).scalar())
 
 
 async def _total(p: Any, org: str, **query: Any) -> dict:
