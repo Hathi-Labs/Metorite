@@ -799,18 +799,26 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
   `does_not_exist`, `found_nothing` and `not_in_place`. Each rule needs a
   record noun from a closed list, or a name. A name has a capital letter or
   a digit on each word, or it starts with a quote mark.
-- **What the matcher reads as no claim.** A question, a condition ("if",
-  "unless", "whether"), a quote, a quoted block and code. A preposition or a
-  list word between "find" and the noun: "any errors in the invoice", "any
-  overdue tasks", "any duplicate contacts". Reported speech: "Priya replied
-  that". The state of a record: "The invoice shows no record of". A record
-  that the answer makes: "does not exist yet". A list filter: "no matches
-  for your filter".
+- **What the matcher reads as no claim.** The tests hold each form below,
+  and the matcher reads no other form as no claim.
+  - A question, a condition ("if", "unless", "whether"), a quote, a quoted
+    block and code.
+  - A preposition or a list word between "find" and the noun: "any errors
+    in the invoice", "any overdue tasks", "any duplicate contacts".
+  - Reported speech, when a person is the subject right before the verb:
+    "Priya replied that there is", "Ravi says he could". A tool or a store as
+    the subject keeps the claim: "The CRM says there is no such order".
+  - The state of one record right before the claim: "The invoice shows no
+    record of". A store keeps the claim: "Our records show no record of".
+  - A record that the answer makes, for the rule `does_not_exist` only:
+    "does not exist yet", "did not exist, so I created it".
+  - A list filter right after the claim: "no matches for your filter".
 - **The bounded work.** The matcher runs on the event loop of the gateway.
   It reads the first 20,000 characters of an answer (`MAX_CLAIM_CHARS`), and
   each quote is 400 characters at most (`MAX_QUOTE_CHARS`). Each regex runs
-  once over a sentence, so the work is linear. 200,000 characters of each
-  shape of the review take less than 0.06 s.
+  once over a sentence. So the cap of 20,000 characters bounds the work. On
+  2,000,000 characters of each shape of the reviews, the best of 3 calls
+  took at most 0.25 s of CPU here.
 - **The flag.** `FIND_CLAIM_CHECK` takes `off`, `shadow` or `on`, for every
   org of the box. `acb_common.settings.find_claim_check_mode` is its one
   reader. It is not a `*_ORGS` or `*_MODES` key, so a change needs a restart.
@@ -823,7 +831,9 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
   `CLAIM_RETRY_NOTE`. After it, the answer goes as it is.
 - **A failed retry.** When the one more request raises, the member reads the
   held draft, as with the check `off`. The line says `retry_failed`. A
-  cancel is not caught, so it stops the run as before.
+  cancel is not caught, so it stops the run as before. The failed request
+  still spends the one retry of the run. So the number check then adds its
+  note, and it makes no request of its own.
 - **The one retry.** NUM-3 and HRD-13 are not built. So the check shares
   `RunLedger.retried` with the number check of CRM-Q29. The check that
   finds a fault first spends it. A later claim logs `retry_spent`.
@@ -842,18 +852,37 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 2. The matcher reads the first 20,000 characters of an answer. It does not
    read a claim after them. It reads a quote of more than 400 characters as
    prose, and not as a quote.
-3. The matcher misses "Sharath has no orders" and "I could not find
-   anything like that order". It misses a name in lower case, such as
-   "nuropeak in the CRM". It also misses a claim in a question or a
-   condition, and in reported speech.
+3. The matcher misses these claims, and the tests keep each miss:
+   - "Sharath has no orders" and "I could not find anything like that
+     order".
+   - "Unfortunately, no order for Sharath turns up in the records".
+   - "Your inbox has no mails from Sharath" and "Our records show no order
+     for Sharath".
+   - A name in lower case, such as "nuropeak in the CRM".
+   - A claim in a question, in a condition, and in reported speech with a
+     person as the subject.
 4. The matcher does not read "no mention of" or "no trace of". A summary of
    a mail uses them for what the mail holds.
-5. The matcher reads these sentences as a claim, a false positive. An empty
-   list in other words: "I could not find any tasks for this week". A capital
-   word that names no record: "I could not find Settings". An old fault that
-   the answer reports: "Earlier I could not find the order, but here it is".
-6. The matcher keeps "I could not find the order, so I created it" as a
-   claim. The new record may be a second copy.
+5. The matcher reads these sentences as a claim, a false positive. The
+   tests keep each one.
+   - An empty list: "I could not find any tasks for this week", "I could
+     not find any tasks due today", "No results for this week".
+   - Reported speech in other forms: "Priya replied: we could not find the
+     payment", "In his mail, Ravi asks why he could not find the order",
+     "The client mentioned that the deal does not exist".
+   - More reported speech: "Ravi's mail says that the order does not exist",
+     "According to Ravi, there is no such order", "The customer could not
+     find the invoice", "Mr. Rao could not find the invoice".
+   - The state of a record in other forms: "No record of a payment yet, so
+     the invoice is open", "There is no record of a payment on this invoice".
+   - A word that names no record: "I could not find Settings", "Python is not
+     in the system", "PDF is not in the inbox", "I found nothing for Q4".
+   - A match that is no record: "I could not find a match between the two
+     invoices".
+   - An old fault that the answer reports: "Earlier I could not find the
+     order, but here it is".
+6. The matcher reads "I could not find the order, so I created it" as a
+   claim. The same is true for a lead. The new record may be a second copy.
 7. The check reads the text of the answer, not the text of a card.
 8. Pass 2 shows no line for a query of one word whose near lookup found no
    name. So the check fires after such a search.
@@ -877,6 +906,10 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
     member. Any `search_company` answer of the run that shows pass 2 passes.
 15. `shadow` logs no text. So the line cannot tell a false positive from a
     true miss. `armed` and `finds` show which claims came after a lookup.
+16. In `on`, a claim after `resolve_name` alone always takes the retry. A
+    `resolve_name` answer never shows pass 2, so it cannot pass the check.
+    The cost is one more model request in each such turn, and one more
+    search when the model obeys the retry text.
 
 **Decisions for the owner before `on`.**
 

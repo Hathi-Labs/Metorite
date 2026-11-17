@@ -152,10 +152,16 @@ NOT apply it. Set the value, then restart `acb-gateway`. Its one reader is
 
 In `shadow`, an answer that says a record does not exist writes one
 `answer_check.claim` line. It does so when no `search_company` answer of the
-turn shows pass 2. The line holds codes and counts, and no text. In `on`, such
-an answer gets one more pass. That pass is the one retry of the run, which the
-number check of `CRM_ANSWER_CHECK` spends too. `shadow` is AGENT-SAFE, and `on`
-is an `enforcement-flip` after 7 days of shadow (D-FIND-8).
+turn shows pass 2. The line holds `mode`, `outcome`, `rule`, `searches`,
+`finds` and `armed`, and no text. `armed` is true when a `search_company` or
+`resolve_name` answer came before the claim.
+
+In `on`, the check holds an answer only after a `search_company` or
+`resolve_name` answer in the turn. Then such a claim gets one more pass. That
+pass is the one retry of the run, which the number check of
+`CRM_ANSWER_CHECK` spends too. A claim before that answer is not held, and
+the line says `unheld_miss`. `shadow` is AGENT-SAFE, and `on` is an
+`enforcement-flip` after 7 days of shadow (D-FIND-8).
 
 `FIND_ORGS` turns on the new shape of a `search_company` hit
 (`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says

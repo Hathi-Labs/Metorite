@@ -74,7 +74,7 @@ that :func:`not_found_claim` reads as "the record does not exist" needs a
 The claim line holds :data:`CLAIM_LOG_FIELDS`: the mode, the outcome, the
 rule code, two counts and ``armed``. It holds no text of the answer and no
 word of a record. The matcher reads the first :data:`MAX_CLAIM_CHARS`
-characters, with linear work, because it runs on the event loop. Fence:
+characters, so its work is bounded, because it runs on the event loop. Fence:
 ``tests/unit/test_answer_not_found.py``.
 """
 
@@ -433,38 +433,61 @@ _CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("does_not_exist", re.compile(
         rf"\b{_RECORD_NOUN}\b[^.!?\n]{{0,60}}?\b(?:does|do|did)(?:n[{_APOS}]t|\s+not)\s+"
         r"(?:seem\s+to\s+|appear\s+to\s+)?exist\b", re.I)),
-    # "I found nothing for Sharath." A name must follow.
+    # "I found nothing for Sharath." A name must follow, and the clause ends
+    # there or goes on to a place of records: "for Sharath in the CRM". So
+    # "nothing for Q4 in the forecast" is no claim.
     ("found_nothing", re.compile(
         r"\b(?:found|returned|got)\s+nothing\s+(?:for|about|on|matching|named|called"
         rf"|under|from|with)(?P<name>(?:\s+{_SPAN_WORD}){{1,3}}?)"
-        r"(?=\s*(?:[.!;,]|$)|\s+(?:in|and|or)\b)",
+        rf"(?=\s*(?:[.!;,]|$)|\s+(?:and|or)\b|\s+in\s+(?:the|your|our|any)\s+{_PLACE}\b)",
         re.I)),
-    # "That company is not in the CRM." "Sharath is not in the CRM."
+    # "That company is not in the CRM." "Sharath is not in the CRM." The
+    # clause ends after the place, so "not in the CRM pipeline stage" is no claim.
     ("not_in_place", re.compile(
         rf"\b(?P<subject>{_RECORD_NOUN}|(?-i:[A-Z][^\s.!?,;:]{{0,59}}))\s+"
         rf"(?:is|are|was|were)(?:n[{_APOS}]t|\s+not)\s+(?:in|on)\s+(?:the|your|our|any)\s+"
-        rf"{_PLACE}\b",
+        rf"{_PLACE}\b(?=\s*(?:[.!;,]|$))",
         re.I)),
 )
 #: A clause that makes a claim a condition or a doubt: "If I can't find the
 #: order, ..." is no claim.
 _HEDGE = re.compile(r"\b(?:if|unless|whether|in\s+case)\b", re.I)
-#: The words right before a claim that report what another person said:
-#: "Priya replied that there is", "Ravi says he". The words "I said" are
-#: the assistant's own, so they do not count.
+#: The words right before a claim that report what another PERSON said:
+#: "Priya replied that there is", "Ravi says he". Group ``who`` is the word
+#: right before the verb, and :func:`_is_person` must take it. So "The CRM
+#: says there is no such order" stays a claim, and so does "I said".
 _REPORTED = re.compile(
-    r"(?<!\bI\s)\b(?:says?|said|replied|replies|wrote|writes|mentioned|mentions|told\s+\w+"
-    r"|tells\s+\w+|reported|reports|confirmed|confirms|claims?|claimed|explained|explains"
-    r"|answered|answers|responded|responds|noted|notes)\s+(?:that\s+)?"
-    r"(?:(?:he|she|they|it|we|you|there)\s+)?(?:(?:is|are|was|were|has|have|had)\s+)?$",
+    r"(?:^|\s)(?P<who>[^\s.!?,;:]{1,60})\s+(?:says?|said|replied|replies|wrote|writes"
+    r"|mentioned|mentions|told\s+\w+|tells\s+\w+|reported|reports|confirmed|confirms"
+    r"|claims?|claimed|explained|explains|answered|answers|responded|responds|noted"
+    r"|notes)\s+(?:that\s+)?(?:(?:he|she|they|it|we|you|there)\s+)?"
+    r"(?:(?:is|are|was|were|has|have|had)\s+)?$",
     re.I,
 )
-#: The words right before a claim that say what a record holds: "The invoice
-#: SHOWS no record of payment" is the state of the invoice, not a lookup.
+#: The lower-case words that name a person as a subject.
+_PERSON_WORDS = frozenset({
+    "he", "she", "they", "customer", "client", "vendor", "supplier", "buyer",
+    "seller", "manager", "colleague", "team", "sender", "rep", "owner", "member",
+    "partner", "accountant", "boss", "lead",
+})
+#: The words that name the tool, a store of records or the assistant. A claim
+#: after them is the claim of a lookup: "The CRM says there is no such order",
+#: "Company search reports no matches for Sharath".
+_SYSTEM_WORDS = frozenset({
+    "crm", "search", "system", "inbox", "mailbox", "records", "record", "results",
+    "result", "database", "tool", "app", "query", "index", "data", "engine", "api",
+    "i", "it", "this", "that", "the", "our", "your", "which", "there",
+})
+#: The words right before a claim that say what one record holds: "The
+#: invoice SHOWS no record of payment" is the state of the invoice, not a
+#: lookup. A store of records is no such subject: "Our records show no
+#: record of an order" and "The search results show no matches" stay claims.
 _RECORD_STATE = re.compile(
-    rf"\b(?:{_RECORD_NOUN}|notes?|files?|documents?|attachments?|reports?|statements?"
-    r"|logs?|history)\s+(?:shows?|showed|has|had|holds?|held|contains?|lists?|says?"
-    r"|said|notes?|mentions?)\s+$",
+    r"\b(?:orders?|deals?|leads?|contacts?|accounts?|invoices?|quot(?:e|es|ation|ations)"
+    r"|payments?|e-?mails?|mails?|messages?|threads?|conversations?|tasks?|projects?"
+    r"|tickets?|shipments?|notes?|files?|documents?|attachments?|statements?|history)"
+    r"\s+(?:shows?|showed|has|had|holds?|held|contains?|lists?|says?|said|notes?"
+    r"|mentions?)\s+$",
     re.I,
 )
 #: "does not exist YET": a record that the answer is about to make.
@@ -498,7 +521,8 @@ _CODE = re.compile(r"```.*?```|`[^`\n]*`|^[ \t]*>.*$", re.S | re.M)
 #: A quote inside a sentence. A record can hold the words "no such order",
 #: and a claim that STARTS inside a quote is the record's text, not the
 #: answer's. A name in a quote ("I could not find «Neuropeak»") stays. Each
-#: quote is :data:`MAX_QUOTE_CHARS` long at most, so the scan is linear.
+#: quote is :data:`MAX_QUOTE_CHARS` long at most, so a scan never reads to
+#: the end of the text from each position.
 _QUOTE = re.compile(
     "|".join(
         f"{open_}[^{close}\\n]{{0,{MAX_QUOTE_CHARS}}}{close}"
@@ -530,12 +554,29 @@ def _is_name(span: str) -> bool:
     return True
 
 
+def _is_person(word: str) -> bool:
+    """True when *word*, the subject right before a verb of speech, names a
+    person: a word of :data:`_PERSON_WORDS`, or a capital word that is no word
+    of the tool, a store or the assistant (:data:`_SYSTEM_WORDS`)."""
+    plain = word.strip(_QUOTE_MARKS).lower()
+    if plain in _PERSON_WORDS:
+        return True
+    if plain in _SYSTEM_WORDS or plain in _NOT_NAMES:
+        return False
+    return word.strip(_QUOTE_MARKS)[:1].isupper()
+
+
 def _rejected(sentence: str, match: re.Match[str], rule: str) -> bool:
     """True when a rule matched words that are no claim of a lookup: a stop
     word in the span, a reported speech, the state of a record, a record that
     the answer is about to make, a list filter, or a word that is no name.
     Each test reads at most :data:`_BEFORE_CHARS` before the match or a few
-    words after it, so the work stays linear."""
+    words after it, so its work does not grow with the sentence.
+
+    Reported speech counts only with a person as the subject right before
+    the verb (:func:`_is_person`). The state of a record counts only with one
+    record as the subject, never a store: "Our records show no record of an
+    order" stays a claim."""
     at = match.start()
     groups = match.groupdict()
     span = groups.get("span") or ""
@@ -547,7 +588,10 @@ def _rejected(sentence: str, match: re.Match[str], rule: str) -> bool:
     if subject is not None and subject[:1].isupper() and subject.lower() in _NOT_NAMES:
         return True
     before = sentence[max(0, at - _BEFORE_CHARS):at]
-    if _REPORTED.search(before) or _RECORD_STATE.search(before):
+    reported = _REPORTED.search(before)
+    if reported is not None and _is_person(reported.group("who")):
+        return True
+    if _RECORD_STATE.search(before):
         return True
     if rule == "does_not_exist" and _YET.match(sentence, match.end()):
         return True
@@ -559,8 +603,8 @@ def _claim_in(sentence: str) -> str | None:
 
     Each regex runs once over the sentence. The quote spans, the first hedge
     and the first act ("so I created it") are found once, and each match
-    reads them by position. So the work is linear in the length of the
-    sentence (FIND-7 fix round, P1)."""
+    reads them by position. No test reads the sentence again for each match
+    (FIND-7 fix round, P1)."""
     quoted = [m.span() for m in _QUOTE.finditer(sentence)]
     starts = [start for start, _end in quoted]
     hedge = _HEDGE.search(sentence)
@@ -591,27 +635,29 @@ def not_found_claim(text: str) -> str | None:
     that says a record does not exist, or None (FIND-7, ``find_engine.md``
     §5.5).
 
-    It reads the first :data:`MAX_CLAIM_CHARS` characters only, and its work
-    is linear, because it runs on the event loop. It reads English only.
+    It reads the first :data:`MAX_CLAIM_CHARS` characters only, so its work
+    is bounded, because it runs on the event loop. It reads English only.
     Pure.
 
-    Each rule needs a record noun from a closed list, or a name. These are
-    no claim: a question, a condition ("if", "unless", "whether"), a claim
-    that starts inside a quote, a quoted block, code, a preposition or a
-    list word between "find" and the noun ("any errors IN the invoice", "any
-    OVERDUE tasks"), reported speech ("Priya replied that"), the state of a
-    record ("The invoice shows no record of"), a record that the answer makes
+    Each rule needs a record noun from a closed list, or a name. The tests
+    hold each form that it reads as no claim, and only these: a question, a
+    condition ("if", "unless", "whether"), a claim that starts inside a
+    quote, a quoted block, code, a preposition or a list word between "find"
+    and the noun ("any errors IN the invoice", "any OVERDUE tasks"), reported
+    speech with a person as the subject right before the verb ("Priya
+    replied that", "Ravi says he"), the state of one record right before the
+    claim ("The invoice shows no record of"), a record that the answer makes
     ("does not exist yet", and "did not exist, so I created it" for the rule
     ``does_not_exist`` only) and a list filter ("no matches for your filter").
 
-    It still fires on these, a known false positive: an empty list in other
-    words ("I couldn't find any tasks for this week"), a name that is no
-    record ("I could not find Settings."), and an old fault that the answer
-    reports. It misses these: "Sharath has no orders", "I could not find
-    anything like that order", a name in lower case, reported speech, a claim
-    in a card, and a claim after the first :data:`MAX_CLAIM_CHARS`
-    characters. It reads a quote of more than :data:`MAX_QUOTE_CHARS`
-    characters as prose. ``find_engine.md`` §5.5 lists each limit.
+    It still fires on known false positives: empty lists in other words,
+    reported speech and the state of a record in other forms, a capital word
+    that names no record, a match that is no record, and an old fault that
+    the answer reports. It misses "Sharath has no orders", "Our records show
+    no order for Sharath", a name in lower case, a claim in a card, and a
+    claim after the first :data:`MAX_CLAIM_CHARS` characters. It reads a
+    quote of more than :data:`MAX_QUOTE_CHARS` characters as prose.
+    ``find_engine.md`` §5.5 lists each case, and the tests keep each one.
     """
     plain = _CODE.sub(" ", str(text or "")[:MAX_CLAIM_CHARS])
     for sentence in _CLAIM_SENTENCE.split(plain):

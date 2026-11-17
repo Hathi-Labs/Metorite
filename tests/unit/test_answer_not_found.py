@@ -211,6 +211,14 @@ FOUND = "I found the deal «Neuropeak - Snowflake 3D printer» from Sharat."
     ("As I said, I could not find the order.", "could_not_find"),
     ("The CRM shows no record of an order from Sharath.", "no_record_of"),
     ("I could not find the order, so I created it.", "could_not_find"),
+    # Fix round 3: a tool or a store of records as the subject keeps the claim.
+    ("The search results show no matches for Sharath.", "no_record_of"),
+    ("Our records show no record of an order from Sharath.", "no_record_of"),
+    ("Your CRM records show no match for Neuropeak.", "no_record_of"),
+    ("The CRM says there is no such order.", "no_such"),
+    ("The CRM confirms there is no such deal.", "no_such"),
+    ("Company search reports no matches for Sharath.", "no_record_of"),
+    ("I found nothing for Sharath in the CRM.", "found_nothing"),
 ])
 def test_a_claim_is_read(text: str, rule: str) -> None:
     assert rule in CLAIM_RULES
@@ -225,6 +233,29 @@ def test_a_claim_is_read(text: str, rule: str) -> None:
     ("I couldn't find Settings.", "could_not_find"),
     # An old fault that the answer reports.
     ("Earlier I could not find the order, but here it is: «Neuropeak».", "could_not_find"),
+    # Fix round 3, the verifier's list. Reported speech in other forms.
+    ("Priya replied: we could not find the payment in our books.", "could_not_find"),
+    ("In his mail, Ravi asks why he could not find the order on the portal.",
+     "could_not_find"),
+    ("The client mentioned that the deal does not exist on their side.", "does_not_exist"),
+    ("Ravi" + chr(0x2019) + "s mail says that the order does not exist.", "does_not_exist"),
+    ("According to Ravi, there is no such order.", "no_such"),
+    ("The customer could not find the invoice.", "could_not_find"),
+    ("Mr. Rao could not find the invoice.", "could_not_find"),
+    # The state of a record in other forms.
+    ("No record of a payment yet, so the invoice is open.", "no_record_of"),
+    ("There is no record of a payment on this invoice.", "no_record_of"),
+    # Empty lists in other forms.
+    ("I couldn't find any tasks due today.", "could_not_find"),
+    ("No results for this week.", "no_record_of"),
+    # A record that the answer made after the claim (limit 6).
+    ("I could not find the lead, so I created it.", "could_not_find"),
+    # A match that is no record.
+    ("I could not find a match between the two invoices.", "could_not_find"),
+    # A capital word that names no record, in a place of records.
+    ("Python is not in the system.", "not_in_place"),
+    ("PDF is not in the inbox.", "not_in_place"),
+    ("I found nothing for Q4.", "found_nothing"),
 ])
 def test_a_known_false_positive_is_still_read(text: str, rule: str) -> None:
     """The limits of §5.5 name these. A change of the matcher that drops one
@@ -288,49 +319,108 @@ def test_a_known_false_positive_is_still_read(text: str, rule: str) -> None:
     "I could not find anything like that order.",
     "The order you mentioned is not in the CRM.",
     "I could not find nuropeak in the CRM.",
+    # Fix round 3: the clause goes on after the place, or no place follows.
+    "Neuropeak is not in the CRM pipeline stage you asked about, it is in Won.",
+    "I found nothing for Q4 in the forecast.",
+    # Fix round 3: false negatives that limit 3 of §5.5 names.
+    "Unfortunately, no order for Sharath turns up in the records.",
+    "Your inbox has no mails from Sharath.",
+    "Our records show no order for Sharath.",
 ])
 def test_no_claim_is_read(text: str) -> None:
     assert not_found_claim(text) is None
 
 
-# ── The work of the matcher is bounded (fix round, P1) ──────────────────────
+# ── The work of the matcher is bounded (fix rounds 1 and 3) ─────────────────
 
-#: The shapes of the review, each with 200,000 characters. Before the fix
-#: round, 50,000 of the first two took 36 s and 48 s, and the third 6.9 s.
-BIG_SHAPES = {
-    "ldquo": chr(0x201C) * 200_000,
-    "laquo": chr(0x00AB) * 200_000,
-    "time_to_order": ("I could not find time to order " * 7000)[:200_000],
-    "lsquo": chr(0x2018) * 200_000,
-    "straight_quote": '"' * 200_000,
-    "apostrophe": " '" * 100_000,
-    "reported": ("Priya said that " * 13000)[:200_000],
-    "long_word": "I could not find " + "x" * 200_000,
-    "could_not_find": ("I could not find " * 12000)[:200_000],
+#: The unit of each shape of the reviews, which a test repeats to a length.
+#: Before fix round 1, 50,000 characters of "ldquo" took 36 s, of "laquo"
+#: 48 s, and of "time_to_order" 6.9 s. The last three units test the rules of
+#: fix round 3.
+SHAPE_UNITS = {
+    "ldquo": chr(0x201C),
+    "laquo": chr(0x00AB),
+    "time_to_order": "I could not find time to order ",
+    "lsquo": chr(0x2018),
+    "straight_quote": '"',
+    "apostrophe": " '",
+    "reported": "Priya said that ",
+    "long_word": "x",
+    "could_not_find": "I could not find ",
+    "reported_system": "The CRM says that ",
+    "not_in_place": "Sharath is not in the CRM pipeline ",
+    "found_nothing": "I found nothing for Q4 in the forecast ",
 }
 
 
-def _seconds(text: str) -> float:
+def _shape(name: str, size: int) -> str:
+    """*size* characters of the shape *name*."""
+    unit = SHAPE_UNITS[name]
+    if name == "long_word":
+        return ("I could not find " + unit * size)[:size]
+    return (unit * (size // len(unit) + 1))[:size]
+
+
+def _timed(text: str) -> float:
+    """The CPU time of one call, in seconds. A shared box makes a process wait
+    for a core. CPU time leaves that wait out, and wall time does not."""
     import time
 
-    started = time.perf_counter()
+    started = time.process_time()
     not_found_claim(text)
-    return time.perf_counter() - started
+    return time.process_time() - started
 
 
-@pytest.mark.parametrize("shape", list(BIG_SHAPES))
+def _best_seconds(text: str, bound: float) -> float:
+    """The best of 3 calls, after one call that warms up. The best call is the
+    cost of the code, and a slow call is the box. A first call over 3 times
+    the bound is the answer at once, so a quadratic mutant fails in one call."""
+    first = _timed(text)
+    if first > 3 * bound:
+        return first
+    return min(_timed(text) for _ in range(3))
+
+
+@pytest.mark.parametrize("shape", list(SHAPE_UNITS))
 def test_a_huge_answer_costs_little(shape: str) -> None:
-    """With the cap of 20,000 characters, each shape takes about 0.05 s here.
-    The bound gives CI 10 times that."""
-    assert _seconds(BIG_SHAPES[shape]) < 0.5
+    """2,000,000 characters of each shape. The matcher reads 20,000 of them:
+    the best of 3 calls took at most 0.25 s of CPU here. With the cap taken
+    out of the code, 11 of the 12 shapes failed the bound of 2 s here. The
+    long word did not, and ``test_a_claim_after_the_cap_is_not_read`` fences
+    the cap by its effect."""
+    assert _best_seconds(_shape(shape, 2_000_000), 2.0) < 2.0
 
 
-@pytest.mark.parametrize("shape", list(BIG_SHAPES))
-def test_the_work_is_linear_with_no_cap(shape: str, monkeypatch) -> None:
-    """With the cap taken away, 50,000 characters of each shape take at most
-    about 0.15 s here. The quadratic code took 7 s to 48 s for 50,000."""
+#: The length of each shape for the test with no cap. "time_to_order" is the
+#: shape of the hedge for each match: that mutant took 5.2 s for 50,000
+#: characters and 45 s for 100,000 here, so it gets the longer text.
+NO_CAP_SIZES = {name: 50_000 for name in SHAPE_UNITS} | {"time_to_order": 100_000}
+
+
+@pytest.mark.parametrize("shape", list(SHAPE_UNITS))
+def test_the_work_is_bounded_with_no_cap(shape: str, monkeypatch) -> None:
+    """With the cap taken away, the best of 3 calls took 0.03 s to 0.61 s of
+    CPU here. The quadratic quote code of the review took 36 s and 48 s for
+    50,000 characters, so the bound of 6 s fails it."""
     monkeypatch.setattr(answer_check, "MAX_CLAIM_CHARS", 10**9)
-    assert _seconds(BIG_SHAPES[shape][:50_000]) < 2.0
+    assert _best_seconds(_shape(shape, NO_CAP_SIZES[shape]), 6.0) < 6.0
+
+
+def test_the_hedge_runs_once_for_each_sentence(monkeypatch) -> None:
+    """The fence of the hedge that ran again for each match (fix round 1, P1).
+    It counts calls, so it does not depend on the speed of the box."""
+    calls: list[int] = []
+    real = answer_check._HEDGE
+
+    class _Counting:
+        def search(self, text: str, *args: Any) -> Any:
+            calls.append(len(text))
+            return real.search(text, *args)
+
+    monkeypatch.setattr(answer_check, "_HEDGE", _Counting())
+    text = "I could not find time to order " * 200
+    assert not_found_claim(text) is None
+    assert len(calls) == 1
 
 
 def test_a_claim_after_the_cap_is_not_read() -> None:
@@ -790,6 +880,24 @@ class TestTheSharedRetry:
         assert [e["outcome"] for e in _claims(logged)] == ["retry_spent"]
         numbers = [e["outcome"] for e in logged if e["event"] == "answer_check.checked"]
         assert numbers == ["pass", "retry", "retry_pass"]
+
+    @STREAMS
+    async def test_a_failed_claim_retry_still_spends_the_retry(self, stream: bool, logged) -> None:
+        """Fix round 3, F4: the one more pass of the claim raises. It spent the
+        retry, so the number check gives its caveat with no retry of its own."""
+        draft = "Open deals hold ₹13.5 lakh. " + CLAIM
+        client = FailingClient([
+            ("call", "crm_aggregate", {"entity": "deals"}),
+            ("call", "search_company", {"query": "Sharath"}),
+            ("text", draft), ("raise",), SPARE,
+        ])
+        agent = Agent(client=client, name="orchestrator", tools=[crm_aggregate, search_company])
+        out = await _run(agent, stream=stream, mode=ON, claim_mode=ON)
+        assert len(client.requests) == 4  # the raise was the one extra request
+        assert out.startswith(draft)
+        assert [e["outcome"] for e in _claims(logged)] == ["retry", "retry_failed"]
+        numbers = [e["outcome"] for e in logged if e["event"] == "answer_check.checked"]
+        assert numbers == ["pass", "caveat"]
 
 
 # ── The one seam and the flag ───────────────────────────────────────────────
