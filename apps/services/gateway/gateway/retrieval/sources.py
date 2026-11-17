@@ -58,6 +58,12 @@ that declares it, like ``meaning``. A source with ``dated=True`` takes
 ``after`` and filters in its app's own SQL. A source with ``reviewed=True``
 takes ``reviewed`` and ranks a page past its review date lower. Only
 ``GET /search/company`` passes them, and only with ``CONTEXT_RECENCY`` on.
+
+**The past chats** (WS-FIND HRD-21, ``find_engine.md`` §3.1 rung 6 and §6).
+The ``chat`` source reads the member's own solo chats with Mira through
+``gateway.chat_search``, after ``feature:chat`` and ``CHAT_SEARCH_ORGS``. It
+declares ``current``, so it takes the id of the chat that the search runs in,
+and it never answers that chat.
 """
 
 from __future__ import annotations
@@ -300,6 +306,10 @@ class Source:
     open: OpenReader | None = None
     #: The kinds of ref that :attr:`open` opens: the kinds of hit it gives.
     kinds: tuple[str, ...] = ()
+    #: True when the app's reader takes ``current=``: the id of the chat that
+    #: the search runs in, which the reader never answers (HRD-21, D-FIND-5).
+    #: Only the ``chat`` source. The id only takes a chat away.
+    current: bool = False
     #: The kinds of record whose names ``resolve_name`` reads (FIND-5,
     #: ``find_engine.md`` §4.2 ``names``).
     names: tuple[str, ...] = ()
@@ -362,7 +372,7 @@ class Source:
         after: datetime | None = None, reviewed: bool = False,
         verified_only: bool = False, vectors: bool = False,
         budget_s: float | None = None, sender: str | None = None,
-        sender_words: str | None = None,
+        sender_words: str | None = None, current: str | None = None,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
@@ -377,6 +387,8 @@ class Source:
         sender only. That source then reads *sender_words* in place of *q*:
         the other words of the query, which still filter the mail (round 3,
         P2-1). The sender stands for the near word, so the words leave it out.
+        *current* (HRD-21) gives a source with ``current`` the id of the chat
+        that the search runs in, which it never answers.
         """
         if not holds(user, self.feature):
             return []
@@ -398,6 +410,8 @@ class Source:
             options["reviewed"] = True
             if verified_only:
                 options["verified_only"] = True
+        if self.current:
+            options["current"] = current
         return (await self.read(user, q, k, **options))[:k]
 
 
@@ -427,6 +441,13 @@ def _studio_open(user: UserContext) -> bool:
 
     org = user.organization_id
     return bool(flags.studio_allowed(org) and flags.search_allowed(org))
+
+
+def _chat_open(user: UserContext) -> bool:
+    """The switch of the past chats: ``CHAT_SEARCH_ORGS`` (HRD-21)."""
+    from gateway.retrieval import find
+
+    return bool(find.chat_search_named(user.organization_id))
 
 
 # ── Small helpers, one rule each ────────────────────────────────────────────
@@ -879,6 +900,37 @@ async def _studio(user: UserContext, q: str, k: int) -> list[Hit]:
     return out
 
 
+# ── chat ────────────────────────────────────────────────────────────────────
+
+async def _chat(user: UserContext, q: str, k: int, *, current: str | None = None) -> list[Hit]:
+    """The member's own past chats (WS-FIND HRD-21, ``find_engine.md`` §3.1
+    rung 6, §6 and D-FIND-5).
+
+    The source applies its switch, ``CHAT_SEARCH_ORGS``, before any read, as
+    the studio source does. Then ``gateway.chat_search`` reads the member's
+    own solo chats with Mira on the web, as the member, with each rule in its
+    WHERE, and drops each chat with the egress mark. *current* is the chat that the
+    search runs in: it never answers, and with none the read gives nothing.
+
+    A hit names the title, the date of the last change and the link that
+    opens the chat (``feed._chat_href``, the chat app's ``open-chat`` link).
+    Its snippet comes only from a row that the member typed, or it is empty.
+    """
+    if not _chat_open(user):
+        return []
+    search = await _module("gateway.chat_search")
+    feed = await _module("gateway.routes.shell.feed")
+    out = []
+    for c in await search.search_own_chats(user, q, k, current=current):
+        out.append(Hit(
+            app="chat", kind="chat", id=c.session_id, title=_title(c.title),
+            hint="Your chat", href=feed._chat_href(c.session_id),
+            snippet=_clip(c.snippet), when=_when(c.last_activity),
+            stamp=_when(c.last_activity),
+        ))
+    return out
+
+
 # ── near (HRD-18b, ``find_engine.md`` §4.3 and §6) ──────────────────────────
 # Each calls its app's own function, which reads the names of rows that the
 # member can open and scores them with ``acb_common.name_match``.
@@ -1151,5 +1203,8 @@ REGISTRY: dict[str, Source] = {
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
                reviewed=True, gate=_knowledge_open),
         Source("studio", "studio", "Studio apps", _studio, gate=_studio_open),
+        # HRD-21: last, and never in the command bar (BAR_APPS). The route asks
+        # it only when its switch is open and the request names the current chat.
+        Source("chat", "chat", "Past chats", _chat, gate=_chat_open, current=True),
     )
 }

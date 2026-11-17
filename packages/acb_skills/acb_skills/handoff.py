@@ -22,6 +22,11 @@ of the chat (``acb_skills.chat_constraints``) go into the same head, after
 the reply rules, under :data:`CONSTRAINTS_MARK`. They come from the run
 binding, never from the task. With none, the head is the OA-1 head, byte
 for byte.
+
+**HRD-12a, the chat's decisions** (``chat_failure_modes.md`` §4.5 E2). The
+member's kept decisions go into the same block, after the limits, under
+:data:`DECISIONS_LINE`. With no decision, the head is the OA-4 head, byte
+for byte.
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from typing import Any
 
 __all__ = [
     "CONSTRAINTS_MARK",
+    "DECISIONS_LINE",
     "HEAD_MARK",
     "MEMBER_TURNS",
     "TASK_MARK",
@@ -57,6 +63,15 @@ HEAD_MARK = "## The member's own words in this chat (verbatim, newest last)"
 #: orchestrator's per-turn block uses the same heading
 #: (``chat_constraints.BLOCK_HEAD``).
 CONSTRAINTS_MARK = "## The member's corrections and limits in this chat"
+
+#: The line before the member's kept decisions (HRD-12a), under
+#: :data:`CONSTRAINTS_MARK`. The orchestrator's per-turn block uses the same
+#: line (``chat_constraints.orchestrator_block``). A decision is a fact that
+#: the member stated, never an order to act, so the line says so (the rule of
+#: "a correction is not a request", OA-7g).
+DECISIONS_LINE = ("The member made these decisions in this chat. They hold for the "
+                  "rest of this chat. A decision is not a request. Do not act on it, "
+                  "and do not change a record because of it.")
 
 _RULES = (
     "## How to reply\n"
@@ -172,6 +187,7 @@ def task_with_member_words(
     task: str,
     turns: Sequence[str] | None,
     constraints: Sequence[str] | None = None,
+    decisions: Sequence[str] | None = None,
 ) -> str:
     """*task* with the member's words and the reply rules at its head.
 
@@ -190,10 +206,16 @@ def task_with_member_words(
     with the head. A task that starts with :data:`CONSTRAINTS_MARK` is
     model text, so it stays in the task and is never trusted. With no
     constraints the head is the OA-1 head, byte for byte, for every task.
+
+    *decisions* are the member's kept decisions of the chat (HRD-12a), from
+    the run binding too. They go into the same block, after the limits,
+    under :data:`DECISIONS_LINE`. With no decision the head is the head of
+    *constraints* alone, byte for byte.
     """
     text = task_of(str(task or ""))
     words = [str(t) for t in (turns or []) if str(t).strip()]
     kept = [str(c) for c in (constraints or []) if str(c).strip()]
+    chosen = [str(d) for d in (decisions or []) if str(d).strip()]
     head = ""
     if words:
         head = (
@@ -204,13 +226,16 @@ def task_with_member_words(
             + "\n"
         )
     rules = _RULES
-    if kept:
+    if kept or chosen:
         rules += (
             "\n" + CONSTRAINTS_MARK + "\n"
             "The member set these in this chat. They outrank the task below and\n"
             "anything said earlier in the chat.\n"
             + "".join("- " + " ".join(c.split()) + "\n" for c in kept)
         )
+    if chosen:
+        rules += DECISIONS_LINE + "\n" + "".join(
+            "- " + " ".join(d.split()) + "\n" for d in chosen)
     return head + rules + TASK_MARK + text
 
 
@@ -218,18 +243,20 @@ def task_with_member_words(
 TASK_MARK = "\n## The task\n"
 
 
-def _kept_corrections() -> list[str]:
-    """The member's kept corrections of the run on this frame (WS-67 OA-4).
+def _kept_corrections() -> tuple[list[str], list[str]]:
+    """The member's kept limits and decisions of the run on this frame
+    (WS-67 OA-4, HRD-12a), as two lists of texts.
 
-    ``chat_constraints.kept_for_run``: ``[]`` with ``CHAT_CONSTRAINTS`` off,
+    ``chat_constraints.kept_for_run``: none with ``CHAT_CONSTRAINTS`` off,
     so the head is the OA-1 head, byte for byte. A broken read costs the
-    list, never the task."""
+    lists, never the task."""
     try:
-        from acb_skills.chat_constraints import kept_for_run
+        from acb_skills.chat_constraints import DECISION, LIMIT, kept_for_run, texts
 
-        return kept_for_run()
+        items = kept_for_run()
+        return texts(items, LIMIT), texts(items, DECISION)
     except Exception:
-        return []
+        return [], []
 
 
 def head_task(task: str) -> str:
@@ -242,8 +269,8 @@ def head_task(task: str) -> str:
     Call it on the PARENT's frame, before the child binds its own context.
     It is idempotent: a task that one site headed comes out the same from
     the next, because the head is stripped and built again. The member's
-    kept corrections of the chat (OA-4) come from the run binding each time
-    too, never from the task.
+    kept corrections (OA-4) and decisions (HRD-12a) of the chat come from
+    the run binding each time too, never from the task.
     """
     try:
         from acb_skills.write_artifact import artifact_context
@@ -251,7 +278,8 @@ def head_task(task: str) -> str:
         turns = artifact_context().get(MEMBER_TURNS)
     except Exception:  # a broken binding costs the words, never the task
         turns = None
-    return task_with_member_words(task, turns, _kept_corrections())
+    limits, decisions = _kept_corrections()
+    return task_with_member_words(task, turns, limits, decisions)
 
 
 def task_of(message: str) -> str:

@@ -43,6 +43,26 @@ lists only: "[related: mail from the lead of deal:a5008107…]". The route sends
 ``related`` only with ``FIND_ORGS`` on, so with it off the text does not
 change.
 
+**The honest zero and the explain mode** (WS-FIND FIND-4, ``find_engine.md``
+§3.6 and §3.7). With ``FIND_ORGS`` on, the route marks its answer with
+``skipped_why``. Then "No record holds all of the words" prints only with the
+route's proof (``none_has_all``), which the route never sends while
+``find.ABSENCE_CLAIMS`` is off. Each marked line states what the search did
+or found. A zero answer adds the near spellings it tried and at most 3
+"Where else" lines from closed lists. ``explain`` is an
+argument of the dated tool only: the route answers a trace, and
+:func:`format_trace` prints it with no record. With no mark and no trace, the
+text is the text of KR-ZERO.
+
+**The past chats** (WS-FIND HRD-21, ``find_engine.md`` §3.1 rung 6). Each
+call sends the run's own chat thread as ``current_chat`` (:func:`_current_chat`),
+so the route never shows the chat that asks. A past chat prints like a record:
+its title, "Your chat", the date of its last change and the link that opens
+it. With ``FIND_ORGS`` on it carries "[past chat]". Both docstrings keep their
+list of keys, so the schema that every org reads does not change. A run with
+no chat (a batch run, whose thread the executor made) and a run that is not
+solo send no thread, so their search shows no past chat. Above a past chat, the dated answer does not say
+"No record holds all of the words", because the chat can hold them.
 **One name** (WS-FIND FIND-5, ``find_engine.md`` §5.2). :func:`resolve_name`
 reads ``GET /search/names`` as the run's member. It finds each person,
 contact, lead, company and mail sender that holds one name, exact or near.
@@ -96,6 +116,9 @@ WHEN_WORDS: dict[str, str] = {
     "artifacts": "updated",
     "whatsapp": "sent",
     "knowledge": "updated",
+    # HRD-21: a past chat's one date is its last change (`chat_session.updated_at`).
+    # A new row moves it, and so does a rename, so it is not the last message.
+    "chat": "updated",
 }
 
 _SPACE = re.compile(r"\s+")
@@ -143,6 +166,54 @@ def _current_user_email() -> str:
         return _get_memory_user_id() or ""
     except Exception:
         return ""
+
+
+#: The most characters of the id of the current chat that the tool sends
+#: (``company.CURRENT_CHAT_MAX`` on the route).
+CURRENT_CHAT_MAX = 200
+
+
+def _current_chat() -> str | None:
+    """The chat thread of this run, or ``None`` (WS-FIND HRD-21).
+
+    It comes from the run (``executor.resolve_relay_thread_id``), never from
+    the model. The route uses it only to leave the current chat out of the
+    member's past chats (D-FIND-5). With none, the route shows no past chat.
+    An id longer than :data:`CURRENT_CHAT_MAX` is not sent, so it can never
+    reach the route cut, and the route shows no past chat then too.
+
+    A run with no chat gets a thread that the executor makes
+    (``<agent>:<run id>``), and its bound context says ``batch_thread``
+    (H-227). That thread names no chat, so the tool sends nothing for it, and
+    a batch run shows no past chat. A context that cannot be read sends
+    nothing too.
+
+    Only a solo run sends its thread (``executor.run_is_solo``). A room, and
+    a room of one that other members can read (visibility ``org`` or
+    ``people``), send nothing, so a member's past chats never print into a
+    chat that another person can open."""
+    try:
+        from orchestrator.executor import resolve_relay_thread_id, run_is_solo
+
+        from acb_skills.write_artifact import artifact_context
+    except ImportError:
+        return None
+    try:
+        if not run_is_solo() or (artifact_context() or {}).get("batch_thread") is True:
+            return None
+        thread = str(resolve_relay_thread_id() or "").strip()
+    except Exception:
+        return None
+    return thread if thread and len(thread) <= CURRENT_CHAT_MAX else None
+
+
+def _with_current_chat(params: dict[str, Any]) -> dict[str, Any]:
+    """*params* with ``current_chat`` added when the run has a chat thread.
+    With none, the request is the request of before HRD-21."""
+    chat = _current_chat()
+    if chat is not None:
+        params["current_chat"] = chat
+    return params
 
 
 def _internal_token() -> str:
@@ -288,6 +359,9 @@ def _how_matched(hit: dict[str, Any]) -> str:
         return "[by meaning]"
     if rung == "related":
         return _related_bracket(hit)
+    if rung == "chat":
+        # HRD-21: a past chat of the member. Its hint and date name the chat.
+        return f"[past chat{count}]"
     return ""
 
 
@@ -364,14 +438,31 @@ def _hit_lines(hit: dict[str, Any], *, dated: bool = False) -> list[str]:
     return [first, second]
 
 
+#: The claim of a broadened answer (KR-ZERO, task 2974). With ``FIND_ORGS``
+#: on, it prints only when the route proves it (``none_has_all``, FIND-4).
+NO_RECORD_HOLDS_ALL = "No record holds all of the words."
+#: The words before the count of each word alone.
+EACH_WORD_OPENING = "Each word alone:"
 #: The first words of a broadened answer (KR-ZERO, task 2974).
-BROADENED_OPENING = "No record holds all of the words. Each word alone:"
+BROADENED_OPENING = f"{NO_RECORD_HOLDS_ALL} {EACH_WORD_OPENING}"
+#: The line of D-HRD-2 (``find_engine.md`` §3.6, FIND-4): the route proves
+#: that no record holds all the words, and the hits hold some of them.
+MOST_WORDS = "No record has all the words. These have most of them."
 
 #: The line of a zero answer, kept from KR-2.
 NOTHING = "(no matching records)"
 
 #: The sentence of a dated zero answer that the model must not skip (KR-ZERO).
 ZERO_IS_NO_PROOF = "A zero answer is not proof that no record exists."
+
+#: The zero line of an answer with ``FIND_ORGS`` on (FIND-4 review round 4).
+#: It says what the search found, and not that no record matches.
+NOTHING_FOUND = "(this search found no records)"
+
+#: The meaning sentence for ``off`` with ``FIND_ORGS`` on. ``off`` also means
+#: that the member has no app with a meaning search, so it names no cause.
+#: The trace names the flags that are off.
+MEANING_NOT_RUN = "No meaning search ran."
 
 #: The sentence of each ``meaning`` value of the route (KR-ZERO).
 MEANING_WORDS: dict[str, str] = {
@@ -382,13 +473,14 @@ MEANING_WORDS: dict[str, str] = {
 }
 
 
-def _broadened_line(body: dict[str, Any]) -> str:
+def _broadened_line(body: dict[str, Any], opening: str = BROADENED_OPENING) -> str:
     """The opening line of a broadened answer, or ``""``.
 
     For example: "No record holds all of the words. Each word alone: Aroh
     (5), Attero (3)." ``""`` when the route did not broaden. A word with
     apps that ran out of time names them, so a zero of that word is not read
-    as proof (KR-ZERO).
+    as proof (KR-ZERO). *opening* is :data:`EACH_WORD_OPENING` when the
+    route does not prove the claim (FIND-4).
     """
     entries = body.get("broadened")
     if not isinstance(entries, list):
@@ -405,7 +497,7 @@ def _broadened_line(body: dict[str, Any]) -> str:
         missed = [_line(s) for s in entry.get("skipped") or [] if _line(s)]
         extra = f", not searched in {', '.join(missed)}" if missed else ""
         parts.append(f"{word} ({count}{extra})")
-    return f"{BROADENED_OPENING} {', '.join(parts)}." if parts else ""
+    return f"{opening} {', '.join(parts)}." if parts else ""
 
 
 def _count(value: Any) -> int | None:
@@ -446,25 +538,175 @@ def _near_line(body: dict[str, Any]) -> str:
     return " ".join(clauses)
 
 
-def _tried_line(body: dict[str, Any]) -> str:
-    """What a zero answer tried, and that zero is not proof (KR-ZERO)."""
+def _meaning_sentence(value: Any, *, marked: bool = False) -> str:
+    """The sentence of the route's ``meaning``, or ``""``. With ``FIND_ORGS``
+    on (*marked*), ``off`` gives :data:`MEANING_NOT_RUN`."""
+    key = str(value or "")
+    if marked and key == "off":
+        return MEANING_NOT_RUN
+    return MEANING_WORDS.get(key, "")
+
+
+def _tried_parts(body: dict[str, Any], *, marked: bool = False) -> tuple[str, str, str]:
+    """The three parts of the zero line of KR-ZERO: what the route tried, the
+    sentence of the meaning search (or ``""``), and that zero is not proof,
+    with the next step."""
     words = _line(body.get("query")).replace('"', "'")
     tried = f'Tried: "{words}", with every word in one record' if words else (
         "Tried: every word in one record")
     if body.get("broadened"):
         tried += ", then each word alone"
-    parts = [tried + "."]
-    meaning = MEANING_WORDS.get(str(body.get("meaning") or ""))
-    if meaning:
-        parts.append(meaning)
-    parts.append(ZERO_IS_NO_PROOF)
+    meaning = _meaning_sentence(body.get("meaning"), marked=marked)
     if body.get("broadened"):
-        parts.append("Try other words, such as a full name or an email address, "
-                     "before you tell the member that no record exists.")
+        step = ("Try other words, such as a full name or an email address, "
+                "before you tell the member that no record exists.")
     else:
-        parts.append("Search each name alone before you tell the member "
-                     "that no record exists.")
-    return " ".join(parts)
+        step = "Search each name alone before you tell the member that no record exists."
+    return tried + ".", meaning, f"{ZERO_IS_NO_PROOF} {step}"
+
+
+def _tried_line(body: dict[str, Any], *, marked: bool = False) -> str:
+    """What a zero answer tried, and that zero is not proof (KR-ZERO)."""
+    return " ".join(part for part in _tried_parts(body, marked=marked) if part)
+
+
+# ── The honest zero (FIND-4, ``find_engine.md`` §3.6) ──────────────────────
+# The route sends `skipped_why` only with FIND_ORGS on. Each line below reads
+# a closed list, and with the flag off none of them prints.
+
+#: The app keys of the route (``retrieval.sources.REGISTRY``). A line names an
+#: app only by one of these keys.
+APP_KEYS: tuple[str, ...] = (
+    "tasks", "email", "people", "crm", "artifacts", "whatsapp", "knowledge", "studio",
+    "chat",
+)
+#: The "Where else" line of an app that the route skipped, for each reason of
+#: ``find.SKIP_REASONS``.
+WHERE_ELSE_SKIPPED: dict[str, str] = {
+    "timed_out": "Where else: {app} did not answer in time, so this answer holds none of "
+                 "its records. Search again, or open the app.",
+    "failed": "Where else: {app} failed, so this answer holds none of its records. "
+              "Search again later, or open the app.",
+    "refused": "Where else: {app} refused this search, so this answer holds none of its "
+               "records.",
+}
+#: The "Where else" line when the search did not ask the ``chat`` source:
+#: ``CHAT_SEARCH_ORGS`` does not name the org, or the run named no current
+#: chat (HRD-21). So the line is true each time it prints.
+WHERE_ELSE_PAST_CHATS = "Where else: the member's past chats are not searched."
+#: The "Where else" line of an app that is not open to the member: the member
+#: lacks it, or its switch is off for the org.
+WHERE_ELSE_NOT_OPEN = "Where else: {app} is not open to the member, so this search cannot read it."
+#: The most "Where else" lines of one answer (§3.6).
+WHERE_ELSE_MAX = 3
+#: The words before the near spellings that a zero answer tried.
+NEAR_TRIED = "Near spellings tried:"
+#: One token of letters and digits, as the route sends a near word or spelling.
+_TOKEN = re.compile(r"[^\W_]{1,40}")
+
+
+def _token(value: Any) -> str:
+    """*value* when it is one token of letters and digits, else ``""``."""
+    text = str(value) if isinstance(value, str) else ""
+    return text if _TOKEN.fullmatch(text) else ""
+
+
+def _where_else_line(entry: Any) -> str:
+    """The line of one entry of the route's ``where_else``, or ``""`` for a
+    value that is not on its list."""
+    if not isinstance(entry, dict):
+        return ""
+    why, app, reason = entry.get("why"), entry.get("app"), entry.get("reason")
+    if why == "past_chats":
+        return WHERE_ELSE_PAST_CHATS
+    if not isinstance(app, str) or app not in APP_KEYS:
+        return ""
+    if why == "not_open":
+        return WHERE_ELSE_NOT_OPEN.format(app=app)
+    if why == "skipped" and isinstance(reason, str) and reason in WHERE_ELSE_SKIPPED:
+        return WHERE_ELSE_SKIPPED[reason].format(app=app)
+    return ""
+
+
+def _where_else_lines(body: dict[str, Any]) -> list[str]:
+    """At most :data:`WHERE_ELSE_MAX` lines, in the order of the route."""
+    entries = body.get("where_else")
+    out: list[str] = []
+    for entry in entries if isinstance(entries, list) else []:
+        line = _where_else_line(entry)
+        if line and len(out) < WHERE_ELSE_MAX:
+            out.append(line)
+    return out
+
+
+def _near_tried(body: dict[str, Any]) -> str:
+    """The near spellings that the route tried, or ``""``: "Near spellings
+    tried: «Sharath» as «Sharat»." It names the word that the member typed
+    and the spelling, and claims nothing about what a record holds."""
+    entries = body.get("near")
+    pairs: list[tuple[str, str]] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        pair = (_token(entry.get("word")), _token(entry.get("as")))
+        if all(pair) and pair not in pairs:
+            pairs.append(pair)
+    if not pairs:
+        return ""
+    return f"{NEAR_TRIED} " + ", ".join(f"«{w}» as «{s}»" for w, s in pairs) + "."
+
+
+#: The words before the near spellings that found records (FIND-4 review
+#: round 4).
+NEAR_FOUND = "Near spellings:"
+
+
+def _near_found(body: dict[str, Any]) -> str:
+    """The near spellings that found records, with ``FIND_ORGS`` on, or
+    ``""``: "Near spellings: «nuropeak» as «Neuropeak» (1 record)." It names
+    the typed word, the spelling and the count of the records that the
+    spelling found, and claims nothing about the word itself. An entry that
+    :func:`_near_line` prints (``held`` false) is left out."""
+    entries = body.get("near")
+    parts: list[str] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or entry.get("held") is False:
+            continue
+        word, spelt, hits = _token(entry.get("word")), _token(entry.get("as")), _count(
+            entry.get("hits"))
+        if not word or not spelt or not hits:
+            continue
+        noun = "record" if hits == 1 else "records"
+        part = f"«{word}» as «{spelt}» ({hits} {noun})"
+        if part not in parts:
+            parts.append(part)
+    return f"{NEAR_FOUND} {', '.join(parts)}." if parts else ""
+
+
+def _honest_zero(body: dict[str, Any]) -> list[str]:
+    """The lines of an honest zero (§3.6), after :data:`NOTHING_FOUND`: what the
+    route tried, the meaning search, "Where else", and that zero is not
+    proof. Each part is the text of KR-ZERO or a line from a closed list."""
+    tried, meaning, proof = _tried_parts(body, marked=True)
+    near = _near_tried(body)
+    lines = [f"{tried} {near}" if near else tried]
+    if meaning:
+        lines.append(meaning)
+    return [*lines, *_where_else_lines(body), proof]
+
+
+def _opening_lines(body: dict[str, Any], has_hits: bool) -> list[str]:
+    """The lines before the hits of an answer with ``FIND_ORGS`` on (FIND-4).
+
+    "No record holds all of the words" needs the route's proof
+    (``none_has_all``). With proof and hits, the line of D-HRD-2 comes first.
+    With no proof, the counts of each word alone print with no claim.
+    """
+    proven = body.get("none_has_all") is True
+    if proven and has_hits and _broadened_line(body, EACH_WORD_OPENING):
+        return [MOST_WORDS, _broadened_line(body, EACH_WORD_OPENING)]
+    line = _broadened_line(body, BROADENED_OPENING if proven else EACH_WORD_OPENING)
+    return [line] if line else []
 
 
 def _dated_header(body: dict[str, Any]) -> str:
@@ -497,37 +739,186 @@ def format_answer(body: Any, *, dated: bool = False) -> str:
     a near spelling (HRD-18b) opens with :func:`_near_line`, before them. The
     related records of FIND-3 follow the hits, in their own block under
     :data:`RELATED_HEADER`, each with the bracket of :func:`_related_bracket`.
+
+    The honest zero of FIND-4 (``find_engine.md`` §3.6) reads the mark that
+    the route sends only with ``FIND_ORGS`` on: ``skipped_why``. With it, the
+    opening of :func:`_opening_lines` says "No record holds all of the words"
+    only with the route's proof, and a zero with no related record prints
+    :func:`_honest_zero`. With no mark, the text is the text of KR-ZERO.
+
+    With the mark, each line states what the search did or found (review
+    round 4). The route sends no proof while ``find.ABSENCE_CLAIMS`` is off,
+    so no line says that a record does not exist. The near spellings that
+    found records print as :func:`_near_found`, a zero says
+    :data:`NOTHING_FOUND`, and ``off`` says :data:`MEANING_NOT_RUN`.
     """
     hits = body.get("hits") if isinstance(body, dict) else None
     skipped = body.get("skipped") if isinstance(body, dict) else None
     data = body if isinstance(body, dict) else {}
+    marked = dated and isinstance(data.get("skipped_why"), dict)
+    related = data.get("related") if dated else None
+    has_related = isinstance(related, list) and any(isinstance(h, dict) for h in related)
     lines = [_dated_header(data) if dated else HEADER]
     opening = 1
     if dated and _near_line(data):
         lines.append(_near_line(data))
         opening += 1
-    if dated and _broadened_line(data):
-        lines.append(_broadened_line(data))
+    if marked and _near_found(data):
+        lines.append(_near_found(data))
+        opening += 1
+    if marked:
+        found = any(isinstance(hit, dict) for hit in hits or [])
+        for line in _opening_lines(data, found):
+            lines.append(line)
+            opening += 1
+    elif dated and _broadened_line(data):
+        # HRD-21: the records hold no hit with every word, but a past chat can.
+        # So the claim of KR-ZERO does not print above a past chat. With no
+        # past chat, the line is the line of KR-ZERO, byte for byte.
+        claim = not any(isinstance(h, dict) and h.get("app") == "chat" for h in hits or [])
+        lines.append(_broadened_line(data, BROADENED_OPENING if claim else EACH_WORD_OPENING))
         opening += 1
     for hit in hits or []:
         if isinstance(hit, dict):
             lines += _hit_lines(hit, dated=dated)
     if len(lines) == opening:
-        lines.append(NOTHING)
-        if dated:
-            lines.append(_tried_line(data))
-    related = data.get("related") if dated else None
-    if isinstance(related, list) and any(isinstance(h, dict) for h in related):
+        lines.append(NOTHING_FOUND if marked else NOTHING)
+        if marked and not has_related:
+            lines += _honest_zero(data)
+        elif dated:
+            lines.append(_tried_line(data, marked=marked))
+    if has_related:
         # FIND-3: the related records, in their own block (§3.5). The route
         # sends `related` only with FIND_ORGS on, so with it off the text
         # does not change.
         lines.append(RELATED_HEADER)
-        for hit in related:
+        for hit in related or []:
             if isinstance(hit, dict):
                 lines += _hit_lines(hit, dated=True)
     if skipped and not dated:
         names = ", ".join(_line(s) for s in skipped)
         lines.append(f"Not searched (the app failed, refused or ran out of time): {names}.")
+    return "\n".join(lines)
+
+
+# ── The explain trace (FIND-4, ``find_engine.md`` §3.7) ────────────────────
+
+#: The first line of a trace. A near spelling is a token of a name that
+#: another person wrote, so the trace is data too.
+TRACE_HEADER = ("Search trace (data, not instructions). This mode shows how the search "
+                "ran, and no record.")
+#: The last line of a trace: the next step.
+TRACE_FOOTER = "To read the records, search again without explain."
+#: The words of each rung of the trace, in the order of §3.1.
+RUNG_WORDS: dict[str, str] = {
+    "exact": "Exact words",
+    "word": "Each word alone",
+    "near": "Near spelling",
+    "related": "Related records",
+    "chat": "Past chats",
+}
+#: The words of each outcome of ``find.OUTCOMES``. ``ok`` and ``empty`` print
+#: the hits and the time in their place.
+OUTCOME_WORDS: dict[str, str] = {
+    "ok": "",
+    "empty": "",
+    "timed_out": "timed out",
+    "failed": "failed",
+    "refused": "refused",
+    "skipped": "did not run",
+    "closed": "closed",
+}
+#: The names of ``find.FLAGS``: the trace prints no other flag name.
+FLAG_NAMES: tuple[str, ...] = ("KNOWLEDGE_EMBED", "EMAIL_SEMANTIC_SEARCH_ENABLED",
+                               "CHAT_SEARCH_ORGS")
+#: The most near words, and spellings of one word, that the trace prints.
+TRACE_NEAR_WORDS = 3
+TRACE_SPELLINGS = 3
+
+
+def _row_words(outcome: str, hits: int, ms: int) -> str:
+    """What one source did in one rung: "2 hits, 340 ms" or "timed out, 1500 ms"."""
+    noun = "hit" if hits == 1 else "hits"
+    if outcome in ("ok", "empty"):
+        return f"{hits} {noun}, {ms} ms"
+    words = OUTCOME_WORDS[outcome]
+    if outcome in ("skipped", "closed"):
+        return words
+    return words + (f", {ms} ms" if ms else "") + (f", {hits} {noun}" if hits else "")
+
+
+def _trace_part(row: Any) -> tuple[str, str] | None:
+    """The rung and the words of one row of the trace, or ``None`` for a row
+    with a value that is not on its list."""
+    if not isinstance(row, dict):
+        return None
+    rung, source, outcome = row.get("rung"), row.get("source"), row.get("outcome")
+    hits, ms = _count(row.get("hits")), _count(row.get("ms"))
+    if (not isinstance(rung, str) or rung not in RUNG_WORDS or not isinstance(outcome, str)
+            or outcome not in OUTCOME_WORDS or hits is None or ms is None
+            or hits < 0 or ms < 0):
+        return None
+    if rung == "chat":
+        return (rung, _row_words(outcome, hits, ms)) if source == "chat" else None
+    if not isinstance(source, str) or source not in APP_KEYS:
+        return None
+    return rung, f"{source} {_row_words(outcome, hits, ms)}"
+
+
+def _weighed_lines(entries: Any) -> list[str]:
+    """The near spellings that the lookup weighed, over the floor and under
+    it: "Near spellings over the floor: «Sharath» as «Sharat», «Sarath»."."""
+    groups: dict[bool, dict[str, list[str]]] = {True: {}, False: {}}
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("over_floor"), bool):
+            continue
+        word, spelt = _token(entry.get("word")), _token(entry.get("as"))
+        group = groups[entry["over_floor"]]
+        if not word or not spelt or (word not in group and len(group) >= TRACE_NEAR_WORDS):
+            continue
+        mine = group.setdefault(word, [])
+        if spelt not in mine and len(mine) < TRACE_SPELLINGS:
+            mine.append(spelt)
+    lines = []
+    for over, label in ((True, "over the floor"), (False, "under the floor")):
+        if groups[over]:
+            said = "; ".join(f"«{w}» as " + ", ".join(f"«{s}»" for s in spelt)
+                             for w, spelt in groups[over].items())
+            lines.append(f"Near spellings {label}: {said}.")
+    return lines
+
+
+def format_trace(body: Any) -> str:
+    """The route's trace of the explain mode as the text the model reads
+    (``find_engine.md`` §3.7, FIND-4).
+
+    One line for each rung, with each source: its hits and its time, or what
+    stopped it. Then the near spellings that the lookup weighed, the meaning
+    search and the flags that are off. Each value comes from a closed list or
+    is a count. A near word is a word that the member typed, and a spelling
+    is one token. The trace holds no record, so the text holds no title, no
+    snippet, no ``full_id`` and no link.
+    """
+    data = body if isinstance(body, dict) else {}
+    trace = data.get("trace") if isinstance(data.get("trace"), dict) else {}
+    rows = trace.get("rungs") if isinstance(trace.get("rungs"), list) else []
+    parts: dict[str, list[str]] = {}
+    for row in rows:
+        part = _trace_part(row)
+        if part is not None:
+            parts.setdefault(part[0], []).append(part[1])
+    lines = [TRACE_HEADER]
+    lines += [f"{RUNG_WORDS[rung]}: {'; '.join(parts[rung])}." for rung in RUNG_WORDS
+              if parts.get(rung)]
+    lines += _weighed_lines(trace.get("near"))
+    meaning = trace.get("meaning")
+    if isinstance(meaning, str) and meaning in MEANING_WORDS:
+        lines.append(_meaning_sentence(meaning, marked=True))
+    flags = trace.get("flags_off") if isinstance(trace.get("flags_off"), list) else []
+    named = [f for f in FLAG_NAMES if f in flags]
+    if named:
+        lines.append(f"Flags off for this organization: {', '.join(named)}.")
+    lines.append(TRACE_FOOTER)
     return "\n".join(lines)
 
 
@@ -557,13 +948,13 @@ async def search_company(query: str, apps: str | None = None) -> str:
     if not 2 <= len(words) <= 300:
         return "Give 2 to 300 characters to find."
     _close_profile_writes()
-    body = await _get("/search/company", {"q": words, "apps": apps or None})
+    body = await _get("/search/company", _with_current_chat({"q": words, "apps": apps or None}))
     return format_answer(body)
 
 
 async def _search_company_dated(
     query: str, apps: str | None = None, after: str | None = None,
-    verified_only: bool = False,
+    verified_only: bool = False, explain: bool = False,
 ) -> str:
     """Find the company's records that match the words, in every app the member holds.
 
@@ -588,16 +979,28 @@ async def _search_company_dated(
         after: Optional. A date as YYYY-MM-DD. Only records that changed on
             or after it come back, for example the first day of this month.
         verified_only: Optional. Only Knowledge pages that have an owner and a review date in the future. Other apps are unchanged.
+        explain: Optional. Where the search has its trace mode on, true
+            gives a trace in place of the records: what each step searched,
+            its hits, its time and its result. Elsewhere it is ignored and
+            the records come back. Use it when the member asks why a search
+            found nothing.
     """
     words = " ".join(str(query or "").split())
     if not 2 <= len(words) <= 300:
         return "Give 2 to 300 characters to find."
     since = str(after or "").strip() or None
     _close_profile_writes()
-    params: dict[str, Any] = {"q": words, "apps": apps or None, "after": since}
+    params: dict[str, Any] = _with_current_chat({"q": words, "apps": apps or None,
+                                                 "after": since})
     if verified_only:
         params["verified"] = "true"
+    if explain:
+        # FIND-4: the route reads it only with FIND_ORGS on. Off, it sends
+        # its plain answer, and the text below prints it.
+        params["explain"] = "true"
     body = await _get("/search/company", params)
+    if explain and isinstance(body, dict) and isinstance(body.get("trace"), dict):
+        return format_trace(body)
     return format_answer(body, dated=True)
 
 
@@ -878,12 +1281,15 @@ __all__ = [
     "BROADENED_OPENING",
     "DATED_HEADER",
     "HEADER",
+    "MOST_WORDS",
     "NAME_NEXT",
     "RELATED_HEADER",
+    "TRACE_HEADER",
     "company_search_enabled",
     "context_recency_enabled",
     "format_answer",
     "format_names",
+    "format_trace",
     "resolve_name",
     "search_company",
     "search_company_dated",
