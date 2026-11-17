@@ -58,8 +58,10 @@ What this proves:
   goes red.
 * In ``_no_shrink_sql`` drop ``or server_write``, or in
   ``chat_brief._post_row`` drop ``server_write=True`` (fix round 1, F1):
-  the enforce cases of ``test_the_server_fill_of_a_minted_row_wins_in_each_mode``
-  go red.
+  the six shadow and enforce cases of
+  ``test_the_server_fill_of_a_minted_row_wins_in_each_mode`` go red. Enforce
+  keeps the client text. Shadow keeps the lead, but the fill logs a shadow
+  line, and the test refuses that line.
 * In ``_note_shrink`` use ``contextlib.nullcontext()`` in place of
   ``contextlib.suppress(Exception)`` (fix round 1, F2):
   ``test_a_fault_of_the_log_never_fails_the_save`` goes red.

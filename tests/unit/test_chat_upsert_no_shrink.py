@@ -34,12 +34,19 @@ Postgres (R8). This file proves the rest:
   ``test_only_a_client_write_of_an_agent_row_gets_a_variant`` goes red.
 * In ``chat_brief._post_row`` drop ``server_write=True``:
   ``test_only_the_server_fill_passes_server_write`` goes red.
+* In a second gateway module, call ``_upsert_messages`` with
+  ``**{"server_write": True}``, or with ``server_write=bool(flag)``:
+  ``test_only_the_server_fill_passes_server_write`` goes red.
+* Add a field ``server_write`` to ``MessageRecord``, and let
+  ``_upsert_messages`` honour it: ``test_no_client_input_can_carry_server_write``
+  goes red.
 * In ``_note_shrink`` use ``contextlib.nullcontext()`` in place of
   ``contextlib.suppress(Exception)``: ``test_a_fault_of_the_log_never_fails_the_save``
   goes red.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import re
 from contextlib import contextmanager
@@ -196,27 +203,95 @@ def test_only_a_client_write_of_an_agent_row_gets_a_variant(mode: str) -> None:
     assert got is base, mode
 
 
+class _ServerWriteUses(ast.NodeVisitor):
+    """Each use of the name ``server_write`` in one module: a keyword of a
+    call, a key of a dict literal (``**{...}`` too), and an assignment to a
+    name or an attribute. Each use carries its enclosing function."""
+
+    def __init__(self, rel: str) -> None:
+        self.rel = rel
+        self.func = "<module>"
+        self.found: list[tuple[str, str, str, str]] = []
+
+    def _function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        outer, self.func = self.func, node.name
+        self.generic_visit(node)
+        self.func = outer
+
+    visit_FunctionDef = _function
+    visit_AsyncFunctionDef = _function
+
+    def visit_Call(self, node: ast.Call) -> None:
+        for kw in node.keywords:
+            if kw.arg == "server_write":
+                self.found.append((self.rel, self.func, ast.unparse(node.func),
+                                   ast.unparse(kw.value)))
+        self.generic_visit(node)
+
+    def visit_Dict(self, node: ast.Dict) -> None:
+        for key, value in zip(node.keys, node.values, strict=True):
+            if isinstance(key, ast.Constant) and key.value == "server_write":
+                self.found.append((self.rel, self.func, "dict", ast.unparse(value)))
+        self.generic_visit(node)
+
+    def _targets(self, targets: list[ast.expr]) -> None:
+        for target in targets:
+            for n in ast.walk(target):
+                if ((isinstance(n, ast.Name) and n.id == "server_write")
+                        or (isinstance(n, ast.Attribute) and n.attr == "server_write")):
+                    self.found.append((self.rel, self.func, "assign", ast.unparse(target)))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._targets(node.targets)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._targets([node.target])
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._targets([node.target])
+        self.generic_visit(node)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self._targets([node.target])
+        self.generic_visit(node)
+
+
 def test_only_the_server_fill_passes_server_write() -> None:
-    """``server_write`` is for ``chat_brief._post_row`` ONLY. The message
-    route of the browser never names it, and no other gateway file passes it.
-    A client that could pass it would bypass the guard."""
+    """``server_write`` is for ``chat_brief._post_row`` ONLY (fix round 2,
+    F-C). An AST walk of every gateway module finds each keyword, each dict
+    key and each assignment of the name. Two uses are allowed: the literal
+    ``True`` of ``_post_row``, and the pass of the seam's own parameter to
+    ``_no_shrink_sql``. A client that could set it would bypass the guard."""
     import inspect
     from pathlib import Path
 
-    from gateway.routes import chat_brief
-
-    assert "server_write=True" in inspect.getsource(chat_brief._post_row)
-    assert "server_write" not in inspect.getsource(chat.save_messages)
     root = Path(chat.__file__).resolve().parents[1]
-    users = sorted(
-        str(f.relative_to(root)).replace("\\", "/")
-        for f in root.rglob("*.py")
-        if "server_write=True" in f.read_text(encoding="utf-8")
-    )
-    assert users == ["routes/chat_brief.py"], users
+    found: list[tuple[str, str, str, str]] = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        visitor = _ServerWriteUses(rel)
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8"), filename=rel))
+        found.extend(visitor.found)
+    assert sorted(found) == [
+        ("routes/chat.py", "_upsert_messages", "_no_shrink_sql", "bool(server_write)"),
+        ("routes/chat_brief.py", "_post_row", "_upsert_messages", "True"),
+    ], found
     param = inspect.signature(chat._upsert_messages).parameters["server_write"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
     assert param.default is False
+
+
+def test_no_client_input_can_carry_server_write() -> None:
+    """Fix round 2, F-A. The client record and the message route name no
+    ``server_write``, so a body can never set it (the model of
+    ``member_typed`` in ``test_chat_summary.py``)."""
+    import inspect
+
+    assert "server_write" not in chat.MessageRecord.model_fields, (
+        "a client record must never carry the server fill")
+    assert "server_write" not in inspect.signature(chat.save_messages).parameters
 
 
 class _FakeResult:

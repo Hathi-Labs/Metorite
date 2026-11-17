@@ -1110,7 +1110,8 @@ def _note_shrink(sql: str, row: Any, *, session_id: str, message_id: str,
                  organization_id: str | None) -> None:
     """Log a shorter client write that the guard saw (HRD-17e-1). No text.
 
-    It never raises. It runs inside the tenant session of the save, so a
+    It never raises an ``Exception`` (a ``BaseException`` still goes up). It
+    runs inside the tenant session of the save, so a
     fault of the log must not fail the save (``gateway/AGENTS.md`` 0e: a
     shadow never changes the answer).
     """
