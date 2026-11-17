@@ -22,10 +22,13 @@ KNOWN, OFF, NOLOGIN, STRANGER = "k@y.test", "off@y.test", "nl@y.test", "x@y.test
 
 
 def _directory(call: dict) -> Any:
+    """The directory answers only the addresses that it is asked about."""
+    asked = {a for a in str(call.get("params", {}).get("emails", "")).split(",") if a}
     if call["path"] == "/projects/people/names":
-        return {"names": {KNOWN: "Kim", OFF: "Olga", NOLOGIN: "Nat"}}
+        every = {KNOWN: "Kim", OFF: "Olga", NOLOGIN: "Nat"}
+        return {"names": {a: n for a, n in every.items() if a in asked}}
     if call["path"] == "/projects/people/reach":
-        return {"not_reachable": [OFF, NOLOGIN]}
+        return {"not_reachable": [a for a in (OFF, NOLOGIN) if a in asked]}
     return responder(call)
 
 
