@@ -259,13 +259,24 @@ A client slice that changes the look needs the owner's Visual review: light mode
 | **HRD-17** | 2996 | Offline, loading and two devices. The design is in §4.7a. The slices are HRD-17a to HRD-17f below. Not built | none (this is the parent row) | STANDARD |
 | **HRD-17a** | 3483 | The server runs one send once. A repeat of the same `user_message_id` in a thread joins the first run. Dark, behind a new flag | `tests/unit/test_send_once.py` | HIGH |
 | **HRD-17b** | 3484 | The chat outbox: in memory, with `sessionStorage` for a reload. It releases once and in order. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
-| **HRD-17c** | 3485 | BUILT, client only, no flag (2026-11-17). An in-memory hold of the sends that a button or a card makes while the history loads. The words go out once, in order, after the load. A thread switch or an unmount drops the hold. After 20 seconds (`HISTORY_HOLD_DEADLINE_SECONDS`) the hold drops, and the words return to the box or the card returns to its question. The textarea stays disabled, and no new text shows. No outbox and no storage. The open composer and the waiting line are OWNER-GATE and move to HRD-17d with the owner's wording. Gate: AGENT-SAFE. Verify: `npx vitest run src/lib/historyHold.test.ts src/components/historyHold.fence.test.ts`. Builder: lane-ui | `src/lib/historyHold.test.ts`, `src/components/historyHold.fence.test.ts` | STANDARD |
+| **HRD-17c** | 3485 | BUILT, client only, no flag (2026-11-17). A button or card send while the history loads waits for the load. Detail in the list under this table. Builder: lane-ui | `src/lib/historyHold.test.ts`, `src/components/historyHold.fence.test.ts` | STANDARD |
 | **HRD-17d** | 3486 | A send that lost its connection before the server answered is not marked sent. Builder: lane-ui | `src/hooks/useAgentChatDisconnect.test.ts` | STANDARD |
 | **HRD-17e** | 3487 | The server's copy wins the fold of a second device, and a shorter write before the seal is refused if the check says so. Builder: lane-ui, with a HIGH server part | `src/lib/chatFold.test.ts`, `tests/unit/test_chat_upsert_no_shrink_r8.py` | STANDARD |
 | **HRD-17f** | 3488 | The e2e test with the network off, and the Visual review. Builder: lane-ui | `e2e/chat_outbox.spec.ts` | STANDARD |
 | **HRD-18** | 2997 | Names as people say them. HRD-18a, BUILT 2026-11-14: the one matcher, the CRM search word by word with its near pass (`crm_platform.md` §19.5), `resolve_person` and `find_contact`. HRD-18b: the company search and the mail sender match | `tests/unit/test_name_variants.py`, `tests/unit/test_crm_near_search_r8.py` (R8) | STANDARD |
 | **HRD-19** | 2998 | Start clean | `tests/unit/test_continue_carries.py` | STANDARD |
 | **HRD-22** | 3231 | A late approve acts once. BUILT dark behind `CHAT_LATE_APPROVE_ORGS`, 2026-11-14 (`chat_run_continuity.md` S2, item 8). The flag flip on production is OWNER-GATE (`enforcement-flip`) | `tests/unit/test_late_approve_grant.py`, `tests/unit/test_late_approve_grant_r8.py` (R8 and a private real Redis) | HIGH |
+
+**HRD-17c, as built** (gate AGENT-SAFE):
+
+- The hold lives in memory, in one mount of the chat. It uses no storage, no outbox and no flag.
+- Only a button or a card send is held. The typed box and the chat bar keep their words, and the textarea stays disabled.
+- After the load, the held sends go out in order, once. The first may start a run. Each later one is a steer, or it is refused and its words go back.
+- A thread switch or an unmount drops the hold.
+- After 20 seconds (`HISTORY_HOLD_DEADLINE_SECONDS`) the hold drops. The words return to the box, or the card returns to its question.
+- A late call that comes after the load posts at once. No new text shows.
+- Verify: `npx vitest run src/lib/historyHold.test.ts src/components/historyHold.fence.test.ts`.
+- The open composer and the waiting line are OWNER-GATE. They move to HRD-17d with the owner's wording.
 
 An eval with a live model costs money. Each eval above USD 0.50 waits for the
 owner's OK.

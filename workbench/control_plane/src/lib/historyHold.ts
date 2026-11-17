@@ -73,3 +73,15 @@ export function createHistoryHold<T>(
     size: () => items.length,
   };
 }
+
+/**
+ * The route of the Nth held send on a drain. The first held send may start a
+ * run. That run is live in the store before the next call, but the render has
+ * not seen it. A plain second send then meets a busy store and drops with no
+ * trace. So every held send after the first counts as sent into a live run:
+ * `sendRoute` makes it a steer, or it is refused and the words go back to the
+ * member. A held send is never dropped and never starts a second run.
+ */
+export function drainAssumesRun(index: number, runActive: boolean): boolean {
+  return runActive || index > 0;
+}

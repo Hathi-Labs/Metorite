@@ -141,7 +141,7 @@ import {
 import { boxHadFocus, refocusAfterPress, refocusQuietly } from "@/lib/composerFocus";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
-import { createHistoryHold, type HistoryHold } from "@/lib/historyHold";
+import { createHistoryHold, drainAssumesRun, type HistoryHold } from "@/lib/historyHold";
 import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
@@ -198,7 +198,7 @@ const HISTORY_LOADER_DELAY_MS = 300;
 // sender changed (a card), else the words go back to the box.
 type HeldSend = {
   text: string;
-  opts: { typed?: boolean; onKept?: () => void };
+  opts: { typed?: boolean; onKept?: () => void; assumeRun?: boolean };
   undo?: () => void;
 };
 /** The mark of a button or card send: hold it while the history loads. */
@@ -2023,6 +2023,8 @@ export default function AgentChat({
    */
   // HRD-17c: the sends that wait for the history. In memory only, per mount.
   // The deadline gives the words back: the sender's `undo`, or the box.
+  const loadingHistoryRef = useRef(loadingHistory);
+  loadingHistoryRef.current = loadingHistory;
   const holdRef = useRef<HistoryHold<HeldSend> | null>(null);
   const giveBackHeldRef = useRef<(dropped: HeldSend[]) => void>(() => {});
   giveBackHeldRef.current = (dropped) => {
@@ -2046,14 +2048,16 @@ export default function AgentChat({
     // `opts.hold` (HRD-17c): a button or a card passes it. While the history
     // loads, the words wait in memory and go out after the load, once. The
     // typed box and the chat bar never pass it (they keep their words).
-    (text: string, opts?: { typed?: boolean; onKept?: () => void; hold?: { undo?: () => void } }): boolean => {
+    (text: string, opts?: { typed?: boolean; onKept?: () => void; hold?: { undo?: () => void }; assumeRun?: boolean }): boolean => {
       const trimmed = text.trim();
       // Guard ALL senders (suggestion pills, MCQ choices, HITL card submits,
       // the email "Fix" flow) — not just the textarea form — against sending
       // while history is still hydrating from Postgres, which would clobber the
       // about-to-be-replaced messages array.
       if (!trimmed) return false;
-      if (loadingHistory) {
+      // The CURRENT state, from a ref: a call that comes after a round trip
+      // holds the closure of the click, and the load may be done by then.
+      if (loadingHistoryRef.current) {
         if (!opts?.hold) return false;
         holdRef.current?.hold({
           text: trimmed,
@@ -2063,7 +2067,11 @@ export default function AgentChat({
         return true;
       }
       setComposerNotice(null);
-      const route = sendRoute({ runActive: isRunActive, mode: effectiveRuntime });
+      // `assumeRun` (HRD-17c): a later held send meets the run that the first
+      // one just started, which this render has not seen yet.
+      const route = opts?.assumeRun === true && !isRunActive
+        ? sendRoute({ runActive: true, mode: effectiveRuntime })
+        : sendRoute({ runActive: isRunActive, mode: effectiveRuntime });
       const typed = opts?.typed === true;
       if (route === "send") {
         void (typed ? sendMessage(trimmed, { typed: true }) : sendMessage(trimmed));
@@ -2079,7 +2087,7 @@ export default function AgentChat({
       });
       return true;
     },
-    [isRunActive, effectiveRuntime, loadingHistory, sendMessage, steerMessage, giveBack]
+    [isRunActive, effectiveRuntime, sendMessage, steerMessage, giveBack]
   );
 
   // HRD-17c: the held sends go out in order, once each, through submitText,
@@ -2088,10 +2096,11 @@ export default function AgentChat({
   // sits before the chat bar's effect, so the older words go first.
   useEffect(() => {
     if (loadingHistory) return;
-    for (const h of holdRef.current?.release() ?? []) {
-      const sent = submitText(h.text, h.opts);
+    (holdRef.current?.release() ?? []).forEach((h, i) => {
+      const withRun = { ...h.opts, assumeRun: drainAssumesRun(i, false) };
+      const sent = submitText(h.text, withRun);
       if (!sent) giveBackHeldRef.current([h]);
-    }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadingHistory]);
 

@@ -36,6 +36,16 @@ describe("the programmatic senders go through the hold", () => {
     expect(body).not.toMatch(/if \(!trimmed \|\| loadingHistory\) return false;/);
   });
 
+  it("submitText reads the CURRENT load state, so a late call posts at once", () => {
+    const body = between(chat, "const submitText = useCallback(", "[isRunActive, effectiveRuntime");
+    expect(body).toContain("if (loadingHistoryRef.current) {");
+    expect(body).not.toMatch(/if \(loadingHistory\)/);
+    expect(body).toContain("opts?.assumeRun === true && !isRunActive");
+    expect(chat).toContain("loadingHistoryRef.current = loadingHistory;");
+    // The deps hold no stale `loadingHistory`.
+    expect(chat).toContain("[isRunActive, effectiveRuntime, sendMessage, steerMessage, giveBack]");
+  });
+
   it("each button and card sender passes the mark", () => {
     expect(chat).toContain("submitText(choice, HOLD_WORDS)");
     expect(chat).toContain("submitText(answer, hold)");
@@ -64,7 +74,9 @@ describe("the drain and the clear", () => {
     const eff = between(chat, "HRD-17c: the held sends go out", "// D99: the chat bar's words");
     expect(eff).toContain("if (loadingHistory) return;");
     expect(eff).toContain("holdRef.current?.release()");
-    expect(eff).toContain("submitText(h.text, h.opts)");
+    expect(eff).toContain("assumeRun: drainAssumesRun(i, false)");
+    expect(eff).toContain("submitText(h.text, withRun)");
+    expect(eff).toContain("giveBackHeldRef.current([h])");
     expect(eff).toContain("[loadingHistory]");
   });
 
