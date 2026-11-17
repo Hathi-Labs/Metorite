@@ -153,14 +153,15 @@ from gateway.routes.crm.field_sql import (
     crm_zone,
     day_field,
     day_sql,
+    field_hint,
     field_pairs,
     from_source,
     group_sql,
     lookup_ids,
     measure_sql,
+    module_filter,
     module_measure,
     module_scope,
-    module_where,
     overlay_amount,
     overlay_close,
     overlay_filters,
@@ -170,7 +171,6 @@ from gateway.routes.crm.field_sql import (
     overlay_weighted,
     overlay_where,
     split_sql,
-    text_matches,
     used_keys,
     zoned,
 )
@@ -246,10 +246,11 @@ MODULE_TABLE = "crm_module_records"
 MODULE_PREFIX = "module:"
 
 #: The query parameters a module aggregate takes, beside ``field.<key>``. A
-#: list filter on a module is a 422, never ignored.
+#: list filter on a module is a 422, never ignored. Task 3690: ``q`` matches
+#: the record name, as on the module list (``field_sql.name_clause``).
 MODULE_PARAMS = frozenset({
     "entity", "measure", "group_by", "group_field", "field", "bucket",
-    "page", "page_size", "sort", "dir", "fields", "long_read",
+    "page", "page_size", "sort", "dir", "fields", "long_read", "q",
 })
 
 #: The groups that only a deal has.
@@ -614,7 +615,7 @@ def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]
     })
     if other:
         raise _refuse(
-            f"A module aggregate takes field.<key> filters only, not {other}.",
+            f"A module aggregate takes field.<key> filters and q only, not {other}.",
         )
     return pairs
 
@@ -893,11 +894,11 @@ async def _read(
         field_measure, field = module_measure(measure, field)
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
-        # §18.16 part 6: a text filter counts each case and short form.
-        matches = await text_matches(db, str(current_tenant()), scope, module, pairs)
-        # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
-        ids = await lookup_ids(db, str(current_tenant()), scope, pairs)
-        where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+        # §18.16 part 6: a text filter counts each case and short form, and
+        # task 3128: a lookup filter by a Metorite id also matches its Zoho
+        # id. Task 3690: the module list calls the same filter, with `q`.
+        where, matches = await module_filter(db, scope, module, pairs, zone=zone,
+                                             q=params.q)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         source = where.source
         matched = {pairs[i][0]: list(found) for i, found in matches.items()}
@@ -1267,12 +1268,19 @@ async def _compute(
             else:
                 if module is None and pairs:
                     raise _core_pairs_refusal()
-                read = await _read(
-                    db, found, module, measure=measure, group_by=group_by,
-                    field=field, group_field=group_field, bucket=bucket,
-                    pairs=pairs, params=params, user=user, fields=fields,
-                    timeout_ms=timeout_ms,
-                )
+                try:
+                    read = await _read(
+                        db, found, module, measure=measure, group_by=group_by,
+                        field=field, group_field=group_field, bucket=bucket,
+                        pairs=pairs, params=params, user=user, fields=fields,
+                        timeout_ms=timeout_ms,
+                    )
+                except HTTPException as exc:
+                    # Task 3690: a field that is not on this module names
+                    # the other modules that hold it.
+                    if module is None:
+                        raise
+                    raise await field_hint(db, module, exc) from None
     except DBAPIError as exc:
         if _is_timeout(exc):
             raise HTTPException(status_code=503, detail=timed_out) from None

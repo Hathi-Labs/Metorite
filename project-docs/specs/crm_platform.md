@@ -148,6 +148,17 @@
 > setup" each clear the names and the two stamps. The admin renames the record
 > types in Fields, "Record names". A list name alone is enough.
 
+> **Built: CRM Rung 0 (task 3690, 2026-11-17).** The chat got 422 on 10 of
+> 61 `crm_aggregate` calls (production log of 2026-11-17). A number field now
+> takes `field.<key>.from` and `.to`. A module aggregate and the module list
+> take `q` and the `field.<key>` filters through one filter. A field that is
+> not on the module gets a 422 that names the close fields and the other
+> modules that hold it.
+
+> Rung 0 is built on `crm-rung0-mt-c18dfcf9`, not merged. No
+> migration and no flag. §18.11.2 item 4 holds the rules. Fences:
+> `tests/unit/test_crm_rung0.py` and `tests/unit/test_crm_rung0_r8.py`.
+
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
 > the sync design (§7.1) that this plan reuses. Do not re-derive them here.
@@ -3915,6 +3926,31 @@ that comes from a model. A per-member record scope (§18.5, CRM-Q12).
    (`field.<key>=<value>`), or a date field with a range (`field.<key>.from`
    and `field.<key>.to`). The core entities keep the list filters they have
    today, and they get no new filter.
+   **Changed 2026-11-17, CRM Rung 0 (task 3690):**
+   - A number field (`number`, `decimal`, `currency`, `percent`) takes a
+     range too. Each end is inclusive, as on a date. The range compares the
+     guarded number of the measure (`field_sql._amount`). A JSON number and a
+     plain decimal string are values. Each other stored form is no value, so
+     no end of a range takes it: `Rs. 0.00`, `NA`, `-`, an empty string,
+     null, an object, an array, `1e999` and `12,50`. So `from=1` gives the
+     records with a value of at least 1. The bound value takes the guard of
+     the equality filter. A `from` past its `to` gives no record, as a date
+     range does. A range on any other type is a 422: "A range takes a date
+     or a number field."
+   - A module aggregate takes `q`. `field_sql.name_clause` is the one name
+     matcher. It is `core.search_where` over `MODULE_RECORDS`, so each word
+     must be in the name, in any case. `%` and `_` stay ILIKE wildcards, as
+     on every CRM list. A `q` longer than 200 characters is a 422, and an
+     empty `q` is an absent one. The overlay of §18.13.5 calls the same
+     matcher.
+   - The module list (`GET /crm/modules/<module>/records`) takes the
+     `field.<key>` filters. It and the module aggregate both call
+     `field_sql.module_filter`, so the total of the list equals the count of
+     the aggregate with the same query.
+   - The 422 `unknown_field` names at most 3 close fields of the module, by
+     key or label. On a module read, it also names at most 3 other mirrored
+     modules of the org with a field of that key or label. Each name is cut
+     to 60 characters and quoted.
 5. The route checks each field name against the field definitions of the
    org, or of the module. On a core entity, the field measure and the field group
    read only a custom key that is not a system field and is not retired. A

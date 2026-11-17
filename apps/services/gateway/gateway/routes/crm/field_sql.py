@@ -57,6 +57,7 @@ groups of ``aggregate.py`` take their month on that clock, through
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -70,10 +71,10 @@ from gateway.routes.crm.modules import _field_defs
 from sqlalchemy import text
 
 #: The query-string prefix of a module field filter: ``field.<key>=<value>``,
-#: and ``field.<key>.from`` / ``field.<key>.to`` for a date range.
+#: and ``field.<key>.from`` / ``field.<key>.to`` for a date or a number range.
 FIELD_PREFIX = "field."
 
-#: The two ends of a date range filter.
+#: The two ends of a range filter. Each end is inclusive.
 RANGE_ENDS: dict[str, str] = {".from": ">=", ".to": "<="}
 
 #: The types a field measure takes.
@@ -143,6 +144,17 @@ MAX_EXPONENT = 100
 #: The most field keys that one 422 names. A model reads the list and picks
 #: one, and a module can hold a few hundred fields.
 CHOICES_MAX = 20
+
+#: Task 3690: the most close fields, and the most other modules, that one
+#: ``unknown_field`` 422 names. The cutoff is the ``difflib`` ratio.
+CLOSE_MAX = 3
+CLOSE_CUTOFF = 0.5
+#: The longest asked name that the close match reads. A longer one gets no
+#: close fields, so a long name costs no ``difflib`` work.
+CLOSE_PROBE = 100
+#: The longest field key, label or module name that a hint quotes. Each is
+#: org text, so the hint cuts it and puts it between quotes.
+HINT_CHARS = 60
 
 #: CRM-Q31-2: each key word of a module scope → its key part of the
 #: catalogue (``crm_sync.catalogue.KEY_PARTS``).
@@ -240,13 +252,42 @@ class FieldScope:
         if found is None and (key or "") in KEY_WORDS and self.catalogue:
             raise HTTPException(status_code=422, detail=self._no_key_field(str(key)))
         if found is None:
+            close = self.closest(key or "")
+            near = f"The closest fields of {self.owner} are: {close}. " if close else ""
             raise HTTPException(status_code=422, detail={
                 "code": "unknown_field",
-                "message": f"'{key}' is not a field of {self.owner}. "
+                "message": f"'{key}' is not a field of {self.owner}. {near}"
                            f"Its fields are: {self.choices()}. "
                            "crm_list_fields gives the type of each.",
+                # Task 3690: the asked name, so a caller with a session can
+                # name the other modules that hold it (:func:`field_hint`).
+                "key": key or "",
             })
         return found
+
+    def closest(self, key: str) -> str:
+        """At most :data:`CLOSE_MAX` keys of this scope whose key or label is
+        near *key*, as one phrase for a 422, or ``""`` (task 3690). The match
+        is ``difflib`` over the case-folded keys and labels, with the cutoff
+        :data:`CLOSE_CUTOFF`. A key word is left out, and so is a name longer
+        than :data:`CLOSE_PROBE`, so the work stays small."""
+        probe = key.strip().casefold()
+        if not probe or len(probe) > CLOSE_PROBE:
+            return ""
+        names: dict[str, str] = {}
+        for k, ref in sorted(self.fields.items()):
+            if k in KEY_WORDS or ref.parts:
+                continue
+            names.setdefault(k.casefold(), k)
+            names.setdefault(ref.label.casefold(), k)
+        keys: list[str] = []
+        for name in difflib.get_close_matches(probe, list(names), n=len(names) or 1,
+                                              cutoff=CLOSE_CUTOFF):
+            if names[name] not in keys:
+                keys.append(names[name])
+            if len(keys) == CLOSE_MAX:
+                break
+        return ", ".join(_named(k, self.fields[k].label) for k in keys)
 
     def _sum_of(self, key: str) -> FieldRef | None:
         """The one ``FieldRef`` of a sum named by its joined keys, or None.
@@ -492,6 +533,66 @@ def _refuse(message: str) -> HTTPException:
     return HTTPException(status_code=422, detail={
         "code": "unfit_field", "message": message,
     })
+
+
+def _quoted(name: Any) -> str:
+    """Org text for a 422 (task 3690): one line, at most :data:`HINT_CHARS`
+    characters, between quotes. A quote inside it is dropped, so the text
+    cannot close the quotes early."""
+    flat = " ".join(str(name).split()).replace("'", "")
+    return f"'{flat[:HINT_CHARS]}'"
+
+
+def _named(key: str, label: str) -> str:
+    """A field key for a 422, with its label when the label differs."""
+    if not label or label == key:
+        return _quoted(key)
+    return f"{_quoted(key)} (label {_quoted(label)})"
+
+
+#: Task 3690: the other mirrored modules of the bound org that hold a field
+#: with the asked key or label. The org, the name and the modules are bound,
+#: and RLS holds the session too.
+_ELSEWHERE_SQL = (
+    "SELECT DISTINCT entity FROM crm_field_defs "
+    "WHERE organization_id = CAST(:agf_org AS uuid) "
+    "AND entity = ANY(CAST(:agf_entities AS text[])) "
+    "AND (lower(key) = :agf_name OR lower(label) = :agf_name) "
+    f"ORDER BY entity LIMIT {CLOSE_MAX}"
+)
+
+
+async def field_hint(db: Any, module: str, exc: HTTPException) -> HTTPException:
+    """*exc* with one more sentence when it is the 422 ``unknown_field``:
+    the other mirrored modules that hold a field with the asked key or
+    label (task 3690). Each other 422 comes back as it was. One bounded read
+    in the caller's tenant session, for the bound org, after the read of the
+    mirrored set. A module name is an
+    API name, never record data. With no such module, the 422 names none."""
+    detail = exc.detail
+    asked = detail.get("key") if isinstance(detail, dict) else None
+    if (exc.status_code != 422 or not isinstance(detail, dict)
+            or detail.get("code") != "unknown_field" or not asked
+            or len(str(asked)) > CLOSE_PROBE):
+        return exc
+    from gateway.routes.crm.core import current_tenant
+    from gateway.routes.crm.modules import mirrored_modules
+
+    mirrored = await mirrored_modules(db)
+    others = [f"{MODULE_OWNER}{m}" for m in sorted(mirrored) if m != module]
+    org = current_tenant()
+    if not others or not org:
+        return exc
+    rows = (await db.execute(text(_ELSEWHERE_SQL), {
+        "agf_org": str(org), "agf_entities": others,
+        "agf_name": str(asked).strip().lower(),
+    })).fetchall()
+    if not rows:
+        return exc
+    names = ", ".join(_quoted(r[0]) for r in rows)
+    message = (f"{detail.get('message', '')} A field {_quoted(asked)} is on: "
+               f"{names}. Give that module as the entity.")
+    return HTTPException(status_code=422, detail={**detail, "message": message})
 
 
 def _type_words(types: tuple[str, ...]) -> str:
@@ -876,13 +977,34 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
     :func:`lookup_ids`)."""
     x = ext[0] if ext is not None and ref.type == "lookup" and end is None else None
     clause, bound = _filter_value(scope, ref, end, k, v, value, also, x)
-    if ref.type in MEASURE_TYPES and end is None:
+    if ref.type in MEASURE_TYPES:
+        # Task 3690: a range compares the same guarded number as `=`. A value
+        # that is no number is NULL, so no end of a range takes it.
         number, keys, source = _amount(scope.column, ref, k)
-        return f"{number} = {clause}", bound, keys, source
+        operator = "=" if end is None else RANGE_ENDS[end]
+        return f"{number} {operator} {clause}", bound, keys, source
     keys = {k: ref.key}
     if x is not None and ext is not None:
         keys[x] = ext[1]
     return clause, bound, keys, _source_of(scope.column)
+
+
+def _decimal(name: str, value: str) -> str:
+    """The bound text of a number filter value, or a 422 (``field.<name>``).
+    The one guard of the value of ``=``, ``.from`` and ``.to``: a finite
+    number of at most :data:`MAX_DIGITS` digits, below 10^:data:`MAX_EXPONENT`."""
+    try:
+        number = Decimal(value.strip())
+    except InvalidOperation:
+        raise _refuse(f"'field.{name}' must be a number.") from None
+    if (not number.is_finite()
+            or len(number.as_tuple().digits) > MAX_DIGITS
+            or abs(number.adjusted()) > MAX_EXPONENT):
+        raise _refuse(
+            f"'field.{name}' must be a number of at most {MAX_DIGITS} "
+            f"digits, below 10^{MAX_EXPONENT}.",
+        )
+    return str(number)
 
 
 def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
@@ -892,11 +1014,15 @@ def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: 
     side of its clause: :func:`_filter` puts the number of :func:`_amount`
     on the left. A module filter reads the detoasted copy (task 3127)."""
     column = _reads(scope.column)
+    if end is not None and ref.type in MEASURE_TYPES:
+        # Task 3690: a number range. :func:`_filter` puts the number on the left.
+        return f"CAST(:{v} AS numeric)", _decimal(ref.key + end, value)
     if end is not None:
         if ref.type not in DATE_TYPES:
             raise _refuse(
-                f"'{ref.key}' is a {ref.type} field. A range takes a date field. "
-                f"The date fields of {scope.owner} are: {scope.choices(DATE_TYPES)}. "
+                f"'{ref.key}' is a {ref.type} field. A range takes a date or a number "
+                f"field. The date and number fields of {scope.owner} are: "
+                f"{scope.choices(DATE_TYPES + MEASURE_TYPES)}. "
                 f"To match one value, give {scope.filter_word(ref.key)}=<value>.",
             )
         # CRM-Q25b: a datetime takes its day in the CRM zone, as its bucket.
@@ -907,18 +1033,7 @@ def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: 
     if ref.type in DATE_TYPES:
         return f"left({column} ->> :{k}, 10) = :{v}", _iso_date(ref.key, value).isoformat()
     if ref.type in MEASURE_TYPES:
-        try:
-            number = Decimal(value.strip())
-        except InvalidOperation:
-            raise _refuse(f"'field.{ref.key}' must be a number.") from None
-        if (not number.is_finite()
-                or len(number.as_tuple().digits) > MAX_DIGITS
-                or abs(number.adjusted()) > MAX_EXPONENT):
-            raise _refuse(
-                f"'field.{ref.key}' must be a number of at most {MAX_DIGITS} "
-                f"digits, below 10^{MAX_EXPONENT}.",
-            )
-        return f"CAST(:{v} AS numeric)", str(number)
+        return f"CAST(:{v} AS numeric)", _decimal(ref.key, value)
     if ref.type == "boolean":
         word = value.strip().lower()
         if word not in ("true", "false"):
@@ -1026,12 +1141,33 @@ async def lookup_ids(db: Any, org: str, scope: FieldScope,
     return out
 
 
+def name_clause(q: str | None) -> tuple[str | None, dict[str, Any]]:
+    """THE name matcher of a module read (task 3690): ``q`` on the record
+    name, and its bound values. ``(None, {})`` when *q* holds nothing.
+
+    It is ``core.search_where`` over ``modules.MODULE_RECORDS``, the ONE
+    search predicate of ``?q=`` that the module list ran before. So the
+    module list, the module aggregate and the overlay match one way. Each
+    word must be in the name, in any case. ``%`` and ``_`` stay ILIKE
+    wildcards, as on every CRM list. A ``q`` of more than ``MAX_Q_CHARS``
+    characters is a 422, and a NUL is a 422 (``records.refuse_nul``)."""
+    from gateway.routes.crm.core import search_where
+    from gateway.routes.crm.modules import MODULE_RECORDS
+    from gateway.routes.crm.records import refuse_nul
+
+    if not q or not q.strip():
+        return None, {}
+    refuse_nul([("q", q)])
+    return search_where(MODULE_RECORDS, q)
+
+
 def module_where(
     scope: FieldScope, module: str, pairs: list[tuple[str, str]], *, zone: str,
     matches: Mapping[int, Sequence[str]] | None = None,
-    ids: Mapping[int, str] | None = None,
+    ids: Mapping[int, str] | None = None, q: str | None = None,
 ) -> WhereSql:
-    """The WHERE clause of one module: the module, and each field filter.
+    """The WHERE clause of one module: the module, each field filter, and
+    ``q`` on the name (:func:`name_clause`, task 3690).
 
     Each name is checked against *scope* first, so an unknown name is a 422
     before any statement runs. A range on a datetime field reads *zone*,
@@ -1051,8 +1187,33 @@ def module_where(
         params.update(keys)
         params[v] = bound
         sources.append(source)
+    named, named_params = name_clause(q)
+    if named:
+        clauses.append(named)
+        params.update(named_params)
     return WhereSql(sql=" WHERE " + " AND ".join(clauses), params=params,
                     source=from_source(*sources))
+
+
+async def module_filter(
+    db: Any, scope: FieldScope, module: str, pairs: list[tuple[str, str]], *,
+    zone: str, q: str | None = None,
+) -> tuple[WhereSql, dict[int, list[str]]]:
+    """THE filter of a module read (task 3690): the module list
+    (``modules.list_module_records``) and the module aggregate both call it,
+    so a total and the list with the same filters cover the same records.
+
+    It reads the stored variants of each text filter (:func:`text_matches`)
+    and the Zoho id of each lookup filter by a Metorite id
+    (:func:`lookup_ids`), in the caller's tenant session, then builds
+    :func:`module_where`. Returns the clause and the variants."""
+    from gateway.routes.crm.core import current_tenant
+
+    org = str(current_tenant())
+    matches = await text_matches(db, org, scope, module, pairs) if pairs else {}
+    ids = await lookup_ids(db, org, scope, pairs) if pairs else {}
+    where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids, q=q)
+    return where, matches
 
 
 # ── The overlay of an empty core slot (CRM-Q20-3a, §18.13.5) ────────────────
@@ -1066,7 +1227,6 @@ OVERLAY_REFUSED: tuple[str, ...] = (
 
 #: The bound names of the overlay clauses.
 _OWNER = "agf_owner"
-_Q = "agf_q"
 _UPDATED_FROM = "agf_uf"
 _UPDATED_TO = "agf_ut"
 
@@ -1165,15 +1325,13 @@ def overlay_where(
             pairs.append((f"{close.key}.from", close_from))
         if close_to:
             pairs.append((f"{close.key}.to", close_to))
-    where = module_where(scope, str(overlay.module), pairs, zone=zone, ids=ids)
+    # Task 3690: `q` goes through the one name matcher of a module read.
+    where = module_where(scope, str(overlay.module), pairs, zone=zone, ids=ids, q=q)
     clauses = [where.sql]
     params = dict(where.params)
     if owner:
         clauses.append(f"lower(owner_email) = :{_OWNER}")
         params[_OWNER] = owner.strip().lower()
-    if q and q.strip():
-        clauses.append(f"name ILIKE :{_Q}")
-        params[_Q] = f"%{q.strip()}%"
     if updated_from:
         clauses.append("coalesce(ext_modified_at, updated_at) >= "
                        + day_start(f"CAST(:{_UPDATED_FROM} AS date)"))
