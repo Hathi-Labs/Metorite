@@ -627,7 +627,9 @@ def test_p1_1_the_real_premerge_gates_a_branch_one_commit_behind(env):
     env.pr(5)
     env.commit("other.txt", "y\n", "main moved")
     git(env.seed, "push", "-q", "origin", "main")
-    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}")
+    # The REAL premerge.sh reads the clock for the release freeze (task 3415). 10:00 UTC is
+    # outside every window, so this case does not depend on the hour that it runs.
+    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}", PREMERGE_NOW="1794823200")
     assert "detached" not in env.log
     assert env.log == "DONE 5 abc123\n"
 
