@@ -1312,3 +1312,19 @@ def test_the_second_witness_is_read_before_the_offer_is_taken():
     src = inspect.getsource(late_approve.grant_from_offer)
     assert src.index("_twin_approved(") < src.index("redis.getdel(okey)")
     assert src.index("SPENT_NAMESPACE") < src.index("redis.getdel(okey)")
+
+
+def test_the_member_level_mark_alone_stops_the_stale_twin(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 1, by behaviour: with the Postgres witness stubbed to False, the
+    member-level mark still refuses the grant. Mutation: drop the read of
+    ``SPENT_NAMESPACE`` in ``grant_from_offer`` -> a grant is written."""
+    assert _run(liveness, "t-hrd22b-m1", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-m1")[0]["request_id"]
+    _run(liveness, "t-hrd22b-m2", live="APPROVE", **_CALL)
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+    monkeypatch.setattr(pending_ask, "twin_approved_since", lambda *_a, **_k: False)
+    res = _approve_late(monkeypatch, "t-hrd22b-m1", c1)
+    assert res.status_code == 409
+    assert _grants(late_on) == []

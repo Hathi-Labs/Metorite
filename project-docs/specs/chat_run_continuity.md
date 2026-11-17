@@ -333,14 +333,17 @@ default. OFF writes no row, parks no run, and reports every run as
      after HRD-22b (task 3294):
      1. **Across chats.** A twin card in chat A takes no grant after the
         member approved its twin in chat B, because the member-level mark
-        reads SPENT. A use also marks both keys with one `SET … GET` each, so
-        a live approve that lands between the grant and its use makes the
-        use refuse.
+        reads SPENT. A use marks the member-level key with ONE `SET … GET`,
+        which alone decides, so a live approve that lands between the grant
+        and its use makes the use refuse, and of two uses at the same moment
+        one writes.
      2. **A fault of Redis.** The grant also asks Postgres. A confirmation
         row of the same member, in any thread, with the same title, detail
         and context, answered `APPROVE` after this row was asked, means that
-        the act ran. The grant refuses then, and when the read fails or the
-        row cannot be compared.
+        the act ran. An `APPROVE` with edits counts. The grant refuses then,
+        and when the read fails or the row cannot be compared. The RESUME path
+        (`_resume_from_row`) asks the same read before it claims the stored
+        call, and a twin that ran takes the old path, so a card shows.
      3. **A mark that expired.** The Postgres read also stops a stale card
         that finds the offer of a new twin.
      Each refusal shows the normal card (the safe side). The cost: when the

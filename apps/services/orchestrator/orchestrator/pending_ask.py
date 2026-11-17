@@ -382,13 +382,15 @@ def read_ask(organization_id: str, request_id: str) -> dict[str, Any] | None:
 
 #: The second witness of the late approve (HRD-22b item 2). A confirmation row
 #: of the member, in ANY thread, with the same visible card, answered APPROVE
-#: after the row was asked. The org predicate stands beside RLS, as in
+#: after the row was asked. An APPROVE with edits (``APPROVE {...}``, the edit
+#: card of EAC-1) is an APPROVE too: the act ran with the edited values. The org predicate stands beside RLS, as in
 #: ``move_ask``.
 _TWIN_APPROVED_SQL = (
     "SELECT 1 FROM chat_pending_ask "
     "WHERE organization_id = CAST(:org AS uuid) AND actor_email = :actor "
     "  AND kind = 'confirmation' AND state = 'answered' "
-    "  AND upper(btrim(coalesce(answer, ''))) = 'APPROVE' "
+    "  AND (upper(btrim(coalesce(answer, ''))) = 'APPROVE' "
+    "       OR upper(coalesce(answer, '')) LIKE 'APPROVE %') "
     "  AND answered_at > CAST(:asked AS timestamptz) AND request_id <> :rid "
     "  AND coalesce(payload->>'title', '') = :title "
     "  AND coalesce(payload->>'detail', '') = :detail "

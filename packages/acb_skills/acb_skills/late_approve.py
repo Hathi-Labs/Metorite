@@ -76,9 +76,16 @@ rules close the gaps of the second review:
   also closes the case of a mark that expired and a new twin that wrote a fresh
   offer.
 * **The race.** :func:`take_grant` takes the grant, then marks the act with ONE
-  ``SET … GET`` on the offer key and on the member key. A live approve that
-  landed between the offer read and the grant write left SPENT there, so the
-  use refuses.
+  ``SET … GET`` on the member-level key, which alone decides (two keys that
+  each test the other's mark can leave NO writer). A live approve that landed
+  between the offer read and the grant write left SPENT there, so the use
+  refuses.
+* **The RESUME path.** ``routes.agent._resume_from_row`` asks
+  :func:`twin_ran` before it admits the run or claims the stored call, because
+  :func:`claim_act` reads Redis only. A twin that ran takes the old path (a
+  card shows, nothing is written).
+* **An APPROVE with edits** (EAC-1, ``APPROVE {…}``) counts as an APPROVE in
+  the Postgres read.
 
 **The safe side.** A missing record, a mismatch, a Redis fault, a run with no
 verified member and a run with no card channel each show the normal card. The
@@ -430,19 +437,21 @@ async def _spend(redis: Any, member: str, thread: str, digest: str) -> bool:
     the act was SPENT already, in this thread or (HRD-22b) in any chat of the
     member.
 
-    ONE ``SET … GET`` writes each mark and gives back the old value (Redis
-    6.2 or later). So of two writers at the same moment, exactly one reads a
-    value that is not SPENT (RESUME-2a review, P1-A). The member-level mark
-    has no thread in its key, so a twin card of another chat sees it."""
+    ONE ``SET … GET`` on the member-level key decides. It has no thread in its
+    key, so a twin card of another chat sees it, and of two writers at the
+    same moment exactly one reads a value that is not SPENT (RESUME-2a review,
+    P1-A). The old value of the offer key does NOT decide: two writers that
+    test two keys can each see the other's mark, and then NO writer takes the
+    act. The offer key is only overwritten with SPENT (an offer that ran is
+    no offer), and the grant is removed. Redis 6.2 or later."""
     from acb_common.tenant_redis import key
 
     ttl = spent_ttl_s()
-    old = await _call(redis.set(key(OFFER_NAMESPACE, member, thread, digest), _SPENT,
+    old = await _call(redis.set(key(SPENT_NAMESPACE, member, digest), _SPENT,
                                 ex=ttl, get=True))
-    old_member = await _call(redis.set(key(SPENT_NAMESPACE, member, digest), _SPENT,
-                                       ex=ttl, get=True))
+    await _call(redis.set(key(OFFER_NAMESPACE, member, thread, digest), _SPENT, ex=ttl))
     await _call(redis.delete(key(GRANT_NAMESPACE, member, thread, digest)))
-    return _is_spent(old) or _is_spent(old_member)
+    return _is_spent(old)
 
 
 async def _twin_approved(org: str, member: str, row: Mapping[str, Any]) -> bool:
@@ -460,6 +469,18 @@ async def _twin_approved(org: str, member: str, row: Mapping[str, Any]) -> bool:
             _OP_TIMEOUT_S * 2))
     except Exception as exc:
         _log.warning("late_approve.twin_read_failed", error_type=type(exc).__name__)
+        return True
+
+
+async def twin_ran(org: str, member: str, row: Mapping[str, Any]) -> bool:
+    """True when a twin of the parked *row* ran, or when nobody can say
+    (fail closed). The one reader that the RESUME path (``routes.agent.
+    _resume_from_row``) asks before it claims the stored call, because
+    :func:`claim_act` reads Redis only, and a stall of Redis leaves no mark
+    (HRD-22b review, P1). Never raises."""
+    try:
+        return await _twin_approved(org, member, row)
+    except Exception:
         return True
 
 
@@ -766,4 +787,5 @@ __all__ = [
     "record_offer",
     "spent_ttl_s",
     "take_grant",
+    "twin_ran",
 ]

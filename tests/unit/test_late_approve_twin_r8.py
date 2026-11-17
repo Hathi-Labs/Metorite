@@ -117,8 +117,19 @@ def test_r8_an_approved_twin_in_another_thread_is_found(as_app):
     assert pending_ask.twin_approved_since(w.org_a, _ALICE.upper(), stale) is True
 
 
+def test_r8_an_approve_with_edits_is_a_twin_that_ran(as_app):
+    """Review P1: the edit card (EAC-1) answers ``APPROVE {...}``, and the act
+    ran with the edited values. The row keeps that text, not the bare word."""
+    w = as_app
+    stale = _stale(w, w.org_a, thread=w.t_alice)
+    twin = _twin_in(w, w.org_a, w.t_alice)
+    _set(w, w.org_a, twin, "answered", 'APPROVE {"edit":{"title":"New"}}', "5 seconds")
+    assert pending_ask.twin_approved_since(w.org_a, _ALICE, stale) is True
+
+
 @pytest.mark.parametrize("state,answer,shift", [
     ("answered", "REJECT", "5 seconds"),
+    ("answered", "APPROVER", "5 seconds"),    # a word that only starts like APPROVE
     ("parked", None, "5 seconds"),
     ("open", None, "5 seconds"),
     ("closed", None, "5 seconds"),
