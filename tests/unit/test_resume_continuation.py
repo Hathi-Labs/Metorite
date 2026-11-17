@@ -1708,6 +1708,13 @@ def test_parked_end_of_reads_only_the_parked_end_of_the_run(streams):
     _seed_events(streams, "t-trim", [{"type": "TEXT_MESSAGE_CONTENT", "delta": "x"}] * 3
                  + [{"type": "RUN_FINISHED", "parked": True}])
     assert asyncio.run(stream_relay.parked_end_of("t-trim", _RUN)) is None, "no head"
+    # Review round 2, P2-a: a trim took part one, and a continuation's marked
+    # start is the first start of the head. That is not part one's stream.
+    _seed_events(streams, "t-trim-2", [
+        {"type": "RUN_STARTED", "runId": _RUN, "resumed": True},
+        {"type": "TEXT_MESSAGE_CONTENT", "delta": "two"},
+        {"type": "RUN_FINISHED", "parked": True}])
+    assert asyncio.run(stream_relay.parked_end_of("t-trim-2", _RUN)) is None, "a marked head"
 
 
 def _gen_lines(*events: dict[str, Any]):
@@ -1847,27 +1854,29 @@ def _case_a_row(db: _ResumeDb, tid: str, **over: Any) -> str:
 
 @pytest.fixture
 def last_turn(monkeypatch):
-    """``routes.chat.reply_turn`` and the member check as recorders.
-    ``answer`` sets ``last`` (an exception raises), ``label`` the members of
-    the label at the park, and ``same_members`` what the member check gives."""
+    """``routes.chat.reply_turn`` and the label check as recorders.
+    ``answer`` sets ``last`` (an exception raises), ``label`` the label at
+    the park, ``late_join`` a later waterline, and ``same_label`` what the
+    label check gives."""
     from gateway.routes import agent as agent_routes
     from gateway.routes import chat as chat_routes
 
-    state: dict[str, Any] = {"answer": True, "label": None, "same_members": True,
-                             "calls": [], "members": []}
+    state: dict[str, Any] = {"answer": True, "label": None, "same_label": True,
+                             "late_join": False, "calls": [], "labels": []}
 
     def _turn(session_id, message_id, *, organization_id):
         state["calls"].append((session_id, message_id, organization_id))
         if isinstance(state["answer"], BaseException):
             raise state["answer"]
-        return chat_routes.ReplyTurn(last=state["answer"], members=state["label"])
+        return chat_routes.ReplyTurn(last=state["answer"], label=state["label"],
+                                     late_join=state["late_join"])
 
-    async def _members(org, thread_id, member, at_park):
-        state["members"].append((org, thread_id, member, at_park))
-        return state["same_members"]
+    async def _labels(org, thread_id, member, at_park):
+        state["labels"].append((org, thread_id, member, at_park))
+        return state["same_label"]
 
     monkeypatch.setattr(chat_routes, "reply_turn", _turn)
-    monkeypatch.setattr(agent_routes, "_same_members_as_park", _members)
+    monkeypatch.setattr(agent_routes, "_same_label_as_park", _labels)
     return state
 
 
@@ -1892,13 +1901,13 @@ def test_case_a_goes_on_in_the_same_reply(
     assert req.run_id == _RUN and req.assistant_message_id == _REPLY
     assert req.payload == {"message": "", "source": "chat"}, "no words, no prompt id"
     assert last_turn["calls"] == [(tid, _REPLY, _ORG_A)]
-    assert last_turn["members"] == [(_ORG_A, tid, _ALICE, None)], "the session's member"
+    assert last_turn["labels"] == [(_ORG_A, tid, _ALICE, None)], "the session's member"
     assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
 
 
 @pytest.mark.parametrize("case", [
     "not_last_turn", "no_message_id", "stream_gone", "other_run", "stopped",
-    "open_row", "no_run_id", "check_fault", "members_changed",
+    "open_row", "no_run_id", "check_fault", "label_changed", "late_join",
 ])
 def test_each_doubt_gives_a_new_reply(
     case, resume_on, ask_db, streams, no_persist, launches, last_turn, monkeypatch,
@@ -1925,8 +1934,10 @@ def test_each_doubt_gives_a_new_reply(
         last_turn["answer"] = False
     if case == "check_fault":
         last_turn["answer"] = RuntimeError("db down")
-    if case == "members_changed":
-        last_turn["same_members"] = False
+    if case == "label_changed":
+        last_turn["same_label"] = False
+    if case == "late_join":
+        last_turn["late_join"] = True
     res = _approve(monkeypatch, tid, rid)
     assert res.status_code == 200, res.text
     body = res.json()
@@ -2033,13 +2044,16 @@ def test_the_case_a_checks_read_server_facts_only():
     same = inspect.getsource(agent_routes._same_reply_of)
     assert "req." not in same and "payload" not in same
     assert 'row.get("run_id")' in same and 'stored.get("message_id")' in same
-    assert "await _same_members_as_park(org, thread_id, member, turn.members)" in same
+    assert "await _same_label_as_park(org, thread_id, member, turn.label)" in same
+    assert "or turn.late_join" in same
+    run = inspect.getsource(executor.run_agent_stream)
+    assert '**({"resumed": True} if resume_call is not None else {})' in run, "the mark"
     assert "member=me)" in inspect.getsource(agent_routes._resume_from_row)
     from gateway.routes import chat as chat_routes
 
     last_sql = " ".join(chat_routes._LAST_TURN_SQL.split())
     assert "(timestamp_ms, id) > (r.timestamp_ms, r.id)" in last_sql, "the order of a reader"
-    assert "r.authority" in last_sql
+    assert "r.authority" in last_sql and "p.join_message_ts > r.timestamp_ms" in last_sql
     route = inspect.getsource(agent_routes._resume_from_row)
     assert route.index("pending_ask.claim_stored_call, org") < route.index(
         "await _same_reply_of(")
@@ -2062,29 +2076,39 @@ class _RoomNow:
         self.resolve_failed = failed
 
 
+_ZOHO = "integrations:use:zoho-crm"
+
+
+def _auth(members: list[str], caps: list[str] | None = None) -> dict[str, Any]:
+    return {"members": sorted(members), "caps": sorted(caps or [])}
+
+
 @pytest.mark.parametrize(("at_park", "room", "now", "same"), [
-    (None, "solo", [_ALICE], True),
-    (None, "solo", [], True),
-    (None, "shared", [_ALICE], False),
-    (None, "solo", [_ALICE, _BOB], False),
-    ((_ALICE, _BOB), "shared", [_BOB, _ALICE.upper()], True),
-    ((_ALICE, _BOB), "shared", [_ALICE, _BOB, "carol@ask-a.test"], False),
-    ((_ALICE, _BOB), "solo", [_ALICE], False),
-    ((), "solo", [_ALICE], False),
-    (None, "failed", [_ALICE], False),
-    (None, "none", [_ALICE], False),
-], ids=["solo", "solo-empty", "solo-label-shared-room", "solo-label-joined",
-        "shared-same", "shared-joined", "shared-left", "bad-label", "room-failed", "no-room"])
-def test_the_member_check_compares_the_room_now_with_the_label(
-    at_park, room, now, same, monkeypatch,
-):
-    """P1. Case A only when the members now equal the members at the park.
-    No label means solo at the park, so the room must still be solo. The read
-    of the members fails open, so a failed room read and a shared room with no
-    label refuse. Mutation: return True for a solo label with a shared room
-    -> red. Compare sets with a member less -> red."""
-    import acb_auth
+    (None, "solo", None, True),
+    (None, "shared", None, False),
+    (None, "solo", _auth([_ALICE, _BOB]), False),
+    (_auth([_ALICE, _BOB]), "shared", _auth([_BOB, _ALICE]), True),
+    (_auth([_ALICE, _BOB], [_ZOHO]), "shared", _auth([_ALICE, _BOB], [_ZOHO]), True),
+    (_auth([_ALICE, _BOB]), "shared", _auth([_ALICE, _BOB], [_ZOHO]), False),
+    (_auth([_ALICE, _BOB], [_ZOHO]), "shared", _auth([_ALICE, _BOB]), False),
+    (_auth([_ALICE, _BOB]), "shared", _auth([_ALICE, _BOB, "carol@ask-a.test"]), False),
+    (_auth([_ALICE, _BOB]), "solo", None, False),
+    ({"caps": []}, "solo", None, False),
+    (None, "failed", None, False),
+    (None, "none", None, False),
+], ids=["solo", "solo-label-shared-room", "solo-then-joined", "shared-same",
+        "shared-same-caps", "cap-granted", "cap-taken", "shared-joined", "shared-left",
+        "bad-label", "room-failed", "no-room"])
+def test_the_label_check_compares_members_and_caps(at_park, room, now, same, monkeypatch):
+    """Review P1 and round 2 P1. Case A only when the label of the room now
+    (``chat_fold._run_authority``) equals the label of the reply row: the
+    members AND the caps. A cap granted or taken after the park changes the
+    intersection of part two. No label means solo at the park, so the room
+    must still be solo. A failed room read refuses. Mutation: compare the
+    members only -> ``cap-granted`` and ``cap-taken`` go green -> red."""
+    from gateway import chat_fold
     from gateway.routes import agent as agent_routes
+    from gateway.routes import chat as chat_routes
 
     rooms = {"solo": _RoomNow(shared=False), "shared": _RoomNow(shared=True),
              "failed": _RoomNow(shared=False, failed=True), "none": None}
@@ -2094,27 +2118,29 @@ def test_the_member_check_compares_the_room_now_with_the_label(
         seen.append(("room", thread_id, email, org))
         return rooms[room]
 
-    async def _access(session_id, actor):
-        seen.append(("access", session_id, actor))
-        return None, list(now)
+    async def _authority(thread_id, actor):
+        seen.append(("authority", thread_id, actor))
+        return now
 
     monkeypatch.setattr(agent_routes, "_resolve_room", _room)
-    monkeypatch.setattr(acb_auth, "resolve_session_access", _access)
-    label = tuple(sorted(at_park)) if at_park else at_park
-    got = asyncio.run(agent_routes._same_members_as_park(_ORG_A, "t-m", _ALICE, label))
+    monkeypatch.setattr(chat_fold, "_run_authority", _authority)
+    label = chat_routes.label_of(at_park)
+    got = asyncio.run(agent_routes._same_label_as_park(_ORG_A, "t-m", _ALICE, label))
     assert got is same
     assert seen[0] == ("room", "t-m", _ALICE, _ORG_A), "the session's member and org"
 
 
-def test_the_label_of_a_row_reads_as_its_members():
+def test_the_label_of_a_row_reads_as_members_and_caps():
     from gateway.routes import chat as chat_routes
 
-    lbl = chat_routes._label_members
+    lbl = chat_routes.label_of
     assert lbl(None) is None
-    assert lbl({"members": ["B@x.test", "a@x.test", "a@x.test"], "caps": []}) == (
-        "a@x.test", "b@x.test")
-    assert lbl(json.dumps({"members": ["a@x.test"]})) == ("a@x.test",)
-    assert lbl({"caps": []}) == () and lbl("not json") == () and lbl({"members": [1]}) == ()
+    assert lbl({"members": ["B@x.test", "a@x.test", "a@x.test"], "caps": [_ZOHO, "b"]}) == (
+        ("a@x.test", "b@x.test"), ("b", _ZOHO))
+    assert lbl(json.dumps({"members": ["a@x.test"]})) == (("a@x.test",), ())
+    bad = chat_routes._BAD_LABEL
+    assert lbl({"caps": []}) == bad and lbl("not json") == bad and lbl({"members": [1]}) == bad
+    assert lbl({"members": ["a@x.test"], "caps": "x"}) == bad and lbl([1]) == bad
 
 
 def test_an_xdel_that_takes_nothing_refuses_before_the_run_is_active(streams, monkeypatch):
@@ -2157,33 +2183,56 @@ def _evt(kind: str, **kw: Any) -> dict[str, Any]:
     return {"type": kind, **kw}
 
 
-def test_same_reply_events_keep_part_one_or_go_to_the_fallback_row():
-    """P2-1. Two ``RUN_STARTED`` of the run: the replay holds part one, so it
-    goes whole into the reply. One: a trim took part one, so only part two
-    goes, into the fallback row. Mutation: ``>= 1`` -> a trimmed replay writes
-    over part one -> red."""
+def _start(*, resumed: bool = False, run_id: str = _RUN) -> dict[str, Any]:
+    return _evt("RUN_STARTED", runId=run_id, **({"resumed": True} if resumed else {}))
+
+
+def test_same_reply_events_decide_by_the_head():
+    """P2-1 and round 2 P2-a. The head decides, and the ``resumed`` mark
+    tells a continuation's start from part one's.
+
+    * One start at the head, and no continuation start: nothing new.
+    * Part one at the head, and one or two continuations: the whole replay.
+    * A trim took part one and left two continuation starts: only the events
+      from the last start go, into the fallback row.
+
+    Mutation: count the starts again -> the trimmed three parts write over
+    part one -> red. Drop the "nothing new" case -> part one goes twice ->
+    red."""
     from gateway.chat_fold import same_reply_events
 
-    whole = [_evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
-             _evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta="two")]
-    assert same_reply_events(whole, _RUN, _REPLY, "fb") == (whole, _REPLY)
-    trimmed = [_evt("TEXT_MESSAGE_CONTENT", delta="ne"), _evt("RUN_STARTED", runId=_RUN),
-               _evt("TEXT_MESSAGE_CONTENT", delta="two")]
-    assert same_reply_events(trimmed, _RUN, _REPLY, "fb") == (trimmed[1:], "fb")
-    other = [_evt("RUN_STARTED", runId="run-x"), _evt("RUN_STARTED", runId=_RUN)]
+    one = [_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"), _evt("RUN_ERROR")]
+    assert same_reply_events(one, _RUN, _REPLY, "fb") == ([], None), "nothing new"
+    two = [_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
+           _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta="two")]
+    assert same_reply_events(two, _RUN, _REPLY, "fb") == (two, _REPLY)
+    three = [*two, _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta="three")]
+    assert same_reply_events(three, _RUN, _REPLY, "fb") == (three, _REPLY)
+    trimmed = three[1:]  # part one's start went, two continuation starts are left
+    assert same_reply_events(trimmed, _RUN, _REPLY, "fb") == (three[4:], "fb")
+    edge = three[2:]  # the trim ended exactly at the end of part one
+    assert same_reply_events(edge, _RUN, _REPLY, "fb") == (three[4:], "fb")
+    other = [_start(run_id="run-x"), _start(resumed=True)]
     assert same_reply_events(other, _RUN, _REPLY, "fb") == (other[1:], "fb")
-    assert same_reply_events([], _RUN, _REPLY, "fb") == ([], "fb")
+    assert same_reply_events([], _RUN, _REPLY, "fb") == ([], None)
 
 
 def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
-    """P2-1, the real fold with the writes as recorders. A whole replay
-    writes the reply row. A trimmed one writes ONLY the fallback row, with
-    part two. With no fallback id the fold is as before."""
+    """P2-1 and round 2, the real fold with the writes as recorders. A whole
+    replay writes the reply row when its label is the row's label. A trimmed
+    one, and a whole one at another label, write ONLY the fallback row, with
+    part two. No continuation start writes nothing. With no fallback id the
+    fold is as before. Mutation: drop the label test of the fold -> part two
+    of another label lands in the reply row -> red."""
     from gateway import chat_fold, run_trace
     from gateway.routes import chat as chat_routes
 
     writes: list[tuple[str, str]] = []
     events: list[dict[str, Any]] = []
+    row_label: list[Any] = [None]
+
+    def _turn(session_id, message_id, *, organization_id):
+        return chat_routes.ReplyTurn(last=True, label=row_label[0])
 
     async def _replay(*_a, **_k):
         return [dict(e) for e in events]
@@ -2200,22 +2249,33 @@ def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
     monkeypatch.setattr(chat_fold, "_run_authority", _none)
     monkeypatch.setattr(chat_routes, "_ensure_session", lambda *_a, **_k: None)
     monkeypatch.setattr(chat_routes, "_upsert_messages", _upsert)
+    monkeypatch.setattr(chat_routes, "reply_turn", _turn)
 
     def fold(fallback: str | None) -> None:
         asyncio.run(chat_fold.persist_final_assistant_message(
             "t-fold", _REPLY, user_id=_ALICE, run_id=_RUN, organization_id=_ORG_A,
             expect_run_id=_RUN, holds_mail=False, same_reply_fallback_id=fallback))
 
-    events[:] = [_evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta="Part one."),
-                 _evt("RUN_STARTED", runId=_RUN), _evt("TEXT_MESSAGE_CONTENT", delta=" Part two."),
-                 _evt("RUN_FINISHED")]
+    whole = [_start(), _evt("TEXT_MESSAGE_CONTENT", delta="Part one."),
+             _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta=" Part two."),
+             _evt("RUN_FINISHED")]
+    events[:] = whole
     fold("fb-row")
     assert writes == [(_REPLY, "Part one. Part two.")]
     writes.clear()
-    events[:] = events[2:]  # a trim took part one
+    row_label[0] = chat_routes.label_of(_auth([_ALICE, _BOB]))  # the park was shared
+    fold("fb-row")
+    assert writes == [("fb-row", " Part two.")], "another label: part two in its own row"
+    row_label[0] = None
+    writes.clear()
+    events[:] = whole[2:]  # a trim took part one
     fold("fb-row")
     assert writes == [("fb-row", " Part two.")], "part one is never written over"
     writes.clear()
+    events[:] = [*whole[:2], _evt("RUN_ERROR")]  # the continuation never started
+    fold("fb-row")
+    assert writes == [], "nothing new"
+    events[:] = whole[2:]
     fold(None)
     assert writes == [(_REPLY, " Part two.")], "with no fallback the fold is as before"
 

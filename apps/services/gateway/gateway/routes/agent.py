@@ -4097,10 +4097,15 @@ async def _same_reply_of(
       (D-RES-7), a Stop and a new run each fail it.
     * The reply row is the last turn of the chat, in the order that a reader
       sees (``routes.chat.reply_turn``, under the session's org).
-    * The members of the room did not change since the park
-      (:func:`_same_members_as_park`). A member who joined later has a
-      waterline after part one, and a member who left must not shape the
-      label of the reply (review of 2026-11-17, P1).
+    * No participant joined after the reply row: no history waterline
+      (``join_message_ts``) is later than it. A member who left and came
+      back has a later waterline, and a set of members cannot show that
+      (review round 2, P2-b).
+    * The label of the room now equals the label of the reply row, members
+      AND caps (:func:`_same_label_as_park`). A part two at a new
+      intersection must not write into a row with the old label (review
+      P1 and round 2 P1). The final fold checks the label again
+      (``chat_fold.persist_final_assistant_message``).
 
     The ids come from the server's row and record, and the members from the
     session's member and org, never from the request (R11). It never raises:
@@ -4121,9 +4126,9 @@ async def _same_reply_of(
         from gateway.routes.chat import reply_turn
 
         turn = await asyncio.to_thread(reply_turn, thread_id, reply_id, organization_id=org)
-        if turn is None or not turn.last:
+        if turn is None or not turn.last or turn.late_join:
             return None
-        if not await _same_members_as_park(org, thread_id, member, turn.members):
+        if not await _same_label_as_park(org, thread_id, member, turn.label):
             return None
     except Exception as exc:  # case B is always safe
         _log.warning("agent.same_reply_check_failed", error=type(exc).__name__)
@@ -4131,35 +4136,37 @@ async def _same_reply_of(
     return run_id, reply_id
 
 
-async def _same_members_as_park(
-    org: str, thread_id: str, member: str, at_park: tuple[str, ...] | None,
+async def _same_label_as_park(
+    org: str, thread_id: str, member: str, at_park: Any,
 ) -> bool:
-    """True when the members of the room now equal the members at the park
-    (RESUME-2b, review of 2026-11-17, P1).
+    """True when the label of the room now equals the label of the reply row
+    (RESUME-2b, review of 2026-11-17, P1, and round 2, P1).
 
-    *at_park* is ``authority.members`` of the reply row, which the fold at
-    the park wrote (``chat_fold._run_authority``). None is no label: the run
-    was solo at the park, so the room must still be solo now. The members now
-    come from the same source as that label,
-    ``acb_auth.resolve_session_access``, with the session's member and org.
-    That read fails open to the member alone. So the room read
+    *at_park* is ``routes.chat.label_of`` of the row's ``authority``, which
+    the fold at the park wrote (``chat_fold._run_authority``): the members
+    AND the caps of a shared room. None is no label: the run was solo at the
+    park, so the room must still be solo now. The label now comes from the
+    same function, ``chat_fold._run_authority``, with the session's member.
+    So a member who joined or left, and a cap that a member gained or lost,
+    each give False. That read fails open to no label. So the room read
     (``_resolve_room``) must also answer: a failed room read, and a shared
     room with no label, give False (fail closed). It may raise, and the
-    caller reads that as case B. Fence:
-    ``tests/unit/test_resume_continuation_r8.py`` (R8)."""
+    caller reads that as case B. Fences:
+    ``tests/unit/test_resume_continuation_r8.py`` (R8) and
+    ``tests/unit/test_resume_continuation.py``."""
     import asyncio
 
-    from acb_auth import resolve_session_access
+    from gateway.chat_fold import _run_authority
+    from gateway.routes.chat import label_of
 
     room = await asyncio.to_thread(_resolve_room, thread_id, member, org)
     if room is None or bool(getattr(room, "resolve_failed", True)):
         return False
     shared = bool(getattr(room, "is_shared", True))
-    _access, now = await resolve_session_access(thread_id, member)
-    now_members = tuple(sorted({str(m).strip().lower() for m in now if str(m).strip()}))
+    now = label_of(await _run_authority(thread_id, member))
     if at_park is None:
-        return not shared and len(now_members) <= 1
-    return now_members == at_park
+        return not shared and now is None
+    return now == at_park
 
 
 async def _give_back_claim(

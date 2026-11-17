@@ -30,7 +30,7 @@ release keeps the work.
 | §4.12 RESUME-1a — a card stores the call that it guards (task 3260) | **BUILT** 2026-11-15, branch `stu-resume1`, dark behind `CHAT_RESUME_ORGS`. Migration 448 adds `chat_pending_ask.stored_call`. RESUME-2a reads it. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 — the retention of a waiting card's row (task 3435) | **BUILT** 2026-11-16, branch `stu-pa-prune`, no new flag and no migration. A prune hook of the job worker clears the stored call of each expired row and deletes a row 7 days after it expires. The member purge deletes the rows that asked a leaver. The prune runs only with `JOB_QUEUE` on, and `JOB_QUEUE` is off on production (§4.12.6, step 1a) |
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. RESUME-2b (task 3460, the row below) builds case A. RESUME-2c (task 3461) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
-| §4.12 RESUME-2b — a late Approve goes on in the same reply, case A (task 3460) | **BUILT** 2026-11-17, branch `stu-resume2b`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with no migration and no new flag. A parked turn that is the last turn, in a room whose members did not change, keeps its run id, its stream and its reply row. D-RES-7: a park keeps its stream 24 h. Each doubt gives case B, and the review fixes of 2026-11-17 (P1, P2-1, P2-2) are built. The flip waits for RESUME-3b (task 3475). The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-2b — a late Approve goes on in the same reply, case A (task 3460) | **BUILT** 2026-11-17, branch `stu-resume2b`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with no migration and no new flag. A parked turn that is the last turn, in a room whose members did not change, keeps its run id, its stream and its reply row. D-RES-7: a park keeps its stream 24 h. Each doubt gives case B, and the review fixes of 2026-11-17 (P1, P2-1, P2-2) and of round 2 (P1, P2-a, P2-b) are built. A known gap must close before the flip: the reconnect replay of a parked stream checks no waterline and no caps (round 2, P2-c). The flip also waits for RESUME-3b (task 3475). The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words and the quiet end of a park show where `CHAT_DURABLE_ASKS` is on. Only the resume route (`_resume_from_row`, with both resume flags on) sends the 429 cap reason. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
 | §4.12 RESUME-4a-1 — a continuation marks the stored native session stale (task 3478) | **BUILT** 2026-11-16, branch `stu-resume4a`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `MAF_NATIVE_SESSIONS` on. No migration and no new flag. RESUME-4a-2 (the late decline) waits for D-RES-9. RESUME-4b (task 3479) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 
@@ -1976,16 +1976,27 @@ the same reply. It needs no migration and no new flag.
   call names its reply row. The stream still ends in the parked
   `RUN_FINISHED` of that run (`stream_relay.parked_end_of`), so no Stop and
   no new run came after it. The reply row is the last turn of the chat
-  (`routes.chat.reply_turn`, under the session's org). The members of the
-  room did not change since the park. Each doubt and each fault give case B.
-- **The members (review of 2026-11-17, P1).** A member who joined after the
-  park has a waterline after part one. So the replay and the reload show
-  them a part of the reply only. A member who left must not shape the label
-  of the reply. So `_same_members_as_park` compares the members now
-  (`acb_auth.resolve_session_access`) with `authority.members` of the reply
-  row, which the fold at the park wrote. No label means solo at the park, and
-  the room must still be solo. That read fails open, so a failed room read
-  (`_resolve_room`) and a shared room with no label give case B too.
+  (`routes.chat.reply_turn`, under the session's org). No member joined after
+  the reply row, and the label of the room did not change since the park.
+  Each doubt and each fault give case B.
+- **The label (review of 2026-11-17, P1, and round 2, P1).** Part two runs at
+  the intersection of now, and the row keeps its first label for ever. So
+  `_same_label_as_park` compares the label of now (`chat_fold._run_authority`)
+  with the `authority` label of the reply row, which the fold at the park
+  wrote. It compares the members AND the caps (`routes.chat.label_of`). A
+  member who joined or left gives case B. A cap that a member gained or lost
+  gives case B too. No label means solo at the park, and the room must still be solo.
+  The read of the label fails open, so a failed room read (`_resolve_room`)
+  and a shared room with no label give case B too.
+- **The window after the check (round 2, P1).** A change can come after the
+  check and before the executor reads the access of the run. So the final
+  fold of a same-reply run reads the label of now again. When it differs from
+  the row's label, part two goes into the fallback row.
+- **A member who came back (round 2, P2-b).** A set of members cannot show a
+  member who left and came back. Such a member has a history waterline
+  (`join_message_ts`) later than the reply row, so a reload hides part two
+  from them. So a waterline later than the row's `timestamp_ms` gives case B
+  (`_LAST_TURN_SQL`).
 - **The last turn (review, P2-2).** "After" is the order of `_get_messages`:
   a larger `(timestamp_ms, id)`. So a shown row with the same millisecond and
   a larger id comes after the reply. An empty agent row that the mint left
@@ -1999,11 +2010,16 @@ the same reply. It needs no migration and no new flag.
 - **Part one is never written over (review, P2-1).** The XDEL must delete
   exactly the parked end. A count of 0 means that a trim or another party
   took it after the check. Then `start_detached` raises `ParkedStreamGone`
-  before the thread reads as active. The fold of a same-reply run writes the
-  reply row only when the replay still holds part one: two `RUN_STARTED` of
-  the run (`chat_fold.same_reply_events`). Else it writes part two into a
-  fresh fallback row. The restart sweep reads the same fallback row from the
-  record of the run (`sameReplyFallbackId`).
+  before the thread reads as active. The restart sweep reads the fallback row
+  from the record of the run (`sameReplyFallbackId`).
+- **The head decides (round 2, P2-a).** The executor marks the `RUN_STARTED`
+  of a continuation `resumed`, so the stream tells part one's start from a
+  continuation's start (`stream_relay.part_one_at_head`). The fold of a
+  same-reply run (`chat_fold.same_reply_events`) takes three paths. With no
+  continuation start, nothing new goes to a row. With part one's start at the
+  head, the whole replay goes into the reply row. Else a trim took part one,
+  and the events from the last continuation start go into a fresh fallback
+  row. `parked_end_of` refuses a head whose first start carries the mark.
 - **The mark of step 5.** A row of case A has no `run_interrupted` mark,
   because a dead run puts other events after the park. So the clear of step 5
   needs no code of its own.
@@ -2020,6 +2036,13 @@ the same reply. It needs no migration and no new flag.
   the org. The stream then lives 24 h (`PARKED_STREAM_TTL_SECONDS`). The two
   `mark_inactive` calls after a park keep the 24 h, and the next
   `mark_active` of the thread ends them.
+- **A known gap that must close before the flag flip (round 2, P2-c).**
+  `GET /agent/run/{thread_id}/reconnect` replays the stream from `0-0`. It
+  checks room membership (`_thread_owner_ok`), and it checks no history
+  waterline and no caps. D-RES-7 keeps a parked stream for 24 h, so the
+  window in which a late joiner can read part one in the stream is wider. The
+  gap was there before RESUME-2b. Do not flip `CHAT_RESUME_ORGS` before a
+  slice makes the reconnect replay obey the waterline and the label.
 - **Not in this slice.** The chat side of case A is RESUME-3b (task 3475).
   The continuation sends a second `RUN_STARTED` with the same run id, and a
   replay of the chat must keep one bubble. The park's fold sealed the row, so
@@ -2028,11 +2051,17 @@ the same reply. It needs no migration and no new flag.
 
 Fences: `tests/unit/test_resume_continuation.py` (sections 12 and 13) and
 `tests/unit/test_resume_continuation_r8.py` (R8, the real stream on a private
-Redis, and the real rows under RLS). The member check has
-`test_a_changed_room_gives_a_new_reply` (R8) and
-`test_the_member_check_compares_the_room_now_with_the_label`. The tie rule has
-`test_the_case_a_checks_on_real_rows` (R8). Part one has
-`test_a_trimmed_head_never_writes_over_part_one` (R8) and
+Redis, and the real rows under RLS). The label check has
+`test_a_changed_room_gives_a_new_reply` (R8),
+`test_a_cap_that_changed_after_the_park_gives_a_new_reply` (R8) and
+`test_the_label_check_compares_members_and_caps`. The window has
+`test_a_change_in_the_window_sends_part_two_to_its_own_row` (R8). A member who
+came back has `test_a_member_who_left_and_came_back_gives_a_new_reply` (R8).
+The tie rule has `test_the_case_a_checks_on_real_rows` (R8). The head has
+`test_three_parts_go_into_one_row_unless_a_trim_took_part_one` (R8),
+`test_a_continuation_that_never_started_writes_nothing_new` (R8),
+`test_a_trimmed_head_never_writes_over_part_one` (R8),
+`test_same_reply_events_decide_by_the_head` and
 `test_a_same_reply_fold_never_writes_over_part_one`.
 
 **Corrections of the audit of 2026-11-16.**

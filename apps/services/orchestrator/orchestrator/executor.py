@@ -7585,7 +7585,13 @@ async def run_agent_stream(
         _thread_emit_seq[thread_id] = 0
 
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
-        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        # RESUME-2b (review round 2, P2-a): the start of a continuation run
+        # carries `resumed`. A case A run goes on in the parked run's stream
+        # with the SAME run id, so only the mark tells part one's start from
+        # a continuation's start (`stream_relay.parked_end_of`,
+        # `chat_fold.same_reply_events`). Any other run sends the bytes of before.
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
+                    **({"resumed": True} if resume_call is not None else {})})
         _laps.lap("start")
         # CS-3a: the setup starts now, so the first phase goes, before the
         # load, the tier wait, the session load and the compose. The run's org

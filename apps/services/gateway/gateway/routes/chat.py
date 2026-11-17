@@ -694,45 +694,68 @@ _SHOWN_ROW_SQL = (
 #: ``(timestamp_ms, id)``. So a row with the same ``timestamp_ms`` and a
 #: larger ``id`` shows after the reply, and it counts (review of 2026-11-17,
 #: P2-2). The second column is the ``authority`` label of the reply, which the
-#: fold at the park wrote. The org stands beside RLS (R5).
+#: fold at the park wrote. The third column is True when a participant joined
+#: after the reply row: its ``join_message_ts`` (the history waterline) is
+#: later than the row's ``timestamp_ms`` (review round 2, P2-b). The org
+#: stands beside RLS (R5).
 _LAST_TURN_SQL = (
     "SELECT NOT EXISTS ("
     "  SELECT 1 FROM chat_message "
     "  WHERE session_id = r.session_id AND organization_id = r.organization_id "
     "    AND (timestamp_ms, id) > (r.timestamp_ms, r.id) AND " + _SHOWN_ROW_SQL
-    + "), r.authority FROM chat_message r "
+    + "), r.authority, EXISTS ("
+    "  SELECT 1 FROM chat_session_participant p "
+    "  WHERE p.session_id = r.session_id AND p.organization_id = r.organization_id "
+    "    AND p.join_message_ts > r.timestamp_ms"
+    ") FROM chat_message r "
     "WHERE r.organization_id = CAST(:org AS uuid) AND r.session_id = :sid "
     "  AND r.id = :mid"
 )
+
+#: A label: the sorted members and the sorted caps of an ``authority`` value.
+Label = tuple[tuple[str, ...], tuple[str, ...]]
+
+#: The label of an ``authority`` value of another shape. It never equals a
+#: real label, which names two members or more (fail closed).
+_BAD_LABEL: Label = ((), ())
 
 
 @dataclass(frozen=True)
 class ReplyTurn:
     """The reply row of a parked turn, as RESUME-2b reads it (:func:`reply_turn`).
 
-    *last* is True when no row that a reader sees comes after it. *members* is
-    the sorted, lower-case ``authority.members`` of the row: the members of a
-    shared room when the fold at the park wrote the row. It is None when the
-    row has no label, which is a solo run at the park. A label of another
-    shape gives ``()``, which equals no room (fail closed)."""
+    *last* is True when no row that a reader sees comes after it. *label* is
+    the ``authority`` label of the row (:func:`label_of`): the members and
+    the caps of a shared room when the fold at the park wrote the row. It is
+    None when the row has no label, which is a solo run at the park.
+    *late_join* is True when a participant's history waterline is later than
+    the row (review round 2, P2-b)."""
 
     last: bool
-    members: tuple[str, ...] | None
+    label: Label | None
+    late_join: bool = False
 
 
-def _label_members(authority: Any) -> tuple[str, ...] | None:
-    """The members of an ``authority`` label, or None for no label."""
+def label_of(authority: Any) -> Label | None:
+    """The label of an ``authority`` value (``chat_fold._run_authority``):
+    ``(members, caps)``, each sorted, the members in lower case. None for no
+    label. A value of another shape gives :data:`_BAD_LABEL`. RESUME-2b reads
+    the label of a row and the label of now through this one function."""
     if authority is None:
         return None
     if isinstance(authority, str):
         try:
             authority = json.loads(authority)
         except ValueError:
-            return ()
-    members = authority.get("members") if isinstance(authority, dict) else None
-    if not isinstance(members, list) or not all(isinstance(m, str) for m in members):
-        return ()
-    return tuple(sorted({m.strip().lower() for m in members if m.strip()}))
+            return _BAD_LABEL
+    if not isinstance(authority, dict):
+        return _BAD_LABEL
+    members, caps = authority.get("members"), authority.get("caps", [])
+    if (not isinstance(members, list) or not all(isinstance(m, str) for m in members)
+            or not isinstance(caps, list) or not all(isinstance(c, str) for c in caps)):
+        return _BAD_LABEL
+    return (tuple(sorted({m.strip().lower() for m in members if m.strip()})),
+            tuple(sorted(set(caps))))
 
 
 def reply_turn(
@@ -741,9 +764,10 @@ def reply_turn(
     """The reply row *message_id* of the chat *session_id* (RESUME-2b, case A),
     or None when it is not there.
 
-    ``gateway.routes.agent._same_reply_of`` is the one caller. A late Approve
-    goes on in the same reply only when nothing shows after the row, and when
-    the members of the room did not change since the park. The org is the
+    ``gateway.routes.agent._same_reply_of`` and the final fold of a
+    same-reply run (``chat_fold``) call it. A late Approve goes on in the same
+    reply only when nothing shows after the row, no member joined after it,
+    and the label of the room did not change since the park. The org is the
     session's: the read opens ``tenant_session(organization_id)``, and the SQL
     names the org beside RLS. A missing row, another org and no org give
     None. Sync: call it through ``asyncio.to_thread``. Fence:
@@ -760,7 +784,7 @@ def reply_turn(
         ).first()
     if row is None:
         return None
-    return ReplyTurn(last=bool(row[0]), members=_label_members(row[1]))
+    return ReplyTurn(last=bool(row[0]), label=label_of(row[1]), late_join=bool(row[2]))
 
 
 def reply_is_last_turn(

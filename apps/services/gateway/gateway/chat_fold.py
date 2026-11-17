@@ -497,24 +497,73 @@ async def _run_holds_mail(
         release_tenant(token)
 
 
-def same_reply_events(
-    events: list[dict[str, Any]], run_id: str, message_id: str, fallback_id: str,
-) -> tuple[list[dict[str, Any]], str]:
-    """``(events, row id)`` that the fold of a same-reply run writes
-    (RESUME-2b, case A, review of 2026-11-17, P2-1).
+#: The label of the fold was not read yet (the fold of each run that does not
+#: go on in the same reply reads it at the write, as before).
+_NOT_READ: Any = object()
 
-    Part one and each continuation start with a ``RUN_STARTED`` of *run_id*.
-    With two or more, the replay holds part one, so the whole replay goes
-    into *message_id*. With fewer, a trim or a reset took part one: only the
-    events from the last ``RUN_STARTED`` of the run go, into *fallback_id*.
-    So part one in *message_id* stays as the fold at the park wrote it."""
+
+async def _same_label_as_row(
+    thread_id: str, message_id: str, authority: Any, organization_id: str | None,
+) -> bool:
+    """True when *authority*, the label of the fold now, equals the label of
+    the row *message_id* (RESUME-2b, review round 2, P1). The row keeps its
+    first label (``COALESCE`` in ``routes.chat._MESSAGE_UPSERT_SQL``), so a
+    part two at another intersection must go to its own row. A row that is
+    not there, and a fault, give False."""
+    import asyncio
+
+    try:
+        from gateway.routes.chat import label_of, reply_turn
+
+        turn = await asyncio.to_thread(
+            reply_turn, thread_id, message_id, organization_id=organization_id)
+    except Exception as exc:  # fail closed: the fallback row
+        _log.warning("chat_fold.same_reply_label_read_failed", error=type(exc).__name__)
+        return False
+    return turn is not None and label_of(authority) == turn.label
+
+
+def same_reply_tail(events: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
+    """The events from the LAST continuation start of *run_id*: a
+    ``RUN_STARTED`` with the ``resumed`` mark (RESUME-2b). Empty when no
+    continuation start landed."""
     starts = [
         i for i, e in enumerate(events)
         if e.get("type") == "RUN_STARTED" and str(e.get("runId") or "") == run_id
+        and e.get("resumed") is True
     ]
-    if run_id and len(starts) >= 2:
+    return events[starts[-1]:] if run_id and starts else []
+
+
+def same_reply_events(
+    events: list[dict[str, Any]], run_id: str, message_id: str, fallback_id: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """``(events, row id)`` that the fold of a same-reply run writes, or
+    ``([], None)`` when it writes nothing (RESUME-2b, case A, review of
+    2026-11-17, P2-1, and round 2, P2-a).
+
+    The decision reads the HEAD, as ``stream_relay.parked_end_of`` does
+    (``stream_relay.part_one_at_head``). Part one starts with a plain
+    ``RUN_STARTED`` of *run_id*, and each continuation with one marked
+    ``resumed``.
+
+    * No continuation start landed (a death after the XDEL, a Stop, a raise
+      before the start): the replay holds part one only, and the row holds
+      it already. Nothing new.
+    * Part one's start is at the head: the replay is whole, so it all goes
+      into *message_id*.
+    * Else a trim took part one, also when two continuation starts are left:
+      the events from the last continuation start go into *fallback_id*.
+
+    So a partial replay never writes over part one."""
+    tail = same_reply_tail(events, run_id)
+    if not tail:
+        return [], None
+    from orchestrator.stream_relay import part_one_at_head
+
+    if part_one_at_head(events, run_id):
         return events, message_id
-    return (events[starts[-1]:] if starts else list(events)), fallback_id
+    return tail, fallback_id
 
 
 async def persist_final_assistant_message(
@@ -533,13 +582,17 @@ async def persist_final_assistant_message(
     """Replay the run's event log and upsert the authoritative message row.
 
     ``same_reply_fallback_id`` (RESUME-2b, case A, review of 2026-11-17,
-    P2-1) marks the fold of a run that went on in the SAME reply. *message_id*
-    then holds part one, which the fold at the park wrote. The fold writes it
-    again only when the replay still holds part one: two or more
-    ``RUN_STARTED`` of the run (:func:`same_reply_events`). Else a trim took
-    the head, and the fold writes the events from the last ``RUN_STARTED`` of
-    the run into the fallback row. So a partial replay never writes over part
-    one. Fence: ``tests/unit/test_resume_continuation.py``.
+    P2-1, and round 2, P1 and P2-a) marks the fold of a run that went on in
+    the SAME reply. *message_id* then holds part one, which the fold at the
+    park wrote. :func:`same_reply_events` decides by the head: no
+    continuation start writes nothing new, part one's start at the head
+    writes the whole replay into *message_id*, and else the events from the
+    last continuation start go into the fallback row. A whole replay goes
+    into *message_id* only when the label of now equals the row's label
+    (:func:`_same_label_as_row`). Else part two goes into the fallback row.
+    So a partial replay, and a part two at another intersection, never write
+    into part one's row. Fences: ``tests/unit/test_resume_continuation.py``,
+    ``tests/unit/test_resume_continuation_r8.py`` (R8).
 
     ``holds_mail`` is the answer of ``acb_skills.egress.run_holds_mail`` for
     this run (WS-17 EM-G11f3, ``email_app_master_plan.md`` section
@@ -596,12 +649,28 @@ async def persist_final_assistant_message(
                     thread_id=thread_id[:12], message_id=message_id[:40],
                 )
                 return None
+        _authority: Any = _NOT_READ
         if same_reply_fallback_id:
-            events, message_id = same_reply_events(
-                events, expect_run_id or run_id, message_id, same_reply_fallback_id,
+            _run = expect_run_id or run_id
+            events, target = same_reply_events(
+                events, _run, message_id, same_reply_fallback_id,
             )
-            if message_id == same_reply_fallback_id:
+            if target is None:
+                _log.info("chat_fold.same_reply_nothing_new", thread_id=thread_id[:12])
+                return None
+            if target == message_id:
+                # Review round 2, P1: part two ran at the intersection of
+                # NOW. The row keeps its first label for ever, so part two
+                # goes into it only when its label is the row's label.
+                _authority = await _run_authority(thread_id, user_id)
+                if not await _same_label_as_row(
+                        thread_id, message_id, _authority, organization_id):
+                    events, target = same_reply_tail(events, _run), same_reply_fallback_id
+                    _log.warning("chat_fold.same_reply_label_changed",
+                                 thread_id=thread_id[:12])
+            if target == same_reply_fallback_id:
                 _log.warning("chat_fold.same_reply_partial", thread_id=thread_id[:12])
+            message_id = target
         # Head-trim visibility (audit R1): the stream is MAXLEN-capped, and
         # Redis trims the OLDEST entries — so a very long turn can lose its
         # head (RUN_STARTED + the start of the answer) before this replay
@@ -670,7 +739,8 @@ async def persist_final_assistant_message(
             # The member who started the run. It is also the run member that
             # the upsert checks and stamps on the agent row (S13).
             actor_email=user_id, agent_name=agent_name,
-            authority=await _run_authority(thread_id, user_id),
+            authority=(await _run_authority(thread_id, user_id)
+                       if _authority is _NOT_READ else _authority),
             # WS-27bm S12. The fold knows which agent ran, so it may set the
             # author of an agent turn again. It never changes a human turn.
             author_from_run=True,

@@ -601,11 +601,11 @@ async def parked_end_of(thread_id: str, run_id: str) -> str | None:
 
     Case A goes on in this stream only when both hold. The last entry is a
     ``RUN_FINISHED`` with ``parked: true``, so no Stop, no new run and no
-    other end came after the park. The ``RUN_STARTED`` at the head names
-    *run_id*, so the stream is the parked run's own. A stream that expired, a
-    head with no ``RUN_STARTED`` (trimmed), and each other shape give None.
-    The two reads cost O(1) and O(:data:`_PARKED_HEAD_SCAN`). A Redis fault
-    raises."""
+    other end came after the park. The head holds part one's own start
+    (:func:`part_one_at_head`), so the stream is the parked run's own and no
+    trim took part one. A stream that expired, a trimmed head, and each other
+    shape give None. The two reads cost O(1) and
+    O(:data:`_PARKED_HEAD_SCAN`). A Redis fault raises."""
     if not thread_id or not run_id:
         return None
     r = await _get_client()
@@ -617,11 +617,25 @@ async def parked_end_of(thread_id: str, run_id: str) -> str | None:
     end = _event_of(end_fields)
     if end.get("type") != "RUN_FINISHED" or end.get("parked") is not True:
         return None
-    for _eid, fields in await r.xrange(key, count=_PARKED_HEAD_SCAN):
-        evt = _event_of(fields)
+    head = [_event_of(fields) for _eid, fields in await r.xrange(key, count=_PARKED_HEAD_SCAN)]
+    return str(end_id) if part_one_at_head(head, run_id) else None
+
+
+def part_one_at_head(events: list[dict[str, Any]], run_id: str) -> bool:
+    """True when the first ``RUN_STARTED`` in the head of *events* is part
+    one's own start: the run *run_id*, with no ``resumed`` mark (RESUME-2b,
+    review round 2, P2-a).
+
+    A continuation of case A keeps the run id, and the executor marks its
+    start ``resumed``. So a head whose first start carries the mark lost part
+    one to a trim. The head is the first :data:`_PARKED_HEAD_SCAN` events.
+    ``parked_end_of`` and ``gateway.chat_fold.same_reply_events`` both ask
+    this one rule."""
+    for evt in events[:_PARKED_HEAD_SCAN]:
         if evt.get("type") == "RUN_STARTED":
-            return str(end_id) if str(evt.get("runId") or "") == run_id else None
-    return None
+            return bool(run_id) and str(evt.get("runId") or "") == run_id \
+                and evt.get("resumed") is not True
+    return False
 
 
 async def is_active(thread_id: str) -> bool:

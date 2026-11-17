@@ -806,6 +806,19 @@ RUNS: dict[str, list[dict[str, Any]]] = {}
 #: Each entry makes ONE stand-in continuation drop the head entry of its
 #: stream first, as a MAXLEN trim does (review of 2026-11-17, P2-1).
 TRIM_HEAD: list[bool] = []
+#: The caps of each member, for the stand-in of ``resolve_session_access``.
+#: The intersection of the members' caps is the run's (review round 2, P1).
+CAPS: dict[str, set[str]] = {}
+#: Each entry is a hook that ONE stand-in continuation awaits right after
+#: the check, before its own start (review round 2, P1: the window).
+IN_WINDOW: list[Any] = []
+#: Each entry makes ONE stand-in continuation raise before its start
+#: (review round 2, P2-a: a continuation that never started).
+RAISE_BEFORE_START: list[bool] = []
+#: Each entry makes ONE stand-in continuation end in a park, as a new card
+#: of part two does (review round 2, P2-a: three parts).
+PARK_AT_END: list[bool] = []
+_ZOHO = "integrations:use:zoho-crm"
 
 
 @pytest.fixture
@@ -850,19 +863,30 @@ def relay_scene(as_app, monkeypatch):
             # The executor tees each event to the relay (`_sse`), so the
             # stand-in pushes each one too.
             rid = (resume_call or {}).get("request_id")
+            # The executor marks the start of a continuation (P2-a).
+            start = {"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
+                     **({"resumed": True} if resume_call is not None else {})}
+            n = len(RUNS.get(thread_id, [])) + 2
             events = [
-                {"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id},
+                start,
                 {"type": "CUSTOM", "name": "confirmation_resolved",
                  "value": {"request_id": rid, "answer": "APPROVE"}},
                 {"type": "TOOL_CALL_START", "toolCallId": "call_abc",
                  "toolCallName": "update_deal_status"},
                 {"type": "TOOL_CALL_RESULT", "toolCallId": "call_abc",
                  "content": "Neuropeak moved to Payment Complete.", "success": True},
-                {"type": "TEXT_MESSAGE_CONTENT", "messageId": "seg-2",
-                 "delta": "The deal moved."},
-                {"type": "RUN_FINISHED", "threadId": thread_id},
+                {"type": "TEXT_MESSAGE_CONTENT", "messageId": f"seg-{n}",
+                 "delta": "The deal moved." if n == 2 else f" Part {n}."},
+                ({"type": "RUN_FINISHED", "threadId": thread_id, "parked": True}
+                 if PARK_AT_END and PARK_AT_END.pop() else
+                 {"type": "RUN_FINISHED", "threadId": thread_id}),
             ]
             RUNS.setdefault(thread_id, []).append({"run_id": run_id, "resume": resume_call})
+            if IN_WINDOW:
+                await IN_WINDOW.pop()()
+            if RAISE_BEFORE_START:
+                RAISE_BEFORE_START.pop()
+                raise RuntimeError("the run died before its start")
             if TRIM_HEAD:
                 TRIM_HEAD.pop()
                 r = await stream_relay._get_client()
@@ -887,7 +911,10 @@ def relay_scene(as_app, monkeypatch):
                         {"sid": session_id}):
                     if "@" in str(subject):
                         emails.add(str(subject).strip().lower())
-        return types.SimpleNamespace(allowed=frozenset()), sorted(emails)
+        if len(emails) < 2:
+            return types.SimpleNamespace(allowed=frozenset()), sorted(emails)
+        allowed = frozenset.intersection(*(frozenset(CAPS.get(m, ())) for m in emails))
+        return types.SimpleNamespace(allowed=allowed), sorted(emails)
 
     monkeypatch.setattr(acb_auth, "resolve_session_access", _session_access)
 
@@ -902,6 +929,10 @@ def relay_scene(as_app, monkeypatch):
     pending_ask._reset_for_tests()
     RUNS.clear()
     TRIM_HEAD.clear()
+    CAPS.clear()
+    IN_WINDOW.clear()
+    RAISE_BEFORE_START.clear()
+    PARK_AT_END.clear()
     yield as_app
     pending_ask._reset_for_tests()
 
@@ -1271,6 +1302,222 @@ def test_a_trimmed_head_never_writes_over_part_one(relay_scene, monkeypatch):
             assert "Let me move it." in rows[mid] and "The deal moved." not in rows[mid]
             (other,) = set(rows) - {mid}
             assert "The deal moved." in rows[other] and "Let me move it." not in rows[other]
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def _label(w, mid: str) -> Any:
+    with w.admin_engine.connect() as c:
+        return c.execute(text("SELECT authority FROM chat_message WHERE id = :m"),
+                         {"m": mid}).scalar_one()
+
+
+@pytest.mark.parametrize("change", ["cap granted", "cap taken"])
+def test_a_cap_that_changed_after_the_park_gives_a_new_reply(change, relay_scene, monkeypatch):
+    """Review round 2, P1. Alice and Bob share the room, and the members do
+    not change. A cap that Bob gains, or loses, after the park changes the
+    intersection of part two. So the label now differs from the label of the
+    row, and the late Approve gives case B under the same claim. Mutation:
+    compare the members only -> case A -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            CAPS[_ALICE] = {_ZOHO}
+            CAPS[_BOB] = set() if change == "cap granted" else {_ZOHO}
+            tid = _new_chat(w, w.org_a)
+            _room_rows(w, tid, w.org_a, _ALICE, _BOB)
+            rid, run_id, mid = await _parked_turn(w, tid, w.org_a)
+            at_park = _label(w, mid)
+            assert at_park["caps"] == ([] if change == "cap granted" else [_ZOHO])
+            CAPS[_BOB] = {_ZOHO} if change == "cap granted" else set()
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict), res
+            assert res["sameReply"] is False and res["runId"] != run_id, res
+            await _run_ends(tid)
+            await _quiet()
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            assert set(rows) == {mid, res["messageId"]} and "The deal moved." not in rows[mid]
+            assert _label(w, mid) == at_park, "the old row keeps its label"
+            assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True), "ONE claim"
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_change_in_the_window_sends_part_two_to_its_own_row(relay_scene, monkeypatch):
+    """Review round 2, P1, the window. The check passes, and case A starts.
+    Then Bob gains a cap before part two runs. The final fold reads the
+    label of now, sees that it differs from the row's label, and writes part
+    two into the fallback row. The reply row keeps part one and its label.
+    Mutation: drop the label test of the fold -> part two lands in the
+    reply row -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            CAPS[_ALICE], CAPS[_BOB] = {_ZOHO}, set()
+            tid = _new_chat(w, w.org_a)
+            _room_rows(w, tid, w.org_a, _ALICE, _BOB)
+            rid, run_id, mid = await _parked_turn(w, tid, w.org_a)
+            at_park = _label(w, mid)
+
+            async def _grant() -> None:
+                CAPS[_BOB] = {_ZOHO}
+
+            IN_WINDOW.append(_grant)
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["sameReply"] is True, res
+            assert res["runId"] == run_id and res["messageId"] == mid
+            await _run_ends(tid)
+            await _quiet()
+            assert IN_WINDOW == [], "non-vacuity: the grant came in the window"
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            assert len(rows) == 2 and mid in rows, rows
+            assert "Let me move it." in rows[mid] and "The deal moved." not in rows[mid]
+            (other,) = set(rows) - {mid}
+            assert "The deal moved." in rows[other] and "Let me move it." not in rows[other]
+            assert _label(w, mid) == at_park
+            assert _label(w, other)["caps"] == [_ZOHO], "part two has the label of now"
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_member_who_left_and_came_back_gives_a_new_reply(relay_scene, monkeypatch):
+    """Review round 2, P2-b. Bob leaves and comes back after the park. The
+    set of members is the same, but his history waterline is later than the
+    reply row, so a reload would hide part two from him. Case B. Mutation:
+    drop the waterline test of ``_LAST_TURN_SQL`` -> case A -> red."""
+    import time
+
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            _room_rows(w, tid, w.org_a, _ALICE, _BOB)
+            rid, run_id, _mid = await _parked_turn(w, tid, w.org_a)
+            with w.admin_engine.begin() as c:
+                c.execute(text("UPDATE chat_session_participant SET join_message_ts = :t "
+                               "WHERE session_id = :s AND subject = :m"),
+                          {"t": int(time.time() * 1000) + 5_000, "s": tid, "m": _BOB})
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict), res
+            assert res["sameReply"] is False and res["runId"] != run_id, res
+            await _run_ends(tid)
+            await _quiet()
+            assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True), "ONE claim"
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_continuation_that_never_started_writes_nothing_new(relay_scene, monkeypatch):
+    """Review round 2, P2-a (a). The continuation raises after the XDEL and
+    before its own start. The replay then holds one start, part one's. The
+    fold writes nothing new: one reply row with part one once. Mutation:
+    fold that replay into the fallback row -> part one shows twice -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            rid, _run_id, _mid = await _parked_turn(w, tid, w.org_a)
+            before = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            RAISE_BEFORE_START.append(True)
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["sameReply"] is True, res
+            await _run_ends(tid)
+            await _quiet()
+            assert RAISE_BEFORE_START == [], "non-vacuity: the run died before its start"
+            events = await _stream(client, tid)
+            assert [e.get("resumed") for e in events if e["type"] == "RUN_STARTED"] == [None]
+            assert {r[0]: r[1] for r in _assistant_rows(w, tid)} == before, "nothing new"
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("trim", [False, True], ids=["whole", "trimmed head, two starts left"])
+def test_three_parts_go_into_one_row_unless_a_trim_took_part_one(trim, relay_scene, monkeypatch):
+    """Review round 2, P2-a (b). Part one parks, a late Approve goes on, part
+    two parks again, and a second late Approve goes on. Whole: the one row
+    holds the three parts. A trim of part one's start before part three
+    leaves two continuation starts: part three goes into its own row, and
+    the reply row keeps parts one and two. Mutation: decide by the count of
+    starts -> the trimmed replay writes over the reply row -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            rid, run_id, mid = await _parked_turn(w, tid, w.org_a)
+            PARK_AT_END.append(True)
+            first = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(first, dict) and first["sameReply"] is True, first
+            await _run_ends(tid)
+            await _quiet()
+            # The second card of part two, as its park leaves it.
+            rid2 = uuid.uuid4().hex
+            assert pending_ask.insert_ask(w.org_a, {
+                "request_id": rid2, "thread_id": tid, "run_id": run_id,
+                "actor_email": _ALICE, "agent_name": "orchestrator", "kind": "confirmation",
+                "question": _TITLE_A, "payload": {"request_id": rid2, "title": _TITLE_A},
+                "stored_call": {"v": 1, "kind": "confirmation", "tool": "update_deal_status",
+                                "module": "agent:orchestrator", "agent": "orchestrator",
+                                "arguments": {"deal_id": "d-orbit", "stage": "Won"},
+                                "call_id": "call_def", "card_text": "y", "act_keys": [],
+                                "digest": "e", "message_id": mid}})
+            assert pending_ask.move_ask(w.org_a, rid2, to="parked",
+                                        from_states=("open",)) is not None
+            if trim:
+                TRIM_HEAD.append(True)
+            second = await _answer(tid, rid2, _ALICE, w.org_a)
+            assert isinstance(second, dict) and second["sameReply"] is True, second
+            await _run_ends(tid)
+            await _quiet()
+            starts = [e.get("resumed") for e in await _stream(client, tid)
+                      if e["type"] == "RUN_STARTED"]
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            if not trim:
+                assert starts == [None, True, True]
+                assert set(rows) == {mid}
+                assert all(t in rows[mid] for t in ("Let me move it.", "The deal moved.",
+                                                    "Part 3."))
+            else:
+                assert starts == [True, True], "part one's start went"
+                assert len(rows) == 2 and mid in rows, rows
+                assert "Let me move it." in rows[mid] and "The deal moved." in rows[mid]
+                assert "Part 3." not in rows[mid]
+                (other,) = set(rows) - {mid}
+                assert "Part 3." in rows[other] and "Let me move it." not in rows[other]
         finally:
             await _quiet()
             await client.flushdb()
