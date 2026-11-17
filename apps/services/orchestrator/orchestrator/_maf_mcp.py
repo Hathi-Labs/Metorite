@@ -236,6 +236,23 @@ def mcp_service(name: str) -> str:
     return f"mcp-{name}"
 
 
+#: The characters that MAF keeps in a prefix. It writes ``-`` for each other one.
+_PREFIX_KEEP = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def tool_prefix(server_name: str) -> str:
+    """HRD-1d: the start of each tool name of the server *server_name*.
+
+    :func:`attach_mcp_tools` gives MAF the server name as
+    ``tool_name_prefix``. MAF writes ``-`` for each character outside
+    ``A-Za-z0-9_.-``, cuts each ``_``, ``.`` and ``-`` at the end, and adds one
+    ``_``. A registry name (``NAME_RE``) comes out as it went in. "" when
+    nothing is left. Fence: ``tests/unit/test_unknown_tool_withheld.py`` holds
+    it against MAF's own builder."""
+    base = _PREFIX_KEEP.sub("-", str(server_name or "")).rstrip("_.-")
+    return f"{base}_" if base else ""
+
+
 def _host(url: str) -> str:
     """The host of *url* for a log line. Never the path or the query."""
     try:

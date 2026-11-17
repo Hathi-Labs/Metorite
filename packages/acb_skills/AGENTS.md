@@ -147,7 +147,7 @@ not write a second copy of that seam. A bare test file name is under
 5i-2. unknown_tool.py -- the ONE answer to a call of a tool that the turn did not load (HRD-1, `chat_failure_modes.md` §4.2 B1).
    - MAF runs no middleware for an unknown name. So `UnknownToolAnswer`, a `ChatMiddleware`, rewrites the raw "not found" tool result before the next request.
    - `_set_text` writes `result` and `items`. The OpenAI client sends `items`, so a rewrite of `result` alone never reaches the model.
-   - The answer names only tools that the member may use: the tools of the request and the packs that the loader offers.
+   - The answer names only tools that the member may use: the tools of the request and the packs that the loader offers. The answer of HRD-1d is the one exception: it repeats the name that the model called, and no other name.
    - Each answer says what happened ("Not run …") and what is true now. It never tells the model to call the tool again. The rewrite stays in the stored history, so a later turn reads it. After a load, the answer keeps the rules of the pack and drops the loader's first line.
    - `CHAT_TOOL_AUTOLOAD` (default off, allowed by D217) also loads the offered pack. The load calls `LoadSkillTools.process` with a `FunctionInvocationContext` over the live list. Do not write a second load path.
    - It loads only for a call of this run, never for a raw text of the history. It loads only when the request holds the same tool list as the request before. A copy from an outer middleware (`WithholdTools`) gets the text only.
@@ -156,7 +156,9 @@ not write a second copy of that seam. A bare test file name is under
    - `MEMBER_LINE` is the member's text for that step. Only `orchestrator.event_translator.tool_result_fields` shows it. The model never reads it.
    - HRD-1b: a step (`step=True`) is a delegated run or a run with no chat. It keeps no loader and reads no record of the packs. Its answer names a tool of the request, or it is `NOT_IN_STEP`. The executor's one hook, `_unknown_tool_view`, makes each provider. Only a batch run can be a step. The stream view of an agent never is.
    - HRD-1c (task 3679): the stream run of each agent holds the provider, and not only the run of the orchestrator. The reason: the member can quote the model's text from any agent. Only the orchestrator holds a loader. So the answer of another agent names only a tool of its own request, and it never loads a pack.
-   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`, `test_unknown_tool_batch_paths.py`, `test_unknown_tool_non_orchestrator_stream.py`.
+   - HRD-1d (task 3719): a tool of an MCP server that the run held back on purpose gets `WITHHELD_MAIL`, which says why. `Withheld` holds the tool-name prefix of each held server, from the server config. `note_withheld` is its one writer, and only a chat provider takes it. A step ignores it.
+   - A held name matches only with the whole prefix, `_` included. A name that a pack of the platform holds never matches. A held name never asks the loader. With no value, the answer is the answer of HRD-1c.
+   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`, `test_unknown_tool_batch_paths.py`, `test_unknown_tool_non_orchestrator_stream.py`, `test_unknown_tool_withheld.py`.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it fails closed.
    - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
    - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
