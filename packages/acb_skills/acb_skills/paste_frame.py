@@ -49,6 +49,7 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 from acb_common.assistant_profile import _PASTED
+
 from acb_skills.untrusted import _BREAKS, UntrustedFrame, is_invisible, neutralise
 
 __all__ = [
