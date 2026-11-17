@@ -590,8 +590,10 @@ async def field_hint(db: Any, module: str, exc: HTTPException) -> HTTPException:
     if not rows:
         return exc
     names = ", ".join(_quoted(r[0]) for r in rows)
-    message = (f"{detail.get('message', '')} A field {_quoted(asked)} is on: "
-               f"{names}. Give that module as the entity.")
+    # The hint goes FIRST: the tool cuts the message at 800 characters, and the
+    # list of keys that follows can be long (verifier F2 of task 3693).
+    message = (f"A field {_quoted(asked)} is on: {names}. Give that module as the "
+               f"entity. {detail.get('message', '')}")
     return HTTPException(status_code=422, detail={**detail, "message": message})
 
 

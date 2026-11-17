@@ -234,6 +234,8 @@ async def test_a_field_of_another_module_names_that_module(rung, app_engine) -> 
                   {"measure": "sum", "field": "Grand_Total"}):
         message = await _refusal(rung, rung.org_a, **query)
         assert "is on: 'module:Invoices'. Give that module as the entity." in message, message
+        # The hint stands before the list of keys: the tool cuts at 800 characters.
+        assert message.index("is on:") < message.index("Its fields are"), message
 
 
 async def test_a_guessed_name_names_the_close_fields(rung, app_engine) -> None:
