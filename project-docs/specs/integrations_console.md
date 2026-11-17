@@ -717,6 +717,267 @@ The owner asked on 2026-11-14 (task 3164) that AI Studio builds on connections. 
 3. **The connector list (IN-11).** One curated file lists each provider that a member can connect. Each row gives its sign-in kind, its owning app, what it unlocks, whether a built-in app shows its data, and where to find a key. The console, Studio, the result card and the chat read that file. It is not a marketplace (§1.3). **BUILT (2026-11-14, task 3174). Studio I8a (task 3168) is the first caller. It reads the label and the scope of a provider.** The file is `packages/acb_common/acb_common/connector_list.json`, with 16 rows. `acb_common.connector_list` reads it in Python. `src/lib/connectors.ts` reads it in TypeScript through `connectors.generated.ts`, which `scripts/gen_connectors.py` writes. Left: the Studio name check (I8, I1b), the console swap and the result card (IN-9).
 4. **A connection outlives its person (IN-12).** An org connection over OAuth acts as the admin who connected it (D98). The member removal names each such connection of the leaver, and an admin connects it again as another person.
 
+### 3.8 Local connectors: a program on the customer's machine (WS-LNK, task 3653, PROPOSED)
+
+> **Status: 📝 PROPOSED, 2026-11-17.** The owner has not approved this design. An agent builds no LNK slice before the owner approves it on task 3653. The epic is task 3654.
+
+> **Verified against code** on 2026-11-17 at `origin/main` `1128df4ed`. This section takes no D-number. The decision gets the next free number when the owner approves it.
+
+#### 3.8.1 The ask and the rule
+
+| Who | Words |
+|---|---|
+| The owner, 2026-11-17 | "this should be done in a way in which this particular connector, whatever we are building, can be set up inside any of our customers' Tally servers as well. They can connect their own Tally to Metorite. Basically, every customer sets up their own personal Tally MCP server by downloading this program and setting it up with their company domain" |
+| The owner's standing rule, 2026-10-01 | A customer never does technical setup: no app registration, no keys, no Integrations plumbing |
+
+So a customer does not run a tunnel, own a DNS zone, open a port or edit a file. The customer does three things. They install one program, type the company domain, and ask their Metorite admin to approve the code that the program shows. Metorite does the rest. LNK-Q1 (§10) settles what "company domain" means.
+
+**The reading.** The program is an MCP server on the customer's machine, and it reads Tally there. Metorite cannot reach that machine, and the customer opens nothing. So the program opens an outbound HTTPS link to Metorite, and Metorite sends each MCP call down that link.
+
+#### 3.8.2 What exists (code survey, 2026-11-17)
+
+| Fact | Evidence |
+|---|---|
+| One registry. An MCP server is one org row with the provider `mcp:<name>`. Its plain fields sit in `provider_meta`: the url, the label, the transport, the agent scope and the two switches | `245_integration_connections.sql:40-68`, `connections/mcp.py:6-10` and `_meta` |
+| A header value is Fernet ciphertext in `credentials_encrypted` | `connections/store.py:12-15`, `save_headers`, `_seal` (`:513`) |
+| The routes sit under `/integrations/mcp`. A register needs `integrations:manage` | `routes/integrations.py:2082-2312`, `:2112-2115` |
+| A run uses a server only with `integrations:use:mcp-<name>`. Every seeded role holds `integrations:use:*`. A per-member deny is an override row, and a write of one needs `admin:access:manage` | `acb_auth/permissions.py:28-46`, `:171`, `:241-247`, `decide` (`:423-442`). `PUT /admin/members/{email}/overrides` in `routes/admin/members.py` |
+| The transports are `http-sse` and `http` only, in three lists. The register refuses stdio (D85) | `routes/integrations.py:2141`, `connections/mcp.py:93`, `_tool_injection.py:4845` |
+| The chat client is MAF `MCPStreamableHTTPTool` over an injected `httpx.AsyncClient`. It gives 10 s to connect and list, and 30 s to one call. It takes 128 tools and 8 servers at most. Above 12 tools or 1,500 tokens, the tools load on demand | `orchestrator/_maf_mcp.py:134-158`, `:674-676`, `:873` |
+| `check_mcp_url` allows `https` on 443 to a global address only. It pins the DNS answer and refuses each 3xx. So an MCP row cannot point at an internal relay by URL | `gateway/outbound_guard.py:304-320`, `acb_common/public_address.py` (`is_local_address`, `:52`) |
+| `_PinnedTransport` is a custom `httpx` transport. It is the precedent for a new transport | `outbound_guard.py:398` |
+| Studio builds its own MCP client from the URL | `connections/mcp_tools.py:349-350` |
+| Only native MAF agents get MCP servers, and only in an org on `MAF_MCP_ORGS` (`*` on production). An untrusted-input agent and a run that holds the email pack get none | `_tool_injection.py:4925-4942` |
+| A run with no member (cron, workflow, webhook) gets no per-member filter. `_integration_authorizer` returns `None`, and `_maf_servers` then keeps every server | `orchestrator/executor.py:5518`, `_tool_injection.py:5081` |
+| The gateway runs one uvicorn process. A deploy drains runs for up to 60 s, then cuts open streams. D7 keeps the gateway SSE-only | `deploy/hostinger/acb-gateway.service:24`, `gateway-drain.sh:18`, `note_taker_app.md:254, 407` |
+| The agent edge is the door for outside programs. It is its own unit, one uvicorn process. It checks a hashed bearer and takes the tenant from the token row only. It already uses the tenant Redis wrapper, and it calls the gateway with an HMAC signature | `acb-agent-edge.service:45`, `agent_edge/bearer.py:29-31, 128-164`, `agent_edge/idempotency.py:66`, `acb_auth/agent_signing.py` |
+| The tenant Redis wrapper cannot build a key with no tenant, by design. A ratchet fails a new direct Redis client. The wrapper has `rpush`, `getdel`, `xadd`, `xread` with a block, `xreadgroup`, `publish` and `subscribe`, and no `blpop`. Its blocking pool holds 16 connections in each process | `acb_common/tenant_redis.py:178`, `:230-243`, `:777`, `tests/unit/test_tenant_redis.py:702` |
+| Cross-worker routing exists for the chat stop. `dispatch_control` publishes, waits for an ack and tries once more. It uses raw keys, and the ratchet lists it as a follow-up | `orchestrator/stream_relay.py:991-992`, `:1111` |
+| A box token is `mbt_` and 43 characters, 256 random bits. Metorite stores only its SHA-256. A member mints it for the tenant of their own session | `acb_auth/agent_tokens.py:206-212`, `:2131`, `external_agent_access.md` §10.9 |
+| A token lookup runs with no tenant bound, and it returns the org. `agent_token` is RLS-exempt for that reason. It has a foreign key to `agent_connection`, which names a member, and a kind check of `access`, `refresh` or `code` | `agent_tokens.py:1942`, `248_agent_access_tokens.sql:148-181` |
+| A short code from before the tenant is known has a precedent. The sign-in code table is RLS-exempt, and its rate limits count its own rows | migration 186 (`auth_email_otp_token`), `scripts/gen_tenant_migration.py:86`, `acb_auth/email_otp.py` |
+| The phone link code is 10 characters, lives 15 minutes, and Metorite stores only its hash. No device flow (RFC 8628) exists | migration 235 (`whatsapp_member_links`), `external_agent_access.md:1678` |
+| `organization.domain` is plain text that nothing verifies. More than one org can claim one domain | `acb_auth/access.py:344-370` |
+| No rule covers customer accounting data that goes to a model vendor. D126 covers issue reports only. The router chain holds more than one vendor | `work_plan.md` §3 |
+| Studio names a connection as `"mcp:tally"` | `ai_studio.md:695` (I1, I8) |
+| MCP-NC1 (PR 2530) is merged. A new server has Always confirm off, and a tool in a member's run asks no card | §3.6.9, `agent_architecture.md` §12.2 WS-8c item 33 |
+
+#### 3.8.3 The shape: one more MCP row
+
+**A local connector is an `mcp:<name>` row of `integration_connections` with the transport `link`.** It has no URL. The chat, Studio (I1, I8), the grant `integrations:use:mcp-<name>`, the console, IN-10 and IN-12 then treat it as any MCP server. This section adds no registry, no loader and no grant word (`building_blocks.md` §6.1).
+
+| Field | Value |
+|---|---|
+| `provider` | `mcp:<name>`, under the name rule `NAME_RE`. The admin names it at the approval, such as `tally` or `tally-pune` |
+| `scope_kind`, `owning_app` | `org`, `integrations` |
+| `provider_meta.transport` | `link`, a new value |
+| `provider_meta.url` | None. A `link` row never has one |
+| `provider_meta.connector` | The kind (`tally`), the machine name, the program version and the typed domain. Each is a display fact |
+| The switches in `provider_meta` | `always_confirm`, `read_only_key`, `agent_scope` and `label`, as for any MCP server |
+| `credentials_encrypted` | Empty. The link credential is a hash in the token store (§3.8.4) |
+| The connector id | The id of the row. The program gets it at the pairing and logs it. It is not a secret |
+
+**The one branch.** One function picks the client for a row. A URL row gets `outbound_guard.mcp_client`, as today. A `link` row gets an `httpx.AsyncClient` over a new link transport (§3.8.5). The chat (`_maf_mcp.py:873`) and Studio (`mcp_tools.py:350`) call that one function, so a third caller cannot skip the guard.
+
+**What else changes.**
+
+- The three transport lists accept `link`. So do the row filters that test `srv.url`: `connections/mcp.py:337`, and `_mcp_may_attach` and `_maf_servers` in `_tool_injection.py`.
+- `POST /integrations/mcp` still refuses `link`. Only an approval writes a `link` row.
+- A run leaves out a `link` row whose program has not polled in the last 60 seconds. So a closed machine never costs a turn its 10-second connect budget.
+- The program serves its MCP layer stateless, with JSON answers. So each request has one answer, and the link carries no stream. The link transport answers a GET for a server stream with 405 itself.
+
+#### 3.8.4 Pairing (the shape of RFC 8628)
+
+The customer types a code on another screen, so the pairing follows the device grant of RFC 8628.
+
+1. The program sends `POST /connectors/pair/start` with the typed domain, the machine name, its version and the kind.
+2. Metorite answers with a device code, a user code, an `expires_in` of 600 seconds and an `interval` of 5 seconds.
+3. The program keeps the device code private. It shows the user code, and the customer sends it to their admin.
+4. An admin with `integrations:manage` types the code in the console.
+5. The approval screen shows the machine, the kind, the version, the typed domain, the source address and the start time.
+6. The admin names the connector, picks who may use it (§3.8.8) and accepts the data notice. Then the admin approves.
+7. The approval writes the registry row in the tenant of the admin's session.
+8. The program polls `POST /connectors/pair/poll` with the device code. The first poll after the approval takes the pending record once.
+9. That poll mints the link credential and saves its hash. It returns the credential, the connector id and the company name.
+10. Before the approval, a poll gets `authorization_pending`. A poll too soon gets `slow_down`, and a poll after 10 minutes gets `expired_token`.
+
+**The codes.**
+
+| Code | Shape | Life |
+|---|---|---|
+| Device code | 256 random bits. Metorite stores only its SHA-256 | 10 minutes |
+| User code | 8 characters of Crockford base 32 (no `I`, `L`, `O` or `U`), shown as `XXXX-XXXX`. That is 40 bits. The form ignores case and the dash, reads `O` as `0`, and reads `I` or `L` as `1` | 10 minutes |
+| Link credential | `mlc_` and 43 characters, 256 random bits, the shape of a box token. Metorite stores only its SHA-256, and the program sees it once | It ends after 90 days with no poll. An admin revokes it at any time |
+
+**The rules of the pairing.**
+
+- **The org comes only from the approving admin's session.** It never comes from the domain. Nothing verifies `organization.domain`, and two orgs can claim one domain.
+- **The domain grants nothing.** When it differs from `organization.domain`, the approval screen says so and asks the admin to confirm again.
+- **The start names no org.** Its answer has one shape for every domain, so a stranger cannot learn who uses Metorite.
+- **The pending record holds no tenant data.** It holds the two hashes, the display fields, the typed domain and the source address. No tenant row exists before the approval, so R5 does not bend.
+- **Rate limits.** The start allows 10 calls an hour from one source address. The approve form allows 5 wrong codes in 15 minutes for one org, and then it locks for 15 minutes.
+- **Remote phishing (RFC 8628 §5.4).** A stranger can start a pairing and ask a real admin to type the code. The screen shows the machine, the source address and the domain warning. The default access is "Only these people", and rung 2 reaches no write tool. Rule (d) treats each answer as outside text.
+
+**Where the pending record lives.** The plan asked for Redis with a 10-minute TTL under a platform namespace. The wrapper cannot build that key today (§3.8.2), and the start limit needs the same kind of key. So LNK-1 takes one of two paths, and its audit picks.
+
+| Path | Cost | Precedent |
+|---|---|---|
+| **A. Redis.** One narrow builder in the wrapper, for a fixed set of platform namespaces under `cc:_platform:`. No org id can match it, because `_ORG_ID_RE` needs a letter or a digit first | A change to a SAFETY seam. `test_tenant_redis.py` must pin the set, so a new namespace fails the build | `cc:_unattributed:cost:<day>` (`acb_common/activity.py:78-81`) |
+| **B. Postgres.** One RLS-exempt table, listed in `gen_tenant_migration.EXEMPT` with its reason. Its rows also count the rate limits, and a sweep deletes the old ones | One migration (R1, R6) and a sweep | Migration 186 and `acb_auth/email_otp.py` |
+
+**Recommendation: B.** It has the whole precedent, the limits included, and it changes no SAFETY seam. Path A is right only if the audit shows that the sweep costs more than the change to the wrapper.
+
+**The credential store.** The link credential follows the rule of `agent_tokens.lookup_token`. A lookup by hash runs with no tenant bound, and it returns the org and the connection. The caller binds that tenant before it reads anything else. `integration_connections` has FORCE RLS, so it cannot serve that lookup.
+
+- **Reused:** `agent_tokens.hash_token`, the shape of the lookup, and the refusals of `bearer.authenticate`. Those are 401 for a missing, long, unknown or revoked token, and 503 for a database outage.
+- **Not reused:** the gates for outside agents in `bearer.authenticate`. Those are `agent_access_orgs`, the box flag and the agent audience. The link checks its own flag, `LINK_CONNECTOR_ORGS`, and its own audience.
+- **The table.** `agent_token` cannot hold the credential as it is, because of its member-bound foreign key and its kind check. LNK-1 extends `agent_token` with expand-only changes (R6), or adds one RLS-exempt lookup table beside it. Each path keeps one hash, one lookup shape and one bearer parser. If neither fits, LNK-1 stops and asks (`building_blocks.md` §6.1 step 4).
+
+#### 3.8.5 The link: HTTPS long poll, not a WebSocket
+
+| Reason | Evidence |
+|---|---|
+| The gateway is one process | `acb-gateway.service:24` |
+| A deploy cuts a held stream after the drain, and Caddy does not retry it. A poll ends in 25 s anyway, and the program polls again | `gateway-drain.sh:18` |
+| Office proxies often block a WebSocket. A plain POST passes them | The Tally build brief of task 3655, §6.8 |
+| D7 keeps the gateway SSE-only | `note_taker_app.md:407` |
+| A request that waits in Redis outlives a restart of the door | §3.8.2 |
+
+**The three routes.**
+
+| Route | Who calls | What it does |
+|---|---|---|
+| `POST /connectors/link/poll` | The program, with the link credential | It carries "Tally up" or "Tally down" and the version. Metorite holds it up to 25 s and answers with the waiting MCP requests, or with none |
+| `POST /connectors/link/reply` | The program, with the link credential | It carries the answer to one request, by its request id |
+| `POST /connectors/link/revoke` | The program, at uninstall | It revokes the credential of the caller. An unknown credential gets 200, as RFC 7009 says |
+
+**One call, step by step.**
+
+1. A run calls a tool of a `link` server. The link transport writes the HTTP request to the queue of the connection.
+2. The queue item holds a request id, the method, the allowed headers, the body and a deadline.
+3. The held poll takes the item and answers the program.
+4. The program runs the request against its own MCP layer, in the same process. Then it posts the reply.
+5. The door checks that the request id belongs to the connection of the credential. It writes the reply under that id.
+6. The transport reads the reply and returns it to the MCP client as an HTTP answer.
+7. With no reply in 30 s, the transport raises a timeout. The call then fails as any MCP timeout fails.
+
+Each key goes through the tenant Redis wrapper. The door binds the org of the credential row, and the gateway binds the org of the run. The door caps each reply at the answer budget of a URL server (`outbound_guard.AnswerBudget`). It drops a reply that comes late, and an item whose deadline has passed.
+
+The MCP client keeps speaking Streamable HTTP. Only its transport changes. So `MCPStreamableHTTPTool`, the card, the hints, Always confirm and the read-only key work as they work for a URL server.
+
+**Capacity.** A held poll is one asyncio task and one open request on one process. A held `xread` with a block also holds one connection of the blocking pool for its whole wait. That pool holds 16 connections in each process (`tenant_redis.py:777`), so the plain design serves at most 16 connectors in a process. LNK-3 must not ship that limit. Its audit picks one of these:
+
+- Short reads with no block, in a loop of about 250 ms.
+- One blocking reader in each process for many connectors. It needs a wrapper change, because a key of one tenant fails while another tenant is bound (`TenantMismatch`).
+- A separate pool for the link, with a measured ceiling.
+
+The audit measures each choice at 50 and at 500 connectors on one process. It records the Redis connections held and the Redis commands each second. It records the memory of one held poll and the time that the link adds to a call, at p50 and p95. It also records the open connections at Caddy, and how long the programs take to come back after a restart of the door.
+
+**The door.** The recommendation is the agent edge. It is the door for outside programs, with the hashed-bearer check and the tenant-from-row rule. It already reaches the tenant Redis wrapper. It is its own unit, so held polls do not load the one gateway process, and a gateway deploy does not cut them. If the audit refuses the edge, a gateway route serves the link with the same lookup.
+
+The LNK-3 audit decides with four facts:
+
+1. The public host, the Caddy route for `/connectors/*`, and each timeout on that path for a 25 s hold.
+2. What a deploy does to the edge unit, and how soon the programs come back.
+3. Whether the edge can write the health state with no import of the gateway. Its `pyproject.toml` forbids that import.
+4. Whether held polls slow the MCP traffic of outside agents on the same process.
+
+The pairing start and the pairing poll use the same door, because they come before the tenant is known. The approval is a console route of the gateway, in the admin's session.
+
+#### 3.8.6 Health and revoke
+
+The door writes the last poll time and the Tally state to a tenant Redis key on each poll. It writes the registry row (`last_sync_at`, `last_error`) only when the state changes. The read model reads the key, and a missing key reads as "no poll". This section adds no status string.
+
+| What the door saw | Stored status (`store.py:63-69`) | The read model | The state of `building_blocks.md` §4.4 | The admin sees |
+|---|---|---|---|---|
+| A poll in the last 60 s, and Tally up | `connected` | `connected` | connected | "Connected. Last call 2 minutes ago." |
+| A poll in the last 60 s, and Tally down | `connected` | `error`, with the code `link_source_down` | failing | "TallyPrime is closed on OFFICE-PC." |
+| No poll for 5 minutes | `connected` | `error`, with the code `link_no_poll` | failing | "The program on OFFICE-PC has not called for 12 minutes." |
+| The credential is revoked, or no poll took it in 10 minutes | `needs_reconnect` | `needs_reconnect` | needs consent | "Pair this machine again." |
+| An admin pressed Disconnect | `disconnected` | `disconnected` | none | The row, with no tools |
+
+"Quiet" in `company_context.md` §6.2 means a source with no new records. A link carries no records, so it never reads as quiet.
+
+**Revoke.**
+
+- Disconnect revokes the credential and sets `disconnected`. The next poll gets 401, and the program shows "Disconnected by your admin".
+- A delete removes the row and revokes the credential.
+- A request that waits when the credential ends gets no reply. It fails at its 30 s deadline.
+- An uninstall calls `/connectors/link/revoke` while the link is up.
+
+#### 3.8.7 Rules
+
+Each rule names its fence, or says advisory. Each fence file is new, except where the row says "existing".
+
+| # | Rule | Fence | Slice |
+|---|---|---|---|
+| a | A `link` row never takes a URL. A URL row never skips `check_mcp_url`. `POST /integrations/mcp` refuses `link` | `test_connector_link_shape.py` | LNK-1, LNK-3 |
+| b | A link credential reaches only the queue of its own connection. A reply with the request id of another connection gets 404 | `test_connector_link_r8.py`: R8, two orgs, the app role with NOBYPASSRLS | LNK-2 |
+| c | A run with no member gets no `link` tool. "No member" means that `_integration_authorizer` returns `None` (`executor.py:5518`): a cron, workflow or webhook run. A delegated run keeps the member of its parent (MCP-C3), and a WhatsApp run has a member. **This blocks rung 2.** Without it, "Only these people" is false for each cron and workflow run | `test_connector_link_injection.py` | LNK-3 |
+| d | The answer of a `link` tool is outside text, and the untrusted frame applies. An MCP tool is always an egress tool (`acb_skills/egress.py:42`). The LNK-3 audit checks that a `link` answer also counts as outside text for the held chat (`HELD_CARD_WRITES_ORGS`) | Advisory until the audit names its test | LNK-3 |
+| e | A write connector (rung 3) has Always confirm on, and the approval sets it. Since MCP-NC1, a new server has it off | `test_connector_link_shape.py` | Rung 3, task 3664 |
+| f | A run that holds the email pack gets no MCP server, so it gets no `link` tool either. This is a stated limit, and this section does not change it | `test_pack_guards.py` (existing) | none |
+| g | "Only these people" also holds for a member who joins later (§3.8.8) | `test_connector_link_access_r8.py` | LNK-3 |
+| h | The pending pairing holds no tenant data. The start answer names no org and has one shape for every domain | `test_connector_pairing.py` | LNK-1 |
+| i | The flag `LINK_CONNECTOR_ORGS` is empty by default. For an org off the flag, the approve route answers 404 and the door refuses the credential | `test_connector_pairing.py`, `test_connector_link_door.py` | LNK-1, LNK-2 |
+
+#### 3.8.8 What the customer's admin decides
+
+The approval screen asks three things. The program cannot decide them.
+
+| Choice | Default | Notes |
+|---|---|---|
+| **Who may use it** | "Only these people", offered first, with the approving admin chosen | The grant stays `integrations:use:mcp-<name>`. A role holds `integrations:use:*`, so a deny for each other member leaves a later joiner open. LNK-3 marks the row, and the injection then accepts only an exact allow override for that server. A new member holds none. A write of an override needs `admin:access:manage`, as it does today |
+| **The data notice** | The admin must accept it to approve | The words are LNK-Q2 |
+| **Read only** | Fixed in rung 2: `read_only_key` on, Always confirm off | Writes need rung 3, a second connector and Always confirm on |
+
+**Where this sits in the console.** The build brief names "Admin → Integrations → Connectors". No view has that name. The console has the views Connections, API keys, Plugins, Skills and AI agents (§3.5, §7.2 IN-2). LNK-4 adds "Pair a local connector" to the Add menu of Connections, and the row joins the one list. It adds no view.
+
+#### 3.8.9 The ladder (D211)
+
+| Rung | The demo | Slices | Metorite code |
+|---|---|---|---|
+| 0 | None open | None | None |
+| 1 | Our office, through a tunnel. A member asks the chat for a ledger balance, and the answer equals the Tally screen. Demo task 3655 | TLY-1 (task 3656) | None. The program registers as a URL server |
+| 2 | Any customer, through the link. A second company installs the program and types its domain. Its admin approves the code, and its chat reads its own Tally. Demo task 3657 | LNK-0 (task 3653, this section), LNK-1 (task 3658), LNK-2 (task 3659), LNK-3 (task 3660), LNK-4 (task 3661), LNK-5 (task 3662), TLY-2 (task 3663) | Yes |
+| 3, Later | Writes. A member asks for a sales voucher, approves the card, and the voucher shows in Tally | Task 3664 | Yes |
+| Later | Other local systems, such as Busy or a local SQL database, reuse the link and the setup screen. A sync of Tally data into Metorite needs a spec of its own | None yet | Yes |
+
+Rung 1 already uses the product program. Only its transport differs from rung 2 (D211 rule 2).
+
+#### 3.8.10 Changes to the draft contract of the build brief
+
+The local build brief of task 3655 (version 2) holds a draft contract in its §6.8. This section is the final contract. Where the two differ, this section wins.
+
+| The brief says | This section says | Why |
+|---|---|---|
+| A user code such as `KMTR-4821` | 8 characters of Crockford base 32, shown as `XXXX-XXXX` | `KMTR-4821` holds about 32 bits. The plan asks for 40 |
+| §3.1: Always confirm is on for a new server | It is off since MCP-NC1 | PR 2530 is merged |
+| §3.2: PR 2530 is open | It is merged | `d99180486` on `main` |
+| "Admin → Integrations → Connectors" | The Add menu of Connections | No Connectors view exists (§3.8.8) |
+| The poll returns a connector id and a credential | It also returns the company name, for step 4 of the setup screen. The credential shows once | The setup screen names the company only after the approval |
+| The Tally state goes up "each minute" | It goes up on each poll | A poll already runs at least every 25 s |
+| The consent names "its AI model provider" | The words wait for LNK-Q2 | The router chain holds more than one vendor |
+| `https://<metorite>/connectors/link` | The host waits for the LNK-3 audit. The paths stay. `/connectors/pair/start`, `/connectors/pair/poll` and `/connectors/link/revoke` are new | §3.8.5 |
+
+#### 3.8.11 Decisions that stay closed
+
+- **D85.** Metorite runs no stdio server and no customer command. The program runs on the customer's machine.
+- **D7.** The gateway stays SSE-only. The link uses plain HTTPS requests, and no WebSocket.
+- **§1.3.** A local connector is an MCP server of the org, which D96.2 puts in the console. It is not a marketplace, and it is not a member connection.
+
+#### 3.8.12 What this section could not settle
+
+| Open point | Who settles it | Recommendation |
+|---|---|---|
+| Where the pending pairing lives | The LNK-1 audit | Path B, Postgres (§3.8.4) |
+| An extension of `agent_token`, or one lookup table beside it | The LNK-1 audit | The path with the smaller change to the token store of WS-55 |
+| The door: the edge or a gateway route | The LNK-3 audit | The edge (§3.8.5) |
+| The queue primitive and the capacity ceiling | The LNK-3 audit | Pick by the measures of §3.8.5 |
+| Whether a `link` answer counts as outside text for the held chat (rule d) | The LNK-3 audit | It counts |
+| Whether the exact-override rule of "Only these people" stays inside D12 | The LNK-3 audit, then the owner if it is a third axis | It stays inside D12. It reads the one grant and adds no grant word |
+| The questions LNK-Q1 to LNK-Q7 | The owner | §10 |
+
 ---
 
 ## 4. Security and tenancy
@@ -816,6 +1077,31 @@ Each test fails first, and then passes. The file is
 | **G** | `POST /integrations/mcp/{name}/test` sends the stored header, decrypted, through `outbound_guard` |
 | **H** | The read model shows each MCP server once |
 
+### 7.4 Local connector slices (WS-LNK)
+
+Each slice is PROPOSED until the owner approves §3.8 on task 3653. A fence file is new, except where the row says "existing".
+
+```
+LNK-0 ─┬─► LNK-1 ─┬─► LNK-3 ─► TLY-2
+       └─► LNK-2 ─┤
+                  └─► LNK-4
+TLY-1 (rung 1, no Metorite code)
+LNK-5 (owner gate: the code-signing certificate)
+```
+
+LNK-3 needs both LNK-1 and LNK-2.
+
+| Slice | Task | Scope | Done when | Fence | Tier | Needs |
+|---|---|---|---|---|---|---|
+| **LNK-0** | 3653 | This section, §3.8, the questions LNK-Q1 to LNK-Q7 and the INDEX row. Docs only | The owner approves §3.8 on task 3653 and answers LNK-Q1 and LNK-Q7 | `test_index_completeness.py`, `test_doc_names_resolve.py` (existing) | LOW | None |
+| **LNK-1** | 3658 | Pairing (§3.8.4): start, poll and approve, the pending record, the codes, the rate limits and the lockout. The mint and the lookup of the credential. The registry row with the transport `link`, and the refusal of `link` on `POST /integrations/mcp`. The flag `LINK_CONNECTOR_ORGS` | A pairing that an admin of org A approves writes a row in A only. The start names no org. Five wrong codes lock the form. The credential shows once. A different domain shows the warning | `test_connector_pairing.py`, `test_connector_pairing_r8.py`, `test_connector_link_shape.py` | HIGH: identity, a credential, and maybe a migration | LNK-0 |
+| **LNK-2** | 3659 | The door (§3.8.5, §3.8.6): poll, reply and revoke, the reused lookup, the queue keys, the health key and the row write on a change of state | A credential of org A cannot take or answer a request of org B. A revoked credential gets 401 at its next poll. The door drops a reply after its deadline | `test_connector_link_r8.py`, `test_connector_link_door.py` | HIGH: a credential and the tenant boundary | LNK-0 |
+| **LNK-3** | 3660 | The client branch (§3.8.3): the one client function, the link transport, the transport lists, the row filters and the Studio client. Rules c, d and g. The audit of the door, the queue primitive and the capacity | A member asks the chat, and a tool call goes through the link to a test program and back inside 30 seconds. A run with no member gets no `link` tool. A later joiner gets no tool of an "Only these people" row. The audit records the measures of §3.8.5 | `test_connector_link_transport.py`, `test_connector_link_injection.py`, `test_connector_link_access_r8.py` | HIGH: three services and a concurrency path | LNK-1, LNK-2 |
+| **LNK-4** | 3661 | The console (§3.8.6, §3.8.8): "Pair a local connector" in the Add menu, the code form, and the approval screen with the machine, the domain warning, who may use it and the data notice. The row states and Disconnect | Visual review passes in four contexts. The owner sees the preview and approves it | A vitest under `src/app/integrations` | STANDARD: UI, with an owner preview | LNK-2. It also calls the approve route of LNK-1 |
+| **LNK-5** | 3662 | Distribution: the signed installer, the update file and its signature check, and the address where Metorite serves them | A clean Windows 11 machine installs the program with no SmartScreen block. The program refuses an update with a bad signature | The tests of the program | STANDARD. Owner gate: the code-signing certificate (LNK-Q3) | LNK-0, LNK-Q3, LNK-Q4 |
+| **TLY-1** | 3656 | Rung 1: the Tally program in address mode, through our tunnel, with read tools only. No Metorite code | The owner sees the demo of task 3655. The rung 1 tests of the build brief pass | The tests of the program | STANDARD | None |
+| **TLY-2** | 3663 | Rung 2: the Tally program in link mode | A second test org pairs, approves and reads its own Tally. A cut link comes back with no manual step. Disconnect stops the tools | The tests of the program. Also `test_connector_link_contract.py`, if LNK-Q6 puts the program in this repo | STANDARD | LNK-3 |
+
 ---
 
 ## 8. Verification commands
@@ -837,6 +1123,20 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/missing
 
 Each slice adds its own test file to this list.
 
+**Verify WS-LNK (§3.8, PROPOSED).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_connector_pairing.py tests/unit/test_connector_pairing_r8.py \
+  tests/unit/test_connector_link_shape.py tests/unit/test_connector_link_r8.py \
+  tests/unit/test_connector_link_door.py tests/unit/test_connector_link_transport.py \
+  tests/unit/test_connector_link_injection.py tests/unit/test_connector_link_access_r8.py \
+  tests/unit/test_pack_guards.py tests/unit/test_tenant_redis.py -v -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/integrations
+```
+
+No R8 suite may skip.
+
 ---
 
 ## 9. Fences (R7)
@@ -849,6 +1149,12 @@ Each slice adds its own test file to this list.
 | A customer-typed URL passes the egress guard | A test with private and metadata addresses | IN-0 |
 | No response of the read model holds a credential | A sentinel fence | IN-1 |
 | A customer key reaches only its own org's run | R8 | IN-3 |
+| A local connector row never takes a URL, and a URL row never skips the guard | `test_connector_link_shape.py` (new) | LNK-1, LNK-3 |
+| A link credential reaches only the queue of its own connection | R8, two orgs, `test_connector_link_r8.py` (new) | LNK-2 |
+| A run with no member gets no link tool | `test_connector_link_injection.py` (new) | LNK-3 |
+| "Only these people" holds for a member who joins later | R8, `test_connector_link_access_r8.py` (new) | LNK-3 |
+| The pairing start names no org, and the pending record holds no tenant data | `test_connector_pairing.py` (new) | LNK-1 |
+| The answer of a link tool counts as outside text for the held chat | Advisory until the LNK-3 audit names its test | LNK-3 |
 
 ---
 
@@ -880,3 +1186,17 @@ today is where every hole of §2.2 lives.
 | **Q1** | Ship IN-0 now, although a key set on the page stops reaching agents until IN-3? | **Decided: yes** (orchestrator, 2026-10-11, a security fix inside the dev window). The startup copy is already inert on prod, so almost nothing stops working |
 | **Q2** | Custom APIs ("Add API" with a model-written schema) and plugins: keep, or retire? | Retire. 0 rows on prod, no reader, an unmetered model call. Bring them back on the registry when a customer asks |
 | **Q3** | Should a member see the console, read-only, for their own connections? | No. A member sees their connections in each app. The console is for admins |
+
+### Local connector questions (WS-LNK, §3.8, 2026-11-17)
+
+The owner answers these on task 3653. LNK-Q1 and LNK-Q7 gate LNK-1 and LNK-3.
+
+| Id | Question | Recommendation |
+|---|---|---|
+| **LNK-Q1** | What does "company domain" mean? | The domain routes the pairing request and drives the mismatch warning. It grants nothing, and the org comes from the approving admin. The other reading is each customer's own web address with a tunnel. That stays an advanced option for a customer with its own IT team |
+| **LNK-Q2** | What does the data notice say? May the books go to every vendor of the router chain? | The notice names each vendor that can read the data, and the admin accepts it at the approval. No rule covers accounting data today, because D126 covers issue reports only. The owner decides whether a connector pins its calls to some vendors |
+| **LNK-Q3** | Which code-signing certificate: EV or OV? | EV. It stops the SmartScreen warning at once. An OV certificate builds trust over weeks of downloads, and the first customers stop at the warning. The owner buys it |
+| **LNK-Q4** | Where does Metorite serve the installer and the update file? | A path on the public host of the link door, so the program trusts one host. The update file carries the signature that LNK-5 checks |
+| **LNK-Q5** | What product name does a customer see in the installer and in Metorite? | The owner picks it. The build uses a working name until then |
+| **LNK-Q6** | Which repository holds the program? | This repository, so CI tests both sides of the link contract in one run |
+| **LNK-Q7** | May a run with no member use a link tool? | No. Refuse it (rule c of §3.8.7). A cron or workflow run then cannot read the books. A later slice can give such a run a named member |
