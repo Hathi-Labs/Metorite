@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from acb_auth import (UserContext, UserRole, get_current_user,
                       identity_read_failed, require_authenticated,
@@ -16,7 +18,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from gateway.build_info import applied_marker, build_sha
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 _log = get_logger("gateway")
 
@@ -2542,59 +2544,112 @@ async def health_runtime() -> dict:
 
 
 class EmbeddingRequest(BaseModel):
-    model: str = "text-embedding-3-small"
+    """The OpenAI-shaped body of ``POST /v1/embeddings``.
+
+    🔴 **Only ``input`` travels.** ``model`` is read and then dropped: the
+    door always names ``tier-embed``, and the Router picks the model (D32.7).
+    A field this model does not declare is ignored, so ``dimensions``,
+    ``encoding_format``, ``user`` and any tenant or member claim never reach
+    the Console (R11). The OpenAI SDK sends ``encoding_format`` by default,
+    so a refusal of extra fields would break Mem0 and Graphiti.
+    """
+
+    model: str = "tier-embed"
     input: str | list[str]
 
-@app.post("/v1/embeddings", tags=["openai"])
+    @field_validator("input")
+    @classmethod
+    def _bounded(cls, value: str | list[str]) -> str | list[str]:
+        """At most :data:`RELAY_MAX_INPUTS` texts, so a large batch costs no hop."""
+        from gateway.kb_index.embed import RELAY_MAX_INPUTS
+
+        texts = [value] if isinstance(value, str) else value
+        if not texts:
+            raise ValueError("input holds no text")
+        if len(texts) > RELAY_MAX_INPUTS:
+            raise ValueError(f"input holds more than {RELAY_MAX_INPUTS} texts")
+        return value
+
+
+def _embedding_attribution(user: UserContext) -> dict[str, Any]:
+    """Who the call is for: the SESSION's member, and whether it proved it.
+
+    🔴 **The member is ``user.email``, never a body field or a header** (R11).
+    It is PROVEN only when ``get_current_user`` bound it as verified in this
+    request's run context. That is branch 1a: the internal bearer and the
+    address that the proxy verified. A service call (``system:internal``)
+    names nobody. On a deployment-key box the Console client then refuses
+    locally, and the route answers 502.
+    """
+    from acb_llm.routed import run_attribution
+
+    found = run_attribution()
+    email = (user.email or "").strip()
+    member = email if "@" in email else None
+    proven = bool(member) and found.get("member") == member and bool(
+        found.get("member_proven")
+    )
+    return {
+        "member": member,
+        "member_proven": proven,
+        "agent": found.get("agent"),
+        "module_slug": found.get("module_slug"),
+        "run_id": found.get("run_id"),
+    }
+
+
+@app.post("/v1/embeddings", tags=["openai"], response_model=None)
 async def embeddings(
     req: EmbeddingRequest,
     user: UserContext = Depends(get_current_user),
-) -> dict:
-    """OpenAI-compatible embeddings endpoint.
+) -> Any:
+    """OpenAI-compatible embeddings, served by OUR Router (task 3553, 2449 S2).
 
-    When OPENAI_API_KEY is available, proxies to the real OpenAI API.
-    Otherwise returns a dummy embedding (zero-vector of 1536 dims) so
-    Mem0's add() can complete — facts are stored without semantic search.
+    The route calls :func:`gateway.kb_index.embed.relay`, which makes the one
+    ``embeddings_on_console`` call on ``tier-embed``. The Console meters the
+    call. This file builds no vendor client and reads no vendor key.
+
+    * A 200 answers the Console's body: ``data[].embedding``, ``usage`` and
+      ``model`` (the tier name).
+    * Any other status from the Console is a VERDICT, and it is relayed with
+      its status and its body. A 402 stays a 402.
+    * No answer (unwired box, a 5xx, 401, 408 or 429, a timeout) is a 502.
+      🔴 **There is NO fallback** (D57.7, owner directive 2026-11-16). The
+      zero vector that this route used to answer is gone too, because a
+      stored zero vector ranks every row the same.
+
+    The app-wide gate (``require_authenticated``) refuses a caller with no
+    identity, so the route never runs for an anonymous call.
     """
-    oai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if oai_key:
-        from openai import OpenAI
-        client = OpenAI(api_key=oai_key)
-        inputs = req.input if isinstance(req.input, list) else [req.input]
-        # The client is synchronous. A worker thread keeps one embed from
-        # stalling the event loop for every tenant, because the gateway also
-        # calls this route over loopback on each Knowledge search and publish
-        # (WS-61 KB-3 review, 2026-10-16).
-        import asyncio as _asyncio
+    from gateway.kb_index.embed import EmbedUnavailable, relay
 
-        resp = await _asyncio.to_thread(
-            client.embeddings.create, model=req.model, input=inputs,
+    texts = [req.input] if isinstance(req.input, str) else list(req.input)
+    started = time.monotonic()
+    try:
+        status, body = await relay(texts, **_embedding_attribution(user))
+    except EmbedUnavailable as exc:
+        _log.error(
+            "gateway.embeddings_router_unavailable",
+            error=str(exc), count=len(texts),
+            elapsed_ms=round((time.monotonic() - started) * 1000),
         )
-        return resp.model_dump()
-    # No embedding provider configured → return a zero vector so Mem0's add()
-    # can still complete, but WARN loudly: semantic search is silently degraded
-    # (every "similarity" is identical), which otherwise looks like memory works
-    # when it doesn't (M13). Set OPENAI_API_KEY to restore real embeddings.
-    inputs = req.input if isinstance(req.input, list) else [req.input]
-    _log.warning(
-        "gateway.embeddings_degraded_zero_vector",
-        model=req.model, count=len(inputs),
-        detail="OPENAI_API_KEY unset — returning zero vectors; semantic search disabled",
+        return JSONResponse(
+            status_code=502,
+            content={"error": {
+                "message": "the AI Router is unavailable",
+                "type": "ConsoleRouterUnavailable",
+                "code": 502,
+            }},
+        )
+    _log.info(
+        "gateway.embeddings_served", status=status, count=len(texts),
+        elapsed_ms=round((time.monotonic() - started) * 1000),
     )
-    dummy = [0.0] * 1536
-    return {
-        "object": "list",
-        "model": req.model,
-        "data": [
-            {
-                "object": "embedding",
-                "index": i,
-                "embedding": dummy,
-            }
-            for i in range(len(inputs))
-        ],
-        "usage": {"prompt_tokens": 0, "total_tokens": 0},
-    }
+    if status != 200:
+        # A VERDICT, with its own status. A 402 flattened into a 502 tells a
+        # customer the AI is down when they are out of credits.
+        return JSONResponse(status_code=status, content=body)
+    return body
 
 
 

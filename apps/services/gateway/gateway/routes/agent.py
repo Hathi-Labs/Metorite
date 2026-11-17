@@ -4718,13 +4718,20 @@ async def run_agent_async(
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:
+        from acb_common.no_person import no_person_scope  # noqa: PLC0415
+
         try:
             # H-201 part 3: the caller's tenant, never the thread's (see
             # run_agent_sync).
-            await run_agent(agent, req.payload, run_id=run_id,
-                            thread_id=req.thread_id, model=req.model,
-                            organization_id=getattr(user, "organization_id", None),
-                            session_user=_session_member(user))
+            # MCP-NC1 review: the caller has the 202 and left, so no person
+            # watches this run (AUTO-7a). The mark makes the MCP gate count
+            # no member, so a write of an outside app is refused, never run
+            # with no card, and no card waits for an answer.
+            with no_person_scope():
+                await run_agent(agent, req.payload, run_id=run_id,
+                                thread_id=req.thread_id, model=req.model,
+                                organization_id=getattr(user, "organization_id", None),
+                                session_user=_session_member(user))
         except Exception as exc:  # noqa: BLE001
             _log.error(
                 "agent.async_run_error",
