@@ -180,7 +180,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 
 1. **One key for each send.** The key is the existing `user_message_id`. No second id exists. The server keys a send on organization, thread and `user_message_id`. A repeat joins the first run by replay and starts no run. A repeat while a run is live is a steer of that run, so it adds no second run either. A send with no id works as it does today. The key comes from the session and the run binding, never from the body alone. Slice HRD-17a.
 2. **The outbox.** A send that the server did not acknowledge waits in `src/lib/chatOutbox.ts`. The server acknowledges a send with its first stream event, or when a poll finds the row by id. The outbox releases entries in order, once, on the `online` event and after the history fold. Slices HRD-17b and HRD-17d.
-3. **Where it lives.** The outbox lives in memory, and `sessionStorage` keeps a copy for a reload of the same tab. It never uses `localStorage`. It clears on sign-out and on a member switch. A fence reads the source and refuses a `localStorage` write of message text. This is the proposed default of D-HRD-17-1.
+3. **Where it lives.** The outbox lives in memory, and `sessionStorage` keeps a copy for a reload of the same tab. It never uses `localStorage`. It clears on sign-out and on a member switch. A fence reads the source and refuses a `localStorage` write of message text. The owner decided this in D-HRD-17-1.
 4. **The waiting state.** A waiting entry shows in the existing run-status line (`runStatus.ts`) with a Cancel. It adds no banner. A send while a run is live is a steer, and it stays on the steer path (`chatSteer.ts`). It never enters the outbox.
 5. **A send while the history loads** goes to the outbox. It goes out after the load settles. The composer stays open for typing. Slice HRD-17c.
 6. **The fold rule.** The client merges by message id. For an id on the server, the server copy wins. A local row whose id is not on the server stays only as an outbox entry. Order stays as the server sets it. Slice HRD-17e.
@@ -245,7 +245,7 @@ A client slice that changes the look needs the owner's Visual review: light mode
 | **HRD-16** | 2995 | A card answer acts once | `tests/unit/test_card_answer_once.py` | HIGH |
 | **HRD-17** | 2996 | Offline, loading and two devices. The design is in §4.7a. The slices are HRD-17a to HRD-17f below. Not built | none (this is the parent row) | STANDARD |
 | **HRD-17a** | 3483 | The server runs one send once. A repeat of the same `user_message_id` in a thread joins the first run. Dark, behind a new flag | `tests/unit/test_send_once.py` | HIGH |
-| **HRD-17b** | 3484 | **The chat outbox library** (client only, no flag). BUILT 2026-11-17, unwired. Nothing calls it until HRD-17d. The notes under this table hold the rules and the checks for the next slice. **Gate:** AGENT-SAFE for the library. OWNER-GATE for the waiting wording and for D-HRD-17-1. **Verify:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/chatOutbox.test.ts`. | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17b** | 3484 | **The chat outbox library** (client only, no flag). BUILT 2026-11-17, unwired. Nothing calls it until HRD-17d. The notes under this table hold the rules and the checks for the next slice. **Gate:** AGENT-SAFE for the library. OWNER-GATE for the waiting wording. The owner decided D-HRD-17-1. **Verify:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/chatOutbox.test.ts`. | `src/lib/chatOutbox.test.ts` | STANDARD |
 | **HRD-17c** | 3485 | A send while the history loads waits for the load. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
 | **HRD-17d** | 3486 | A send that lost its connection before the server answered is not marked sent. Builder: lane-ui | `src/hooks/useAgentChatDisconnect.test.ts` | STANDARD |
 | **HRD-17e** | 3487 | The server's copy wins the fold of a second device, and a shorter write before the seal is refused if the check says so. Builder: lane-ui, with a HIGH server part | `src/lib/chatFold.test.ts`, `tests/unit/test_chat_upsert_no_shrink_r8.py` | STANDARD |
@@ -254,7 +254,7 @@ A client slice that changes the look needs the owner's Visual review: light mode
 **Notes on HRD-17b (task 3484).**
 
 - **Files.** `src/lib/chatOutbox.ts` is pure TypeScript. `clearOutbox()` runs next to each sign-out and each member switch: `Sidebar.tsx`, `SignUpForm.tsx`, and `switchTo`, `addAccount`, `signOutThis` and `signOutAll` in `accountSwitch.ts`.
-- **Storage.** `createOutbox` takes one injected backend: `memory` or `session`. The constant `OUTBOX_STORAGE` picks one. Its default is `"session"` (D-HRD-17-1, PROPOSED), so either answer is a one-line change. The code never writes message text to `localStorage`.
+- **Storage.** `createOutbox` takes one injected backend: `memory` or `session`. The constant `OUTBOX_STORAGE` picks one. Its default is `"session"` (D-HRD-17-1, decided), and a change is one line. The code never writes message text to `localStorage`.
 - **The copy.** It is ONE JSON value for all threads, under `OUTBOX_KEY`. It names the member by an opaque `memberKey`, the id that binds `dataCache.bindIdentity`. `restore` drops a copy of another member.
 - **The entry.** It holds the `user_message_id`, the thread, TEXT, `createdAt` and an optional `supersedes`. `enqueue` refuses files, an empty or too long text, a duplicate id and a full box.
 - **Release.** `release(threadId, send)` sends the entries in order and once. `retry` keeps the entry and stops the queue. `failed` removes the entry and reports it. An entry older than `OUTBOX_TTL_MS` (10 minutes) is not sent. `release` reports it as `expired`, so the caller can put the text back in the composer as not sent.
@@ -346,12 +346,12 @@ decided them. They take no D number in `work_plan.md` §3.
 | **Q4** | What if a decision names no item? | Keep the sentence, and the model asks. Tie it to the focus item only after HRD-11a |
 | **Q5** | What is the flag? | Keep the global bool `CHAT_CONSTRAINTS`. The owner decides at the flip whether to add `CHAT_CONSTRAINTS_ORGS` |
 
-**D-HRD-17-1 is PROPOSED** (HRD-17, 2026-11-16). The owner has not decided it.
+**D-HRD-17-1: the owner decided it** (on task 3484, 2026-11-17). The owner chose the default below.
 It takes no D number in `work_plan.md` §3.
 
-The owner was asked on task 3484 (2026-11-17). The default stays PROPOSED until the owner answers. HRD-17b builds both backends behind `OUTBOX_STORAGE`, so the answer is a one-line change.
+The owner picked the per-tab copy that a reload keeps. HRD-17b builds both backends behind `OUTBOX_STORAGE`, so the choice stays a one-line change.
 
-| # | Question | Proposed default |
+| # | Question | Decision |
 |---|---|---|
 | **D-HRD-17-1** | Does an unsent message survive a closed tab? | No. It survives a reload of the same tab, in `sessionStorage`, and it clears on sign-out. A closed tab keeps no message text on a shared computer. The cost: a message typed offline is lost when the member closes the tab |
 
