@@ -411,7 +411,11 @@ and the key. Close the tunnel with Ctrl+C in that shell.
 
 ### Mirror the chat flags of production (`--mirror-prod`)
 
-`--mirror-prod` sets the chat flags of production for each chat of the pack arms, in the eval process only. `prod_flags.json` holds the values, the read date (2026-11-17) and the source (`/opt/acb/app/.env` on the production box). An org list of `*` becomes the eval org. `TOOL_SEARCH_ORGS` stays empty. The switch is off by default. So the old results stay comparable. The results header records `mirror_prod`. `--merge` and `--compare` refuse files that ran with different values. Each key must be a real settings field, and the unit test checks it.
+`--mirror-prod` sets the chat flags of production for each chat of the pack arms, in the eval process only. `prod_flags.json` holds the values, the read date (2026-11-17) and the source (`/opt/acb/app/.env` on the production box).
+
+An org list of `*` becomes the eval org. `TOOL_SEARCH_ORGS` stays empty. The switch is off by default. So the old results stay comparable.
+
+The results header records `mirror_prod`. `--merge` and `--compare` refuse files that ran with different values. Each key must be a real settings field, and the unit test checks it.
 
 ### Test one tier on another model (`--tier-map`)
 
