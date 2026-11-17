@@ -5,8 +5,10 @@ CO-11, the pin, is BUILT and dark behind `CHAT_PIN_ORGS` (task 3510,
 2026-11-16). Its chat tool is not built (§18). CO-2a, the topic store and
 its routes, is BUILT and dark behind `CHAT_TOPICS_ORGS` (task 3501,
 2026-11-16). CO-2b adds `topic_id` and `set_by`, the move, the pass that
-never overrides a member, the rail and the chip. The rest of D163 is not
-built.
+never overrides a member, the rail and the chip.
+
+CO-4, the shadow join log, is BUILT and dark behind `CHAT_JOIN_SHADOW_ORGS`
+(task 3503, 2026-11-16). The rest of D163 is not built.
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions.
@@ -234,7 +236,10 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 - `chat_session_digest`: `session_id` PK, `organization_id`, `content_hash`,
   `entities JSONB`, `embedding`, `digested_at`. §10.1 reconciles it with CX-4.
 - `chat_join_log`: the shadow record of CO-4: the session, the candidate, the
-  outcome and the override.
+  outcome and the override. CO-4 built it (migration 457), one row for each new
+  chat. Each text is a code from a fixed list, and no column holds a word of
+  the member. `gateway/chat_join_shadow.py` is the one module that runs SQL on
+  it. The member purge deletes the rows of a leaver.
 - `chat_topic_note` (CO-16): one row for each version of a note. `id`,
   `organization_id`, `member_email`, `topic_id`, `version`, `focus`, `body`,
   `sources` (session ids only, never a title), `source_deleted_at`,
@@ -271,7 +276,7 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 | CO-1 | 3500 | 2 | The pass (§5), metered to the platform | **OWNER-GATE** for the flip. HIGH tier: money | A test run on Fracktal reports the real cost per chat, and no `usage_event` debits the company |
 | CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. CO-2b: the topic of a chat, the move, the rail, the chip and the seed. It waits for CO-11 (task 3510, not merged) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
 | CO-3 | 3502 | Later | One search of chats and files, on MEM-2. Reconcile first (§10.1) | AGENT-SAFE, dark | A word inside a chat and a word inside a file both return, and a colleague's private chat does not |
-| CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log` | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
+| CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log`. **BUILT, dark** (2026-11-16), migration 457, flag `CHAT_JOIN_SHADOW_ORGS`. The first message of a new chat writes one row of codes and ids, and no text. The held mark is not read yet | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
 | CO-5 | 3504 | 3 | The chip with a preview, join, carry and undo (§7, §17.1) | **OWNER-GATE** for the flip | Each row of §7.1 and each bar of §7.2 has a test, and the override rate is under 10 % on Fracktal |
 | CO-6 | 3505 | Later | Promotion to company topics | AGENT-SAFE, dark | The admin card shows the count and no name |
 | CO-7 | 3506 | Later | The shared chat pointer | AGENT-SAFE, dark | A private chat never shows (R8 test) |
@@ -368,6 +373,17 @@ CO-2a adds two fences:
   topic of a member. Org B never reads org A, and only an admin changes a
   company topic. The store refuses a duplicate in one list, and the purge
   deletes the member topics. FORCE RLS holds, and the flag off gives 404.
+
+CO-4 adds two fences:
+
+- `tests/unit/test_chat_join_shadow.py`: each row of §7.1 and each bar of
+  §7.2 has a case, and the same record outranks similar words. No column and
+  no argument of the module carries a text of the member. Only the module and
+  the member purge name `chat_join_log` in Python. The hook starts the
+  match only for a turn that the member sent, with the org and the member of
+  the session.
+- `tests/unit/test_chat_join_shadow_r8.py` (R8): one row for each new chat,
+  the bars on real rows, two orgs, a colleague, the cascade and the purge.
 
 ## 14. Risks
 

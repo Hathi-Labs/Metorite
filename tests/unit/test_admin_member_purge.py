@@ -514,6 +514,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "task_accounts": 1,
         # WS-CO CO-11: the fake holds no chat pin of the member.
         "chat_member_rows": 0,
+        # WS-CO CO-4: the fake holds no shadow row of the member.
+        "chat_join_rows": 0,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
@@ -1047,6 +1049,32 @@ def test_the_chat_rows_of_this_org_go_before_her_private_chats() -> None:
     assert "chat_session_member" not in {r.table for r in _PURGE_KEEPS}
     assert "chat_session_member" in cascade_children("chat_session")
     assert cascade_closure("chat_session_member") == set()
+
+
+def test_the_shadow_join_rows_of_this_org_go_before_her_private_chats() -> None:
+    """WS-CO CO-4 (``chat_organization.md`` §7 and §10): the purge deletes the
+    member's own rows of ``chat_join_log``. The clause names the member and
+    the bound org, so the rows of the same address in another org stay. It
+    runs before ``private_chat_sessions``, whose cascade takes only the rows
+    of her private chats. No table hangs off ``chat_join_log``.
+
+    Mutation-checked: dropping the entry fails here and in the count dict
+    above, and ``test_chat_join_shadow_r8.py`` fails on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_children, cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "chat_join_log"]
+    assert rows.key == "chat_join_rows"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("chat_join_rows") < keys.index("private_chat_sessions")
+    assert keys.index("chat_join_rows") < keys.index("member_record")
+    assert "chat_join_log" not in {r.table for r in _PURGE_KEEPS}
+    assert "chat_join_log" in cascade_children("chat_session")
+    assert cascade_closure("chat_join_log") == set()
 
 
 def test_the_member_s_private_change_history_goes() -> None:
