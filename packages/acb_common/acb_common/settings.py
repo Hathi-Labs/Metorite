@@ -1105,6 +1105,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_focus_item.py.
     chat_focus_orgs: str = ""
 
+    # ── The per-turn budget of a read tool (HRD-5, chat_failure_modes.md B5) ─
+    #
+    # TOOL_TURN_BUDGET_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and each run is as before. On, the next call to a read
+    # tool in a turn does not run after 3 empty or refused answers from that
+    # tool. Its answer is "Stop. You tried: ..." and tells the chat to ask the
+    # member one question. A write tool is never counted or stopped. The one
+    # reader is `orchestrator.tool_turn_budget.tool_turn_budget_on`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_tool_turn_budget.py.
+    tool_turn_budget_orgs: str = ""
+
     # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
     #
     # CHAT_RUN_PHASE_ORGS: a comma list of organization ids, or `*`. Empty:
@@ -1497,6 +1509,19 @@ class Settings(BaseSettings):
     # `enforcement-flip`, after the owner preview.
     # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
     chat_pin_orgs: str = ""
+
+    # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
+    #
+    # `chat_card_record_orgs` lists the organization ids where a write card
+    # that a member approved leaves one row in `chat_card_record`: the chat,
+    # the member, the card id, the outcome key, the act kind and the link of
+    # the record made. No text of the card. Empty means off: nothing is
+    # written. The one reader is `orchestrator.card_record.record_allowed`,
+    # and it fails closed. The name ends in `_orgs`, so a SIGHUP applies a
+    # change with no restart (`docs/flag_reload.md`). A value other than
+    # empty on a box is the gate `enforcement-flip`.
+    # Fences: tests/unit/test_card_record.py, tests/unit/test_card_record_r8.py.
+    chat_card_record_orgs: str = ""
 
     # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
     #
