@@ -339,6 +339,18 @@ ALTER TABLE chat_session_participant ADD CONSTRAINT chat_session_participant_org
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS chat_session_participant_org_idx ON chat_session_participant (organization_id);
 
+-- chat_topic
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM chat_topic WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: chat_topic still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE chat_topic ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE chat_topic ADD CONSTRAINT chat_topic_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS chat_topic_org_idx ON chat_topic (organization_id);
+
 -- copilot_config
 DO $$
 BEGIN

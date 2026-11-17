@@ -582,6 +582,29 @@ test.describe("phone", () => {
     await expect(launcher.getByTestId("launcher-hint")).toHaveText("Star the apps you want in your sidebar.");
   });
 
+  // Task 3587. The drawer keeps the node of the tap. A tap before the layout
+  // read answered kept the skeleton, or every held app, until the drawer
+  // closed. The read is held past the tap here, so each run takes that path.
+  // Mutation, seen to fail first: remove the `menuShape` effect in
+  // `AppShell.tsx`, and the drawer never shows the stars.
+  test("a tap before the layout read answers shows the stars when it answers", async ({ page }) => {
+    const store = await stub(
+      page,
+      { ...EMPTY, preset: "engineer", answered: "answered", pins: ["/email", "/chat"], known: KNOWN },
+      { holdGet: true },
+    );
+    await page.goto("/settings/appearance");
+    await page.getByRole("button", { name: "Menu" }).click();
+    const drawer = page.locator("aside:not([data-collapsed])");
+    await expect(drawer.getByRole("button", { name: "Desktop view" })).toBeVisible();
+    store.release();
+    await expect.poll(() => shape(page, drawer)).toEqual([
+      ["personal", ["My Email"]],
+      ["studio", ["Chat"]],
+    ]);
+    await expect(drawer.getByTestId("nav-skeleton")).toHaveCount(0);
+  });
+
   test("with the chat-first flag on, step 1's answer writes the preset's stars and there is no step 2 (CF-2)", async ({ page }) => {
     const store = await stub(page, EMPTY, { chatFirst: true });
     await page.goto("/settings/appearance");
