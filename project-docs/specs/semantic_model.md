@@ -72,7 +72,7 @@ one line each.
 ## 1. The evidence (production, 2026-11-17, counts only)
 
 One org with a Zoho mirror of about 17 custom modules. One member, one
-thread of CRM questions, 33 runs (`evidence.md`). The request log
+thread of CRM questions, 33 runs (the coordinator's evidence file). The request log
 (`crm_requests.txt`) gives these counts:
 
 | What the chat called | Count |
@@ -87,7 +87,7 @@ thread of CRM questions, 33 runs (`evidence.md`). The request log
 | An aggregate that used the key word `@amount` | 3 |
 | An aggregate that split a total over named fields (`fields=`) | 1 |
 
-**The refusal classes** (`evidence.md`, "The 10 refused CRM calls"):
+**The refusal classes** (the coordinator's evidence file, "The 10 refused CRM calls"):
 
 1. A name as `q` on a module total: 422. A module aggregate takes no `q`
    (`routes/crm/aggregate.py` `MODULE_PARAMS`).
@@ -134,7 +134,7 @@ V = built on `main`. Dark = built behind a flag that is off. P = planned.
 | 7 | Sample values | For low-cardinality dimensions | `crm_list_fields` shows every picklist option (V). Masked samples for an admin (CRM-Q32) | Small. The options are one tool call away, not in a brief. A connection has none |
 | 8 | Verified queries | Snowflake VQR, Genie trusted assets, Power BI verified answers | None. The digest runs fixed queries in code (CRM-Q28) | All of it |
 | 9 | Instructions | Few and focused | `crm_business_rules` (migration 283), the CRM facts block, the period and filter lines (§18.16) | None for a connection |
-| 10 | One query grammar | One typed query | Two: the CRM list and aggregate parameters (`records.ListParams`, `field.<key>`), and `acb_common/studio_query.py` for Studio objects. A third is proposed (`ui_research.md` §4.1) | Three spellings of a filter |
+| 10 | One query grammar | One typed query | Two: the CRM list and aggregate parameters (`records.ListParams`, `field.<key>`), and `acb_common/studio_query.py` for Studio objects. A third is proposed (the CRM UI research draft (§4.1, not on `main`)) | Three spellings of a filter |
 | 11 | Validate and repair | Run, read the error, retry a fixed number of times | Typed 422s (`field_sql.py`). The refusal seam `acb_common/tool_refusals.py`. A read budget (§18.16.3) | A refusal does not list the legal fields. No count of refusals. No learning from them |
 | 12 | Numbers from a query | The server computes each figure | `acb_common/number_check.py` and `acb_skills/answer_check.py` arm on a CRM tool (V) | An MCP result does not arm the check (P 3141) |
 | 13 | Connect-time profiling | Snowflake Autopilot | `crm_sync/map_pipeline.py`: shape at 0 tokens, then the decide tier, with caps (V for Zoho) | None for an MCP server or a ledger |
@@ -342,12 +342,12 @@ which matches the record name, as the module list does. No grammar changes.
 
 **Rung 2 unifies the grammar (SEM-1b).** Three spellings exist: the CRM
 parameters, `acb_common/studio_query.py`, and the filter set of
-`ui_research.md` §4.1. Two options:
+the CRM UI research draft (§4.1, not on `main`). Two options:
 
-| | Option A: `studio_query` is the one shape | Option B: a CRM `filter_grammar.py` (`ui_research.md` S1) |
+| | Option A: `studio_query` is the one shape | Option B: a CRM `filter_grammar.py` (the CRM UI research draft, S1) |
 |---|---|---|
 | What it is | The JSON shape, the operator names and the error codes of `studio_query` serve every store. Each store keeps its own compiler and its own value rules | A new CRM module with its own operator words (`is`, `between`, `any_of`, `empty`) |
-| Operators today | `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `contains`, `is_empty`. No `between`, no `starts_with`, no `any` group | The full set of `ui_research.md` §4.1 |
+| Operators today | `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `contains`, `is_empty`. No `between`, no `starts_with`, no `any` group | The full set of the CRM UI research draft (§4.1, not on `main`) |
 | What must change | Add one `any` group and `matches`. Make the value check a hook of each store | Nothing in Studio |
 | The conflicts to solve | A Studio date is a day in UTC, and a CRM month uses the CRM zone (`field_sql.crm_zone`). Studio money is minor units, and Zoho sends JSON numbers, some as strings. A Studio select must be one option, and the CRM counts each spelling (§18.16.6). Studio filters hot fields only (`query_not_indexed`), and the CRM filters any jsonb key. Studio caps a statement at 5 s, the CRM at 10 s | None now. The CRM and Studio keep two spellings |
 | The type map | `crm_field_defs` types map to Studio types: currency to money, picklist to select, boolean to checkbox, a lookup (`{id, name}`) to a relation by id or name | Not needed |
@@ -355,7 +355,7 @@ parameters, `acb_common/studio_query.py`, and the filter set of
 
 **Recommendation: Option A for the shape, with a value hook for each store.**
 The chat then learns one query form for every app. This is D-SEM-3. Until the
-owner decides it, SEM-1b and `ui_research.md` S1 must not both start, because
+owner decides it, SEM-1b and the CRM UI research draft S1 must not both start, because
 together they would write two grammars.
 
 **Never model-written SQL on our Postgres.** A typed query fails loudly, and
@@ -626,7 +626,7 @@ the owner answers D-SEM-1.
 3. **D-SEM-3. Which one query grammar** (§5.1). Option A: the shape of
    `studio_query` for every store. It gets one `any` group, `matches`, and a
    value hook for each store. Option B: a CRM `filter_grammar.py`, as
-   `ui_research.md` S1 proposes. Recommendation: A. It costs more, because of
+   the CRM UI research draft S1 proposes. Recommendation: A. It costs more, because of
    the zone, money, spelling and hot-field conflicts that §5.1 lists. B leaves
    a third spelling. Rung 1 does not wait for this answer.
 4. **D-SEM-4. Who approves.** The CRM admin for the CRM (as CRM-Q32). A holder
