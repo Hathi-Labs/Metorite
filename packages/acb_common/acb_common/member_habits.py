@@ -28,6 +28,8 @@ a person (D-192): the share is of acts on one kind of item.
 when the member turned ``learning`` off. Each gate is checked on every call,
 before the cache, so a switch takes effect at once.
 
+**A purge clears the cache** (:func:`forget_member`, task 3639).
+
 **Tenancy (R5).** The caller passes a session bound with
 ``tenant_session(org)``, and the org of the cache key is the same one. The
 member comes from the session of the caller. The cache goes through the tenant
@@ -127,12 +129,50 @@ def find_habit(app: str, rows: list[tuple[str, list[str] | None]]) -> Habit | No
     return Habit(app=app, act=act, targets=targets, count=count, total=total)
 
 
+def _digest(*parts: Any) -> str:
+    return hashlib.sha256(json.dumps(list(parts), sort_keys=True).encode()).hexdigest()[:40]
+
+
+def _member_part(member: str) -> str:
+    """The member's segment of the cache key: a digest, never the address."""
+    return _digest("member", member)
+
+
 def _cache_key(member: str, app: str, mailbox: str | None, kind: dict[str, Any]) -> Any:
+    """``cc:<org>:member_habits:<member digest>:<item digest>``. The member
+    digest is its own segment, so a purge clears one member's keys with one
+    pattern (:func:`forget_member`)."""
     from acb_common import tenant_redis
 
-    digest = hashlib.sha256(json.dumps(
-        [member, app, mailbox, kind], sort_keys=True).encode()).hexdigest()[:40]
-    return tenant_redis.key("member_habits", digest)
+    return tenant_redis.key("member_habits", _member_part(member),
+                            _digest(app, mailbox, kind))
+
+
+async def forget_member(org: str, member: str) -> int:
+    """Delete each cached habit of *member* in *org* at once (task 3639). The
+    member purge calls it: a cached habit holds the addresses of the member's
+    acts (``targets``), so it must not outlive the purge for up to an hour.
+    Best effort: a failure of Redis logs the class and answers what it
+    removed. The org comes from the purge, never from request input (R5)."""
+    who = str(member or "").strip().lower()
+    if not who or not org:
+        return 0
+    removed = 0
+    try:
+        from acb_common import tenant_redis
+
+        with tenant_redis.organization_scope(org):
+            redis = tenant_redis.get_tenant_redis()
+            head = tenant_redis.key("member_habits", _member_part(who)).value + ":"
+            async for raw in redis.scan_iter(tenant_redis.match("member_habits", _member_part(who))):
+                name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                rest = name[len(head):] if name.startswith(head) else ""
+                if rest:
+                    removed += int(await redis.delete(
+                        tenant_redis.key("member_habits", _member_part(who), rest)) or 0)
+    except Exception as exc:  # the class only
+        _log.warning("member_habits.forget_failed", error=type(exc).__name__)
+    return removed
 
 
 async def _cache_get(org: str, k_args: tuple[Any, ...]) -> tuple[bool, Habit | None]:
