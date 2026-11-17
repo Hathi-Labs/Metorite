@@ -321,6 +321,46 @@ def test_at_the_cap_the_pin_tool_drops_studio_more_a_chosen_trade() -> None:
     assert BASE + 2 + size["email"] + size["studio"] - 1 == 99
 
 
+@pytest.mark.parametrize("held", ["", "*"], ids=["held-off", "held-on"])
+def test_with_both_flags_on_the_core_studio_pack_leaves_a_chosen_trade_of_a_worst_case(
+    monkeypatch: pytest.MonkeyPatch, held: str,
+) -> None:
+    """CO-11b (task 3563, ``chat_organization.md`` §18 item 3). A chosen trade
+    of a worst case, with the flags ON only. ``pin_chat`` (``CHAT_PIN_ORGS``)
+    and ``find_tools`` (``TOOL_SEARCH_ORGS``) each add one tool to the base.
+    The case ``studio_with_email_and_crm_records`` of the golden matrix runs
+    through the harness of the matrix (``_row``) at three bases:
+
+    * flags off (BASE): email, crm-records and studio, 57 + 31 + 13 + 10 less
+      the two specialists = 109 tools.
+    * pin_chat alone (BASE + 1): the same packs, 110 tools, at the cap.
+    * both flags (BASE + 2): 111 tools, so ``choose`` drops the core pack
+      ``studio`` by name. The request holds 59 + 31 + 13 - 2 = 101 tools.
+
+    With both flags off, nothing changes. Mutation: expect ``studio-more`` in
+    the place of ``studio``, or run at BASE + 1 -> red."""
+    from acb_common import get_settings
+
+    import tests.unit.test_studio_split_matrix as matrix
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", held, raising=False)
+    case = matrix.CASES["studio_with_email_and_crm_records"]
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"])
+            for slug in ("email", "crm-records", "studio")}
+    assert matrix.BASE == 57 and size == {"email": 31, "crm-records": 13, "studio": 10}
+    rows = {}
+    for extra in (0, 1, 2):
+        monkeypatch.setattr(matrix, "BASE", 57 + extra)
+        rows[extra] = matrix._row(case)
+    assert rows[0]["packs"] == rows[1]["packs"] == ["email", "crm-records", "studio"]
+    assert (rows[0]["tools"], rows[1]["tools"]) == (109, 110)
+    assert "studio" in rows[1]["packs"] and "studio" not in rows[2]["packs"]
+    assert rows[2]["packs"] == ["email", "crm-records"]
+    assert rows[2]["skipped"] == ["studio-more", "studio"]
+    assert 59 + sum(size.values()) - 2 == 111 > tp.MAX_REQUEST_TOOLS == 110
+    assert rows[2]["tools"] == 59 + size["email"] + size["crm-records"] - 2 == 101
+
+
 def test_at_the_cap_find_tools_drops_studio_more_the_trade_of_decision_13() -> None:
     """The trade that the owner accepted in D222 decision 13. A Studio turn
     with the email words fills the cap exactly with production's base (56 and

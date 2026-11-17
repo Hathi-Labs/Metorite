@@ -748,9 +748,10 @@ and the default is empty.
        longer offers `projects-cycles` with the hold off.
    - With `pin_chat` and `find_tools` both on, the base is two tools larger.
      Then 13 rows of 7 cases change. In `studio_with_email_and_crm_records`,
-     the core pack `studio` itself leaves. No test measures this case.
-   - Only the `studio-more` case has a test
-     (`tests/unit/test_exact_tool_count.py`).
+     the core pack `studio` itself leaves. A test measures this case now.
+   - Two cases have a test in `tests/unit/test_exact_tool_count.py`: the
+     `studio-more` case, and this case with both flags on. The other cases
+     have no test.
 
    The old item 3, the raise of the debt ceiling from 25 to 27, is moot.
    CO-11b paid both rows.
