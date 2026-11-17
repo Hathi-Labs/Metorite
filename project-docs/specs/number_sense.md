@@ -1,7 +1,11 @@
 # Numbers that make sense — a plausibility check for every total
 
-**Status: PROPOSED, 2026-11-13. Nothing is built.** Epic 3132. NUM-0 is
-task 3133. The owner decides D-NUM-1 to D-NUM-5 (§7). The defaults hold
+**Status: PROPOSED, 2026-11-13. NUM-1 is built (2026-11-17, task 3134).**
+`acb_common/number_sense.py` holds the pure checks `concentration` (CRM-Q25e,
+called by the CRM aggregate), `outlier`, `coverage`, `parts`, `part_period` and
+`grouping`. Only `concentration` has a caller. The kinds `jump` (needs NUM-7)
+and `duplicates` are not built, and no tool, harness or table exists yet.
+Epic 3132. NUM-0 is task 3133. The owner decides D-NUM-1 to D-NUM-5 (§7). The defaults hold
 until the owner answers.
 
 **Owner ask, 2026-11-13, in chat.** The words are the owner's, so they sit in
