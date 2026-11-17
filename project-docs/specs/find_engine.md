@@ -290,7 +290,9 @@ off, `Hit.as_dict` gives the keys of today, byte for byte.
 
 `edge` is a code constant from a closed list: `contact_of`, `lead_of`,
 `deal_of`, `company_of`, `mail_from`, `mail_to` and `mail_domain`. It holds no
-text of either record. A hit found by two rungs keeps the lower rung.
+text of either record. A hit found by two rungs keeps the copy that holds
+more words. On a tie of words, it keeps the lower rung (the planner, FIND-2b,
+2026-11-17).
 
 As built (HRD-21), a past chat prints its date beside its hint, as each app
 does: "(Your chat, updated 2026-11-12)". The date is `updated_at` of the

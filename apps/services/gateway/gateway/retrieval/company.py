@@ -878,8 +878,7 @@ def _wins_a_tie(new: Hit, kept: Hit) -> bool:
     rungs found (HRD-18b review of 2026-11-16, P2-d).
 
     The copy that holds more words wins, and on a tie the lower rung: the
-    order of §3.4. The text of §3.5 says the lower rung alone. The owner is
-    asked (a3). To go back to §3.5, compare ``find.rung_of`` here only.
+    order of §3.4 and the text of §3.5 (the planner, FIND-2b, 2026-11-17).
     """
     return _first_in_order(new) < _first_in_order(kept)
 
