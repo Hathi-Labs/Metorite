@@ -92,7 +92,14 @@ def test_a_version_or_a_final_in_a_file_name_is_not_a_topic():
 def test_an_id_form_of_an_attachment_adds_no_word():
     i = wc.intent_of("send_email", {"to": ["a@b.test"], "subject": "Hi",
                                     "attachments": ["task-file:3f2a1b9c-4abc-9def", "knowledge:0a1b2c3d",
+                                                    "attachment:99aa11bb", "file:77cc88dd",
                                                     "outputs/NDA_Acme.pdf", "plain"]})
+    assert i.file_stems == frozenset({"nda", "acme"})
+
+
+def test_an_artifact_attachment_keeps_its_file_name():
+    i = wc.intent_of("send_email", {"to": ["a@b.test"], "subject": "Hi",
+                                    "attachments": ["artifact:mira:outputs/NDA_Acme_2026-11-12.pdf"]})
     assert i.file_stems == frozenset({"nda", "acme"})
 
 
@@ -158,6 +165,20 @@ async def test_a_frequent_contact_does_not_hide_a_real_resend():
     out = await _run("send_email", args, FakeReader(sent=sent))
     assert [f["kind"] for f in out] == ["write_already_sent"]
     assert out[0]["evidence"][0]["id"] == "m1" and out[0]["facts"]["count"] == 1
+
+
+async def test_a_weekly_routine_does_not_hide_a_different_resend():
+    """Three status mails that share {acme, pilot} are a routine. The NDA mail is not."""
+    routine = [_sent(days_ago=d, subject="Acme pilot status", n=d) for d in (2, 9, 16)]
+    nda = _sent(days_ago=5, subject="NDA for Acme", files=("NDA_Acme.pdf",), n=99)
+    args = {"to": ["mahesh@vendor.test"], "subject": "Acme pilot NDA", "attachments": ["x/NDA_Acme.pdf"]}
+    for order in ([*routine, nda], [nda, *routine]):  # the answer does not depend on the order
+        out = await _run("send_email", args, FakeReader(sent=order))
+        assert [f["evidence"][0]["id"] for f in out] == ["m99"]
+    # With only the routine to match, the check stays quiet.
+    only = await _run("send_email", {"to": ["mahesh@vendor.test"], "subject": "Acme pilot status"},
+                      FakeReader(sent=routine))
+    assert only == []
 
 
 async def test_a_reply_in_a_long_thread_is_not_a_resend():

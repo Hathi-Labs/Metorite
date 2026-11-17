@@ -123,6 +123,11 @@ def title_words(text: str | None) -> frozenset[str]:
                      if (w not in TITLE_GLUE and len(w) >= 2) or w.isdigit())
 
 
+#: The heads of the attachment forms that hold an id and no file name
+#: (``acb_skills/held_card.py``). ``artifact:<agent>:<path>`` is not one of them.
+_ID_HEADS: frozenset[str] = frozenset({"attachment", "knowledge", "task-file", "file"})
+
+
 def _file_name(value: str) -> str | None:
     """A file name from an attachment argument, or None for an id form.
 
@@ -130,9 +135,10 @@ def _file_name(value: str) -> str | None:
     or ``knowledge:<uuid>``. An id holds no name, so it adds no word.
     """
     v = (value or "").strip()
-    if not v or re.match(r"^[A-Za-z][A-Za-z0-9_-]*:", v) or not _EXT.search(v):
+    head = v.split(":", 1)[0].lower() if ":" in v else ""
+    if not v or head in _ID_HEADS or not _EXT.search(v):
         return None
-    return v
+    return v  # a path, a name, or ``artifact:<agent>:<path>``, which holds a name
 
 
 # ── The intent ──────────────────────────────────────────────────────────────
@@ -291,14 +297,21 @@ async def _already_sent(intent: Intent, member: str, reader: Reader, now: dateti
             hits.append((matched, r))
     if not hits:
         return []
-    # The best match is the one that shares the most words. A routine (a weekly
-    # report) is the SAME match repeated, so only hits that hold all of its
-    # words count. Other mail to this address on one shared word does not.
-    best = max(hits, key=lambda h: (len(h[0]), h[1]["sent_at"]))[0]
-    same = [r for m, r in hits if best <= m]
-    if len(same) >= RECURRING_MIN:
+    # A routine (a weekly report) is the SAME match repeated. So test each
+    # maximal match set apart: the mails that hold all of its words. A set that
+    # repeats RECURRING_MIN times is a routine and stays quiet, and it never
+    # hides a different set (the NDA you sent among three status mails). Other
+    # mail to this address on one shared word does not count toward a set.
+    sets = {m for m, _ in hits}
+    maximal = [m for m in sets if not any(m < o for o in sets)]
+    fired: list[dict[str, Any]] = []
+    for m in maximal:
+        same = [r for mm, r in hits if m <= mm]
+        if len(same) < RECURRING_MIN:
+            fired.extend(same)
+    if not fired:
         return []
-    hits = same
+    hits = list({r["id"]: r for r in fired}.values())
     latest = max(hits, key=lambda r: r["sent_at"])
     return [_finding(
         kind="write_already_sent", member=member, entity_type="thread",
