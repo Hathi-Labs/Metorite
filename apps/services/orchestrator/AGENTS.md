@@ -27,6 +27,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - ⚠️ It is the ONE builder of a spawning Copilot client. `child_env_client` builds every agent client with `env=copilot_env()`, and `install_child_env_guard` (installed by `orchestrator/__init__.py`) covers every path.
    - Do not build a `CopilotClient` for an agent anywhere else. Fence: `test_copilot_child_env.py`.
 3. agents.py exports build_orchestrator_agent(), the main orchestrator MAF Agent.
+   - WS-FIND FIND-6 (`find_engine.md` §5.3 and §5.4): the build reads `_find_enabled` once, with company search on. For an org of `FIND_ORGS`, `resolve_name` joins after `search_company`. With `CONTEXT_RECENCY` on too, the persona gains `FIND_STANDING_RULE` by one exact swap (`_FIND_SWAP`), because the route runs the ladder only then. Each find tool of the core list (`search_company`, `resolve_name`, `resolve_person`) then takes `acb_skills.pack_tool_guard.guard`, the one guard of HRD-3. Each other org keeps the persona and the tool objects of before. `resolve_person` stays until `resolve_name` has its parity (D-FIND-3). Fences: `test_find_tools.py`, `evals/trajectories/test_find_family_trajectory.py`.
 4. mutation.py handles Self_Mutation_Node. It starts a Docker sandbox on agent failure.
 5. stream_relay.py buffers all SSE events to Redis Streams for fire-and-forget chat with live reconnection.
 6. All agents must go through MAF. No raw Copilot SDK path for business execution.
@@ -106,6 +107,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 22. **A run that holds a CRM tool gets the number check** (spec `crm_platform.md` §18.11.2).
    - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`. Read `agents` again after injection. Do not attach the provider anywhere else.
    - Each new relay of a run queue must drop the hold beat (`_relayable`). Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+   - FIND-7: the same seam gives the "not found" check to an agent that holds `search_company`, while `FIND_CLAIM_CHECK` is not `off`. It does so only for an org of `FIND_ORGS`. The seam asks `gateway.retrieval.find.find_allowed` for the org of the run binding, and no org or a fault reads as off. With the flag `off`, and for any other org, the seam attaches what it attached before. Fence: `test_answer_not_found.py`.
 22a. **A slow tool call gets one line for the member** (HRD-6 part 1, spec `chat_run_continuity.md` §4.11). It ships dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
    - `_tool_injection._apply_progress_notice` runs right BEFORE `_apply_answer_check`, after `_apply_steer_turns`. Rule 22 keeps the number check last, so its recorder sits inside the timer, and the timer still wraps each tool call. It reads the org of the run binding only. Do not attach `acb_skills.progress_notice.ProgressNoticeProvider` anywhere else.
 22b. **A card stores the call that it guards** (RESUME-1a, task 3260, spec `chat_run_continuity.md` §4.12.4 item 1). It ships dark behind `CHAT_RESUME_ORGS`.
@@ -126,6 +128,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 24. **The orchestrator's per-turn context carries the member's own profile block** (spec `personalization.md` §5.1).
    - It needs an org, `assistant_profile.enabled_for(org)`, a verified member and `_RUN_SOLO_ROOM` True. `enabled_for(org)` is the one reader.
    - A delegated run cannot widen `_RUN_SOLO_ROOM`. Never read it from the payload. Fences: `test_executor_profile_block.py`, `test_executor_profile_block_r8.py` (R8), `test_assistant_profile_org_rollout.py`.
+   - `run_is_solo()` is the one reader of `_RUN_SOLO_ROOM` outside this module (WS-FIND HRD-21). `search_company` asks it before it names the current chat, so a member's past chats never print into a chat that another person can read. Fence: `test_chat_source.py`.
    - A build that only measures the context runs inside `_interview_peek` (PZ-32). The token count of a native session and the fallback text are two such builds. So they leave `_INTERVIEW_SHOWN` as they found it.
    - In `_compose_maf_run`, the context that the model reads is the first step after the peek, before any import. A failed import then still records the memo. Fences: `test_profile_pz32.py::test_native_session_keeps_interview_memo`, `test_the_model_reads_the_due_line_and_the_memo_records_it` and `test_an_import_fault_still_records_the_memo`.
    - The persona gains the offer line of PZ-32 (`_PROFILE_CARD_SWAP`) only with `ASSISTANT_PROFILE_CARD_WRITES_ORGS` naming the org (`agents._profile_card_writes_enabled`). Fence: `test_profile_pz32.py::test_the_offer_line_follows_the_org`.
@@ -133,6 +136,10 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 25. **The orchestrator's per-turn context carries the member's corrections and limits of the chat** (spec `one_assistant_context.md` §4).
    - `_prime_chat_constraints` runs only for the agent `orchestrator`, with `CHAT_CONSTRAINTS` on, a solo room and a verified member. A delegated run inherits the list and never opens the tools.
    - Fences: `test_chat_constraints.py`, `evals/trajectories/test_chat_constraints_trajectory.py`.
+25a. **The orchestrator's per-turn context carries the item in focus of the chat** (HRD-11a, spec `chat_failure_modes.md` §4.5 E1). It ships dark behind `CHAT_FOCUS_ORGS`.
+   - `_chat_focus_slot` has the gates of the briefing: the orchestrator, a solo room, a verified member, a run that shows cards, not batch and not delegated. Its one Redis read starts in `_EarlyReads`, and `_prime_chat_focus` binds it after the OA-4 prime (lap `focus`).
+   - `_chat_focus_block` goes right after the OA-4 block. `_record_pack_call` and the sub-run hook beside `_record_email_working_set` write the item, through `_record_chat_focus`. A derived run context drops the binding (`_without_focus_key`).
+   - Fences: `test_focus_item.py`, `test_setup_laps.py`, `evals/trajectories/test_focus_item_trajectory.py`.
 26. **A pack tool acts as its owner acts in a sub-run of this chat** (spec `one_assistant_context.md` §4.2.3). `_tool_injection._pack_tools(slug, run_ctx)` is the one builder. Since OA-7c its live caller is `_apply_tool_packs` (contract 27).
    - STRICT within a turn (the owner confirmed it on 2026-10-27): the first email call marks the chat. Each later call of the turn runs held. An egress tool then does not run, and it answers `egress.EGRESS_HELD_PACK_ANSWER`.
    - The run check of each call keys on `tool_packs.PACK_RUN_KEY`, which the server mints for each run. It never keys on `run_id`, which a client can set.
@@ -179,6 +186,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - A load by the model makes its pack sticky (task 1747). A pack of layer (a) becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
    - Task 1747: `_pack_left_block` puts `tool_packs.left_line` last in `_context_preamble_parts`, after the cache break. It names the sticky packs that left at the start of the turn. It reads the record of the packs from the run binding, so a delegated run gets no line. Fence: `test_pack_turn_keeps_used_packs.py`.
    - HRD-1: `_log_request_tools_view` puts `acb_skills.unknown_tool.UnknownToolProvider` on the view of the orchestrator, after each seam of `_inject_agent_tools`. It finds the loader on that view. Do not attach it anywhere else. Fence: `test_unknown_tool_answer.py`.
+   - Task 3599: `event_translator.tool_result_fields` is the one mapping of a tool result of a stream or batch step for the member. The Tier 2 shim and the resume path keep their own mapping. `translate_update` and `_tool_calls_of` both call it, so the stream and a batch sub-run agree. MAF's own "not found" result shows `unknown_tool.MEMBER_LINE` and stays a failed step. Every other result maps as before. Fence: `test_unloaded_pack_tool.py`.
    - Fence: `tests/unit/test_load_skill_tools.py`.
    - WS-67 TS-2a PR 3 (D222): `find_tools` joins the same run, dark behind `TOOL_SEARCH_ORGS`. `_apply_tool_packs` reads `tool_packs.tool_search_on` for the bound tenant, and only with `offer_loader`. With the flag off, the run is byte-identical. Fence: `test_tool_search_off.py`.
    - Decision 13: with the flag on, `find_tools` counts in the base before the first `choose`, as the load tool does. `executor._log_pack_request_tools` counts it too. Fence: `test_exact_tool_count.py`.
