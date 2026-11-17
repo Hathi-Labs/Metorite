@@ -193,7 +193,7 @@ async def _client() -> Any:
     """The relay's pooled client, behind the tenant-prefix wrapper."""
     from orchestrator.stream_relay import _tenant_client
 
-    return await _tenant_client()
+    return await _tenant_client()  # type: ignore[no-untyped-call]
 
 
 def _event_type(line: Any) -> str:
