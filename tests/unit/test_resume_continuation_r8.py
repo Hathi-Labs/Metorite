@@ -1000,6 +1000,14 @@ async def _run_ends(tid: str) -> None:
     raise AssertionError("the continuation did not end")
 
 
+async def _quiet() -> None:
+    """Let each detached run of the test end before the client closes, so
+    a failed assertion fails fast and never hangs the loop at its end."""
+    for task in list(stream_relay._DETACHED_TASKS.values()):
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(asyncio.shield(task), timeout=10)
+
+
 async def _stream(client, tid: str) -> list[dict[str, Any]]:
     return [json.loads(f["event"]) for _eid, f in await client.xrange(f"cc:stream:{tid}")]
 
@@ -1046,6 +1054,7 @@ def test_case_a_goes_on_in_the_same_reply(relay_scene, monkeypatch):
             assert _user_rows(w, tid) == 1, "no member turn"
             assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True)
         finally:
+            await _quiet()
             await client.flushdb()
             await client.aclose()
 
@@ -1118,6 +1127,7 @@ def test_the_case_a_checks_on_real_rows(relay_scene, monkeypatch):
             await client.delete(f"cc:stream:{tid}")
             assert await same(w.org_a, tid, row, stored) is None, "the stream expired"
         finally:
+            await _quiet()
             await client.flushdb()
             await client.aclose()
 
@@ -1175,6 +1185,7 @@ def test_a_lost_parked_end_keeps_the_old_row_and_opens_a_new_reply(how, relay_sc
             assert "The deal moved." in rows[res["messageId"]]
             assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True), "ONE claim"
         finally:
+            await _quiet()
             await client.flushdb()
             await client.aclose()
 
@@ -1229,6 +1240,7 @@ def test_a_changed_room_gives_a_new_reply(at_park, now, same, relay_scene, monke
                 assert [r["run_id"] for r in RUNS[tid]] == [res["runId"]], "ONE run"
             assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True), "ONE claim"
         finally:
+            await _quiet()
             await client.flushdb()
             await client.aclose()
 
@@ -1260,6 +1272,7 @@ def test_a_trimmed_head_never_writes_over_part_one(relay_scene, monkeypatch):
             (other,) = set(rows) - {mid}
             assert "The deal moved." in rows[other] and "Let me move it." not in rows[other]
         finally:
+            await _quiet()
             await client.flushdb()
             await client.aclose()
 
@@ -1320,6 +1333,7 @@ def test_a_real_park_keeps_the_stream_24h(both, relay_scene, monkeypatch):
             else:
                 assert 0 < ttl <= stream_relay.STREAM_TTL_SECONDS, ttl
         finally:
+            await _quiet()
             await client.flushdb()
             await client.aclose()
 
