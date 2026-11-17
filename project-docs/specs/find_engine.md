@@ -786,33 +786,52 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 - **The mark of pass 2.** `company_search_tools.ran_second_pass` is the one
   reader, beside the code that writes each line. A line of rung 2 starts with
   "Each word alone:". A line of rung 3 starts with "Near spellings:" or
-  "No record holds «", or the "Tried:" line ends with "Near spellings tried:".
-  A trace counts too, because the explain mode runs each rung. The tool folds
-  each line break of a record, so no record can start such a line.
+  "No record holds «". A trace counts too, because the explain mode runs
+  each rung.
+- **No record can fake the mark.** The tool folds each line break of a
+  title, a hint, a snippet and the query, for each boundary of
+  `str.splitlines`. The "Tried:" line quotes the query, so the reader looks
+  for "Near spellings tried:" only after the quote of the query closes.
 - **Why not the log line.** `search.company.ladder` is a log line of the
   gateway. The harness reads only the text of the tool answer.
-- **The matcher.** `not_found_claim` has 5 rules with closed codes:
-  `no_such`, `could_not_find`, `no_record_of`, `there_is_no_named` and
-  `does_not_exist`. Each rule needs a record noun from a closed list, or a
-  name in a place of records, such as "Sharath in the CRM". A preposition
-  between "find" and the noun ends a claim, so "any errors in the invoice"
-  is no claim. A question, a condition ("if", "unless", "whether"), a quote,
-  a quoted block and code are no claim.
+- **The matcher.** `not_found_claim` has 7 rules with closed codes:
+  `no_such`, `could_not_find`, `no_record_of`, `there_is_no_named`,
+  `does_not_exist`, `found_nothing` and `not_in_place`. Each rule needs a
+  record noun from a closed list, or a name. A name has a capital letter or
+  a digit on each word, or it starts with a quote mark.
+- **What the matcher reads as no claim.** A question, a condition ("if",
+  "unless", "whether"), a quote, a quoted block and code. A preposition or a
+  list word between "find" and the noun: "any errors in the invoice", "any
+  overdue tasks", "any duplicate contacts". Reported speech: "Priya replied
+  that". The state of a record: "The invoice shows no record of". A record
+  that the answer makes: "does not exist yet". A list filter: "no matches
+  for your filter".
+- **The bounded work.** The matcher runs on the event loop of the gateway.
+  It reads the first 20,000 characters of an answer (`MAX_CLAIM_CHARS`), and
+  each quote is 400 characters at most (`MAX_QUOTE_CHARS`). Each regex runs
+  once over a sentence, so the work is linear. 200,000 characters of each
+  shape of the review take less than 0.06 s.
 - **The flag.** `FIND_CLAIM_CHECK` takes `off`, `shadow` or `on`, for every
   org of the box. `acb_common.settings.find_claim_check_mode` is its one
   reader. It is not a `*_ORGS` or `*_MODES` key, so a change needs a restart.
 - **`shadow`.** The check writes at most one `answer_check.claim` line for a
   run, and changes nothing. The outcome is `shadow_miss` or `shadow_pass`.
-- **`on`.** The check holds an answer once a find tool answered in the run
-  (`FIND_TOOLS`, the tools of §5.2 and §5.3). A claim with no pass 2 gets
-  one more model request, with the fixed text `CLAIM_RETRY_NOTE`. After it,
-  the answer goes as it is.
+- **`on`.** The check holds each answer once `search_company` or
+  `resolve_name` answered in the run (`CLAIM_ARM_TOOLS`). A list tool of an
+  app does not arm it, because an empty list is a true answer. A claim with
+  no pass 2 gets one more model request, with the fixed text
+  `CLAIM_RETRY_NOTE`. After it, the answer goes as it is.
+- **A failed retry.** When the one more request raises, the member reads the
+  held draft, as with the check `off`. The line says `retry_failed`. A
+  cancel is not caught, so it stops the run as before.
 - **The one retry.** NUM-3 and HRD-13 are not built. So the check shares
   `RunLedger.retried` with the number check of CRM-Q29. The check that
   finds a fault first spends it. A later claim logs `retry_spent`.
 - **The log line.** `answer_check.claim` holds `mode`, `outcome`, `rule`,
-  `searches` and `finds`. It holds no word of the answer, of a record or of
-  the member. The run context adds the run id, as for `answer_check.checked`.
+  `searches`, `finds` and `armed`. `finds` counts the results of every find
+  tool of §5.2 and §5.3. `armed` is true when `search_company` or
+  `resolve_name` answered before the claim. The line holds no word of the
+  answer, of a record or of the member. The run context adds the run id.
 - **Off.** With the flag `off`, the seam attaches what it attached before,
   and the log line `executor.answer_check_on` keeps its fields. Fence:
   `tests/unit/test_answer_not_found.py`.
@@ -820,29 +839,58 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 **The limits of FIND-7.**
 
 1. The matcher reads English only.
-2. The matcher misses a claim with no record noun and no place, such as "I
-   could not find Neuropeak". It also misses a claim in a question or a
-   condition. It misses a name in lower case, such as "nuropeak in the CRM".
-3. The matcher misses a claim with a preposition before its noun. An
-   example is "I could not find anything like that order". The matcher does
-   not read "no mention of" or "no trace of". A summary of a mail uses them
-   for what the mail holds.
-4. The matcher fires on an old fault that the answer reports. An example is
-   "Earlier I could not find the order, but here it is".
-5. The check reads the text of the answer, not the text of a card.
-6. Pass 2 shows no line for a query of one word whose near lookup found no
+2. The matcher reads the first 20,000 characters of an answer. It does not
+   read a claim after them. It reads a quote of more than 400 characters as
+   prose, and not as a quote.
+3. The matcher misses "Sharath has no orders" and "I could not find
+   anything like that order". It misses a name in lower case, such as
+   "nuropeak in the CRM". It also misses a claim in a question or a
+   condition, and in reported speech.
+4. The matcher does not read "no mention of" or "no trace of". A summary of
+   a mail uses them for what the mail holds.
+5. The matcher reads these sentences as a claim, a false positive. An empty
+   list in other words: "I could not find any tasks for this week". A capital
+   word that names no record: "I could not find Settings". An old fault that
+   the answer reports: "Earlier I could not find the order, but here it is".
+6. The matcher keeps "I could not find the order, so I created it" as a
+   claim. The new record may be a second copy.
+7. The check reads the text of the answer, not the text of a card.
+8. Pass 2 shows no line for a query of one word whose near lookup found no
    name. So the check fires after such a search.
-7. Pass 2 does not run when the first pass has a hit with every content
-   word. It does not run with `CONTEXT_RECENCY` off, or for a query with an
-   operator. With `FIND_ORGS` off, it runs only when the first pass finds no
-   hit. In each case the check fires on a claim.
-8. In `on`, an answer before the first find tool of the run is not held. It
-   streams as it is, and the check logs `unheld_miss`.
-9. In `on`, the member sees a held answer only when it is complete, as with
-   the number check.
-10. A search of a sub-agent does not count for the run of its parent.
-11. The check does not compare the words of the search with the words of the
+9. With `CONTEXT_RECENCY` off, the route returns after pass 1. The plain
+   tool then shows no mark. See `retrieval/company.py`, the return before the
+   words alone. So in `on`, each claim after a search takes the retry, and no
+   claim can pass.
+10. Pass 2 does not run when the first pass has a hit with every content
+    word, or for a query with an operator. With `FIND_ORGS` off, it runs only
+    when the first pass finds no hit. In each case the check fires on a
+    claim.
+11. In `on`, the check holds no answer before the first `search_company` or
+    `resolve_name` answer of the turn. Such an answer streams as it is, and
+    the check logs `unheld_miss`. A claim after a list tool only is not held.
+12. In `on`, after the first `search_company` or `resolve_name` answer of a
+    turn, the member sees each later answer only when the model has drafted
+    all of it. The text does not stream. This is true for each answer, not
+    only for a claim.
+13. A search of a sub-agent does not count for the run of its parent.
+14. The check does not compare the words of the search with the words of the
     member. Any `search_company` answer of the run that shows pass 2 passes.
+15. `shadow` logs no text. So the line cannot tell a false positive from a
+    true miss. `armed` and `finds` show which claims came after a lookup.
+
+**Decisions for the owner before `on`.**
+
+1. **The claims with no lookup.** The done-when says that a claim needs a
+   `search_company` answer in the same turn. This slice does not hold a
+   claim before the first `search_company` or `resolve_name` answer. It
+   only logs `unheld_miss`, so the streamed answer of each other turn stays.
+   The owner must accept this gap, or ask for a hold of every answer.
+2. **`CONTEXT_RECENCY` on production.** Limit 9 applies when the flag is
+   off. Check the value on the production box before the flip. This slice
+   cannot read it.
+3. **The precision of the matcher.** Shadow logs no text (limit 15). Before
+   the flip, decide if the counts of 7 days are enough. Another option is a
+   review of a sample of answers that the owner reads.
 
 ## 6. Privacy and tenancy
 

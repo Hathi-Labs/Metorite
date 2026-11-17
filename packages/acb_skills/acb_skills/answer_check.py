@@ -62,15 +62,19 @@ that :func:`not_found_claim` reads as "the record does not exist" needs a
 
 * ``shadow`` logs one ``answer_check.claim`` line for the run, and changes
   nothing.
-* ``on`` holds the answer once the run read a result of :data:`FIND_TOOLS`.
-  A claim with no pass 2 gets ONE more model request with
-  :data:`CLAIM_RETRY_NOTE`. That is the one retry of the run, which the
-  number check spends too (``RunLedger.retried``). After it, the answer goes
-  as it is (D-FIND-8). An answer before any find result is not held: the
-  check logs it as ``unheld_miss``.
+* ``on`` holds each answer once the run read a result of
+  :data:`CLAIM_ARM_TOOLS` (``search_company`` or ``resolve_name``). A claim
+  with no pass 2 gets ONE more model request with :data:`CLAIM_RETRY_NOTE`.
+  That is the one retry of the run, which the number check spends too
+  (``RunLedger.retried``). After it, the answer goes as it is (D-FIND-8). A
+  retry that raises sends the held draft as it is (``retry_failed``). An
+  answer before such a result is not held: the check logs it as
+  ``unheld_miss``.
 
-The claim line holds the mode, the outcome, the rule code and two counts. It
-holds no text of the answer and no word of a record. Fence:
+The claim line holds :data:`CLAIM_LOG_FIELDS`: the mode, the outcome, the
+rule code, two counts and ``armed``. It holds no text of the answer and no
+word of a record. The matcher reads the first :data:`MAX_CLAIM_CHARS`
+characters, with linear work, because it runs on the event loop. Fence:
 ``tests/unit/test_answer_not_found.py``.
 """
 
@@ -306,13 +310,25 @@ _CODE_LIKE = re.compile(
 #: An agent that holds it gets the claim check.
 CLAIM_SEARCH_TOOL = "search_company"
 
-#: The find tools of the chat (``find_engine.md`` §5.2 and §5.3). A result of
-#: one of them arms the hold of the claim check in ``on``. ``resolve_name`` is
-#: the tool of FIND-5, and a name that no run holds arms nothing.
+#: The find tools of the chat (``find_engine.md`` §5.2 and §5.3). The claim
+#: line counts their results (``finds``). They arm nothing.
 FIND_TOOLS: frozenset[str] = frozenset({
     CLAIM_SEARCH_TOOL, "resolve_name", "search_crm", "crm_list_records",
     "query_inbox", "find_contact", "find_tasks", "resolve_person",
 })
+
+#: The tools with a pass 2 or a near ladder of names (``search_company``, and
+#: ``resolve_name`` of FIND-5). Only a result of one of them arms the hold of
+#: the claim check in ``on`` (``armed`` on the claim line). An app's list
+#: tool does not arm it, because an empty list ("no overdue tasks") is a
+#: true answer, not a failed lookup.
+CLAIM_ARM_TOOLS: frozenset[str] = frozenset({CLAIM_SEARCH_TOOL, "resolve_name"})
+
+#: The most characters of an answer that :func:`not_found_claim` reads. A
+#: claim after them is not read. It bounds the work on the event loop.
+MAX_CLAIM_CHARS = 20_000
+#: The most characters of one quote that the matcher reads as a quote.
+MAX_QUOTE_CHARS = 400
 
 #: The text of the one more pass (D-FIND-8). It is fixed: no word of the
 #: answer, of a record or of the member goes into it.
@@ -330,13 +346,17 @@ CLAIM_RETRY_NOTE = (
 #: The rule codes of :func:`not_found_claim`, for the log. A closed list.
 CLAIM_RULES: tuple[str, ...] = (
     "no_such", "could_not_find", "no_record_of", "there_is_no_named", "does_not_exist",
+    "found_nothing", "not_in_place",
 )
 
 #: The outcomes of the claim line, for the log. A closed list.
 CLAIM_OUTCOMES: tuple[str, ...] = (
     "shadow_pass", "shadow_miss", "pass", "retry", "retry_spent",
-    "after_retry_miss", "unheld_miss",
+    "after_retry_miss", "unheld_miss", "retry_failed",
 )
+
+#: The fields of the claim line. Each value is a code, a count or a bool.
+CLAIM_LOG_FIELDS: tuple[str, ...] = ("mode", "outcome", "rule", "searches", "finds", "armed")
 
 #: The kinds of record whose absence an answer can claim. Plain English only.
 _RECORD_NOUN = (
@@ -369,56 +389,122 @@ _SPAN_STOP = frozenset({
     "with", "in", "on", "of", "for", "about", "at", "from", "by", "into", "within",
     "inside", "regarding", "across", "between", "among", "under", "over", "after",
     "before", "during", "than", "like", "wrong",
+    # A list or a check, not a lookup: "no OVERDUE tasks", "no DUPLICATE contacts".
+    "overdue", "unread", "upcoming", "due", "duplicate", "duplicates", "duplicated",
 })
 #: One word of the span, a quoted name too: "find «Neuropeak» in the CRM".
-_SPAN_WORD = r"[^\s.!?,;:]+"
+#: A word has 60 characters at most, so a long run of letters ends the span.
+_SPAN_WORD = r"[^\s.!?,;:]{1,60}"
 #: The places of the company's records: "I could not find Sharath IN THE CRM".
 _PLACE = (
     r"(?:crm|inbox|mailbox|mails?|e-?mails?|records|system|database|projects|tasks"
     rf"|people|contacts|whatsapp|knowledge(?:\s+base)?|company(?:[{_APOS}]s)?\s+records)"
 )
+#: The verb of a failed lookup: "could not find", "can't locate".
+_CANNOT_FIND = rf"\b{_CANNOT}\s+(?:find|locate|track\s+down)\b"
 #: Each rule of a claim, in order: its code and its pattern. Each pattern
-#: needs a record noun, or a name in a place of records, so "I could not
-#: find the time" is no claim.
+#: needs a record noun, or a NAME (group ``name``, :func:`_is_name`), so "I
+#: could not find the time" is no claim.
 _CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("no_such", re.compile(
         rf"\bno\s+such\s+(?:{_SPAN_WORD}\s+){{0,2}}?{_RECORD_NOUN}\b", re.I)),
     ("could_not_find", re.compile(
-        rf"\b{_CANNOT}\s+(?:find|locate|track\s+down)\b"
-        rf"(?P<span>(?:\s+{_SPAN_WORD}){{0,4}}?)\s+"
+        rf"{_CANNOT_FIND}(?P<span>(?:\s+{_SPAN_WORD}){{0,4}}?)\s+"
         rf"(?:{_RECORD_NOUN}\b|any(?:thing|one|body)\s+(?:for|about|on|matching|named"
         r"|called|under|from|related|with)\b)",
         re.I)),
     # A name in a place of records: "I could not find Sharath in the CRM".
-    # :func:`_claim_in` needs a name: a capital or a digit on each word, or a
-    # quote mark first. So "find any errors in the system" is no claim.
     ("could_not_find", re.compile(
-        rf"\b{_CANNOT}\s+(?:find|locate|track\s+down)\b"
-        rf"(?P<name>(?:\s+{_SPAN_WORD}){{1,4}}?)\s+"
+        rf"{_CANNOT_FIND}(?P<name>(?:\s+{_SPAN_WORD}){{1,4}}?)\s+"
         rf"in\s+(?:the|your|our|any)\s+{_PLACE}\b",
+        re.I)),
+    # A name that ends the clause: "I could not find Neuropeak."
+    ("could_not_find", re.compile(
+        rf"{_CANNOT_FIND}(?P<name>(?:\s+{_SPAN_WORD}){{1,3}}?)"
+        r"(?=\s*(?:[.!;,]|$)|\s+anywhere\b)",
         re.I)),
     ("no_record_of", re.compile(
         r"\bno\s+(?:records?|match(?:es)?|results?|entr(?:y|ies))\s+"
         r"(?:of|for|matching|named|called|about|from|with|under)\b", re.I)),
     ("there_is_no_named", re.compile(
         rf"\bthere(?:\s+is|\s+are|\s+was|\s+were|[{_APOS}]s)\s+no\s+{_RECORD_NOUN}\s+"
-        r"(?:named|called|matching|by\s+the\s+name|with\s+the\s+name|under\s+the\s+name)\b",
+        r"(?:named|called|matching|(?:by|with|under)\s+(?:the|that|this|such\s+a)\s+name)\b",
         re.I)),
     ("does_not_exist", re.compile(
         rf"\b{_RECORD_NOUN}\b[^.!?\n]{{0,60}}?\b(?:does|do|did)(?:n[{_APOS}]t|\s+not)\s+"
         r"(?:seem\s+to\s+|appear\s+to\s+)?exist\b", re.I)),
+    # "I found nothing for Sharath." A name must follow.
+    ("found_nothing", re.compile(
+        r"\b(?:found|returned|got)\s+nothing\s+(?:for|about|on|matching|named|called"
+        rf"|under|from|with)(?P<name>(?:\s+{_SPAN_WORD}){{1,3}}?)"
+        r"(?=\s*(?:[.!;,]|$)|\s+(?:in|and|or)\b)",
+        re.I)),
+    # "That company is not in the CRM." "Sharath is not in the CRM."
+    ("not_in_place", re.compile(
+        rf"\b(?P<subject>{_RECORD_NOUN}|(?-i:[A-Z][^\s.!?,;:]{{0,59}}))\s+"
+        rf"(?:is|are|was|were)(?:n[{_APOS}]t|\s+not)\s+(?:in|on)\s+(?:the|your|our|any)\s+"
+        rf"{_PLACE}\b",
+        re.I)),
 )
 #: A clause that makes a claim a condition or a doubt: "If I can't find the
 #: order, ..." is no claim.
 _HEDGE = re.compile(r"\b(?:if|unless|whether|in\s+case)\b", re.I)
+#: The words right before a claim that report what another person said:
+#: "Priya replied that there is", "Ravi says he". The words "I said" are
+#: the assistant's own, so they do not count.
+_REPORTED = re.compile(
+    r"(?<!\bI\s)\b(?:says?|said|replied|replies|wrote|writes|mentioned|mentions|told\s+\w+"
+    r"|tells\s+\w+|reported|reports|confirmed|confirms|claims?|claimed|explained|explains"
+    r"|answered|answers|responded|responds|noted|notes)\s+(?:that\s+)?"
+    r"(?:(?:he|she|they|it|we|you|there)\s+)?(?:(?:is|are|was|were|has|have|had)\s+)?$",
+    re.I,
+)
+#: The words right before a claim that say what a record holds: "The invoice
+#: SHOWS no record of payment" is the state of the invoice, not a lookup.
+_RECORD_STATE = re.compile(
+    rf"\b(?:{_RECORD_NOUN}|notes?|files?|documents?|attachments?|reports?|statements?"
+    r"|logs?|history)\s+(?:shows?|showed|has|had|holds?|held|contains?|lists?|says?"
+    r"|said|notes?|mentions?)\s+$",
+    re.I,
+)
+#: "does not exist YET": a record that the answer is about to make.
+_YET = re.compile(r"\s+yet\b", re.I)
+#: An act of the answer that made the record: "so I created it".
+_MADE_IT = re.compile(
+    rf"\b(?:so|and|then)\s+I(?:\s+have|[{_APOS}]ve)?\s+(?:created|made|added|set\s+up|opened"
+    r"|logged)\b",
+    re.I,
+)
+#: The filter of a list after a claim: "no matches FOR YOUR FILTER".
+_LIST_FILTER = re.compile(
+    r"\s*(?:(?:for|with|matching|that\s+match(?:es)?)\s+)?(?:your|the|this|these|those|that)"
+    r"\s+(?:filters?|criteria|view)\b",
+    re.I,
+)
+#: How far before a claim the reported-speech and record-state rules read.
+_BEFORE_CHARS = 80
+#: Words that start with a capital but name no record.
+_NOT_NAMES = frozenset({
+    "it", "this", "that", "these", "those", "he", "she", "they", "we", "you", "i",
+    "there", "here", "which", "what", "who", "monday", "tuesday", "wednesday",
+    "thursday", "friday", "saturday", "sunday", "january", "february", "march",
+    "april", "may", "june", "july", "august", "september", "october", "november",
+    "december", "today", "tomorrow", "yesterday",
+})
+#: Small words that may sit inside a name: "Bank of Baroda", "Neuropeak or Sharat".
+_NAME_JOINS = frozenset({"of", "and", "or", "&", "de", "the"})
 #: Code, and a line that quotes a block. Neither is prose of the answer.
 _CODE = re.compile(r"```.*?```|`[^`\n]*`|^[ \t]*>.*$", re.S | re.M)
 #: A quote inside a sentence. A record can hold the words "no such order",
 #: and a claim that STARTS inside a quote is the record's text, not the
-#: answer's. A name in a quote ("I could not find «Neuropeak»") stays.
+#: answer's. A name in a quote ("I could not find «Neuropeak»") stays. Each
+#: quote is :data:`MAX_QUOTE_CHARS` long at most, so the scan is linear.
 _QUOTE = re.compile(
-    "«[^»\\n]*»|\u201c[^\u201d\\n]*\u201d|\u2018[^\u2019\\n]*\u2019|\"[^\"\\n]*\""
-    r"|(?<!\w)'[^'\n]*'(?!\w)"
+    "|".join(
+        f"{open_}[^{close}\\n]{{0,{MAX_QUOTE_CHARS}}}{close}"
+        for open_, close in (("«", "»"), (_LDQUO, _RDQUO), (_LSQUO, _RSQUO), ('"', '"'))
+    )
+    + f"|(?<!\\w)'[^'\\n]{{0,{MAX_QUOTE_CHARS}}}'(?!\\w)"
 )
 #: The end of a sentence or of a line, for the claim check.
 _CLAIM_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -426,31 +512,75 @@ _CLAIM_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 def _is_name(span: str) -> bool:
     """True when *span* reads as the name of a record: a quote mark first, or
-    a capital letter or a digit at the start of each word."""
-    words = span.split()
-    if not words:
+    a capital letter or a digit at the start of each word. A join word may
+    sit inside ("Bank of Baroda"). A pronoun, a day and a month are no name."""
+    words = [word.strip(_QUOTE_MARKS) for word in span.split()]
+    raw = span.split()
+    if not raw:
         return False
-    if words[0][:1] in _QUOTE_MARKS:
+    if raw[0][:1] in _QUOTE_MARKS:
         return True
-    return all(word.strip(_QUOTE_MARKS)[:1].isupper() or word.strip(_QUOTE_MARKS)[:1].isdigit()
-               for word in words)
+    if not words[0] or words[0].lower() in _NOT_NAMES:
+        return False
+    for i, word in enumerate(words):
+        if 0 < i < len(words) - 1 and word.lower() in _NAME_JOINS:
+            continue
+        if not (word[:1].isupper() or word[:1].isdigit()):
+            return False
+    return True
+
+
+def _rejected(sentence: str, match: re.Match[str], rule: str) -> bool:
+    """True when a rule matched words that are no claim of a lookup: a stop
+    word in the span, a reported speech, the state of a record, a record that
+    the answer is about to make, a list filter, or a word that is no name.
+    Each test reads at most :data:`_BEFORE_CHARS` before the match or a few
+    words after it, so the work stays linear."""
+    at = match.start()
+    groups = match.groupdict()
+    span = groups.get("span") or ""
+    if any(word.strip(_QUOTE_MARKS).lower() in _SPAN_STOP for word in span.split()):
+        return True
+    if groups.get("name") is not None and not _is_name(groups["name"]):
+        return True
+    subject = groups.get("subject")
+    if subject is not None and subject[:1].isupper() and subject.lower() in _NOT_NAMES:
+        return True
+    before = sentence[max(0, at - _BEFORE_CHARS):at]
+    if _REPORTED.search(before) or _RECORD_STATE.search(before):
+        return True
+    if rule == "does_not_exist" and _YET.match(sentence, match.end()):
+        return True
+    return _LIST_FILTER.match(sentence, match.end()) is not None
 
 
 def _claim_in(sentence: str) -> str | None:
-    """The rule code of the first claim of one *sentence*, or None."""
+    """The rule code of the first claim of one *sentence*, or None.
+
+    Each regex runs once over the sentence. The quote spans, the first hedge
+    and the first act ("so I created it") are found once, and each match
+    reads them by position. So the work is linear in the length of the
+    sentence (FIND-7 fix round, P1)."""
     quoted = [m.span() for m in _QUOTE.finditer(sentence)]
+    starts = [start for start, _end in quoted]
+    hedge = _HEDGE.search(sentence)
+    hedge_end = hedge.end() if hedge else len(sentence) + 1
+    made = _MADE_IT.search(sentence)
+    made_at = made.start() if made else -1
     for rule, pattern in _CLAIM_PATTERNS:
         for match in pattern.finditer(sentence):
             at = match.start()
-            if any(start <= at < end for start, end in quoted):
+            i = bisect.bisect_right(starts, at) - 1
+            if i >= 0 and at < quoted[i][1]:
                 continue
-            if _HEDGE.search(sentence[:at]):
+            if hedge_end <= at:
                 continue
-            groups = match.groupdict()
-            span = groups.get("span") or ""
-            if any(word.strip(_QUOTE_MARKS).lower() in _SPAN_STOP for word in span.split()):
+            if rule == "does_not_exist" and made_at > at:
+                # "The order did not exist, so I created it." Only this rule:
+                # "I could not find the order, so I created it" stays a claim,
+                # because the new record may be a second copy.
                 continue
-            if "name" in groups and not _is_name(groups["name"] or ""):
+            if _rejected(sentence, match, rule):
                 continue
             return rule
     return None
@@ -461,15 +591,29 @@ def not_found_claim(text: str) -> str | None:
     that says a record does not exist, or None (FIND-7, ``find_engine.md``
     §5.5).
 
-    The rules are CONSERVATIVE, because a false hold in ``on`` costs a model
-    request. Each rule needs a record noun from a closed list, or a name in a
-    place of records ("Sharath in the CRM"). A preposition between "find" and
-    the noun ends the claim, so "any errors in the invoice" is none. A
-    question, a sentence with a condition ("if", "unless", "whether"), a
-    claim that starts inside a quote, a quoted block and code are no claim.
-    It reads English only. Pure.
+    It reads the first :data:`MAX_CLAIM_CHARS` characters only, and its work
+    is linear, because it runs on the event loop. It reads English only.
+    Pure.
+
+    Each rule needs a record noun from a closed list, or a name. These are
+    no claim: a question, a condition ("if", "unless", "whether"), a claim
+    that starts inside a quote, a quoted block, code, a preposition or a
+    list word between "find" and the noun ("any errors IN the invoice", "any
+    OVERDUE tasks"), reported speech ("Priya replied that"), the state of a
+    record ("The invoice shows no record of"), a record that the answer makes
+    ("does not exist yet", and "did not exist, so I created it" for the rule
+    ``does_not_exist`` only) and a list filter ("no matches for your filter").
+
+    It still fires on these, a known false positive: an empty list in other
+    words ("I couldn't find any tasks for this week"), a name that is no
+    record ("I could not find Settings."), and an old fault that the answer
+    reports. It misses these: "Sharath has no orders", "I could not find
+    anything like that order", a name in lower case, reported speech, a claim
+    in a card, and a claim after the first :data:`MAX_CLAIM_CHARS`
+    characters. It reads a quote of more than :data:`MAX_QUOTE_CHARS`
+    characters as prose. ``find_engine.md`` §5.5 lists each limit.
     """
-    plain = _CODE.sub(" ", str(text or ""))
+    plain = _CODE.sub(" ", str(text or "")[:MAX_CLAIM_CHARS])
     for sentence in _CLAIM_SENTENCE.split(plain):
         sentence = sentence.strip()
         if not sentence or sentence.endswith("?"):
@@ -740,8 +884,10 @@ class RunLedger:
     #: FIND-7: True when the claim check is on for the run. Else the ledger
     #: counts no find result, as before FIND-7.
     claims: bool = False
-    #: FIND-7: the results of :data:`FIND_TOOLS` and of ``search_company``.
+    #: FIND-7: the results of :data:`FIND_TOOLS`, of :data:`CLAIM_ARM_TOOLS`
+    #: (``lookups``, which arm the hold) and of ``search_company``.
     finds: int = 0
+    lookups: int = 0
     searches: int = 0
     #: FIND-7: a ``search_company`` answer of the run showed pass 2.
     second_pass: bool = False
@@ -803,6 +949,8 @@ class RunLedger:
             shown = False
         with self._lock:
             self.finds += 1
+            if tool in CLAIM_ARM_TOOLS:
+                self.lookups += 1
             if tool == CLAIM_SEARCH_TOOL:
                 self.searches += 1
                 self.second_pass = self.second_pass or shown
@@ -1383,10 +1531,13 @@ class CheckClaims(ChatMiddleware):
 
     def _log(self, outcome: str, rule: str) -> None:
         # The run id comes from the bound run context (``acb_common._log``).
-        # The line holds codes and counts, never a word of the answer.
+        # The line holds codes, counts and one bool, never a word of the
+        # answer (:data:`CLAIM_LOG_FIELDS`). ``armed``: a result of
+        # :data:`CLAIM_ARM_TOOLS` came before the answer in this run.
         _log.info(
             "answer_check.claim", mode=self._mode, outcome=outcome, rule=rule,
             searches=self._ledger.searches, finds=self._ledger.finds,
+            armed=self._ledger.lookups > 0,
         )
 
     def _miss(self, response: ChatResponse) -> str | None:
@@ -1406,9 +1557,11 @@ class CheckClaims(ChatMiddleware):
             await call_next()
             self._watch(context, unheld=False)
             return
-        if not self._ledger.finds:
-            # No find tool has answered in this run yet, so the answer is not
-            # held: the member reads it as it streams. The check logs it.
+        if not self._ledger.lookups:
+            # No search_company or resolve_name answer came in this run yet,
+            # so the answer is not held: the member reads it as it streams.
+            # An empty list of an app's own tool is a true answer. The check
+            # logs a claim.
             await call_next()
             self._watch(context, unheld=True)
             return
@@ -1476,8 +1629,16 @@ class CheckClaims(ChatMiddleware):
                 yield update
             return
         context.messages = self._retry_messages(messages, response)
-        await call_next()
-        retry_updates, second = await self._drain(context.result)
+        try:
+            await call_next()
+            retry_updates, second = await self._drain(context.result)
+        except Exception as exc:
+            # The one more pass failed. The held draft goes out as it is, as
+            # with the check off. A cancel is no Exception, so it goes on up.
+            self._failed(context, messages, rule, exc)
+            for update in updates:
+                yield update
+            return
         self._after(second)
         for update in retry_updates:
             yield update
@@ -1490,10 +1651,21 @@ class CheckClaims(ChatMiddleware):
         if rule is None or not self._spend(rule):
             return response
         context.messages = self._retry_messages(messages, response)
-        await call_next()
+        try:
+            await call_next()
+        except Exception as exc:
+            self._failed(context, messages, rule, exc)
+            return response
         second = context.result
         self._after(second)
         return second
+
+    def _failed(self, context: Any, messages: list[Any], rule: str, exc: Exception) -> None:
+        """The one more pass raised: put the messages back and log
+        ``retry_failed``. The error type goes to a warning line, never its text."""
+        context.messages = messages
+        self._log("retry_failed", rule)
+        _log.warning("answer_check.claim_retry_failed", error=type(exc).__name__)
 
 
 def _role(message: Any) -> str:
@@ -1580,6 +1752,8 @@ class AnswerCheckProvider(ContextProvider):
 
 __all__ = [
     "ARM_TOOLS",
+    "CLAIM_ARM_TOOLS",
+    "CLAIM_LOG_FIELDS",
     "CLAIM_OUTCOMES",
     "CLAIM_RETRY_NOTE",
     "CLAIM_RULES",
@@ -1590,6 +1764,7 @@ __all__ = [
     "FIND_TOOLS",
     "HEARTBEAT_S",
     "HOLD_EVENT",
+    "MAX_CLAIM_CHARS",
     "MEMBER_MESSAGE",
     "MODEL_WRITTEN_TOOLS",
     "MODES",
