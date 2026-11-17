@@ -418,7 +418,8 @@ def all_scenarios() -> tuple[Scenario, ...]:
     """The email chats, then the CRM, Projects, mixed and fan-out chats, then the
     Studio chats (TS-5a). The Studio chats are in no work set: the delegation arm
     never runs them."""
+    from evals.one_assistant_measure.scenarios_holdout import HOLDOUT_SCENARIOS
     from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS
     from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
 
-    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS)
+    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS, *HOLDOUT_SCENARIOS)
