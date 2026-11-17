@@ -396,6 +396,7 @@ SELECT s.id, s.title, s.updated_at,
    AND s.channel IS NULL
    AND s.id <> :sid
    AND s.updated_at >= :since
+   AND NOT COALESCE(s.member_summary @> jsonb_build_object('off', true), false)
  ORDER BY s.updated_at DESC, s.id DESC
  LIMIT :lim
 """
@@ -504,6 +505,11 @@ async def _match(db: Any, org: str, member: str, session_id: str, turn_id: str,
     chat of the member, or this turn is not its first message."""
     params = {"sid": session_id, "member": member, "turn": turn_id}
     if (await db.execute(text(NEW_CHAT_SQL), params)).first() is None:
+        return None
+    # Spec §5 and §16.2: a member whose switch "Keep chat summaries" is off
+    # never joins, and a chat that is `off` is never a candidate (the SQL
+    # leaves it out). So nothing of the member's chats is read or logged.
+    if not await member_switch_on(db, org, member):
         return None
     rows = (await db.execute(text(CANDIDATES_SQL), {
         "sid": session_id, "member": member,

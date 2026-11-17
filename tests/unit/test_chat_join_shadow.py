@@ -330,6 +330,42 @@ def test_a_whole_run_sends_no_word_of_the_first_message(monkeypatch) -> None:
     assert insert["turn"] == "turn-1"
 
 
+def test_a_member_with_the_switch_off_is_not_matched_or_logged(monkeypatch) -> None:
+    """Opus review P1: with "Keep chat summaries" off the match reads no
+    chat of the member and logs no row, whatever the titles say."""
+    from contextlib import asynccontextmanager
+
+    import acb_common.assistant_profile as ap
+    import acb_common.db as shared
+
+    now = datetime(2026, 11, 16, 12, tzinfo=UTC)
+    db = _FakeDb(now)
+
+    @asynccontextmanager
+    async def _session(org: str | None = None):
+        yield db
+
+    async def _switch_off(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(shared, "tenant_session", _session)
+    monkeypatch.setattr(ap, "chat_summary_for", lambda org: True)
+    monkeypatch.setattr(cjs, "member_switch_on", _switch_off)
+    monkeypatch.setattr(cjs, "shadow_allowed", lambda org: True)
+    d = asyncio.run(cjs.record_first_message(
+        "org-a", "alice@co4.test", "new", "turn-1",
+        fingerprint("Zanzibarine invoice draft for Acme"), now=now))
+    assert d is None
+    sql = [str(p) for p in db.params]
+    assert not any("sid" in p and "outcome" in p for p in sql)
+
+
+def test_an_off_chat_is_never_a_candidate() -> None:
+    """Opus review P1: an `off` chat is out of the candidate read (§16.2)."""
+    assert "jsonb_build_object('off', true)" in cjs.CANDIDATES_SQL
+    assert "NOT COALESCE(s.member_summary @>" in cjs.CANDIDATES_SQL
+
+
 # ── 6. One module names the table ───────────────────────────────────────────
 
 
