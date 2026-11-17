@@ -1129,7 +1129,7 @@ async def update_message(
         owned = result.fetchone()
         if not owned:
             raise HTTPException(status_code=404, detail="Message not found")
-        acted_mailbox = str(owned.account_id)
+        acted_mailbox = str(getattr(owned, "account_id", "") or "") or None
 
         # A move asks the provider for its folder BEFORE any write, so a
         # refused move answers 400 and writes nothing (EM-G3b item 8).
@@ -1192,12 +1192,12 @@ async def update_message(
         # move to a user label is also "archive" (O-GM-1), so it cannot tell.
         if target is not None and canonical_folder(target) == "archive":
             await member_actions.record_act(
-                db, org=user.organization_id or "", member=user.email or "",
+                db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="archive", via="app", item_kind="email",
                 item_id=message_id, mailbox_id=acted_mailbox)
         for name in (updates.add_labels or [])[:5]:
             await member_actions.record_act(
-                db, org=user.organization_id or "", member=user.email or "",
+                db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="label", via="app", item_kind="email",
                 item_id=message_id, mailbox_id=acted_mailbox,
                 features={"triage_label": name})
@@ -1323,7 +1323,7 @@ async def snooze_message(
         ), params)
         if until is not None:  # WS-PZ MM-1: a snooze is an act, an un-snooze is not
             await member_actions.record_act(
-                db, org=user.organization_id or "", member=user.email or "",
+                db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="snooze", via="app", item_kind="email",
                 item_id=message_id, mailbox_id=str(row.account_id))
         return {

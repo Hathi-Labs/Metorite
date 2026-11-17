@@ -6043,6 +6043,11 @@ One more mutation removed the `sni_hostname` extension. The real TLS test failed
 **D-EM-61.** No member chooses the model or the tier of an email AI task. Our
 code chooses each tier. This amends D-EM-7, which took the rules model only.
 
+**Amended 2026-11-16 (owner, task 3541, answer 3715a9c6).** "Draft with AI"
+moves from `tier-fast` to `tier-powerful`. The owner chose a better draft and
+accepted a few seconds more for each click. The member still chooses no tier.
+`tier_for_size` never lowers a tier, so a long thread stays on `tier-powerful`.
+
 **Status.** ✅ MERGED #759 (`cc0e5ba4d`, 2026-10-09). No migration and no
 flag. The slice is AGENT-SAFE.
 
@@ -6052,7 +6057,7 @@ it:
 | Row | Field | Tier now |
 |---|---|---|
 | Draft writing model | `draft_model` | `tier-powerful` |
-| Manual draft model | `compose_model` | `tier-fast` |
+| Manual draft model | `compose_model` | `tier-powerful` (was `tier-fast` until 2026-11-16) |
 | Email chat model | `chat_model` | `tier-powerful`, or the tier policy when `AI_TIER_ROUTING` covers email-assistant (D90) |
 
 The email agent's `update_assistant_settings` tool loses `draft_model` and
@@ -6067,8 +6072,8 @@ never a member choice, and they do not change.
 |---|---|---|
 | A rule draft (REPLY, DRAFT_EMAIL) | `actions._apply_rule_actions` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
 | A follow-up nudge | `followups._maybe_send_follow_up_reminders` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
-| "Draft with AI", reply | `drafting.draft_reply_smart` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
-| "Draft with AI", composer | `drafting._compose_assist_run` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
+| "Draft with AI", reply | `drafting.draft_reply_smart` | `EMAIL_TASK_TIERS["compose"]`, `tier-powerful` (2026-11-16) |
+| "Draft with AI", composer | `drafting._compose_assist_run` | `EMAIL_TASK_TIERS["compose"]`, `tier-powerful` (2026-11-16) |
 | The email chat | `chat.ai_chat`, `EmailAssistantChat.tsx`, `chat/page.tsx` | `tier-powerful`, or no model for a covered agent |
 | The rule match, thread status, cold check and sender pin | `decide_features` | `tier-decide` (D-EM-7) |
 | The old rule call outside `on` | `engine` | `tier-fast` |

@@ -126,6 +126,13 @@ class ActError(ValueError):
     """The act does not fit the record. The message holds no value of the act."""
 
 
+def org_of(user: Any) -> str:
+    """The organization of the session user, or "" when it has none. A seam
+    passes it as ``org``: the user comes from ``get_current_user``, never from
+    request input (R5), and a caller with no org records nothing."""
+    return str(getattr(user, "organization_id", None) or "")
+
+
 def counts_as_choice(via: str) -> bool:
     """True when an act with this ``via`` is a choice of the member. A learner
     reads only such rows. ``rule`` is never a choice (§19.4)."""
