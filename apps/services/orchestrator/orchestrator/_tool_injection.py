@@ -3918,7 +3918,11 @@ async def _record_pack_call(
     (:func:`_pack_ws_lock`), so two pack calls at once each see the other's
     update, and none is lost. Condition 5: the mailbox event "Now working on
     <mailbox>" goes to the run's own queue, and a run with no queue gets it on
-    its relay stream (``executor._emit_to_run_or_relay``). Never raises."""
+    its relay stream (``executor._emit_to_run_or_relay``).
+
+    HRD-11a: then, under the same lock, the item in focus of the chat
+    (``executor._record_chat_focus``), for an email or a Projects owner. Only
+    a run with its own binding writes it (``CHAT_FOCUS_ORGS``). Never raises."""
     try:
         from orchestrator import executor as ex
 
@@ -3926,9 +3930,9 @@ async def _record_pack_call(
         call = {"id": "", "name": name, "args": args, "result": str(result), "success": True}
         async with _pack_ws_lock(ctx):
             before, _preamble = await ex._email_working_set_for(owner, ctx)
-            if before is None:
-                return
-            await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            if before is not None:
+                await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            await ex._record_chat_focus(owner, ctx, [call])
     except Exception as exc:  # the working set never costs the call
         _log.warning("executor.pack_ws_unwritten", tool=name, error_type=type(exc).__name__)
 
