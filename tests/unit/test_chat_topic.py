@@ -367,6 +367,55 @@ def test_a_name_that_shows_passes(raw: str) -> None:
     assert clean_name(raw) == raw
 
 
+def _list_headings_of_the_control_plane() -> tuple[str, ...]:
+    """``PINNED_GROUP`` and then ``DATE_GROUPS``, read from ``chatHistory.ts``."""
+    src = (ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "chatHistory.ts"
+           ).read_text(encoding="utf-8")
+    pinned = re.search(r'export const PINNED_GROUP = "([^"]+)" as const;', src)
+    dates = re.search(r"export const DATE_GROUPS = \[([^\]]+)\] as const;", src)
+    assert pinned and dates, "the parse of chatHistory.ts found no heading"
+    return (pinned.group(1), *re.findall(r'"([^"]+)"', dates.group(1)))
+
+
+def test_the_list_headings_are_the_headings_of_the_chat_list() -> None:
+    """Visual review P3: one list of headings, pinned to the TypeScript.
+    Mutation: add a day group to ``DATE_GROUPS`` and not to ``LIST_HEADINGS``
+    -> red here."""
+    from gateway.chat_topic import LIST_HEADINGS
+
+    assert _list_headings_of_the_control_plane() == LIST_HEADINGS
+
+
+def test_the_heading_reader_can_fail() -> None:
+    src = ('export const PINNED_GROUP = "Pinned" as const;\n'
+           'export const DATE_GROUPS = ["Today", "Soon"] as const;')
+    pinned = re.search(r'export const PINNED_GROUP = "([^"]+)" as const;', src)
+    dates = re.search(r"export const DATE_GROUPS = \[([^\]]+)\] as const;", src)
+    assert pinned and dates
+    assert (pinned.group(1), *re.findall(r'"([^"]+)"', dates.group(1))) == ("Pinned", "Today", "Soon")
+
+
+@pytest.mark.parametrize("heading", ["Pinned", "Today", "Yesterday", "Previous 7 days",
+                                     "Previous 30 days", "Older"])
+def test_a_name_of_a_list_heading_is_refused(heading: str) -> None:
+    """Visual review P3: a topic called "Today" would read as the day group.
+    Each heading is refused as it is, in another case, and with other spacing.
+    Mutation: drop the heading check of ``clean_name`` -> red."""
+    from gateway.chat_topic import TopicNameError, clean_name
+
+    for raw in (heading, heading.upper(), heading.lower(), f"  {heading} ",
+                heading.replace(" ", "  ")):
+        with pytest.raises(TopicNameError, match=r"^The chat list uses this name\. Pick another"):
+            clean_name(raw)
+
+
+@pytest.mark.parametrize("raw", ["Today plan", "Pinned notes", "Older clients", "Previous 8 days"])
+def test_a_name_that_only_holds_a_heading_passes(raw: str) -> None:
+    from gateway.chat_topic import clean_name
+
+    assert clean_name(raw) == raw
+
+
 def test_the_migration_check_agrees_with_the_cap() -> None:
     from gateway.chat_topic import NAME_MAX
 

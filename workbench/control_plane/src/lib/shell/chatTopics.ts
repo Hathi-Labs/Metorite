@@ -119,6 +119,17 @@ export function menuFocusIndex(rows: readonly TopicMenuRow[]): number {
 }
 
 /**
+ * Whether the focus moves once more when the list of a cold open arrives
+ * (visual review P2). On a cold open the list loads after the first focus,
+ * so the first focus sits on "New topic…". When the list lands, the focus
+ * moves to the current topic ONCE, and only when it still sits on that first
+ * row: a member who moved the focus, or who opened the name form, keeps it.
+ */
+export function focusAfterLoad(state: { reran: boolean; onFirstRow: boolean; moves: boolean }): boolean {
+  return !state.reran && state.onFirstRow && state.moves;
+}
+
+/**
  * Whether the topic menu of the chat-first phone is open (review P2-1). The
  * menu opens FOR one chat, so a change of chat closes it, and a stale open
  * can never open it on another chat.

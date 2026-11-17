@@ -121,6 +121,23 @@ def _shows(ch: str) -> bool:
     return ch not in _UNSEEN_POINTS and unicodedata.category(ch) not in _UNSEEN_CATEGORIES
 
 
+#: The headings that the chat list draws itself: ``PINNED_GROUP`` and
+#: ``DATE_GROUPS`` of ``workbench/control_plane/src/lib/shell/chatHistory.ts``,
+#: in its order. A topic of one of these names would read as a heading of the
+#: list, so :func:`clean_name` refuses it. The fence ``test_chat_topic.py``
+#: reads the TypeScript, so the two lists cannot drift.
+LIST_HEADINGS: tuple[str, ...] = (
+    "Pinned", "Today", "Yesterday", "Previous 7 days", "Previous 30 days", "Older")
+
+
+def _heading_key(name: str) -> str:
+    """A name with each run of white space as one space, in no case."""
+    return " ".join(name.split()).casefold()
+
+
+_LIST_HEADING_KEYS = frozenset(_heading_key(h) for h in LIST_HEADINGS)
+
+
 class TopicNameError(ValueError):
     """A name that the store refuses. The message is for the member."""
 
@@ -170,6 +187,11 @@ def clean_name(raw: object) -> str:
     refused, because the list would show a blank row. A new emoji alone is
     unassigned (``Cn``) in an older Unicode table, so it is refused too. With
     a word beside it, it passes.
+
+    A name that is a heading of the chat list (:data:`LIST_HEADINGS`, such as
+    "Pinned" or "Today") is refused in any case and with any spacing, so a
+    topic never reads as a heading of the list. The CHECK of the table does
+    not hold this rule.
     """
     if not isinstance(raw, str):
         raise TopicNameError("A topic name must be text.")
@@ -183,6 +205,8 @@ def clean_name(raw: object) -> str:
             raise TopicNameError("A topic name cannot hold a control character.")
     if not any(_shows(ch) for ch in name):
         raise TopicNameError("A topic name must hold at least one character that shows.")
+    if _heading_key(name) in _LIST_HEADING_KEYS:
+        raise TopicNameError("The chat list uses this name. Pick another name.")
     return name
 
 

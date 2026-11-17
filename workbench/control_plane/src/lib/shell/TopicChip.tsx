@@ -26,7 +26,7 @@
  * `chatTopics.test.ts`.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
@@ -48,6 +48,7 @@ import {
   chipLabel,
   createChatTopic,
   fetchChatTopics,
+  focusAfterLoad,
   menuFocusIndex,
   topicMenuRows,
   type TopicMenuRow,
@@ -70,9 +71,18 @@ export interface TopicChipProps {
   className?: string;
 }
 
+/** The row that takes the focus (`menuFocusIndex`). */
+const FOCUS_ROW = "[data-chat-topic-menu] [data-chat-topic-focus]";
+
+/**
+ * A group heading of the menu. It has the type of the group headings of the
+ * chat list (`SessionPicker.tsx`, visual review P3), so a topic name reads
+ * the same in the menu and in the list. No shared token holds those classes,
+ * so the list's class string is used as it is.
+ */
 function Heading({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-3 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground glass:normal-case glass:tracking-normal glass:text-caption">
+    <div className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted-foreground glass:text-caption">
       {children}
     </div>
   );
@@ -99,6 +109,9 @@ export default function TopicChip({
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const topics = useCachedResource(open ? TOPICS_PATH : null, fetchChatTopics);
+  // The row that the first focus of this open went to, and whether the
+  // focus already moved once after the list landed.
+  const firstFocus = useRef<{ el: HTMLElement | null; reran: boolean }>({ el: null, reran: false });
   const current = session ? (shownTopic(session)?.id ?? null) : null;
   const rows = useMemo(() => topicMenuRows(topics.data, current), [topics.data, current]);
   const label = chipLabel(session);
@@ -143,11 +156,34 @@ export default function TopicChip({
   // takes no focus, so the composer keeps it.
   useEffect(() => {
     if (!open || naming) return;
+    firstFocus.current = { el: null, reran: false };
     const id = requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>("[data-chat-topic-menu] [data-chat-topic-focus]")?.focus();
+      const el = document.querySelector<HTMLElement>(FOCUS_ROW);
+      el?.focus();
+      firstFocus.current.el = el;
     });
     return () => cancelAnimationFrame(id);
   }, [open, naming]);
+
+  // A cold open (visual review P2): the list lands after the first focus, so
+  // that focus sat on "New topic…". When the list lands, the focus moves to
+  // the current topic ONCE, and only if it still sits on the first row
+  // (`focusAfterLoad`). A member who moved the focus keeps it, and the name
+  // form (`naming`) stops it.
+  const loaded = topics.data !== undefined;
+  useEffect(() => {
+    if (!open || naming || !loaded) return;
+    const first = firstFocus.current;
+    const id = requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(FOCUS_ROW);
+      const onFirstRow = first.el !== null && document.activeElement === first.el;
+      if (focusAfterLoad({ reran: first.reran, onFirstRow, moves: target !== null && target !== first.el })) {
+        target?.focus();
+      }
+      first.reran = true;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [open, naming, loaded]);
 
   const move = (topic: SessionTopic | null) => {
     setOpen(false);

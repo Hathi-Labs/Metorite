@@ -29,6 +29,7 @@ import {
   createChatTopic,
   createProblem,
   fetchChatTopics,
+  focusAfterLoad,
   menuFocusIndex,
   parseTopics,
   topicMenuIsOpen,
@@ -229,6 +230,51 @@ describe("the topic menu and a change of chat", () => {
     expect(chip).toMatch(/useEffect\(\(\) => \{\s+if \(!open \|\| naming\) return;/);
     // Escape gives the focus back to the trigger: the "…" button itself.
     expect(chip).toContain('anchor?.tagName === "BUTTON" ? anchor : anchor?.querySelector<HTMLElement>("button")');
+  });
+
+  // Visual review P2: a cold open. Mutation: drop `onFirstRow` from
+  // `focusAfterLoad` -> the focus leaves a row the member moved to.
+  it("moves the focus once to the current topic when the list lands, and never after the member moved it", () => {
+    // Cold open: the first focus sat on "New topic…", the member did nothing.
+    expect(focusAfterLoad({ reran: false, onFirstRow: true, moves: true })).toBe(true);
+    // The member moved the focus (or typed in the name form): leave it.
+    expect(focusAfterLoad({ reran: false, onFirstRow: false, moves: true })).toBe(false);
+    // Once only: a second landing of the list moves nothing.
+    expect(focusAfterLoad({ reran: true, onFirstRow: true, moves: true })).toBe(false);
+    // A warm open: the first focus is already the current topic.
+    expect(focusAfterLoad({ reran: false, onFirstRow: true, moves: false })).toBe(false);
+    // The target of a cold open is the current topic once the list holds it.
+    const cold = topicMenuRows(undefined, "t-board");
+    const warm = topicMenuRows([SALES, BOARD], "t-board");
+    expect(cold[menuFocusIndex(cold)].kind).toBe("new");
+    expect(warm[menuFocusIndex(warm)]).toMatchObject({ kind: "topic", current: true });
+  });
+
+  // Mutation: drop the effect that runs on `loaded` -> red here.
+  it("the chip runs the focus again when the list lands, once, and only on the first row", () => {
+    const chip = source("TopicChip.tsx");
+    expect(chip).toContain("const loaded = topics.data !== undefined;");
+    expect(chip).toMatch(/if \(!open \|\| naming \|\| !loaded\) return;/);
+    expect(chip).toContain("const onFirstRow = first.el !== null && document.activeElement === first.el;");
+    expect(chip).toMatch(/focusAfterLoad\(\{ reran: first\.reran, onFirstRow,/);
+    expect(chip).toContain("first.reran = true;");
+    expect(chip).toContain("}, [open, naming, loaded]);");
+    // Each open starts again: the first focus records its row.
+    expect(chip).toContain("firstFocus.current = { el: null, reran: false };");
+    expect(chip).toContain("firstFocus.current.el = el;");
+  });
+
+  // Visual review P3. Mutation: give the menu heading its own size again.
+  it("the menu headings have the type of the group headings of the chat list", () => {
+    // The classes of each heading, less the padding, which follows the place.
+    const typeOf = (classes: string) =>
+      classes.split(/\s+/).filter((c) => c && !/^(glass:)?p[xytb]?-/.test(c)).sort();
+    const list = /<h3 className="([^"]+)">\{g\.label\}<\/h3>/.exec(source("SessionPicker.tsx"));
+    const menu = /function Heading[\s\S]*?<div className="([^"]+)">/.exec(source("TopicChip.tsx"));
+    expect(list && menu).toBeTruthy();
+    expect(typeOf(menu![1])).toEqual(typeOf(list![1]));
+    expect(typeOf(list![1])).toContain("text-[11px]");
+    expect(source("TopicChip.tsx")).not.toContain("text-[10px]");
   });
 
   it("the chip does not show on an archived chat, as the pin does not", () => {

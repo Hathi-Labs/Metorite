@@ -187,7 +187,16 @@ D163 does not cover §15 to §20. They stay PROPOSED until the owner answers §1
   is the current topic, else "New topic…", and never "No topic". The full
   view shows the topic name on the chip. The side panel and a phone show the
   tag icon, and its label names the topic. A phone with the chat-first flag
-  offers the menu in the chat's "…" control, and the menu hangs from it.
+  offers the menu in the chat's "…" control, and the menu hangs from it. On
+  a phone, the menu hangs below the header and covers the header controls,
+  such as Share, while it is open. That is by design: a press outside or
+  Escape closes it. On a cold open the first focus is "New topic…". When the
+  list lands, the focus moves once to the current topic, unless the member
+  moved it first.
+- **Names.** A topic cannot take the name of a heading of the list, such as
+  "Pinned" or "Today", in any case. The store refuses it with "The chat list
+  uses this name. Pick another name." The TypeScript labels and
+  `chat_topic.LIST_HEADINGS` are one list (`test_chat_topic.py`).
 - **A move that fails.** The list puts the old topic back, and a toast says
   "The chat did not move. Try again, or pick another topic." The menu then
   reads the topics again. A later move is never undone by an earlier
