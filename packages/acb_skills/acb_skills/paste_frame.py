@@ -1,6 +1,6 @@
 """The split of a member's turn into the member's words and one pasted block (HRD-14a).
 
-Spec: ``project-docs/specs/chat_failure_modes.md §4.7b (PR 2529)``, the row
+Spec: ``project-docs/specs/chat_failure_modes.md`` section 4.7b (PR 2529), the row
 HRD-14a of its section 6, and the questions Q-HRD-14-1 to Q-HRD-14-12 of its
 section 8. D-HRD-5 (D217) decides the trigger: a part of a member turn that
 holds 8 or more lines that are not blank holds a block. Fence:
@@ -22,7 +22,9 @@ behind its own flag. So this slice changes no chat.
    rule of ``typed_text``) has no lead.
 5. The text splits into paragraphs at the blank lines.
 6. The FIRST paragraph is the lead only when it is ONE line of at most
-   :data:`LEAD_MAX` characters, with no address, link or phone number.
+   :data:`LEAD_MAX` characters, with no hidden character, address, link or
+   phone number. A hidden character is ``untrusted.is_invisible`` or a
+   variation selector, because ``neutralise`` keeps it in the lead.
 7. The paste is the rest, to the end. A tail stays inside it, so ``tail`` is
    always empty (Q-HRD-14-2). The field keeps room for another answer.
 
@@ -32,9 +34,13 @@ in ONE block of the label :data:`PASTE_LABEL`, and runs ``neutralise`` on
 the lead too. The marker lines come only from :class:`UntrustedFrame`.
 
 The checks of an address, a link and a phone number are closed rules (spec
-section 4.7b). Each one folds the line first (:func:`fold`). A form beyond
-the fold is a named residual: `` (at) ``, ``[dot]``, an IP address as a host
-with no scheme, and a number in words.
+section 4.7b). Each one reads a scan copy of the line first
+(:func:`_scan_text`). A form beyond that copy is a named residual: `` (at) ``,
+``[dot]``, an IP address as a host with no scheme, and a number in words.
+The spec also names these residuals of a link: a word-like domain, a space
+and then a word, with a short label (``Pay at acme.in now``), a word-like
+domain in capitals with no path, and a top-level domain that is not on the
+list.
 
 WARNING: the frame is advice to the model, and no test can prove that a model
 obeys it. The fence proves where the lead and the block are.
@@ -59,11 +65,7 @@ __all__ = [
     "PASTE_LABEL",
     "WORD_TLDS",
     "PathsExist",
-    "fold",
     "frame_member_text",
-    "has_address",
-    "has_link",
-    "has_phone",
     "no_path_proven",
     "split",
 ]
@@ -133,36 +135,62 @@ def _upload_note(paths: tuple[str, ...]) -> str:
 # -- the address, link and phone rules (step 6) ---------------------------------
 
 _IDEOGRAPHIC_STOP = chr(0x3002)
+#: The longest text that a rule reads. The split gives a rule only one lead
+#: line of at most :data:`LEAD_MAX` characters. A longer text counts as a hit,
+#: so each rule stays linear and fails on the safe side.
+_SCAN_MAX = 2_000
+#: The variation selectors: they hide no glyph of their own, and a run of
+#: them can carry hidden bytes.
+_VARIATION = (range(0xFE00, 0xFE10), range(0xE0100, 0xE01F0))
 
 
-def _fold_case_kept(text: str) -> str:
-    """:func:`fold` with no change of case."""
+def _hidden(ch: str) -> bool:
+    """True for a character that a reader cannot see: ``untrusted.is_invisible``
+    (Cf, zero-width, TAG) or a variation selector. ``neutralise`` keeps each
+    one, so a lead that holds one goes into the block."""
+    code = ord(ch)
+    return is_invisible(ch) or any(code in span for span in _VARIATION)
+
+
+def _scan_text_case_kept(text: str) -> str:
+    """:func:`_scan_text` with no change of case."""
     norm = unicodedata.normalize("NFKC", str(text or ""))
-    kept = "".join(ch for ch in norm if not is_invisible(ch))
+    kept = "".join(ch for ch in norm
+                   if not _hidden(ch) and unicodedata.category(ch) not in ("Mn", "Me"))
     return kept.replace(_IDEOGRAPHIC_STOP, ".")
 
 
-def fold(text: str) -> str:
-    """*text* as the checks read it: NFKC, then no invisible character
-    (``untrusted.is_invisible``), then the ideographic full stop as ``.``,
-    then lower case. NFKC folds the full-width and the small at sign to
-    ``@``, and the half-width full stop to the ideographic one."""
-    return _fold_case_kept(text).lower()
+def _scan_text(text: str) -> str:
+    """*text* as the rules read it: NFKC, then no hidden character and no
+    combining mark (Mn, Me), then the ideographic full stop as ``.``, then
+    lower case. NFKC folds the full-width and the small at sign to ``@``,
+    and the half-width full stop to the ideographic one. The copy is only for
+    the rules: the lead keeps its own text."""
+    return _scan_text_case_kept(text).lower()
 
 
-#: The spelled address: `` at `` with `` dot ``.
-_SPELLED_RE = re.compile(r"\w at [\w-]+(?: dot [\w-]+)+")
+#: The spelled address of the spec: `` at `` and later `` dot `` and a word.
+#: It reads the scan copy with each run of white space as one space. Up to
+#: three words may stand between ``at`` and ``dot``, and a word may hold dots,
+#: so ``ravi at mail.acme dot test`` and ``(ravi) at acme dot test`` are
+#: addresses.
+_SPELLED_RE = re.compile(r"(?:^|\s)at\s\S+(?:\s\S+){0,2}?\sdot\s\w")
 
 #: The top-level domains of :data:`LINK_TLDS` that are also a word or a word
-#: end. A bare domain of one of them is a link only on the strict rule of
-#: :data:`_WORD_DOMAIN_RE`, so ``Done.In the end`` is not a link.
-WORD_TLDS = frozenset({"in", "ai", "me", "us", "app", "dev", "to"})
+#: end. A bare domain of one of them takes the strict end rule of
+#: :func:`_word_domain`, so ``Done.In the end`` and ``note.to Ravi`` are not
+#: links.
+WORD_TLDS = frozenset({
+    "in", "ai", "me", "us", "app", "dev", "to", "be", "top", "online", "shop",
+    "click", "link", "site", "store", "zip",
+})
 
 #: The closed list of top-level domains of a bare domain. A missed link in a
 #: lead keeps a target outside the block, and a false hit costs one ask. So
-#: the list leans wide. It holds no file end that a member often types, so
-#: ``README.md``, ``app.py`` and ``it.it`` are not links: ``md``, ``py``,
-#: ``it`` and ``is`` stay out. ``www.`` or a scheme is a link with any
+#: the list leans wide, and it holds the domains that short links and abuse
+#: use. It holds no file end that a member often types, so ``README.md``,
+#: ``app.py``, ``run.sh`` and ``it.it`` are not links: ``md``, ``py``, ``it``,
+#: ``is`` and ``sh`` stay out. ``www.`` or a scheme is a link with any
 #: top-level domain.
 LINK_TLDS = frozenset({
     "com", "net", "org", "edu", "gov", "mil", "int", "info", "biz", "io",
@@ -171,54 +199,87 @@ LINK_TLDS = frozenset({
     "ie", "eu", "ru", "cn", "jp", "kr", "sg", "hk", "tw", "ae", "sa", "za",
     "ng", "ke", "br", "mx", "ar", "cl", "pk", "bd", "lk", "np", "ph", "th",
     "vn", "tr", "il", "eg", "gr", "pt", "cz", "hu", "ro", "ua", "qa", "kw",
+    "tk", "ly", "gl", "ml", "ga", "cf", "gq", "cc",
     *WORD_TLDS,
 })
 _LABEL = r"[^\W_](?:[\w-]*[^\W_])?"
 _DOMAIN_RE = re.compile(
     rf"(?<![\w-]){_LABEL}(?:\.{_LABEL})*"
     rf"\.(?:{'|'.join(sorted(LINK_TLDS - WORD_TLDS))})(?![\w-])")
-#: A bare domain of :data:`WORD_TLDS`. It reads the text with its case kept,
-#: and the top-level domain must be in lower case, so ``Done.In`` is a
-#: sentence break and not a link. The top-level domain must end the text, or
-#: come before a character that is no letter, digit, ``_`` or ``-``. White
-#: space counts only when no letter comes after it, so ``note.to Ravi`` is
-#: not a link, and ``acme.in/pay``, ``acme.in?x``, ``acme.in.`` are.
 _WORD_DOMAIN_RE = re.compile(
-    rf"(?<![\w-]){_LABEL}(?:\.{_LABEL})*\.(?:{'|'.join(sorted(WORD_TLDS))})"
-    r"(?=\Z|[^\w\s-]|\s(?!\s*[^\W\d_]))")
+    rf"(?<![\w-])(?:{_LABEL}\.)*({_LABEL})\.((?i:{'|'.join(sorted(WORD_TLDS))}))(?![\w-])")
+#: A path, a query, a fragment or a port. After a domain it is never the end
+#: of a sentence, so the domain is a link in any case.
+_PATH_AFTER = frozenset("/?#:")
+#: The shortest last label of a word-like domain that is a link before a
+#: space and a word. ``payroll.ai and`` is a link, and ``note.to Ravi`` is not.
+_WORD_LABEL_MIN = 5
 _SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://")
 _WWW_RE = re.compile(r"(?<![\w-])www\.")
 
 #: A date never joins a phone number: yyyy-mm-dd or dd/mm/yyyy. The scan puts
-#: a character that is no digit and no separator in its place.
-_DATE_RE = re.compile(r"(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})(?!\d)")
+#: a character that is no digit and no separator in its place. A digit run
+#: right after a ``+`` or a digit is not a date.
+_DATE_RE = re.compile(r"(?<![\d+])(?:\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})(?!\d)")
 #: The separators of a phone number: spaces, dashes, dots and brackets.
 _SEP = r"[\s\-.()\[\]" + re.escape("".join(map(chr, (*range(0x2010, 0x2016), 0x2212)))) + "]"
 _PHONE_RUN_RE = re.compile(rf"(\+)?{_SEP}*(\d(?:{_SEP}*\d)*)")
 
 
-def has_address(text: str) -> bool:
-    """True when the folded *text* holds an ``@``, or `` at `` with `` dot ``."""
-    folded = fold(text)
-    return "@" in folded or _SPELLED_RE.search(folded) is not None
-
-
-def has_link(text: str) -> bool:
-    """True when the folded *text* holds a scheme, ``www.``, or a bare domain
-    whose top-level domain is in :data:`LINK_TLDS`. A top-level domain of
-    :data:`WORD_TLDS` takes the strict rule of ``_WORD_DOMAIN_RE``."""
-    folded = fold(text)
-    if any(rx.search(folded) for rx in (_SCHEME_RE, _WWW_RE, _DOMAIN_RE)):
+def _has_address(text: str) -> bool:
+    """True when the scan copy of *text* holds an ``@``, or `` at `` and
+    later `` dot ``. A text over :data:`_SCAN_MAX` counts as one."""
+    if len(text) > _SCAN_MAX:
         return True
-    return _WORD_DOMAIN_RE.search(_fold_case_kept(text)) is not None
+    scan = " ".join(_scan_text(text).split())
+    return "@" in scan or _SPELLED_RE.search(scan) is not None
 
 
-def has_phone(text: str) -> bool:
-    """True when the folded *text* holds a ``+`` and then 8 or more digits, or
-    10 or more digits with a separator between them. A bare run of digits is
-    not a phone number, and a date is never part of one."""
-    masked = _DATE_RE.sub("#", fold(text))
-    for m in _PHONE_RUN_RE.finditer(masked):
+def _word_domain(text: str) -> bool:
+    """True when *text* (case kept) holds a bare domain of :data:`WORD_TLDS`
+    that is a link. A path, a query, a fragment or a port after it makes a
+    link in any case. Else the top-level domain must be in lower case, and it
+    must end the text or come before a sign that is no letter. A space and
+    then a letter end a link only when the last label is in lower case and
+    holds :data:`_WORD_LABEL_MIN` or more characters."""
+    for m in _WORD_DOMAIN_RE.finditer(text):
+        after = text[m.end():]
+        if after and after[0] in _PATH_AFTER:
+            return True
+        if not m.group(2).islower():
+            continue
+        if not after or not after[0].isspace():
+            return True
+        rest = after.lstrip()
+        if not rest or not rest[0].isalpha():
+            return True
+        label = m.group(1)
+        if label.islower() and len(label) >= _WORD_LABEL_MIN:
+            return True
+    return False
+
+
+def _has_link(text: str) -> bool:
+    """True when the scan copy of *text* holds a scheme, ``www.``, or a bare
+    domain whose top-level domain is in :data:`LINK_TLDS`. A top-level domain
+    of :data:`WORD_TLDS` takes the rule of :func:`_word_domain`. A text over
+    :data:`_SCAN_MAX` counts as one."""
+    if len(text) > _SCAN_MAX:
+        return True
+    scan = _scan_text(text)
+    if any(rx.search(scan) for rx in (_SCHEME_RE, _WWW_RE, _DOMAIN_RE)):
+        return True
+    return _word_domain(_scan_text_case_kept(text))
+
+
+def _has_phone(text: str) -> bool:
+    """True when the scan copy of *text* holds a ``+`` and then 8 or more
+    digits, or 10 or more digits with a separator between them. A bare run
+    of digits is not a phone number, and a date is never part of one. A text
+    over :data:`_SCAN_MAX` counts as one."""
+    if len(text) > _SCAN_MAX:
+        return True
+    for m in _PHONE_RUN_RE.finditer(_DATE_RE.sub("#", _scan_text(text))):
         core = m.group(2)
         digits = sum(ch.isdigit() for ch in core)
         if m.group(1) and digits >= 8:
@@ -245,12 +306,12 @@ def _blank(line: str) -> bool:
 
 
 def _lead_ok(line: str) -> bool:
-    """Step 6: one line of at most :data:`LEAD_MAX` characters that names no
-    address, link or phone number. The caller already refused a part with a
+    """Step 6: one line of at most :data:`LEAD_MAX` characters that holds no
+    hidden character and names no address, link or phone number. The caller already refused a part with a
     ``_PASTED`` line."""
     text = line.strip()
-    return (len(text) <= LEAD_MAX
-            and not has_address(text) and not has_link(text) and not has_phone(text))
+    return (len(text) <= LEAD_MAX and not any(_hidden(ch) for ch in text)
+            and not _has_address(text) and not _has_link(text) and not _has_phone(text))
 
 
 def _parts(text: str, paths_exist: PathsExist) -> _Parts:
