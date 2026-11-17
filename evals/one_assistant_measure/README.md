@@ -579,10 +579,10 @@ The live console line of a held-out turn shows its cost only. `--report`, `--mer
 
 **The win margin.** `--compare B.json,A.json` reads two files. B ran before a change and A ran after it. Each file needs two repeats of the arm (`--compare-arm`, default `pack`). A turn passes when every check that gives a value passes. A turn that is capped or missing in any of the four runs is left out, and the report counts it.
 
-The **noise** `n` counts the turns whose pass or fail differs between repeat 1 and repeat 2 of B. Tune and held-out turns count together. The report prints these facts for each split: the turns, the passes of each repeat and the flips each way. It names the tune turns that flipped. It counts the held-out turns that flipped. A **wins** when all four rules hold:
+The **noise** `n` counts the T and H turns whose pass or fail differs between repeat 1 and repeat 2 of B. A turn of E or of another group does not count. The report prints these facts for each split: the turns, the passes of each repeat and the flips each way. It names the tune turns that flipped. It counts the held-out turns that flipped. A **wins** when all four rules hold:
 
 1. Each chat tagged `case:<k>` passes in both repeats of A. A case that failed in B is then fixed. A case that passed in both repeats of B stays passed. A case that is missing or capped in A fails.
-2. On T, the tune chats tagged `t2874`, the passes of A minus the passes of B are at least `max(2, n + 1)`. The sum covers both repeats. `--t-tag` changes the tag.
+2. On T, the tune chats tagged `t2874`, the passes of A minus the passes of B are at least `max(2, n + 1)`. The sum covers both repeats. Or A passes every T turn in both repeats. `--t-tag` changes the tag.
 3. On H, the held-out chats, the passes of A are at least the passes of B minus `n`.
 4. On E, the passes of A are at least the passes of B minus `n`. E is the tune chats of the `email` set that are not T.
 
@@ -613,6 +613,8 @@ Every new check has a unit test. The behaviour of 11-11 fails it, and the right 
 1. A turn has `card`: `approve`, `send` or `discard`. `run.Member` answers the card with the grammar of production. The docstring of `Member` cites the lines of `ask_tools.py` and `reply_card.py`. A revise is a steer, and the harness cannot post a steer in a run, so no chat replays one.
 2. The mailbox fake answers the held forward card, `/email/forward`, `/email/reply-zero/resolve` and `/email/reply-card/draft-state`. It scores a near spelling as `closest`, with `acb_common.name_match`. A Discard trashes the card's draft, as the browser does.
 3. `workgateway.py` answers `resolve_person`. Case 6 turns on the profile flag in the eval process only. The flag is not in `prod_flags.json`.
+
+Limit of cases 3 and 4. The harness sends turn 2 only the text that the browser sends. Production loads the stored session, so turn 2 also sees the tool results of turn 1. A live pass or fail of turn 2 of case 3 or case 4 does not prove what production does. The harness is not changed for this.
 
 Case 5 fails the 11-11 way only when the Projects packs are on. Run it live with `--mirror-prod`.
 

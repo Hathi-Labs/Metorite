@@ -36,13 +36,18 @@ _PROMISE = re.compile(
 _DOUBT = re.compile(
     r"\b(?:haven['\u2019]t seen|have not seen|no (?:delivery )?confirmation|not (?:been )?confirmed|"
     r"can(?:['\u2019]?t|not) (?:confirm|verify)|unable to (?:confirm|verify)|not sure (?:it|if|whether)|"
-    r"cannot be sure|can['\u2019]t be sure|may not have|might not have|did not (?:get|see) a)\b",
+    r"cannot be sure|can['\u2019]t be sure|may not have|might not have|did not (?:get|see) a|"
+    r"could(?:n['\u2019]t| not) (?:confirm|verify)|check (?:your )?sent folder)\b|"
+    r"\bnot (?:certain|sure) (?:it|that)\b[^.]*\b(?:sent|delivered|went)\b",
     re.IGNORECASE)
 #: The member pressed Discard, so the card is gone. These words say that it still waits.
 _STILL_OPEN = re.compile(
     r"\b(?:up for your decision|until you press|still (?:open|waiting|pending)|waiting for you|"
-    r"awaiting your|treat it as declined|has not been sent yet|not yet sent)\b", re.IGNORECASE)
-_DISCARD = re.compile(r"\bdiscard(?:ed)?\b", re.IGNORECASE)
+    r"awaiting your|treat it as declined|has not been sent yet|not yet sent|ready for you|"
+    r"to approve|awaiting your approval)\b", re.IGNORECASE)
+_DISCARD = re.compile(
+    r"\bdiscard(?:ed)?\b|\byou (?:cancelled|canceled|declined)\b|\bwon['\u2019]t send\b",
+    re.IGNORECASE)
 
 
 def ordered_calls_of(events: list[dict[str, Any]]) -> list[Call]:
@@ -71,7 +76,7 @@ def _not_run(result: str) -> bool:
     text = str(result).strip()
     return (text.startswith(ck.REFUSED_PREFIXES) or text == MEMBER_LINE
             or ck._UNKNOWN_FUNCTION.match(text) is not None
-            or re.search(r"Requested function.*not found", text, re.DOTALL) is not None)
+            or re.search(r"Requested function.*not found", text, re.DOTALL) is not None)
 
 
 def _ran(calls: list[Call]) -> list[Call]:
@@ -91,15 +96,20 @@ def _act_kept(obs: ck.Observation, arg: Any) -> bool:
 
 def _no_promise(obs: ck.Observation, _arg: Any) -> bool:
     """The answer promises no later check, unless a read ran in this turn (defect 2).
-    "I can check it" is an offer and passes."""
+    "I can check it" is an offer and passes.
+
+    Limit: when a read ran in the turn, any answer passes. A promise of a FURTHER check after
+    that read ("I'll also look at the file") cannot be told from "I checked" by a pattern
+    without false fails, so the check leaves it."""
     if any(n in READ_TOOLS for n, _, _ in _ran(obs.ordered)):
         return True
     return _PROMISE.search(obs.answer) is None
 
 
 def _no_doubt(obs: ck.Observation, _arg: Any) -> bool:
-    """The answer doubts no send. A tool's "Sent to" is the confirmation (defect 3)."""
-    return _DOUBT.search(obs.answer) is None
+    """The answer doubts no send. A tool's "Sent to" is the confirmation (defect 3).
+    An empty answer fails: it says nothing about the send."""
+    return bool(obs.answer.strip()) and _DOUBT.search(obs.answer) is None
 
 
 def _states_discard(obs: ck.Observation, _arg: Any) -> bool:
@@ -128,8 +138,9 @@ _NOBODY = re.compile(r"\bNobody matches\b", re.IGNORECASE)
 
 
 def _tried_closest(obs: ck.Observation, arg: Any) -> bool:
-    """After ``resolve_person`` says nobody, ``find_contact`` runs with the same name
-    before the turn ends (defect 6). *arg* is a pattern of the typed name."""
+    """``find_contact`` ran with the typed name in this turn (defect 6). *arg* is a pattern of
+    the name. It does NOT enforce the order: ``find_contact`` may run before or after
+    ``resolve_person`` said nobody. Such a call is the retry that the member needs."""
     nobody = False
     for name, args, result in obs.ordered:
         if name == "resolve_person" and _NOBODY.search(result):

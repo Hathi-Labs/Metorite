@@ -200,12 +200,13 @@ def chats(spec: dict[str, tuple[bool, bool]], *, tags: tuple[str, ...] = (),
 T = ("t2874",)
 
 
-def base_rows(*, t_after: bool = True, noisy: int = 0, h_after: bool = True,
+def base_rows(*, t_after: bool = True, noisy: int = 0, t_noisy: int = 0, h_after: bool = True,
               e_after: bool = True, case_after: bool = True,
               ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """B and A with 3 T chats and 1 case chat (all fail in B), 2 held-out chats and
-    2 E chats (all pass in B, but *noisy* of them fail in repeat 2 of B)."""
-    t_ids = {f"t{i}": (False, False) for i in range(3)}
+    2 E chats (all pass in B, but *noisy* of them fail in repeat 2 of B). *t_noisy* of the
+    T chats pass in repeat 2 of B and fail in repeat 1: noise in T."""
+    t_ids = {f"t{i}": (False, i < t_noisy) for i in range(3)}
     t_ids_a = {k: (t_after, t_after) for k in t_ids}
     e_b = {"e1": (True, noisy < 1), "e2": (True, noisy < 2)}
     b = (chats(t_ids, tags=T)
@@ -228,7 +229,7 @@ def test_a_clear_gain_wins(tmp_path: Path) -> None:
     text, code = verdict(tmp_path, b, a)
     assert code == compare.EXIT_WIN, text
     assert "VERDICT: WIN" in text
-    assert "noise n = 0 of 8 turns" in text
+    assert "noise n = 0 of 6 T and H turns" in text
     assert "T (tune, tag t2874): 4 turns. Passes B [0, 0], A [4, 4]" in text
     assert "H (held-out): 2 turns" in text
     assert "Other tune (not T, not E): 0 turns" in text
@@ -236,16 +237,43 @@ def test_a_clear_gain_wins(tmp_path: Path) -> None:
 
 
 def test_the_noise_is_the_flip_count_between_two_repeats_of_b(tmp_path: Path) -> None:
-    b, a = base_rows(noisy=2)
+    b, a = base_rows(t_noisy=2)
     text, _ = verdict(tmp_path, b, a)
-    assert "noise n = 2 of 8 turns" in text
+    assert "noise n = 2 of 6 T and H turns" in text
+
+
+def test_the_noise_of_the_email_set_does_not_raise_n(tmp_path: Path) -> None:
+    b, a = base_rows(noisy=2)  # both E chats flip between the repeats of B
+    text, _ = verdict(tmp_path, b, a)
+    assert "noise n = 0 of 6 T and H turns" in text
+
+
+def test_rule_2_passes_when_a_passes_every_t_turn_in_both_repeats(tmp_path: Path) -> None:
+    # B fails one T turn in one repeat: the gain is 1, below 2, and the noise is 1.
+    t = {f"t{i}": (i != 0, True) for i in range(3)}
+    case = {"case1": (True, True)}
+    rest = (chats({"h1": (True, True)}, split="holdout", tags=("holdout",))
+            + chats({"e1": (True, True)}))
+    b = chats(t, tags=T) + chats(case, tags=(*T, "case:1")) + rest
+    a = (chats({k: (True, True) for k in t}, tags=T) + chats(case, tags=(*T, "case:1"))
+         + chats({"h1": (True, True)}, split="holdout", tags=("holdout",))
+         + chats({"e1": (True, True)}))
+    text, code = verdict(tmp_path, b, a)
+    assert "rule 2  T gain 1" in text and "ok, A passes every T turn in both repeats" in text
+    assert code == compare.EXIT_WIN, text
+    # one T turn of A fails in one repeat: the branch closes, and the gain of 1 is too small
+    for r in a:
+        if r["scenario"] == "t1" and r["repeat"] == 2:
+            r["checks"]["has_alpha"] = False
+    text, code = verdict(tmp_path, b, a)
+    assert code == compare.EXIT_LOSS and "rule 2" in text and "FAILS" in text
 
 
 def test_rule_2_boundary_is_two_with_no_noise(tmp_path: Path) -> None:
     # Only the case chat gains: A 2 - B 0 = 2, and max(2, 0 + 1) = 2.
     b, a = base_rows(t_after=False)
     text, code = verdict(tmp_path, b, a)
-    assert "rule 2  T gain 2 (A 2 - B 0) needs at least 2: ok" in text, text
+    assert "rule 2  T gain 2 (A 2 - B 0) needs at least 2" in text and "ok, by the gain" in text, text
     assert code == compare.EXIT_WIN
     # One gained turn in one repeat is below two.
     for r in a:
@@ -257,9 +285,9 @@ def test_rule_2_boundary_is_two_with_no_noise(tmp_path: Path) -> None:
 
 def test_rule_2_needs_more_when_the_noise_is_higher(tmp_path: Path) -> None:
     # The same gain of 2 loses when B flips two turns between its repeats: need 3.
-    b, a = base_rows(t_after=False, noisy=2)
+    b, a = base_rows(t_after=False, t_noisy=2)
     text, code = verdict(tmp_path, b, a)
-    assert "rule 2  T gain 2 (A 2 - B 0) needs at least 3: FAILS" in text, text
+    assert "needs at least 3" in text and "FAILS" in text, text
     assert code == compare.EXIT_LOSS
 
 
@@ -303,7 +331,7 @@ def test_rule_3_held_out_may_fall_by_the_noise_only(tmp_path: Path) -> None:
     assert code == compare.EXIT_LOSS
     assert "rule 3  H A 2 >= B 4 - n 0: FAILS" in text
     # one noisy turn does not let a fall of 2 through, two noisy turns do
-    b, a = base_rows(h_after=False, noisy=2)
+    b, a = base_rows(h_after=False, t_noisy=2)
     text, code = verdict(tmp_path, b, a)
     assert "rule 3  H A 2 >= B 4 - n 2: ok" in text
 
@@ -313,9 +341,9 @@ def test_rule_4_the_email_set_may_fall_by_the_noise_only(tmp_path: Path) -> None
     text, code = verdict(tmp_path, b, a)
     assert code == compare.EXIT_LOSS
     assert "rule 4  E A 2 >= B 4 - n 0: FAILS" in text
-    b, a = base_rows(e_after=False, noisy=2)  # two noisy turns let a fall of 2 pass
+    b, a = base_rows(e_after=False, t_noisy=2)  # two noisy turns let a fall of 2 pass
     text, _ = verdict(tmp_path, b, a)
-    assert "rule 4  E A 2 >= B 2 - n 2: ok" in text, text
+    assert "rule 4  E A 2 >= B 4 - n 2: ok" in text, text
 
 
 def test_the_held_out_turns_are_counted_never_named(tmp_path: Path) -> None:

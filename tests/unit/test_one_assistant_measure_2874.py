@@ -61,6 +61,22 @@ def test_no_doubt_fails_on_the_words_of_the_false_doubt() -> None:
     assert run_check("no_doubt", obs("Yes. It went to priya@boardworks.example.")) is True
 
 
+def test_no_doubt_widened_and_an_empty_answer_fails() -> None:
+    assert run_check("no_doubt", obs("I couldn't confirm it went.")) is False
+    assert run_check("no_doubt", obs("Please check your Sent folder.")) is False
+    assert run_check("no_doubt", obs("I am not sure that it was delivered.")) is False
+    assert run_check("no_doubt", obs("   ")) is False  # an empty answer says nothing
+    assert run_check("no_doubt", obs("Yes, it went to priya@boardworks.example.")) is True
+
+
+def test_states_discard_words_in_both_directions() -> None:
+    assert run_check("states_discard", obs("You cancelled it, so nothing went out.")) is True
+    assert run_check("states_discard", obs("You declined the card. I won't send it.")) is True
+    assert run_check("states_discard", obs("The reply is ready for you to approve.")) is False
+    assert run_check("states_discard", obs("You discarded it, but it is awaiting your approval.")
+                     ) is False
+
+
 def test_states_discard_fails_on_a_card_that_waits() -> None:
     wrong = ("The card is up for your decision. It has not been sent. I will treat it as "
              "declined until you press Send.")

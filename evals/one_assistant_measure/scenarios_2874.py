@@ -26,8 +26,14 @@ What each replay does NOT prove:
   with ``--mirror-prod``.
 * Case 6. ``resolve_person`` is a tool of the orchestrator behind the profile flag
   (``ASSISTANT_PROFILE_ENABLED``). The chat sets the flag in the eval process only (:data:`FLAGS`).
-  It is no key of ``prod_flags.json``, because the coordinator's list of production flags
-  does not name it.
+  ``ASSISTANT_PROFILE_ENABLED`` is a key of ``prod_flags.json`` (part 4), so a run with
+  ``--mirror-prod`` has it. ``ASSISTANT_PROFILE_ORGS`` is not in the production list, and
+  only :data:`FLAGS` sets it, for this chat.
+
+Limit of cases 3 and 4. The harness sends a later turn only the text that the browser sends:
+the earlier questions and answers. Production loads the stored session, so turn 2 also sees the
+tool results of turn 1. So a live pass or fail of turn 2 of case 3 or case 4 does not prove
+what production does. The tool result of the same turn (turn 1) is real.
 
 Every chat holds at most 11 words in a turn, so no turn-kind request goes out.
 """

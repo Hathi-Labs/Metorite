@@ -9,9 +9,9 @@ A **turn passes** when every check that gives a value passes (a check that
 gives None does not count). A capped turn is left out. A turn is scored only
 when it is present and not capped in all four runs (B1, B2, A1, A2).
 
-The **noise** ``n`` is the number of scored turns, tune and held-out together,
-whose pass or fail differs between repeat 1 and repeat 2 of B. Two repeats of
-unchanged code give it.
+The **noise** ``n`` is the number of scored T and H turns whose pass or fail
+differs between repeat 1 and repeat 2 of B. Two repeats of unchanged code give it.
+A turn of E or of another group does not count.
 
 A **wins** when all four rules hold:
 
@@ -20,7 +20,7 @@ A **wins** when all four rules hold:
    passed. A case that is missing or capped in A fails.
 2. On T (the tune chats tagged ``t_tag``, default ``t2874``): the passes of A
    minus the passes of B, summed over both repeats, is at least
-   ``max(2, n + 1)``.
+   ``max(2, n + 1)``. Or A passes every T turn in both repeats.
 3. On H (the held-out chats): the passes of A (summed over both repeats) are at
    least the passes of B minus ``n``.
 4. On E (the tune chats of the ``email`` set, minus T): the same as rule 3.
@@ -136,12 +136,12 @@ def compare(b_path: Path, a_path: Path, *, t_tag: str = DEFAULT_T_TAG,  # noqa: 
         else:
             group[key] = "other"
 
-    noise = sum(1 for k in scored if b.result(0, k) != b.result(1, k))
+    noise = sum(1 for k in scored if group[k] in ("T", "H") and b.result(0, k) != b.result(1, k))
     lines = [f"compare: B {b_path.name} (before), A {a_path.name} (after), arm {arm}",
              f"repeats: B {b.repeats}, A {a.repeats}",
              f"scored turns: {len(scored)}. Left out (missing or capped in one run): {dropped}.",
-             f"noise n = {noise} of {len(scored)} turns (pass or fail differs between repeat 1 "
-             "and repeat 2 of B)", ""]
+             f"noise n = {noise} of {sum(1 for k in scored if group[k] in ('T', 'H'))} "
+             "T and H turns (pass or fail differs between repeat 1 and repeat 2 of B)", ""]
 
     def passes(side: Side, name: str) -> list[int]:
         return [sum(1 for k in scored if group[k] == name and side.result(i, k)) for i in (0, 1)]
@@ -219,20 +219,22 @@ def compare(b_path: Path, a_path: Path, *, t_tag: str = DEFAULT_T_TAG,  # noqa: 
     t_turns, tb, ta = stats["T"]
     gain = sum(ta) - sum(tb)
     need = max(2, n + 1)
-    verdict["2"] = gain >= need
-    h_turns, hb, ha = stats["H"]
+    all_t = t_turns > 0 and sum(ta) == 2 * t_turns
+    verdict["2"] = gain >= need or all_t
+    _h_turns, hb, ha = stats["H"]
     verdict["3"] = sum(ha) >= sum(hb) - n
     _, eb, ea = stats["E"]
     verdict["4"] = sum(ea) >= sum(eb) - n
     lines += [
         "",
         f"rule 1  every case chat passes both repeats of A: {'ok' if verdict['1'] else 'FAILS'}",
-        f"rule 2  T gain {gain} (A {sum(ta)} - B {sum(tb)}) needs at least {need}: "
-        f"{'ok' if verdict['2'] else 'FAILS'}",
+        f"rule 2  T gain {gain} (A {sum(ta)} - B {sum(tb)}) needs at least {need}"
+        f"{' (or A passes every T turn in both repeats)'}: "
+        + ("ok, by the gain" if gain >= need else "ok, A passes every T turn in both repeats"
+           if all_t else "FAILS"),
         f"rule 3  H A {sum(ha)} >= B {sum(hb)} - n {n}: {'ok' if verdict['3'] else 'FAILS'}",
         f"rule 4  E A {sum(ea)} >= B {sum(eb)} - n {n}: {'ok' if verdict['4'] else 'FAILS'}",
     ]
     win = all(verdict.values())
     lines.append("VERDICT: " + ("WIN" if win else "LOSS"))
-    del t_turns, h_turns
     return "\n".join(lines), EXIT_WIN if win else EXIT_LOSS
