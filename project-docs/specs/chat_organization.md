@@ -13,6 +13,10 @@ never overrides a member. It also adds the topic groups of the list and the
 chip (§6.1). Its chat tool is not built. The seed of the company list and the
 pass (CO-1) are not built. The rest of D163 is not built.
 
+CO-2c is BUILT and dark behind the same flag (task 3647, 2026-11-17). It adds
+the order of the list: Recent first, and each group by its newest chat (§6.1,
+"The order of the list").
+
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions. Some
 slices of them are built since then, and §11 marks each one.
@@ -407,8 +411,9 @@ usage rows of the hidden tier. That number sets the cap of §5.2.
 - **The read.** `GET /chat/sessions` sends `topicId` and `topicName` for the
   caller only, and only a topic that shows. A chat in a hidden topic sits
   under its day. The shell read serves the flag as `chat_topics`.
-- **The UI.** The list shows Pinned, then one group for each topic by name,
-  then the days. The chip in the chat header opens a menu. "New topic…" and
+- **The UI.** (CO-2c replaced the group order: see "The order of the list"
+  below.) The list shows Pinned, then one group for each topic,
+  then one Other group. The chip in the chat header opens a menu. "New topic…" and
   "No topic" come first, at a fixed place, and the topics come under them.
   The company topics come before the member's own topics. The first focus
   is the current topic, else "New topic…", and never "No topic". The full
@@ -440,6 +445,37 @@ usage rows of the hidden tier. That number sets the cap of §5.2.
 - **Chat parity: not built.** No chat tool lists or moves chats today. The
   read, the create and the move are three debt rows of P-7, and the debt
   ceiling of the chat goes from 27 to 30.
+
+#### The order of the list (CO-2c, task 3647, 2026-11-17), dark
+
+The owner asked for the most recent chat at the top. Each rule below holds
+with `CHAT_TOPICS_ORGS` on. With it off, the list stays as CO-0 and CO-11 draw it.
+
+- **Last used.** The time of a chat is its `updatedAt`. A saved message moves
+  it (`_TOUCH_SESSION_SQL`). A rename moves it, because the PATCH stamps it.
+- **No move.** A pin, a topic move and an archive do not move it. Opening a
+  chat with no message does not move it either.
+- **Recent.** This group comes first. It holds the five chats with the
+  newest `updatedAt`, newest first. A pinned chat counts. With fewer than five
+  chats, it holds them all. A tie goes by id.
+- **Then.** Pinned comes next, as CO-11 orders it. Then each topic group
+  and one group called "Other", by the `updatedAt` of the newest chat in the
+  group. The newest group comes first. The chats with no topic form Other.
+  No day group shows with topics on.
+- **Inside a group.** The newest chat comes first.
+- **Daily briefs.** The Daily briefs fold of task 3564 keeps its place at the
+  end. A folded brief is not in Recent and not in a topic group. Recent and
+  the groups read the list without the folded briefs.
+- **Twice.** A chat in Recent shows again in its own group: Pinned, its topic,
+  or Other. It shows in no third place. The copy in Recent has the DOM id
+  `recent:<id>`. Both copies show the chat on screen, and both act on the same chat.
+- **Tab order.** Recent comes first, then the groups. Each row shows once.
+- **A search.** A search shows one flat list, with no Recent.
+- **Names.** "Recent" and "Other" join `chat_topic.LIST_HEADINGS`, so no topic
+  takes these names. `test_chat_topic.py` reads both from `chatHistory.ts`.
+- **One list.** The dock, the full chat and the phone share `SessionPicker`.
+  Artifacts passes no `topicsOn`, so its list stays by day.
+- **Fence.** `chatHistory.test.ts`, "the order of the list".
 
 **Before the flag flip.** The owner accepts the raise of the parity ceiling
 from 27 to 30. The seed of the company list (§6, "The list") is not built.
@@ -619,6 +655,7 @@ transaction of its seam:
 | CO-0 | none | — | The full-screen chat (§9). **BUILT**, PR 1607 | AGENT-SAFE | The four captures pass, and `/chat` and the dock's full view match |
 | CO-1 | 3500 | 2 | The pass (§5): one call writes the summary, a title, a topic and the records. It runs on a hidden tier with an absorbed card (§5.1, PROPOSED D163.7a). Its migration adds `chat_session.title_source` (nullable, expand only) and `chat_session_digest`, with the number taken at build time (§10.2). A client upsert never writes over a server title (`test_upsert_keeps_a_server_title`, §5.4). It builds third: after CO-10 and CO-2 (§5.6) | AGENT-SAFE to build dark, in two PRs: the Console tier first, then the gateway pass. **OWNER-GATE** for the flip of `CHAT_ORGANIZE_SHADOW_ORGS` and `CHAT_ORGANIZE_ORGS` (§5.5). HIGH tier: money, a migration | The build half of §5.7 passes. The owner half: a run on Fracktal reports the real cost per chat, and no `usage_event` debits the company |
 | CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. **CO-2b BUILT, dark** (task 3588, 2026-11-17): the topic of a chat, the move, the rule of the pass, the rail and the chip (§6.1). The seed of the company list is not built. CO-1 builds after it (§5.6) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
+| CO-2c | 3647 | 2 | The order of the list: Recent, then Pinned, then each group by its newest chat (§6.1). **BUILT, dark** (2026-11-17). UI only: no data, no route, no migration | AGENT-SAFE, dark. STANDARD tier | The list shows the five newest chats in Recent, and each chat in its own group too |
 | CO-3 | 3502 | Later | One search of chats and files, on MEM-2. Reconcile first (§10.1) | AGENT-SAFE, dark | A word inside a chat and a word inside a file both return, and a colleague's private chat does not |
 | CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log` | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
 | CO-5 | 3504 | 3 | The chip with a preview, join, carry and undo (§7, §17.1) | **OWNER-GATE** for the flip | Each row of §7.1 and each bar of §7.2 has a test, and the override rate is under 10 % on Fracktal |
