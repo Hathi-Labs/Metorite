@@ -10305,11 +10305,8 @@ def _tool_calls_of(response: Any) -> list[dict[str, Any]]:
     calls: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     try:
-        from acb_common.tool_refusals import is_refusal
-    except Exception:
-        def is_refusal(_r: Any) -> bool:  # type: ignore[misc]
-            return False
-    try:
+        from orchestrator.event_translator import tool_result_fields
+
         for message in list(getattr(response, "messages", None) or []):
             for content in list(getattr(message, "contents", None) or []):
                 ctype = getattr(content, "type", None)
@@ -10327,10 +10324,11 @@ def _tool_calls_of(response: Any) -> list[dict[str, Any]]:
                                   "args": raw if isinstance(raw, dict) else {},
                                   "result": "", "success": True}
                 elif ctype == "function_result" and cid in calls:
-                    exc = getattr(content, "exception", None)
-                    result = getattr(content, "result", "") or ""
-                    calls[cid]["result"] = str(exc) if exc else str(result)
-                    calls[cid]["success"] = exc is None and not is_refusal(result)
+                    # The one mapping of the stream (task 3599): MAF's own
+                    # "not found" never reaches the member's trail.
+                    text, success = tool_result_fields(content)
+                    calls[cid]["result"] = text
+                    calls[cid]["success"] = success
     except Exception:
         _log.warning("executor.tool_calls_unread")
     return [calls[c] for c in order]
