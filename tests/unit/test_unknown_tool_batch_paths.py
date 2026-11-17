@@ -191,8 +191,12 @@ def batch(tmp_path, monkeypatch):
     async def _zero(*_a, **_k):
         return 0
 
+    real_sleep = asyncio.sleep
+
     async def _fast_sleep(*_a, **_k):
-        return None
+        # No wait for the self-anneal back-off, but each sleep still yields,
+        # so a polling loop of the stream run cannot spin.
+        await real_sleep(0)
 
     # A run that fails past its retries asks no model and opens no pull request.
     monkeypatch.setattr(executor, "_llm_recovery", _none)
