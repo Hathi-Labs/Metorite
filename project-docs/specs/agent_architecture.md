@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-11-04. §12.2 WS-8c adds the admin's read-only key for each MCP server (MCP-C2, item 32, owner request). Item 32 is built on branch `mcp-c2-read-only-key`, and it waits for the verifier and the merge. 2026-10-12: §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-11-17. §12.2 WS-8c item 33 (MCP-NC1, task 3603, owner directive) amends H-299. A run that a verified member started in Metorite calls an MCP tool with no card. A run with no member, and a WhatsApp run, still refuse a tool that does not say read-only. A new server has "always confirm" off, and a re-register keeps the stored switch. Item 33 is BUILT on branch `mt-7b0b9e6d-mcp-cards-off`, and it waits for the verifier and the merge. 2026-11-04: §12.2 WS-8c adds the admin's read-only key for each MCP server (MCP-C2, item 32, owner request). Item 32 is built on branch `mcp-c2-read-only-key`, and it waits for the verifier and the merge. 2026-10-12: §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -973,6 +973,11 @@ nothing.
 that gap, and items 18 to 21 harden them (review of PR #888). The first production flip of
 `MAF_MCP_ORGS` waits for them.
 
+> **Amended by item 33 (MCP-NC1, owner directive 2026-11-16).** In a run that a verified
+> member started in Metorite, no MCP tool waits for the card. Items 13 to 17 now bind a run
+> with no member, a WhatsApp run, a server that is set to always confirm, and a chat that read
+> an untrusted answer.
+
 13. **When the gate asks for a card.** `RunScopedMCPTool` keeps the `annotations` of each tool from
     `tools/list` (MCP 2025-03-26), because MAF drops them. `McpPermissionGate` gives the hints
     to `decide()` as `mcp_tool` and `mcp_annotations` (`permission_policy.py:248-256`).
@@ -1123,11 +1128,11 @@ logs `mcp.tool_annotations_changed`. Item 31 gives the admin a switch that ignor
       (`_tool_injection._maf_servers`), and onto each attached tool
       (`_maf_mcp.server_always_confirms`). A loaded tool of item 27 is an MCP function of
       that tool, so the switch applies to it. The list and load tools stay without a card.
-    - **Defaults.** A new server gets `true`. `POST /integrations/mcp` takes
-      `always_confirm`, and the default is `true`. A row with no key reads as `false`, so a
-      server that was stored before H-300 keeps its behaviour. The move of an old
-      `mcp_servers` row writes `false` for the same reason. Any value but a real `false`
-      reads as `true`, so a damaged value fails closed.
+    - **Defaults.** A new server gets `false` (item 33, MCP-NC1). `POST /integrations/mcp`
+      takes `always_confirm`, and the default is `false`. Before item 33 both were `true`. A
+      row that a save stored `true` keeps `true` until an admin turns it off. A row with no
+      key reads as `false`. The move of an old `mcp_servers` row writes `false`. Any value
+      but a real `false` reads as `true`, so a damaged value fails closed.
     - **The change.** `PATCH /integrations/mcp/{name}` takes `{"always_confirm": <bool>}`.
       It needs `integrations:manage`, and it takes the org from the caller's tenant. It
       changes the one key, under any status, and keeps the headers. Another org's name is
@@ -1148,9 +1153,9 @@ logs `mcp.tool_annotations_changed`. Item 31 gives the admin a switch that ignor
       and a WhatsApp run refuse the tool. A read-only tool that ran with no member before
       is now refused there, because it needs a card.
     - **The console.** The MCP side panel and the Add MCP form show one labelled tick on
-      the shared `Checkbox`: "Always ask before any tool runs". Its help line says that
-      Metorite does not trust the server's claim. It is on for a new server. A member
-      without `integrations:manage` sees it disabled.
+      the shared `Checkbox`: "Always ask before any tool runs". Its help line says that with
+      the switch off the chat runs each tool without asking (item 33). It is off for a new
+      server. A member without `integrations:manage` sees it disabled.
 
 **The read-only key (MCP-C2, owner request 2026-11-04).** The owner asked for full read access
 to an outside MCP server with no card for each read. Shaurrya Console is the first case. About
@@ -1214,15 +1219,96 @@ Item 32 is the switch. Metorite task 1584.
     - **The reads.** `GET /integrations/mcp` returns `read_only_key`. The read model returns
       `detail.read_only_key` as `"true"` or `"false"`.
     - **The console.** The Add MCP form and the MCP side panel show a second labelled tick on
-      the shared `Checkbox`: "This key can only read". Its help line says: "Every tool of this
-      server runs without asking. Turn this on only when the key cannot change data at the
-      source." A tick of one switch clears the other. A member without
+      the shared `Checkbox`: "This key can only read". Its help line says: "Chats that
+      cannot ask for approval, such as WhatsApp, can then use every tool of this server.
+      Turn this on only when the key cannot change data at the source." (item 33 changed
+      the first sentence). A tick of one switch clears the other. A member without
       `integrations:manage` sees it disabled. On a row that acts as an admin through OAuth
       (`acts_as` is set), the tick is disabled, and one more line says that the switch does
       not apply there. Until the list shows a saved pair, the panel draws the pair that the
       gateway saved. After a failed save, the ticks wait for the next read.
     - **The log.** Each attach logs `mcp.attached` with `read_only_key`, the names of the
       servers that have the switch on.
+
+**No card in a member's run (MCP-NC1, owner directive 2026-11-16).** Metorite task 3603. On
+2026-11-16 a member of Shaurrya Teleservices approved 12 cards in 20 minutes, each for a read
+in the Shaurrya app. The one tool of that server, `call_operation`, says that it is
+destructive, so `decide()` answered `mcp_confirm` for each call. The owner's words sit in a
+block that the linter does not read:
+
+```text
+"remove the aproval cards as well, its not needed anymore for accessing external MCPs"
+"ensure all the things related to querying external apps like the shaurya app is also sorted"
+```
+
+33. **A member's run asks no card for an MCP tool.** It amends H-299 (items 13 to 17).
+    - **The rule.** The gate passes the fact `mcp_member_present` to `decide()`. In step 3b,
+      after always confirm, the read-only key and the hints, a real `True` gives the new code
+      `MCP_MEMBER_RUN` (`"mcp_member_run"`). The gate runs that code with no card, as it runs
+      `mcp_read_only`. `decide()` stays the one gate.
+    - **Who counts as a member.** The fact is true only in a run that a verified member started
+      and watches in Metorite: the web chat, and a member's own `POST /agent/run` with a
+      thread. `POST /agent/run/async` answers 202 and runs in the background, so nobody
+      watches it. The route runs it inside `no_person_scope`, so it counts as a run with no
+      member, also with a thread. The executor passes `member_present` only with an authority from
+      `_integration_authorizer`, a verified member of the run binding
+      (`_verified_run_member`), and no batch run. A body's claim of a member (`user_email`
+      with no session) is not verified, so it keeps `mcp_confirm`. The gate sets the fact
+      false inside `no_person_scope` (AUTO-7a, D131 rule 4, `_maf_mcp._person_present`, a
+      listed reader in `test_no_person_present.py`), and on a fault of that check. It also
+      sets it false for a function whose server it cannot find, because it cannot read the
+      "always confirm" of that server.
+    - **WhatsApp keeps the H-299 refusal** until the owner decides otherwise. The owner's
+      directive does not name WhatsApp. A run that refuses cards (a WhatsApp run, and a stream
+      with `shows_cards=False`) counts as a run with no member (`_maf_mcp._refuses_cards`).
+      So a member's WhatsApp run refuses a tool that does not say read-only, with
+      `no_card_channel`, as before. This also holds when a Redis fault reads the session mark
+      as clear there. A read-only tool and a tool of a read-only-key server still run on
+      WhatsApp. `SCOPE_RULE` of `bot_run.py` and `whatsapp_assistant_channel.md` stay true.
+    - **No MCP server in an unattended run.** A batch, scheduled, webhook, Projects dispatch or
+      headless run gets no MCP server at all (`executor._batch_thread`, the H-236 `no_egress`,
+      fenced in `test_wac_channel_parity.py`). So this item changes none of them.
+    - **What still asks the card.** A server that is set to always confirm (item 31). A chat
+      that read an untrusted answer (step 3a of `decide()`, EM-G11d). A gate fault
+      (`gate_error`). Item 32's order stays: step 3a, always confirm, the read-only key, the
+      hints, then the member.
+    - **The default.** A new server has always confirm off: `connections/mcp.save()`, the
+      `POST /integrations/mcp` body and the Add form all start off. A row stored `true` keeps
+      `true` until an admin turns it off. A re-register whose body names no
+      `always_confirm` keeps the stored switch, and the Add form sends the switch only when
+      the admin ticks it, or as off with the read-only key on (review F7).
+    - **The read-only key.** It now changes only a run where the member fact is false, such
+      as a WhatsApp run. There it runs each tool of the server.
+    - **The audit.** Each attach still logs `mcp.tool_annotations` with the hints of each
+      tool. Each call still logs `permission.decision` with the tool and the code, so a call
+      that ran with no card shows as `mcp_member_run`.
+    - **The card text.** The first sentence of a card says "read-only" whenever the hints say
+      so, also with no switch. A card for an untrusted answer can show a read-only tool.
+    - **Readers that keep the old test.** `mcp_needs_confirmation` keeps its name and its
+      truth table. It now means "the hints do not show a read". It still decides a run with
+      no member, the Studio class of an action, the `read_only` field of the index (item
+      25), the guard against a relaxed list, and the live read of a Studio preview. A preview
+      sends nothing (STU-I11), so it stays stricter than the gate.
+    - **What the directive changes.** In a member's run in Metorite, each act of an external
+      app now runs with no card, unless an admin sets its server to always confirm. D131.7
+      names five acts that always ask: money, a member or role write, a delete, a bulk change,
+      and a send to an outside person that the scope does not name. D164.4 names four of
+      them. Those decisions bind Mira's automations, the CRM ladder and their acts on
+      platform data. This item takes the tools of an external app out of the card in a
+      member's own run, for each of those five acts.
+    - **What a member can reach.** An OAuth row acts as the admin who connected it (D98). So
+      each member's run can now write at that app as that admin, with no card.
+    - **Known limit: an injected instruction.** Text from a web page or from an MCP result
+      does not mark the session. Only an answer of an agent that reads mail marks it (step
+      3a). So text that a stranger wrote can lead the model to an external write with no
+      card. The always-confirm switch is the control for a server that can do damage.
+    - **What stays.** Step 3a and `_holds_untrusted_pack` (task 3604 holds an open owner
+      question). OA-7b. D-CSY-5. The read-only key switch and its one parse. No schema change.
+    - **Fences.** `test_maf_mcp_confirm.py` (A12 to A22, A31, A35, A36 and A39),
+      `test_maf_mcp_budget.py` (A25), `test_mcp_always_confirm_r8.py` (A32 and the
+      re-register), `test_mcp_read_only_key_r8.py` (A37), `test_no_person_present.py` (the
+      reader list), `alwaysConfirm.test.ts`, `mcpConnect.test.ts`, and the golden trajectory
+      `evals/trajectories/test_permission_trajectory.py::test_the_mcp_rule_is_the_contract`.
 
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
 request to the address that the check resolved, with the host name as SNI. It allows `https` on
@@ -1258,12 +1344,12 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A9 | IN-D6. Orgs A and B register one name and get two rows. A registers it again and updates its row. A request with no tenant gets 4xx and writes no row. R8. | `test_mcp_register_r8.py` |
 | A10 | The WS-43q done-when lists WS-8c, and the anchor of `maf_coding_engine.md` §15.2 is correct. | `test_maf_mcp_injection.py` |
 | A11 | An unreachable server does not fail the run. The connections close when the run ends. | `test_maf_mcp_injection.py` |
-| A12 | A tool with `destructiveHint` true, `readOnlyHint` false, or no hints waits for the card. A read-only tool that is not destructive runs at once. | `test_maf_mcp_confirm.py` |
+| A12 | In a run with no member, the gate refuses a tool with `destructiveHint` true, `readOnlyHint` false, or no hints (item 33 amends: it waited for the card). A read-only tool that is not destructive runs at once. | `test_maf_mcp_confirm.py` |
 | A13 | Approve runs the tool. Deny and a timeout return a refusal, and the tool never runs. | `test_maf_mcp_confirm.py` |
-| A14 | A run with no member, or with no card channel, refuses a tool that needs a card, and shows no card. | `test_maf_mcp_confirm.py` |
-| A15 | A WhatsApp run refuses, and parks nothing. | `test_maf_mcp_confirm.py` |
+| A14 | A run with no member refuses a tool that does not say read-only. A run with no card channel refuses a tool that needs a card. Neither shows a card. | `test_maf_mcp_confirm.py` |
+| A15 | A WhatsApp run refuses a tool that needs a card, and parks nothing. A member's WhatsApp run still refuses a tool that does not say read-only (item 33). | `test_maf_mcp_confirm.py::test_a_member_whatsapp_run_still_refuses_a_write` |
 | A16 | The card redacts sensitive arguments, shows every other argument whole, and labels the server's description. A call that the card cannot show whole is refused. | `test_maf_mcp_confirm.py` |
-| A17 | Each attach logs `mcp.tool_annotations`. A destructive tool on the real `run_agent_stream` emits the card, and the server runs it only after Approve. | `test_maf_mcp_confirm.py` |
+| A17 | Each attach logs `mcp.tool_annotations`. Item 33: a destructive tool on the real `run_agent_stream` of a member runs with no card, and `permission.decision` logs `mcp_member_run`. | `test_maf_mcp_confirm.py` |
 | A18 | A later `tools/list` cannot relax a tool, and each change of hints is logged. | `test_maf_mcp_confirm.py` |
 | A19 | A stream that does not declare `shows_cards=True` refuses each card, and every caller of `run_agent_stream` declares it. | `test_maf_mcp_confirm.py` |
 | A20 | A tool name cannot spoof the hint line. Names are escaped and capped at 64. | `test_maf_mcp_confirm.py` |
@@ -1271,20 +1357,21 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A22 | Arguments of a shape the gate cannot read refuse the call. | `test_maf_mcp_confirm.py` |
 | A23 | At run start, the MCP schemas cost 1,500 tokens or fewer for each server, and 4,000 or fewer in total. The fixture has 8 servers, and one of them has 128 tools. | `test_maf_mcp_budget.py` |
 | A24 | A list call returns, for each tool, the name, one line of 80 characters or fewer, and `read_only`. It returns no `parameters`. | `test_maf_mcp_budget.py` |
-| A25 | A loaded tool whose hints need a card waits for the card. A loaded read-only tool runs at once. List and load show no card. | `test_maf_mcp_budget.py` |
+| A25 | A loaded tool keeps its gate rule: a member's run calls it with no card, a run with no member refuses a write, and an always-confirm server asks the card (item 33). A loaded read-only tool runs at once. List and load show no card. | `test_maf_mcp_budget.py` |
 | A26 | A loader is egress. `_from_mcp` answers true for it, and `WithholdEgressTools` withholds it. | `test_maf_mcp_budget.py` |
 | A27 | A server with a 129th tool is left out, and so is a 9th server. Each case logs its event. | `test_maf_mcp_budget.py` |
 | A28 | With `ExperimentalWarning` set to error, the attach succeeds and the run goes on. | `test_maf_mcp_budget.py` |
 | A29 | A contract test pins the MAF API of items 22 to 27: the two constructor arguments, the read of the attribute in `functions`, the three loader names, the signature of `_list_progressive_mcp_tools`, `_functions` and `_progressive_loader_functions`. A MAF upgrade that changes one of them fails loud. | `test_maf_mcp_budget.py` |
 | A30 | A hidden tool whose name clashes with a platform tool leaves its server out. | `test_maf_mcp_budget.py` |
 | A31 | With `always_confirm` true, a tool with `readOnlyHint` true and `destructiveHint` false waits for the card. Approve runs it and Deny refuses it, on the gate and on the real `run_agent_stream` with a FastMCP server. With the switch off or the key missing, that tool runs with no card. | `test_maf_mcp_confirm.py` |
-| A32 | A new server is set to always confirm. A row with no key and a moved `mcp_servers` row read as false. R8. | `test_mcp_always_confirm_r8.py` |
+| A32 | A new server is NOT set to always confirm (item 33 amends). A row with no key and a moved `mcp_servers` row read as false. R8. | `test_mcp_always_confirm_r8.py` |
 | A33 | `PATCH /integrations/mcp/{name}` flips the switch and keeps the headers, and writes one audit event. A re-POST with the switch off writes one audit event with no header in it. A string value gets 422. A member without `integrations:manage` gets 403. Another org's name is 404. R8, two orgs, the app role. | `test_mcp_always_confirm_r8.py` |
-| A34 | `GET /integrations/mcp` and the read model return the flag, and no header value reaches a response or a log line. The console toggle is on for a new server, and it sends `always_confirm`. | `test_mcp_always_confirm_r8.py`, `alwaysConfirm.test.ts` |
+| A34 | `GET /integrations/mcp` and the read model return the flag, and no header value reaches a response or a log line. The console toggle is off for a new server (item 33), and it sends `always_confirm`. | `test_mcp_always_confirm_r8.py`, `alwaysConfirm.test.ts` |
 | A35 | With `read_only_key` true, a tool with `destructiveHint` true runs with no card, on the gate and on the real `run_agent_stream` with a FastMCP server. It runs in a run with no member too. Each attach logs `mcp.attached` with `read_only_key`. With the switch off, A12 to A14 hold. | `test_maf_mcp_confirm.py` |
 | A36 | With both switches true on a row, every tool waits for the card. After an untrusted answer, a tool of a read-only-key server still waits for the card. The list loader shows `read_only` true for each tool of a read-only-key server. | `test_maf_mcp_confirm.py`, `test_maf_mcp_budget.py` |
 | A37 | `PATCH` sets the switch, keeps the headers, and writes one audit event. A body with both switches true gets 422, and so does a string value. `PATCH {"read_only_key": true}` on a row with `always_confirm` true gets 422, and so does a PATCH on an OAuth row. `PATCH {"always_confirm": true}` on a row with `read_only_key` true gets 422. On a row with both stored true, `PATCH {"always_confirm": false}` leaves the key off. A body with only `always_confirm` behaves as A33. A re-POST with no `read_only_key` turns it off, and its audit event records both flags. A member without `integrations:manage` gets 403. Another org's name is 404. A new server reads as false. R8, two orgs, the app role. | `test_mcp_read_only_key_r8.py` |
 | A38 | `GET /integrations/mcp` and the read model return the flag. The console tick sends `read_only_key`, and a tick of one switch clears the other. | `test_mcp_read_only_key_r8.py`, `alwaysConfirm.test.ts` |
+| A39 | Item 33. In a verified member's run in Metorite, each MCP tool runs with no card, whatever its hints say. Only a real `True` member fact counts. Always confirm and an untrusted answer still ask the card. A function of no known server still asks. A run with no member, a body's claim of a member, a run inside `no_person_scope` (such as `POST /agent/run/async`), and a WhatsApp run still refuse a tool that does not say read-only. | `test_maf_mcp_confirm.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.

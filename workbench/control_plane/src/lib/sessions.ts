@@ -45,10 +45,29 @@ export interface ChatSession {
    */
   hasUserMessage?: boolean;
   /**
+   * Task 3564: whether the chat holds the day's brief, from the server's list
+   * (`_IS_BRIEF_SQL` in `routes/chat.py`). Only the server knows it, so only
+   * the merge below sets it. No save sends it: `_syncSessionToDb` and
+   * `_patchSessionInDb` name their fields (fence: `sessionsIsBrief.test.ts`).
+   * Undefined for a chat the server has not listed yet.
+   *
+   * The mark belongs to the chat, not to the reader. A room, or a chat that
+   * the org sees, that holds another member's brief reads true for each
+   * viewer. So a fold of brief chats needs `isOwner` true as well.
+   */
+  isBrief?: boolean;
+  /**
    * D99 (migration 254): when the member archived the chat, or null. An
    * archived chat stays, and the assistant lists it under "Archived".
    */
   archivedAt?: string | null;
+  /**
+   * CO-13: the chat that this one continues, from the server's list. Null
+   * says it continues nothing. A null `id` says the member cannot read the
+   * source: the header then says "an earlier chat", with no title and no
+   * link. Only the merge below sets it, so a browser never invents it.
+   */
+  continuedFrom?: { id: string | null; title: string | null } | null;
   /**
    * WS-CO CO-11: when THIS member pinned the chat, or null. The server sends
    * it only while `CHAT_PIN_ORGS` holds the org, and only the caller's own
@@ -942,7 +961,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       isOwner?: boolean;
       participantCount?: number;
       hasUserMessage?: boolean;
+      isBrief?: boolean;
       archivedAt?: string | null;
+      continuedFrom?: ChatSession["continuedFrom"];
       pinnedAt?: string | null;
     }>;
 
@@ -962,10 +983,15 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       // CF-5: a member turn seen here stays true. The server's answer can
       // lag a save by one list, and the fact never goes back to false.
       if (r.hasUserMessage !== undefined) s.hasUserMessage = s.hasUserMessage || r.hasUserMessage;
+      // Task 3564: the server alone knows the brief mark, so its answer wins.
+      if (r.isBrief !== undefined) s.isBrief = r.isBrief;
       // D99: an archive and a name made on another device reach this one.
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
       s.archivedAt = r.archivedAt ?? null;
+      // CO-13: the server's answer wins. A chat made here a moment ago holds
+      // no mark until this list says what it continues.
+      s.continuedFrom = r.continuedFrom ?? null;
       // CO-11: a pin made on another device reaches this one. The server
       // sends the key only with the switch on. Off, the local mark stays,
       // and the list draws no pin.
@@ -1000,7 +1026,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           isOwner: r.isOwner,
           participantCount: r.participantCount,
           hasUserMessage: r.hasUserMessage,
+          isBrief: r.isBrief,
           archivedAt: r.archivedAt ?? null,
+          continuedFrom: r.continuedFrom ?? null,
           pinnedAt: r.pinnedAt ?? null,
         });
       }
