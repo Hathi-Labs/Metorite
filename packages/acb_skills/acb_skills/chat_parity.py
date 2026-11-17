@@ -188,6 +188,7 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/agents/agent-crm/agents.py",
     "apps/agents/agent-whatsapp-assistant/agents.py",
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
+    "packages/acb_skills/acb_skills/chat_pin_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
@@ -321,7 +322,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # ── People ──
     "GET /api/tasks/people": "my_tasks_people",
     # ── Chat ──
+    # CO-11b (task 3563): Pin and Unpin of THIS chat. The tool takes no chat
+    # id: it acts on the chat of the run, as the member of the run.
+    "DELETE /api/chat/sessions/{}/pin": "pin_chat",
     "GET /api/agent/artifacts": "list_artifacts",
+    "PUT /api/chat/sessions/{}/pin": "pin_chat",
     # ── Settings and the assistant profile ──
     "DELETE /api/auth/me/assistant-profile/aliases/{}": (
         "profile_alias",
@@ -940,10 +945,6 @@ DEBT: dict[str, str] = {
     "DELETE /api/chat/sessions/{}": "P-7",
     "DELETE /api/chat/sessions/{}/agents/{}": "P-7",
     "DELETE /api/chat/sessions/{}/participants/{}": "P-7",
-    # CO-11 (task 3510): Unpin and Pin of a chat. No chat tool lists or opens
-    # chats today, so P-7 pays both in a separate slice. That slice can need a
-    # line in tool_packs.py, which the cal-tasks session owns.
-    "DELETE /api/chat/sessions/{}/pin": "P-7",
     "GET /api/agent/workspace/{}": "P-7",
     "GET /api/agent/workspace/{}/history": "P-7",
     "GET /api/chat/directory": "P-7",
@@ -965,7 +966,6 @@ DEBT: dict[str, str] = {
     "POST /api/documents/pdf": "P-7",
     "POST /api/feedback": "P-7",
     "PUT /api/agent/workspace/{}/file": "P-7",
-    "PUT /api/chat/sessions/{}/pin": "P-7",
     # ── Shell, Home and approvals ──
     "DELETE /api/push/subscriptions": "P-7",
     "GET /api/actions/pending": "P-7",
@@ -1103,7 +1103,7 @@ DEBT_CEILING: dict[str, int] = {
     "workflows": 18,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18).
     "apps": 28,
     "agents": 20,
-    "chat": 27,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). P-7 pays them with the chat tool of the chat list, a separate slice.
+    "chat": 25,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-11b (task 3563) paid both with pin_chat (27 to 25).
     "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
     "admin": 36,

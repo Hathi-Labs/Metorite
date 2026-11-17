@@ -2,7 +2,8 @@
 
 **Status:** ACTIVE (D163, 2026-11-02). CO-0 is BUILT (PR 1607, 2026-11-02).
 CO-11, the pin, is BUILT and dark behind `CHAT_PIN_ORGS` (task 3510,
-2026-11-16). Its chat tool is not built (§18). The rest of D163 is not built.
+2026-11-16). Its chat tool `pin_chat` is BUILT and dark behind the same flag
+(CO-11b, task 3563, 2026-11-17, §18). The rest of D163 is not built.
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions.
@@ -268,7 +269,7 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 | CO-8 | 3507 | Later | The Save to Knowledge suggestion | AGENT-SAFE, dark | The suggestion saves nothing by itself |
 | CO-9 | 3508 | Later | The gap count (§8.3) | AGENT-SAFE. The flag is `KNOWLEDGE_GAPS` | A gap under 5 askers does not show |
 | CO-10 | 3509 | 1 | Turn on the job worker and chat summaries for HathiLabs (§19 question 1) | **OWNER-GATE**. `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (D-PZ-35) | An idle chat on production has a stored summary, and the next new chat shows it |
-| CO-11 | 3510 | 2 | Pin (§18). **BUILT, dark** (2026-11-16), flag `CHAT_PIN_ORGS`. Chat parity: a follow-up slice, CO-11b (task 3563), needs cal-tasks. The flip waits for §18, §19 question 8 and the parity ceiling (§18) | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
+| CO-11 | 3510 | 2 | Pin (§18). **BUILT, dark** (2026-11-16), flag `CHAT_PIN_ORGS`. Chat parity: CO-11b (task 3563) **BUILT, dark** (2026-11-17), the tool `pin_chat`. The flip waits for §18, §19 question 8 and the trade of the tool count (§18) | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
 | CO-12 | 3511 | 2 | First-run hints and the empty state (§17.2, §17.3) | AGENT-SAFE | Each hint shows once per member, and the empty state shows no private topic of a colleague |
 | CO-13 | 3512 | 3 | The continue mark (§17.5) | AGENT-SAFE | A continued chat shows its source, and `test_continued_from_readers.py` stays green |
 | CO-14 | 3513 | Later | The length cue (§17.4). It waits for HRD-19 (task 2998) | AGENT-SAFE | The cue shows at 60 % and not below, and a tap runs Start clean |
@@ -346,6 +347,16 @@ CO-11 adds two fences:
   chat that the member cannot read. They are also two orgs, an unpin, a
   Delete and the member purge.
 
+CO-11b adds two fences:
+
+- `tests/unit/test_chat_pin_tool.py`: the tool takes only `pinned`, and it
+  sends the route of the chat of the run as the verified member, with no
+  body. It refuses with no request with no member, with no chat, in a batch
+  run and on WhatsApp. The build holds it only for an org on the flag.
+- `tests/unit/test_chat_pin_tool_r8.py` (R8) sends the tool to the real
+  routes on a real database. The identity comes from the headers that the
+  tool sent.
+
 ## 14. Risks
 
 - **Context cost.** Each joined turn resends the window, so §7.2 bars a full chat.
@@ -388,6 +399,7 @@ and adds no second spec of the same topic.
 | Past chats as a search source (HRD-21, task 3225) | SPEC ONLY | `find_engine.md` D-FIND-5 |
 | Start clean (HRD-19, task 2998) | SPEC ONLY | `chat_failure_modes.md` E3 |
 | Pin (CO-11) | BUILT, dark (task 3510) | §18 |
+| Pin from the chat (CO-11b) | BUILT, dark (task 3563) | §18 |
 | First-run hints, an offer with a preview, condense | ABSENT | §16 and §17 |
 
 The audit of task 3491 read production on 2026-11-16. `ASSISTANT_BRIEFING_ORGS`
@@ -660,17 +672,42 @@ and the default is empty.
   act on the row only. The shell read serves the flag as `chat_pin`.
 - **The purge.** The member purge deletes each row of the member in the
   bound org (`chat_member_rows`). A Delete of the chat deletes its rows.
-- **Chat parity: not built.** No chat tool lists or opens chats today. The
-  chat tool of the pin is a follow-up slice of P-7: CO-11b, task 3563. It
-  can need a line in `tool_packs.py`, which the cal-tasks session owns. The
-  two acts are debt rows of P-7 in `acb_skills/chat_parity.py`, and the debt
-  ceiling of the chat goes from 25 to 27.
+- **Chat parity: built (CO-11b, task 3563, 2026-11-17), dark.** The member
+  says "pin this chat" or "unpin this chat", and the assistant calls
+  `pin_chat` (`acb_skills/chat_pin_tools.py`). The tool acts on the chat of
+  the run only, and it takes no chat id. It sends the same `PUT` or `DELETE`
+  route as the member of the run, so each rule of the route applies. The
+  answer says when the chat list shows the change, and it offers the words
+  of the Undo.
+  - Only the orchestrator holds the tool, for an org on `CHAT_PIN_ORGS`
+    (`agents._chat_pin_enabled`). It is in no pack and no skill family.
+  - It refuses with no request in a WhatsApp run, a batch run, and a run with
+    no verified member. A chat that read outside mail shows one card first.
+  - Both acts are `COVERED` in `acb_skills/chat_parity.py`. The debt ceiling
+    of the chat is 25 again.
+  - `tool_packs.py` no longer loads the authority pack for a bare "unpin".
+    It needs "unpin this page", "unpin the page" or "unpin a page".
+  - Fences: `tests/unit/test_chat_pin_tool.py`,
+    `tests/unit/test_chat_pin_tool_r8.py` (R8), the two rows of `CONTROLS` in
+    `tests/unit/test_pack_requests.py`, and the two pin cases of
+    `tests/unit/test_exact_tool_count.py`.
 
 **Before the flag flip.** The owner does three things first:
 
 1. Accept §18. It is still PROPOSED (§15 to §20).
 2. Answer §19 question 8: does a restore show the pin again?
-3. Accept the raise of the parity debt ceiling of the chat from 25 to 27.
+3. Accept the trade of the tool count. With the flag on, `pin_chat` rides in
+   each request, as `find_tools` does (D222 decision 13). The agent ran the
+   golden matrix of `tests/unit/test_studio_split_matrix.py` once, with a
+   base one tool larger. It shows three changes at the cap of 110 tools.
+   Only the first has a test (`tests/unit/test_exact_tool_count.py`):
+   - A Studio turn with the email words drops the pack `studio-more`.
+   - In a Studio turn, the loader no longer offers the pack `email`.
+   - With the email pack and a sticky Projects pair, the loader no longer
+     offers `crm-records` or `projects-cycles`.
+
+   The old item 3, the raise of the debt ceiling from 25 to 27, is moot.
+   CO-11b paid both rows.
 
 ## 19. Owner questions
 

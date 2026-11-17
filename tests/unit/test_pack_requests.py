@@ -362,6 +362,10 @@ CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("revert that draft", ()),
     ("revert that deal update", ()),
     ("what senders email me most about the crm deals", ("email", "crm-records")),
+    # CO-11b (task 3563): the pin of a chat is a core tool of the orchestrator,
+    # so these turns load no pack. A bare "unpin" once loaded projects-authority.
+    ("unpin this chat", ()),
+    ("pin this chat", ()),
 )
 
 
