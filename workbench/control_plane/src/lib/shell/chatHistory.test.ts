@@ -7,17 +7,23 @@ import { describe, expect, it } from "vitest";
 import type { ChatSession } from "@/lib/sessions";
 
 import {
+  OTHER_GROUP,
   PINNED_GROUP,
+  RECENT_GROUP,
   chatGroups,
   dateGroups,
+  groupKey,
   isPinned,
   matchesQuery,
   mergeFileEntry,
+  pickerGroups,
   relativeAge,
+  rowKey,
   sessionTitle,
   shownTopic,
   splitSessions,
   topicGroups,
+  walkOrder,
 } from "./chatHistory";
 
 const NOW = Date.parse("2026-10-12T12:00:00Z");
@@ -203,19 +209,21 @@ describe("the topic groups (CO-2b, chat_organization.md §6)", () => {
     }
   });
 
-  it("orders Pinned, then the topics by name, then the days of the chats with no topic", () => {
+  it("orders Recent, Pinned, then the groups by their newest chat, with Other among them", () => {
     expect(shape(topicGroups(sessions, noon, true, true))).toEqual([
+      // A tie of time goes by id: loose-today before pinned-sales, board before loose-yesterday.
+      [RECENT_GROUP, null, ["sales-new", "loose-today", "pinned-sales", "board", "loose-yesterday"]],
       [PINNED_GROUP, null, ["pinned-sales"]],
-      ["board prep", "t-board", ["board"]],
       ["Sales", "t-sales", ["sales-new", "sales-old"]],
-      ["Today", null, ["loose-today"]],
-      ["Yesterday", null, ["loose-yesterday"]],
+      [OTHER_GROUP, null, ["loose-today", "loose-yesterday"]],
+      ["board prep", "t-board", ["board"]],
     ]);
   });
 
   it("with the pins off a pinned chat sits in its topic", () => {
     const groups = topicGroups(sessions, noon, true, false);
     expect(groups.map((g) => g.label)).not.toContain(PINNED_GROUP);
+    expect(groups[0].label).toBe(RECENT_GROUP);
     expect(groups.find((g) => g.topicId === "t-sales")?.items.map((s) => s.id)).toEqual([
       "sales-new",
       "pinned-sales",
@@ -225,32 +233,138 @@ describe("the topic groups (CO-2b, chat_organization.md §6)", () => {
 
   it("keys a group on the topic id: two topics of one name stay two groups", () => {
     const mine = row("mine", { topicId: "t-mine", topicName: "Sales" });
-    const groups = topicGroups([mine, row("co", { ...sales })], noon, true, true);
+    const groups = topicGroups([mine, row("co", { ...sales })], noon, true, true).filter((g) => !g.recent);
+    // One time, so the tie goes by the group key.
     expect(groups.map((g) => g.topicId)).toEqual(["t-mine", "t-sales"]);
     expect(groups.map((g) => g.label)).toEqual(["Sales", "Sales"]);
   });
 
-  it("a topic called Today is a topic group, apart from the day group", () => {
+  it("a topic called Today is a topic group, and no day group shows", () => {
     const today = row("odd", { topicId: "t-today", topicName: "Today" });
-    expect(shape(topicGroups([today, row("loose")], noon, true, true))).toEqual([
+    const loose = row("loose", { updatedAt: iso(2 * H) });
+    expect(shape(topicGroups([today, loose], noon, true, true)).slice(1)).toEqual([
       ["Today", "t-today", ["odd"]],
-      ["Today", null, ["loose"]],
+      [OTHER_GROUP, null, ["loose"]],
     ]);
   });
 
-  it("a chat with no topic, or a topic the server did not name, sits under its day", () => {
+  it("a chat with no topic, or a topic the server did not name, sits in Other", () => {
     // The server sends null for a hidden topic. An id with no name shows none.
     const hidden = row("hidden", { topicId: null, topicName: null });
     const nameless = row("nameless", { topicId: "t-x", topicName: "  " });
     expect(shownTopic(hidden)).toBeNull();
     expect(shownTopic(nameless)).toBeNull();
     expect(shape(topicGroups([hidden, nameless], noon, true, true))).toEqual([
-      ["Today", null, ["hidden", "nameless"]],
+      [RECENT_GROUP, null, ["hidden", "nameless"]],
+      [OTHER_GROUP, null, ["hidden", "nameless"]],
     ]);
   });
 
   it("an archived pinned chat is not in Pinned, and goes to its topic", () => {
     const put = row("put-away", { ...sales, pinnedAt: iso(1 * H), archivedAt: iso(0) });
-    expect(shape(topicGroups([put], noon, true, true))).toEqual([["Sales", "t-sales", ["put-away"]]]);
+    expect(shape(topicGroups([put], noon, true, true))).toEqual([
+      [RECENT_GROUP, null, ["put-away"]],
+      ["Sales", "t-sales", ["put-away"]],
+    ]);
+  });
+});
+
+// CO-2c, the order of the list. Mutations, each red here: take six chats in
+// Recent and not five (`RECENT_COUNT`); sort Recent oldest first; drop the id
+// tie-break of `newestFirst`; sort the groups by name again; leave a pinned
+// chat out of Recent; make Recent in a search (`pickerGroups`); let the
+// switch-off case build Recent; draw the day groups of the chats with no
+// topic; drop the `recent:` prefix of `rowKey`.
+describe("the order of the list (CO-2c, chat_organization.md §6.1)", () => {
+  const H = 60 * 60 * 1000;
+  const noon = new Date(2026, 10, 17, 12, 0, 0).getTime();
+  const iso = (ms: number) => new Date(noon - ms).toISOString();
+  const at = (id: string, hoursAgo: number, over: Partial<ChatSession> = {}) =>
+    chat(id, { updatedAt: iso(hoursAgo * H), ...over });
+  const ids = (g: { items: { id: string }[] }) => g.items.map((s) => s.id);
+  const eight = [
+    at("c1", 8, { topicId: "t-a", topicName: "Alpha" }),
+    at("c2", 1),
+    at("c3", 7),
+    at("c4", 2, { topicId: "t-b", topicName: "Beta" }),
+    at("c5", 6),
+    at("c6", 3),
+    at("c7", 5, { topicId: "t-a", topicName: "Alpha" }),
+    at("c8", 4),
+  ];
+
+  it("Recent holds the five newest chats, newest first, out of eight", () => {
+    const [recent] = topicGroups(eight, noon, true, true);
+    expect(recent.label).toBe(RECENT_GROUP);
+    expect(ids(recent)).toEqual(["c2", "c4", "c6", "c8", "c7"]);
+  });
+
+  it("a tie of time goes by id", () => {
+    const tied = [at("b", 1), at("a", 1), at("c", 1)];
+    expect(ids(topicGroups(tied, noon, true, true)[0])).toEqual(["a", "b", "c"]);
+    expect(ids(topicGroups([...tied].reverse(), noon, true, true)[0])).toEqual(["a", "b", "c"]);
+  });
+
+  it("a pinned chat is in Recent and in Pinned, and in no third place", () => {
+    const list = [at("p", 1, { pinnedAt: iso(9 * H), topicId: "t-a", topicName: "Alpha" }), at("q", 2)];
+    const groups = topicGroups(list, noon, true, true);
+    const holding = groups.filter((g) => ids(g).includes("p")).map((g) => g.label);
+    expect(holding).toEqual([RECENT_GROUP, PINNED_GROUP]);
+  });
+
+  it("a chat with no topic is in Recent and in Other, and a topic chat in Recent and its topic", () => {
+    const groups = topicGroups([at("x", 1), at("y", 2, { topicId: "t-a", topicName: "Alpha" })], noon, true, true);
+    expect(groups.filter((g) => ids(g).includes("x")).map((g) => g.label)).toEqual([RECENT_GROUP, OTHER_GROUP]);
+    expect(groups.filter((g) => ids(g).includes("y")).map((g) => g.label)).toEqual([RECENT_GROUP, "Alpha"]);
+    // No day group shows with topics on.
+    expect(groups.map((g) => g.label)).not.toContain("Today");
+  });
+
+  it("with fewer than five chats Recent holds them all", () => {
+    expect(ids(topicGroups([at("a", 2), at("b", 1)], noon, true, true)[0])).toEqual(["b", "a"]);
+  });
+
+  it("the groups go by their newest chat, and each holds its chats newest first", () => {
+    const groups = topicGroups(eight, noon, true, true).slice(1);
+    // Beta: c4 at 2h. Other: c2 at 1h. Alpha: c7 at 5h.
+    expect(groups.map((g) => g.label)).toEqual([OTHER_GROUP, "Beta", "Alpha"]);
+    expect(ids(groups[0])).toEqual(["c2", "c6", "c8", "c5", "c3"]);
+    expect(ids(groups[2])).toEqual(["c7", "c1"]);
+  });
+
+  it("a chat in a hidden topic reads as no topic and sits in Other", () => {
+    const hidden = at("h", 1, { topicId: "t-gone", topicName: null });
+    const groups = topicGroups([hidden], noon, true, true);
+    expect(groups.map((g) => g.label)).toEqual([RECENT_GROUP, OTHER_GROUP]);
+  });
+
+  it("an empty list has no group", () => {
+    expect(topicGroups([], noon, true, true)).toEqual([]);
+  });
+
+  it("a search draws no Recent: the picker gets null and draws one flat list", () => {
+    expect(pickerGroups(eight, "chat", noon, true, true)).toBeNull();
+    expect(pickerGroups(eight, "", noon, true, true)?.[0].label).toBe(RECENT_GROUP);
+  });
+
+  it("with the topic switch off the list is exactly chatGroups, with the pins on and off", () => {
+    for (const pinsOn of [true, false]) {
+      const list = [...eight, at("pp", 1, { pinnedAt: iso(H) })];
+      expect(topicGroups(list, noon, false, pinsOn)).toEqual(chatGroups(list, noon, pinsOn));
+      expect(pickerGroups(list, "", noon, false, pinsOn)).toEqual(chatGroups(list, noon, pinsOn));
+      expect(topicGroups(list, noon, false, pinsOn).map((g) => g.label)).not.toContain(RECENT_GROUP);
+    }
+  });
+
+  it("the copy in Recent has its own key and id, and each row shows once in the walk", () => {
+    const list = [at("p", 1, { pinnedAt: iso(9 * H) }), at("q", 2, { topicId: "t-a", topicName: "Alpha" })];
+    const groups = topicGroups(list, noon, true, true);
+    const walk = walkOrder(groups);
+    // Recent copies first, then the copy in each group. No id repeats.
+    expect(walk).toEqual(["recent:p", "recent:q", "p", "q"]);
+    expect(new Set(walk).size).toBe(walk.length);
+    expect(groups.map((g) => groupKey(g))).toEqual(["recent", "Pinned", "topic:t-a"]);
+    expect(rowKey(groups[0], "p")).toBe("recent:p");
+    expect(rowKey(groups[1], "p")).toBe("p");
   });
 });
