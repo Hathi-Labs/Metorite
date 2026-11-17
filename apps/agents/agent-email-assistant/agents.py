@@ -6688,6 +6688,17 @@ def _noted(out: Any, came_back: bool) -> Any:
     return f"{_REVISE_UNREAD}\n\n{out}"
 
 
+async def _revise_forward_card(card_id: str, thread: str) -> None:
+    """Spend the forward card that a chat message closed, and link the next card
+    to it (HRD-8b-2). It is best effort: the link is a label, and the member's
+    answer to the card is already "closed by your message". A fault only logs,
+    so the model still reads the text of the forward and nothing is lost."""
+    try:
+        await _revise_card(card_id, thread)
+    except Exception as exc:  # the class only: the card stays until its TTL
+        _log.warning("email.forward_revise_failed", error=type(exc).__name__)
+
+
 async def _revise_card(card_id: str, thread: str) -> Any:
     """``POST /email/new-card/revise``, and ONE more try after a 503 (§18.11).
 
@@ -7385,7 +7396,10 @@ async def _held_card(
     # §18.11: only a card to edit names the run's chat thread, so a rows card
     # (a WhatsApp run) takes no snapshot and no revise.
     edit = form and _edit_card_open()
-    thread = _run_thread() if edit else ""
+    # HRD-8b-2: a forward card is a rows card, and it still names the chat thread,
+    # so a message that closes it can spend it and link the next card.
+    forward = body.get("kind") == "forward" and _edit_card_open()
+    thread = _run_thread() if (edit or forward) else ""
     try:
         prep = await _post("/email/held-card",
                            {**body, "card_thread_id": thread} if thread else body) or {}
@@ -7405,6 +7419,8 @@ async def _held_card(
         close_on_steer=True,
     )
     if _revised(answer):
+        if forward and thread and prep.get("card_id"):
+            await _revise_forward_card(str(prep["card_id"]), thread)
         return closed
     if not isinstance(answer, ask_tools.RowsAnswer) or not answer:
         return _unapproved_line() or _not_done(act)
