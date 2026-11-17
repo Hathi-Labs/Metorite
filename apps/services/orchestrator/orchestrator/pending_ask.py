@@ -589,20 +589,19 @@ def _claim(
 
 
 #: RESUME-2a review, P2: the give-back of a claim whose run never started.
-#: ONE statement moves the row from the state of its claim back to
-#: ``parked`` with the stored call that the claim took. The state is
-#: ``answered`` for an Approve (:func:`claim_stored_call`) and ``closed`` for
-#: a decline (:func:`claim_declined_call`, RESUME-4a-2), never a list. The
-#: WHERE is the claim's own: the org beside RLS, the request id, the member,
-#: the thread, a row that has not expired, and a column that the claim set to
-#: NULL. No run waits on the card (the thread was at rest), so ``parked`` is
-#: its true state.
+#: ONE statement moves the row from ``answered`` back to ``parked`` with the
+#: stored call that the claim took. The WHERE is the claim's own: the org
+#: beside RLS, the request id, the member, the thread, a row that has not
+#: expired, and a column that the claim set to NULL. No run waits on the card
+#: (the thread was at rest), so ``parked`` is its true state. A declined
+#: claim (:func:`claim_declined_call`) is never given back: its ``closed``
+#: row never matches (review of RESUME-4a-2, P2-1).
 _RESTORE_SQL = (
     "UPDATE chat_pending_ask SET state = 'parked', answer = NULL, "
     "  answered_at = NULL, parked_at = COALESCE(parked_at, now()), "
     "  stored_call = CAST(:stored AS jsonb) "
     "WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
-    "  AND state = :claimed AND stored_call IS NULL AND expires_at > now() "
+    "  AND state = 'answered' AND stored_call IS NULL AND expires_at > now() "
     "  AND actor_email = :member AND thread_id = :tid "
     "RETURNING request_id"
 )
@@ -615,7 +614,6 @@ def restore_stored_call(
     member: str,
     thread_id: str,
     stored: dict[str, Any],
-    declined: bool = False,
 ) -> bool:
     """Give back the claim of :func:`claim_stored_call` when its run never
     started (RESUME-2a review, P2). True when the row waits again.
@@ -625,11 +623,7 @@ def restore_stored_call(
     So the card can be answered again, and the call runs at most once.
     *member*, *thread_id* and *stored* are the claim's own. The org is the
     session's, under RLS with the org predicate beside it (R5). A stored
-    call that :func:`_stored_text` refuses gives back nothing.
-
-    RESUME-4a-2: with *declined* True, it gives back the claim of
-    :func:`claim_declined_call`, so it moves a ``closed`` row only. A
-    declined claim never matches an ``answered`` row, and the reverse."""
+    call that :func:`_stored_text` refuses gives back nothing."""
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
     from sqlalchemy import text
 
@@ -642,8 +636,7 @@ def restore_stored_call(
         r = s.execute(
             text(_RESTORE_SQL),
             {"org": organization_id, "rid": request_id, "member": who,
-             "tid": thread_id, "stored": body,
-             "claimed": "closed" if declined is True else "answered"},
+             "tid": thread_id, "stored": body},
         ).first()
     return r is not None
 

@@ -32,7 +32,7 @@ release keeps the work.
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words and the quiet end of a park show where `CHAT_DURABLE_ASKS` is on. Only the resume route (`_resume_from_row`, with both resume flags on) sends the 429 cap reason. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
 | §4.12 RESUME-4a-1 — a continuation marks the stored native session stale (task 3478) | **BUILT** 2026-11-16, branch `stu-resume4a`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `MAF_NATIVE_SESSIONS` on. No migration and no new flag. RESUME-4a-2 is the next row. RESUME-4b (task 3479) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
-| §4.12 RESUME-4a-2 — a late decline reaches the model (task 3478) | **BUILT** 2026-11-17, branch `stu-resume4a2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The owner decided D-RES-9 (§4.12.8). No migration and no new flag. The production flip is OWNER-GATE (`enforcement-flip`) |
+| §4.12 RESUME-4a-2 — a late decline reaches the model (task 3478) | **BUILT** 2026-11-17, branch `stu-resume4a2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The owner decided D-RES-9 (§4.12.8). Server only: no client sends this request until RESUME-7, because the web card sends `REJECT`. The fixes of the review of 2026-11-17 (P2-1, P2-2) are built. One owner question is open (§4.12.4, "What RESUME-4a-2 built"). No migration and no new flag. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -1963,13 +1963,19 @@ path.
 Approve, with these changes:
 
 - **The route.** The decline branch of `respond_user_input` calls
-  `_resume_from_row` first. The flags, the checks, the cap and the
-  give-back are the same as for an Approve. Each miss takes
-  `_late_decline_from_row`, as before.
+  `_resume_from_row` first. The flags and the checks are the same as for an
+  Approve. Each miss takes `_late_decline_from_row`, as before.
+- **A decline ALWAYS closes the card** (review of 2026-11-17, P2-1). A "no"
+  needs no run slot. A cap refusal takes `_late_decline_from_row`, which
+  closes the row with a 200. A refused start, or a raise before
+  `start_detached` began, keeps the row `closed`. The slot goes, and the
+  answer is `200 {"ok": true, "declined": true}`, with no `resumed`. No
+  give-back moves a declined claim. Fence: `test_resume_continuation.py`
+  and `test_resume_continuation_r8.py` (R8).
 - **The claim.** `pending_ask.claim_declined_call` is ONE statement. It has
   the CTE and the predicates of `claim_stored_call`. It moves the row to
-  `closed`, not `answered`. The give-back
-  (`restore_stored_call(declined=True)`) moves a `closed` row only.
+  `closed`, not `answered`. `restore_stored_call` moves an `answered` row
+  only.
 - **The answer.** `200 {"ok": true, "resumed": true, "declined": true,
   "threadId", "runId"}`.
 - **The prologue.** It marks the stored native session stale first, as
@@ -1982,7 +1988,10 @@ Approve, with these changes:
   `declined: true`. A late `REJECT` keeps the resend path of today, so the
   model reads it as a new message. No client sends a decline of a card
   with a stored call today. RESUME-7 (the "Not now" on My Day) can use
-  this path.
+  this path. So this path is server only until RESUME-7.
+- **Open owner question.** Must a late `REJECT` of a plain card also start
+  the continuation? The change is one line in `_resumable_row` and a fence.
+  Until the owner answers, a `REJECT` keeps the resend path.
 
 **Corrections of the audit of 2026-11-16.**
 
@@ -2206,7 +2215,7 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 | RESUME-3b (task 3475) | 1 | The chat side of case A: the same bubble, and a replay that reads on after a parked `RUN_FINISHED` keeps the reply open | An Approve of a parked turn that is the last turn goes on in the same reply | `src/lib/chatResume.test.ts` | HIGH (the attach loop) | RESUME-2b, RESUME-3a |
 | RESUME-3c (task 3476) | 1 | The words of §4.12.4 item 5 that need a server code: the changed record, the expired card, and another tab or device first | Each moment shows its words from the server's code | `src/lib/chatResume.test.ts` | STANDARD | RESUME-3a, and the server codes |
 | RESUME-D1 (task 3263) | 1 | Chat · Rung 1 demo · Approve a card an hour later, and the work goes on | The owner runs the script below on production and says so on the task | none | demo | RESUME-0a to RESUME-3 |
-| RESUME-4a (task 3478) | 2 | Two parts. **4a-1, BUILT 2026-11-16, dark:** after each continuation on the note path, each stored native session of the thread goes stale. The prologue marks it before the stored call and before the model runs, so the next turn reads the text history that holds the reply. **4a-2, BUILT 2026-11-17, dark:** the late decline (D-RES-9, decided). A late "Not now" of a row with a stored call starts a short continuation that runs no tool | 4a-1: in case B with `MAF_NATIVE_SESSIONS` on, the turn after a continuation loads no session for any agent of the thread (`digest_drop`, reason `resume_stale`), and the next turn reads the text history (which holds the reply when the browser's copy holds it). Another org cannot mark a row. A thread with no row gets no row, and a second mark changes nothing. With the flags off or `MAF_NATIVE_SESSIONS` off, the run sends no statement. 4a-2: the row moves to `closed` once, the 200 says `resumed` and `declined`, no tool runs, and the note holds the `CARD_DECLINED` text. A row with no stored call, a flag off and each other miss take the late decline of before | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_native_stale_r8.py` (R8), `tests/unit/test_resume_continuation_r8.py` (R8) | HIGH (the run loop, the native session store). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-2a |
+| RESUME-4a (task 3478) | 2 | Two parts. **4a-1, BUILT 2026-11-16, dark:** after each continuation on the note path, each stored native session of the thread goes stale. The prologue marks it before the stored call and before the model runs, so the next turn reads the text history that holds the reply. **4a-2, BUILT 2026-11-17, dark:** the late decline (D-RES-9, decided). A late "Not now" of a row with a stored call starts a short continuation that runs no tool. Server only: no client sends it until RESUME-7 | 4a-1: in case B with `MAF_NATIVE_SESSIONS` on, the turn after a continuation loads no session for any agent of the thread (`digest_drop`, reason `resume_stale`), and the next turn reads the text history (which holds the reply when the browser's copy holds it). Another org cannot mark a row. A thread with no row gets no row, and a second mark changes nothing. With the flags off or `MAF_NATIVE_SESSIONS` off, the run sends no statement. 4a-2: the row moves to `closed` once, the 200 says `resumed` and `declined`, no tool runs, and the note holds the `CARD_DECLINED` text. A row with no stored call, a flag off and each other miss take the late decline of before. A cap refusal or a refused start still closes the row with a 200 | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_native_stale_r8.py` (R8), `tests/unit/test_resume_continuation_r8.py` (R8) | HIGH (the run loop, the native session store). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-2a |
 | RESUME-4b (task 3479) | 2 | The exact path: save the session at the park with call X and a placeholder result, swap the real result under X in `session.state`, and run with no new message | The model input of a continuation holds the call and its real result under one call id, and no orphan call. A run that is not a continuation keeps the preamble goldens byte for byte (`tests/unit/test_native_session_persistence.py`, `evals/trajectories`) | `tests/unit/test_resume_native_session.py`, `tests/unit/test_native_session_persistence.py` | HIGH (the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-4a |
 | RESUME-5 (task 3265) | 2 | Park at the stop | A stop with a card open parks its run. The row is `parked`, the reply has no "interrupted" mark, and an Approve after the restart resumes it | `tests/unit/test_gateway_drain.py`, `tests/unit/test_pending_ask_flow.py` | HIGH (the deploy path) | RESUME-1 |
 | RESUME-6 (task 3266) | 2 | A cut run goes on by itself | A cut run with no open write goes on in the same reply with no notice. A run with an open write shows Continue, as today. Flag off, nothing goes on by itself | `tests/unit/test_resume_after_release.py` | HIGH (the run loop, the deploy path) | RESUME-2, RESUME-3 |

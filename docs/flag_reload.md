@@ -80,7 +80,8 @@ row of a plain confirmation card of a listed write keeps the call that the
 card guards. RESUME-2a: a late Approve of such a card then runs that call
 once, in a new reply, with no member turn. RESUME-4a-2: a late decline
 (`declined: true`) of such a card starts a short reply that runs no tool. The
-model then says that nothing was done. `*` lists every org, and the default is
+model then says that nothing was done. This part is server only: no client
+sends that request until RESUME-7. `*` lists every org, and the default is
 empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,

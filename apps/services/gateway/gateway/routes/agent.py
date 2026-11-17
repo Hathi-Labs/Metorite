@@ -3912,13 +3912,19 @@ async def _resume_from_row(
     the member asks again.
 
     **A late decline** (RESUME-4a-2, task 3478, D-RES-9, the owner's answer
-    ``3be3ea82``). The same checks, the same cap and the same give-back. The
-    claim is ``pending_ask.claim_declined_call``: the row moves to
-    ``closed``. The continuation runs NO tool. Its note tells the model that
-    the member declined and that nothing was done
-    (``chat_recovery.RESUMED_DECLINED``). The answer adds ``"declined":
-    true``. Each miss returns None, and the route then takes
-    :func:`_late_decline_from_row`, as before.
+    ``3be3ea82``). The same checks. The claim is
+    ``pending_ask.claim_declined_call``: the row moves to ``closed``. The
+    continuation runs NO tool. Its note tells the model that the member
+    declined and that nothing was done (``chat_recovery.RESUMED_DECLINED``).
+    The answer adds ``"declined": true``. Each miss returns None, and the
+    route then takes :func:`_late_decline_from_row`, as before.
+
+    A decline ALWAYS closes the card, and it needs no run slot (review of
+    4a-2, P2-1). A cap refusal returns None, so
+    :func:`_late_decline_from_row` closes the row. A refusal of the start, or
+    a raise before ``start_detached`` began, keeps the row ``closed``: no
+    give-back. The slot goes, and the answer is the 200 ``{"ok": true,
+    "declined": true}`` of a late decline, with no ``resumed``.
     """
     import asyncio
 
@@ -3943,6 +3949,10 @@ async def _resume_from_row(
         organization_id=org, member=_session_member(user), thread_id=req.thread_id,
     )
     if not admission.admitted:
+        if declined:
+            # Review of 4a-2, P2-1 (a): a "no" needs no run slot. The late
+            # decline of before closes the row, with no run.
+            return None
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
@@ -3988,7 +3998,12 @@ async def _resume_from_row(
             cont, None,  # type: ignore[arg-type]
             user=user, background_tasks=BackgroundTasks(), _continuation=launch,
         )
-    except BaseException:
+    except BaseException as exc:
+        if declined and isinstance(exc, Exception) and launch.phase in ("new", "refused"):
+            # Review of 4a-2, P2-1 (b): no run began, and the claim keeps the
+            # row closed. The answer is the late decline of before.
+            await release_member_slot(organization_id=org, thread_id=req.thread_id)
+            return await _declined_with_no_run(org, me, req)
         await _give_back_claim(org, me, req, claimed, launch)
         await release_member_slot(organization_id=org, thread_id=req.thread_id)
         raise
@@ -4021,9 +4036,16 @@ async def _give_back_claim(
     ran, so the row goes back to ``parked`` with its stored call
     (``pending_ask.restore_stored_call``). In ``starting`` or ``started`` the
     run may be live, so the claim stays and the call runs at most once. It
-    never raises, so the error of the run route stays the answer."""
+    never raises, so the error of the run route stays the answer.
+
+    A decline never gives its claim back (review of 4a-2, P2-1): the row
+    stays ``closed``, so the card cannot be approved later."""
     import asyncio
 
+    if launch.decline:
+        _log.info("agent.resume_decline_kept_closed", request_id=req.request_id[:12],
+                  phase=launch.phase)
+        return
     if launch.phase not in ("new", "refused"):
         _log.warning("agent.resume_claim_kept", request_id=req.request_id[:12],
                      phase=launch.phase)
@@ -4034,12 +4056,29 @@ async def _give_back_claim(
         back = await asyncio.to_thread(
             pending_ask.restore_stored_call, org, req.request_id,
             member=me, thread_id=req.thread_id or "", stored=claimed,
-            declined=launch.decline,
         )
     except BaseException:  # never mask the refusal of the route
         _log.warning("agent.resume_claim_restore_failed", exc_info=True)
         return
     _log.info("agent.resume_claim_restored", request_id=req.request_id[:12], restored=back)
+
+
+async def _declined_with_no_run(
+    org: str, me: str, req: UserInputResponseRequest,
+) -> dict[str, Any]:
+    """The answer of a late decline whose continuation never began (review
+    of 4a-2, P2-1 (b)). The claim moved the row to ``closed`` and dropped
+    its offer, so My Day drops the card. The answer is the one of
+    :func:`_late_decline_from_row`."""
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(org, me)
+    _log.info(
+        "agent.pending_ask_declined_late",
+        request_id=req.request_id[:12], thread_id=(req.thread_id or "")[:12],
+        resumed=False,
+    )
+    return {"ok": True, "declined": True}
 
 
 def _stored_call_resumes(stored: Any, row: dict[str, Any]) -> bool:

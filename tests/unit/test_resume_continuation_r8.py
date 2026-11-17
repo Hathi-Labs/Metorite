@@ -52,8 +52,11 @@ RESUME-4a-2 (task 3478, D-RES-9), the late decline:
 * ``test_another_member_thread_or_org_declines_nothing`` — drop the actor
   predicate of ``_CLAIM_DECLINED_SQL``, and Bob closes Alice's card.
 * ``test_an_expired_row_declines_nothing``.
-* ``test_a_refusal_after_the_decline_claim_gives_the_row_back`` — keep
-  ``state = 'answered'`` in the restore, and the closed row stays closed.
+* ``test_a_refusal_after_the_decline_claim_keeps_the_row_closed`` (review
+  of 4a-2, P2-1) — give the declined claim back and raise after a refused
+  start, and the answer is a 409 with a row that waits.
+* ``test_a_cap_refusal_of_a_decline_closes_the_row_as_before`` — answer the
+  429 for a decline, and the row stays parked.
 * ``test_flag_off_a_late_decline_is_as_before`` — drop the flag test.
 
 ``HELD_R8_REDIS_URL`` names a PRIVATE Redis, because the suite runs FLUSHDB.
@@ -939,43 +942,81 @@ def test_an_expired_row_declines_nothing(scene, monkeypatch):
     asyncio.run(go())
 
 
-def test_a_refusal_after_the_decline_claim_gives_the_row_back(scene, monkeypatch):
-    """The run route refuses once after the decline claim. The real
-    ``restore_stored_call(declined=True)`` puts the ``closed`` row back to
-    ``parked`` WITH its stored call, so a second decline resumes it. The
-    give-back of an Approve never moves a closed row, and the give-back of
-    another member, thread or org moves nothing."""
+def test_a_refusal_after_the_decline_claim_keeps_the_row_closed(scene, monkeypatch):
+    """Review of 4a-2, P2-1 (b), on the real rows. The run route refuses once
+    after the decline claim. A decline ALWAYS closes the card: the row stays
+    ``closed`` with no stored call, the answer is the 200 of a late decline
+    (no ``resumed``), no tool runs, and the slot goes. A later Approve and a
+    second decline find nothing. The real restore never moves the closed row.
+    Mutation: give the declined claim back and raise -> 409 and a row that
+    waits -> red."""
+    from orchestrator import run_cap
+
     w, r = scene
     tid = w.t_alice
+    released: list[str] = []
+    real_release = run_cap.release_member_slot
+
+    async def _release(*, organization_id, thread_id):
+        released.append(thread_id)
+        await real_release(organization_id=organization_id, thread_id=thread_id)
+
+    monkeypatch.setattr(run_cap, "release_member_slot", _release)
 
     async def go() -> None:
         client = await _client()
         _use_redis(monkeypatch, client)
         try:
             rid = await _park(r, tid, w.org_a)
-            REFUSE.append(True)
-            refused = await _decline(tid, rid, _ALICE, w.org_a)
-            assert getattr(refused, "status_code", None) == 409, refused
-            assert _row(w, w.org_a, rid) == ("parked", None, False), "the row waits again"
             stored = pending_ask.read_stored_call(w.org_a, rid)
             assert stored is not None and stored["arguments"]["deal_id"] == "d-neuro"
-            res = await _decline(tid, rid, _ALICE, w.org_a)
-            assert isinstance(res, dict) and res["declined"] is True, res
+            REFUSE.append(True)
+            refused = await _decline(tid, rid, _ALICE, w.org_a)
+            assert refused == {"ok": True, "declined": True}, refused
+            assert _row(w, w.org_a, rid) == ("closed", None, True), "the card closed"
+            assert pending_ask.read_stored_call(w.org_a, rid) is None
+            assert released == [tid], "the slot went"
             await _settle()
-            assert PATCHES == [] and _row(w, w.org_a, rid) == ("closed", None, True)
+            assert STARTED == [] and PATCHES == [], "no run and no tool"
+            again = await _decline(tid, rid, _ALICE, w.org_a)
+            assert getattr(again, "status_code", None) == 409
+            approve = await _answer(tid, rid, _ALICE, w.org_a)
+            assert getattr(approve, "status_code", None) == 409
+            await _settle()
+            assert STARTED == [] and PATCHES == [], "an Approve after it runs nothing"
             assert pending_ask.restore_stored_call(
                 w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is False, \
-                "the give-back of an Approve never moves a closed row"
-            for member, thread, org in ((_BOB, tid, w.org_a), (_ALICE, "t-x", w.org_a),
-                                        (_ALICE, tid, w.org_b)):
-                assert pending_ask.restore_stored_call(
-                    org, rid, member=member, thread_id=thread, stored=stored,
-                    declined=True) is False
+                "the restore never moves a closed row"
             assert _row(w, w.org_a, rid) == ("closed", None, True)
-            assert pending_ask.restore_stored_call(
-                w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored,
-                declined=True) is True
-            assert _row(w, w.org_a, rid) == ("parked", None, False)
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_cap_refusal_of_a_decline_closes_the_row_as_before(scene, monkeypatch):
+    """Review of 4a-2, P2-1 (a), on the real rows. A member at the run cap
+    declines: no claim, no run, and the late decline of before closes the
+    row with a 200. Mutation: answer the 429 for a decline -> red."""
+    from orchestrator import run_cap
+
+    w, r = scene
+    tid = w.t_alice
+
+    async def _full(**_k):
+        return run_cap.Admission(False, 5, ("t1", "t2"))
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            rid = await _park(r, tid, w.org_a)
+            monkeypatch.setattr(run_cap, "admit_member_run", _full)
+            res = await _decline(tid, rid, _ALICE, w.org_a)
+            assert res == {"ok": True, "declined": True}, res
+            assert _row(w, w.org_a, rid) == ("closed", None, True)
+            assert STARTED == [] and PATCHES == []
         finally:
             await client.flushdb()
             await client.aclose()

@@ -41,9 +41,12 @@ What it holds (R7):
 10. RESUME-4a-2 (task 3478, D-RES-9): a late decline of a row with a stored
    call claims the row once (to ``closed``) and starts ONE continuation that
    calls NO tool. Its note holds the ``CARD_DECLINED`` text and the fenced
-   title and values. The stale mark is still first. The give-back restores a
-   declined claim. Each miss takes ``_late_decline_from_row`` byte for byte.
-   ``decline`` never comes from a request. A second answer is the plain 409.
+   title and values. The stale mark is still first. Each miss takes
+   ``_late_decline_from_row`` byte for byte. ``decline`` never comes from a
+   request. A second answer is the plain 409. Review of 4a-2, P2-1: a decline
+   ALWAYS closes the card. A cap refusal takes the late decline of before. A
+   refused start keeps the row closed, frees the slot and answers the 200
+   ``declined`` with no ``resumed``. A declined claim is never given back.
 
 Run::
 
@@ -158,11 +161,10 @@ class _ResumeDb(_AskDb):
         row.update(state="closed", stored_call=None)
         return stored
 
-    def restore_stored_call(self, org, rid, *, member, thread_id, stored, declined=False):
+    def restore_stored_call(self, org, rid, *, member, thread_id, stored):
         self.restores.append(rid)
         row = self.rows.get((org, rid))
-        claimed = "closed" if declined is True else "answered"
-        if (row is None or row["state"] != claimed or row.get("stored_call") is not None
+        if (row is None or row["state"] != "answered" or row.get("stored_call") is not None
                 or row["actor_email"] != member or row["thread_id"] != thread_id):
             return False
         row.update(state="parked", answer=None, stored_call=dict(stored))
@@ -1895,41 +1897,126 @@ def test_the_decline_note_takes_the_one_text_and_fences_the_title_and_values():
     assert "<<<end-card-values>>>" not in approved
 
 
-def test_a_refusal_after_the_decline_claim_gives_it_back(
-    resume_on, ask_db, liveness, no_persist, monkeypatch,
+def test_a_cap_refusal_of_a_decline_closes_the_card_as_before(
+    resume_on, ask_db, liveness, no_persist, launches, monkeypatch,
 ):
-    """The give-back restores a declined claim: the row is ``parked`` with
-    its stored call again, so a second decline resumes it. Mutation: drop
-    ``declined=launch.decline`` from ``_give_back_claim`` -> the restore
-    looks for ``answered`` -> the row stays closed -> red."""
+    """Review of 4a-2, P2-1 (a). A member at the run cap declines a parked
+    card. A "no" needs no run slot: the late decline of before closes the
+    row and answers 200, with no claim and no run. An Approve at the cap is
+    still the 429. Mutation: answer the 429 for a decline too -> red."""
+    from orchestrator import run_cap
+
+    async def _full(**_k):
+        return run_cap.Admission(False, 5, ("t1", "t2"))
+
+    monkeypatch.setattr(run_cap, "admit_member_run", _full)
+    rid = _park_row(ask_db)
+    res = _decline(monkeypatch, "t-resume", rid)
+    assert res.status_code == 200, res.text
+    assert res.json() == {"ok": True, "declined": True}
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "closed" and row["stored_call"] is None
+    assert ask_db.claims == [] and launches == []
+    twin = _park_row(ask_db)
+    approve = _approve(monkeypatch, "t-resume", twin)
+    assert approve.status_code == 429, "non-vacuity: an Approve still needs a slot"
+    assert ask_db.rows[(_ORG_A, twin)]["state"] == "parked"
+
+
+@pytest.mark.parametrize("where", ["route", "exclusive"])
+def test_a_refused_decline_start_keeps_the_row_closed_and_answers_declined(
+    where, resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Review of 4a-2, P2-1 (b). The run route refuses after the decline
+    claim: another member's run took the thread in the window (``route``,
+    phase ``new``), or ``start_detached(exclusive=True)`` refused
+    (``exclusive``, phase ``refused``). No run began. The row stays
+    ``closed`` with no stored call, nothing gives it back, the slot goes,
+    and the answer is the 200 of a late decline, with no ``resumed``. A
+    later Approve finds nothing to run. Mutation: give the declined claim
+    back and raise after a refused start -> the 409 -> red."""
     from fastapi import HTTPException
     from gateway.routes import agent as agent_routes
+    from orchestrator import run_cap
 
     seen = _stream_world(monkeypatch, shared=True)
-    refusals = [True]
+    released: list[str] = []
+    dropped: list[str] = []
 
-    async def _bobs_run(thread_id: str, actor: str) -> None:
-        if refusals and refusals.pop():
+    async def _release(*, organization_id, thread_id):
+        released.append(thread_id)
+
+    async def _drop(_org, _member, _thread_id, request_id):
+        dropped.append(request_id)
+
+    monkeypatch.setattr(run_cap, "release_member_slot", _release)
+    monkeypatch.setattr(late_approve, "drop_offer", _drop)
+    if where == "route":
+        async def _bobs_run(thread_id: str, actor: str) -> None:
             raise HTTPException(status_code=409, detail={"error": "run_in_progress",
                                                          "holder": _BOB})
 
-    monkeypatch.setattr(agent_routes, "_refuse_if_another_run_is_active", _bobs_run)
+        monkeypatch.setattr(agent_routes, "_refuse_if_another_run_is_active", _bobs_run)
+    else:
+        async def _refused(thread_id, gen, **kw):
+            raise stream_relay.SupersedeRefused(thread_id, "a run in flight", _ALICE)
+
+        monkeypatch.setattr(stream_relay, "start_detached", _refused)
     rid = _park_row(ask_db, tid="t-dec-race")
-    first = _resume_now("t-dec-race", rid, declined=True)
-    assert getattr(first, "status_code", None) == 409, first
-    assert ask_db.claims == [rid] and ask_db.restores == [rid]
+    res = _resume_now("t-dec-race", rid, declined=True)
+    assert res == {"ok": True, "declined": True}, res
     row = ask_db.rows[(_ORG_A, rid)]
-    assert row["state"] == "parked" and row["stored_call"] == _stored()
-    assert seen["starts"] == [] and seen["mints"] == []
-    second = _resume_now("t-dec-race", rid, declined=True)
-    assert isinstance(second, dict) and second["declined"] is True, second
-    assert len(seen["starts"]) == 1 and ask_db.rows[(_ORG_A, rid)]["state"] == "closed"
-    assert seen["run_kwargs"][0]["resume_call"]["declined"] is True
+    assert row["state"] == "closed" and row["stored_call"] is None
+    assert ask_db.claims == [rid] and ask_db.restores == [], "no give-back"
+    assert "t-dec-race" in released, "the slot went"
+    assert dropped == [rid], "the offer went"
+    assert seen["starts"] == [] and WRITES == [], "no run, and no tool"
+    assert _resume_now("t-dec-race", rid) is None, "an Approve finds nothing to run"
+    assert _resume_now("t-dec-race", rid, declined=True) is None
+    assert ask_db.claims == [rid], "no second claim"
+
+
+def test_a_cancel_or_a_late_raise_of_a_decline_keeps_the_row_closed(
+    resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """A cancel before the start, or a raise of ``start_detached`` that may
+    come after the run began: the error stays the answer, and the row stays
+    ``closed``. ``_give_back_claim`` never calls the restore for a decline.
+    Mutation: drop the ``launch.decline`` test of ``_give_back_claim`` -> the
+    cancel calls the restore -> red."""
+    from gateway.routes import agent as agent_routes
+
+    seen = _stream_world(monkeypatch)
+
+    async def _cancelled(thread_id: str, actor: str) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(agent_routes, "_refuse_if_another_run_is_active", _cancelled)
+    rid = _park_row(ask_db, tid="t-dec-cancel")
+    with pytest.raises(asyncio.CancelledError):
+        _resume_now("t-dec-cancel", rid, declined=True)
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "closed"
+    assert ask_db.restores == [], "a decline never calls the restore"
+
+    async def _noop(*_a, **_k):
+        return None
+
+    async def _broke(thread_id, gen, **kw):
+        raise RuntimeError("the drain task may run already")
+
+    monkeypatch.setattr(agent_routes, "_refuse_if_another_run_is_active", _noop)
+    monkeypatch.setattr(stream_relay, "start_detached", _broke)
+    late = _park_row(ask_db, tid="t-dec-late")
+    with pytest.raises(RuntimeError):
+        _resume_now("t-dec-late", late, declined=True)
+    assert ask_db.rows[(_ORG_A, late)]["state"] == "closed"
+    assert ask_db.rows[(_ORG_A, late)]["stored_call"] is None
+    assert ask_db.restores == [] and seen["starts"] == []
 
 
 def test_the_decline_claim_and_the_restore_are_one_statement_each():
-    """Mutation: drop the actor predicate of the decline claim, or put back
-    ``state = 'answered'`` in the restore -> red."""
+    """Mutation: drop the actor predicate of the decline claim, or let the
+    restore move a ``closed`` row -> red."""
     sql = " ".join(pending_ask._CLAIM_DECLINED_SQL.split())
     for part in ("organization_id = CAST(:org AS uuid)", "request_id = :rid",
                  "state = ANY(:waiting)", "expires_at > now()", "actor_email = :member",
@@ -1938,10 +2025,11 @@ def test_the_decline_claim_and_the_restore_are_one_statement_each():
         assert part in sql, part
     assert "answer = :answer" not in sql and "'answered'" not in sql
     assert sql.count(";") == 0 and sql.count("UPDATE ") == 1
+    # Review of 4a-2, P2-1: a declined claim is never given back.
     restore = " ".join(pending_ask._RESTORE_SQL.split())
-    assert "state = :claimed" in restore and "'answered'" not in restore
-    body = inspect.getsource(pending_ask.restore_stored_call)
-    assert '"claimed": "closed" if declined is True else "answered"' in body
+    assert "state = 'answered'" in restore
+    assert "closed" not in restore and ":claimed" not in restore
+    assert "declined" not in inspect.signature(pending_ask.restore_stored_call).parameters
 
 
 def test_a_lock_timeout_and_a_deadlock_mean_no_decline_claim(monkeypatch):
