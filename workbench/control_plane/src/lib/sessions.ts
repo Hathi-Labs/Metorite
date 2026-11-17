@@ -62,6 +62,13 @@ export interface ChatSession {
    */
   archivedAt?: string | null;
   /**
+   * CO-13: the chat that this one continues, from the server's list. Null
+   * says it continues nothing. A null `id` says the member cannot read the
+   * source: the header then says "an earlier chat", with no title and no
+   * link. Only the merge below sets it, so a browser never invents it.
+   */
+  continuedFrom?: { id: string | null; title: string | null } | null;
+  /**
    * WS-CO CO-11: when THIS member pinned the chat, or null. The server sends
    * it only while `CHAT_PIN_ORGS` holds the org, and only the caller's own
    * pin, so a colleague in the same room never reads it. An archived chat
@@ -1071,6 +1078,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       hasUserMessage?: boolean;
       isBrief?: boolean;
       archivedAt?: string | null;
+      continuedFrom?: ChatSession["continuedFrom"];
       pinnedAt?: string | null;
       topicId?: string | null;
       topicName?: string | null;
@@ -1098,6 +1106,9 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       // The server keeps both, so its answer wins here. The name only with
       // the chat bar on: off, the merge keeps every local title, as before.
       s.archivedAt = r.archivedAt ?? null;
+      // CO-13: the server's answer wins. A chat made here a moment ago holds
+      // no mark until this list says what it continues.
+      s.continuedFrom = r.continuedFrom ?? null;
       // CO-11: a pin made on another device reaches this one. The server
       // sends the key only with the switch on. Off, the local mark stays,
       // and the list draws no pin.
@@ -1141,6 +1152,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           hasUserMessage: r.hasUserMessage,
           isBrief: r.isBrief,
           archivedAt: r.archivedAt ?? null,
+          continuedFrom: r.continuedFrom ?? null,
           pinnedAt: r.pinnedAt ?? null,
           topicId: r.topicId ?? null,
           topicName: r.topicName ?? null,

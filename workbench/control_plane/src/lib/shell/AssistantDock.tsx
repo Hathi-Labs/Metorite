@@ -177,6 +177,7 @@ import {
 import { surfaceOfPane } from "./surface";
 import { chatFilesHref, isPinned, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
+import { ContinuedMark } from "./ContinuedMark";
 import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { useOptionalSidebarFold } from "@/components/SidebarFold";
 import { LAYER_CLASS } from "@/lib/layers";
@@ -605,6 +606,15 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       setRecoveredInput(opened.text);
       setAssistantSession(opened.sessionId);
       refresh();
+      // CO-13: the row made above holds no link. The server's list does, so
+      // merge it now and the "Continued from" line shows at once. A failed
+      // fetch stays silent, as in the effect above.
+      void fetchAndMergeSessionsFromDb()
+        .then((merged) => {
+          madeHere.current.note(merged);
+          setSessions(merged);
+        })
+        .catch(() => {});
     },
     /** Open a chat the member chose: a refusal of it is an error they see. */
     select: (id: string) => {
@@ -1441,6 +1451,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           onClick={() => morphAskBox("into-bar", closeAssistant)}
         />
       </header>
+      {/* CO-13: which chat this one continues. A row of its own, under the header. */}
+      <ContinuedMark mark={active?.continuedFrom} onOpen={pickerProps.onSelect} />
 
       <div className="relative flex min-h-0 flex-1">
         {columnForm && listOpen ? (

@@ -18,7 +18,7 @@
  * holds the owner's acts.
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
 import SessionRunDot from "@/components/SessionRunDot";
@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/Input";
 import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
-import { isPinned, relativeAge, sessionTitle, splitSessions, topicGroups } from "./chatHistory";
+import { BRIEFS_GROUP, type BriefsOpenState, foldBriefs, isPinned, nextBriefsOpen, relativeAge, sessionTitle, splitSessions, topicGroups } from "./chatHistory";
 
 // ── The session picker ───────────────────────────────────────────────────────
 
@@ -224,6 +224,19 @@ export function SessionPicker({
   const unread = useUnreadIds();
   const [now] = useState(() => Date.now());
   const lists = useMemo(() => splitSessions(sessions, query, activeId), [sessions, query, activeId]);
+  // Daily briefs fold into one closed group at the end (task 3564). A search
+  // shows one flat list, so there the briefs stay in it.
+  const folded = useMemo(
+    () => (query ? { main: lists.open, briefs: [] as ChatSession[] } : foldBriefs(lists.open)),
+    [lists.open, query],
+  );
+  // The group opens when the chat on screen is a folded brief, whether the
+  // list loads late or the member moves into one. The member may close it.
+  const [briefsState, setBriefsState] = useState<BriefsOpenState>({ open: false, handled: null });
+  const nextBriefs = nextBriefsOpen(briefsState, activeId, folded.briefs.map((s) => s.id));
+  if (nextBriefs !== briefsState) setBriefsState(nextBriefs);
+  const showBriefs = nextBriefs.open;
+  const briefsListId = useId();
   const row = (s: ChatSession, archived: boolean) => (
     <SessionRow
       key={s.id}
@@ -269,18 +282,18 @@ export function SessionPicker({
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
-        {lists.open.length === 0 ? (
+        {folded.main.length === 0 && folded.briefs.length === 0 ? (
           <p className="px-3 py-3 text-xs text-muted-foreground glass:text-footnote">
             {query ? "No chat matches." : "Your chats will show here."}
           </p>
         ) : (
           query ? (
-            <ul className="flex flex-col gap-0.5">{lists.open.map((s) => row(s, false))}</ul>
+            <ul className="flex flex-col gap-0.5">{folded.main.map((s) => row(s, false))}</ul>
           ) : (
             // By day, newest first (CO-0), with the pinned chats first
             // (CO-11), then a group for each topic (CO-2b). A search shows
             // one list. A topic group keys on its id, never its name.
-            topicGroups(lists.open, now, topicsOn, pinsOn && Boolean(onPin)).map((g) => (
+            topicGroups(folded.main, now, topicsOn, pinsOn && Boolean(onPin)).map((g) => (
               <section
                 key={g.topicId ? `topic:${g.topicId}` : g.label}
                 aria-label={g.label}
@@ -294,6 +307,28 @@ export function SessionPicker({
             ))
           )
         )}
+        {folded.briefs.length > 0 ? (
+          <div className="mt-1 border-t border-border pt-1" data-chat-group={BRIEFS_GROUP}>
+            <Button
+              variant="ghost"
+              size="none"
+              layout="flex items-center"
+              onClick={() => setBriefsState((st) => ({ ...st, open: !st.open }))}
+              aria-expanded={showBriefs}
+              aria-controls={briefsListId}
+              className="w-full gap-2 rounded-md px-2 py-1.5 text-left text-xs"
+            >
+              <Icon name={showBriefs ? "ChevronDown" : "ChevronRight"} size={14} />
+              <span className="flex-1">{BRIEFS_GROUP}</span>
+              <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+                {folded.briefs.length}
+              </span>
+            </Button>
+            {showBriefs ? (
+              <ul id={briefsListId} className="flex flex-col gap-0.5">{folded.briefs.map((s) => row(s, false))}</ul>
+            ) : null}
+          </div>
+        ) : null}
         {lists.archived.length > 0 ? (
           <div className="mt-1 border-t border-border pt-1">
             <Button
