@@ -27,12 +27,25 @@ import { Input } from "@/components/ui/Input";
 import { useActiveSessions, useNeedsInputIds, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
-import { BRIEFS_GROUP, type BriefsOpenState, foldBriefs, isPinned, nextBriefsOpen, relativeAge, sessionTitle, splitSessions, topicGroups } from "./chatHistory";
+import {
+  BRIEFS_GROUP,
+  type BriefsOpenState,
+  foldBriefs,
+  groupKey,
+  isPinned,
+  nextBriefsOpen,
+  pickerGroups,
+  relativeAge,
+  rowKey,
+  sessionTitle,
+  splitSessions,
+} from "./chatHistory";
 
 // ── The session picker ───────────────────────────────────────────────────────
 
 /** One row: the name and its age, and on hover the row's own acts. */
 function SessionRow({
+  rowId,
   session,
   on,
   now,
@@ -46,6 +59,8 @@ function SessionRow({
   onRestore,
   onRemove,
 }: {
+  /** The DOM id of the row: the chat id, or `recent:<id>` for its copy in Recent. */
+  rowId: string;
   session: ChatSession;
   on: boolean;
   now: number;
@@ -103,7 +118,7 @@ function SessionRow({
       className={`group relative flex items-center rounded-md glass:rounded-[10px] ${
         on ? "bg-primary/10 glass:bg-sidebar-accent" : "hover:bg-secondary has-[:focus-visible]:bg-secondary"
       }`}
-      data-session-row={session.id}
+      data-session-row={rowId}
       data-has-actions={hasActions ? "" : undefined}
     >
       <Button
@@ -240,9 +255,18 @@ export function SessionPicker({
   if (nextBriefs !== briefsState) setBriefsState(nextBriefs);
   const showBriefs = nextBriefs.open;
   const briefsListId = useId();
-  const row = (s: ChatSession, archived: boolean) => (
+  // The open chats in groups, or null for a search (one flat list, no Recent).
+  const groups = useMemo(
+    () => pickerGroups(folded.main, query, now, topicsOn, pinsOn && Boolean(onPin)),
+    [folded.main, query, now, topicsOn, pinsOn, onPin],
+  );
+  // `rowId` is the key and the DOM id of the row. A chat in Recent shows
+  // twice, so its copy in Recent takes a prefix (CO-2c). Both copies mark the
+  // chat on screen, and both act on the same chat.
+  const row = (s: ChatSession, archived: boolean, rowId: string = s.id) => (
     <SessionRow
-      key={s.id}
+      key={rowId}
+      rowId={rowId}
       session={s}
       on={s.id === activeId}
       now={now}
@@ -291,22 +315,23 @@ export function SessionPicker({
             {query ? "No chat matches." : "Your chats will show here."}
           </p>
         ) : (
-          query ? (
+          groups === null ? (
             <ul className="flex flex-col gap-0.5">{folded.main.map((s) => row(s, false))}</ul>
           ) : (
             // By day, newest first (CO-0), with the pinned chats first
-            // (CO-11), then a group for each topic (CO-2b). A search shows
-            // one list. A topic group keys on its id, never its name.
-            topicGroups(folded.main, now, topicsOn, pinsOn && Boolean(onPin)).map((g) => (
+            // (CO-11). With topics on, Recent comes first, then Pinned, then a
+            // group for each topic by its newest chat (CO-2b, CO-2c). A search
+            // shows one list. A topic group keys on its id, never its name.
+            groups.map((g) => (
               <section
-                key={g.topicId ? `topic:${g.topicId}` : g.label}
+                key={groupKey(g)}
                 aria-label={g.label}
                 data-chat-group={g.label}
                 data-chat-topic={g.topicId}
                 className="mb-1"
               >
                 <h3 className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground glass:px-3 glass:text-caption">{g.label}</h3>
-                <ul className="flex flex-col gap-0.5">{g.items.map((s) => row(s, false))}</ul>
+                <ul className="flex flex-col gap-0.5">{g.items.map((s) => row(s, false, rowKey(g, s.id)))}</ul>
               </section>
             ))
           )
