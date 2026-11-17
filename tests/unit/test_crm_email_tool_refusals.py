@@ -433,7 +433,7 @@ def test_a_422_of_the_field_scope_names_the_choices() -> None:
         exc.value.detail["message"])
     with pytest.raises(HTTPException) as exc:
         fs.module_where(scope, "Invoices", [("Circle.from", "2026-10-01")], zone="UTC")
-    assert "date fields of module:Invoices are: Invoice_Date" in exc.value.detail["message"]
+    assert "date and number fields of module:Invoices are: Invoice_Date" in exc.value.detail["message"]
 
 
 def test_the_choices_are_capped() -> None:
