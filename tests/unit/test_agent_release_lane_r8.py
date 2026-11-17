@@ -407,3 +407,74 @@ async def test_a_task_that_was_already_in_progress_stays_even_with_an_open_pull_
     # No move to the review lane either: the claim moved nothing.
     assert out["task_status"]["moved"] is False
     assert _lane_of(w.p, task) == ("In progress", "in_progress")
+
+
+# ── 9. A person closes the run: the claim of the RUN is undone (verifier N1) ──
+
+
+def _agent_move(p: Any, board: SimpleNamespace, task: str, to_lane: str, lane_from: str,
+                to_category: str) -> None:
+    """The agent itself moves the task again, through its own client: a
+    ``status_change`` of the SAME member that carries the stamp of the client."""
+    import json
+
+    from tests.unit.test_agent_runs_r8 import VIA
+
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_tasks SET status_id = CAST(:s AS uuid) "
+                       "WHERE id = CAST(:t AS uuid)"), {"s": board.lanes[to_lane], "t": task})
+        c.execute(text(
+            "INSERT INTO pm_activities (organization_id, task_id, type, body, meta, created_by) "
+            "VALUES (CAST(:o AS uuid), CAST(:t AS uuid), 'status_change', :b, "
+            "CAST(:m AS jsonb), :e)"),
+            {"o": board.org, "t": task, "b": f"{lane_from} → {to_lane}", "e": board.email,
+             "m": json.dumps({"from": lane_from, "to": to_lane, "from_category": "in_progress",
+                              "to_category": to_category, "via": VIA})})
+
+
+async def test_an_assignee_who_closes_the_run_undoes_the_claim_of_the_run(w) -> None:
+    """``may_end_run`` lets the run's member, an assignee or an admin release a
+    run (Fleet's "Close the run"). The claim that is undone is the RUN's, so the
+    identity of the person who presses the button does not matter."""
+    board = _board(w.p, w.org, w.email, STANDARD)
+    task = _task(w.p, board, "Backlog")
+    person = "assignee@release-r8.test"
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid)) ON CONFLICT DO NOTHING"),
+            {"e": person, "o": w.org})
+        c.execute(text(
+            "INSERT INTO pm_task_assignees (organization_id, task_id, assignee, assigned_by) "
+            "VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :a, :e)"),
+            {"o": w.org, "t": task, "a": person, "e": w.email})
+        c.execute(text(
+            "INSERT INTO pm_project_grants (organization_id, project_id, subject, created_by) "
+            "VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :s, :e)"),
+            {"o": w.org, "p": board.project, "s": person, "e": w.email})
+    async with _session(w.p) as call:
+        claimed = await call(w.agent, "POST", f"/projects/tasks/{task}/claim", {})
+        run = claimed.json()["agent_run_id"]
+        assert _lane_of(w.p, task) == ("In progress", "in_progress")
+        # The assignee, a person with no client stamp, closes the stalled run.
+        released = await call(
+            _principal(person, w.org), "POST", f"/projects/agent-runs/{run}/release", {})
+    assert released.status_code == 200, released.text
+    assert released.json()["task_status"] == {
+        "name": "Backlog", "category": "backlog", "moved": True, "reason": "nothing_started"}
+    assert _lane_of(w.p, task) == ("Backlog", "backlog")
+
+
+async def test_a_later_move_of_the_agent_itself_does_not_hide_the_lane_of_the_claim(w) -> None:
+    board = _board(w.p, w.org, w.email, (*STANDARD, ("In review", "in_progress", 35)))
+    task = _task(w.p, board, "Backlog")
+    async with _session(w.p) as call:
+        claimed = await call(w.agent, "POST", f"/projects/tasks/{task}/claim", {})
+        run = claimed.json()["agent_run_id"]
+        # The agent moves its own task to the review lane, and gives it back
+        # with nothing attached: the lane the claim left is still Backlog.
+        _agent_move(w.p, board, task, "In review", "In progress", "in_progress")
+        released = await call(w.agent, "POST", f"/projects/agent-runs/{run}/release", {})
+    assert released.status_code == 200, released.text
+    assert released.json()["task_status"]["reason"] == "nothing_started"
+    assert _lane_of(w.p, task) == ("Backlog", "backlog")

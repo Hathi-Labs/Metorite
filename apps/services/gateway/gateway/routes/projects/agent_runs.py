@@ -2961,11 +2961,13 @@ async def may_answer_run(db: Any, run: Any, user: UserContext) -> bool:
 #: The references of a task that show started work.
 _REFS_OF_TASK_SQL = "SELECT kind, state FROM pm_task_refs WHERE task_id = CAST(:tid AS uuid)"
 
-#: The last status move of a task, with who wrote it: the move that a claim
-#: made, when this agent wrote it.
-_LAST_MOVE_SQL = (
-    "SELECT created_by, created_at, meta FROM pm_activities WHERE task_id = CAST(:tid AS uuid)"
-    " AND type = 'status_change' ORDER BY created_at DESC, id DESC LIMIT 1"
+#: Every status move of a task since a run began, oldest first, with who wrote
+#: it. The first one is the claim's own move. Later ones are the agent's or a
+#: person's.
+_MOVES_SINCE_SQL = (
+    "SELECT created_by, created_at, meta FROM pm_activities"
+    " WHERE task_id = CAST(:tid AS uuid) AND type = 'status_change'"
+    " AND created_at >= :since ORDER BY created_at, id"
 )
 
 #: A pull request in these states is open. A pull request with no state read
@@ -3024,20 +3026,27 @@ async def _settle_task_lane(
         return _lane_report(status, moved=False, reason="archived"), None
     if status.category != STARTED_CATEGORY:
         return _lane_report(status, moved=False, reason="not_started_lane"), None
-    last = (await db.execute(text(_LAST_MOVE_SQL), {"tid": tid})).first()
-    meta = from_jsonb(last.meta) if last is not None else None
-    # The move of THIS claim: the same member, through the same client
-    # (`meta.via`, which a person's move in the app never carries), and
-    # written no earlier than this run. A move that a person made by hand,
-    # even the same member's, is never reversed (verifier F4). A task that was
-    # in progress before the claim has no such move: it is a person's live
-    # work, and the release leaves it alone (owner default, F5).
-    mine = (
-        last is not None and last.created_by == actor(user)
+    moves = (await db.execute(
+        text(_MOVES_SINCE_SQL), {"tid": tid, "since": run.created_at},
+    )).fetchall()
+    # The move of THIS claim is the first status move since the run began. It
+    # counts only when it was made by the member of the RUN (not by whoever
+    # presses Release: an admin or an assignee may close the run), through the
+    # same client (`meta.via`, which a person's move in the app never
+    # carries), and into a started lane. Each later move must be the agent's
+    # own too. A move that a person made by hand, even the same member's, is
+    # never reversed (verifier F4), and a task that was in progress before the
+    # claim has no such move: it is a person's live work, and the release
+    # leaves it alone (owner default, F5). The lane that the claim LEFT is the
+    # `from` of the first move, also when the agent moved the task again.
+    owner = str(run.member_email or "").strip().lower()
+    metas = [from_jsonb(m.meta) for m in moves]
+    mine = bool(moves) and all(
+        str(m.created_by or "").strip().lower() == owner
         and isinstance(meta, dict) and meta.get("via") == run.client_via
-        and last.created_at >= run.created_at
-        and meta.get("to_category") == STARTED_CATEGORY
-    )
+        for m, meta in zip(moves, metas, strict=True)
+    ) and metas[0].get("to_category") == STARTED_CATEGORY
+    meta = metas[0] if mine else None
     if not mine:
         return _lane_report(status, moved=False, reason="no_status_before_claim"), None
     refs = (await db.execute(text(_REFS_OF_TASK_SQL), {"tid": tid})).fetchall()
