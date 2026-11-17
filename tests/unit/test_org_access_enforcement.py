@@ -412,6 +412,16 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "(`test_company_search_sources.py::TestTheRouteTakesNoTenant`)."
         ),
     },
+    "gateway.retrieval.names": {
+        "/search/names": (
+            "WS-FIND FIND-5. `FIND_ORGS` answers 404 first. The route asks only "
+            "a source that `Source.reaches` the member: `feature:<app>` and the "
+            "app's switch. The CRM source also applies the access rule, and a "
+            "refusal gives no row (`test_resolve_name_tool.py`). The route takes "
+            "no member and no org from the request "
+            "(`test_resolve_name_tool.py::TestTheRouteTakesNoTenant`)."
+        ),
+    },
 }
 
 

@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sys
 import uuid
 from types import SimpleNamespace
 from typing import Any, get_args, get_type_hints
@@ -116,6 +117,19 @@ def no_outbound(monkeypatch):
     real_connect = socket.socket.connect
 
     def _connect(self: socket.socket, address: Any) -> Any:
+        # Task 3586. On Windows, `socket.socketpair()` is Python's own loopback
+        # fallback, and each new asyncio loop calls it. That call is no
+        # outbound send: only `socket._fallback_socketpair`, to a loopback
+        # address, passes here. Any other caller still trips the wire. On
+        # Linux, `socketpair` is native and never reaches `connect`.
+        caller = sys._getframe(1)
+        if (
+            caller.f_code.co_name == "_fallback_socketpair"
+            and caller.f_globals.get("__name__") == "socket"
+            and isinstance(address, tuple)
+            and address[0] in ("127.0.0.1", "::1")
+        ):
+            return real_connect(self, address)
         if self.family != getattr(socket, "AF_UNIX", None):
             hits.append("socket.connect")
             raise AssertionError(TRIPWIRE)

@@ -40,6 +40,13 @@ class MemoryMarkClient:
         self.calls.append(("exists", ",".join(names)))
         return sum(1 for n in names if n in self.values or n in self.hashes)
 
+    async def delete(self, *names: str) -> int:
+        # HRD-11a fix round 1: the item in focus is deleted when a run names
+        # two or more items, or when a call clears it.
+        self.calls.append(("delete", ",".join(names)))
+        return sum(1 for n in names
+                   if self.values.pop(n, None) is not None or self.hashes.pop(n, None) is not None)
+
     async def expire(self, name: str, _seconds: int) -> bool:
         self.calls.append(("expire", name))
         return name in self.values or name in self.hashes
@@ -101,6 +108,14 @@ def install_memory_mark_store(patcher: Any) -> MemoryMarkClient | None:
         pass
     else:
         patcher.setattr(chat_constraints, "get_tenant_redis", lambda: store)
+    # HRD-11a: the item in focus of a chat lives in the same tenant Redis,
+    # and each orchestrator turn of an org on CHAT_FOCUS_ORGS reads it.
+    try:
+        from acb_skills import chat_focus
+    except ImportError:
+        pass
+    else:
+        patcher.setattr(chat_focus, "get_tenant_redis", lambda: store)
     # WS-67 OA-7c: the sticky packs of a chat live in the same tenant Redis.
     try:
         from acb_skills import tool_packs
