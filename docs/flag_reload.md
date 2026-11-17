@@ -33,6 +33,17 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_CLAIM_CHECK_ORGS` turns on the claim check of an answer
+(`chat_failure_modes.md` §6 row HRD-13). For each listed org, the run of the
+orchestrator logs one line, `answer_claims.checked`, at its end. The line
+counts the claims of acts and promises that no tool outcome of the run backs.
+The check is shadow only, and it never changes the answer (D-HRD-6).
+
+`*` lists every org, and the default is empty. Its one reader is
+`acb_skills.answer_claims.claim_check_on`. The injection asks it at the start
+of each run, so a reload applies to the next run. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.

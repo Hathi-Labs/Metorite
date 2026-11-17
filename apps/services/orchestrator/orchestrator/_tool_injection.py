@@ -2996,6 +2996,9 @@ def _inject_agent_tools(
     # RESUME-1a: the MAF call id of each tool call, for the stored call of a
     # card. Off for the org, it attaches nothing.
     _apply_resume_call_id(agents)
+    # HRD-13: the orchestrator's run gets the claim check, in shadow. It reads
+    # the whole run at its end and changes nothing. Off for the org, nothing.
+    _apply_claim_check(agents, agent_name)
     # HRD-6: a slow tool call gets one line for the member. Its middleware
     # wraps each tool call, and the number check's recorder sits inside it.
     _apply_progress_notice(agents)
@@ -3032,6 +3035,45 @@ def _apply_resume_call_id(agents: list[Any]) -> None:
     for i, agent in enumerate(agents):
         if isinstance(agent, Agent):
             agents[i] = agent_with_providers(agent, [CallIdProvider()])
+
+
+def _apply_claim_check(agents: list[Any], agent_name: str | None) -> None:
+    """The claim check of the orchestrator's answer on ONE run (HRD-13, task 2992).
+
+    It replaces the native MAF ``Agent`` of the agent ``orchestrator`` with a
+    per-run view that carries ONE ``acb_skills.answer_claims.ClaimCheckProvider``,
+    as :func:`_apply_progress_notice` does. The provider reads the whole run in
+    ``after_run`` and logs one line. It never changes the answer (D-HRD-6).
+    With ``CHAT_CLAIM_CHECK_ORGS`` off for the run's org it changes nothing.
+    The org is the run binding's (:func:`_run_org`), never request input. The
+    names of the agent's delegation tools go to the provider, because the
+    calls of a sub-run stay inside the delegation. Any other agent, a Copilot
+    SDK agent and a plain object stay as they are. Fence:
+    ``tests/unit/test_answer_claims.py``.
+    """
+    from acb_skills.answer_claims import CHECKED_AGENT, claim_check_on
+
+    if str(agent_name or "") != CHECKED_AGENT or not agents:
+        return
+    if not claim_check_on(_run_org()):
+        return
+    try:
+        from acb_skills.answer_claims import ClaimCheckProvider
+        from acb_skills.egress import is_delegation_tool
+        from agent_framework import Agent
+    except ImportError as exc:  # pragma: no cover — ships with the platform
+        _log.warning("executor.claim_check_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    agent = agents[0]
+    if not isinstance(agent, Agent):
+        return
+    delegations = frozenset(
+        _tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool
+        if _delegates_to(t) or is_delegation_tool(t)
+    )
+    agents[0] = agent_with_providers(agent, [ClaimCheckProvider(CHECKED_AGENT, delegations)])
 
 
 def _apply_progress_notice(agents: list[Any]) -> None:

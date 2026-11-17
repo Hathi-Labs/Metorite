@@ -8027,6 +8027,9 @@ async def run_agent_stream(
                     thread_id=_caller_thread_id,
                 ):
                     yield _resume_line
+                # HRD-13: the stored call ran with no middleware, so the claim
+                # check abstains on its acts (`answer_claims.RESUMED_KEY`).
+                _derive_ctx(resumed_call=True)
 
             # ── Tier 1: native MAF agent live streaming ─────────────────────
             # The intended ``agent_framework.ag_ui.stream_agent_response`` is not
