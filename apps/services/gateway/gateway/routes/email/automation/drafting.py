@@ -103,11 +103,13 @@ async def _account_signature(db: Any, account_id: str) -> str:
 def _resolve_draft_attachments(
     attachments: list[SendAttachment] | None,
     artifacts: list[ArtifactAttachment] | None,
-    user_email: str | None = None,
+    user_email: str | None = None, *,
+    organization_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve base64 uploads + workspace artifact refs to the provider's
     ``[{filename, content, mime_type}]`` shape — the same resolution the /send
-    path does, so a draft can carry attachments exactly like a direct send."""
+    path does, so a draft can carry attachments exactly like a direct send.
+    *organization_id* is the member's tenant from the session (task 3598)."""
     import base64 as _b64  # noqa: PLC0415
     out: list[dict[str, Any]] = []
     for a in attachments or []:
@@ -121,7 +123,8 @@ def _resolve_draft_attachments(
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid attachment encoding: {exc}") from exc
-    out.extend(load_artifact_attachments(artifacts, user_email))
+    out.extend(load_artifact_attachments(
+        artifacts, user_email, organization_id=organization_id))
     return out
 
 
@@ -3834,7 +3837,11 @@ async def upsert_draft(
             cc = [c for c in (req.cc or []) if c]
             bcc = [b for b in (req.bcc or []) if b]
             subject = req.subject or ""
-            atts = _resolve_draft_attachments(req.attachments, req.artifacts, user.email)
+            # Task 3598: a chat file needs a room check, which reads the
+            # database, so the files resolve in a thread.
+            atts = await asyncio.to_thread(
+                _resolve_draft_attachments, req.attachments, req.artifacts,
+                user.email, organization_id=user.organization_id)
             thread_id: str | None = None
             # EM-G3a-f7: only a Gmail save answers ``html``, and only a Gmail
             # save with ``keep_html`` sends HTML (D-G3a-f7-5).

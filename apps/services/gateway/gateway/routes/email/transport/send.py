@@ -3,6 +3,7 @@ automation layer via a deferred import)."""
 
 from __future__ import annotations
 
+import asyncio
 import smtplib
 import ssl
 import uuid
@@ -54,9 +55,12 @@ class ArtifactAttachment(BaseModel):
 
     Lets the email-assistant attach files it produced, and lets the compose UI
     attach the files the member uploaded. Resolved server-side. H-201 part 2:
-    only the sender's own ``personal`` workspace is a source
+    the sender's own ``personal`` workspace is a source
     (``workspace._member_agent_workspace``). A shared agent's clone holds the
-    run output of every tenant, so it is never a source."""
+    run output of every tenant, so it is never a source. Task 3598: a file of
+    a chat folder of a shared agent's tenant dir is a source too, when the
+    sender may write to that chat (``workspace._chat_thread_file``). The model
+    carries no tenant field: the tenant is the sender's own."""
     path: str  # workspace-relative path (e.g. "outputs/quote.pdf")
     name: str | None = None  # display filename (defaults to the file's name)
     agent: str | None = None  # source agent workspace (defaults to email-assistant)
@@ -90,26 +94,29 @@ class MetoriteFileRef(BaseModel):
 SendEmailRequest.model_rebuild()
 
 
-def resolve_artifact_path(ref: ArtifactAttachment, user_email: str | None) -> Path:
-    """THE resolver of one workspace file of a send: its path, or a 422.
-
-    The file must be in the sending member's OWN workspace of its source
-    agent (default ``email-assistant``). H-201 part 2
-    (``projects_ai_chat.md`` §21.14): the source is only
-    ``workspace._member_agent_workspace``, so a shared agent's clone is never
-    read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
-    refuses ``.env``, ``.git/`` and every other secret name.
-
-    H-201 part 3 (§21.15, the P1 of the part 2 review): a refused ref FAILS
-    the send with 422, and a warning names it. The old rule skipped it, so
-    the mail went out without the file that the member asked for.
-
-    Task 2491: :func:`load_artifact_attachments` (the send) and
-    :func:`refused_artifacts` (the check before a card) both call this, so
-    the check and the send keep one rule. Fence:
-    ``tests/unit/test_email_files_before_card.py``."""
+def _artifact_refused(agent: str, rel: str) -> HTTPException:
+    """The 422 of a workspace file that a send does not take, after a warning."""
     from acb_common import get_logger
+
+    get_logger("gateway.email.send").warning(
+        "email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
+    return HTTPException(
+        status_code=422,
+        detail=(
+            f"The attachment '{rel[:200]}' is not a file in your own "
+            "workspace, so nothing was sent."
+        ),
+    )
+
+
+def _resolve_artifact(
+    ref: ArtifactAttachment, user_email: str | None,
+    organization_id: str | None, chat_files: bool,
+) -> tuple[Path, tuple[Path, str] | None]:
+    """The path of one ref, and ``(tenant dir, path)`` when the file is in a
+    chat folder. The body of :func:`resolve_artifact_path`."""
     from gateway.routes.workspace import (
+        _chat_thread_file,
         _is_blocked_path,
         _member_agent_workspace,
         _safe_resolve,
@@ -124,21 +131,55 @@ def resolve_artifact_path(ref: ArtifactAttachment, user_email: str | None) -> Pa
             full = _safe_resolve(ws, rel)
         except HTTPException:
             full = None
-    if full is None or not full.is_file():
-        get_logger("gateway.email.send").warning(
-            "email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"The attachment '{rel[:200]}' is not a file in your own "
-                "workspace, so nothing was sent."
-            ),
-        )
-    return full
+    if full is not None and full.is_file():
+        return full, None
+    # Task 3598: the member's own workspace has no such file. A chat folder of
+    # a shared agent is the next source, and only for a chat that the member
+    # may write to. A ref with no agent takes the chat's own agent.
+    chat = (_chat_thread_file(ref.agent, rel, user_email, organization_id)
+            if chat_files and rel else None)
+    if chat is None:
+        raise _artifact_refused(agent, rel)
+    return chat[0] / chat[1], chat
+
+
+def resolve_artifact_path(
+    ref: ArtifactAttachment, user_email: str | None, *,
+    organization_id: str | None = None, chat_files: bool = True,
+) -> Path:
+    """THE resolver of one workspace file of a send: its path, or a 422.
+
+    The file must be in the sending member's OWN workspace of its source
+    agent (default ``email-assistant``). H-201 part 2
+    (``projects_ai_chat.md`` §21.14): that source is only
+    ``workspace._member_agent_workspace``, so a shared agent's clone is never
+    read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
+    refuses ``.env``, ``.git/`` and every other secret name.
+
+    Task 3598: when that workspace has no such file, a file of a chat folder
+    of a shared agent's tenant dir is the next source
+    (``workspace._chat_thread_file``). The member must be able to write to
+    that chat. *organization_id* is the sender's tenant, from the server-side
+    identity, never from the request. ``None`` refuses each chat file. With
+    *chat_files* off (a held chat), no chat file is a source. A failed room
+    lookup answers 503. The check reads the database, so an async caller runs
+    this in a thread.
+
+    H-201 part 3 (§21.15, the P1 of the part 2 review): a refused ref FAILS
+    the send with 422, and a warning names it. The old rule skipped it, so
+    the mail went out without the file that the member asked for.
+
+    Task 2491: :func:`load_artifact_attachments` (the send) and
+    :func:`refused_artifacts` (the check before a card) both call this rule,
+    so the check and the send keep one rule. Fences:
+    ``tests/unit/test_email_files_before_card.py``,
+    ``tests/unit/test_email_attach_shared_agent.py``."""
+    return _resolve_artifact(ref, user_email, organization_id, chat_files)[0]
 
 
 def refused_artifacts(
-    refs: list[ArtifactAttachment], user_email: str | None,
+    refs: list[ArtifactAttachment], user_email: str | None, *,
+    organization_id: str | None = None,
 ) -> list[str]:
     """The path of each ref that a send refuses, as the ref gives it.
 
@@ -149,7 +190,7 @@ def refused_artifacts(
     refused: list[str] = []
     for ref in refs:
         try:
-            resolve_artifact_path(ref, user_email)
+            resolve_artifact_path(ref, user_email, organization_id=organization_id)
         except HTTPException as exc:
             if exc.status_code != 422:
                 raise
@@ -159,23 +200,42 @@ def refused_artifacts(
 
 def load_artifact_attachments(
     refs: "list[ArtifactAttachment] | None",
-    user_email: str | None = None,
+    user_email: str | None = None, *,
+    organization_id: str | None = None, chat_files: bool = True,
 ) -> list[dict]:
     """Resolve workspace-artifact references to ``[{filename, content,
     mime_type}]`` for a provider. Each ref resolves through
     :func:`resolve_artifact_path`, and a refused ref fails the whole send
-    with 422 (H-201 part 3). This fails closed."""
+    with 422 (H-201 part 3). This fails closed.
+
+    Task 3598: a chat file is read with ``acb_skills.safe_open``, because a
+    container can write a chat folder. A link at any depth, or a file that
+    went away after the check, fails the send with the same 422."""
     if not refs:
         return []
     import mimetypes
 
+    from acb_skills import safe_open
+
     out: list[dict] = []
     for ref in refs:
-        full = resolve_artifact_path(ref, user_email)
+        full, chat = _resolve_artifact(ref, user_email, organization_id, chat_files)
+        if chat is None:
+            content = full.read_bytes()
+        else:
+            try:
+                got = safe_open.read_bytes(*chat)
+            except (safe_open.UnsafePath, OSError):
+                got = None
+            if got is None:
+                raise _artifact_refused(
+                    (ref.agent or "email-assistant").strip() or "email-assistant",
+                    (ref.path or "").strip())
+            content = got
         mime, _ = mimetypes.guess_type(full.name)
         out.append({
             "filename": ref.name or full.name,
-            "content": full.read_bytes(),
+            "content": content,
             "mime_type": mime or "application/octet-stream",
         })
     return out
@@ -223,8 +283,12 @@ async def send_email(
                     ) from exc
 
             # Resolve any workspace-artifact attachments (agent-created files)
-            # to bytes and merge them in alongside base64 attachments.
-            artifact_atts = load_artifact_attachments(req.artifacts, user.email)
+            # to bytes and merge them in alongside base64 attachments. Task
+            # 3598: the tenant is the sender's own, and the room check of a
+            # chat file reads the database, so it runs in a thread.
+            artifact_atts = await asyncio.to_thread(
+                load_artifact_attachments, req.artifacts, user.email,
+                organization_id=user.organization_id)
             if artifact_atts:
                 attachments = (attachments or []) + artifact_atts
             # H-392: each Metorite file resolves again as the member, and it

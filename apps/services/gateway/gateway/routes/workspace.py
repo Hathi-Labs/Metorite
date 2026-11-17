@@ -1018,6 +1018,100 @@ def _is_loose_path(rel: str, own_slug: str | None) -> bool:
     return is_loose_rel(rel)
 
 
+def _chat_path_parts(rel: str) -> tuple[list[str], str] | None:
+    """The parts of ``<inputs|outputs>/<thread slug>/<file>`` and the chat id
+    that the slug names, else ``None`` (task 3598).
+
+    A loose file, a path with a ``..`` or ``.`` part, an absolute path, a
+    blocked name and a path form that a case-blind disk folds give ``None``. The slug must be the exact slug of its id
+    (``agent_paths.thread_slug``), so one slug names one chat."""
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import THREAD_HEADS, is_thread_slug, thread_slug
+
+    clean = str(rel or "").replace("\\", "/")
+    if _odd_name_form(clean) or _is_blocked_path(clean):
+        return None
+    try:
+        parts = safe_open.split_rel(clean)
+    except safe_open.UnsafePath:
+        return None
+    if len(parts) < 3 or parts[0] not in THREAD_HEADS or not is_thread_slug(parts[1]):
+        return None
+    session_id = parts[1].rsplit("-", 1)[0]
+    try:
+        return (parts, session_id) if thread_slug(session_id) == parts[1] else None
+    except ValueError:
+        return None
+
+
+def _chat_thread_file(
+    agent_name: str | None, rel: str, user_email: str | None,
+    organization_id: str | None,
+) -> tuple[Path, str] | None:
+    """``(tenant dir, path)`` of a file of a chat that the caller may write
+    to, in a shared agent's tenant dir. Else ``None`` (task 3598).
+
+    A shared agent writes the files of a chat to ``outputs/<thread slug>/``
+    and ``inputs/<thread slug>/`` of the tenant dir. ``make_document`` gives
+    that path. The tenant dir holds the chats of every member of the org, so
+    only the chat folder can say whose file it is. The rule:
+
+    * the path is ``<inputs|outputs>/<thread slug>/<file>``. A loose file, a
+      path with ``..`` or an absolute path, a blocked name and a path form that
+      a case-blind disk folds give ``None``;
+    * the slug names one chat. ``resolve_room_access`` must give the caller
+      ``can_send`` in it (an owner or a member). A viewer, a reader of an org
+      chat, a member who left and a chat with no row give ``None``. A failed
+      lookup answers 503;
+    * the tenant dir comes from *organization_id*, the caller's tenant from
+      the server-side identity, never from the request (R5);
+    * the file opens with no link at any depth (``acb_skills.safe_open``).
+
+    *agent_name* is the agent that the ref names. ``None`` takes the chat's own
+    agent. A ``personal`` or ``team`` agent gives ``None``. The call is sync
+    and reads the database, so an async caller runs it in a thread.
+    """
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import is_valid_agent_name
+    from gateway.rooms import resolve_room_access
+
+    email = str(user_email or "").strip()
+    if "@" not in email or not organization_id:
+        return None
+    found = _chat_path_parts(rel)
+    if found is None:
+        return None
+    parts, session_id = found
+    own = parts[1]
+    named = str(agent_name or "").strip()
+    if named:
+        named = _chat_agent_name(named)
+        if not is_valid_agent_name(named) or _agent_instance_for(named, email):
+            return None
+    room = resolve_room_access(session_id, email, organization_id=organization_id)
+    if room.resolve_failed:
+        raise HTTPException(status_code=503, detail=room.denied("attach its files"))
+    if room.unknown_session or not room.can_send:
+        return None
+    agent = named or _chat_agent_name(room.agent_name)
+    if _agent_instance_for(agent, email):
+        return None
+    ws = _tenant_agent_workspace(agent, organization_id)
+    if ws is None:
+        return None
+    rel_clean = "/".join(parts)
+    try:
+        real = _safe_resolve(ws, rel_clean).relative_to(ws.resolve()).as_posix()
+    except (HTTPException, OSError, ValueError):
+        return None
+    if (real.split("/")[:2] != parts[:2] or _is_other_thread_path(real, own)
+            or _is_loose_path(real, own)):
+        return None
+    if not safe_open.is_file(ws, rel_clean):
+        return None
+    return ws, rel_clean
+
+
 def _skill_top(rel: str, own_slug: str | None) -> str | None:
     """The skill folder of *rel* in a shared agent's tenant dir, else ``None``.
 

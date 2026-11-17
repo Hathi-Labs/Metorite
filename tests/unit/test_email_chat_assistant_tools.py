@@ -516,7 +516,8 @@ async def test_the_route_keeps_the_body_when_asked(monkeypatch, gmail, sent_body
         account_id=BOX, draft_id="b0000000-0000-4000-8000-0000000000d1",
         to=["ravi@contoso.test"], cc=["priya@fracktal.test"], subject="New",
         body="Hi Ravi," if gmail else "", keep_html=True, keep_body=True)
-    await dr.upsert_draft(req, SimpleNamespace(email="dana@fracktal.test"))
+    # A real UserContext always carries the tenant (task 3598 reads it).
+    await dr.upsert_draft(req, SimpleNamespace(email="dana@fracktal.test", organization_id=None))
     [kw] = updates
     assert kw["body_text"] == sent_body
     if not gmail:
