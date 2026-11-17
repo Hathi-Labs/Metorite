@@ -1113,12 +1113,13 @@ def _permission_gate(
     actually about to do, not just their name.
 
     ``facts`` are fields that the CALLER knows and the arguments do not
-    carry. The MCP gate passes ``mcp_tool`` and the server's
-    ``mcp_annotations`` (H-299), so ``decide()`` applies its MCP rule. They
-    are set after the argument mapping, so a tool argument cannot write them.
-    A caller that needs a fail-closed answer must not trust ``gate_error``:
-    the MCP gate shows a card for every code but ``mcp_read_only`` and
-    ``mcp_read_only_key`` (MCP-C2).
+    carry. The MCP gate passes ``mcp_tool``, the server's
+    ``mcp_annotations`` (H-299) and ``mcp_member_present`` (MCP-NC1), so
+    ``decide()`` applies its MCP rule. They are set after the argument
+    mapping, so a tool argument cannot write them. A caller that needs a
+    fail-closed answer must not trust ``gate_error``: the MCP gate shows a
+    card for every code but ``mcp_read_only``, ``mcp_read_only_key`` (MCP-C2)
+    and ``mcp_member_run`` (MCP-NC1).
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
@@ -3905,7 +3906,11 @@ async def _record_pack_call(
     (:func:`_pack_ws_lock`), so two pack calls at once each see the other's
     update, and none is lost. Condition 5: the mailbox event "Now working on
     <mailbox>" goes to the run's own queue, and a run with no queue gets it on
-    its relay stream (``executor._emit_to_run_or_relay``). Never raises."""
+    its relay stream (``executor._emit_to_run_or_relay``).
+
+    HRD-11a: then, under the same lock, the item in focus of the chat
+    (``executor._record_chat_focus``), for an email or a Projects owner. Only
+    a run with its own binding writes it (``CHAT_FOCUS_ORGS``). Never raises."""
     try:
         from orchestrator import executor as ex
 
@@ -3913,9 +3918,9 @@ async def _record_pack_call(
         call = {"id": "", "name": name, "args": args, "result": str(result), "success": True}
         async with _pack_ws_lock(ctx):
             before, _preamble = await ex._email_working_set_for(owner, ctx)
-            if before is None:
-                return
-            await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            if before is not None:
+                await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            await ex._record_chat_focus(owner, ctx, [call])
     except Exception as exc:  # the working set never costs the call
         _log.warning("executor.pack_ws_unwritten", tool=name, error_type=type(exc).__name__)
 
@@ -4891,10 +4896,11 @@ async def _inject_mcp_servers(
     A registry row always names its org, so there are no org-less "global"
     servers.
 
-    **The card** (H-299). *member_present* is True only when a member can
-    answer a confirmation card in this run. The executor passes it. The
-    default is False, so a caller that does not say refuses each MCP tool
-    that needs a card (``_maf_mcp.McpPermissionGate``).
+    **The card** (H-299, MCP-NC1). *member_present* is True only when a
+    member started this run. The executor passes it. Then a tool runs with no
+    card, unless its server is set to always confirm. The default is False,
+    so a caller that does not say refuses each MCP tool that does not say
+    read-only, and each tool that needs a card (``_maf_mcp.McpPermissionGate``).
 
     **No stdio** (D85). A stdio row starts a process on the host, so both
     paths drop it and log ``mcp.stdio_refused``.
@@ -5080,7 +5086,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
         out.append(_maf_mcp.McpServer(
             name=str(srv.name), url=str(srv.url), headers=_str_map(srv.headers),
             # H-300: the admin's "always confirm" switch. A row with no key
-            # reads as false, so the server keeps its H-299 behaviour.
+            # reads as false, so the gate applies the rule of item 33
+            # (MCP-NC1): no card in a verified member's run in Metorite, and
+            # the H-299 refusal of a write with no member and on WhatsApp.
             always_confirm=getattr(srv, "always_confirm", False) is True,
             # MCP-C2: the admin's read-only key, as the registry parsed it
             # once (``StoredServer.read_only_key``). Nothing parses it again.
