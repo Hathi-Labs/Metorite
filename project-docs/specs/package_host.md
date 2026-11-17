@@ -128,8 +128,6 @@ Each point keeps the seam that owns it today. Only the place where the seam read
 | `jobs` | A verb in ⌘K "Do" | `lib/shell/registry.ts`, `routes/shell/intent.py` | One owner for each job id |
 | `search` | Records in Find and in `search_company` | `retrieval/sources.py`, `routes/shell/search.py` | One owner for each source id |
 | `needs` | A bell item | `routes/shell/needs.py` `register(Provider)` | `register` refuses a duplicate today |
-| `nudges` | A kind of finding that asks the member to act | `routes/shell/feed.py` provider registry (`my_day_feed.md` §4.1), then Reach (`proactive_reach.md`) | One owner for each kind id |
-| `insights` | A kind of finding that states a fact, with no act due | The same registry, group "For your information" | One owner for each kind id |
 | `cards` | A Home card | `lib/shell/presets.ts`, `routes/admin/me.py` | One owner for each card key |
 | `skill` | A tool pack | `acb_skills/tool_packs.py`, then `ai_studio.md` F3 | One owner for each pack id |
 | `actions` | Catalog rows | D136 manifests, `GET /studio/actions` (B1) | One owner for each action id |
@@ -139,13 +137,18 @@ Each point keeps the seam that owns it today. Only the place where the seam read
 | `fields` | Fields on a host record (§8.3) | The field layer (PKG-13) | One owner for each field key |
 | `settings` | A section in Settings | `personalization.md` §12.6 | One owner for each section id |
 
-**The `nudges` and `insights` points (HX-0, task 3590).** Each claim is the declaration of one kind. `proactive_loop.md` §6.2 owns its fields, and §6.1 owns the fields of a finding. This spec owns only the envelope:
+**The `nudges` and `insights` points (HX-0, task 3590) are named here and are not in the table above.** The table lists the points that the registry holds, and the CHECK of `package_contribution` (`package_contribution_point`, migration of PKG-4) holds the same 13. `tests/unit/test_package_registry_r8.py` keeps the two equal. The two new points join the table in the slice that builds their consumer, with a migration that widens the CHECK (expand only, R6). `proactive_loop.md` §6 owns the fields of a finding and of a kind.
+
+- `nudges` adds a kind of finding that asks the member to act. Its consumer seam is the provider registry of `routes/shell/feed.py` (`my_day_feed.md` §4.1), then Reach (`proactive_reach.md`). The conflict rule: one owner for each kind id.
+- `insights` adds a kind of finding that states a fact, with no act due. Its consumer seam is the same registry, in the group "For your information". The conflict rule: one owner for each kind id.
+
+The envelope of a claim:
 - The claim key is the `kind` id. Two kinds with one id fail at install, as §4 says.
 - A `nudges` kind has a group of Now, Needs you or Ready for you. An `insights` kind has the group "For your information", and its `reach_class` is `brief` at most.
 - A declaration with no `fixtures` fails at install. A declaration with no `reach_class` gets `none`, so the kind never leaves the app.
 - A claim adds no code. The `source` names a provider that already exists, a job kind or a connection.
 - Delivery checks `visibility_scope` of each finding again (`proactive_loop.md` §6.4 and §8.4). The install check does not replace it.
-- Fence: LOOP-7 (task 3447) builds `test_finding_contract.py`. Until then this section is advisory (R7).
+- Fence: `tests/unit/test_finding_contract.py` (LOOP-7, task 3447) checks a declaration and its fixtures. Until the points join the registry, this section is advisory (R7).
 
 **A duplicate claim fails at install,** not at render. The install refuses with the point, the key and the package that holds it. This is the Cordis rule: "declaring a slot is claiming it".
 
