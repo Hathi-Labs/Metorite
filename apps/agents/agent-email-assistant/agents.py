@@ -2993,6 +2993,8 @@ async def compose_reply(
         copy += f". The mail server refused {_addr_text(res.get('refused'))}, so they got nothing"
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
+        # Task 3594: the reply went. A Save to Drafts sent nothing.
+        await _note_sent(res.get("id"), _sent_people(res), request_id=answer.request_id)
         return f"Sent to {to}{copy}, from {box}.{kept}"
     did = str(res.get("draft_id") or "")
     # The id lets the agent schedule the draft (``schedule_send``, H-375).
@@ -6538,6 +6540,8 @@ async def send_email(
             return line
         return _not_done(f"The {verb} was not sent.")
     res = await _post("/email/send", payload)
+    # Task 3594: the mail went, so the chat keeps the record of the send.
+    await _note_sent((res or {}).get("id"), [*to, *cc, *(bcc or [])])
     count = len(refs) + len(shared)
     note = f" with {count} attachment(s)" if count else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
@@ -6893,6 +6897,9 @@ async def _new_mail_answered(answer: Any, sender: str, usual: str) -> str:
         if exc.status in (404, 409, 422):
             return f"Nothing was sent. {getattr(exc, 'detail', '') or exc!s}"
         raise
+    if res.get("action") == "send":
+        # Task 3594: the mail went. A Save draft sent nothing.
+        await _note_sent(res.get("id"), _sent_people(res), request_id=answer.request_id)
     return _new_mail_result(res, sender, usual)
 
 
@@ -7190,6 +7197,8 @@ async def forward_email(
     if note:
         payload["note"] = note
     res = await _post("/email/forward", payload)
+    # Task 3594: the forward went, so the chat keeps the record of the send.
+    await _note_sent((res or {}).get("id"), [*to, *(cc or []), *(bcc or [])])
     sent = res.get("attachments") or []
     files_note = f" with {len(sent)} attachment(s)" if sent else " with no attachments"
     return (
@@ -7408,7 +7417,7 @@ async def _held_card(
     if answer.responder and member and answer.responder.strip().lower() != member:
         return card_outcome_text(CARD_OTHER_MEMBER, act)
     try:
-        return await _post("/email/held-card/act", {
+        res = await _post("/email/held-card/act", {
             "card_id": answer.request_id,
             "card_thread_id": answer.thread_id,
             "answer": answer.answer,
@@ -7417,6 +7426,9 @@ async def _held_card(
         if exc.status in (404, 409, 422):
             return _held_refusal(exc, lead)
         raise
+    # Task 3594: a send or a forward went. A schedule sent nothing yet.
+    await _note_held_sent(res, answer.request_id, str(body.get("draft_id") or ""))
+    return res
 
 
 async def _held_form_card(
@@ -7450,7 +7462,7 @@ async def _held_form_answered(answer: Any, lead: str) -> dict[str, Any] | str:
     if isinstance(answer, str):
         return answer
     try:
-        return await _post("/email/held-card/act", {
+        res = await _post("/email/held-card/act", {
             "card_id": answer.request_id,
             "card_thread_id": answer.thread_id,
             "answer": answer.answer,
@@ -7459,6 +7471,9 @@ async def _held_form_answered(answer: Any, lead: str) -> dict[str, Any] | str:
         if exc.status in (404, 409, 422):
             return _held_refusal(exc, lead)
         raise
+    # Task 3594: the held new mail went. A Save draft sent nothing.
+    await _note_held_sent(res, answer.request_id)
+    return res
 
 
 def _held_refusal(exc: Exception, lead: str) -> str:
@@ -7483,6 +7498,42 @@ def _held_sent_text(res: dict[str, Any], lead: str) -> str:
     tail = (f" The member left {left} row(s) unticked, and those did not go."
             if left else "")
     return f"{lead}: {'; '.join(parts)}.{tail}"
+
+
+def _sent_people(res: Any) -> list[str]:
+    """The To, Cc and Bcc of the act's answer: the people that the member
+    approved on the card and that the mail server took."""
+    if not isinstance(res, dict):
+        return []
+    return [str(a) for key in ("to", "cc", "bcc") for a in (res.get(key) or [])]
+
+
+async def _note_sent(message_id: Any, people: list[str], *,
+                     request_id: str | None = None) -> None:
+    """Task 3594: the sent-mail record of the chat (``chat_organization.md``
+    §16.3). Call it only AFTER the mail went, with the provider id and the
+    approved addresses. Never on a decline, a close or a failure. The next
+    turn reads the record, so it does not send the same mail again. An
+    older platform, the flag off and a fault write nothing. Never raises."""
+    try:
+        from acb_skills.ask_tools import note_sent_message
+    except ImportError:  # an older platform with no record
+        return
+    try:
+        await note_sent_message(str(message_id or ""), list(people or []),
+                                request_id=request_id)
+    except Exception:  # the record never costs the send its answer
+        return
+
+
+async def _note_held_sent(res: Any, request_id: str, draft_id: str = "") -> None:
+    """:func:`_note_sent` for the act of a held card. Only a send and a
+    forward went. A save or a schedule sent nothing. A draft send answers no
+    provider id, so its id is the draft's own, as ``draft:<id>``."""
+    if not isinstance(res, dict) or res.get("action") not in ("send", "forward"):
+        return
+    mid = str(res.get("id") or "") or (f"draft:{draft_id}" if draft_id else "")
+    await _note_sent(mid, _sent_people(res), request_id=request_id)
 
 
 #: The longest subject of a draft from the chat (``drafting.SUBJECT_MAX``).
@@ -7682,6 +7733,9 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "Not sent. The draft changed after the card showed it. Read the "
             "draft again, and ask the user before you send it."
         )
+    # Task 3594: the draft went. The route answers no provider id, so the
+    # record names the draft's own id.
+    await _note_sent(f"draft:{draft_id}", [a for v in lists.values() for a in v])
     return "Draft sent."
 
 

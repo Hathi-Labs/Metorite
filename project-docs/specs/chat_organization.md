@@ -510,9 +510,18 @@ with HRD-12 before it builds.
 `orchestrator/card_record.py`. HRD-12 does not overlap: it keeps typed words,
 and this table keeps none. The row names the member who answered the card, and
 it has two nullable slots: `record_link` (an app path) and `message_id` (a
-token, for task 3594). The send and create tools do not set the slots yet, and
-no read of the chat calls `card_record.was_sent`. An auto-approved call that
-shows no card writes no row.
+token, for task 3594). An auto-approved call that shows no card writes no row.
+
+**Status (2026-11-17, task 3594).** The sent-mail record is built, dark behind
+the same `CHAT_CARD_RECORD_ORGS`. Migration 458 adds `recipients` (the
+addresses that the member approved, 50 at most) and `sent_at`. Each send tool
+of the email agent calls `ask_tools.note_sent_message` after the mail went,
+and never on a decline, a close or a failure. The tools are `send_email`,
+`forward_email`, `send_draft`, `compose_reply`, the new-mail card and the held
+card. A send counts only in the tool call frame of its own approved card. The
+run context of each later turn states the last 5 sent acts of the chat, one
+fact line each, and one rule line (`executor._sent_acts_block`). The persona
+does not change. The create tools do not set `record_link` yet.
 
 ### 16.4 Later chats in the topic (CO-18)
 
