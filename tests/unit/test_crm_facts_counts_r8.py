@@ -141,3 +141,25 @@ async def test_the_facts_read_no_exact_count_of_a_module_with_fill_rows(
     subjects = {f.subject for f in facts}
     # Records and no fill row: the module is still there.
     assert "module:Fee_Receipts" in subjects
+
+
+async def test_with_the_fill_flag_off_each_module_is_counted_exactly(
+    org_a, monkeypatch,
+) -> None:
+    """Verifier finding F2. ``fills_of`` answers None for an org outside
+    ``CRM_FILL_RANK_ORGS``, so the fill mode has no totals and falls back to
+    the exact count for EVERY module. The facts then read what they read
+    before task 3593."""
+    from acb_common import get_settings
+    from gateway.routes.crm.catalogue import COUNT_FROM_FILL, _load
+
+    monkeypatch.setattr(get_settings(), "crm_fill_rank_orgs", "", raising=False)
+
+    async def work(db: _Spy) -> Any:
+        return await _load(db, org_a.org_a, count=COUNT_FROM_FILL)
+
+    (_m, sources, _r, _o), spy = await _as_app(org_a, org_a.org_a, work)
+    got = _records_of(sources)
+    # The fill row says 100, but the flag is off: the exact count (3) wins.
+    assert got["Invoices"] == 3
+    assert len(spy.counted) == 1 and "Invoices" in spy.counted[0]
