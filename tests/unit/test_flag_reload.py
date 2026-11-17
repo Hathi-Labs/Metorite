@@ -121,6 +121,22 @@ def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not waiting_allowed("globex")
 
 
+def test_my_day_learn_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-58 LOOP-4a, proactive_loop.md §7.2. The reload list holds the key,
+    and the one reader sees a change with no restart."""
+    from gateway.routes.shell.state import learn_allowed
+
+    assert fr.reloadable("MY_DAY_LEARN_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("MY_DAY_LEARN_ORGS", "")
+    get_settings.cache_clear()
+    assert not learn_allowed("acme")
+    env(**{**_START, "MY_DAY_LEARN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("MY_DAY_LEARN_ORGS",)
+    assert learn_allowed("acme")
+    assert not learn_allowed("globex")
+
+
 def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-MCP SW-53, agent_coordination.md. The reload list holds the key, and
     the one reader sees a change with no restart. The master stays a restart
@@ -174,6 +190,22 @@ def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert fr.reload_flags().applied == ("STUDIO_DOOR_OPS_ORGS",)
     assert door_ops_allowed("acme")
     assert not door_ops_allowed("globex")
+
+
+def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11, chat_organization.md §18. The reload list holds the key,
+    and the one reader of the pin switch sees a change with no restart."""
+    from gateway.chat_session_member import pin_allowed
+
+    assert fr.reloadable("CHAT_PIN_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert pin_allowed("acme")
+    assert not pin_allowed("globex")
+    assert not pin_allowed(None)
 
 
 def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
@@ -231,6 +263,21 @@ def test_studio_chat_tools_orgs_reloads_and_its_reader_follows(env, monkeypatch)
     assert fr.reload_flags().applied == ("STUDIO_CHAT_TOOLS_ORGS",)
     assert chat_tools_allowed("acme")
     assert not chat_tools_allowed("globex")
+
+def test_studio_skill_offer_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-1d, ai_studio.md §14 TOF-1d. The reload list holds the key,
+    and the one reader of the skill offer sees a change with no restart."""
+    from gateway.routes.studio.flags import skill_offer_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_OFFER_ORGS")
+    monkeypatch.setenv("STUDIO_SKILL_OFFER_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_offer_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_OFFER_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_OFFER_ORGS",)
+    assert skill_offer_allowed("acme")
+    assert not skill_offer_allowed("globex")
+    assert not skill_offer_allowed(None)
 
 def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
@@ -292,6 +339,22 @@ def test_studio_live_preview_orgs_reloads_and_its_reader_follows(env, monkeypatc
     assert fr.reload_flags().applied == ("STUDIO_LIVE_PREVIEW_ORGS",)
     assert live_preview_on("ACME ")
     assert not live_preview_on("globex")
+
+
+def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-2a, chat_organization.md §6. The reload list holds the key, and
+    the one reader of the topic switch sees a change with no restart."""
+    from gateway.chat_topic import topics_allowed
+
+    assert fr.reloadable("CHAT_TOPICS_ORGS")
+    monkeypatch.setenv("CHAT_TOPICS_ORGS", "")
+    get_settings.cache_clear()
+    assert not topics_allowed("acme")
+    env(**{**_START, "CHAT_TOPICS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_TOPICS_ORGS",)
+    assert topics_allowed("ACME ")
+    assert not topics_allowed("globex")
+    assert not topics_allowed(None)
 
 
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:

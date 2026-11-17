@@ -26,7 +26,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { clearCardLog, getFormEdits, keepFormEdits, noteCardEvent } from "@/lib/chatStore";
-import { NO_EDITS, closedEdits, formEditsReducer, type FormEdits } from "@/lib/confirmationQueue";
+import { NO_EDITS, asNewMailEdits, closedEdits, formEditsReducer, type FormEdit, type FormEdits } from "@/lib/confirmationQueue";
 import type { NewMailEdits } from "@/lib/replyCard";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -36,6 +36,8 @@ const A = "thread-a";
 const B = "thread-b";
 const CARD = "c".repeat(32);
 const OTHER = "d".repeat(32);
+/** The subject of kept mail edits: the map holds a task card's edits too (EAC-2), so a reader asks the guard. */
+const subjectOf = (e: FormEdit | undefined) => asNewMailEdits(e)?.subject;
 const edits = (subject: string): NewMailEdits => ({ subject, body: "text", ticks: { rows: [] } as never, fileTicks: [] });
 
 function kept(...pairs: [string, NewMailEdits][]): FormEdits {
@@ -56,8 +58,8 @@ describe("the edits of each thread (CS, task 1893)", () => {
     expect(getFormEdits(B)).toBeUndefined();
     const b = kept([OTHER, edits("Other")]);
     keepFormEdits(B, b);
-    expect(getFormEdits(A)?.get(CARD)?.subject).toBe("Rates");
-    expect(getFormEdits(B)?.get(OTHER)?.subject).toBe("Other");
+    expect(subjectOf(getFormEdits(A)?.get(CARD))).toBe("Rates");
+    expect(subjectOf(getFormEdits(B)?.get(OTHER))).toBe("Other");
     expect(getFormEdits(A)?.has(OTHER)).toBe(false);
   });
 
@@ -73,7 +75,7 @@ describe("the edits of each thread (CS, task 1893)", () => {
     keepFormEdits(B, kept([OTHER, edits("Other")]));
     clearCardLog(A);
     expect(getFormEdits(A)).toBeUndefined();
-    expect(getFormEdits(B)?.get(OTHER)?.subject).toBe("Other");
+    expect(subjectOf(getFormEdits(B)?.get(OTHER))).toBe("Other");
   });
 });
 
@@ -83,7 +85,7 @@ describe("closedEdits (task 1893)", () => {
   it("closes-only-what-left: a card that left the queue drops its edits, the others stay", () => {
     const out = closedEdits(map, new Set([CARD, OTHER]), new Set([OTHER]));
     expect(out.has(CARD)).toBe(false);
-    expect(out.get(OTHER)?.subject).toBe("Other");
+    expect(subjectOf(out.get(OTHER))).toBe("Other");
   });
 
   it("closes-only-what-left: a card that was never in the queue before does not count as left", () => {
@@ -111,7 +113,7 @@ describe("the wiring in AgentChat (task 1893)", () => {
   });
 
   it("chat-wires-the-store: each edit is written through to the store, for the thread it belongs to", () => {
-    expect(block).toMatch(/const onFormEdits = useCallback\(\(key: string, value: NewMailEdits\) => \{[\s\S]*?keepFormEdits\(sessionId, formEditsRef\.current\);[\s\S]*?\}, \[sessionId\]\);/);
+    expect(block).toMatch(/const onFormEdits = useCallback\(\(key: string, value: FormEdit\) => \{[\s\S]*?keepFormEdits\(sessionId, formEditsRef\.current\);[\s\S]*?\}, \[sessionId\]\);/);
   });
 
   it("chat-wires-the-store: the prune runs by transition, and writes its result through", () => {

@@ -268,6 +268,11 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   own delete, on the same session. A hook that raises fails the try, and the
   whole prune rolls back. BR-2a-1 added the retention of the brief runs
   here, with its 90 day cut-off (`core_brief.md` §3.4, `brief/run.py`).
+  WS-STU I8b-1a added the asks of a connection, with a 30 day cut-off
+  (`connections/attention.py`). Task 3435 added the waiting chat cards
+  (`orchestrator/pending_ask.py`, `chat_run_continuity.md` §4.12.4 item 1).
+  An expired card loses its stored call, and the card goes 7 days after it
+  expires. These two hooks run in a savepoint and never raise.
 
 ## 5c. Seed hooks: a job every 15 minutes (BR-2a-1, built)
 
