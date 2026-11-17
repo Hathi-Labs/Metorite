@@ -27,6 +27,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - ⚠️ It is the ONE builder of a spawning Copilot client. `child_env_client` builds every agent client with `env=copilot_env()`, and `install_child_env_guard` (installed by `orchestrator/__init__.py`) covers every path.
    - Do not build a `CopilotClient` for an agent anywhere else. Fence: `test_copilot_child_env.py`.
 3. agents.py exports build_orchestrator_agent(), the main orchestrator MAF Agent.
+   - WS-FIND FIND-6 (`find_engine.md` §5.3 and §5.4): the build reads `_find_enabled` once, with company search on. For an org of `FIND_ORGS`, `resolve_name` joins after `search_company`. With `CONTEXT_RECENCY` on too, the persona gains `FIND_STANDING_RULE` by one exact swap (`_FIND_SWAP`), because the route runs the ladder only then. Each find tool of the core list (`search_company`, `resolve_name`, `resolve_person`) then takes `acb_skills.pack_tool_guard.guard`, the one guard of HRD-3. Each other org keeps the persona and the tool objects of before. `resolve_person` stays until `resolve_name` has its parity (D-FIND-3). Fences: `test_find_tools.py`, `evals/trajectories/test_find_family_trajectory.py`.
 4. mutation.py handles Self_Mutation_Node. It starts a Docker sandbox on agent failure.
 5. stream_relay.py buffers all SSE events to Redis Streams for fire-and-forget chat with live reconnection.
 6. All agents must go through MAF. No raw Copilot SDK path for business execution.
@@ -106,6 +107,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 22. **A run that holds a CRM tool gets the number check** (spec `crm_platform.md` §18.11.2).
    - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`. Read `agents` again after injection. Do not attach the provider anywhere else.
    - Each new relay of a run queue must drop the hold beat (`_relayable`). Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+   - FIND-7: the same seam gives the "not found" check to an agent that holds `search_company`, while `FIND_CLAIM_CHECK` is not `off`. It does so only for an org of `FIND_ORGS`. The seam asks `gateway.retrieval.find.find_allowed` for the org of the run binding, and no org or a fault reads as off. With the flag `off`, and for any other org, the seam attaches what it attached before. Fence: `test_answer_not_found.py`.
 22a. **A slow tool call gets one line for the member** (HRD-6 part 1, spec `chat_run_continuity.md` §4.11). It ships dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
    - `_tool_injection._apply_progress_notice` runs right BEFORE `_apply_answer_check`, after `_apply_steer_turns`. Rule 22 keeps the number check last, so its recorder sits inside the timer, and the timer still wraps each tool call. It reads the org of the run binding only. Do not attach `acb_skills.progress_notice.ProgressNoticeProvider` anywhere else.
 22b. **A card stores the call that it guards** (RESUME-1a, task 3260, spec `chat_run_continuity.md` §4.12.4 item 1). It ships dark behind `CHAT_RESUME_ORGS`.
