@@ -27,11 +27,13 @@ answers the trace of §3.7 with no record. Each search writes one
 `search.company.ladder` line.
 
 **FIND-7 is built** (task 3244, 2026-11-17, see "As built" in §5.5). Behind
-`FIND_CLAIM_CHECK`, the harness reads the final answer of each chat run. An
-answer that says a record does not exist needs a `search_company` answer of
-the same run that shows pass 2. In `shadow`, a miss writes one
-`answer_check.claim` line with no text. In `on`, it gets one more pass. The
-flag is `off` on every box.
+`FIND_CLAIM_CHECK`, the harness reads the final answer of each chat run, for
+an org of `FIND_ORGS` only. An answer that says a record does not exist
+needs a `search_company` answer of the same run that shows pass 2. An app's
+search tool alone does not count.
+
+In `shadow`, a miss writes one `answer_check.claim` line with no text. In
+`on`, it gets one more pass. The flag is `off` on every box.
 
 **HRD-21 is built** (task 3225, 2026-11-16, see "As built" in §3.1 and §6).
 Behind `CHAT_SEARCH_ORGS`, rung 6 reads the member's own solo chats with
@@ -781,6 +783,12 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
   `_tool_injection._apply_answer_check`, attaches it to an agent whose own
   tools hold `search_company`. A spawn child gets no check. It sits inside the
   number check, so it reads the model's own text before a note joins it.
+- **Only an org of `FIND_ORGS`.** Pass 2 exists only for such an org, so the
+  seam attaches the check only there. It asks
+  `gateway.retrieval.find.find_allowed`, the one reader of `FIND_ORGS`, for
+  the org of the run binding. No org, or a fault of the reader, reads as off.
+  For any other org the seam adds no middleware and writes no log line, as
+  with the flag `off`.
 - **The final answer only.** The check reads a model response that calls no
   tool. A step that calls a tool is no answer, because the run goes on.
 - **The mark of pass 2.** `company_search_tools.ran_second_pass` is the one
@@ -819,16 +827,19 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
   once over a sentence. So the cap of 20,000 characters bounds the work. On
   2,000,000 characters of each shape of the reviews, the best of 3 calls
   took at most 0.25 s of CPU here.
-- **The flag.** `FIND_CLAIM_CHECK` takes `off`, `shadow` or `on`, for every
-  org of the box. `acb_common.settings.find_claim_check_mode` is its one
-  reader. It is not a `*_ORGS` or `*_MODES` key, so a change needs a restart.
+- **The flag.** `FIND_CLAIM_CHECK` takes `off`, `shadow` or `on`. The flag
+  is global, but the check acts only for an org of `FIND_ORGS`.
+  `acb_common.settings.find_claim_check_mode` is its one reader. It is not a
+  `*_ORGS` or `*_MODES` key, so a change needs a restart.
 - **`shadow`.** The check writes at most one `answer_check.claim` line for a
   run, and changes nothing. The outcome is `shadow_miss` or `shadow_pass`.
-- **`on`.** The check holds each answer once `search_company` or
-  `resolve_name` answered in the run (`CLAIM_ARM_TOOLS`). A list tool of an
-  app does not arm it, because an empty list is a true answer. A claim with
-  no pass 2 gets one more model request, with the fixed text
-  `CLAIM_RETRY_NOTE`. After it, the answer goes as it is.
+- **`on`.** The check holds each answer once any find tool of §5.2 or §5.3
+  answered in the run (`FIND_TOOLS`). A claim with no pass 2 gets one more
+  model request, with the fixed text `CLAIM_RETRY_NOTE`. After it, the answer
+  goes as it is. An app's search tool alone (`search_crm`, `query_inbox`,
+  `find_tasks`, `crm_list_records`, `find_contact`) has no pass 2, so a claim
+  after it alone gets the retry too. The planner decided this on task 3244:
+  §5.5 binds.
 - **A failed retry.** When the one more request raises, the member reads the
   held draft, as with the check `off`. The line says `retry_failed`. A
   cancel is not caught, so it stops the run as before. The failed request
@@ -840,11 +851,13 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 - **The log line.** `answer_check.claim` holds `mode`, `outcome`, `rule`,
   `searches`, `finds` and `armed`. `finds` counts the results of every find
   tool of §5.2 and §5.3. `armed` is true when `search_company` or
-  `resolve_name` answered before the claim. The line holds no word of the
-  answer, of a record or of the member. The run context adds the run id.
-- **Off.** With the flag `off`, the seam attaches what it attached before,
-  and the log line `executor.answer_check_on` keeps its fields. Fence:
-  `tests/unit/test_answer_not_found.py`.
+  `resolve_name` answered before the claim, so the retry is a fair request to
+  run pass 2. It is false when only an app's search tool ran, or none
+  (`finds` 0). The line holds no word of the answer, of a record or of the
+  member. The run context adds the run id.
+- **Off.** With the flag `off`, and for an org off `FIND_ORGS`, the seam
+  attaches what it attached before. The log line `executor.answer_check_on`
+  keeps its fields. Fence: `tests/unit/test_answer_not_found.py`.
 
 **The limits of FIND-7.**
 
@@ -895,18 +908,20 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 9. With `CONTEXT_RECENCY` off, the route returns after pass 1. The plain
    tool then shows no mark. See `retrieval/company.py`, the return before the
    words alone. So in `on`, each claim after a search takes the retry, and no
-   claim can pass.
+   claim can pass. On production `CONTEXT_RECENCY` is true: the planner read
+   it on the box at 08:40 UTC on 2026-11-17.
 10. Pass 2 does not run when the first pass has a hit with every content
     word, or for a query with an operator. With `FIND_ORGS` off, it runs only
     when the first pass finds no hit. In each case the check fires on a
     claim.
-11. In `on`, the check holds no answer before the first `search_company` or
-    `resolve_name` answer of the turn. Such an answer streams as it is, and
-    the check logs `unheld_miss`. A claim after a list tool only is not held.
-12. In `on`, after the first `search_company` or `resolve_name` answer of a
-    turn, the member sees each later answer only when the model has drafted
-    all of it. The text does not stream. This is true for each answer, not
-    only for a claim.
+11. In `on`, the check holds no answer before the first find result of the
+    turn. A claim with no find tool at all streams as it is, and the check
+    logs `unheld_miss` with `finds` 0. `shadow` logs it as `shadow_miss` with
+    `finds` 0. The planner accepted this gap: such an answer comes with no
+    search at all.
+12. In `on`, after the first find result of a turn, the member sees each
+    later answer only when the model has drafted all of it. The text does not
+    stream. This is true for each answer, not only for a claim.
 13. A search of a sub-agent does not count for the run of its parent.
 14. The check does not compare the words of the search with the words of the
     member. Any `search_company` answer of the run that shows pass 2 passes.
@@ -916,22 +931,27 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
     `resolve_name` answer never shows pass 2, so it cannot pass the check.
     The cost is one more model request in each such turn, and one more
     search when the model obeys the retry text.
+17. In `on`, a true empty list after an app's search tool costs the retry,
+    for example "I could not find any overdue tasks" after `find_tasks`. The
+    line then says `armed` false. The planner accepted this cost, and the
+    owner reads 20 shadow lines before the flip (decision 1).
+18. The check acts only for an org of `FIND_ORGS`. In any other org it adds
+    nothing, in each mode.
 
-**Decisions for the owner before `on`.**
+**Decisions for the owner before `on`.** The planner decided these on task
+3244, and the owner can change them.
 
-1. **The claims with no lookup.** The done-when says that a claim needs a
-   `search_company` answer in the same turn. This slice does not hold a
-   claim before the first `search_company` or `resolve_name` answer. It
-   only logs `unheld_miss`, so the streamed answer of each other turn stays.
-   So `on` never holds a claim after `search_crm`, `query_inbox`,
-   `find_tasks`, `crm_list_records` or `find_contact` alone (limit 11). The
-   owner must accept this gap, or ask for a hold of every answer.
-2. **`CONTEXT_RECENCY` on production.** Limit 9 applies when the flag is
-   off. Check the value on the production box before the flip. This slice
-   cannot read it.
-3. **The precision of the matcher.** Shadow logs no text (limit 15). Before
-   the flip, decide if the counts of 7 days are enough. Another option is a
-   review of a sample of answers that the owner reads.
+1. **Read 20 shadow lines before the flip.** Read 20 `answer_check.claim`
+   lines with their turns, from the HathiLabs org only, with no chat of a
+   customer. Count the false holds, and write the count on task 3244. With
+   more than 2 false holds in 20, do not flip to `on`.
+2. **`CONTEXT_RECENCY` on production is true.** The planner read it on the
+   box at 08:40 UTC on 2026-11-17. On that box, `FIND_ORGS` and
+   `FIND_CLAIM_CHECK` are not set, so both are off. Limit 9 does not apply
+   there.
+3. **The precision of the matcher.** Shadow cannot measure it, because the
+   line holds no text (limit 15). The planner accepted this. Decision 1
+   answers it.
 
 ## 6. Privacy and tenancy
 

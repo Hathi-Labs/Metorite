@@ -62,17 +62,23 @@ that :func:`not_found_claim` reads as "the record does not exist" needs a
 
 * ``shadow`` logs one ``answer_check.claim`` line for the run, and changes
   nothing.
-* ``on`` holds each answer once the run read a result of
-  :data:`CLAIM_ARM_TOOLS` (``search_company`` or ``resolve_name``). A claim
-  with no pass 2 gets ONE more model request with :data:`CLAIM_RETRY_NOTE`.
-  That is the one retry of the run, which the number check spends too
+* ``on`` holds each answer once the run read a result of any tool of
+  :data:`FIND_TOOLS`. A claim with no pass 2 gets ONE more model request
+  with :data:`CLAIM_RETRY_NOTE`, after an app's search tool alone too. That
+  is the one retry of the run, which the number check spends too
   (``RunLedger.retried``). After it, the answer goes as it is (D-FIND-8). A
   retry that raises sends the held draft as it is (``retry_failed``). An
-  answer before such a result is not held: the check logs it as
+  answer before any find result is not held: the check logs it as
   ``unheld_miss``.
 
+The seam attaches the check only for an org of ``FIND_ORGS``, because pass 2
+exists only there (``orchestrator._tool_injection._apply_answer_check``).
+
 The claim line holds :data:`CLAIM_LOG_FIELDS`: the mode, the outcome, the
-rule code, two counts and ``armed``. It holds no text of the answer and no
+rule code, two counts and ``armed``. ``armed`` is true when a
+``search_company`` or ``resolve_name`` answer is in the run
+(:data:`CLAIM_ARM_TOOLS`), and false when only an app's search tool ran, or
+none. It holds no text of the answer and no
 word of a record. The matcher reads the first :data:`MAX_CLAIM_CHARS`
 characters, so its work is bounded, because it runs on the event loop. Fence:
 ``tests/unit/test_answer_not_found.py``.
@@ -311,17 +317,20 @@ _CODE_LIKE = re.compile(
 CLAIM_SEARCH_TOOL = "search_company"
 
 #: The find tools of the chat (``find_engine.md`` §5.2 and §5.3). The claim
-#: line counts their results (``finds``). They arm nothing.
+#: line counts their results (``finds``). The first result of one of them
+#: arms the hold of the claim check in ``on`` (FIND-7 round 5, the decision of
+#: the planner): a claim after an app's search tool alone has no pass 2, so
+#: it gets the one retry.
 FIND_TOOLS: frozenset[str] = frozenset({
     CLAIM_SEARCH_TOOL, "resolve_name", "search_crm", "crm_list_records",
     "query_inbox", "find_contact", "find_tasks", "resolve_person",
 })
 
 #: The tools with a pass 2 or a near ladder of names (``search_company``, and
-#: ``resolve_name`` of FIND-5). Only a result of one of them arms the hold of
-#: the claim check in ``on`` (``armed`` on the claim line). An app's list
-#: tool does not arm it, because an empty list ("no overdue tasks") is a
-#: true answer, not a failed lookup.
+#: ``resolve_name`` of FIND-5). The claim line says ``armed`` true when one of
+#: them answered in the run, so the retry is a fair request to run pass 2.
+#: With ``armed`` false, only an app's search tool ran: an empty list ("no
+#: overdue tasks") may be a true answer, and the owner reads such lines first.
 CLAIM_ARM_TOOLS: frozenset[str] = frozenset({CLAIM_SEARCH_TOOL, "resolve_name"})
 
 #: The most characters of an answer that :func:`not_found_claim` reads. A
@@ -938,8 +947,9 @@ class RunLedger:
     #: FIND-7: True when the claim check is on for the run. Else the ledger
     #: counts no find result, as before FIND-7.
     claims: bool = False
-    #: FIND-7: the results of :data:`FIND_TOOLS`, of :data:`CLAIM_ARM_TOOLS`
-    #: (``lookups``, which arm the hold) and of ``search_company``.
+    #: FIND-7: the results of :data:`FIND_TOOLS` (``finds``, which arm the
+    #: hold), of :data:`CLAIM_ARM_TOOLS` (``lookups``, the field ``armed``)
+    #: and of ``search_company``.
     finds: int = 0
     lookups: int = 0
     searches: int = 0
@@ -1587,7 +1597,8 @@ class CheckClaims(ChatMiddleware):
         # The run id comes from the bound run context (``acb_common._log``).
         # The line holds codes, counts and one bool, never a word of the
         # answer (:data:`CLAIM_LOG_FIELDS`). ``armed``: a result of
-        # :data:`CLAIM_ARM_TOOLS` came before the answer in this run.
+        # :data:`CLAIM_ARM_TOOLS` came before the answer in this run. False
+        # means that only an app's search tool ran, or no find tool at all.
         _log.info(
             "answer_check.claim", mode=self._mode, outcome=outcome, rule=rule,
             searches=self._ledger.searches, finds=self._ledger.finds,
@@ -1611,11 +1622,11 @@ class CheckClaims(ChatMiddleware):
             await call_next()
             self._watch(context, unheld=False)
             return
-        if not self._ledger.lookups:
-            # No search_company or resolve_name answer came in this run yet,
-            # so the answer is not held: the member reads it as it streams.
-            # An empty list of an app's own tool is a true answer. The check
-            # logs a claim.
+        if not self._ledger.finds:
+            # No find tool has answered in this run yet, so the answer is not
+            # held: the member reads it as it streams, and the check logs a
+            # claim as `unheld_miss`. After any find result, a claim with no
+            # pass 2 is held, an app's search tool alone too (round 5).
             await call_next()
             self._watch(context, unheld=True)
             return

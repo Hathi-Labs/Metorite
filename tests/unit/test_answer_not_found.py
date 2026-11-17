@@ -556,9 +556,10 @@ class TestTheMarkOfPassTwo:
         ledger.record("search_company", PASS_TWO)
         assert ledger.second_pass and ledger.searches == 2 and ledger.finds == 3
 
-    def test_only_search_company_and_resolve_name_arm_the_hold(self) -> None:
-        """Fix round, P2: an app's list tool counts in ``finds`` and arms
-        nothing. ``search_company`` and ``resolve_name`` arm it."""
+    def test_only_search_company_and_resolve_name_set_armed(self) -> None:
+        """Round 5: every find tool counts in ``finds``, and the first one arms
+        the hold. Only ``search_company`` and ``resolve_name`` count in
+        ``lookups``, which is the field ``armed`` of the claim line."""
         armed = {"search_company", "resolve_name"}
         assert armed == answer_check.CLAIM_ARM_TOOLS
         ledger = RunLedger(numbers=False, claims=True)
@@ -778,7 +779,8 @@ class TestOn:
 
     async def test_an_answer_before_any_find_is_not_held(self, logged) -> None:
         """No find tool has answered, so the stream is not held. The claim is
-        logged, and the run spends no pass."""
+        logged with ``finds`` 0, and the run spends no pass. This is the gap
+        that the planner accepted (§5.5, round 5)."""
         agent, client = _agent([("text", "There is no such order in the CRM.")])
         from orchestrator._native_run_context import agent_with_providers
 
@@ -786,7 +788,8 @@ class TestOn:
         texts = [u.text async for u in view.run("Any order?", stream=True) if u.text]
         assert len(texts) == 2  # the two deltas of the fake model, as they came
         assert len(client.requests) == 1
-        assert [e["outcome"] for e in _claims(logged)] == ["unheld_miss"]
+        assert [(e["outcome"], e["finds"], e["armed"]) for e in _claims(logged)] == [
+            ("unheld_miss", 0, False)]
 
     async def test_a_held_answer_streams_whole(self) -> None:
         agent, _client = _agent([("call", "search_company", {"query": "Sharath"}),
@@ -794,16 +797,40 @@ class TestOn:
         assert await _run(agent, stream=True) == FOUND
 
     @STREAMS
-    async def test_an_empty_list_of_a_list_tool_gets_no_pass(self, stream: bool, logged) -> None:
-        """Fix round, P2: an answer that reports an empty list after an app's
-        list tool is a true answer. It is not held, and it costs no request."""
+    async def test_a_claim_after_an_app_search_tool_alone_gets_the_retry(
+        self, stream: bool, logged,
+    ) -> None:
+        """Round 5, the decision of the planner: §5.5 binds. An app's search
+        tool has no pass 2, so a claim after it alone is held and gets the one
+        retry. The line says ``armed`` false, so the owner can read such a
+        line as a possible empty list. This costs 4 requests, not 2."""
         answer = "I couldn't find any open tasks for Sharath."
         agent, client = _agent([("call", "find_tasks", {"query": "Sharath"}),
-                                ("text", answer)], tools=[find_tasks, search_company])
+                                ("text", answer),
+                                ("call", "search_company", {"query": "Sharath open tasks"}),
+                                ("text", FOUND), SPARE], tools=[find_tasks, search_company])
+        out = await _run(agent, stream=stream)
+        assert len(client.requests) == 4
+        assert out == FOUND
+        assert _user_texts(client.requests[2])[-1] == CLAIM_RETRY_NOTE
+        assert [(e["outcome"], e["finds"], e["armed"]) for e in _claims(logged)] == [
+            ("retry", 1, False)]
+
+    @STREAMS
+    async def test_an_empty_list_after_find_tasks_now_costs_a_retry(
+        self, stream: bool, logged,
+    ) -> None:
+        """The trade that the planner accepted: a true empty list after
+        ``find_tasks`` costs the retry too. The owner reads 20 shadow lines
+        before ``on`` (§5.5)."""
+        answer = "I couldn't find any open tasks for Sharath."
+        agent, client = _agent([("call", "find_tasks", {"query": "Sharath"}),
+                                ("text", answer), ("text", answer), SPARE],
+                               tools=[find_tasks, search_company])
         assert await _run(agent, stream=stream) == answer
-        assert len(client.requests) == 2
+        assert len(client.requests) == 3
         assert [(e["outcome"], e["armed"]) for e in _claims(logged)] == [
-            ("unheld_miss", False)]
+            ("retry", False), ("after_retry_miss", False)]
 
     @STREAMS
     async def test_resolve_name_arms_the_hold(self, stream: bool, logged) -> None:
@@ -925,14 +952,23 @@ class _CopilotShaped:
         self._tools = [search_company]
 
 
+#: The org of the run in the seam tests, and the value of FIND_ORGS.
+FIND_ORG = "org-find"
+
+
 class TestTheSeam:
     def _apply(self, agents: list[Any], monkeypatch, *, claim: str, crm: str = "off",
-               name: str = "orchestrator") -> list[Any]:
+               name: str = "orchestrator", org: str | None = FIND_ORG,
+               find_orgs: str = FIND_ORG) -> list[Any]:
+        """The real seam, with the run org of the run binding and FIND_ORGS."""
         import acb_common.settings as settings_mod
+        from acb_common import get_settings
         from orchestrator import _tool_injection
 
         monkeypatch.setattr(settings_mod, "crm_answer_check_mode", lambda: crm)
         monkeypatch.setattr(settings_mod, "find_claim_check_mode", lambda: claim)
+        monkeypatch.setattr(_tool_injection, "_run_org", lambda: org)
+        monkeypatch.setattr(get_settings(), "find_orgs", find_orgs)
         _tool_injection._apply_answer_check(agents, name)
         return agents
 
@@ -1004,6 +1040,79 @@ class TestTheSeam:
         agent, _ = _agent([])
         assert self._apply([agent], monkeypatch, claim="off")[0] is agent
         assert self._apply([agent], monkeypatch, claim=ON)[0] is agent
+
+
+class TestOnlyAFindOrg:
+    """Round 5, the decision of the planner: pass 2 exists only for an org of
+    FIND_ORGS, so the check acts only there. The flag stays global."""
+
+    def _lines(self, monkeypatch) -> list[dict[str, Any]]:
+        from orchestrator import _tool_injection
+
+        lines: list[dict[str, Any]] = []
+        monkeypatch.setattr(_tool_injection._log, "info",
+                            lambda event, **kw: lines.append({"event": event, **kw}))
+        return lines
+
+    @pytest.mark.parametrize("claim", ["off", SHADOW, ON])
+    @STREAMS
+    async def test_an_org_off_find_orgs_runs_as_with_the_flag_off(
+        self, claim: str, stream: bool, monkeypatch, logged,
+    ) -> None:
+        """No middleware, no log line, and the same answer and count of
+        requests as with the flag off."""
+        lines = self._lines(monkeypatch)
+        agent, client = _agent([("call", "search_company", {"query": "Sharath"}),
+                                ("text", CLAIM), SPARE])
+        agents = TestTheSeam()._apply([agent], monkeypatch, claim=claim,
+                                      org="org-other", find_orgs=FIND_ORG)
+        assert agents[0] is agent
+        assert not [e for e in lines if e["event"] == "executor.answer_check_on"]
+        if stream:
+            out = "".join([u.text or "" async for u in agent.run("Any order?", stream=True)])
+        else:
+            out = (await agent.run("Any order?")).text
+        assert out == CLAIM
+        assert len(client.requests) == 2
+        assert _claims(logged) == []
+
+    def test_a_crm_agent_off_find_orgs_keeps_the_number_check_alone(self, monkeypatch) -> None:
+        lines = self._lines(monkeypatch)
+        agent, _ = _agent([], tools=[crm_aggregate, search_company])
+        agents = TestTheSeam()._apply([agent], monkeypatch, claim=ON, crm=ON,
+                                      org="org-other", find_orgs=FIND_ORG)
+        provider = TestTheSeam()._provider(agents[0])
+        assert provider is not None and (provider.mode, provider.claim_mode) == (ON, OFF)
+        on = [e for e in lines if e["event"] == "executor.answer_check_on"]
+        assert on == [{"event": "executor.answer_check_on", "agent": "orchestrator",
+                       "mode": ON}]
+
+    @pytest.mark.parametrize("find_orgs", [FIND_ORG, "*", f"x, {FIND_ORG.upper()}"])
+    def test_an_org_on_find_orgs_gets_the_check(self, find_orgs: str, monkeypatch) -> None:
+        agent, _ = _agent([])
+        agents = TestTheSeam()._apply([agent], monkeypatch, claim=SHADOW, find_orgs=find_orgs)
+        provider = TestTheSeam()._provider(agents[0])
+        assert provider is not None and provider.claim_mode == SHADOW
+
+    @pytest.mark.parametrize("org", [None, ""])
+    def test_no_org_reads_as_off(self, org: str | None, monkeypatch) -> None:
+        agent, _ = _agent([])
+        assert TestTheSeam()._apply([agent], monkeypatch, claim=ON, org=org,
+                                    find_orgs="*")[0] is agent
+
+    def test_a_fault_of_the_reader_reads_as_off(self, monkeypatch) -> None:
+        from gateway.retrieval import find
+
+        def _broken(_org: Any) -> bool:
+            raise RuntimeError("settings are down")
+
+        monkeypatch.setattr(find, "find_allowed", _broken)
+        agent, _ = _agent([])
+        assert TestTheSeam()._apply([agent], monkeypatch, claim=ON)[0] is agent
+
+    def test_an_empty_find_orgs_reads_as_off(self, monkeypatch) -> None:
+        agent, _ = _agent([])
+        assert TestTheSeam()._apply([agent], monkeypatch, claim=ON, find_orgs="")[0] is agent
 
 
 class TestTheFlag:

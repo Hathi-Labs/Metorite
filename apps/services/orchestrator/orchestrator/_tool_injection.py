@@ -3107,14 +3107,29 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
 
     WS-FIND FIND-7 (``find_engine.md`` §5.5): the same provider carries the
     "not found" check to an agent that holds ``search_company``, while
-    ``FIND_CLAIM_CHECK`` is not ``off``. With that flag ``off``, this seam
-    does what it did before.
+    ``FIND_CLAIM_CHECK`` is not ``off``. The flag is global, but the check
+    acts only for an org of ``FIND_ORGS``, because pass 2 exists only there.
+    The org is the run binding's (:func:`_run_org`), and the rule is
+    ``gateway.retrieval.find.find_allowed``, the one reader of ``FIND_ORGS``
+    that ``agents._find_enabled`` wraps for the tool list. No org, or a fault,
+    reads as off. For an org off the list, and with the flag ``off``, this
+    seam does what it did before.
     """
     from acb_common.settings import crm_answer_check_mode, find_claim_check_mode
     from acb_skills.subagent_contract import INTERNAL_AGENTS
 
     mode = crm_answer_check_mode()
     claim_mode = find_claim_check_mode()
+    if claim_mode != "off":
+        try:
+            from gateway.retrieval.find import find_allowed
+
+            org = _run_org()
+            find_on = bool(org) and find_allowed(org)
+        except Exception:  # a fault never turns the check on
+            find_on = False
+        if not find_on:
+            claim_mode = "off"
     if mode == "off" and claim_mode == "off":
         return
     if str(agent_name or "") in INTERNAL_AGENTS:
