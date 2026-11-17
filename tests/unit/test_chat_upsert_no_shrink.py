@@ -15,17 +15,20 @@ Postgres (R8). This file proves the rest:
 **The mutations (R7).** Copy the file, change it, run, and restore it with
 ``cp`` (``cmp`` then says the file is the same again).
 
-* In ``chat_no_shrink.no_shrink_mode`` return ON for any org when the list
-  is not empty: ``test_the_reader_reads_each_org`` goes red.
+* In ``chat_no_shrink._listed`` return ``bool(entries)`` (drop the per-org
+  check): ``test_the_reader_reads_each_org`` goes red.
 * In ``routes/chat.py::_no_shrink_sql`` drop ``or author_from_run``:
   ``test_only_a_client_write_of_an_agent_row_gets_a_variant`` goes red.
 * In ``_no_shrink_sql`` drop ``kind != "agent"``: the same test goes red.
 * Give ``_no_shrink_sql`` the variant with the flag off (drop
   ``mode == OFF or``): ``test_flag_off_runs_the_base_text_and_no_other_statement``
   goes red.
-* Add ``char_length(content)`` to ``_MESSAGE_UPSERT_SQL``:
-  ``test_the_flag_off_text_is_pinned`` goes red.
-* Pass ``text=...`` to the log call in ``chat_no_shrink.log_shrink``:
+* Add ``AND char_length(chat_message.content) >= 0`` to the ``WHERE`` of
+  ``_MESSAGE_UPSERT_SQL``: ``test_the_flag_off_text_is_pinned`` goes red.
+* In ``_upsert_messages`` put the content into the ``message_id`` of the
+  ``_note_shrink`` call (log the text):
+  ``test_a_save_logs_one_line_with_no_text`` goes red.
+* Add a field to the log call in ``chat_no_shrink.log_shrink``:
   ``test_the_log_line_names_lengths_and_no_text`` goes red.
 """
 from __future__ import annotations
@@ -257,6 +260,8 @@ def test_the_log_line_names_lengths_and_no_text() -> None:
                          "old_chars", "new_chars", "prefix"}
     assert (line["event"], line["thread_id"], line["message_id"]) == (
         "chat_no_shrink_shadow", "s" * 12, "m" * 40)
+    # A warning, so a box with LOG_LEVEL above INFO still counts it.
+    assert line["log_level"] == "warning"
     assert (line["org"], line["old_chars"], line["new_chars"], line["prefix"]) == (
         ORG_A, 34, 5, True)
     with pytest.raises(ValueError):

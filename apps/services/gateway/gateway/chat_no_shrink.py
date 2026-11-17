@@ -94,12 +94,12 @@ def log_shrink(
 
     *event* is :data:`SHADOW_EVENT` or :data:`REFUSED_EVENT`, and any other
     name raises :class:`ValueError`. So a count in the production logs reads
-    one fixed name for each mode.
+    one fixed name for each mode. Both lines are warnings. A box that sets
+    ``LOG_LEVEL`` above INFO still writes them, so a count of zero means zero.
     """
     if event not in (SHADOW_EVENT, REFUSED_EVENT):
         raise ValueError(f"unknown no-shrink event: {event!r}")
-    write = _log.warning if event == REFUSED_EVENT else _log.info
-    write(
+    _log.warning(
         event,
         thread_id=str(session_id)[:12],
         message_id=str(message_id)[:40],

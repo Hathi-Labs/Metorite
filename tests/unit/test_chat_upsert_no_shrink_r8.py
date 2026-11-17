@@ -45,11 +45,11 @@ What this proves:
 * In ``_no_shrink_sql`` drop ``kind != "agent"`` (guard a human row):
   ``test_enforce_a_human_row_of_the_same_member_still_takes_shorter_text``
   goes red.
-* In ``chat_no_shrink.log_shrink`` log the text: the no-text asserts of
-  ``test_shadow_a_shorter_client_write_still_wins_and_logs_one_line`` go red.
-* In ``chat_no_shrink.no_shrink_mode`` return ON for each org when the list
-  is not empty (drop the per-org check):
-  ``test_enforce_is_per_org`` goes red.
+* In ``_upsert_messages`` put the content into the ``message_id`` of the
+  ``_note_shrink`` call (log the text):
+  ``test_shadow_a_shorter_client_write_still_wins_and_logs_one_line`` goes red.
+* In ``chat_no_shrink._listed`` return ``bool(entries)`` (drop the per-org
+  check): ``test_enforce_is_per_org`` goes red.
 * In ``_no_shrink_sql`` give the variant with the flag off (drop
   ``mode == OFF or``): ``test_flag_off_a_shorter_client_write_wins_as_today``
   goes red.
