@@ -609,6 +609,19 @@ def _seen_by(view: dict[str, Any]) -> str:
     return ", ".join(names) + (f" and {more} more" if more > 0 else "") if names else "nobody"
 
 
+async def _openable(people: list[str]) -> list[str]:
+    """The people among *people* who CAN open a task that is given to them
+    (task 3633): not an agent, not a stranger to the directory, not a person
+    who is suspended or has no login. The card names the others under their own
+    rows (``not in the directory``, ``suspended``, ``no login yet``), so
+    ``gives access to`` never says that access is given to someone who cannot use
+    it. Order and case are kept. One lookup, and none for an empty list."""
+    humans = [p for p in people if not p.startswith("agent:")]
+    strangers, cannot = await _address_check(humans)
+    out = {a.lower() for a in strangers} | {a.lower() for a in cannot}
+    return [p for p in humans if p.lower() not in out]
+
+
 async def _access_lines(
     project_id: str, people: list[str] | None = None, beyond: str = "",
 ) -> dict[str, Any]:
@@ -624,7 +637,7 @@ async def _access_lines(
     """
     pid = uuid_of(project_id, "project_id")
     params: dict[str, str] = {}
-    humans = [p for p in people or [] if not p.startswith("agent:")]
+    humans = await _openable(people or [])
     if humans:
         params["people"] = ",".join(humans)
     if beyond:

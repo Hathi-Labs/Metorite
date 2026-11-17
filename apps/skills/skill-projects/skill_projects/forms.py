@@ -71,6 +71,7 @@ from skill_projects.writes import (
     _NewTask,
     _node,
     _not_confirmed,
+    _openable,
     _post_new_task,
     _prepare_new_task,
     _project_id,
@@ -1146,7 +1147,7 @@ async def _plan_access(parent_id: str, owners: list[str]) -> dict[str, Any]:
     space has no parent, so only its owners and the member see it."""
     if parent_id:
         return await _access_lines(parent_id, owners)
-    who = ", ".join(dict.fromkeys(o for o in owners if not o.startswith("agent:")))
+    who = ", ".join(dict.fromkeys(await _openable(owners)))
     return {"seen by": "you and each task's owner", **({"gives access to": who} if who else {})}
 
 
