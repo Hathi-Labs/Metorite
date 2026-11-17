@@ -69,9 +69,11 @@ the list.
 
 * :data:`LIST_TOOLS` is the closed table of the list reads, as ``tool ->
   kind``. A list holds only the ids that the tool result printed, in the
-  printed order: the ``• id=<id> `` lines of an email list and the
+  printed order: the ``• id=<uuid> `` lines of an email list and the
   ``  full_id: <uuid>`` lines of a task list (:data:`_LIST_LINES`). Each id
-  passes :func:`_valid_id`. The list keeps the first :data:`LIST_MAX` ids.
+  must read as a UUID (:func:`_list_id`), so a list line that a mail
+  subject forges with a free token gives nothing. The list keeps the first
+  :data:`LIST_MAX` ids.
 * A list read that acted REPLACES the stored list, of any kind, and puts the
   cursor before the first item. A list read that printed no id deletes it.
 * THE CURSOR is the highest place in the list of an item that the calls of
@@ -197,14 +199,21 @@ LIST_TOOLS: Mapping[str, str] = MappingProxyType({
     "find_priority": EMAIL, "query_inbox": EMAIL,
     "find_tasks": TASK, "list_tasks": TASK, "my_work": TASK,
 })
-#: The line of one item in a list result, by kind. The email lists print
+#: The line of one item in a list result, by kind. SECURITY (independent read
+#: of HRD-11b): the email tools print the subject and the snippet of the
+#: sender with no line-break strip. So a subject can forge a whole
+#: ``• id=<token> `` line. Each id of a list must therefore read as a UUID
+#: (:func:`_list_id`), because each ``email_messages.id`` is one. A forged
+#: line with a free token goes into no list. The residual: a forged line with
+#: a real UUID still goes in. The sender must know the id of a mail in the
+#: member's own mailbox, and the email tools read only that mailbox. The email lists print
 #: ``• id=<id> `` at the start of a line (``agent-email-assistant``
 #: ``query_inbox`` and ``find_priority``). The task lists print
 #: ``  full_id: <uuid>`` on a line of its own (``skill_projects.reads
 #: ._task_line``). An id that a cut result ends in has no space or no end of
 #: line after it, so it does not match.
 _LIST_LINES: Mapping[str, re.Pattern[str]] = MappingProxyType({
-    EMAIL: re.compile(r"^\u2022 id=(\S{1,200}) ", re.MULTILINE),
+    EMAIL: re.compile(r"^\u2022 id=([0-9A-Fa-f-]{36}) ", re.MULTILINE),
     TASK: re.compile(r"^  full_id: ([0-9A-Fa-f-]{36})$", re.MULTILINE),
 })
 #: The most ids that a stored list keeps.
@@ -362,12 +371,26 @@ def focus_of(owner: str, calls: Iterable[Mapping[str, Any]]) -> dict[str, str] |
 # ── The last list (HRD-11b) ─────────────────────────────────────────────────
 
 
+def _list_id(kind: str, value: Any) -> str:
+    """*value* as the id of a list item of *kind*, or ``""``. It passes
+    :func:`_valid_id`, and it must read as a UUID for EACH kind, so a forged
+    list line with a free token gives nothing. It comes back in the
+    canonical lower-case form."""
+    fid = _valid_id(kind, value)
+    if not fid:
+        return ""
+    try:
+        return _ok_id(str(uuid.UUID(fid)))
+    except ValueError:
+        return ""
+
+
 def clean_list(raw: Any) -> dict[str, Any] | None:
     """*raw* as ``{"kind", "ids", "cursor", "cut"}``, or None. THE check of a
     list.
 
     The kind must be one of :data:`KINDS`. Each id must pass
-    :func:`_valid_id`, and a bad id makes the whole list None. The ids are
+    :func:`_list_id` (a UUID), and a bad id makes the whole list None. The ids are
     different, at least one and at most :data:`LIST_MAX`. The cursor is
     :data:`BEFORE_FIRST` or a place in the list. Any other key is dropped."""
     if not isinstance(raw, Mapping):
@@ -378,7 +401,7 @@ def clean_list(raw: Any) -> dict[str, Any] | None:
         return None
     out: list[str] = []
     for value in ids:
-        fid = _valid_id(kind, value)
+        fid = _list_id(kind, value)
         if not fid or fid in out:
             return None
         out.append(fid)
@@ -398,15 +421,15 @@ def list_of(owner: str, call: Mapping[str, Any]) -> dict[str, Any] | None:
 
     ``{"kind", "ids", "cursor", "cut"}`` with the cursor before the first
     item. ``ids`` is empty when the result printed no id. Only the lines of
-    :data:`_LIST_LINES` count, and each id passes :func:`_valid_id`. A line
-    with a bad id is skipped."""
+    :data:`_LIST_LINES` count, and each id passes :func:`_list_id` (a UUID).
+    A line with a bad id is skipped."""
     kind = LIST_TOOLS.get(str(call.get("name") or ""))
     if kind is None or OWNERS.get(kind) != owner or not _acted(call):
         return None
     ids: list[str] = []
     cut = False
     for match in _LIST_LINES[kind].finditer(str(call.get("result") or "")):
-        fid = _valid_id(kind, match.group(1))
+        fid = _list_id(kind, match.group(1))
         if not fid or fid in ids:
             continue
         if len(ids) == LIST_MAX:
