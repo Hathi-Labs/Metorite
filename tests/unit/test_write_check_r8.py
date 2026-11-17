@@ -120,6 +120,21 @@ def world(promoted, app_engine):  # noqa: F811 — fixtures
                             at=NOW - 1 * day, to=addr_me)
         ids["own_reply"] = mail(a_me, p.org_a, folder="sent", thread="th-live", subject="Re: Terms",
                                 at=NOW - 2 * day, frm=addr_me, to="ravi@contoso.test")
+        # A message of the colleague that holds the SAME thread id as the member's NDA
+        # mail. It must not decide what the member's own read leaves out.
+        ids["col_same_thread"] = mail(a_col, p.org_a, folder="inbox", thread="th-mine",
+                                      subject="Other", at=NOW - 4 * day, to=addr_col)
+        # A shared mailbox that the member may read, with a mail that a colleague sent.
+        a_shared, addr_shared = box(m.col, p.org_a)
+        c.execute(text("UPDATE email_accounts SET shared_since = now() WHERE id = CAST(:a AS uuid)"),
+                  {"a": a_shared})
+        c.execute(text(
+            "INSERT INTO email_mailbox_grants (organization_id, account_id, subject, level, "
+            "created_by) VALUES (CAST(:o AS uuid), CAST(:a AS uuid), :s, 'read', 'admin@wc18.test')"),
+            {"o": p.org_a, "a": a_shared, "s": m.me})
+        ids["shared"] = mail(a_shared, p.org_a, folder="sent", thread="th-shared",
+                             subject="Licence terms", at=NOW - 2 * day, frm=addr_shared)
+        ids["shared_box"] = a_shared
         # The same thread id in the colleague's mailbox. It is not the member's.
         ids["col_root"] = mail(a_col, p.org_a, folder="inbox", thread="th-col-live", subject="Plans",
                                at=NOW - 5 * day, to=addr_col)
@@ -164,6 +179,8 @@ def world(promoted, app_engine):  # noqa: F811 — fixtures
                       {"p": ids["projects"]})
             c.execute(text("DELETE FROM pm_projects WHERE id = ANY(CAST(:p AS uuid[]))"),
                       {"p": ids["projects"]})
+            c.execute(text("DELETE FROM email_mailbox_grants WHERE account_id = CAST(:a AS uuid)"),
+                      {"a": ids["shared_box"]})
             c.execute(text("DELETE FROM email_attachments WHERE message_id IN (SELECT id FROM "
                            "email_messages WHERE account_id IN (SELECT id FROM email_accounts "
                            "WHERE user_id = ANY(:u)))"), {"u": [m.me, m.col, m.zed]})
@@ -215,6 +232,30 @@ async def test_r8_the_thread_of_a_reply_is_left_out(world) -> None:
         out = await _reader(w, w.m.me, w.p.org_a).sent_mail(
             ["mahesh@vendor.test"], since, w.ids["mine"])
     assert out == []  # the only match sits in the thread that the reply answers
+
+
+@pytest.mark.asyncio
+async def test_r8_a_shared_mailbox_is_not_the_members_own_sent_mail(world, monkeypatch) -> None:
+    """With the shared-mailbox flag on, the member may READ the shared box, and a
+    colleague's send there is still not "a mail you sent" (``private_predicate``)."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "email_shared_mailbox", True, raising=False)
+    w, since = world, NOW - timedelta(days=30)
+    async with _as_member(w.p, w.p.org_a):
+        mine = await _reader(w, w.m.me, w.p.org_a).sent_mail(["mahesh@vendor.test"], since, None)
+    assert w.ids["shared"] not in _ids(mine) and _ids(mine) == {w.ids["mine"]}
+
+
+@pytest.mark.asyncio
+async def test_r8_a_colleagues_message_cannot_decide_what_the_exclusion_leaves_out(world) -> None:
+    w, since = world, NOW - timedelta(days=30)
+    async with _as_member(w.p, w.p.org_a):
+        out = await _reader(w, w.m.me, w.p.org_a).sent_mail(
+            ["mahesh@vendor.test"], since, w.ids["col_same_thread"])
+    # The colleague's message shares the thread id of the member's NDA mail, and the
+    # member cannot read it, so it excludes nothing.
+    assert _ids(out) == {w.ids["mine"]}
 
 
 @pytest.mark.asyncio

@@ -85,7 +85,15 @@ STOP_WORDS: frozenset[str] = frozenset({
 RESEND_WORDS: frozenset[str] = frozenset({"resend", "resent", "resending", "again", "reminder"})
 
 _WORD = re.compile(r"[a-z0-9]+")
-#: A date stamp inside a file name: 2026-11-12, 20261112, 12-11-2026, v2, final.
+#: Words of a file name that name a version, not a topic: Deck_final, Report_v2.
+_FILE_NOISE: frozenset[str] = frozenset({"final", "copy", "draft", "signed", "scan"})
+_VERSION = re.compile(r"^v\d+$")
+#: Glue words of a task title. A title keeps its numbers and its months:
+#: "Pay invoice 1043" is not "Pay invoice 1042", and April is not March.
+TITLE_GLUE: frozenset[str] = frozenset({
+    "a", "an", "the", "and", "or", "of", "to", "for", "on", "in", "at", "with",
+    "from", "is", "are", "be", "by", "this", "that", "your", "our", "my", "you"})
+#: A date stamp inside a file name: 2026-11-12, 20261112, 12-11-2026.
 _DATE_STAMP = re.compile(r"(?<!\d)(?:\d{4}[-_.]?\d{2}[-_.]?\d{2}|\d{2}[-_.]\d{2}[-_.]\d{4})(?!\d)")
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 
@@ -101,11 +109,30 @@ def words(text: str | None) -> frozenset[str]:
 
 
 def file_stem_words(name: str | None) -> frozenset[str]:
-    """The words of a file name, without its extension and its date stamp."""
+    """The words of a file name, without its extension, date stamp and version."""
     base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
     base = _EXT.sub("", base)
     base = _DATE_STAMP.sub(" ", base)
-    return words(base.replace("_", " "))
+    return frozenset(w for w in words(base.replace("_", " "))
+                     if w not in _FILE_NOISE and not _VERSION.match(w))
+
+
+def title_words(text: str | None) -> frozenset[str]:
+    """The words of a task title: numbers and months count, glue does not."""
+    return frozenset(w for w in _WORD.findall((text or "").lower())
+                     if (w not in TITLE_GLUE and len(w) >= 2) or w.isdigit())
+
+
+def _file_name(value: str) -> str | None:
+    """A file name from an attachment argument, or None for an id form.
+
+    ``send_email`` takes a path, a name, or an id such as ``task-file:<uuid>``
+    or ``knowledge:<uuid>``. An id holds no name, so it adds no word.
+    """
+    v = (value or "").strip()
+    if not v or re.match(r"^[A-Za-z][A-Za-z0-9_-]*:", v) or not _EXT.search(v):
+        return None
+    return v
 
 
 # ── The intent ──────────────────────────────────────────────────────────────
@@ -154,10 +181,11 @@ def intent_of(tool: str, args: Mapping[str, Any]) -> Intent | None:
         topic = words(subject)
         recipients = _addresses(
             _split(args.get("to")) + _split(args.get("cc")) + _split(args.get("bcc")))
-        files = [str(a) for a in (args.get("attachments") or [])]
         stems: set[str] = set()
-        for f in files:
-            stems |= file_stem_words(f)
+        for f in args.get("attachments") or []:
+            name = _file_name(str(f))
+            if name:
+                stems |= file_stem_words(name)
         return Intent(
             act="send_email", recipients=recipients,
             reply_to=str(args["reply_to_email_id"]) if args.get("reply_to_email_id") else None,
@@ -172,7 +200,7 @@ def intent_of(tool: str, args: Mapping[str, Any]) -> Intent | None:
     if tool == "create_task":
         title = str(args.get("title") or "")
         return Intent(act="create_task", project_id=str(args.get("project_id") or "") or None,
-                      title=title, topic=words(title))
+                      title=title, topic=title_words(title))
     return None
 
 
@@ -252,16 +280,25 @@ async def _already_sent(intent: Intent, member: str, reader: Reader, now: dateti
     if not (intent.topic or intent.file_stems):
         return []  # nothing to match on, so no match
     rows = await reader.sent_mail(intent.recipients, now - SENT_WINDOW, intent.reply_to)
-    hits = []
+    hits: list[tuple[frozenset[str], dict[str, Any]]] = []
     for r in rows:
         to = {a.lower() for a in r.get("to", ())}
         if not to & set(intent.recipients):
             continue
-        if (words(r.get("subject")) & intent.topic) or (r.get("file_stems") or frozenset()) & intent.file_stems:
-            hits.append(r)
-    # A routine (a weekly report) is not a resend.
-    if not hits or len(hits) >= RECURRING_MIN:
+        matched = (words(r.get("subject")) & intent.topic) | (
+            (r.get("file_stems") or frozenset()) & intent.file_stems)
+        if matched:
+            hits.append((matched, r))
+    if not hits:
         return []
+    # The best match is the one that shares the most words. A routine (a weekly
+    # report) is the SAME match repeated, so only hits that hold all of its
+    # words count. Other mail to this address on one shared word does not.
+    best = max(hits, key=lambda h: (len(h[0]), h[1]["sent_at"]))[0]
+    same = [r for m, r in hits if best <= m]
+    if len(same) >= RECURRING_MIN:
+        return []
+    hits = same
     latest = max(hits, key=lambda r: r["sent_at"])
     return [_finding(
         kind="write_already_sent", member=member, entity_type="thread",
@@ -301,8 +338,10 @@ async def _task_settled(intent: Intent, member: str, reader: Reader, now: dateti
     reason = None
     if state.get("done"):
         reason = "done"
-    elif intent.act == "assign_task" and intent.assignees and set(intent.assignees) <= {
+    elif intent.act == "assign_task" and intent.assignees and set(intent.assignees) == {
             a.lower() for a in state.get("assignees", ())}:
+        # ``assign`` REPLACES the set. A smaller set removes people, which is not
+        # "already assigned".
         reason = "assigned"
     elif intent.act == "nudge_task":
         last = state.get("last_nudged_at")
@@ -323,7 +362,7 @@ async def _duplicate_task(intent: Intent, member: str, reader: Reader, now: date
     if intent.act != "create_task" or not intent.project_id or not intent.topic:
         return []
     for row in await reader.open_tasks(intent.project_id):
-        theirs = words(row.get("title"))
+        theirs = title_words(row.get("title"))
         if not theirs:
             continue
         share = len(theirs & intent.topic) / len(theirs | intent.topic)

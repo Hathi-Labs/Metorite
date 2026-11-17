@@ -84,6 +84,18 @@ def test_a_file_name_counts_without_its_extension_and_date_stamp():
     assert wc.file_stem_words("report.pdf") == frozenset({"report"})
 
 
+def test_a_version_or_a_final_in_a_file_name_is_not_a_topic():
+    assert wc.file_stem_words("Report_v2_final.pdf") == frozenset({"report"})
+    assert wc.file_stem_words("Deck_final.pptx") == frozenset({"deck"})
+
+
+def test_an_id_form_of_an_attachment_adds_no_word():
+    i = wc.intent_of("send_email", {"to": ["a@b.test"], "subject": "Hi",
+                                    "attachments": ["task-file:3f2a1b9c-4abc-9def", "knowledge:0a1b2c3d",
+                                                    "outputs/NDA_Acme.pdf", "plain"]})
+    assert i.file_stems == frozenset({"nda", "acme"})
+
+
 # ── The intent ─────────────────────────────────────────────────────────────
 
 def test_the_intent_comes_from_the_typed_arguments_only():
@@ -137,6 +149,17 @@ async def test_already_sent_stays_quiet(name, sent, args):
     assert await _run("send_email", args, FakeReader(sent=sent)) == [], name
 
 
+async def test_a_frequent_contact_does_not_hide_a_real_resend():
+    """Three mails to the same address that share only "acme" are not a routine."""
+    sent = [_sent(days_ago=3, subject="NDA for Acme", files=("NDA_Acme.pdf",), n=1),
+            _sent(days_ago=6, subject="Acme pilot kickoff", n=2),
+            _sent(days_ago=9, subject="Acme pilot pricing", n=3)]
+    args = {"to": ["mahesh@vendor.test"], "subject": "NDA for Acme", "attachments": ["outputs/NDA_Acme.pdf"]}
+    out = await _run("send_email", args, FakeReader(sent=sent))
+    assert [f["kind"] for f in out] == ["write_already_sent"]
+    assert out[0]["evidence"][0]["id"] == "m1" and out[0]["facts"]["count"] == 1
+
+
 async def test_a_reply_in_a_long_thread_is_not_a_resend():
     """The reader leaves out the thread of the email that the reply answers."""
     class ThreadAware(FakeReader):
@@ -185,6 +208,9 @@ async def test_task_settled_fires(tool, args, task, reason):
     ("nudge_task", {"task_id": "t1"}, _task()),
     ("nudge_task", {"task_id": "t1"}, None),  # a task that the member cannot open
     ("assign", {"task_id": "t1", "assignees": "other@acme.test"}, _task()),
+    # `assign` replaces the set: a smaller set removes people, it is not "already assigned".
+    ("assign", {"task_id": "t1", "assignees": "pri@acme.test"},
+     _task(assignees=["pri@acme.test", "ben@acme.test"])),
 ])
 async def test_task_settled_stays_quiet(tool, args, task):
     assert await _run(tool, args, FakeReader(task=task)) == []
@@ -201,16 +227,19 @@ async def test_duplicate_task_fires_on_a_matching_title_of_the_same_project():
 
 @pytest.mark.parametrize("title,open_title", [
     ("Fix the login page", "Fix the signup page"),
-    ("Review 2026", "Review 2027"),          # numbers do not count, so one word each: equal
-    ("Update", "Update plan"),               # stop words only
+    ("Pay invoice 1043", "Pay invoice 1042"),            # numbers count in a title
+    ("Close the April books", "Close the March books"),  # months count in a title
+    ("Review 2026", "Review 2027"),
 ])
 async def test_duplicate_task_stays_quiet_when_titles_differ(title, open_title):
     r = FakeReader(open=[{"id": "x1", "title": open_title}])
-    out = await _run("create_task", {"project_id": "p1", "title": title}, r)
-    if title == "Review 2026":
-        assert [f["kind"] for f in out] == ["write_duplicate_task"]  # the same words
-    else:
-        assert out == []
+    assert await _run("create_task", {"project_id": "p1", "title": title}, r) == []
+
+
+async def test_duplicate_task_fires_on_the_same_numbered_title():
+    r = FakeReader(open=[{"id": "x1", "title": "Pay invoice 1042"}])
+    out = await _run("create_task", {"project_id": "p1", "title": "pay invoice 1042"}, r)
+    assert [f["kind"] for f in out] == ["write_duplicate_task"]
 
 
 # ── The finding (§6.1) and the label rule (§4.9.2) ─────────────────────────
@@ -261,11 +290,13 @@ async def test_an_unknown_mode_and_an_unchecked_tool_run_nothing():
     assert await wc.check_write("send_email", SEND, member="", reader=r, mode="on", now=NOW) == []
 
 
-async def test_at_most_two_findings_show():
+async def test_the_cap_of_findings_is_enforced(monkeypatch):
     newer = [{"id": "n1", "account_id": "a1", "thread_id": "t9", "received_at": NOW}]
-    out = await _run("send_email", {**SEND, "reply_to_email_id": "e-1"},
-                     FakeReader(sent=[_sent()], newer=newer))
-    assert len(out) <= wc.MAX_SHOWN
+    args = {**SEND, "reply_to_email_id": "e-1"}
+    reader = FakeReader(sent=[_sent()], newer=newer)
+    assert len(await _run("send_email", args, reader)) == 2
+    monkeypatch.setattr(wc, "MAX_SHOWN", 1)
+    assert len(await _run("send_email", args, reader)) == 1
 
 
 async def test_a_slow_read_drops_and_the_check_stays_in_its_budget(caplog):

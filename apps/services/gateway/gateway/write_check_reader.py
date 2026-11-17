@@ -29,7 +29,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from gateway.db import tenant_session
-from gateway.routes.email.mailbox_access import mailbox_predicate
+from gateway.routes.email.mailbox_access import mailbox_predicate, private_predicate
 from gateway.write_check import file_stem_words
 
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -60,6 +60,11 @@ class SqlReader:
                         exclude_thread_of: str | None) -> list[dict[str, Any]]:
         """Mail that the member sent to any of *recipients* since *since*.
 
+        Own mailboxes only (``private_predicate``). A shared mailbox that the
+        member may read holds mail of colleagues, and "a mail you sent" would
+        be false for it. That is ``write_teammate_contacted``, blocked by
+        LOOP-Q11.
+
         The thread of the email that a reply answers is left out: a reply in a
         long thread is not a resend (§4.9.3).
         """
@@ -77,7 +82,7 @@ class SqlReader:
                      WHERE a.message_id = em.id) AS files
               FROM email_messages em
               JOIN email_accounts ea ON ea.id = em.account_id
-             WHERE {mailbox_predicate("ea", uid="uid", level="read")}
+             WHERE {private_predicate("ea", uid="uid")}
                AND LOWER(COALESCE(em.folder, '')) = 'sent'
                AND em.received_at >= :since
                AND EXISTS (SELECT 1 FROM jsonb_array_elements(
@@ -86,7 +91,9 @@ class SqlReader:
                     WHERE LOWER(r->>'email') = ANY(:addrs))
                AND (CAST(:excl AS uuid) IS NULL OR em.thread_id IS DISTINCT FROM (
                         SELECT x.thread_id FROM email_messages x
-                         WHERE x.id = CAST(:excl AS uuid)))
+                          JOIN email_accounts xa ON xa.id = x.account_id
+                         WHERE x.id = CAST(:excl AS uuid)
+                           AND {mailbox_predicate("xa", uid="uid", level="read")}))
              ORDER BY em.received_at DESC
              LIMIT :lim"""
         async with tenant_session() as db:
