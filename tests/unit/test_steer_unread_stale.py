@@ -17,7 +17,7 @@ import pytest
 steer = pytest.importorskip("orchestrator.steer", reason="orchestrator not installed")
 store = pytest.importorskip("orchestrator.native_session_store", reason="orchestrator not installed")
 
-from acb_common.tenant_redis import organization_scope  # noqa: E402
+executor = pytest.importorskip("orchestrator.executor", reason="orchestrator not installed")
 
 
 @pytest.fixture
@@ -35,6 +35,8 @@ def calls(monkeypatch) -> list[dict[str, str]]:
     monkeypatch.setattr(steer, "persist_signal", stored)
     monkeypatch.setattr(steer, "_PENDING_GUIDANCE", {})
     monkeypatch.setattr(steer, "_CLOSED", set())
+    monkeypatch.setattr(executor, "_RUN_ORG", {"t-1": "org-a", "t-2": "org-a", "t-3": "org-a",
+                                               "t-4": "org-a", "t-6": "org-a", "t-7": "org-b"})
     return seen
 
 
@@ -49,9 +51,9 @@ def _flag(monkeypatch, on: bool) -> None:
 
 async def test_an_unread_steer_marks_the_session_stale(monkeypatch, calls) -> None:
     _flag(monkeypatch, True)
-    steer._PENDING_GUIDANCE["t-1"] = [{"id": "s1", "text": "also the archive", "author": "a@x.test"}]
-    with organization_scope("org-a"):
-        assert await steer.return_unconsumed("t-1") == 1
+    assert steer.buffer_guidance("t-1", "a@x.test", "also the archive", signal_id="s1")
+    # No ``organization_scope`` here: the real terminal push runs outside any such block.
+    assert await steer.return_unconsumed("t-1") == 1
     assert calls == [{"org": "org-a", "thread": "t-1"}]
 
 
@@ -62,32 +64,36 @@ async def test_a_steer_that_could_not_be_stored_still_marks_the_session(monkeypa
         return False
 
     monkeypatch.setattr(steer, "persist_signal", not_stored)
-    steer._PENDING_GUIDANCE["t-2"] = [{"id": "s1", "text": "x"}]
-    with organization_scope("org-a"):
-        assert await steer.return_unconsumed("t-2") == 0
+    assert steer.buffer_guidance("t-2", "a", "x", signal_id="s1")
+    assert await steer.return_unconsumed("t-2") == 0
     assert calls == [{"org": "org-a", "thread": "t-2"}]
 
 
 async def test_a_run_that_read_every_steer_marks_nothing(monkeypatch, calls) -> None:
     _flag(monkeypatch, True)
-    with organization_scope("org-a"):
-        assert await steer.return_unconsumed("t-3") == 0
+    assert await steer.return_unconsumed("t-3") == 0
     assert calls == []
 
 
 async def test_with_the_flag_off_nothing_is_marked(monkeypatch, calls) -> None:
     _flag(monkeypatch, False)
-    steer._PENDING_GUIDANCE["t-4"] = [{"id": "s1", "text": "x"}]
-    with organization_scope("org-a"):
-        await steer.return_unconsumed("t-4")
+    assert steer.buffer_guidance("t-4", "a", "x", signal_id="s1")
+    await steer.return_unconsumed("t-4")
     assert calls == []
 
 
-async def test_with_no_tenant_bound_nothing_is_marked(monkeypatch, calls) -> None:
+async def test_with_no_run_tenant_nothing_is_marked(monkeypatch, calls) -> None:
     _flag(monkeypatch, True)
-    steer._PENDING_GUIDANCE["t-5"] = [{"id": "s1", "text": "x"}]
+    assert steer.buffer_guidance("t-5", "a", "x", signal_id="s1")  # t-5 has no run org
     await steer.return_unconsumed("t-5")
     assert calls == []
+
+
+async def test_the_org_is_the_runs_own_not_another_threads(monkeypatch, calls) -> None:
+    _flag(monkeypatch, True)
+    assert steer.buffer_guidance("t-7", "a", "x", signal_id="s1")
+    await steer.return_unconsumed("t-7")
+    assert calls == [{"org": "org-b", "thread": "t-7"}]
 
 
 async def test_a_fault_in_the_mark_never_fails_the_run(monkeypatch, calls) -> None:
@@ -97,6 +103,5 @@ async def test_a_fault_in_the_mark_never_fails_the_run(monkeypatch, calls) -> No
         raise RuntimeError("db down")
 
     monkeypatch.setattr(store, "mark_stale", boom)
-    steer._PENDING_GUIDANCE["t-6"] = [{"id": "s1", "text": "x"}]
-    with organization_scope("org-a"):
-        assert await steer.return_unconsumed("t-6") == 1
+    assert steer.buffer_guidance("t-6", "a", "x", signal_id="s1")
+    assert await steer.return_unconsumed("t-6") == 1

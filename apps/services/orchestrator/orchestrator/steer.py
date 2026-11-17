@@ -460,6 +460,25 @@ _GUIDANCE_SEQ = itertools.count()
 _CLOSED: set[str] = set()
 
 
+def _run_org_of(thread_id: str) -> str:
+    """The tenant of the run on *thread_id*, from the run binding, or "" (task 3640).
+
+    ``executor._RUN_ORG`` first (set by the run boundary, never by request input), then
+    the async bound tenant (``acb_common.db.current_tenant``), as
+    ``executor._current_run_org`` does. Never raises."""
+    try:
+        from orchestrator import executor  # noqa: PLC0415
+
+        org = executor._RUN_ORG.get(thread_id)
+        if org:
+            return str(org)
+        from acb_common.db import current_tenant  # noqa: PLC0415
+
+        return str(current_tenant() or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def buffer_guidance(
     thread_id: str, author: str, text: str, *, signal_id: str = "",
     typed: bool = False,
@@ -497,6 +516,9 @@ def buffer_guidance(
         entry["loop"] = asyncio.get_running_loop()
     except RuntimeError:
         pass
+    # Task 3640: the run's tenant, read HERE while the run is live. At the run's end the
+    # terminal event is pushed from a tee task, outside any ``organization_scope`` block.
+    entry["org"] = _run_org_of(thread_id)
     buf.append(entry)
     return True
 
@@ -609,29 +631,28 @@ async def return_unconsumed(thread_id: str) -> int:
         # them, so its saved session lacks them. The mark drops that session once, and the
         # next turn reads the text history, which holds them. The run saved its session
         # BEFORE its terminal event, so this mark lands after the save.
-        await _mark_session_stale(thread_id)
+        await _mark_session_stale(thread_id, next((str(e.get("org") or "") for e in entries if e.get("org")), ""))
     return given
 
 
-async def _mark_session_stale(thread_id: str) -> None:
+async def _mark_session_stale(thread_id: str, org: str) -> None:
     """Drop the stored native session of *thread_id*. Never raises.
 
-    Only with ``MAF_NATIVE_SESSIONS`` on and a tenant bound (R5). The org is the run's
-    binding, never a request value. Fence: ``tests/unit/test_steer_unread_stale.py``."""
+    Only with ``MAF_NATIVE_SESSIONS`` on. *org* is the run's tenant, read from the run
+    binding when the steer was buffered (R5), never from a request. With no org it logs
+    ``steer.session_stale_skipped`` and marks nothing. Fence:
+    ``tests/unit/test_steer_unread_stale.py``."""
     try:
         from acb_common import get_settings  # noqa: PLC0415
 
         if not getattr(get_settings(), "maf_native_sessions", False):
             return
-        from acb_common.tenant_redis import current_organization, organization_bound  # noqa: PLC0415
-
-        if not organization_bound():
+        if not org:
+            _log.warning("steer.session_stale_skipped", thread_id=thread_id[:12], reason="no_org")
             return
         from orchestrator import native_session_store  # noqa: PLC0415
 
-        await native_session_store.mark_stale(
-            organization_id=current_organization(), thread_id=thread_id,
-        )
+        await native_session_store.mark_stale(organization_id=org, thread_id=thread_id)
     except Exception as exc:  # noqa: BLE001 — a run must end whatever happens here
         _log.warning("steer.session_stale_failed", thread_id=thread_id[:12], error=type(exc).__name__)
 
