@@ -95,7 +95,8 @@ IMPORTERS[EXECUTOR] = frozenset({"recent"})
 #: flag and the member's switch), and turns each into word hashes at once. It
 #: stores no text. The two rules of a chat are the SQL of this module.
 IMPORTERS[GATEWAY / "chat_join_shadow.py"] = frozenset({
-    "ELIGIBLE_SQL", "OPEN_RUN_SQL", "list_for_member", "member_switch_on"})
+    "ELIGIBLE_SQL", "NOT_OFF_SQL", "OPEN_RUN_SQL", "list_for_member",
+    "member_switch_on"})
 #: The trees that (c) reads: all code of the platform.
 PLATFORM = (ROOT / "apps", ROOT / "packages")
 

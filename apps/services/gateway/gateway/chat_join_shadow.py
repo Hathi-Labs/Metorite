@@ -59,6 +59,7 @@ from sqlalchemy import text
 
 from gateway.assistant_summaries import (
     ELIGIBLE_SQL,
+    NOT_OFF_SQL,
     OPEN_RUN_SQL,
     list_for_member,
     member_switch_on,
@@ -396,7 +397,7 @@ SELECT s.id, s.title, s.updated_at,
    AND s.channel IS NULL
    AND s.id <> :sid
    AND s.updated_at >= :since
-   AND NOT COALESCE(s.member_summary @> jsonb_build_object('off', true), false)
+   AND {NOT_OFF_SQL}
  ORDER BY s.updated_at DESC, s.id DESC
  LIMIT :lim
 """

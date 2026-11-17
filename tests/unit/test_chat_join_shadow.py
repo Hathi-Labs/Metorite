@@ -362,8 +362,10 @@ def test_a_member_with_the_switch_off_is_not_matched_or_logged(monkeypatch) -> N
 
 def test_an_off_chat_is_never_a_candidate() -> None:
     """Opus review P1: an `off` chat is out of the candidate read (§16.2)."""
-    assert "jsonb_build_object('off', true)" in cjs.CANDIDATES_SQL
-    assert "NOT COALESCE(s.member_summary @>" in cjs.CANDIDATES_SQL
+    from gateway.assistant_summaries import NOT_OFF_SQL
+
+    assert NOT_OFF_SQL in cjs.CANDIDATES_SQL
+    assert "'off', true" in NOT_OFF_SQL and NOT_OFF_SQL.startswith("NOT COALESCE")
 
 
 # ── 6. One module names the table ───────────────────────────────────────────
