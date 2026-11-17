@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 from evals.one_assistant_measure import checks as ck
+from evals.one_assistant_measure import checks_2874, mirror, run, splits
 from evals.one_assistant_measure import mailbox as mb
-from evals.one_assistant_measure import mirror, run, splits
 from evals.one_assistant_measure.scenarios import all_scenarios
 from evals.one_assistant_measure.scenarios_2874 import (
     FLAGS,
@@ -140,11 +140,27 @@ def test_the_scripted_run_passes_every_chat() -> None:
     assert {"forward_email", "mark_thread_done", "find_contact", "compose_reply"} <= tools
 
 
-def test_a_wrong_path_of_case_7_is_reachable_and_fails_the_check() -> None:
-    """The 11-11 path: ``send_email`` for a reply. The product refuses it in a held chat, so
-    the live check is not vacuous: the harness runs the wrong tool and the check sees it."""
+def _capture(monkeypatch: pytest.MonkeyPatch) -> list[list[tuple[str, dict[str, Any], str]]]:
+    """Keep the ordered calls of each turn, so a test reads the real tool results."""
+    seen: list[list[tuple[str, dict[str, Any], str]]] = []
+    real = run.ck_2874.ordered_calls_of
+
+    def keep(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
+        out = real(events)
+        seen.append(out)
+        return out
+
+    monkeypatch.setattr(run.ck_2874, "ordered_calls_of", keep)
+    return seen
+
+
+def test_a_wrong_path_of_case_7_runs_and_the_product_refuses_it(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 11-11 path: ``send_email`` for a reply. In a held chat the product refuses it with
+    "use compose_reply". The harness runs the tool, and the check sees the wasted round."""
     from evals.one_assistant_measure.scenarios_2874 import REPLY
 
+    seen = _capture(monkeypatch)
     first = [tool_turn("query_inbox", {"from_email": "priya"}, call_id="c1"),
              tool_turn("read_email", {"email_id": PRIYA_ID}, call_id="c2"),
              text_turn("Priya asks for 250 boards."),
@@ -154,26 +170,39 @@ def test_a_wrong_path_of_case_7_is_reachable_and_fails_the_check() -> None:
                                          "draft": "Yes."}, call_id="c4"),
              text_turn("Saved in Drafts.")]
     rows = run.run_chat(REPLY, "pack", models={ORCHESTRATOR: ReplyModel(first)})
-    assert "send_email" in rows[1]["email_tools"]
+    refusal = next(r for n, _, r in seen[1] if n == "send_email")
+    assert "a reply goes through compose_reply" in refusal
     assert rows[1]["checks"]["compose_not_send"] is False
 
 
-def test_a_wrong_path_of_case_5_is_reachable_with_the_production_flags() -> None:
+def test_case_5_wrong_path_runs_only_with_the_production_flags(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 11-11 path: a search of Projects tasks before the act. The email chat turns on the
+    email pack alone, so the Projects tool is not in the request. With ``--mirror-prod`` it is."""
     from acb_skills import tool_packs
 
     from evals.one_assistant_measure.scenarios_2874 import DONE
 
-    wrong = tool_packs.PACKS["projects"].tools[0]
-    assert wrong == "add_subtasks" or "find_tasks" in tool_packs.PACKS["projects"].tools
-    first = [tool_turn("query_inbox", {"from_email": "lakshmi"}, call_id="c1"),
-             text_turn("Lakshmi says it is paid."),
-             tool_turn(tool_packs.LOAD_TOOL, {"pack": "projects"}, call_id="c2"),
-             tool_turn("find_tasks", {"query": "invoice TR-88"}, call_id="c3"),
-             tool_turn("mark_thread_done", {"account_id": mb.WORK, "email_id": LAKSHMI.id},
-                       call_id="c4"),
-             text_turn("Done.")]
-    rows = run.run_chat(DONE, "pack", models={ORCHESTRATOR: ReplyModel(first)}, mirror_prod=True)
-    assert rows[1]["checks"]["mark_thread_done_first"] is False
+    assert "find_tasks" in tool_packs.PACKS["projects"].tools
+
+    def models() -> dict[str, ReplyModel]:
+        return {ORCHESTRATOR: ReplyModel([
+            tool_turn("query_inbox", {"from_email": "lakshmi"}, call_id="c1"),
+            text_turn("Lakshmi says it is paid."),
+            tool_turn(tool_packs.LOAD_TOOL, {"pack": "projects"}, call_id="c2"),
+            tool_turn("find_tasks", {"query": "invoice TR-88"}, call_id="c3"),
+            tool_turn("mark_thread_done", {"account_id": mb.WORK, "email_id": LAKSHMI.id},
+                      call_id="c4"),
+            text_turn("Done.")])}
+
+    ran = {}
+    for mirrored in (False, True):
+        seen = _capture(monkeypatch)
+        rows = run.run_chat(DONE, "pack", models=models(), mirror_prod=mirrored)
+        find = next(r for n, _, r in seen[1] if n == "find_tasks")
+        ran[mirrored] = not checks_2874._not_run(find)
+        assert rows[1]["checks"]["mark_thread_done_first"] is False  # the wrong path fails it
+    assert ran == {False: False, True: True}
 
 
 # ── the card answers ─────────────────────────────────────────────────────────

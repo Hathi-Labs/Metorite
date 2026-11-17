@@ -24,7 +24,8 @@ spend so far. It writes ``--out`` after each chat.
 ``--report`` prints the tables of ``--out``.
 
 Exit codes: 0 pass (or a live run that finished), 1 a scripted check
-failed, 2 the live run cannot start.
+failed, 2 the live run cannot start (or ``--compare`` cannot read its files), 3 ``--compare``
+says that A does not win (task 3649).
 """
 from __future__ import annotations
 
@@ -1817,6 +1818,11 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     because the chunks of one run can run on different code (fix round 1).
     ``sha`` is the one SHA when all chunks agree, else ``"mixed"``."""
     parts = [splits.load(p) for p in paths]
+    for path, p in zip(paths, parts, strict=True):
+        held = [r for r in p["rows"] if splits.split_of_row(r) == splits.HOLDOUT]
+        if (p.get("sealed") or {}).get("rows") and not held:
+            raise ValueError(f"{path.name}: it holds held-out counts, but its sibling file "
+                             f"{splits.sibling(path).name} is missing. A merge would drop them.")
     if len({json.dumps(p.get("mirror_prod"), sort_keys=True) for p in parts}) > 1:
         raise ValueError("the chunks ran with different --mirror-prod settings. Do not merge them.")
     data = {k: v for k, v in parts[0].items()

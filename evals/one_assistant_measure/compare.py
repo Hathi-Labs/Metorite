@@ -149,7 +149,8 @@ def compare(b_path: Path, a_path: Path, *, t_tag: str = DEFAULT_T_TAG,  # noqa: 
     verdict: dict[str, bool] = {}
     stats: dict[str, tuple[int, list[int], list[int]]] = {}
     for name, title in (("T", f"T (tune, tag {t_tag})"), ("H", "H (held-out)"),
-                        ("E", "E (tune, email set, not T)")):
+                        ("E", "E (tune, email set, not T)"),
+                        ("other", "Other tune (not T, not E)")):
         turns = sum(1 for k in scored if group[k] == name)
         pb, pa = passes(b, name), passes(a, name)
         stats[name] = (turns, pb, pa)
@@ -174,6 +175,10 @@ def compare(b_path: Path, a_path: Path, *, t_tag: str = DEFAULT_T_TAG,  # noqa: 
                 lines.append("  to pass: " + ", ".join(named_up))
             if named_down:
                 lines.append("  to fail: " + ", ".join(named_down))
+    tune_turns = sum(1 for g in group.values() if g != "H")
+    tune_b = [sum(1 for k in scored if group[k] != "H" and b.result(i, k)) for i in (0, 1)]
+    tune_a = [sum(1 for k in scored if group[k] != "H" and a.result(i, k)) for i in (0, 1)]
+    lines.append(f"Tune total: {tune_turns} turns. Passes B {tune_b}, A {tune_a}.")
     if stats["H"][0] == 0:
         lines.append("H: 0 turns. Rule 3 holds with no evidence.")
 

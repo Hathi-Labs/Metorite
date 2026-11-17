@@ -149,10 +149,11 @@ DISCARDED = Scenario(
              Plan((("query_inbox", {"from_email": "anil"}),
                    ("compose_reply", {"email_id": ANIL.id, "account_id": WORK,
                                       "instruction": "Confirm delivery on 14 November."})),
-                  "You discarded the reply, so nothing was sent."), card="discard"),
+                  "You discarded the reply, so I will not send it. Tell me if you want a new one."),
+             card="discard"),
         Turn("Is that reply still waiting for me?",
              (Check("states_discard", None, "says_discarded"),),
-             Plan((), "No. You discarded it, and nothing was sent. Tell me if you want a new one.")),
+             Plan((), "No. You discarded it. Tell me if you want a new reply.")),
     ),
 )
 
@@ -178,8 +179,7 @@ MISS = Scenario(
     turns=(Turn(
         "Send Vineeta a note: the samples are ready.",
         (Check("tried_closest", r"vineeta", "find_contact_with_the_name"),
-         Check("no_write", None, "sent_nothing_yet"),
-         Check("answer_all", (r"Vinita Rao",), "names_the_closest")),
+         Check("no_write_before_question", None, "asked_before_a_write")),
         Plan((("resolve_person", {"name": "Vineeta"}), ("find_contact", {"name": "Vineeta"})),
              "I found no exact match for Vineeta. The closest is Vinita Rao, "
              "vinita@gardenlab.example. Is she the person?")),),

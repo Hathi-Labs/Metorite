@@ -1,7 +1,7 @@
 """The checks of the seven defects of the owner chat of 2026-11-11 (task 2874).
 
 Each check fails on the behaviour of 2026-11-11 and passes on the right one.
-The ``tests/unit/test_one_assistant_measure_split.py`` file holds both cases of each.
+The ``tests/unit/test_one_assistant_measure_2874.py`` file holds both cases of each.
 
 The checks read ``Observation.ordered``: EVERY tool call of the orchestrator's own
 run in a turn, in order, as ``(name, arguments, result)``. The older fields of the
@@ -140,6 +140,19 @@ def _tried_closest(obs: ck.Observation, arg: Any) -> bool:
     return False
 
 
+def _no_write_before_question(obs: ck.Observation, _arg: Any) -> bool:
+    """No mail-writing tool runs before the member is asked (case 6). The tool says to ask the
+    member with ``ask_questions`` when the match is only the closest spelling. The harness
+    answers a question with "go on without it" (``harness.NO_ANSWER``), so a write AFTER an
+    ``ask_questions`` call is the harness's doing and does not fail this check."""
+    for name, _, _ in obs.ordered:
+        if name == "ask_questions":
+            return True
+        if name in ck.WRITES:
+            return False
+    return True
+
+
 def _reply_by_compose(obs: ck.Observation, arg: Any) -> bool:
     """A reply goes through ``compose_reply`` on the email *arg*, and ``send_email`` is not
     called for it (defect 7: the call was refused with "use compose_reply", a wasted round)."""
@@ -163,6 +176,7 @@ KINDS = {
     "states_discard": _states_discard,
     "done_direct": _done_direct,
     "tried_closest": _tried_closest,
+    "no_write_before_question": _no_write_before_question,
     "reply_by_compose": _reply_by_compose,
     "result_has": _result_has,
 }

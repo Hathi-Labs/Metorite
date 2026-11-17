@@ -231,6 +231,8 @@ def test_a_clear_gain_wins(tmp_path: Path) -> None:
     assert "noise n = 0 of 8 turns" in text
     assert "T (tune, tag t2874): 4 turns. Passes B [0, 0], A [4, 4]" in text
     assert "H (held-out): 2 turns" in text
+    assert "Other tune (not T, not E): 0 turns" in text
+    assert "Tune total: 6 turns. Passes B [2, 2], A [6, 6]." in text
 
 
 def test_the_noise_is_the_flip_count_between_two_repeats_of_b(tmp_path: Path) -> None:
@@ -290,7 +292,8 @@ def test_rule_1_a_capped_case_in_a_fails(tmp_path: Path) -> None:
         if r["scenario"] == "case1" and r["repeat"] == 2:
             r["capped"] = "refused"
     text, code = verdict(tmp_path, b, a)
-    assert code == compare.EXIT_LOSS and "case1: B [False, False], A [None, None]" not in text
+    assert code == compare.EXIT_LOSS
+    assert "case1: B [False, False], A [True, None]: FAILS" in text
     assert "Left out (missing or capped in one run): 1" in text
 
 

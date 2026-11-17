@@ -411,7 +411,7 @@ and the key. Close the tunnel with Ctrl+C in that shell.
 
 ### Mirror the chat flags of production (`--mirror-prod`)
 
-`--mirror-prod` sets the chat flags of production for each chat of the pack arms, in the eval process only. `prod_flags.json` holds the values, the read date (2026-11-17) and the source (`/opt/acb/app/.env` on the production box). An org list of `*` becomes the eval org. `TOOL_SEARCH_ORGS` stays empty. The switch is off by default, so the old results stay comparable. The results header records `mirror_prod`. `--merge` and `--compare` refuse files that ran with different values. Each key must be a real settings field, and the unit test checks it.
+`--mirror-prod` sets the chat flags of production for each chat of the pack arms, in the eval process only. `prod_flags.json` holds the values, the read date (2026-11-17) and the source (`/opt/acb/app/.env` on the production box). An org list of `*` becomes the eval org. `TOOL_SEARCH_ORGS` stays empty. The switch is off by default. So the old results stay comparable. The results header records `mirror_prod`. `--merge` and `--compare` refuse files that ran with different values. Each key must be a real settings field, and the unit test checks it.
 
 ### Test one tier on another model (`--tier-map`)
 
@@ -569,7 +569,7 @@ Each result row keeps `split` and `tags`. A row of an old file has no stamp, so 
 
 A fixer brief never names that file. No answer, tool argument, card or word of a held-out turn reaches `X.json` or the console.
 
-The live console line of a held-out turn shows its cost only. `--report`, `--merge` and `--rescore` read the sibling file and seal their output the same way. A scripted run plays known-good plans and holds no model output, so it prints in full.
+The live console line of a held-out turn shows its cost only. `--report`, `--merge` and `--rescore` read the sibling file and seal their output the same way. A scripted run plays known-good plans, so it holds no model output. It prints the chat ids, the tool names and the names of failed checks of held-out chats. It prints no answer text.
 
 **The win margin.** `--compare B.json,A.json` reads two files. B ran before a change and A ran after it. Each file needs two repeats of the arm (`--compare-arm`, default `pack`). A turn passes when every check that gives a value passes. A turn that is capped or missing in any of the four runs is left out, and the report counts it.
 
@@ -609,6 +609,8 @@ Every new check has a unit test. The behaviour of 11-11 fails it, and the right 
 3. `workgateway.py` answers `resolve_person`. Case 6 turns on the profile flag in the eval process only. The flag is not in `prod_flags.json`.
 
 Case 5 fails the 11-11 way only when the Projects packs are on. Run it live with `--mirror-prod`.
+
+The fence is `tests/unit/test_one_assistant_measure_2874.py`. It holds one failing and one passing case for each new check.
 
 ## Fix round 2 (after the first live run)
 
