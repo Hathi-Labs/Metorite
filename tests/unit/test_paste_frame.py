@@ -36,6 +36,13 @@ Mutations checked by hand (each one turns a test here red):
 * M10 ``fold`` with no ideographic full stop: row ``a35-spelled-and-stop``.
 * M11 ``has_phone`` with no date mask: row ``a40-date``.
 * M12 ``md`` and ``py`` in ``LINK_TLDS``: row ``a37-file-names``.
+* M21 ``in`` out of ``WORD_TLDS``: row ``a36-bare-domain`` (``acme.in``).
+* M22 the case of a word-like domain not kept: row ``a37-file-names``
+  (``All done.In``).
+* M23 white space and a letter after a word-like domain read as an end:
+  row ``a37-file-names`` (``note.to Ravi``).
+* M24 the word-like domains on the loose rule of ``_DOMAIN_RE``: row
+  ``a37-file-names``.
 * M13 the proof read as truthy, not ``is True``: the upload note tests.
 * M13b no proof at all: row ``a16-forged-upload-note``.
 * M14 no ``neutralise`` on the lead: row ``a04-forged-open-in-lead``.
@@ -64,6 +71,7 @@ from acb_skills.paste_frame import (
     LEAD_MAX,
     LINK_TLDS,
     PASTE_LABEL,
+    WORD_TLDS,
     frame_member_text,
     has_address,
     has_link,
@@ -253,8 +261,15 @@ CORPUS_A: tuple[Row, ...] = (
     _lead_row(35, "spelled-and-stop", "Mail x at evil dot test about it", stays=False,
               more=((f"Open evil{chr(0x3002)}com now", False),
                     (f"Open evil{chr(0xFF61)}com now", False))),
-    _lead_row(36, "bare-domain", "Check invoices.example.com for me", stays=False),
-    _lead_row(37, "file-names", "Fix README.md and app.py", stays=True),
+    _lead_row(36, "bare-domain", "Check invoices.example.com for me", stays=False,
+              more=(("Pay at acme.in", False), ("Pay at acme.in/pay today", False),
+                    ("Open evil.ai?x=1 now", False), ("Open acme.dev.", False),
+                    ("Mail notes.to, please", False))),
+    # The strict rule of a word-like top-level domain. "Pay at acme.in now"
+    # pins a named residual: white space and then a letter end no link.
+    _lead_row(37, "file-names", "Fix README.md and app.py", stays=True,
+              more=(("Done.In the end we agreed", True), ("All done.In", True),
+                    ("Send the note.to Ravi", True), ("Pay at acme.in now", True))),
     _lead_row(38, "phone", "Call +91 98450 12345 about it", stays=False,
               more=(("Call 098450-12345 about it", False), ("Call (080) 4123 4567 now", False))),
     _lead_row(39, "order-number", "Order 4411809321 is late.", stays=True),
@@ -409,9 +424,11 @@ def test_a_lead_holds_no_address_link_or_phone() -> None:
 
 
 def test_the_closed_lists_of_the_rules() -> None:
-    assert "com" in LINK_TLDS
-    for word in ("md", "py", "it", "js", "ts", "sh", "rs", "in", "is", "to", "me"):
+    for tld in ("com", "io", "co", "uk", "de", "in", "ai", "me", "us", "app", "dev", "to"):
+        assert tld in LINK_TLDS, tld
+    for word in ("md", "py", "it", "is", "js", "ts", "sh", "rs"):
         assert word not in LINK_TLDS, word
+    assert WORD_TLDS == {"in", "ai", "me", "us", "app", "dev", "to"}
     assert not has_link("README.md app.py notes.txt it.it")
     assert has_link("ACME.COM") and has_link("acme.co.uk")
     assert not has_address("meet at noon") and has_address("x AT evil DOT test")

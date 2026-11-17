@@ -58,6 +58,7 @@ __all__ = [
     "MIN_LINES",
     "PASTE_LABEL",
     "PathsExist",
+    "WORD_TLDS",
     "fold",
     "frame_member_text",
     "has_address",
@@ -134,23 +135,35 @@ def _upload_note(paths: tuple[str, ...]) -> str:
 _IDEOGRAPHIC_STOP = chr(0x3002)
 
 
+def _fold_case_kept(text: str) -> str:
+    """:func:`fold` with no change of case."""
+    norm = unicodedata.normalize("NFKC", str(text or ""))
+    kept = "".join(ch for ch in norm if not is_invisible(ch))
+    return kept.replace(_IDEOGRAPHIC_STOP, ".")
+
+
 def fold(text: str) -> str:
     """*text* as the checks read it: NFKC, then no invisible character
     (``untrusted.is_invisible``), then the ideographic full stop as ``.``,
     then lower case. NFKC folds the full-width and the small at sign to
     ``@``, and the half-width full stop to the ideographic one."""
-    norm = unicodedata.normalize("NFKC", str(text or ""))
-    kept = "".join(ch for ch in norm if not is_invisible(ch))
-    return kept.replace(_IDEOGRAPHIC_STOP, ".").lower()
+    return _fold_case_kept(text).lower()
 
 
 #: The spelled address: `` at `` with `` dot ``.
 _SPELLED_RE = re.compile(r"\w at [\w-]+(?: dot [\w-]+)+")
 
-#: The closed list of top-level domains of a bare domain. It holds no
-#: top-level domain that is also a common file end or a short English word,
-#: so ``README.md``, ``app.py`` and ``it.it`` are not links. A bare domain of
-#: another top-level domain is not a link. ``www.`` or a scheme still is.
+#: The top-level domains of :data:`LINK_TLDS` that are also a word or a word
+#: end. A bare domain of one of them is a link only on the strict rule of
+#: :data:`_WORD_DOMAIN_RE`, so ``Done.In the end`` is not a link.
+WORD_TLDS = frozenset({"in", "ai", "me", "us", "app", "dev", "to"})
+
+#: The closed list of top-level domains of a bare domain. A missed link in a
+#: lead keeps a target outside the block, and a false hit costs one ask. So
+#: the list leans wide. It holds no file end that a member often types, so
+#: ``README.md``, ``app.py`` and ``it.it`` are not links: ``md``, ``py``,
+#: ``it`` and ``is`` stay out. ``www.`` or a scheme is a link with any
+#: top-level domain.
 LINK_TLDS = frozenset({
     "com", "net", "org", "edu", "gov", "mil", "int", "info", "biz", "io",
     "co", "xyz", "mobi", "asia",
@@ -158,10 +171,21 @@ LINK_TLDS = frozenset({
     "ie", "eu", "ru", "cn", "jp", "kr", "sg", "hk", "tw", "ae", "sa", "za",
     "ng", "ke", "br", "mx", "ar", "cl", "pk", "bd", "lk", "np", "ph", "th",
     "vn", "tr", "il", "eg", "gr", "pt", "cz", "hu", "ro", "ua", "qa", "kw",
+    *WORD_TLDS,
 })
 _LABEL = r"[^\W_](?:[\w-]*[^\W_])?"
 _DOMAIN_RE = re.compile(
-    rf"(?<![\w-]){_LABEL}(?:\.{_LABEL})*\.(?:{'|'.join(sorted(LINK_TLDS))})(?![\w-])")
+    rf"(?<![\w-]){_LABEL}(?:\.{_LABEL})*"
+    rf"\.(?:{'|'.join(sorted(LINK_TLDS - WORD_TLDS))})(?![\w-])")
+#: A bare domain of :data:`WORD_TLDS`. It reads the text with its case kept,
+#: and the top-level domain must be in lower case, so ``Done.In`` is a
+#: sentence break and not a link. The top-level domain must end the text, or
+#: come before a character that is no letter, digit, ``_`` or ``-``. White
+#: space counts only when no letter comes after it, so ``note.to Ravi`` is
+#: not a link, and ``acme.in/pay``, ``acme.in?x``, ``acme.in.`` are.
+_WORD_DOMAIN_RE = re.compile(
+    rf"(?<![\w-]){_LABEL}(?:\.{_LABEL})*\.(?:{'|'.join(sorted(WORD_TLDS))})"
+    r"(?=\Z|[^\w\s-]|\s(?!\s*[^\W\d_]))")
 _SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://")
 _WWW_RE = re.compile(r"(?<![\w-])www\.")
 
@@ -181,9 +205,12 @@ def has_address(text: str) -> bool:
 
 def has_link(text: str) -> bool:
     """True when the folded *text* holds a scheme, ``www.``, or a bare domain
-    whose top-level domain is in :data:`LINK_TLDS`."""
+    whose top-level domain is in :data:`LINK_TLDS`. A top-level domain of
+    :data:`WORD_TLDS` takes the strict rule of ``_WORD_DOMAIN_RE``."""
     folded = fold(text)
-    return any(rx.search(folded) for rx in (_SCHEME_RE, _WWW_RE, _DOMAIN_RE))
+    if any(rx.search(folded) for rx in (_SCHEME_RE, _WWW_RE, _DOMAIN_RE)):
+        return True
+    return _WORD_DOMAIN_RE.search(_fold_case_kept(text)) is not None
 
 
 def has_phone(text: str) -> bool:
