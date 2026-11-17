@@ -45,17 +45,20 @@ the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 (`chat_failure_modes.md` §6 row HRD-17e-1). For each listed org, a client
 save that makes an agent row shorter before the fold seals it keeps the stored
 text. The save logs one `chat_no_shrink_refused` line, with lengths and no
-text. `*` lists every org, and the default is empty. Its one reader is
-`gateway.chat_no_shrink.no_shrink_mode`, and each save asks it. So a reload
-applies at the next save. A flip stays OWNER-GATE (`enforcement-flip`). Do not
-flip it before the owner reads the counts of `CHAT_NO_SHRINK_SHADOW_ORGS`.
+text. `*` lists every org, and the default is empty.
+
+Its one reader is `gateway.chat_no_shrink.no_shrink_mode`, and each save asks
+it. So a reload applies at the next save. A flip stays OWNER-GATE
+(`enforcement-flip`). Do not flip it before the owner reads the counts of
+`CHAT_NO_SHRINK_SHADOW_ORGS`.
 
 `CHAT_NO_SHRINK_SHADOW_ORGS` turns on the shadow of the same guard. For each
 listed org, the save is the save of before. A client save that makes an agent
 row shorter before the seal logs one `chat_no_shrink_shadow` line, with
-lengths and no text. An org in both lists enforces. `*` lists every org, and
-the default is empty. It has the same reader. A flip stays OWNER-GATE
-(`enforcement-flip`).
+lengths and no text. An org in both lists enforces.
+
+`*` lists every org, and the default is empty. It has the same reader. A flip
+stays OWNER-GATE (`enforcement-flip`).
 
 `CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
 CO-11). For each listed org, a member may pin a chat, and the chat list shows a

@@ -90,6 +90,16 @@ def test_the_reader_reads_each_org(monkeypatch) -> None:
     assert ns.no_shrink_mode(ORG_B) == ns.ON
 
 
+def test_both_flags_reload_and_only_the_operator_writes_them() -> None:
+    from acb_common import env_guard
+    from gateway.flag_reload import RELOADABLE
+
+    for name in ("CHAT_NO_SHRINK_ORGS", "CHAT_NO_SHRINK_SHADOW_ORGS"):
+        assert name in RELOADABLE
+        assert env_guard.is_platform_env(name)
+        assert name in env_guard.PLATFORM_ENV_NAMES
+
+
 def test_no_org_reads_off_even_for_star(monkeypatch) -> None:
     _flags(monkeypatch, enforce="*", shadow="*")
     assert ns.no_shrink_mode(None) == ns.OFF

@@ -25,7 +25,8 @@ What this proves:
   length pass. The fold still writes shorter text and seals the row. The
   mint changes nothing. A human row of the same member still takes shorter
   text. A write after the seal stays refused. An org with the flag off keeps
-  the old behaviour;
+  the old behaviour. A body that names the agent row as a member turn or a
+  system turn is declined, so another role does not pass the guard;
 * characters, not bytes: a text with fewer characters and more bytes is
   shorter. An empty new text over a stored text is shorter. An empty stored
   text takes any text. ``content`` is ``NOT NULL``, so no stored NULL exists;
@@ -382,6 +383,23 @@ def test_enforce_a_human_row_of_the_same_member_still_takes_shorter_text(
         row = chat.row("u1")
         assert (row.content, row.author_kind) == ("Acme total?", "human")
         assert _lines(caps) == []
+    finally:
+        chat.close()
+
+
+def test_enforce_a_client_cannot_pass_the_guard_by_another_role(graph_as_app, monkeypatch):
+    """``_no_shrink_sql`` reads the kind that ``_attribute`` takes from the
+    body. A body that names the agent row as a member turn or a system turn
+    runs the base text, and the S13 ``WHERE`` then declines it."""
+    ns = graph_as_app
+    _flags(monkeypatch, enforce=ns.org_a)
+    chat = Chat(ns, ns.org_a, "role")
+    try:
+        chat.save(SECRET)
+        for role in ("user", "system"):
+            assert chat.save("Short", role=role)["unchanged"] == ["a1"], role
+            row = chat.row()
+            assert (row.content, row.author_kind) == (SECRET, "agent"), role
     finally:
         chat.close()
 
