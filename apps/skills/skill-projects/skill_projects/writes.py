@@ -2235,7 +2235,7 @@ async def assign(task_id: str, assignees: str) -> str:
     # Say so in plain words, so the assigner can fix it.
     skipped = [str(a) for a in done.get("not_notified") or [] if str(a).strip()]
     if skipped:
-        names = ", ".join(data(a) for a in dict.fromkeys(skipped))
+        names = data(", ".join(dict.fromkeys(skipped)))
         out.append(f"{names} will not get a notice, and cannot open this task yet.")
     return "\n".join(out)
 

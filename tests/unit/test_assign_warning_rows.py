@@ -21,7 +21,7 @@ import skill_projects
 from tests.unit._projects_agent_fakes import approve, fake_gateway, writes
 from tests.unit.test_projects_agent_writes import UUID, responder
 
-STRANGER, KNOWN, OFF = "x@y.test", "k@y.test", "off@y.test"
+STRANGER, KNOWN, OFF = "z@y.test", "k@y.test", "off@y.test"
 
 
 def _gateway(not_notified: list[str] | None = None):
