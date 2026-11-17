@@ -39,17 +39,29 @@ none of the 29 sites changes to gain per-member and per-app billing.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from acb_common import get_logger
 
 __all__ = [
+    "MAX_STREAM_FRAME_BYTES",
     "OUT_OF_CREDITS",
     "RoutedRefusal",
+    "RouterStreamBroken",
+    "RouterStreamFrame",
+    "RouterStreamParser",
     "completion_on_router",
+    "direct_arm_allowed",
+    "refuse_direct_arm",
     "router_wired",
     "routing_is_on",
     "run_attribution",
+    "stream_on_router",
 ]
 
 _log = get_logger("acb_llm.routed")
@@ -78,7 +90,8 @@ OUT_OF_CREDITS = (
 #: ⚠️ `model`, `messages`, `max_tokens` and `temperature` are set
 #: explicitly above, and `stream` is deliberately absent — this path is the
 #: non-streaming one, and sending `stream: true` here would ask the Console
-#: for frames nothing reads.
+#: for frames nothing reads. :func:`stream_on_router` sets `stream` itself
+#: (task 3542), and only on its own payload.
 _FORWARDABLE = (
     "task", "client_ref", "top_p", "n", "stop", "seed", "user",
     "presence_penalty", "frequency_penalty", "logit_bias", "response_format",
@@ -138,6 +151,93 @@ def routing_is_on() -> bool:
         return False
     settings = get_settings()
     return bool(getattr(settings, "router_serving_enabled", False)) and router_is_wired()
+
+
+#: True after this process logged its first ``ai.route_refused_unwired``.
+#: One line for each process, so a box with routing off does not log on each
+#: call. A test resets it.
+_REFUSAL_LOGGED = False
+
+
+def direct_arm_allowed() -> bool:
+    """Whether a call may take the direct arm (local litellm). Never raises.
+
+    Task 3554 (2449 S3). True ONLY when the settings say ``ACB_ENV=dev``.
+    ``acb_env`` defaults to ``prod``, so an unset variable is production
+    (H-90). The idiom is ``acb_auth.deps._acb_env``.
+
+    🔴 **A settings read that fails is a refusal.** :func:`routing_is_on`
+    answers False when it cannot import its parts, which sends the call to
+    the direct arm. This function must not copy that. A box that cannot read
+    its own settings is not a laptop.
+
+    ⚠️ The unit suite replaces this function with an allow (the autouse
+    fixture ``_allow_the_direct_ai_arm`` in ``tests/conftest.py``), because
+    many tests stub litellm and run as production. A test that proves the
+    refusal opts out with the ``direct_arm_guard`` marker.
+    """
+    try:
+        from acb_common.settings import get_settings
+
+        return str(get_settings().acb_env) == "dev"
+    except Exception:  # a settings read that fails is not a dev box
+        return False
+
+
+def refuse_direct_arm(seam: str) -> None:
+    """Stop a call that is about to take the direct arm outside dev.
+
+    Task 3554 (2449 S3, ``ai_tier_routing.md`` §2.10). Each seam calls this
+    at the point where the Router branch did not take the call, and BEFORE it
+    loads a vendor key or calls litellm. The five seams are
+    ``acompletion_with_fallback`` and ``acompletion_stream_text`` in
+    ``context.py``, ``complete`` and ``complete_with_tools`` in ``client.py``,
+    and the gateway ``/v1`` door (``v1_compat``, which answers its 502).
+
+    🔴 **Why.** With routing off, each seam called a vendor with the
+    gateway's own key, and nobody billed the call. On production that is a
+    silent hole in the money loop (H-171, D57.7). A dev box keeps the direct
+    arm, because it has no Console to route to.
+
+    Raises ``ConsoleRouterUnavailable("unrouted")`` outside dev, so a caller
+    that already reads a Router outage (:func:`is_router_outage`) reads this
+    one too. The first refusal of a process logs ``ai.route_refused_unwired``
+    with the seam, the serving flag and the wiring. The line holds no secret.
+
+    Fence (R7): ``tests/unit/test_internal_ai_is_routed.py``, one class for
+    each seam (``Test*IsClosedOutsideDev``) and ``TestTheGuardItself``.
+    """
+    if direct_arm_allowed():
+        return
+    _note_refusal(seam)
+    try:
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+    except Exception:  # no auth package: refuse all the same
+        raise RuntimeError(
+            "unrouted: the AI Router is off, and this box is not a dev box"
+        ) from None
+    raise ConsoleRouterUnavailable("unrouted")
+
+
+def _note_refusal(seam: str) -> None:
+    """Log the first refusal of this process, and only the first. Never raises."""
+    global _REFUSAL_LOGGED
+    if _REFUSAL_LOGGED:
+        return
+    _REFUSAL_LOGGED = True
+    serving: bool | None = None
+    env: str | None = None
+    # The line still goes out when the settings do not read.
+    with contextlib.suppress(Exception):
+        from acb_common.settings import get_settings
+
+        settings = get_settings()
+        serving = bool(getattr(settings, "router_serving_enabled", False))
+        env = str(settings.acb_env)
+    _log.error(
+        "ai.route_refused_unwired",
+        seam=seam, router_serving=serving, router_wired=router_wired(), acb_env=env,
+    )
 
 
 def router_wired() -> bool:
@@ -283,7 +383,46 @@ async def completion_on_router(
     """
     from acb_auth.console_resolve import chat_completion_on_console
 
-    from acb_llm.jobs import apply_job, ensure_json_word, note_empty_answer
+    from acb_llm.jobs import note_empty_answer
+
+    payload, attribution, max_tokens = _router_call(
+        tier=tier, messages=messages, max_tokens=max_tokens,
+        temperature=temperature, source=source, extra=extra, job=job,
+    )
+    status, body = await chat_completion_on_console(payload, **attribution)
+
+    if status >= 400:
+        raise _refusal(tier, status, body)
+
+    # ⚠️ Rebuilt as the type the 29 call sites already hold. They read
+    # `resp.choices[0].message.content`, and handing them a dict would turn a
+    # working feature into an AttributeError at the far end of a refactor.
+    from litellm import ModelResponse
+
+    resp = ModelResponse(**body) if isinstance(body, dict) else body
+    used = str(getattr(resp, "model", "") or body.get("model", tier))
+    note_empty_answer(resp, model=used, job=job, max_tokens=max_tokens)
+    return resp, used
+
+
+def _router_call(
+    *,
+    tier: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    source: str | None,
+    extra: dict[str, Any] | None,
+    job: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], int]:
+    """The payload, the attribution and the cap of ONE Router call.
+
+    :func:`completion_on_router` and :func:`stream_on_router` both build their
+    call here, so the two cannot send different fields or bill a different
+    member. Task 3542 moved these lines out of ``completion_on_router``, in
+    the same order, and changed none of them.
+    """
+    from acb_llm.jobs import apply_job, ensure_json_word
 
     # Idempotent, so a seam that applied the job already changes nothing here.
     max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=dict(extra or {}))
@@ -320,26 +459,332 @@ async def completion_on_router(
     for key in _FORWARDABLE:
         if extra and key in extra and extra[key] is not None:
             payload[key] = extra[key]
+    return payload, attribution, max_tokens
 
-    status, body = await chat_completion_on_console(payload, **attribution)
 
-    if status >= 400:
-        detail = ""
-        if isinstance(body, dict):
-            raw = body.get("detail")
-            detail = raw if isinstance(raw, str) else str(raw or "")
-        _log.warning(
-            "acb_llm.router_refused",
-            router_tier=tier, router_status=status, router_detail=detail[:200],
-        )
-        raise RoutedRefusal(status, detail or "no reason given")
+def _refusal(tier: str, status: int, body: Any, *, stream: bool = False) -> RoutedRefusal:
+    """The :class:`RoutedRefusal` of a Router verdict, logged once.
 
-    # ⚠️ Rebuilt as the type the 29 call sites already hold. They read
-    # `resp.choices[0].message.content`, and handing them a dict would turn a
-    # working feature into an AttributeError at the far end of a refactor.
-    from litellm import ModelResponse
+    ``detail`` is the Console's own text, as the caller may render it. The
+    streamed call adds ``stream=True`` to the line, and the buffered call
+    logs the line it always did.
+    """
+    detail = ""
+    if isinstance(body, dict):
+        raw = body.get("detail")
+        detail = raw if isinstance(raw, str) else str(raw or "")
+    _log.warning(
+        "acb_llm.router_refused",
+        router_tier=tier, router_status=status, router_detail=detail[:200],
+        **({"stream": True} if stream else {}),
+    )
+    return RoutedRefusal(status, detail or "no reason given")
 
-    resp = ModelResponse(**body) if isinstance(body, dict) else body
-    used = str(getattr(resp, "model", "") or body.get("model", tier))
-    note_empty_answer(resp, model=used, job=job, max_tokens=max_tokens)
-    return resp, used
+
+# ── The streamed call (task 3542) ───────────────────────────────────────────
+#
+# The Router streams (CP-4b, 2026-08-27). `console_resolve.
+# stream_completion_on_console` yields its raw SSE bytes, and the gateway's
+# `/v1` relay hands them on unread. This is the one reader of those bytes in
+# `acb_llm`. `context._routed_text` drives it, with the three stream bounds.
+#
+# ⚠️ **The Console meters the stream, and this side meters nothing.** The
+# Console asks the provider for the usage frame itself
+# (`main._stream_kwargs_for`, `stream_options.include_usage`), and
+# `router.relay_stream` writes one usage row in its `finally`, on a clean end
+# and on a client that left. `_streamed_completion` gives the hold back in its
+# own `finally`. So this client sends `stream: true` and nothing more, as the
+# `/v1` relay does, and it calls no `_emit_usage`. The buffered
+# `completion_on_router` emits none either.
+#
+# ⚠️ **Gap 1: a routed draft that ends early bills ZERO.** This is a Console
+# task, not this slice. The usage frame comes last, just before `[DONE]`. The
+# member can close the composer, or a bound can fire, before the Console sees
+# that frame. Then this client closes the stream, and the Console closes the
+# provider stream.
+#
+# `relay_stream` meters the counts that it saw. For a provider that sends
+# usage last, they are zero (`customer_console/router.py` 1335-1346).
+# `_record_completion` then marks the row `usage_unreadable`, logs the ERROR
+# `router.usage_unreadable`, and bills zero (`main.py` 8533-8558). So each
+# abandoned draft raises that ERROR. The row records the provider cost as
+# NULL, so a margin report cannot see the spend (`main.py` 8574-8579). The
+# operator report counts that row in `unbilled_calls` (`store.py` 1825-1833).
+#
+# CP-4b done-when 3 (`customer_console.md`, about line 1443) says that the
+# Console still meters an abandoned stream for what the provider delivered.
+# The Console does not do that for a provider that sends usage last. The
+# buffered call of task 3541 ran to its end after its caller left, so the
+# Console billed all of it. We read that in the code (`main.chat_completions`
+# is a sync route that runs `call_chain` to its end), and we did not run it.
+#
+# ⚠️ **Gap 2: a cancel before the Console sends its headers.** This is a
+# Console task too, not this slice. The Console route is sync. It pulls the
+# first provider chunk before it returns. So it does not see a client that
+# leaves in that time (`main.py` 9476-9510, the §8.6 window). A cancel, or the
+# 45 s first-chunk bound, can land there.
+#
+# What happens next depends on Starlette and the server. The Console
+# docstring (`main.py` 9142-9151) names Starlette 1.1.0, and it says that
+# `_streamed_completion` may never start then. The lock holds Starlette 1.7.0
+# and uvicorn 0.54.0, which reports ASGI spec 2.3. Below spec 2.4, Starlette
+# runs the body beside `listen_for_disconnect`, and uvicorn's `send` returns
+# quietly for a gone client. The 3542 verifier probed these versions: the body
+# started, pulled the head chunk and ran its `finally`.
+#
+# So with these versions the case most likely becomes gap 1, a zero-billed
+# `usage_unreadable` row. We did not prove that the body always starts. If it
+# does not, the Console writes no row, so `unbilled_calls` never counts the
+# call. Only the WARNING `router.hold_swept` shows it. The `StreamingResponse`
+# of Starlette 1.7.0 never calls `aclose`, so no code closes the provider
+# stream. The vendor can then bill tokens that no record shows.
+#
+# The hold of that call stays until `_hold_sweeper` frees it. A hold must be
+# 1800 s old, and the sweep runs each 600 s (`main.py` 8323-8324). So the hold
+# stays 30 to 40 minutes. Each hold reserves a worst-case estimate of the call
+# (`main.py` 8355-8400). With the spend gate on and a priced rate card, stacked
+# holds can then refuse a member with a false 402.
+
+#: The largest SSE line, or the data of one event, that the parser holds. A
+#: chunk frame of a draft is under 1 KB, and a whole answer of 3,000 tokens is
+#: about 12 KB. A stream past this cap is broken, and it ends the call rather
+#: than grow the buffer without end.
+MAX_STREAM_FRAME_BYTES = 1_048_576
+
+
+@dataclass(frozen=True, slots=True)
+class RouterStreamFrame:
+    """One ``data:`` frame of a routed stream, cut to what the arm reads.
+
+    ``reasoning`` and ``content`` are the two deltas of the first choice, as
+    the direct arm reads them from a litellm chunk. A frame with neither (the
+    role frame, the ``finish_reason`` frame, the usage frame) is still a frame,
+    because any frame is a sign of life for the idle bound.
+    """
+
+    reasoning: str = ""
+    content: str = ""
+    model: str = ""
+    finish_reason: str | None = None
+    usage: dict[str, Any] | None = None
+
+
+class RouterStreamBroken(Exception):
+    """The Router's bytes cannot be read as one whole answer.
+
+    ``code`` is one of a closed set of our own words, and it is the whole
+    message. It never holds text of the frame: a provider error can quote the
+    request, and each caller logs ``str(exc)``.
+
+    * ``stream_error_frame``: a frame carried an ``error`` object.
+    * ``stream_malformed_frame``: the data of a frame is not a JSON object.
+    * ``stream_frame_too_large``: a line or an event passed
+      :data:`MAX_STREAM_FRAME_BYTES`.
+    * ``stream_truncated``: the bytes ended before ``[DONE]``.
+    * ``stream_never_opened``: ``[DONE]`` came before any data frame.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class RouterStreamParser:
+    """Turn the Router's SSE bytes into frames. Pure: no I/O and no clock.
+
+    ⚠️ **The bytes do not align with frames.** ``stream_completion_on_console``
+    relays them as ``aiter_bytes`` gives them. So the parser keeps the bytes
+    of a part line, splits on ``\\n`` (a ``\\r`` before it goes too), and
+    decodes a whole frame only. A UTF-8 character split across two chunks is
+    then whole when it is read.
+
+    The SSE rules it keeps: a blank line ends an event, the ``data:`` lines of
+    one event join with ``\\n``, one space after the colon goes, a line that
+    starts with ``:`` is a comment (a keepalive), and each other field
+    (``event``, ``id``, ``retry``) is not read. A comment makes no frame, so
+    it never counts as a sign of life for the idle bound.
+
+    It differs from the SSE spec in three cases, and the Console sends none
+    of them. An event of one bare ``data:`` line fails as a malformed frame.
+    A lone ``\\r`` does not end a line, and a leading byte-order mark stays.
+    """
+
+    def __init__(self, *, max_frame_bytes: int = MAX_STREAM_FRAME_BYTES) -> None:
+        self._buf = bytearray()
+        self._data: list[bytes] = []
+        self._data_bytes = 0
+        self._max = max_frame_bytes
+        #: ``[DONE]`` arrived. The parser reads nothing after it.
+        self.done = False
+        #: The data frames read, ``[DONE]`` not counted.
+        self.frames = 0
+
+    def feed(self, chunk: bytes) -> list[RouterStreamFrame]:
+        """The frames that *chunk* completes. Raises :class:`RouterStreamBroken`."""
+        if self.done:
+            return []
+        self._buf.extend(chunk)
+        out: list[RouterStreamFrame] = []
+        if b"\n" in chunk:
+            *lines, rest = bytes(self._buf).split(b"\n")
+            self._buf = bytearray(rest)
+            for line in lines:
+                frame = self._line(line[:-1] if line.endswith(b"\r") else line)
+                if frame is not None:
+                    out.append(frame)
+                if self.done:
+                    self._buf = bytearray()
+                    return out
+        if len(self._buf) + self._data_bytes > self._max:
+            raise RouterStreamBroken("stream_frame_too_large")
+        return out
+
+    def end(self) -> None:
+        """The bytes ended. Raise unless they held a data frame, then ``[DONE]``.
+
+        ⚠️ A lone ``[DONE]`` is not an empty answer. The Console sends exactly
+        that when every step of the chain failed before a frame existed
+        (``main._stream_closed``), where the buffered call gets a 502.
+        """
+        if not self.done:
+            raise RouterStreamBroken("stream_truncated")
+        if self.frames == 0:
+            raise RouterStreamBroken("stream_never_opened")
+
+    def _line(self, line: bytes) -> RouterStreamFrame | None:
+        if not line:
+            return self._dispatch()
+        if line.startswith(b":"):
+            return None
+        name, _sep, value = line.partition(b":")
+        if name != b"data":
+            return None
+        if value.startswith(b" "):
+            value = value[1:]
+        self._data.append(value)
+        self._data_bytes += len(value)
+        if self._data_bytes > self._max:
+            raise RouterStreamBroken("stream_frame_too_large")
+        return None
+
+    def _dispatch(self) -> RouterStreamFrame | None:
+        if not self._data:
+            return None
+        data = b"\n".join(self._data)
+        self._data, self._data_bytes = [], 0
+        if data.strip() == b"[DONE]":
+            self.done = True
+            return None
+        try:
+            body = json.loads(data)
+        except (ValueError, RecursionError):  # bad UTF-8 is a ValueError too
+            raise RouterStreamBroken("stream_malformed_frame") from None
+        if not isinstance(body, dict):
+            raise RouterStreamBroken("stream_malformed_frame")
+        if body.get("error"):
+            # The OpenAI client's rule for a frame: a truthy `error` fails it.
+            raise RouterStreamBroken("stream_error_frame")
+        self.frames += 1
+        return _frame_of(body)
+
+
+def _frame_of(body: dict[str, Any]) -> RouterStreamFrame:
+    """The deltas of the first choice, read as ``context._stream_text`` reads a
+    litellm chunk: each one only when it is truthy, and as ``str``."""
+    reasoning = content = ""
+    finish: str | None = None
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        first = choices[0]
+        raw_finish = first.get("finish_reason")
+        finish = raw_finish if isinstance(raw_finish, str) else None
+        delta = first.get("delta")
+        if isinstance(delta, dict):
+            piece = delta.get("reasoning_content")
+            reasoning = str(piece) if piece else ""
+            piece = delta.get("content")
+            content = str(piece) if piece else ""
+    model = body.get("model")
+    usage = body.get("usage")
+    return RouterStreamFrame(
+        reasoning=reasoning,
+        content=content,
+        model=model if isinstance(model, str) else "",
+        finish_reason=finish,
+        usage=usage if isinstance(usage, dict) else None,
+    )
+
+
+async def stream_on_router(
+    *,
+    tier: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    source: str | None = None,
+    extra: dict[str, Any] | None = None,
+    job: str | None = None,
+) -> AsyncIterator[RouterStreamFrame]:
+    """One completion, STREAMED and billed by the Console. Yields each frame.
+
+    The call is :func:`completion_on_router`'s: the same payload, the same
+    attribution and the same job rules (:func:`_router_call`), with
+    ``stream: true``. The generator ends at ``[DONE]``, and the caller reads
+    the text from the frames. It holds no clock: ``context._routed_text``
+    bounds it.
+
+    Raises:
+        RoutedRefusal: the Router answered with a status that is not 200,
+            before the first byte. 402 is out of credits, 400 an unknown tier,
+            403 the breaker, as on the buffered call.
+        ConsoleRouterUnavailable: no whole answer came. The Router was not
+            reached, the connection broke, or the bytes broke
+            (:class:`RouterStreamBroken`, whose code is the message).
+            ``stream_completion_on_console`` raises this class for a break
+            in the middle of a stream, so a broken frame takes it too.
+
+    ⚠️ **D57.7.** Nothing here falls back to litellm or to the buffered call.
+    A second call would be a second bill for one answer.
+
+    ⚠️ **The Console stream is always closed**, in the ``finally``: at
+    ``[DONE]``, on an error, on a bound, and when the caller cancels or closes
+    this generator. A cancel that comes while this waits for bytes unwinds the
+    Console generator itself. The close covers the rest.
+    """
+    from acb_auth.console_resolve import (
+        ConsoleRouterUnavailable,
+        ConsoleRouterVerdict,
+        stream_completion_on_console,
+    )
+
+    payload, attribution, _max_tokens = _router_call(
+        tier=tier, messages=messages, max_tokens=max_tokens,
+        temperature=temperature, source=source, extra=extra, job=job,
+    )
+    payload["stream"] = True
+    raw = stream_completion_on_console(payload, **attribution)
+    parser = RouterStreamParser()
+    try:
+        try:
+            async for chunk in raw:
+                for frame in parser.feed(chunk):
+                    yield frame
+                if parser.done:
+                    break
+            parser.end()
+        except ConsoleRouterVerdict as verdict:
+            raise _refusal(tier, verdict.status, verdict.body, stream=True) from None
+        except RouterStreamBroken as broken:
+            _log.warning(
+                "acb_llm.router_stream_broken",
+                router_tier=tier, reason=broken.code, frames=parser.frames,
+            )
+            raise ConsoleRouterUnavailable(broken.code) from broken
+    finally:
+        await _aclose_quietly(raw)
+
+
+async def _aclose_quietly(stream: Any) -> None:
+    """Close the Console stream. Bounded, and a failed close changes nothing."""
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(stream.aclose(), timeout=1.0)
