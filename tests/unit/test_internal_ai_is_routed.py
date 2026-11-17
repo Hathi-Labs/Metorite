@@ -828,9 +828,12 @@ class TestTheStreamedArmThroughTheREALClient:
     @staticmethod
     def _wire(monkeypatch, *, status: int = 200, body: bytes = b"",
               error: dict[str, Any] | None = None, hang: bool = False,
-              state: dict[str, bool] | None = None) -> list[Any]:
+              state: dict[str, bool] | None = None,
+              source: Any = None) -> list[Any]:
         """``hang`` makes the body wait with no end after its bytes, and
-        ``state["closed"]`` turns True when httpx closes the body stream."""
+        ``state["closed"]`` turns True when httpx closes the body stream.
+        ``source`` is a function that gives the body as an async iterator,
+        in place of ``body``."""
         import httpx
         import litellm
         from acb_auth import console_resolve
@@ -839,6 +842,10 @@ class TestTheStreamedArmThroughTheREALClient:
 
         class _Pieces(httpx.AsyncByteStream):
             async def __aiter__(self):
+                if source is not None:
+                    async for chunk in source():
+                        yield chunk
+                    return
                 for i in range(0, len(body), 5):
                     yield body[i:i + 5]
                 if hang:
@@ -903,6 +910,50 @@ class TestTheStreamedArmThroughTheREALClient:
         with pytest.raises(StreamIdleTimeout):
             await _draft(on_delta=seen, first_chunk_s=5.0, idle_s=0.05, total_s=5.0)
         assert seen == [("content", "Hi")]
+        assert state["closed"], "the connection to the Console stayed open"
+
+    async def test_the_FIRST_CHUNK_bound_through_the_real_client(
+        self, monkeypatch, routed
+    ):
+        """The real clock and the real client. A keepalive comment every
+        0.05 s makes no frame, so the first-chunk bound (0.25 s) fires, far
+        inside the total bound (2 s). The guard of 5 s turns a bound that never
+        fires into a plain ``TimeoutError``, so the test fails and does not
+        hang."""
+        from acb_llm import context as ctx
+
+        async def keepalives():
+            while True:
+                yield b": keepalive\n\n"
+                await asyncio.sleep(0.05)
+
+        monkeypatch.setattr(ctx, "STREAM_FIRST_CHUNK_S", 0.25)
+        monkeypatch.setattr(ctx, "STREAM_TOTAL_S", 2.0)
+        state = {"closed": False}
+        self._wire(monkeypatch, source=keepalives, state=state)
+        with pytest.raises(ctx.StreamFirstChunkTimeout):
+            await asyncio.wait_for(_draft(), 5.0)
+        assert state["closed"], "the connection to the Console stayed open"
+
+    async def test_the_TOTAL_bound_through_the_real_client(self, monkeypatch, routed):
+        """The real clock and the real client. A frame every 0.1 s keeps the
+        idle bound (30 s) away, so the total bound (0.3 s) ends the stream. The
+        guard of 5 s turns a bound that never fires into a plain
+        ``TimeoutError``."""
+        from acb_llm import context as ctx
+
+        async def frames():
+            while True:
+                yield _frame(content="x")
+                await asyncio.sleep(0.1)
+
+        monkeypatch.setattr(ctx, "STREAM_TOTAL_S", 0.3)
+        state = {"closed": False}
+        self._wire(monkeypatch, source=frames, state=state)
+        seen = _Seen()
+        with pytest.raises(ctx.StreamTotalTimeout):
+            await asyncio.wait_for(_draft(on_delta=seen), 5.0)
+        assert seen, "no delta reached the composer before the bound"
         assert state["closed"], "the connection to the Console stayed open"
 
 

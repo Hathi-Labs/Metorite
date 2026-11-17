@@ -517,8 +517,11 @@ async def acompletion_stream_text(
 
     No model-fallback chain here: a streaming caller has usually already
     surfaced partial output, so silently restarting on another model would
-    duplicate it. On failure the error propagates and the caller decides
-    (drafting falls back to its non-streaming path / neutral template).
+    duplicate it. On failure the error propagates and the caller decides.
+    The email drafters make no second model call. An interactive draft raises
+    with copy for the member (task 3541). The rule path returns its NO_DRAFT
+    sentinel. ``_llm_compose_assist`` raises for a Router refusal or outage,
+    and keeps the owner's own text for any other failure.
 
     Usage is emitted post-stream via ``litellm.stream_chunk_builder`` so
     streamed calls stay visible in observability like non-streamed ones.

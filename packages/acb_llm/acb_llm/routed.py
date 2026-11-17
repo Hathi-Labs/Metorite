@@ -417,7 +417,9 @@ def _refusal(tier: str, status: int, body: Any, *, stream: bool = False) -> Rout
 # `relay_stream` meters the counts that it saw. For a provider that sends
 # usage last, they are zero (`customer_console/router.py` 1335-1346).
 # `_record_completion` then marks the row `usage_unreadable`, logs the ERROR
-# `router.usage_unreadable`, and bills zero (`main.py` 8533-8558). The
+# `router.usage_unreadable`, and bills zero (`main.py` 8533-8558). So each
+# abandoned draft raises that ERROR. The row records the provider cost as
+# NULL, so a margin report cannot see the spend (`main.py` 8574-8579). The
 # operator report counts that row in `unbilled_calls` (`store.py` 1825-1833).
 #
 # CP-4b done-when 3 (`customer_console.md`, about line 1443) says that the
@@ -433,10 +435,26 @@ def _refusal(tier: str, status: int, body: Any, *, stream: bool = False) -> Rout
 # leaves in that time (`main.py` 9476-9510, the §8.6 window). A cancel, or the
 # 45 s first-chunk bound, can land there.
 #
-# Then `_streamed_completion` never starts (`main.py` 9148-9151). The Console
-# writes no usage row, and no Console code closes the provider stream. The
-# hold stays until `_hold_sweeper` frees it, after
-# `HOLD_SWEEP_OLDER_THAN_SECONDS` (1800 s).
+# What happens next depends on Starlette and the server. The Console
+# docstring (`main.py` 9142-9151) names Starlette 1.1.0, and it says that
+# `_streamed_completion` may never start then. The lock holds Starlette 1.7.0
+# and uvicorn 0.54.0, which reports ASGI spec 2.3. Below spec 2.4, Starlette
+# runs the body beside `listen_for_disconnect`, and uvicorn's `send` returns
+# quietly for a gone client. The 3542 verifier probed these versions: the body
+# started, pulled the head chunk and ran its `finally`.
+#
+# So with these versions the case most likely becomes gap 1, a zero-billed
+# `usage_unreadable` row. We did not prove that the body always starts. If it
+# does not, the Console writes no row, so `unbilled_calls` never counts the
+# call. Only the WARNING `router.hold_swept` shows it. The `StreamingResponse`
+# of Starlette 1.7.0 never calls `aclose`, so no code closes the provider
+# stream. The vendor can then bill tokens that no record shows.
+#
+# The hold of that call stays until `_hold_sweeper` frees it. A hold must be
+# 1800 s old, and the sweep runs each 600 s (`main.py` 8323-8324). So the hold
+# stays 30 to 40 minutes. Each hold reserves a worst-case estimate of the call
+# (`main.py` 8355-8400). With the spend gate on and a priced rate card, stacked
+# holds can then refuse a member with a false 402.
 
 #: The largest SSE line, or the data of one event, that the parser holds. A
 #: chunk frame of a draft is under 1 KB, and a whole answer of 3,000 tokens is
@@ -496,6 +514,10 @@ class RouterStreamParser:
     starts with ``:`` is a comment (a keepalive), and each other field
     (``event``, ``id``, ``retry``) is not read. A comment makes no frame, so
     it never counts as a sign of life for the idle bound.
+
+    It differs from the SSE spec in three cases, and the Console sends none
+    of them. An event of one bare ``data:`` line fails as a malformed frame.
+    A lone ``\\r`` does not end a line, and a leading byte-order mark stays.
     """
 
     def __init__(self, *, max_frame_bytes: int = MAX_STREAM_FRAME_BYTES) -> None:
