@@ -26,6 +26,15 @@ tried, and at most 3 "Where else" lines. `search_company(explain=true)`
 answers the trace of §3.7 with no record. Each search writes one
 `search.company.ladder` line.
 
+**FIND-7 is built** (task 3244, 2026-11-17, see "As built" in §5.5). Behind
+`FIND_CLAIM_CHECK`, the harness reads the final answer of each chat run, for
+an org of `FIND_ORGS` only. An answer that says a record does not exist
+needs a `search_company` answer of the same run that shows pass 2. An app's
+search tool alone does not count.
+
+In `shadow`, a miss writes one `answer_check.claim` line with no text. In
+`on`, it gets one more pass. The flag is `off` on every box.
+
 **HRD-21 is built** (task 3225, 2026-11-16, see "As built" in §3.1 and §6).
 Behind `CHAT_SEARCH_ORGS`, rung 6 reads the member's own solo chats with
 Mira, and never the current chat. A hit names the title, the date of the last
@@ -767,6 +776,183 @@ search with all the words.
 The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 (D-FIND-8).
 
+**As built (FIND-7, task 3244).**
+
+- **The home.** `CheckClaims` in `acb_skills/answer_check.py` is a second
+  chat middleware on the one provider, `AnswerCheckProvider`. The one seam,
+  `_tool_injection._apply_answer_check`, attaches it to an agent whose own
+  tools hold `search_company`. A spawn child gets no check. It sits inside the
+  number check, so it reads the model's own text before a note joins it.
+- **Only an org of `FIND_ORGS`.** Pass 2 exists only for such an org, so the
+  seam attaches the check only there. It asks
+  `gateway.retrieval.find.find_allowed`, the one reader of `FIND_ORGS`, for
+  the org of the run binding. No org, or a fault of the reader, reads as off.
+  For any other org the seam adds no middleware and writes no log line, as
+  with the flag `off`.
+- **The final answer only.** The check reads a model response that calls no
+  tool. A step that calls a tool is no answer, because the run goes on.
+- **The mark of pass 2.** `company_search_tools.ran_second_pass` is the one
+  reader, beside the code that writes each line. A line of rung 2 starts with
+  "Each word alone:". A line of rung 3 starts with "Near spellings:" or
+  "No record holds «". A trace counts too, because the explain mode runs
+  each rung.
+- **No record can fake the mark.** The tool folds each line break of a
+  title, a hint, a snippet and the query, for each boundary of
+  `str.splitlines`. The "Tried:" line quotes the query, so the reader looks
+  for "Near spellings tried:" only after the quote of the query closes.
+- **Why not the log line.** `search.company.ladder` is a log line of the
+  gateway. The harness reads only the text of the tool answer.
+- **The matcher.** `not_found_claim` has 7 rules with closed codes:
+  `no_such`, `could_not_find`, `no_record_of`, `there_is_no_named`,
+  `does_not_exist`, `found_nothing` and `not_in_place`. Each rule needs a
+  record noun from a closed list, or a name. A name has a capital letter or
+  a digit on each word, or it starts with a quote mark.
+- **What the matcher reads as no claim.** The tests hold each form below,
+  and the matcher reads no other form as no claim.
+  - A question, a condition ("if", "unless", "whether"), a quote, a quoted
+    block and code.
+  - A preposition or a list word between "find" and the noun: "any errors
+    in the invoice", "any overdue tasks", "any duplicate contacts".
+  - Reported speech, when a person is the subject right before the verb:
+    "Priya replied that there is", "Ravi says he could". A tool or a store as
+    the subject keeps the claim: "The CRM says there is no such order".
+  - The state of one record right before the claim: "The invoice shows no
+    record of". A store keeps the claim: "Our records show no record of".
+  - A record that the answer makes, for the rule `does_not_exist` only:
+    "does not exist yet", "did not exist, so I created it".
+  - A list filter right after the claim: "no matches for your filter".
+- **The bounded work.** The matcher runs on the event loop of the gateway.
+  It reads the first 20,000 characters of an answer (`MAX_CLAIM_CHARS`), and
+  each quote is 400 characters at most (`MAX_QUOTE_CHARS`). Each regex runs
+  once over a sentence. So the cap of 20,000 characters bounds the work. On
+  2,000,000 characters of each shape of the reviews, the best of 3 calls
+  took at most 0.25 s of CPU here.
+- **The flag.** `FIND_CLAIM_CHECK` takes `off`, `shadow` or `on`. The flag
+  is global, but the check acts only for an org of `FIND_ORGS`.
+  `acb_common.settings.find_claim_check_mode` is its one reader. It is not a
+  `*_ORGS` or `*_MODES` key, so a change needs a restart.
+- **`shadow`.** The check writes at most one `answer_check.claim` line for a
+  run, and changes nothing. The outcome is `shadow_miss` or `shadow_pass`.
+- **`on`.** The check holds each answer once any find tool of §5.2 or §5.3
+  answered in the run (`FIND_TOOLS`). A claim with no pass 2 gets one more
+  model request, with the fixed text `CLAIM_RETRY_NOTE`. After it, the answer
+  goes as it is. An app's search tool alone (`search_crm`, `query_inbox`,
+  `find_tasks`, `crm_list_records`, `find_contact`) has no pass 2, so a claim
+  after it alone gets the retry too. The planner decided this on task 3244:
+  §5.5 binds.
+- **A failed retry.** When the one more request raises, the member reads the
+  held draft, as with the check `off`. The line says `retry_failed`. A
+  cancel is not caught, so it stops the run as before. The failed request
+  still spends the one retry of the run. So the number check then adds its
+  note, and it makes no request of its own.
+- **The one retry.** NUM-3 and HRD-13 are not built. So the check shares
+  `RunLedger.retried` with the number check of CRM-Q29. The check that
+  finds a fault first spends it. A later claim logs `retry_spent`.
+- **The log line.** `answer_check.claim` holds `mode`, `outcome`, `rule`,
+  `searches`, `finds` and `armed`. `finds` counts the results of every find
+  tool of §5.2 and §5.3. `armed` is true when `search_company` or
+  `resolve_name` answered before the claim, so the retry is a fair request to
+  run pass 2. It is false when only an app's search tool ran, or none
+  (`finds` 0). The line holds no word of the answer, of a record or of the
+  member. The run context adds the run id.
+- **Off.** With the flag `off`, and for an org off `FIND_ORGS`, the seam
+  attaches what it attached before. The log line `executor.answer_check_on`
+  keeps its fields. Fence: `tests/unit/test_answer_not_found.py`.
+
+**The limits of FIND-7.**
+
+1. The matcher reads English only.
+2. The matcher reads the first 20,000 characters of an answer. It does not
+   read a claim after them. It reads a quote of more than 400 characters as
+   prose, and not as a quote.
+3. The matcher misses these claims, and the tests keep each miss:
+   - "Sharath has no orders" and "I could not find anything like that
+     order".
+   - "Unfortunately, no order for Sharath turns up in the records".
+   - "Your inbox has no mails from Sharath" and "Our records show no order
+     for Sharath".
+   - A name in lower case, such as "nuropeak in the CRM".
+   - "Sharath is not in the CRM yet" and "Sharath is not in the CRM or the
+     inbox". The rule `not_in_place` needs the clause to end after the place.
+   - A claim in a question, in a condition, and in reported speech with a
+     person as the subject.
+4. The matcher does not read "no mention of" or "no trace of". A summary of
+   a mail uses them for what the mail holds.
+5. The matcher reads these sentences as a claim, a false positive. The
+   tests keep each one.
+   - An empty list: "I could not find any tasks for this week", "I could
+     not find any tasks due today", "No results for this week".
+   - Reported speech in other forms: "Priya replied: we could not find the
+     payment", "In his mail, Ravi asks why he could not find the order",
+     "The client mentioned that the deal does not exist".
+   - More reported speech: "Ravi's mail says that the order does not exist",
+     "According to Ravi, there is no such order", "The customer could not
+     find the invoice", "Mr. Rao could not find the invoice".
+   - Reported speech that the rule does not see, because no person and verb
+     of speech come right before the claim: "Ravi: I could not find the
+     invoice", "Ravi wrote back and could not find the invoice", "Your note
+     says you could not locate the shipment".
+   - The state of a record in other forms: "No record of a payment yet, so
+     the invoice is open", "There is no record of a payment on this invoice".
+   - A word that names no record: "I could not find Settings", "Python is not
+     in the system", "PDF is not in the inbox", "I found nothing for Q4".
+   - A match that is no record: "I could not find a match between the two
+     invoices".
+   - An old fault that the answer reports: "Earlier I could not find the
+     order, but here it is".
+6. The matcher reads "I could not find the order, so I created it" as a
+   claim. The same is true for a lead. The new record may be a second copy.
+7. The check reads the text of the answer, not the text of a card.
+8. Pass 2 shows no line for a query of one word whose near lookup found no
+   name. So the check fires after such a search.
+9. With `CONTEXT_RECENCY` off, the route returns after pass 1. The plain
+   tool then shows no mark. See `retrieval/company.py`, the return before the
+   words alone. So in `on`, each claim after a search takes the retry, and no
+   claim can pass. On production `CONTEXT_RECENCY` is true: the planner read
+   it on the box at 08:40 UTC on 2026-11-17.
+10. Pass 2 does not run when the first pass has a hit with every content
+    word, or for a query with an operator. With `FIND_ORGS` off, it runs only
+    when the first pass finds no hit. In each case the check fires on a
+    claim.
+11. In `on`, the check holds no answer before the first find result of the
+    turn. A claim with no find tool at all streams as it is, and the check
+    logs `unheld_miss` with `finds` 0. `shadow` logs it as `shadow_miss` with
+    `finds` 0. The planner accepted this gap: such an answer comes with no
+    search at all.
+12. In `on`, after the first find result of a turn, the member sees each
+    later answer only when the model has drafted all of it. The text does not
+    stream. This is true for each answer, not only for a claim.
+13. A search of a sub-agent does not count for the run of its parent.
+14. The check does not compare the words of the search with the words of the
+    member. Any `search_company` answer of the run that shows pass 2 passes.
+15. `shadow` logs no text. So the line cannot tell a false positive from a
+    true miss. `armed` and `finds` show which claims came after a lookup.
+16. In `on`, a claim after `resolve_name` alone always takes the retry. A
+    `resolve_name` answer never shows pass 2, so it cannot pass the check.
+    The cost is one more model request in each such turn, and one more
+    search when the model obeys the retry text.
+17. In `on`, a true empty list after an app's search tool costs the retry,
+    for example "I couldn't find any tasks due today" after `find_tasks`. The
+    line then says `armed` false. The planner accepted this cost, and the
+    owner reads 20 shadow lines before the flip (decision 1).
+18. The check acts only for an org of `FIND_ORGS`. In any other org it adds
+    nothing, in each mode.
+
+**Decisions for the owner before `on`.** The planner decided these on task
+3244, and the owner can change them.
+
+1. **Read 20 shadow lines before the flip.** Read 20 `answer_check.claim`
+   lines with their turns, from the HathiLabs org only, with no chat of a
+   customer. Count the false holds, and write the count on task 3244. With
+   more than 2 false holds in 20, do not flip to `on`.
+2. **`CONTEXT_RECENCY` on production is true.** The planner read it on the
+   box at 08:40 UTC on 2026-11-17. On that box, `FIND_ORGS` and
+   `FIND_CLAIM_CHECK` are not set, so both are off. Limit 9 does not apply
+   there.
+3. **The precision of the matcher.** Shadow cannot measure it, because the
+   line holds no text (limit 15). The planner accepted this. Decision 1
+   answers it.
+
 ## 6. Privacy and tenancy
 
 - **Tenancy is a row (D15).** Each lookup runs in the bound tenant session. No
@@ -912,7 +1098,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
-| **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
+| **FIND-7** (built) | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |
 | **FIND-8** | 3246 | 3 | `contributes.search` made real: one entry in each shell manifest of an app with a source, `load_search()` in `shell_manifest.py`, the lockstep of §4.4, `BAR_APPS` and `TAU_DAYS` read from the manifest, and the `building_blocks.md` §3.1 row set right | No behaviour changes: the search suites pass unchanged. A source with no entry, or an entry with no source, fails the fence | `test_search_contributions.py`, new. `test_shell_manifests.py`, `test_shell_search.py` | STANDARD · AGENT-SAFE | FIND-3, HRD-18b |
 | **FIND-9** | 3247 | 3 | The Studio source of §4.5: one source for each install that declares `contributes.search`, over the object query of C2a, as the member | A near name finds a Studio record. A member outside the scope of the install gets nothing. Org B gets nothing | `test_find_studio_source_r8.py`, new | HIGH · AGENT-SAFE. It follows `STUDIO_ORGS` | FIND-8 |
@@ -973,6 +1159,9 @@ uv run python -m evals.search_company.run --fixture
 
 # Each slice adds its own fence from §9.2, for example FIND-2
 uv run pytest tests/unit/test_find_matched_by.py -q
+
+# FIND-7, the "not found" check, with the number check that shares its retry
+uv run pytest tests/unit/test_answer_not_found.py tests/unit/test_crm_answer_check.py -q
 ```
 
 ## 13. What this spec does not own
