@@ -475,13 +475,23 @@ async def set_sent(thread_id: str, request_id: str, message_id: Any,
     id, the approved addresses and the time. A send tool calls it only AFTER
     the mail went. The member is the run's own. Never raises."""
     try:
-        org, actor = await _facts(thread_id)
-        if not org or not actor or not record_allowed(org):
+        from acb_common.db import current_tenant
+
+        bound = current_tenant()
+        if bound is not None and not record_allowed(bound):
+            # Off for the bound tenant: no Redis read after the mail went.
             return False
-        return bool(await asyncio.wait_for(asyncio.to_thread(
-            update_sent, org, session_id=thread_id, member=actor,
-            request_id=request_id, message_id=str(message_id or ""),
-            recipients=list(recipients or [])), _TIMEOUT_S))
+
+        async def _write() -> bool:
+            org, actor = await _facts(thread_id)
+            if not org or not actor or not record_allowed(org):
+                return False
+            return bool(await asyncio.to_thread(
+                update_sent, org, session_id=thread_id, member=actor,
+                request_id=request_id, message_id=str(message_id or ""),
+                recipients=list(recipients or [])))
+
+        return await asyncio.wait_for(_write(), _TIMEOUT_S)
     except BaseException as exc:  # noqa: BLE001
         if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
             raise

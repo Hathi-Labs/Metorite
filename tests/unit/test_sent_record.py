@@ -489,3 +489,57 @@ def test_the_send_email_tool_writes_after_the_send_and_not_on_a_failure(
 
 async def _empty() -> str:
     return ""
+
+
+def test_a_refused_address_is_not_recorded_as_sent() -> None:
+    """The mail server refused x@y.test, so the line must not say that the
+    mail went to it (Opus review of 8d35f393a, P2)."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    path = root / "apps" / "agents" / "agent-email-assistant" / "agents.py"
+    src = path.read_text(encoding="utf-8")
+    assert "def _not_refused(" in src
+    ns: dict = {}
+    start = src.index("def _not_refused(")
+    end = src.index("\n\n\nasync def _note_sent(")
+    exec("from typing import Any\n" + src[start:end], ns)  # noqa: S102
+    f = ns["_not_refused"]
+    assert f(["a@x.test", "x@y.test"], {"refused": ["X@Y.test"]}) == ["a@x.test"]
+    assert f(["a@x.test"], {}) == ["a@x.test"]
+    assert f(["a@x.test"], None) == ["a@x.test"]
+    assert src.count("_not_refused(") >= 4
+    assert importlib.util is not None and sys is not None
+
+
+def test_set_sent_off_reads_no_redis(monkeypatch) -> None:
+    """Flag off for the bound tenant: no run fact is read after the mail went
+    (Opus review of 8d35f393a, P2)."""
+    import asyncio
+
+    from acb_common import db as acb_db
+    from acb_common import get_settings
+    from orchestrator import card_record as cr
+
+    looked: list[str] = []
+
+    async def facts(_tid):
+        looked.append("facts")
+        return "org-1", "alice@x.test"
+
+    monkeypatch.setattr(cr, "_facts", facts)
+    monkeypatch.setattr(acb_db, "current_tenant", lambda: "org-1")
+    monkeypatch.setattr(get_settings(), "chat_card_record_orgs", "", raising=False)
+    assert asyncio.run(cr.set_sent("t", "a" * 32, "<m@x.test>", ["a@x.test"])) is False
+    assert looked == []
+
+    async def slow(_tid):
+        await asyncio.sleep(10)
+        return "org-1", "alice@x.test"
+
+    monkeypatch.setattr(cr, "_facts", slow)
+    monkeypatch.setattr(cr, "_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(get_settings(), "chat_card_record_orgs", "*", raising=False)
+    assert asyncio.run(cr.set_sent("t", "a" * 32, "<m@x.test>", ["a@x.test"])) is False

@@ -5,8 +5,9 @@ CO-11, the pin, is BUILT and dark behind `CHAT_PIN_ORGS` (task 3510,
 2026-11-16). Its chat tool is not built (§18). CO-2a, the topic store and
 its routes, is BUILT and dark behind `CHAT_TOPICS_ORGS` (task 3501,
 2026-11-16). CO-2b adds `topic_id` and `set_by`, the move, the pass that
-never overrides a member, the rail and the chip. The rest of D163 is not
-built.
+never overrides a member, the rail and the chip. CO-17, the card record,
+and its sent-mail record are BUILT and dark behind `CHAT_CARD_RECORD_ORGS`
+(tasks 3516 and 3594, 2026-11-17). The rest of D163 is not built.
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions.

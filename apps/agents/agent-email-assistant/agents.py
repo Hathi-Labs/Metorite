@@ -6541,7 +6541,8 @@ async def send_email(
         return _not_done(f"The {verb} was not sent.")
     res = await _post("/email/send", payload)
     # Task 3594: the mail went, so the chat keeps the record of the send.
-    await _note_sent((res or {}).get("id"), [*to, *cc, *(bcc or [])])
+    await _note_sent((res or {}).get("id"),
+                     _not_refused([*to, *cc, *(bcc or [])], res))
     count = len(refs) + len(shared)
     note = f" with {count} attachment(s)" if count else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
@@ -7198,7 +7199,8 @@ async def forward_email(
         payload["note"] = note
     res = await _post("/email/forward", payload)
     # Task 3594: the forward went, so the chat keeps the record of the send.
-    await _note_sent((res or {}).get("id"), [*to, *(cc or []), *(bcc or [])])
+    await _note_sent((res or {}).get("id"),
+                     _not_refused([*to, *(cc or []), *(bcc or [])], res))
     sent = res.get("attachments") or []
     files_note = f" with {len(sent)} attachment(s)" if sent else " with no attachments"
     return (
@@ -7505,7 +7507,19 @@ def _sent_people(res: Any) -> list[str]:
     approved on the card and that the mail server took."""
     if not isinstance(res, dict):
         return []
-    return [str(a) for key in ("to", "cc", "bcc") for a in (res.get(key) or [])]
+    return _not_refused(
+        [str(a) for key in ("to", "cc", "bcc") for a in (res.get(key) or [])], res)
+
+
+def _not_refused(people: list[str], res: Any) -> list[str]:
+    """*people* without an address that the mail server refused. The answer
+    of ``/email/send`` and ``/email/forward`` names them in ``refused``, and
+    the record must not say that the mail went to them."""
+    refused = res.get("refused") if isinstance(res, dict) else None
+    if not isinstance(refused, (list, tuple)) or not refused:
+        return list(people)
+    gone = {str(a).strip().lower() for a in refused}
+    return [a for a in people if str(a).strip().lower() not in gone]
 
 
 async def _note_sent(message_id: Any, people: list[str], *,
