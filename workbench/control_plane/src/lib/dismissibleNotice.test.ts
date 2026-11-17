@@ -125,7 +125,8 @@ describe("an info-only notice is a slim line with a Dismiss", () => {
   it("the body is the second part of the same line", async () => {
     const m = await loadWith(memoryStorage());
     const html = renderNotice(m, "run_restarted_steered");
-    expect(html).toMatch(/The assistant restarted<\/span>.*Your answer went into the current reply\.<\/span>/);
+    // RESUME-3a (§4.12.4 item 5): the title says what happened, and nothing restarted.
+    expect(html).toMatch(/The chat had stopped waiting<\/span>.*Your answer went into the current reply\.<\/span>/);
     // With no slot to switch to (`otherAccountNotice.test.ts`), the line
     // says how to get there.
     expect(renderNotice(m, "answer_in_other_account")).toContain(

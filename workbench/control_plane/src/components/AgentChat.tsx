@@ -83,10 +83,10 @@ import {
   heldKeys,
   receiptLabel,
   settleAnswer,
+  type FormEdit,
   type FormEdits,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
-import type { NewMailEdits } from "@/lib/replyCard";
 import {
   UNCHANGED_CLOSE_MS,
   changingLine,
@@ -98,6 +98,8 @@ import {
 import { sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
+import { refreshLiveRuns } from "@/lib/liveRuns";
+import { receiptAnchorBeforeRun, waitingCardIds } from "@/lib/chatResume";
 import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
 import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
@@ -412,6 +414,13 @@ const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELL
 
 /** The one line a member reads when compaction fails. Nothing was removed. */
 const COMPACT_FAILED_NOTICE = "Could not shorten this chat. Every message is kept.";
+
+/** RESUME-3a: where the "Approved" line of a card that another device
+ *  approved draws: under the last message before the reply that goes on. */
+function lineAnchorBeforeRun(threadId: string): string | null {
+  const st = getSessionState(threadId);
+  return receiptAnchorBeforeRun(st.messages, st.run.messageId);
+}
 
 export default function AgentChat({
   agentName,
@@ -1168,6 +1177,14 @@ export default function AgentChat({
   );
   // §18.11: the steer reads the queue's cards, and marks what it carried.
   useEffect(() => { cardsRef.current = confirmations.cards; }, [confirmations.cards]);
+  // RESUME-3a: the request ids of the cards that waited parked in this chat.
+  // Only an answer to one of them, from another tab or device, adds a line.
+  const parkedCardsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { parkedCardsRef.current = new Set(); }, [sessionId]);
+  useEffect(() => {
+    if (run.phase !== "parked") return;
+    for (const c of confirmations.cards) if (c.requestId) parkedCardsRef.current.add(c.requestId);
+  }, [run.phase, confirmations.cards]);
   useEffect(() => {
     markSentRef.current = (key, version) => dispatchConfirmation({ type: "memberVersion", key, version });
   }, []);
@@ -1190,7 +1207,7 @@ export default function AgentChat({
     formEditsRef.current = getFormEdits(sessionId) ?? NO_EDITS;
     heldRef.current = new Set();
   }
-  const onFormEdits = useCallback((key: string, value: NewMailEdits) => {
+  const onFormEdits = useCallback((key: string, value: FormEdit) => {
     formEditsRef.current = formEditsReducer(formEditsRef.current, { key, value });
     keepFormEdits(sessionId, formEditsRef.current);
   }, [sessionId]);
@@ -1290,9 +1307,14 @@ export default function AgentChat({
         // The closing answer goes with it: a new-mail card that a chat
         // message closed (REVISED) stays as the slot of its new draft (§18.11).
         if (rid) {
+          // RESUME-3a: a card that waited parked here, and that another tab or
+          // device approved, leaves with "Approved". Its line draws under the
+          // last message before the reply that goes on now.
+          const elsewhere = parkedCardsRef.current.has(String(rid));
           dispatchConfirmation({
             type: "resolved", requestId: String(rid),
             ...(typeof answer === "string" ? { answer } : {}),
+            ...(elsewhere ? { elsewhere: true, afterId: lineAnchorBeforeRun(sessionId) } : {}),
           });
         }
         // An answer from anywhere (another tab, another member of a room)
@@ -1502,6 +1524,51 @@ export default function AgentChat({
     return () => { stale = true; };
   }, [sessionId, threadNeedsInput, pendingAskTick]);
 
+  // RESUME-3a step 7: the server stopped listing a parked thread. Another tab
+  // or device answered its card, or the card closed. Once the run rests, ask
+  // the server ONCE for what still waits, and settle each card that shows as
+  // waiting and is not on the list. A continuation that runs first closes the
+  // card itself, with "Approved", through its `confirmation_resolved`.
+  const parkedWaitRef = useRef(false);
+  const askCheckDueRef = useRef(false);
+  const runRests = !isLivePhase(run.phase) && run.phase !== "parked";
+  useEffect(() => {
+    parkedWaitRef.current = false;
+    askCheckDueRef.current = false;
+  }, [sessionId]);
+  useEffect(() => {
+    if (threadNeedsInput) {
+      if (run.phase === "parked") parkedWaitRef.current = true;
+      return;
+    }
+    if (parkedWaitRef.current) {
+      parkedWaitRef.current = false;
+      askCheckDueRef.current = true;
+    }
+    if (!askCheckDueRef.current || !runRests || !sessionId) return;
+    askCheckDueRef.current = false;
+    const forSession = sessionId;
+    const waiting = waitingCardIds(
+      confirmations.cards,
+      [
+        elicitation && elicitation.answered === undefined && !elicitation.declined ? elicitation.requestId : null,
+        userInput && userInput.answered === undefined && !userInput.declined ? userInput.requestId : null,
+      ],
+      redrawnRef.current.waiting,
+    );
+    if (waiting.size === 0) return;
+    void fetchPendingAsksOrNull(forSession).then((asks) => {
+      if (sessionIdRef.current !== forSession) return;
+      for (const id of cardsToSettle(asks, waiting)) {
+        redrawnRef.current.waiting.delete(id);
+        dispatchConfirmation({ type: "resolved", requestId: id });
+        setElicitation((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+        setUserInput((prev) => (prev?.requestId === id && prev.answered === undefined ? null : prev));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the cards are read at the check, not watched
+  }, [sessionId, threadNeedsInput, run.phase, runRests]);
+
   // HITL cards are per-session component state — clear them on a session
   // switch so a question raised in session A never renders in (or gets its
   // answer routed from) session B.  The event subscriber above already
@@ -1548,7 +1615,17 @@ export default function AgentChat({
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
-      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason }) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason, resumed }) => {
+        // RESUME-3a: the late Approve started a continuation run. The run
+        // state of its thread hears it, and the run list is asked at once, so
+        // the attach starts. No envelope goes and no notice draws.
+        if (resumed) {
+          dispatchRun(forSession, {
+            type: "resumed", at: Date.now(), runId: resumed.runId,
+            ...(resumed.messageId ? { messageId: resumed.messageId } : {}),
+          });
+          refreshLiveRuns();
+        }
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
         if (otherAccount) {

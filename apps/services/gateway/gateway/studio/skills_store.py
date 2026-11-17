@@ -471,8 +471,8 @@ async def get_version(db: Any, member: str, skill_id: str,
 # closed). A draft, a paused and an archived skill never load. The fence is
 # ``tests/unit/test_skill_packs_r8.py``.
 
-#: The most skill heads that one turn reads. The match runs on the name, so
-#: the head read takes no body.
+#: The most skill heads that one turn reads. The match runs on the name, and
+#: TOF-1c also on the head description, so the head read takes no body.
 MAX_LOADABLE = 200
 
 _LOADABLE_WHERE = (

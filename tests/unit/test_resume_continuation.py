@@ -26,6 +26,18 @@ What it holds (R7):
    of the request, never reach the executor.
 7. The note is never the member's words: memory reads and extracts ``""``,
    the typed and sent words are ``""``, and the native session skips the run.
+8. The follow-ups of the RESUME-2a re-review. P2-2: with only
+   ``CHAT_RESUME_ORGS`` on, a live approve still writes the SPENT mark, and
+   the grant keeps its own flag. P2-3: the claim gives TAKEN, SPENT or
+   UNKNOWN, and UNKNOWN gives the neutral note. ``start_detached`` reads the
+   task of the thread after its await.
+9. RESUME-4a-1 (task 3478): the prologue marks the stored native session of
+   its key stale BEFORE the stored call and the note, with the org of the
+   run binding, the caller's thread and the session key (never the label of
+   an attribution scope). No mark with ``MAF_NATIVE_SESSIONS`` off or no
+   thread. A failing mark never fails the run. The mark is ONE bound UPDATE
+   that names ``organization_id``. The R8 half is
+   ``tests/unit/test_resume_native_stale_r8.py``.
 
 Run::
 
@@ -58,7 +70,7 @@ from tests.unit.test_chat_deploy_recovery import (  # noqa: E402, F401
     liveness,
     no_persist,
 )
-from tests.unit.test_late_approve_grant import (  # noqa: E402, F401
+from tests.unit.test_late_approve_grant import (  # noqa: E402
     DEALS,
     WRITES,
     _cards,
@@ -559,8 +571,12 @@ def _wrapped(fn: Any) -> Any:
 
 
 def _prologue(agents: list[Any], resume: dict[str, Any], *, tid: str = "t-pro",
-              payload: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict]:
+              payload: dict[str, Any] | None = None,
+              mark_thread: str | None = None) -> tuple[list[dict[str, Any]], dict]:
     payload = {"message": ""} if payload is None else payload
+    # RESUME-4a-1: the run route passes the caller's thread. The cases of
+    # RESUME-2a pass none, so they send no mark.
+    extra: dict[str, Any] = {} if mark_thread is None else {"thread_id": mark_thread}
 
     async def _answer_cards() -> None:
         # A card that shows is answered REJECT, so a run never hangs on it.
@@ -576,7 +592,7 @@ def _prologue(agents: list[Any], resume: dict[str, Any], *, tid: str = "t-pro",
         helper = asyncio.create_task(_answer_cards())
         try:
             lines = [line async for line in executor._resume_prologue(
-                agents, "orchestrator", resume, payload)]
+                agents, "orchestrator", resume, payload, **extra)]
         finally:
             helper.cancel()
         return [json.loads(line[len("data: "):]) for line in lines]
@@ -941,21 +957,161 @@ def test_a_lock_timeout_and_a_deadlock_mean_no_claim(monkeypatch):
 # 8. Review of RESUME-2a: P1-A (the twin guard fails closed)
 # ---------------------------------------------------------------------------
 
-def test_with_no_late_approve_scope_the_yes_is_refused_and_the_card_shows(
+def test_with_no_scope_the_yes_is_refused_and_the_card_shows(
     resume_on, ask_db, liveness, monkeypatch,
 ):
-    """P1-A (b): ``claim_act`` fails CLOSED. A run with no late-approve scope
-    (the flag off for the run's org) takes no yes, so the card shows and
-    nothing writes before the member answers it. Mutation: return True from
-    ``claim_act`` when the scope is None -> one write and no card -> red."""
+    """P1-A (b): ``claim_act`` fails CLOSED. A run with no scope (both flags
+    off for the run's org, after P2-2) takes no yes, so the card shows and
+    nothing writes before the member answers it. Its outcome is ``unknown``,
+    never ``spent`` (P2-3). Mutation: give ``CLAIM_TAKEN`` from ``claim_act``
+    when the scope is None -> one write and no card -> red."""
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
     out = _yes_run(_stored(), lambda: _keyed(
         update_deal_status, deal_id="d-neuro", stage="Payment Complete"))
     assert WRITES == [] and out["cards"], "the card showed, and REJECT wrote nothing"
-    assert out["state"].outcome == "spent"
-    assert resume_on.data == {}, "no scope writes no mark"
+    assert out["state"].outcome == "unknown"
+    assert resume_on.data == {} and resume_on.calls == [], "no scope reads and writes nothing"
+
+
+# ---------------------------------------------------------------------------
+# 8b. RESUME-2a follow-up: P2-2 (either flag writes the mark) and P2-3 (three
+#     answers of the claim)
+# ---------------------------------------------------------------------------
+
+def _plain_card(deal_id: str = "d-neuro", stage: str = "Payment Complete",
+                keyed: bool = True) -> Any:
+    """The plain card of the stand-in call, as the gate builds it."""
+    from acb_skills.ask_tools import PlainCard
+
+    title = DEALS[deal_id]
+    keys = card_call_keys(update_deal_status, deal_id=deal_id, stage=stage) if keyed else None
+    return PlainCard(f"Move this deal to {stage}?", f"{title} → {stage}",
+                     f"deal: {title}\nstage: {stage}", None, keys, update_deal_status, False)
+
+
+def _in_run(body: Any, tid: str = "t-claim") -> Any:
+    """Run *body* (an async callable) in a run bound to *tid*, org A and
+    Alice, in a task of its own."""
+    async def _bound() -> Any:
+        executor._stream_relay_thread_id.set(tid)
+        _bound_run(tid)
+        return await body()
+
+    async def go() -> Any:
+        return await asyncio.create_task(_bound())
+
+    return asyncio.run(go())
+
+
+def test_the_claim_gives_taken_spent_and_unknown(resume_on, monkeypatch):
+    """P2-3. ``claim_act`` tells three answers apart. TAKEN once, then SPENT.
+    A Redis fault, no scope and a card with no act give UNKNOWN, never
+    SPENT. Mutation: give SPENT for a fault -> red."""
+    from acb_common import get_settings
+
+    card = _plain_card()
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_TAKEN
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_SPENT
+    resume_on.fail = ConnectionError("redis down")
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_UNKNOWN
+    resume_on.fail = None
+    no_act = _plain_card(keyed=False)
+    assert _in_run(lambda: late_approve.claim_act(no_act)) == late_approve.CLAIM_UNKNOWN
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
+    assert _in_run(lambda: late_approve.claim_act(card)) == late_approve.CLAIM_UNKNOWN
+    assert {late_approve.CLAIM_TAKEN, late_approve.CLAIM_SPENT,
+            late_approve.CLAIM_UNKNOWN} == {"taken", "spent", "unknown"}
+
+
+def test_a_claim_fault_shows_the_card_and_the_note_never_says_it_ran(
+    resume_on, ask_db, liveness,
+):
+    """P2-3. A Redis fault at the claim: the card shows (fail closed), the
+    outcome is ``unknown``, and the note says that the change MAY have run.
+    It never says that the change ran. Mutation: map UNKNOWN to ``spent`` in
+    ``resume_answer``, or drop the ``unknown`` row of the executor's map ->
+    red."""
+    resume_on.fail = ConnectionError("redis down")
+    out = _yes_run(_stored(), lambda: _keyed(
+        update_deal_status, deal_id="d-neuro", stage="Payment Complete"))
+    assert WRITES == [] and out["cards"], "the card showed, and REJECT wrote nothing"
+    assert out["state"].outcome == "unknown"
+
+    events, payload = _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume())
+    assert WRITES == []
+    assert _cards(liveness, "t-pro"), "the card showed"
+    assert not [e for e in events if e.get("type") == "TOOL_CALL_RESULT" and e.get("success") is False]
+    note = payload["message"]
+    assert "It may have run already." in note
+    assert "already ran in this chat" not in note and "Metorite ran the tool" not in note
+
+
+def test_the_unknown_note_is_neutral_and_fenced():
+    """P2-3: the one new outcome lives in the one seam of the notes
+    (``chat_recovery``). Its note says neither that the change ran nor that
+    nothing ran."""
+    from gateway import chat_recovery as cr
+
+    assert cr.RESUMED_UNKNOWN == "unknown"
+    outcomes = [cr.RESUMED_APPROVED, cr.RESUMED_CHANGED, cr.RESUMED_NOT_RUN,
+                cr.RESUMED_SPENT, cr.RESUMED_UNKNOWN]
+    assert len(set(outcomes)) == len(outcomes)
+    notes = {o: cr.compose_resumed_call_note("Move it?", "ok", o) for o in outcomes}
+    assert len(set(notes.values())) == len(notes), "each outcome has its own note"
+    unknown = notes[cr.RESUMED_UNKNOWN]
+    assert "could not tell if this change ran already" in unknown
+    assert "It may have run already." in unknown
+    assert "did not write the approved values" in unknown
+    assert unknown.count("<<<tool-result>>>") == 1
+
+
+def test_a_live_approve_with_only_resume_on_marks_the_act_for_a_later_flip(
+    resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """P2-2. ``CHAT_RESUME_ORGS`` on and ``CHAT_LATE_APPROVE_ORGS`` off: a
+    live approve of a twin card still writes the SPENT mark, and only the
+    mark. The org then joins the late-approve list within the life of a row.
+    The stored call of the OLD twin card reads SPENT and writes nothing.
+    Mutation: gate ``note_approved`` on ``CHAT_LATE_APPROVE_ORGS`` alone ->
+    no mark -> the old card writes again -> red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    tid = "t-p22-flip"
+    out = _run(liveness, tid, live="APPROVE", deal_id="d-neuro", stage="Payment Complete")
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert list(resume_on.data.values()) == [late_approve._SPENT], "the mark, and no offer or grant"
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
+    twin = _yes_run(_stored(), lambda: _keyed(
+        update_deal_status, deal_id="d-neuro", stage="Payment Complete"), tid=tid)
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")], "the old card writes nothing"
+    assert twin["cards"] and twin["state"].outcome == "spent"
+
+
+def test_the_grant_keeps_its_own_flag(resume_on, monkeypatch):
+    """P2-2 widens the writer of the SPENT mark only. With only
+    ``CHAT_RESUME_ORGS`` on, a grant in place is never used, and the card
+    shows: the members that get a grant do not change. Mutation: open
+    ``take_grant`` with ``spend=True`` -> the grant is used -> red."""
+    from acb_common import get_settings
+    from acb_common.tenant_redis import key, organization_scope
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    card = _plain_card()
+    act = late_approve.act_of(card, "orchestrator")
+    assert act is not None
+    with organization_scope(_ORG_A):
+        gkey = key(late_approve.GRANT_NAMESPACE, _ALICE, "t-grant", act.digest).value
+    resume_on.data[gkey] = late_approve._encode("rid-x", act.text, act.keys)
+    assert _in_run(lambda: late_approve.take_grant(card), tid="t-grant") is False
+    assert gkey in resume_on.data, "the grant is not read"
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
+    assert _in_run(lambda: late_approve.take_grant(card), tid="t-grant") is True, "non-vacuity"
 
 
 # ---------------------------------------------------------------------------
@@ -1202,3 +1358,246 @@ def test_start_detached_exclusive_refuses_any_live_run(liveness, monkeypatch):
             await stream_relay.start_detached("t-ex2", _gen(), actor=None, exclusive=True)
 
     asyncio.run(go_down())
+
+
+def test_start_detached_exclusive_reads_the_task_after_its_await(liveness, monkeypatch):
+    """RESUME-2a follow-up. A run that registers its task on the thread while
+    ``is_active`` awaits still refuses the exclusive start, and it is never
+    cancelled. Mutation: read ``_DETACHED_TASKS`` before the await -> the
+    start goes on and cancels that run -> red."""
+    tid = "t-ex-late"
+
+    async def _gen():
+        for line in ():
+            yield line
+
+    async def go() -> None:
+        other = asyncio.create_task(asyncio.sleep(30))
+
+        async def _registers_during_the_await(_tid: str) -> bool:
+            stream_relay._DETACHED_TASKS[tid] = other
+            return False
+
+        monkeypatch.setattr(stream_relay, "is_active", _registers_during_the_await)
+        try:
+            with pytest.raises(stream_relay.SupersedeRefused):
+                await stream_relay.start_detached(tid, _gen(), actor=None, exclusive=True)
+            assert not other.done(), "the other run goes on"
+            assert stream_relay._DETACHED_TASKS.get(tid) is other
+        finally:
+            other.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await other
+            stream_relay._DETACHED_TASKS.pop(tid, None)
+
+    asyncio.run(go())
+# ---------------------------------------------------------------------------
+# 11. RESUME-4a-1: a continuation marks the stored native session stale
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def native_on(monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", True)
+
+
+@pytest.fixture
+def marks(monkeypatch):
+    """The store's mark as a recorder. Each call keeps its key, and what the
+    run had done at that moment: the writes and the run's message."""
+    from orchestrator import native_session_store
+
+    seen: list[dict[str, Any]] = []
+    state: dict[str, Any] = {}
+
+    async def _mark(*, organization_id: str, thread_id: str) -> str:
+        payload = state.get("payload") or {}
+        seen.append({"org": organization_id, "thread": thread_id,
+                     "writes": list(WRITES), "message": payload.get("message")})
+        return "marked"
+
+    monkeypatch.setattr(native_session_store, "mark_stale", _mark)
+    return seen, state
+
+
+class _LineLog:
+    """A logger that keeps each line as ``(event, fields)``."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, dict[str, Any]]] = []
+
+    def __getattr__(self, _level: str) -> Any:
+        return lambda event, **kw: self.lines.append((event, kw))
+
+
+def test_a_continuation_marks_the_session_stale_before_the_call_and_the_note(
+    native_on, marks, resume_on, ask_db, liveness,
+):
+    """The mark goes FIRST: before the stored call writes and before the note
+    becomes the run's input. Mutation: remove the
+    ``_mark_native_session_stale`` call from ``_resume_prologue`` -> no
+    mark -> red."""
+    seen, state = marks
+    payload: dict[str, Any] = {"message": ""}
+    state["payload"] = payload
+    _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume(),
+              payload=payload, mark_thread="t-pro")
+    assert [(m["org"], m["thread"]) for m in seen] == [(_ORG_A, "t-pro")]
+    assert seen[0]["writes"] == [], "the mark came before the stored call wrote"
+    assert seen[0]["message"] == "", "the mark came before the note"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert payload["message"].startswith("[Metorite] The member approved the card")
+
+
+def test_a_refused_call_marks_too(native_on, marks, resume_on, ask_db, liveness):
+    """A refused call still runs the model on the note, so its reply is a
+    row with no user row before it. It marks as well."""
+    seen, _ = marks
+    _prologue([_Agent([])], _resume(), mark_thread="t-refused")
+    assert [m["thread"] for m in seen] == ["t-refused"] and WRITES == []
+
+
+def test_no_mark_with_native_sessions_off_or_no_thread(
+    marks, resume_on, ask_db, liveness, monkeypatch,
+):
+    from acb_common import get_settings
+
+    seen, _ = marks
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", False)
+    _prologue([_Agent([])], _resume(), mark_thread="t-off")
+    assert seen == [], "MAF_NATIVE_SESSIONS off sends no statement"
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", True)
+    _prologue([_Agent([])], _resume(), mark_thread="  ")
+    _prologue([_Agent([])], _resume())
+    assert seen == [], "no thread sends no statement"
+    _prologue([_Agent([])], _resume(), mark_thread="t-on")
+    assert [m["thread"] for m in seen] == ["t-on"], "non-vacuity"
+
+
+def test_no_org_sends_no_mark(native_on, marks, resume_on, ask_db, liveness, monkeypatch):
+    seen, _ = marks
+    monkeypatch.setattr(executor, "_current_run_org", lambda: None)
+    _prologue([_Agent([])], _resume(), mark_thread="t-no-org")
+    assert seen == []
+
+
+def test_a_failing_mark_never_fails_the_run(native_on, resume_on, ask_db, liveness, monkeypatch):
+    """The executor glue catches a fault of the store, and logs its type
+    only. Mutation: drop the ``try`` of ``_mark_native_session_stale`` -> the
+    prologue raises -> red."""
+    from orchestrator import native_session_store
+
+    async def _broken(**_k: Any) -> str:
+        raise RuntimeError("secret detail of the fault")
+
+    log = _LineLog()
+    monkeypatch.setattr(native_session_store, "mark_stale", _broken)
+    monkeypatch.setattr(executor, "_log", log)
+    _events, payload = _prologue([_Agent([_Tool(_wrapped(update_deal_status))])], _resume(),
+                                 mark_thread="t-broken")
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")], "the run went on"
+    assert payload["message"].startswith("[Metorite] The member approved the card")
+    failed = [kw for event, kw in log.lines if event == "native_session.mark_stale_failed"]
+    assert failed == [{"agent": "orchestrator", "error": "RuntimeError"}]
+    assert "secret detail" not in repr(log.lines)
+
+
+def test_the_store_mark_never_raises_and_logs_the_type_only(monkeypatch):
+    from orchestrator import native_session_store as store
+
+    def _down(*_a: Any) -> bool:
+        raise ConnectionError("password=hunter2 host=db")
+
+    log = _LineLog()
+    monkeypatch.setattr(store, "mark_row_stale", _down)
+    monkeypatch.setattr(store, "_log", log)
+    out = asyncio.run(store.mark_stale(
+        organization_id=_ORG_A, thread_id="t-down"))
+    assert out == "failed"
+    assert log.lines == [("native_session.mark_stale_failed",
+                          {"thread_id": "t-down", "error": "ConnectionError"})]
+    monkeypatch.setattr(store, "mark_row_stale", lambda *_a: False)
+    assert asyncio.run(store.mark_stale(
+        organization_id=_ORG_A, thread_id="t")) == "unchanged"
+    monkeypatch.setattr(store, "mark_row_stale", lambda *_a: True)
+    assert asyncio.run(store.mark_stale(
+        organization_id=_ORG_A, thread_id="t")) == "marked"
+
+
+def test_the_mark_binds_the_thread_and_org_under_an_attribution_scope(
+    native_on, marks, resume_on, ask_db, liveness,
+):
+    """The mark binds the bound org and the caller's thread, and no agent
+    key, so an attribution scope (``_run_agent_label``) changes nothing.
+    Mutation: bind another thread or org -> red."""
+    from acb_common import run_attribution_scope
+
+    seen, _ = marks
+    with run_attribution_scope(app="auto", agent="auto.headless"):
+        assert executor._run_agent_label("orchestrator") == "auto.headless", "non-vacuity"
+        _prologue([_Agent([])], _resume(), mark_thread="t-scope")
+    assert [(m["org"], m["thread"]) for m in seen] == [(_ORG_A, "t-scope")]
+    src = inspect.getsource(executor.run_agent_stream)
+    assert "_begin_native_session(\n                    agent, agent_name," in src
+    assert ("agents, agent_name, resume_call, event_payload,\n"
+            "                    thread_id=_caller_thread_id,") in src
+    assert "caller_thread_id=_caller_thread_id" in src
+
+
+def test_the_prologue_is_the_one_caller_and_runs_before_the_session_load():
+    """Only a continuation marks: the ONE call is in ``_resume_prologue``,
+    which runs only under ``if resume_call is not None:``, before the session
+    load and the compose. So a run that is not a continuation sends no
+    statement, and its input stays byte for byte as before."""
+    src = inspect.getsource(executor)
+    assert src.count("await _mark_native_session_stale(") == 1, "ONE call"
+    prologue = inspect.getsource(executor._resume_prologue)
+    body = prologue.split('"""', 2)[2]
+    assert body.lstrip().startswith("await _mark_native_session_stale(agent_name, thread_id)")
+    assert src.count("native_session_store.mark_stale(") == 1
+    run = inspect.getsource(executor.run_agent_stream)
+    gate = run.index("if resume_call is not None:\n                async for _resume_line")
+    assert gate < run.index("_session_turn = await _begin_native_session(")
+    assert gate < run.index("_native_input, _native_ctx = _compose_maf_run(")
+
+
+def test_the_mark_is_one_bound_update_that_names_the_org():
+    """Mutation: drop the org predicate -> red. The R8 file proves the rows."""
+    import re
+
+    from orchestrator import native_session_store as store
+
+    sql = " ".join(store._MARK_STALE_SQL.split())
+    assert sql.startswith("UPDATE maf_agent_session SET transcript_digest = :stale WHERE ")
+    for part in ("organization_id = CAST(:org AS uuid)", "thread_id = :tid",
+                 "transcript_digest <> :stale"):
+        assert part in sql, part
+    assert "agent_name" not in sql and ":agent" not in sql, "each agent of the thread"
+    assert ";" not in sql and "INSERT" not in sql.upper() and "DELETE" not in sql.upper()
+    body = inspect.getsource(store.mark_row_stale)
+    assert body.count(".execute(") == 1
+    assert "tenant_session(organization_id)" in body
+    assert "_MARK_STALE_SQL" in body
+    # The column takes 64 hex characters only (the CHECK of migration 228), so
+    # the sentinel is the zero digest. A real digest equals it only through a
+    # SHA-256 preimage of zero. Mutation: mark with a real digest -> red.
+    assert re.fullmatch(r"[0-9a-f]{64}", store.STALE_DIGEST)
+    assert store.STALE_DIGEST == "0" * 64
+    for rows in ([], [("user", "")], [("user", "x")]):
+        assert store.transcript_digest(rows) != store.STALE_DIGEST
+
+
+def test_a_stale_row_loads_as_a_digest_drop_and_the_room_still_wins():
+    from orchestrator import native_session_store as store
+
+    covered = [("user", "hello")]
+    row = store.StoredRow({}, store.STALE_DIGEST, "fp")
+    state = store.LoadState(chat_exists=True, stored=row)
+    assert store._decide(state, covered=covered, fingerprint="fp", browser_history=None) == (
+        store.DIGEST_DROP, "resume_stale")
+    assert store._decide(state, covered=covered, fingerprint="other",
+                         browser_history=None)[0] == store.FINGERPRINT_DROP
+    fresh = store.StoredRow({}, store.transcript_digest(covered), "fp")
+    assert store._decide(store.LoadState(chat_exists=True, stored=fresh), covered=covered,
+                         fingerprint="fp", browser_history=None) == (store.HIT, "")

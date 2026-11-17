@@ -80,6 +80,8 @@ DIRECTORY_CAP = 2000
 MATCHES_MAX = 5
 #: The feature that opens the directory tiers.
 PEOPLE_FEATURE = "feature:people"
+#: The feature that opens the mail tier (CT-1).
+EMAIL_FEATURE = "feature:email"
 
 #: The bound tenant, as ``people/core.py::has_login`` writes it. ``NULLIF``
 #: fails closed: an unbound GUC matches no row.
@@ -281,7 +283,11 @@ async def resolve_person_for_assistant(
     "total": n, "directory": bool, "truncated": bool, "near": bool}``.
     ``directory`` is false when the member lacks ``feature:people``, so only
     the aliases were searched. ``near`` is true when no name equals the input
-    and the matches are near spellings (HRD-18a), nearest first.
+    and the matches are near spellings (HRD-18a), nearest first. ``mail`` is
+    true when the directory found nobody and the matches are people of the
+    member's own mail (CT-1): near spellings, who are not members.
+    ``mail_searched`` is true when the mail tier ran, so the answer names
+    only the places that were searched. Both keys are absent when false.
     """
     uid = getattr(user, "email", None) or ""
     if not uid:
@@ -299,6 +305,8 @@ async def resolve_person_for_assistant(
     found: list[dict[str, str]] = []
     truncated = False
     near = False
+    mail = False
+    mail_searched = False
     try:
         async with _tenant_session() as db:
             found = await _alias_tier(db, uid, org, wanted, address)
@@ -313,11 +321,30 @@ async def resolve_person_for_assistant(
                     found, tier = await asyncio.to_thread(_near_tier, people, members, raw)
                     near = bool(found)
                 source = tier if found else None
+            if not found and not address and user.has_permission(EMAIL_FEATURE):
+                # CT-1: the directory found nobody. The member's own mail
+                # may hold the person: the one reader of the suggest door.
+                from gateway.routes.email.transport.contacts import mail_people
+
+                mail_searched = True
+                hits = await mail_people(db, uid, raw)
+                # A mail hit that is a member or a person is no stranger:
+                # it is dropped, because the directory missed its name only.
+                found = [{"name": h.name or h.email, "email": h.email} for h in hits
+                         if not await email_in_org(db, h.email)]
+                if found:
+                    source, near, mail = "mail", True, True
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("auth.assistant_profile.resolve_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return {"source": source, "matches": found[:MATCHES_MAX], "total": len(found),
-            "directory": directory, "truncated": truncated, "near": near}
+    out: dict[str, Any] = {
+        "source": source, "matches": found[:MATCHES_MAX], "total": len(found),
+        "directory": directory, "truncated": truncated, "near": near}
+    if mail:
+        out["mail"] = True
+    if mail_searched:
+        out["mail_searched"] = True
+    return out
