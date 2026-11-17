@@ -46,7 +46,7 @@ function chat(id: string, ageMs: number, over: Partial<ChatSession> = {}): ChatS
 const brief = (id: string, ageMs: number) =>
   chat(id, ageMs, { isBrief: true, hasUserMessage: false, title: `Your day, ${id}` });
 
-function render(sessions: ChatSession[], activeId: string | null = null): string {
+function render(sessions: ChatSession[], activeId = ""): string {
   return renderToStaticMarkup(
     createElement(SessionPicker, {
       sessions,
