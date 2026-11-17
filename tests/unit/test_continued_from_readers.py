@@ -50,6 +50,9 @@ ALLOWED: dict[tuple[str, str], str] = {
     # The session list reads the link and gives `continuedFrom` (CO-13).
     ("apps/services/gateway/gateway/routes/chat.py", "_get_sessions"):
         "the session list (§9.3 item 8, CO-13)",
+    # The one statement of the list is a module constant since task 3564.
+    ("apps/services/gateway/gateway/routes/chat.py", "_SESSIONS_SQL"):
+        "the one statement of the session list (CO-13)",
 }
 
 #: The only TypeScript files that name the `continuedFrom` key of the list.

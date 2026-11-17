@@ -287,6 +287,32 @@ async def test_neuropeak_order_finds_the_deal_and_the_thread_of_its_lead(
     assert not any(i in json.dumps(off) for i in world["sharat"])
 
 
+async def test_explain_gives_the_trace_and_no_record(world, flags, roomy) -> None:
+    """FIND-4 (task 3241, ``find_engine.md`` §3.7): through the real route and
+    the real apps, ``explain=true`` answers the trace. It holds no hit and no
+    related record, and no id, title, address or domain of a record."""
+    from tests.unit.test_company_search_r8 import _ask as ask
+
+    p, crm = world["p"], world["a"]
+    flags("*")
+    user = _member(A, p.org_a, *ALL)
+    plain = await _ask(p, user, "Neuropeak order")
+    assert plain["hits"] and plain["related"], "the search finds records to hide"
+    answer = await ask(p, user, {"q": "Neuropeak order", "apps": "crm,email",
+                                 "explain": "true"})
+    assert answer["hits"] == [] and "related" not in answer
+    rows = {(r["rung"], r["source"]): r for r in answer["trace"]["rungs"]}
+    # No CRM record holds both words. "Neuropeak" alone finds the deal.
+    assert rows[("exact", "crm")]["ran"] and rows[("exact", "crm")]["outcome"] == "empty"
+    assert rows[("word", "crm")]["outcome"] == "ok" and rows[("word", "crm")]["hits"] >= 1
+    # Rung 4 ran on the deal: the lead's mail and the lead and contact.
+    assert rows[("related", "email")]["hits"] >= 1 and rows[("related", "crm")]["hits"] >= 1
+    text = json.dumps(answer)
+    for value in (*crm.values(), *world["sharat"], SHARAT, DOMAIN, PRIYA, "Snowflake",
+                  "Satyanarayana", "/crm?", "/email?"):
+        assert value not in text, value
+
+
 async def test_the_related_reads_give_ids_and_keys_only(world) -> None:
     p, crm = world["p"], world["a"]
     me = _member(A, p.org_a, *ALL)

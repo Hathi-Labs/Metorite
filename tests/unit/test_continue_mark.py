@@ -33,6 +33,7 @@ def _row(sid: str, *, title: str | None = "t", link: str | None = None, archived
         message_count=1, created_at=NOW, updated_at=NOW, user_id="a@x.test",
         visibility="private", participant_count=1, has_user_message=True,
         my_role="owner", archived_at=archived, continued_from=link,
+        is_brief=False,
     )
 
 
@@ -118,7 +119,7 @@ def test_the_existing_keys_are_unchanged(monkeypatch) -> None:
     assert set(out[0]) == {
         "id", "agentName", "title", "lastPreview", "messageCount", "createdAt",
         "updatedAt", "visibility", "isOwner", "participantCount",
-        "hasUserMessage", "archivedAt", "continuedFrom",
+        "hasUserMessage", "isBrief", "archivedAt", "continuedFrom",
     }
 
 

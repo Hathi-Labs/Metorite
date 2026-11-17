@@ -535,6 +535,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
     try:
+        # The retention of the waiting chat cards registers its prune hook at
+        # import (task 3435, orchestrator/pending_ask.py). A route imports the
+        # module late, so the import here puts the hook in place before the
+        # first tick. Its own try, as above.
+        from orchestrator import pending_ask as _pending_ask  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.pending_ask_prune_skipped", error=type(exc).__name__)
+    try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
         from gateway.align import check as _align_check  # noqa: F401
@@ -1876,6 +1884,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-FIND FIND-5 — `GET /search/names`, the route of `resolve_name`
+    # (find_engine.md §5.2). `FIND_ORGS` answers 404 first, and each source
+    # checks its own app's gates, as for `/search/company`.
+    from gateway.retrieval.names import router as _names_router
+
+    app.include_router(_names_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-59 RE-1a — Reach: `/reach/preview` and `/reach/brief`
     # (proactive_reach.md). Gated on `feature:chat`, as the WhatsApp channel
     # is. With REACH_ENABLED off, or the member off the allowlist, both 404.
@@ -1972,6 +1990,17 @@ try:
     from gateway.routes.chat_transcribe import router as _chat_transcribe_router
 
     app.include_router(_chat_transcribe_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # chat_organization.md §6 CO-2a — the topics of the chat list. Shares
+    # /chat's prefix, in its own module, as the brief does. Dark behind
+    # CHAT_TOPICS_ORGS. Fence: test_chat_topic.py checks that this app
+    # serves the routes, because a failed import here answers 404 too.
+    from gateway.routes.chat_topics import router as _chat_topics_router
+
+    app.include_router(_chat_topics_router)
 except Exception:  # pragma: no cover
     pass
 

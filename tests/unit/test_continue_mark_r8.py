@@ -156,5 +156,5 @@ def test_a_chat_with_no_continuation_is_unchanged(db) -> None:
     assert set(row) == {
         "id", "agentName", "title", "lastPreview", "messageCount", "createdAt",
         "updatedAt", "visibility", "isOwner", "participantCount",
-        "hasUserMessage", "archivedAt", "continuedFrom",
+        "hasUserMessage", "isBrief", "archivedAt", "continuedFrom",
     }
