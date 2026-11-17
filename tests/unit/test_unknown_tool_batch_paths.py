@@ -7,16 +7,19 @@ self-anneal retry. Their model read ``Error: Requested function "x" not
 found.``, and it could quote that text to the member. That is the symptom
 that the owner saw ("Function query_inbox not found").
 
-The one seam is ``executor._assemble_batch_agents``. It puts
-``unknown_tool.UnknownToolProvider`` on the first agent
-(``_unknown_tool_view``). A run with a parent, or with no chat, is a step
+ONE hook, ``executor._unknown_tool_view``, makes the provider for every
+path. ``_log_request_tools_view`` calls it for the stream run of the
+orchestrator, and ``_assemble_batch_agents`` calls it for each batch run. A
+sub-agent runs through the batch run. A run with a parent, or with no chat, is a step
 (``step=True``). Its answer names a tool of the request, or it is
 ``unknown_tool.NOT_IN_STEP``. It never names a pack and never asks a loader.
 A top-level run of a chat (WhatsApp) gets the HRD-1 text as the stream run
 gets it with ``CHAT_TOOL_AUTOLOAD`` off.
 
-The tests run the REAL ``run_agent``, ``_assemble_batch_agents``,
-``_run_with_maf_agent`` and ``_run_sub_agent_streaming``. Only the load, the
+The tests run the REAL ``run_agent_stream``, ``run_agent``,
+``_assemble_batch_agents``, ``_run_with_maf_agent`` and
+``_run_sub_agent_streaming``. ``CHAT_TOOL_AUTOLOAD`` stays dark on each path:
+the batch tests run with the flag on too, and nothing loads. Only the load, the
 store, the integrations and the platform tool lists are stubbed. A scripted
 model client reads each request as the OpenAI client sends it.
 
@@ -145,7 +148,6 @@ def batch(tmp_path, monkeypatch):
     import acb_skills.loader as loader
     from acb_common import get_settings
     from gateway.routes import agent as agent_routes
-
     from orchestrator import _tool_injection as ti
     from orchestrator import app_tools, executor, mutation, workflow_tools
 
@@ -249,10 +251,18 @@ async def _run_agent(*, thread_id: str | None = None) -> dict[str, Any]:
 _UNKNOWN = [("call", "query_inbox", {"query": "Priya"}), ("text", "Done.")]
 
 
-async def test_a_top_level_chat_run_gets_the_hrd1_text(batch) -> None:
+def _autoload(monkeypatch, on: bool) -> None:
+    """``CHAT_TOOL_AUTOLOAD`` on or off for the run. A batch run has no
+    loader, and a step never asks one, so the answer is the same."""
+    monkeypatch.setattr(ut, "autoload_enabled", lambda: on)
+
+
+@pytest.mark.parametrize("autoload", [False, True], ids=["dark", "flag-on"])
+async def test_a_top_level_chat_run_gets_the_hrd1_text(batch, monkeypatch, autoload) -> None:
     """A WhatsApp run: a chat, no parent. It has no loader, so the text is
-    HRD-1's with the auto-load off. Mutation: detach the view → the model
-    reads MAF's text → red."""
+    HRD-1's with the auto-load off, also with the flag on. Mutation: detach
+    the view → the model reads MAF's text → red."""
+    _autoload(monkeypatch, autoload)
     batch["script"] = _UNKNOWN
     out = await _run_agent(thread_id="wa-thread-1")
     client = _ran(batch)
@@ -273,10 +283,12 @@ async def test_a_run_with_no_chat_gets_the_step_text(batch) -> None:
     assert [c["result"] for c in out["tool_calls"]] == [ut.MEMBER_LINE]
 
 
-async def test_a_delegated_run_gets_the_step_text(batch) -> None:
+@pytest.mark.parametrize("autoload", [False, True], ids=["dark", "flag-on"])
+async def test_a_delegated_run_gets_the_step_text(batch, monkeypatch, autoload) -> None:
     """``delegate_to_agent``, ``call_agent`` and a worker run here under the
-    parent's frame. Mutation: pass no ``step=`` at the batch run → NOT_HERE
-    → red."""
+    parent's frame. With the flag on too, the answer is the typed text only.
+    Mutation: pass no ``step=`` at the batch run → NOT_HERE → red."""
+    _autoload(monkeypatch, autoload)
     batch["script"] = _UNKNOWN
     with _parent():
         out = await _run_agent()
@@ -312,13 +324,15 @@ async def test_the_retry_keeps_the_mode_of_the_first_attempt(batch, parent: bool
     assert [c["result"] for c in out["tool_calls"]] == [ut.MEMBER_LINE]
 
 
-async def test_the_sub_run_stream_shows_the_member_line(batch) -> None:
+@pytest.mark.parametrize("autoload", [False, True], ids=["dark", "flag-on"])
+async def test_the_sub_run_stream_shows_the_member_line(batch, monkeypatch, autoload) -> None:
     """``_run_sub_agent_streaming``, the seam of each specialist tool, of
     ``call_agent`` and of ``delegate_to_agent`` with a queue. Its native
-    branch runs ``run_agent``. The model reads the step text, the trail shows
-    the member line, and no event holds MAF's text."""
+    branch runs ``run_agent``. The model reads the step text, with the flag
+    on too, the trail shows the member line, and no event holds MAF's text."""
     from orchestrator import executor
 
+    _autoload(monkeypatch, autoload)
     batch["script"] = _UNKNOWN
     queue: asyncio.Queue = asyncio.Queue()
     with _parent():
@@ -390,7 +404,6 @@ def _record(gone: tuple[str, ...] = ()) -> tp.PackRun:
 async def _view_run(script, providers: list[Any], ctx: dict[str, Any]) -> _Scripted:
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
-
     from orchestrator._native_run_context import agent_with_providers
 
     client = _Scripted(script)
@@ -494,18 +507,59 @@ async def test_tier_2_of_the_orchestrator_keeps_the_answer() -> None:
     assert rows == [], "no shim row for a name that the run does not hold"
 
 
-def test_the_batch_assembly_is_the_one_attach_site() -> None:
-    """The stream view and the batch assembly are the only two callers of
-    the provider. The batch assembly attaches it after the injection and
-    before the MCP servers, as the stream path does."""
+async def test_the_stream_run_of_the_orchestrator_reads_the_same_hook(batch) -> None:
+    """The REAL ``run_agent_stream`` of the orchestrator, the HRD-1 path. It
+    reaches the hook through ``_log_request_tools_view``. With no pack on
+    there is no loader, and ``CHAT_TOOL_AUTOLOAD`` is off by default: the
+    model reads the typed text, and the trail shows the member line."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import bind_artifact_context
+    from orchestrator import executor
+
+    from tests.unit._native_maf_harness import parse_frames
+
+    assert ut.autoload_enabled() is False, "the auto-load is dark by default"
+    batch["script"] = _UNKNOWN
+    token = bind_tenant(ORG)
+    try:
+        lines = [line async for line in executor.run_agent_stream(
+            "orchestrator", {"message": "check my inbox"}, run_id="r-stream",
+            thread_id="chat-stream", shows_cards=True, organization_id=ORG)]
+    finally:
+        release_tenant(token)
+        bind_artifact_context()
+        executor._RUN_QUEUES.clear()
+        executor._pending_user_input.clear()
+    client = _ran(batch)
+    assert _tool_texts(client) == [ut.NOT_HERE.format(name="query_inbox")]
+    _assert_no_maf_text(client)
+    events = parse_frames(lines)
+    results = [e for e in events if e.get("type") == "TOOL_CALL_RESULT"]
+    assert [e.get("content") for e in results] == [ut.MEMBER_LINE], events
+    for event in events:
+        assert not _MAF.search(json.dumps(event, default=str)), event
+
+
+def test_one_hook_serves_every_path() -> None:
+    """ONE hook makes the provider: ``_unknown_tool_view``. The stream view
+    of the orchestrator and the batch assembly call it, and a sub-agent runs
+    through the batch run. The batch assembly calls it after the injection
+    and before the MCP servers, as the stream path does."""
     import inspect
 
     from orchestrator import executor as ex
 
     src = inspect.getsource(ex)
-    assert src.count("UnknownToolProvider(") == 2, "the stream view and the batch view"
+    assert src.count("UnknownToolProvider(") == 1, "one hook makes the provider"
+    assert "UnknownToolProvider(" in inspect.getsource(ex._unknown_tool_view)
+    callers = [name for name, fn in inspect.getmembers(ex, inspect.isfunction)
+               if fn.__module__ == ex.__name__ and name != "_unknown_tool_view"
+               and "_unknown_tool_view(" in inspect.getsource(fn)]
+    assert sorted(callers) == ["_assemble_batch_agents", "_log_request_tools_view"], callers
     body = inspect.getsource(ex._assemble_batch_agents)
     at = body.index("_unknown_tool_view(agents, step=step)")
     assert body.index("_log_agent_tools_resolved(") < at < body.index("_inject_mcp_servers(")
     assert inspect.getsource(ex._run_agent_inner).count("step=_answer_step") == 3
     assert "step=inputs.step" in inspect.getsource(ex._self_anneal)
+    # The sub-agent seam runs a native agent through the batch run.
+    assert "result = await run_agent(" in inspect.getsource(ex._run_sub_agent_streaming)

@@ -45,10 +45,11 @@ result, and the trail of the chat showed it. :func:`unknown_call_name` finds
 MAF's result in each of its three fields. ``orchestrator.event_translator``
 asks it, and shows :data:`MEMBER_LINE` on the step in its place.
 
-HRD-1b (task 3230): a batch run gets the same answer, with no flag. The
-executor's batch assembly (``_assemble_batch_agents``) puts the provider on
-each batch run, so a WhatsApp run, a delegated agent, a worker and a
-self-anneal retry are in scope. A batch run has no loader, so it never loads.
+HRD-1b (task 3230): a batch run gets the same answer, with no flag. One hook
+of the executor, ``_unknown_tool_view``, puts the provider on the stream run
+of the orchestrator and on each batch run (``_assemble_batch_agents``). So a
+WhatsApp run, a delegated agent, a worker and a self-anneal retry are in
+scope. A batch run has no loader, so it never loads.
 A delegated run answers another model, and a run with no chat answers no
 member. Each of those runs is a *step* (``step=True``). Its answer names only
 a tool of the request, or it is :data:`NOT_IN_STEP`. A step never reads the

@@ -2190,11 +2190,12 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
     provider and of an MCP server. Only the orchestrator, and never raises.
     The view comes from ``agent_with_providers``, as the loader's does.
 
-    HRD-1: the same view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
-    the one answer to a call of a tool that the run did not load. It goes
-    after each seam of ``_inject_agent_tools``, so its chat middleware runs
-    inside the hold, steer and number-check middleware, and rewrites the
-    messages that they pass on. Only the tier policy view comes later."""
+    HRD-1: the next view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
+    the one answer to a call of a tool that the run did not load, through the
+    one hook :func:`_unknown_tool_view`. It goes after each seam of
+    ``_inject_agent_tools``, so its chat middleware runs inside the hold,
+    steer and number-check middleware, and rewrites the messages that they
+    pass on. Only the tier policy view comes later."""
     if agent_name != _PACK_AGENT or not agents:
         return agents
     try:
@@ -2203,13 +2204,12 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
         if not isinstance(agents[0], Agent):
             return agents
         from acb_skills.tool_guard import LogRequestToolsProvider
-        from acb_skills.unknown_tool import UnknownToolProvider
 
         from orchestrator._native_run_context import agent_with_providers
 
-        # HRD-1: the answer to an unknown tool name rides in the same view.
-        agents[0] = agent_with_providers(
-            agents[0], [LogRequestToolsProvider(agent_name), UnknownToolProvider()])
+        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+        # HRD-1: the answer to an unknown tool name, last, as before HRD-1b.
+        agents = _unknown_tool_view(agents, step=False)
     except Exception as exc:  # a log never costs the turn
         _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
     return agents
@@ -2217,14 +2217,16 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
 
 def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
     """*agents*, with the first one on a per-run view that carries
-    ``acb_skills.unknown_tool.UnknownToolProvider`` (HRD-1b, task 3230).
+    ``acb_skills.unknown_tool.UnknownToolProvider`` (HRD-1, HRD-1b).
 
-    The batch assembly is the one caller, so each batch run, each delegated
-    run, each worker and each self-anneal retry answers a call of an unknown
-    tool name with the HRD-1 text, and never with MAF's own text. *step* is
-    True for a delegated run or a run with no chat: its text names no pack.
-    A Copilot SDK agent is not a MAF ``Agent``, so it gets no view. Never
-    raises: a fault leaves MAF's text, as before."""
+    The ONE hook of the answer to a call of an unknown tool name. The stream
+    run of the orchestrator (:func:`_log_request_tools_view`) and each batch
+    run (:func:`_assemble_batch_agents`) call it. A delegated agent, a worker
+    and a self-anneal retry run through the batch run, so they get it there.
+    The model then reads the HRD-1 text, and never MAF's own text. *step* is
+    True for a delegated run or a run with no chat: its text names no pack,
+    and it never asks a loader. A Copilot SDK agent is not a MAF ``Agent``,
+    so it gets no view. Never raises: a fault leaves MAF's text, as before."""
     if not agents:
         return agents
     try:
