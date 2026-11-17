@@ -193,27 +193,59 @@ class TestTheCoreList:
         dark = build("", profile=True)
         assert [n for n in _names(lit) if n != "resolve_name"] == _names(dark)
 
-    def test_the_gaps_of_parity_are_closed(self):
+    def test_the_gaps_of_parity_are_closed(self, monkeypatch):
         """FIND-6b (task 3665) closed the three reasons that ``resolve_person``
         stayed (§5.3): no member, no saved alias, no address. ``resolve_person``
         itself stays in the core list until the next PR (D-FIND-3, one release
         later). The pins now say the gaps are closed, so a change that opens
-        one again goes red."""
+        one again goes red. Mutations: take ``alias`` out of ``names.MATCHES``,
+        let ``sources.saved_names`` skip ``_alias_tier``, or make
+        ``names.shows_email`` answer False → red."""
+        from contextlib import asynccontextmanager
+
+        from acb_auth import UserContext, UserRole, build_access
         from gateway.retrieval import names, sources
+        from gateway.retrieval.sources import Named
         from gateway.routes.admin import assistant_profile_people as people
 
-        assert "member" in names.KINDS
+        assert "member" in names.KINDS and "member" in sources.REGISTRY["people"].names
         assert "alias" in names.KINDS and "alias" in names.MATCHES
-        # The aliases: one reader. ``saved_names`` calls ``_alias_tier``.
-        assert callable(people._alias_tier)
-        body = Path(sources.__file__).read_text(encoding="utf-8")
-        assert "_alias_tier" in body or "saved_names" in body
-        text = cst.format_names({"verdict": "one", "rows": [{
-            "app": "people", "kind": "person", "match": "exact", "name": "Raj Rao",
-            "id": "6d000000-0000-4000-8000-000000000001", "href": "/people/x",
-            "status": "active", "email": "raj@acme.test"}]})
-        assert "raj@acme.test" in text, (
+        # The aliases: one reader. The read of the name route runs the tier 1
+        # of resolve_person, `_alias_tier`, with the member and the org of
+        # the session.
+        calls: list[tuple[Any, ...]] = []
+
+        async def tier(db: Any, uid: str, org: str, wanted: str, address: str) -> Any:
+            calls.append((uid, org, wanted, address))
+            return [{"name": "Raj", "email": "raj@acme.test"}]
+
+        @asynccontextmanager
+        async def session(organization_id: Any = None):
+            yield object()
+
+        monkeypatch.setattr(people, "_alias_tier", tier)
+        monkeypatch.setattr(people, "_tenant_session", session)
+        monkeypatch.setattr(people, "current_tenant", lambda: ORG)
+        user = UserContext(email=MEMBER, role=UserRole.EMPLOYEE, organization_id=ORG,
+                           access=build_access([], roles=["member"]))
+        found = asyncio.run(sources.saved_names(user, "RAJ"))
+        assert calls == [(MEMBER, ORG, "raj", "")]
+        assert [(n.kind, n.email) for n in found] == [("alias", "raj@acme.test")]
+        # The address: the route's own rule (`names.shows_email`) puts it in
+        # the row of an active person, and the tool prints it.
+        person = Named("person", "6d000000-0000-4000-8000-000000000001", "Raj Rao",
+                       "/people/x", state=names.ADDRESS_STATUS, email="raj@acme.test")
+        rows, _exact = names.rows_of([names.SourceAnswer("people", exact=[person])],
+                                     names.KINDS)
+        text = cst.format_names({"verdict": "one", "rows": rows})
+        assert "- «Raj Rao» <raj@acme.test>" in text, (
             "resolve_name must print the colleague address of an active person")
+        # Only an active person: resolve_person reads no other (`PEOPLE_SQL`).
+        assert names.ADDRESS_STATUS == "active" and "status = 'active'" in people.PEOPLE_SQL
+        for state in ("alumni", "contractor", "invited", ""):
+            other = Named("person", person.id, "Raj Rao", "/people/x", state=state,
+                          email="raj@acme.test")
+            assert names.shows_email(other) is False, state
 
 
 # ── 2. The standing rule ────────────────────────────────────────────────────

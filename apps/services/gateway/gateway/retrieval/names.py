@@ -106,8 +106,12 @@ EXACT_MATCHES: tuple[str, ...] = ("exact", "alias")
 #: saved name wins over them (tier 1), and one address is one colleague.
 COLLEAGUE_KINDS: tuple[str, ...] = ("person", "member")
 #: The status of a person whose row prints the address: ``resolve_person``
-#: reads the active people only (``PEOPLE_SQL``).
-ADDRESS_STATUS = "active"
+#: reads the active people only (``PEOPLE_SQL``). One value, in ``sources``.
+ADDRESS_STATUS = sources.ADDRESS_STATUS
+#: The status of a person who left the org. ``email_in_org`` refuses only it
+#: (``COALESCE(status, 'active') <> 'alumni'``), so the mail of such a person
+#: keeps its sender row (:func:`in_org`).
+LEFT_STATUS = "alumni"
 #: The verdicts of an answer.
 VERDICTS: tuple[str, ...] = ("one", "partial", "several", "near", "none")
 #: Why a source gave no row: it ran out of time, it failed, or the app refused
@@ -448,6 +452,20 @@ def shows_email(record: Named) -> bool:
     return record.kind == "person" and record.state == ADDRESS_STATUS
 
 
+def in_org(record: Named) -> bool:
+    """True when *record* is a colleague who has not left the org, by the rule
+    of ``email_in_org`` (``assistant_profile_people.EMAIL_IN_ORG_SQL``): a
+    person whose status is not :data:`LEFT_STATUS` (an empty status reads as
+    active), an active member, or a saved name, which passed that check in
+    its read. It needs an address. resolve_person drops a mail hit only for
+    such a colleague, so only such a record hides a sender row. Pure."""
+    if not record.email:
+        return False
+    if record.kind in ("alias", "member"):
+        return True
+    return record.kind == "person" and record.state != LEFT_STATUS
+
+
 def _row(key: str, record: Named, match: str, spelt: str = "") -> dict[str, Any]:
     row: dict[str, Any] = {
         "app": key, "kind": record.kind, "id": record.id,
@@ -480,7 +498,9 @@ def rows_of(answers: list[SourceAnswer], kinds: tuple[str, ...]) -> tuple[list[d
       prints the address when a row of that address may print it.
     * **A colleague is no mail sender.** A sender row whose address a saved
       name, a person or a member of the answer holds gives no row, as the
-      mail tier of ``resolve_person`` drops each address of the org."""
+      mail tier of ``resolve_person`` drops each address of the org. A person
+      who left (:data:`LEFT_STATUS`) is not of the org there, so the sender
+      row of an alumnus stays (:func:`in_org`)."""
     exact: list[tuple[str, Named, str, str]] = []
     near: list[tuple[str, Named, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -505,8 +525,9 @@ def rows_of(answers: list[SourceAnswer], kinds: tuple[str, ...]) -> tuple[list[d
     # `sorted` is stable, so a tie keeps the order of the sources.
     ordered = sorted(exact, key=place) + sorted(near, key=place)
     # The addresses of the colleagues of the answer, before tier 1 drops a row.
-    colleagues = {item[1].email for item in ordered
-                  if item[1].kind in ("alias", *COLLEAGUE_KINDS) and item[1].email}
+    # Only a colleague who is still in the org (:func:`in_org`), so the mail of
+    # an alumnus keeps its sender row, as in resolve_person.
+    colleagues = {item[1].email for item in ordered if in_org(item[1])}
     if any(item[1].kind == "alias" for item in ordered):
         ordered = [item for item in ordered if item[1].kind not in COLLEAGUE_KINDS]
     rows: list[dict[str, Any]] = []

@@ -966,6 +966,44 @@ async def test_a_colleague_who_wrote_to_the_member_is_no_sender(
     assert _rows(senders) == {("email", "sender", email, "exact")}
 
 
+async def test_the_mail_of_an_alumnus_keeps_its_sender_row(
+        world, fb, flags, roomy_names) -> None:
+    """Fix round, P2-a: `email_in_org` refuses a person who left, so the mail
+    tier of resolve_person keeps that mail. The alumnus row prints no
+    address, the sender row stays with its address, and the answer is
+    several, as on main."""
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    word = _word("Leftmail")
+    gone, address = fb.person(p.org_a, f"{word} Old", status="alumni")
+    _mail(p.admin_engine, org=p.org_a, account=world["box_a"], name=f"{word} Old",
+          address=address, subject="Still here", body="from an alumnus")
+    got = await _resolve(p, me, word)
+    assert _rows(got) == {("people", "person", gone, "exact"),
+                          ("email", "sender", address, "exact")}
+    person = next(r for r in got["rows"] if r["kind"] == "person")
+    assert person["status"] == "alumni" and "email" not in person
+    assert got["verdict"] == "several"
+
+
+async def test_a_colleague_takes_one_place_of_the_people_page(
+        world, fb, flags, roomy_names) -> None:
+    """Fix round, P2-b: each member has a People row (migration 206). Twelve
+    such colleagues hold the word, and one holds the whole name. The page of
+    20 holds 12 places, not 24, so People is not full and the answer is one."""
+    p = world["p"]
+    flags("*")
+    word = _word("Kirpage")
+    for i in range(11):
+        fb.login(p.org_a, f"{word} N{chr(97 + i)}")
+    zed = fb.login(p.org_a, f"{word} Zed")
+    got = await _resolve(p, _member(A, p.org_a, *ALL), f"{word} Zed")
+    (row,) = got["rows"]
+    assert (row["kind"], row["email"]) == ("person", zed)
+    assert got["full"] == [] and got["verdict"] == "one"
+
+
 async def test_the_member_read_keeps_org_b_out_with_no_rls(world, fb) -> None:
     """RLS holds the org wall for the app role, so an R8 test through the
     route cannot see a missing org filter. The admin role reads past RLS:

@@ -1100,6 +1100,48 @@ class TestTheMembers:
         # Non-vacuity: asked for senders alone, the sender row is there.
         assert _rows(ask("Sharat", kinds="sender")) == [("email", "sender", ADDRESS, "exact")]
 
+    def test_the_mail_of_an_alumnus_keeps_its_sender_row(self, apps):
+        """Fix round, P2-a: `email_in_org` refuses a person who left, so the
+        mail tier of resolve_person keeps that mail. The answer is several,
+        as on main, and the alumnus row prints no address. Mutation: let an
+        alumnus hide the sender → one, with no address."""
+        person = Named("person", PERSON_2, "Sharat Menon", f"/people/{PERSON_2}",
+                       state="alumni", email=ADDRESS)
+        apps.records["crm"] = []
+        apps.records["people"].append((person, ""))
+        answer = ask("Sharat")
+        assert _rows(answer) == [("people", "person", PERSON_2, "exact"),
+                                 ("email", "sender", ADDRESS, "exact")]
+        assert "email" not in answer["rows"][0] and answer["verdict"] == "several"
+
+    @pytest.mark.parametrize(("kind", "state", "inside"), [
+        ("alias", "", True), ("member", "", True), ("person", "active", True),
+        ("person", "contractor", True), ("person", "invited", True), ("person", "", True),
+        ("person", "alumni", False), ("sender", "", False), ("contact", "", False),
+    ])
+    def test_in_org_is_the_rule_of_email_in_org(self, kind, state, inside):
+        """A person passes unless alumni (`COALESCE(status, 'active') <>
+        'alumni'`). A member of the read is active, and a saved name passed
+        the check in its own read."""
+        from gateway.routes.admin import assistant_profile_people as rp
+
+        record = Named(kind, "x", "X", "", state=state, email="x@acme.test")
+        assert names.in_org(record) is inside
+        assert names.in_org(dataclasses.replace(record, email="")) is False
+        assert f"<> '{names.LEFT_STATUS}'" in rp.EMAIL_IN_ORG_SQL
+
+    def test_rows_of_keeps_the_sender_of_an_alumnus(self):
+        alumnus = Named("person", PERSON_2, "Tara Rao", "/p", state="alumni", email=MEMBER_ADDR)
+        sender = Named("sender", MEMBER_ADDR, "Tara Rao", "/email?email=m")
+        rows, exact = names.rows_of([names.SourceAnswer("people", exact=[alumnus]),
+                                     names.SourceAnswer("email", exact=[sender])], names.KINDS)
+        assert [r["kind"] for r in rows] == ["person", "sender"] and exact == 2
+        # An active member of that address is of the org: the sender drops.
+        member_row = names.SourceAnswer("people", exact=[_member_record("Tara Rao")])
+        rows, _exact = names.rows_of([member_row, names.SourceAnswer("email", exact=[sender])],
+                                     names.KINDS)
+        assert [r["kind"] for r in rows] == ["member"]
+
     def test_a_near_colleague_hides_an_exact_sender_of_its_address(self):
         sender = Named("sender", MEMBER_ADDR, "Tara Rao", "/email?email=m",
                        forms=("Tara Rao", "tara.rao"))
@@ -1259,18 +1301,60 @@ class TestTheMemberReader:
     def test_people_then_members_with_their_addresses(self, reads):
         reads["people"] = [{"id": PERSON, "name": "Tara Rao", "preferred_name": None,
                             "status": "active", "email": "Tara.Rao@ACME.test"}]
-        reads["members"] = [{"name": "Tara  Rao", "email": "tara.rao@acme.test"},
+        reads["members"] = [{"name": "Tara  Iyer", "email": "tara.iyer@acme.test"},
                             {"name": "", "email": "tr@acme.test"},
                             {"name": "Evil", "email": "ev\u202eil@acme.test"}]
         got, more = asyncio.run(sources._people_named(member("people"), "Tara", 20))
         assert got == [
             Named("person", PERSON, "Tara Rao", f"/people/{PERSON}", state="active",
                   email="tara.rao@acme.test"),
-            Named("member", "tara.rao@acme.test", "Tara Rao", "",
-                  forms=("Tara Rao", "tara.rao"), email="tara.rao@acme.test"),
+            Named("member", "tara.iyer@acme.test", "Tara Iyer", "",
+                  forms=("Tara Iyer", "tara.iyer"), email="tara.iyer@acme.test"),
             Named("member", "tr@acme.test", "tr@acme.test", "", forms=("tr",),
                   email="tr@acme.test")]
         assert more is False and reads["asked"] == [("Tara", 20)]
+
+    def test_a_member_and_its_people_row_take_one_place(self, reads):
+        """Fix round, P2-b: migration 206 gives each member a People row with
+        its name and address. Eleven such colleagues take eleven places of a
+        page of 20, not 22, so the page is not full (as on main). Mutation:
+        keep each member \u2192 `more` is True."""
+        reads["people"] = [{"id": f"p-{i}", "name": f"Kiran N{i}", "status": "active",
+                            "email": f"kiran{i}@acme.test"} for i in range(11)]
+        reads["members"] = [{"name": f"kiran  n{i}", "email": f"Kiran{i}@acme.test"}
+                            for i in range(11)]
+        got, more = asyncio.run(sources._people_named(member("people"), "Kiran", 20))
+        assert [n.kind for n in got] == ["person"] * 11 and more is False
+
+    def test_one_colleague_among_eleven_stays_one(self, apps, reads, monkeypatch):
+        """The route with the real People read: twelve colleagues hold
+        "Kiran", and one holds "Kiran Zed". Each is a person and a member.
+        The page holds 12 places of 20, so People is not full and the answer
+        is one, not partial."""
+        monkeypatch.setitem(sources.REGISTRY, "people", dataclasses.replace(
+            sources.REGISTRY["people"], named=sources._people_named))
+        names_ = [f"Kiran N{i}" for i in range(11)] + ["Kiran Zed"]
+        reads["people"] = [{"id": f"p-{i}", "name": n, "status": "active",
+                            "email": f"kiran{i}@acme.test"} for i, n in enumerate(names_)]
+        reads["members"] = [{"name": n, "email": f"kiran{i}@acme.test"}
+                            for i, n in enumerate(names_)]
+        answer = ask("Kiran Zed")
+        assert _rows(answer) == [("people", "person", "p-11", "exact")]
+        assert answer["full"] == [] and answer["verdict"] == "one"
+
+    @pytest.mark.parametrize(("person", "kept"), [
+        # Another name in the People row: the member holds a name of its own.
+        ({"name": "K. Nair", "status": "active"}, True),
+        # A person who is not active prints no address, and the member does.
+        ({"name": "Kiran Nair", "status": "contractor"}, True),
+        ({"name": "Kiran Nair", "status": "active"}, False),
+    ])
+    def test_a_member_stays_when_its_people_row_does_not_stand_for_it(
+            self, reads, person, kept):
+        reads["people"] = [{"id": "p-1", "email": "kiran@acme.test", **person}]
+        reads["members"] = [{"name": "Kiran Nair", "email": "kiran@acme.test"}]
+        got, _more = asyncio.run(sources._people_named(member("people"), "Kiran", 20))
+        assert ("member" in [n.kind for n in got]) is kept
 
     def test_people_and_members_share_the_page(self, reads):
         reads["people"] = [{"id": f"p-{i}", "name": f"Tara {i}", "status": "active"}

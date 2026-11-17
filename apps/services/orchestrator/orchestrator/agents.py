@@ -1252,10 +1252,11 @@ def build_orchestrator_agent(
     # WS-63 PZ-6a: the four profile writes, on the same one path, with the
     # persona line of `_PROFILE_SWAP`. Each refuses outside the member's own
     # chat. Fence: tests/unit/test_profile_write_tools.py.
-    # WS-FIND FIND-6: `resolve_person` stays in the list. `resolve_name` has
-    # no member, no saved alias and no address yet, so the parity of D-FIND-3
-    # does not hold (find_engine.md §5.3, as built). For an org of FIND_ORGS
-    # it takes the guard of the find tools.
+    # WS-FIND FIND-6: `resolve_person` stays in the list. FIND-6b gave
+    # `resolve_name` the member, the saved alias and the address, so the
+    # parity of D-FIND-3 holds. `resolve_person` leaves one release later, in
+    # the next PR (find_engine.md §5.3). For an org of FIND_ORGS it takes the
+    # guard of the find tools.
     if profile_on:
         from acb_skills.profile_tools import WRITE_TOOLS, resolve_person
 
