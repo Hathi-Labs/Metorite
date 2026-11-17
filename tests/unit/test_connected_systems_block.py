@@ -190,10 +190,10 @@ async def test_the_reasons_cover_unreachable_reconnect_no_card_and_asks_each_cal
     out = await _tool_injection._mcp_reasons(
         "org-a", servers, ["reads", "writes"], {"dead": "unreachable", "oauth": "reconnect", "x": "weird"},
         tools, member_present=True)
-    # The chat read mail. Since MCP-NC1 a member's run needs no card, so the mark is what makes
-    # EACH tool ask one, the read-only tool and the write tool alike.
-    assert out == {"dead": "unreachable", "oauth": "reconnect", "reads": "asks_each_call",
-                   "writes": "asks_each_call"}
+    # The chat read mail. Since MCP-NC1 a member's run needs no card for a tool that does not
+    # change data, so the mark is what makes the read-only tool ask one. A destructive tool asks a
+    # card anyway, so the mark adds nothing there.
+    assert out == {"dead": "unreachable", "oauth": "reconnect", "reads": "asks_each_call"}
     assert set(out.values()) <= set(sb.REASONS)
 
     async def clean() -> bool:
