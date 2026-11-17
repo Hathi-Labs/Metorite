@@ -23,8 +23,8 @@ rule in its WHERE:
 
 After the read, :func:`acb_skills.egress.marked_sessions` drops each chat that
 holds the egress mark: the mark of an email-assistant run or another untrusted
-read. Each run that a marked chat starts binds ``no_egress``. The SQL does not
-test the mark, and the mark is the only test. So a chat that read mail with no
+read. Its own run holds the writes that a held chat holds off. Each run that it
+delegates binds ``no_egress``. The SQL does not test the mark, and the mark is the only test. So a chat that read mail with no
 mark can show (``find_engine.md`` §6, limit 1). The read of the marks is
 read-only, and a fault raises, so no chat shows.
 

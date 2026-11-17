@@ -659,7 +659,7 @@ bound tenant session. The tests of each rule are
 | Only the member's own chat | `chat_session.user_id` equals the address of the session, the rule of the chat's own list. RLS lets a chat of member B through, so this rule alone stops it |
 | Never a room or a shared chat | `rooms.SOLO_ROOM_SQL`, the one rule of a solo chat |
 | Never a chat with another agent | The agent is `orchestrator`, the chat has no channel, and no other agent has a seat or a row. The sandbox can cover a run of another agent (H-236). It never covers the orchestrator |
-| Never a chat with the egress mark | An email-assistant run or another untrusted read marks its chat. Each run that a marked chat starts binds `no_egress`. The SQL does not test the mark. `egress.marked_sessions` reads the marks in one `MGET`, read-only, and drops each marked chat after the read. A fault of Redis shows no chat, and the answer names `chat` as skipped. Limit 1 names a chat with no mark |
+| Never a chat with the egress mark | An email-assistant run or another untrusted read marks its chat. Its own run holds the writes that a held chat holds off, and each run that it delegates binds `no_egress`. The SQL does not test the mark. `egress.marked_sessions` reads the marks in one `MGET`, read-only, and drops each marked chat after the read. A fault of Redis shows no chat, and the answer names `chat` as skipped. Limit 1 names a chat with no mark |
 | Never the current chat | `s.id <> :current`. The tool sends the thread of its run (`executor.resolve_relay_thread_id`). The run route makes the chat row with that thread id, so the two are one value. With no current chat, or in a batch run, the route does not ask the source |
 | Never in a room | In a shared room the run acts as the room (`room:<thread>`), and the tool refuses before any call (`SHARED_ROOM`). A room of one that other members can read (visibility `org` or `people`) is not solo either. The tool sends the current chat only from a solo run (`executor.run_is_solo`), so the route asks no past chat there |
 | No text of another person | The search reads the title and the `user` and `assistant` rows. It never reads a `system` row or the tool events. The snippet comes only from a row that the member typed (`member_typed`, `typed_text`, not a card answer). A reply of Mira can restate a mail, so its text never prints. The statement returns the text of no other row |
@@ -677,9 +677,10 @@ Seven limits stay, and the review must know them:
    it. The owner must accept it at the preview, before the flip.
 
    `search_company` writes no egress mark. Its email source gives Mira the
-   subject, the sender and a passage of each mail hit. So a Mira chat that
-   read mail through `search_company` has no mark, and its title and typed
-   snippet can show. The owner must accept this at the preview, or a
+   subject, the sender and a passage of each mail hit. Its WhatsApp source
+   gives the chat name, the sender and a passage of a stranger's message.
+   So a Mira chat that read mail or WhatsApp through `search_company` has no
+   mark, and its title and typed snippet can show. The owner must accept this at the preview, or a
    follow-up must add the mark before the `CHAT_SEARCH_ORGS` flip.
 2. **A title prints as the chat keeps it**, cut to 200 characters. It can
    hold the start of a pasted mail. The member already sees the same title in
