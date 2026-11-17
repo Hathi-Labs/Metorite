@@ -389,6 +389,17 @@ the start of each run, so a reload applies to the next run. Any value other
 than empty is OWNER-ONLY (`work_plan.md` §6 D4), and the §3a window does not
 open it.
 
+`TOOL_TURN_BUDGET_ORGS` turns on the per-turn budget of a read tool
+(`chat_failure_modes.md` §4 row B5, HRD-5). It covers `search_company`
+and `find_tasks`. For each listed org, one of these tools may give
+3 empty or refused answers in a turn. Its next call in that turn does not run.
+The answer tells the chat to ask the member one question.
+
+`*` lists every org for this flag,
+and the default is empty. Its one reader is
+`orchestrator.tool_turn_budget.tool_turn_budget_on`. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
