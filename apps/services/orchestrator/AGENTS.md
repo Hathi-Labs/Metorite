@@ -29,6 +29,10 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 3. agents.py exports build_orchestrator_agent(), the main orchestrator MAF Agent.
 4. mutation.py handles Self_Mutation_Node. It starts a Docker sandbox on agent failure.
 5. stream_relay.py buffers all SSE events to Redis Streams for fire-and-forget chat with live reconnection.
+5a. **`send_once.py` keeps one key for each send** (HRD-17a, spec `chat_failure_modes.md` §6). It ships dark behind `CHAT_SEND_ONCE_ORGS`, and `send_once_on` is its one reader.
+   - The key is a `TenantKey` of the org, the thread, a hash of the member and the send id. Never build it as a string.
+   - Only the gateway's run route calls `begin`. A claim moves to its run only through `TenantRedis.replace_if`, so two runs of one send cannot both start. A release uses `delete_if`, so it never deletes a newer claim.
+   - A repeat replays only a run that the stream's first `RUN_STARTED`, or the live-run index, names. Fence: `test_send_once.py`.
 6. All agents must go through MAF. No raw Copilot SDK path for business execution.
 7. mutation_runner.py runs inside the Docker sandbox and uses the Copilot SDK directly (by design).
 8. workflow_tools.py gives published workflows to every agent as a trio: `list_workflows`, `run_workflow` and `get_workflow_run` (spec `workflows_app.md` F13). The gated `_tool_injection` pipeline injects it.
