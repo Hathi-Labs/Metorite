@@ -60,7 +60,6 @@ import { useSteadyRunView } from "@/components/RunStatusRow";
 import Button from "@/components/ui/Button";
 import { PillNavigateContext } from "@/components/ui/EntityPill";
 import { Input } from "@/components/ui/Input";
-import { useToast } from "@/components/ui/Toast";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import { useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
@@ -206,8 +205,6 @@ const COMPOSER_FOCUS_TRIES = 40;
 function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: boolean }) {
   const st = useAssistant();
   const scope = useChatScope();
-  // CO-2b: a failed move of a chat says so in a toast (review P2-2).
-  const toast = useToast();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [restoredId, setRestoredId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -645,13 +642,16 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     /**
      * CO-2b: move a chat into a topic for this member, or to "No topic". The
      * list draws the move at once. A refusal of the server, or a lost
-     * connection, puts it back, says so with the next step, and reads the
-     * topics again (`topicMoveFailed`).
+     * connection, puts it back, and reads the topics again
+     * (`topicMoveFailed`). The words go in the notice line of the chat, never
+     * in a toast (owner, 2026-11-01), and only while that chat is on screen.
      */
     move: (id: string, topic: SessionTopic | null) => {
       const failed = () => {
         refresh();
-        topicMoveFailed(toast, id);
+        topicMoveFailed((words) => {
+          if (assistantState().sessionId === id) setNotice(words);
+        });
       };
       if (setSessionTopic(id, topic, failed)) refresh();
     },

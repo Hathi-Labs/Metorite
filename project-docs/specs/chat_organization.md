@@ -164,7 +164,9 @@ D163 does not cover §15 to §20. They stay PROPOSED until the owner answers §1
   too, so the pass does not put a topic back.
 - **The pass.** `chat_session_member.set_auto_topic` is the one door of
   CO-1. It writes `set_by = 'auto'` only where no row exists, or where
-  `set_by` is NULL or `auto`. A member's row stays as it is (D163).
+  `set_by` is NULL or `auto`. A member's row stays as it is (D163). CO-1
+  must catch `TopicNameError` from `find_or_create_member_topic`. Then it
+  files that chat under no topic, and calls no `set_auto_topic` for it.
 - **Who may use a topic.** A company topic that shows, or the member's own
   topic. A colleague's topic and a hidden company topic answer as a topic
   that does not exist.
@@ -194,13 +196,19 @@ D163 does not cover §15 to §20. They stay PROPOSED until the owner answers §1
   list lands, the focus moves once to the current topic, unless the member
   moved it first.
 - **Names.** A topic cannot take the name of a heading of the list, such as
-  "Pinned" or "Today", in any case. The store refuses it with "The chat list
-  uses this name. Pick another name." The TypeScript labels and
-  `chat_topic.LIST_HEADINGS` are one list (`test_chat_topic.py`).
-- **A move that fails.** The list puts the old topic back, and a toast says
-  "The chat did not move. Try again, or pick another topic." The menu then
-  reads the topics again. A later move is never undone by an earlier
-  failure.
+  "Pinned" or "Today", or a word of the topic menu, such as "No topic" or
+  "New topic". Case, spacing and a closing ellipsis do not count. The store
+  refuses it with "The chat list uses this name. Pick another name."
+  `chat_topic.RESERVED_NAMES` is the one list, and `test_chat_topic.py` pins
+  it to the TypeScript labels. Look-alikes are not blocked: a Cyrillic
+  letter or a zero-width character makes a new name.
+- **A move that fails.** The list puts back the last topic that the server
+  confirmed. The notice line of the chat then says "The chat did not move.
+  Try again, or pick another topic." The dock shows no toast (owner,
+  2026-11-01). The menu reads the topics again, and an earlier failure never
+  undoes a later move.
+- **The "…" control of the phone.** While the topic menu is open, a press on
+  the "…" control closes the topic menu and opens no More menu.
 - **The purge.** The member purge deletes the rows and the private topics of
   a leaver. A row of a colleague on such a topic keeps its org and loses
   only the topic.

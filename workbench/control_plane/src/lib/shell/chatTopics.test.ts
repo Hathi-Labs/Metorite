@@ -21,10 +21,12 @@ import {
   MINE_HEADING,
   MOVE_FAILED,
   MOVE_FAILED_NEXT,
+  MOVE_FAILED_WORDS,
   NO_TOPIC,
   NO_TOPICS_YET,
   TOPICS_DID_NOT_LOAD,
   TOPICS_PATH,
+  anchorPressCloses,
   chipLabel,
   createChatTopic,
   createProblem,
@@ -192,18 +194,45 @@ describe("the requests", () => {
 });
 
 // Review P2-2. Mutation: drop the `invalidate` of `topicMoveFailed` -> the
-// cached list stays; drop the toast -> nothing says why.
+// cached list stays; drop the `say` -> nothing says why.
 describe("a move that failed", () => {
   it("says what happened and the next step, and reads the topics again", () => {
     put(TOPICS_PATH, [SALES]);
     expect(peek(TOPICS_PATH)).toBeDefined();
-    const shown: unknown[] = [];
-    topicMoveFailed({ show: (spec) => (shown.push(spec), "id") }, "s-1");
-    expect(shown).toEqual([
-      { key: "chat-topic:s-1", variant: "error", title: MOVE_FAILED, description: MOVE_FAILED_NEXT },
-    ]);
-    expect(`${MOVE_FAILED} ${MOVE_FAILED_NEXT}`).toBe("The chat did not move. Try again, or pick another topic.");
+    const said: string[] = [];
+    topicMoveFailed((words) => said.push(words));
+    expect(said).toEqual([MOVE_FAILED_WORDS]);
+    expect(MOVE_FAILED_WORDS).toBe(`${MOVE_FAILED} ${MOVE_FAILED_NEXT}`);
+    expect(MOVE_FAILED_WORDS).toBe("The chat did not move. Try again, or pick another topic.");
     expect(peek(TOPICS_PATH)).toBeUndefined();
+  });
+
+  // Final verifier P1: the dock shows no toast (owner, 2026-11-01, fenced in
+  // `assistant.test.ts`). The words go in the notice line of the chat on
+  // screen. Mutation: `useToast` in the dock again -> red here and there.
+  it("the dock says it in the notice line of the chat on screen, never in a toast", () => {
+    const dock = source("AssistantDock.tsx");
+    expect(dock).not.toMatch(/useToast/);
+    expect(dock).toMatch(/topicMoveFailed\(\(words\) => \{\s+if \(assistantState\(\)\.sessionId === id\) setNotice\(words\);/);
+  });
+});
+
+// Final verifier P3. Mutation: let the own trigger swallow its press, or
+// drop the capture listener -> red here.
+describe("a press on the anchor of the chat-first phone", () => {
+  it("closes the topic menu and opens no More menu, and only for the `none` trigger", () => {
+    expect(anchorPressCloses("none", true)).toBe(true);
+    expect(anchorPressCloses("none", false)).toBe(false);
+    expect(anchorPressCloses("chip", true)).toBe(false);
+    expect(anchorPressCloses("icon", true)).toBe(false);
+  });
+
+  it("the chip takes that press in the capture phase, before the handlers of React", () => {
+    const chip = source("TopicChip.tsx");
+    expect(chip).toContain('document.addEventListener("click", onAnchorClick, true);');
+    expect(chip).toContain('document.removeEventListener("click", onAnchorClick, true);');
+    expect(chip).toMatch(/if \(!anchorPressCloses\(trigger, open\) \|\| !anchor\) return;/);
+    expect(chip).toMatch(/event\.stopPropagation\(\);\s+event\.preventDefault\(\);\s+setOpen\(false\);\s+\};\s+document\.addEventListener\("mousedown"/);
   });
 });
 

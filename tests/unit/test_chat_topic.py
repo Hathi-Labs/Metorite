@@ -416,6 +416,52 @@ def test_a_name_that_only_holds_a_heading_passes(raw: str) -> None:
     assert clean_name(raw) == raw
 
 
+def _chip_labels_of_the_control_plane() -> tuple[str, ...]:
+    """``NO_TOPIC``, ``COMPANY_HEADING``, ``MINE_HEADING`` and ``NEW_TOPIC``,
+    read from ``chatTopics.ts``."""
+    src = (ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "chatTopics.ts"
+           ).read_text(encoding="utf-8")
+    out = []
+    for name in ("NO_TOPIC", "COMPANY_HEADING", "MINE_HEADING", "NEW_TOPIC"):
+        hit = re.search(rf'^export const {name} = "([^"]+)";$', src, re.M)
+        assert hit, f"the parse of chatTopics.ts found no {name}"
+        out.append(hit.group(1))
+    return tuple(out)
+
+
+def test_the_chip_labels_are_the_words_of_the_topic_menu() -> None:
+    """Final verifier P3: the words of the chip are reserved too, in the same
+    one list. Mutation: change ``MINE_HEADING`` in chatTopics.ts and not
+    ``CHIP_LABELS`` -> red here."""
+    from gateway.chat_topic import CHIP_LABELS, LIST_HEADINGS, RESERVED_NAMES
+
+    assert _chip_labels_of_the_control_plane() == CHIP_LABELS
+    assert (*LIST_HEADINGS, *CHIP_LABELS) == RESERVED_NAMES
+
+
+@pytest.mark.parametrize("label", ["No topic", "Company topics", "My topics", "New topic…",
+                                   "New topic", "New topic...", "new  TOPIC"])
+def test_a_name_of_a_chip_label_is_refused(label: str) -> None:
+    """Mutation: drop ``CHIP_LABELS`` from ``RESERVED_NAMES`` -> red."""
+    from gateway.chat_topic import TopicNameError, clean_name
+
+    for raw in (label, label.upper(), f" {label}  "):
+        with pytest.raises(TopicNameError, match=r"^The chat list uses this name\. Pick another"):
+            clean_name(raw)
+
+
+@pytest.mark.parametrize("raw", [
+    "No topics", "My topics list", "New topics", "Company topic",
+    # A look-alike is not blocked: the Cyrillic small letter o (U+043E), and a
+    # zero-width space.
+    "N" + chr(0x043E) + " topic", "No" + chr(0x200B) + " topic",
+])
+def test_a_name_near_a_chip_label_passes(raw: str) -> None:
+    from gateway.chat_topic import clean_name
+
+    assert clean_name(raw) == raw
+
+
 def test_the_migration_check_agrees_with_the_cap() -> None:
     from gateway.chat_topic import NAME_MAX
 

@@ -129,13 +129,27 @@ def _shows(ch: str) -> bool:
 LIST_HEADINGS: tuple[str, ...] = (
     "Pinned", "Today", "Yesterday", "Previous 7 days", "Previous 30 days", "Older")
 
+#: The words of the topic chip and its menu: ``NO_TOPIC``, ``COMPANY_HEADING``,
+#: ``MINE_HEADING`` and ``NEW_TOPIC`` of
+#: ``workbench/control_plane/src/lib/shell/chatTopics.ts``, in that order. A
+#: topic of one of these names would read as a row of the menu. The fence
+#: ``test_chat_topic.py`` reads the TypeScript.
+CHIP_LABELS: tuple[str, ...] = ("No topic", "Company topics", "My topics", "New topic…")
+
+#: The one list of the names that :func:`clean_name` refuses.
+RESERVED_NAMES: tuple[str, ...] = (*LIST_HEADINGS, *CHIP_LABELS)
+
 
 def _heading_key(name: str) -> str:
-    """A name with each run of white space as one space, in no case."""
-    return " ".join(name.split()).casefold()
+    """A name with each run of white space as one space, in no case, and with
+    no ellipsis at its end: "New topic", "New topic..." and "New topic…" are
+    one name. A look-alike, such as a Cyrillic letter or a zero-width
+    character inside, is a new name, and passes."""
+    key = " ".join(name.split()).casefold()
+    return key.removesuffix("…").removesuffix("...").rstrip()
 
 
-_LIST_HEADING_KEYS = frozenset(_heading_key(h) for h in LIST_HEADINGS)
+_RESERVED_KEYS = frozenset(_heading_key(h) for h in RESERVED_NAMES)
 
 
 class TopicNameError(ValueError):
@@ -188,10 +202,11 @@ def clean_name(raw: object) -> str:
     unassigned (``Cn``) in an older Unicode table, so it is refused too. With
     a word beside it, it passes.
 
-    A name that is a heading of the chat list (:data:`LIST_HEADINGS`, such as
-    "Pinned" or "Today") is refused in any case and with any spacing, so a
-    topic never reads as a heading of the list. The CHECK of the table does
-    not hold this rule.
+    A name of :data:`RESERVED_NAMES` is refused in any case and with any
+    spacing: a heading of the chat list, such as "Pinned" or "Today", or a
+    word of the topic menu, such as "No topic". So a topic never reads as a
+    heading or as a row of the menu. A look-alike is not blocked. The CHECK
+    of the table does not hold this rule.
     """
     if not isinstance(raw, str):
         raise TopicNameError("A topic name must be text.")
@@ -205,7 +220,7 @@ def clean_name(raw: object) -> str:
             raise TopicNameError("A topic name cannot hold a control character.")
     if not any(_shows(ch) for ch in name):
         raise TopicNameError("A topic name must hold at least one character that shows.")
-    if _heading_key(name) in _LIST_HEADING_KEYS:
+    if _heading_key(name) in _RESERVED_KEYS:
         raise TopicNameError("The chat list uses this name. Pick another name.")
     return name
 
@@ -433,7 +448,9 @@ def find_or_create_member_topic(s: Any, member: str, name: str) -> Topic:
     same name in any case gives that topic. Else it makes a PRIVATE topic of
     the member (D163.2), never a company topic. A colleague's topic never
     matches, so the answer never shows that a colleague holds the name.
-    :class:`TopicNameError` for a bad name.
+    :class:`TopicNameError` for a bad name, a reserved name too
+    (:data:`RESERVED_NAMES`). ⚠️ CO-1 must catch it, and then files the chat
+    under no topic: it calls no ``set_auto_topic`` for that chat.
     """
     from sqlalchemy import text
 

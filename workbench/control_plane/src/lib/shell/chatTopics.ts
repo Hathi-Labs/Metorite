@@ -130,6 +130,17 @@ export function focusAfterLoad(state: { reran: boolean; onFirstRow: boolean; mov
 }
 
 /**
+ * Whether a press on the anchor closes the menu and goes no further (final
+ * verifier P3). With the `none` trigger the anchor is the "…" control of the
+ * chat-first phone. A press on it while the topic menu is open closes the
+ * topic menu, and must not open the More menu under it too. An own trigger
+ * (`chip`, `icon`) toggles the menu itself, so its press goes on.
+ */
+export function anchorPressCloses(trigger: "chip" | "icon" | "none", open: boolean): boolean {
+  return trigger === "none" && open;
+}
+
+/**
  * Whether the topic menu of the chat-first phone is open (review P2-1). The
  * menu opens FOR one chat, so a change of chat closes it, and a stale open
  * can never open it on another chat.
@@ -142,19 +153,20 @@ export function topicMenuIsOpen(openFor: string | null, activeId: string | null 
 export const MOVE_FAILED = "The chat did not move.";
 export const MOVE_FAILED_NEXT = "Try again, or pick another topic.";
 
-/** What a failed move needs from the toast of the app. */
-export interface MoveFailureToast {
-  show(spec: { key?: string; variant?: "error"; title: string; description?: string }): string;
-}
+/** The two sentences as one line, for the notice of the dock. */
+export const MOVE_FAILED_WORDS = `${MOVE_FAILED} ${MOVE_FAILED_NEXT}`;
 
 /**
  * After a move failed (review P2-2): say so with the next step, and read the
  * topics again, because the menu drew a cached list that can hold a topic
  * that is gone. The list has already put the old topic back.
+ *
+ * `say` is the notice line of the dock, above the composer, never a toast:
+ * the dock shows no toast (owner, 2026-11-01, fenced in `assistant.test.ts`).
  */
-export function topicMoveFailed(toast: MoveFailureToast, sessionId: string): void {
+export function topicMoveFailed(say: (words: string) => void): void {
   invalidate(TOPICS_PATH);
-  toast.show({ key: `chat-topic:${sessionId}`, variant: "error", title: MOVE_FAILED, description: MOVE_FAILED_NEXT });
+  say(MOVE_FAILED_WORDS);
 }
 
 /** The read of the topics. A refusal throws, so the read cache keeps its last answer. */

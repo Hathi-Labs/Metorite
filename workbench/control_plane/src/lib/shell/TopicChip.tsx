@@ -45,6 +45,7 @@ import {
   NO_TOPICS_YET,
   TOPICS_DID_NOT_LOAD,
   TOPICS_PATH,
+  anchorPressCloses,
   chipLabel,
   createChatTopic,
   fetchChatTopics,
@@ -142,13 +143,26 @@ export default function TopicChip({
       const back = anchor?.tagName === "BUTTON" ? anchor : anchor?.querySelector<HTMLElement>("button");
       back?.focus();
     };
+    // A press on the "…" control of the chat-first phone closes this menu
+    // and goes no further, so the More menu does not open under it
+    // (`anchorPressCloses`). The capture phase on `document` runs before the
+    // handlers of React, which listen on the root.
+    const onAnchorClick = (event: MouseEvent) => {
+      if (!anchorPressCloses(trigger, open) || !anchor) return;
+      if (!(event.target instanceof Node) || !anchor.contains(event.target)) return;
+      event.stopPropagation();
+      event.preventDefault();
+      setOpen(false);
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey, true);
+    document.addEventListener("click", onAnchorClick, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("click", onAnchorClick, true);
     };
-  }, [open, anchor, setOpen]);
+  }, [open, anchor, setOpen, trigger]);
 
   // Focus goes to the row of `menuFocusIndex` once the panel has drawn: the
   // current topic, else "New topic…", and never "No topic" (review P2-3).

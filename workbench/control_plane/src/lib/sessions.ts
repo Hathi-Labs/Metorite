@@ -253,6 +253,10 @@ export function __newPageForTests(): void {
   boundScope = null;
   lastIdentity = null;
   lastMemberScope = null;
+  // CO-2b: a new page has no move of a topic out.
+  topicMoveTurn.clear();
+  topicConfirmed.clear();
+  topicMovesOut.clear();
 }
 
 /** The scope that is bound now, or null. */
@@ -911,6 +915,12 @@ export interface SessionTopic {
 /** The newest move of each chat, so an undo never takes back a later move. */
 const topicMoveTurn = new Map<string, number>();
 
+/** The last topic of each chat that the server confirmed, while a move of it is out. */
+const topicConfirmed = new Map<string, { topicId: string | null; topicName: string | null }>();
+
+/** How many moves of each chat are out. */
+const topicMovesOut = new Map<string, number>();
+
 /**
  * The member moves a chat into a topic, or to "No topic" with null (CO-2b,
  * `chat_organization.md` §6). The topic is the member's own, on the server,
@@ -923,20 +933,42 @@ const topicMoveTurn = new Map<string, number>();
  *
  * ⚠️ The undo of a move restores only its own mark (verifier P3-8). A later
  * move of the same chat wins: an earlier move that fails after it changes
- * nothing, and `onUndo` does not run.
+ * nothing, and `onUndo` does not run. An undo puts back the last topic that
+ * the server confirmed, never the mark of another move that is still out.
  */
 export function setSessionTopic(id: string, topic: SessionTopic | null, onUndo?: () => void): boolean {
   const sessions = getSessions();
   const s = sessions.find((x) => x.id === id);
   if (!s || (s.topicId ?? null) === (topic?.id ?? null)) return false;
-  const before = { topicId: s.topicId ?? null, topicName: s.topicName ?? null };
+  // The topic to put back is the last CONFIRMED one (final verifier P3): the
+  // row as the server list left it when no move of this chat is out, or the
+  // answer of a move that the server took. Never the mark of another move
+  // that is still out, so two failed moves in a row put back the first value.
+  if (!(topicMovesOut.get(id) ?? 0)) {
+    topicConfirmed.set(id, { topicId: s.topicId ?? null, topicName: s.topicName ?? null });
+  }
+  topicMovesOut.set(id, (topicMovesOut.get(id) ?? 0) + 1);
   const mark = topic?.id ?? null;
   const turn = (topicMoveTurn.get(id) ?? 0) + 1;
   topicMoveTurn.set(id, turn);
   s.topicId = mark;
   s.topicName = topic?.name ?? null;
   writeList(sessions);
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    const left = (topicMovesOut.get(id) ?? 1) - 1;
+    if (left > 0) {
+      topicMovesOut.set(id, left);
+    } else {
+      topicMovesOut.delete(id);
+      topicConfirmed.delete(id);
+    }
+  };
   const undo = () => {
+    const before = topicConfirmed.get(id) ?? { topicId: null, topicName: null };
+    settle();
     // A later move of this chat owns the row now.
     if (topicMoveTurn.get(id) !== turn) return;
     const now = getSessions();
@@ -958,6 +990,12 @@ export function setSessionTopic(id: string, topic: SessionTopic | null, onUndo?:
         return;
       }
       const body = (await res.json().catch(() => null)) as { topicId?: string | null; topicName?: string | null } | null;
+      // The server took this move: it is the confirmed topic now.
+      topicConfirmed.set(id, {
+        topicId: body?.topicId !== undefined ? body.topicId : mark,
+        topicName: body?.topicName !== undefined ? body.topicName : (topic?.name ?? null),
+      });
+      settle();
       const now = getSessions();
       const row = now.find((x) => x.id === id);
       // The server's name, unless a later move already changed the row.

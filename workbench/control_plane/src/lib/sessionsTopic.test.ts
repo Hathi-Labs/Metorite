@@ -154,6 +154,41 @@ describe("setSessionTopic (CO-2b)", () => {
     expect(undoFirst).not.toHaveBeenCalled();
   });
 
+  // Final verifier P3. Mutation: take `before` from the row at each move ->
+  // the second failure puts back the mark of the first move, "t-2".
+  it("two failed moves in a row put back the last confirmed topic", async () => {
+    seed(row("a", { topicId: "t-1", topicName: "Sales" }));
+    const fails: Array<(r: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      fails.push(resolve);
+    })));
+    const undoFirst = vi.fn();
+    const undoSecond = vi.fn();
+    expect(setSessionTopic("a", { id: "t-2", name: "Board prep" }, undoFirst)).toBe(true);
+    expect(setSessionTopic("a", { id: "t-3", name: "Finance" }, undoSecond)).toBe(true);
+    fails[0](new Response("{}", { status: 404 }));
+    fails[1](new Response("{}", { status: 503 }));
+    await vi.waitFor(() => expect(undoSecond).toHaveBeenCalledTimes(1));
+    expect(topicOf("a")).toEqual(["t-1", "Sales"]);
+    expect(undoFirst).not.toHaveBeenCalled();
+  });
+
+  it("a failed move after a confirmed one puts back the confirmed topic", async () => {
+    seed(row("a", { topicId: "t-1", topicName: "Sales" }));
+    const answers: Array<(r: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      answers.push(resolve);
+    })));
+    const undo = vi.fn();
+    expect(setSessionTopic("a", { id: "t-2", name: "Board prep" })).toBe(true);
+    expect(setSessionTopic("a", { id: "t-3", name: "Finance" }, undo)).toBe(true);
+    answers[0](new Response(JSON.stringify({ ok: true, topicId: "t-2", topicName: "Board prep" }), { status: 200 }));
+    await new Promise((r) => setTimeout(r, 20));
+    answers[1](new Response("{}", { status: 404 }));
+    await vi.waitFor(() => expect(undo).toHaveBeenCalledTimes(1));
+    expect(topicOf("a")).toEqual(["t-2", "Board prep"]);
+  });
+
   // Mutation: drop the mark check of the undo -> a topic that the merge of
   // the server list wrote after the move is taken back.
   it("an undo leaves a row that the server list changed after the move", async () => {
