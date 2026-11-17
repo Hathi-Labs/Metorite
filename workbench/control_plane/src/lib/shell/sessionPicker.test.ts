@@ -23,9 +23,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatSession } from "@/lib/sessions";
 
+const live = vi.hoisted(() => ({
+  running: new Set<string>(),
+  unread: new Set<string>(),
+  needs: new Set<string>(),
+}));
+
 vi.mock("@/hooks/useActiveSessions", () => ({
-  useActiveSessions: () => new Set<string>(),
-  useUnreadIds: () => new Set<string>(),
+  useActiveSessions: () => live.running,
+  useUnreadIds: () => live.unread,
+  useNeedsInputIds: () => live.needs,
 }));
 
 import { SessionPicker } from "./SessionPicker";
@@ -95,6 +102,29 @@ describe("the pin in the chat list (CO-11)", () => {
     const html = draw({ pinsOn: true });
     expect(groups(html)).not.toContain("Pinned");
     expect(html).not.toMatch(/aria-label="(Un)?[Pp]in /);
+  });
+});
+
+describe("the amber dot in the chat list (task 3600)", () => {
+  /** The dot inside the row of one chat. */
+  const rowOf = (html: string, id: string) =>
+    html.split(`data-session-row="${id}"`)[1].split("data-session-row=")[0];
+
+  it("a chat that waits on the member wears the amber dot, and loses it when the row closes", () => {
+    live.running = new Set(["plain", "pinned"]);
+    live.unread = new Set(["pinned"]);
+    live.needs = new Set(["plain"]);
+    const open = draw({});
+    expect(rowOf(open, "plain")).toContain('aria-label="Needs your answer"');
+    expect(rowOf(open, "plain")).toContain("bg-warning");
+    expect(rowOf(open, "plain")).not.toContain("Assistant is working");
+    expect(rowOf(open, "pinned")).toContain('aria-label="Assistant is working"');
+    live.needs = new Set();
+    const closed = draw({});
+    expect(closed).not.toContain("Needs your answer");
+    expect(rowOf(closed, "plain")).toContain('aria-label="Assistant is working"');
+    live.running = new Set();
+    live.unread = new Set();
   });
 });
 
