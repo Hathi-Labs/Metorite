@@ -39,6 +39,7 @@ none of the 29 sites changes to gain per-member and per-app billing.
 """
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from acb_common import get_logger
@@ -47,6 +48,8 @@ __all__ = [
     "OUT_OF_CREDITS",
     "RoutedRefusal",
     "completion_on_router",
+    "direct_arm_allowed",
+    "refuse_direct_arm",
     "router_wired",
     "routing_is_on",
     "run_attribution",
@@ -138,6 +141,93 @@ def routing_is_on() -> bool:
         return False
     settings = get_settings()
     return bool(getattr(settings, "router_serving_enabled", False)) and router_is_wired()
+
+
+#: True after this process logged its first ``ai.route_refused_unwired``.
+#: One line for each process, so a box with routing off does not log on each
+#: call. A test resets it.
+_REFUSAL_LOGGED = False
+
+
+def direct_arm_allowed() -> bool:
+    """Whether a call may take the direct arm (local litellm). Never raises.
+
+    Task 3554 (2449 S3). True ONLY when the settings say ``ACB_ENV=dev``.
+    ``acb_env`` defaults to ``prod``, so an unset variable is production
+    (H-90). The idiom is ``acb_auth.deps._acb_env``.
+
+    🔴 **A settings read that fails is a refusal.** :func:`routing_is_on`
+    answers False when it cannot import its parts, which sends the call to
+    the direct arm. This function must not copy that. A box that cannot read
+    its own settings is not a laptop.
+
+    ⚠️ The unit suite replaces this function with an allow (the autouse
+    fixture ``_allow_the_direct_ai_arm`` in ``tests/conftest.py``), because
+    many tests stub litellm and run as production. A test that proves the
+    refusal opts out with the ``direct_arm_guard`` marker.
+    """
+    try:
+        from acb_common.settings import get_settings
+
+        return str(get_settings().acb_env) == "dev"
+    except Exception:  # a settings read that fails is not a dev box
+        return False
+
+
+def refuse_direct_arm(seam: str) -> None:
+    """Stop a call that is about to take the direct arm outside dev.
+
+    Task 3554 (2449 S3, ``ai_tier_routing.md`` §2.10). Each seam calls this
+    at the point where the Router branch did not take the call, and BEFORE it
+    loads a vendor key or calls litellm. The five seams are
+    ``acompletion_with_fallback`` and ``acompletion_stream_text`` in
+    ``context.py``, ``complete`` and ``complete_with_tools`` in ``client.py``,
+    and the gateway ``/v1`` door (``v1_compat``, which answers its 502).
+
+    🔴 **Why.** With routing off, each seam called a vendor with the
+    gateway's own key, and nobody billed the call. On production that is a
+    silent hole in the money loop (H-171, D57.7). A dev box keeps the direct
+    arm, because it has no Console to route to.
+
+    Raises ``ConsoleRouterUnavailable("unrouted")`` outside dev, so a caller
+    that already reads a Router outage (:func:`is_router_outage`) reads this
+    one too. The first refusal of a process logs ``ai.route_refused_unwired``
+    with the seam, the serving flag and the wiring. The line holds no secret.
+
+    Fence (R7): ``tests/unit/test_internal_ai_is_routed.py``, one class for
+    each seam (``Test*IsClosedOutsideDev``) and ``TestTheGuardItself``.
+    """
+    if direct_arm_allowed():
+        return
+    _note_refusal(seam)
+    try:
+        from acb_auth.console_resolve import ConsoleRouterUnavailable
+    except Exception:  # no auth package: refuse all the same
+        raise RuntimeError(
+            "unrouted: the AI Router is off, and this box is not a dev box"
+        ) from None
+    raise ConsoleRouterUnavailable("unrouted")
+
+
+def _note_refusal(seam: str) -> None:
+    """Log the first refusal of this process, and only the first. Never raises."""
+    global _REFUSAL_LOGGED
+    if _REFUSAL_LOGGED:
+        return
+    _REFUSAL_LOGGED = True
+    serving: bool | None = None
+    env: str | None = None
+    # The line still goes out when the settings do not read.
+    with contextlib.suppress(Exception):
+        from acb_common.settings import get_settings
+
+        settings = get_settings()
+        serving = bool(getattr(settings, "router_serving_enabled", False))
+        env = str(settings.acb_env)
+    _log.error(
+        "ai.route_refused_unwired",
+        seam=seam, router_serving=serving, router_wired=router_wired(), acb_env=env,
+    )
 
 
 def router_wired() -> bool:
