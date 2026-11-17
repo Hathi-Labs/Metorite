@@ -503,7 +503,7 @@ _NO_RUN = "true"  # gh answers, and lists no dispatch run
                                      ((13, 29), "13:30"), ((20, 20), "21:30"), ((21, 45), "21:30")])
 def test_a_merge_inside_a_freeze_window_is_refused(repo, hm, slot):
     res = _run(repo, PREMERGE_NOW=str(_at(*hm)), PREMERGE_RUNS_CMD=_NO_RUN)
-    assert res.returncode == 1, res.stdout
+    assert res.returncode == 75, res.stdout  # 75: merge_bot reads it as a wait, not a BACK
     assert "release freeze" in res.stderr and slot in res.stderr
 
 
@@ -520,12 +520,12 @@ def test_a_started_release_run_closes_the_window_early(repo):
     # A run of the day before does not count.
     old = 'echo 2026-11-15T13:31:02Z'
     res = _run(repo, PREMERGE_NOW=str(_at(13, 40)), PREMERGE_RUNS_CMD=old)
-    assert res.returncode == 1
+    assert res.returncode == 75
 
 
 def test_no_answer_from_gh_keeps_the_window_shut_until_the_slot(repo):
     res = _run(repo, PREMERGE_NOW=str(_at(13, 0)), PREMERGE_RUNS_CMD="exit 1")
-    assert res.returncode == 1 and "release freeze" in res.stderr
+    assert res.returncode == 75 and "release freeze" in res.stderr
     res = _run(repo, PREMERGE_NOW=str(_at(13, 40)), PREMERGE_RUNS_CMD="exit 1")
     assert res.returncode == 0, res.stderr
 
@@ -541,9 +541,16 @@ def test_the_window_closes_at_the_slot_plus_30_minutes(repo):
     res = _run(repo, PREMERGE_NOW=str(_at(14, 0)), PREMERGE_RUNS_CMD=_NO_RUN)
     assert res.returncode == 0, res.stderr
     res = _run(repo, PREMERGE_NOW=str(_at(13, 59)), PREMERGE_RUNS_CMD=_NO_RUN)
-    assert res.returncode == 1
+    assert res.returncode == 75
 
 
 def test_claude_md_names_the_freeze_windows():
     text = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     assert "04:20" in text and "12:20" in text and "20:20" in text
+
+
+@pytest.mark.parametrize("value", ["yes please", " ", "3415 x", "abc"])
+def test_the_override_must_be_a_task_number(repo, value):
+    res = _run(repo, PREMERGE_NOW=str(_at(12, 30)), PREMERGE_RUNS_CMD=_NO_RUN,
+               PREMERGE_FREEZE_OK=value)
+    assert res.returncode == 1 and "must be a task number" in res.stderr

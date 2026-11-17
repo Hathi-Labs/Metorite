@@ -100,7 +100,7 @@ freeze_check() {
     start=$(( slot - 4200 )); end=$(( slot + 1800 ))
     [ "$now" -ge "$start" ] && [ "$now" -lt "$end" ] || continue
     rc=0
-    ans="$( ${PREMERGE_RUNS_CMD:-gh run list --workflow deploy.yml --event workflow_dispatch --limit 10 --json createdAt --jq .[].createdAt} 2>/dev/null )" || rc=$?
+    ans="$( ${PREMERGE_RUNS_CMD:-timeout 20 gh run list --workflow deploy.yml --event workflow_dispatch --limit 10 --json createdAt --jq .[].createdAt} 2>/dev/null )" || rc=$?
     started=0
     if [ "$rc" = 0 ]; then
       while IFS= read -r created; do
@@ -112,11 +112,17 @@ freeze_check() {
       end="$slot"; [ "$now" -ge "$end" ] && return 0
     fi
     [ "$started" = 1 ] && return 0
+    if [ -n "${PREMERGE_FREEZE_OK:-}" ] && ! [[ "${PREMERGE_FREEZE_OK}" =~ ^[0-9]+$ ]]; then
+      fail "PREMERGE_FREEZE_OK must be a task number (digits only). Got: ${PREMERGE_FREEZE_OK}"
+    fi
     if [ -n "${PREMERGE_FREEZE_OK:-}" ]; then
       say "release freeze OVERRIDDEN for task ${PREMERGE_FREEZE_OK} (window $(date -u -d "@$start" +%H:%M) to $(date -u -d "@$end" +%H:%M) UTC)"
       return 0
     fi
-    fail "release freeze: no merge from $(date -u -d "@$start" +%H:%M) UTC until the $slot_h UTC release run starts (or $(date -u -d "@$end" +%H:%M) UTC at the latest). It is $(date -u -d "@$now" +%H:%M) UTC. A merge now cancels main's batch. Wait. A Rung 0 fix that the owner approved: PREMERGE_FREEZE_OK=<task number>."
+    # Exit 75, not 1: the freeze is not a defect of the branch. merge_bot reads 75 as a
+    # skip ("wait"), never as a BACK to the lane (review of PR 2488). A person sees the same text.
+    printf 'premerge: FAIL. %s\n' "release freeze: no merge from $(date -u -d "@$start" +%H:%M) UTC until the $slot_h UTC release run starts (or $(date -u -d "@$end" +%H:%M) UTC at the latest). It is $(date -u -d "@$now" +%H:%M) UTC. A merge now cancels main's batch. Wait. A Rung 0 fix that the owner approved: PREMERGE_FREEZE_OK=<task number>." >&2
+    exit 75
   done
   return 0
 }
