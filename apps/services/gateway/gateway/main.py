@@ -1884,6 +1884,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-FIND FIND-5 — `GET /search/names`, the route of `resolve_name`
+    # (find_engine.md §5.2). `FIND_ORGS` answers 404 first, and each source
+    # checks its own app's gates, as for `/search/company`.
+    from gateway.retrieval.names import router as _names_router
+
+    app.include_router(_names_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-59 RE-1a — Reach: `/reach/preview` and `/reach/brief`
     # (proactive_reach.md). Gated on `feature:chat`, as the WhatsApp channel
     # is. With REACH_ENABLED off, or the member off the allowlist, both 404.
