@@ -156,10 +156,10 @@ def test_the_forward_row_reads_a_jsonb_sender() -> None:
 def test_the_seams_carry_the_features() -> None:
     em = _G / "routes" / "email"
     msgs = (em / "transport" / "messages.py").read_text(encoding="utf-8")
-    assert "act_features.of_message(db, user.organization_id, message_id)" in msgs
+    assert "act_features.of_message(db, member_actions.org_of(user), message_id)" in msgs
     assert msgs.count("act_features.of_message(") == 2
     rz = (em / "automation" / "replyzero.py").read_text(encoding="utf-8")
-    assert "db, user.organization_id, req.account_id, req.thread_id)" in rz
+    assert "db, member_actions.org_of(user), req.account_id, req.thread_id)" in rz
     send = (em / "transport" / "send.py").read_text(encoding="utf-8")
     assert "*(req.cc or [])" in send and "act_features.of_address(" in send
 

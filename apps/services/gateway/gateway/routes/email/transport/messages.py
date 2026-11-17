@@ -1193,7 +1193,7 @@ async def update_message(
         # move to a user label is also "archive" (O-GM-1), so it cannot tell.
         acted_features: dict[str, Any] | None = None
         if (target is not None and canonical_folder(target) == "archive") or updates.add_labels:
-            acted_features = await act_features.of_message(db, user.organization_id, message_id)
+            acted_features = await act_features.of_message(db, member_actions.org_of(user), message_id)
         if target is not None and canonical_folder(target) == "archive":
             await member_actions.record_act(
                 db, org=member_actions.org_of(user), member=user.email or "",
@@ -1330,7 +1330,7 @@ async def snooze_message(
                 db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="snooze", via="app", item_kind="email",
                 item_id=message_id, mailbox_id=str(row.account_id),
-                features=await act_features.of_message(db, user.organization_id, message_id))
+                features=await act_features.of_message(db, member_actions.org_of(user), message_id))
         return {
             "ok": True,
             "message_id": message_id,

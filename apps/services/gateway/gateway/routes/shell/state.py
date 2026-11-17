@@ -963,7 +963,7 @@ async def record_card_acts(db: Any, user: UserContext, items: list[StateItem],
     records its first 20."""
     for item in [i for i in items if i.action in MEMBER_ACTS and i.signal_id in written][:20]:
         await member_actions.record_act(
-            db, org=user.organization_id or "", member=user.email or "", app="my_day",
+            db, org=member_actions.org_of(user), member=user.email or "", app="my_day",
             act=MEMBER_ACTS[item.action], via="app", item_kind="signal",
             item_id=item.signal_id, features={"signal_kind": item.kind})
 
