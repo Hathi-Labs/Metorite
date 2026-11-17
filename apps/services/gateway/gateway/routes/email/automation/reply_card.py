@@ -403,7 +403,7 @@ async def _read_reply_to(db: Any, owner: str, row: Any) -> list[str]:
                 sess.provider_message_id, folder=getattr(row, "folder", None),
                 message_id=(getattr(row, "internet_message_id", None)
                             or getattr(row, "thread_id", None))))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - the class only
         _log.warning("email.reply_card_reply_to_failed", error=type(exc).__name__)
         return []
 
@@ -1120,7 +1120,7 @@ def _person_marks(
         thread_mark,
     )
 
-    ASKED_MARK = ASSISTANT_ADDED_MARK if held else ADDED_MARK
+    ASKED_MARK = ASSISTANT_ADDED_MARK if held else ADDED_MARK  # noqa: N806
 
     sender = str(getattr(mail, "sender", "") or "").lower()
     who = str(getattr(mail, "sender_name", "") or "") or sender

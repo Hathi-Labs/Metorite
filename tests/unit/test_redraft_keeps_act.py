@@ -850,3 +850,47 @@ async def test_a_new_mail_after_a_reply_says_the_act_changed(monkeypatch):
     got = await _rd.link_fields(USER, "chat-thread-1", link["to"], cc=link["cc"], act="new")
     assert got["revises"] == card["card_id"] and got["draft"] == 2
     assert got["changed"] == {"act": {"was": "reply", "now": "new"}}
+
+
+async def test_a_reply_card_with_a_bcc_keeps_it_in_the_link_and_names_a_change(monkeypatch):
+    """The Bcc of a reply card goes to the link at the revise, and a later card with
+    another Bcc says so. Mutation: drop ``bcc=_bcc_of(rec)`` in the revise -> red."""
+    from tests.unit.test_recipient_intent import USER
+
+    w = _reply_world(monkeypatch)
+    card = await _rd_reply(w, "chat-thread-1", bcc=[F.COLLEAGUE])
+    rec = json.loads(w.redis.keys[_reply_key(w, card["card_id"])])
+    assert [a.lower() for a in rec["bcc"]] == [F.COLLEAGUE.lower()]
+    await _rd.revise_new_mail_card(
+        _rd.ReviseRequest(card_id=card["card_id"], card_thread_id="chat-thread-1"), USER)
+    [link] = [json.loads(v) for k, v in w.redis.keys.items() if ":card_revised:" in k]
+    assert link["bcc"] == [F.COLLEAGUE.lower()]
+    got = await _rd.link_fields(USER, "chat-thread-1", link["to"], cc=link["cc"],
+                                bcc=[F.OTHER], act="new")
+    assert got["changed"]["bcc"] == {"added": [F.OTHER.lower()],
+                                     "removed": [F.COLLEAGUE.lower()]}
+
+
+async def test_a_late_answer_to_a_revised_reply_card_is_refused(monkeypatch):
+    """The act of a revised reply card is refused: no answer was taken for it, so the
+    act answers 409 before it reads any record. Mutation: let the act skip
+    ``take_reply_answer`` -> red."""
+    import types
+
+    from gateway.routes.email.automation import reply_card as _rc
+
+    from tests.unit.test_recipient_intent import MAIL, USER
+
+    w = _reply_world(monkeypatch)
+    card = await _rd_reply(w, "chat-thread-1")
+    await _rd.revise_new_mail_card(
+        _rd.ReviseRequest(card_id=card["card_id"], card_thread_id="chat-thread-1"), USER)
+    answer = "APPROVE " + json.dumps({"reply": {
+        "action": "send", "reply_all": True, "body": "Wednesday 11am works.",
+        "to": ["x@y.test"], "cc": [], "message_id": MAIL}})
+    with pytest.raises(HTTPException) as err:
+        await _rc.reply_card_act(
+            _rc.ReplyCardActRequest(message_id=MAIL, card_request_id=card["card_id"],
+                                    card_thread_id="chat-thread-1", answer=answer),
+            types.SimpleNamespace(), USER)
+    assert err.value.status_code == 409 and w.sent == []

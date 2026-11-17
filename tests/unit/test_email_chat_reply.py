@@ -325,7 +325,7 @@ async def test_a_request_id_from_another_room_records_nothing(monkeypatch, redis
         request_id="rid-9", answer=_answer(), was_freeform=False, thread_id="th-viewer")
     try:
         await routes_agent.respond_user_input(req, user)
-    except Exception:
+    except Exception:  # noqa: BLE001 - the 409 or the late-answer path
         pass
     assert redis.keys == {}
     assert await _record(ORG, "rid-9", MEMBER, _answer()) is True  # the member's own
@@ -553,7 +553,7 @@ def test_the_parameter_fence_pins_compose_reply() -> None:
 def _variant(extra: str) -> Any:
     """``compose_reply`` with one more parameter, as a careless change adds."""
     ns: dict[str, Any] = {}
-    exec(
+    exec(  # noqa: S102 - a fixed test source
         "async def compose_reply(email_id, account_id, reply_all=False, draft='', "
         f"instruction='', cc=None, bcc=None, {extra}=None):\n"
         "    return ''\n", ns)
