@@ -226,7 +226,7 @@ not write a second copy of that seam. A bare test file name is under
    - `UntrustedFrame.paste_note` is the note of a block of pasted text (HRD-14a). `note` does not change.
 5m-0. paste_frame.py -- the split of a member turn into the member's lead and ONE `PASTED TEXT` block (HRD-14a, spec `chat_failure_modes.md` §4.7b).
    - `split` and `frame_member_text` are pure. Nothing calls them until HRD-14b adds the seam behind its flag.
-   - The marker lines come only from `UntrustedFrame`. The `_PASTED` rule comes from `acb_common.assistant_profile`. Do not copy either.
+   - The marker lines come only from `UntrustedFrame`. The `_PASTED` rule comes from `acb_common.assistant_profile`. A hidden character is `reply_card.is_invisible_char`. Do not copy any of them.
    - Fence: `test_paste_frame.py`.
 5m-1. hidden_text.py -- the ONE rule of a hidden character in owner text that a store keeps (WS-STU F1b, spec `ai_studio.md` §14 F1b).
    - `find_hidden`, `strip_hidden`, `hidden_problem` and `body_hidden_problem`. The base is `reply_card.is_invisible_char`, which is wider than `untrusted.is_invisible`. A new line, a tab and a carriage return are legal.
