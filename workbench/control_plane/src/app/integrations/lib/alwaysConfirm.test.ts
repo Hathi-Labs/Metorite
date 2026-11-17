@@ -109,9 +109,14 @@ describe("the switch in the Add form", () => {
     expect(mcpBody(off).always_confirm).toBe(false);
     // A real boolean, never a string: the gateway takes a strict bool.
     expect(typeof mcpBody(off).always_confirm).toBe("boolean");
-    // With the read-only key on, the switch goes out as off, so the gateway
-    // never reads both switches on.
-    expect(mcpBody(tickFormSwitch(base, "read_only_key", true)).always_confirm).toBe(false);
+    // The read-only key alone sends no switch either. On a server that always
+    // confirms, the gateway then refuses both on with 422, and the form says so.
+    const keyed = mcpBody(tickFormSwitch(base, "read_only_key", true));
+    expect("always_confirm" in keyed).toBe(false);
+    expect(keyed.read_only_key).toBe(true);
+    // A tick of "always confirm" and then of the key sends the switch off.
+    const both = tickFormSwitch(tickFormSwitch(base, "always_confirm", true), "read_only_key", true);
+    expect(mcpBody(both)).toMatchObject({ always_confirm: false, read_only_key: true });
   });
 
   it("draws one labelled, unchecked toggle with the help line", () => {
@@ -121,8 +126,8 @@ describe("the switch in the Add form", () => {
     expect(html).toContain(ALWAYS_CONFIRM_LABEL);
     expect(ALWAYS_CONFIRM_LABEL).toBe("Always ask before any tool runs");
     expect(ALWAYS_CONFIRM_HELP).toBe(
-      "With this off, the chat in Metorite runs each tool of this server without asking. " +
-        "With this on, every tool of this server waits for a member to approve it.",
+      "With this off, the Metorite chat runs each tool of this server without asking. " +
+        "With this on, each tool waits for a member to approve it.",
     );
     expect(html).toContain(ALWAYS_CONFIRM_HELP);
     expect(html).not.toMatch(/checked=""/);

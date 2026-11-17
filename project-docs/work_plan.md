@@ -4781,6 +4781,8 @@ Owner decision, 2026-10-27 (see D129). Metorite #809. It answers the seven owner
 
 ### D131 — Automations climb a trust ladder of three levels (2026-10-27)
 
+*Limited by MCP-NC1 (D98 record, 2026-11-16) for the tools of an external app in a member's run.*
+
 Owner decision, 2026-10-27 (see D129). Metorite #815.
 
 1. **Suggest.** Mira puts a card in My Day, and nothing changes.
@@ -5222,6 +5224,8 @@ The side chat actually walks somebody through the entire user flow."
 4. **D-GD-4. Metorite pays for guide questions for the first 14 days,** inside the cap of D-OB-6. After that, a guide question is a normal chat turn.
 
 ### D164 — The CRM changes by a trust ladder, and every change lands in Change history (2026-11-02)
+
+*Limited by MCP-NC1 (D98 record, 2026-11-16) for the tools of an external app in a member's run.*
 
 Owner decision, 2026-11-02, in chat. Board: **WS-CRM**. Owning spec: `specs/crm_conversational.md` §4. Metorite: sub-epic #1429, slice CRM-M1 (#1431). It amends D133, which says an admin approves each change that the AI proposes. It changes no other rule of D133.
 

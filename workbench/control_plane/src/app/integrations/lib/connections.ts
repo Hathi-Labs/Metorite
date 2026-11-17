@@ -518,8 +518,8 @@ export function mcpDescription(row: Connection): string {
 }
 
 export const ALWAYS_CONFIRM_HELP =
-  "With this off, the chat in Metorite runs each tool of this server without asking. " +
-  "With this on, every tool of this server waits for a member to approve it.";
+  "With this off, the Metorite chat runs each tool of this server without asking. " +
+  "With this on, each tool waits for a member to approve it.";
 
 /** The switch of an MCP row. `null` on a row that is not an MCP server. */
 export function mcpAlwaysConfirm(row: Connection): boolean | null {
@@ -746,10 +746,10 @@ export function mcpBody(f: McpForm): Record<string, unknown> {
     agent_scope: scope.length ? scope : ["*"],
     enabled: true,
     // F7 of the MCP-NC1 review: the switch goes out only when the admin ticked
-    // it, or when the read-only key is on (then it must be off). Else the
-    // gateway keeps the stored switch of a server that exists, and a new one
-    // gets off.
-    ...(f.alwaysConfirmTouched || f.readOnlyKey ? { always_confirm: f.alwaysConfirm } : {}),
+    // it. Else the gateway keeps the stored switch of a server that exists,
+    // and a new one gets off. A re-register with the read-only key of a server
+    // that always confirms gets the gateway's 422, and the form shows it.
+    ...(f.alwaysConfirmTouched ? { always_confirm: f.alwaysConfirm } : {}),
     // MCP-C2: always sent. A register is a full register, so a body with no
     // key turns it off.
     read_only_key: f.readOnlyKey,

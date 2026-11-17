@@ -5082,7 +5082,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
         out.append(_maf_mcp.McpServer(
             name=str(srv.name), url=str(srv.url), headers=_str_map(srv.headers),
             # H-300: the admin's "always confirm" switch. A row with no key
-            # reads as false, so the server keeps its H-299 behaviour.
+            # reads as false, so the gate applies the rule of item 33
+            # (MCP-NC1): no card in a verified member's run in Metorite, and
+            # the H-299 refusal of a write with no member and on WhatsApp.
             always_confirm=getattr(srv, "always_confirm", False) is True,
             # MCP-C2: the admin's read-only key, as the registry parsed it
             # once (``StoredServer.read_only_key``). Nothing parses it again.

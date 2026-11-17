@@ -1219,10 +1219,10 @@ Item 32 is the switch. Metorite task 1584.
     - **The reads.** `GET /integrations/mcp` returns `read_only_key`. The read model returns
       `detail.read_only_key` as `"true"` or `"false"`.
     - **The console.** The Add MCP form and the MCP side panel show a second labelled tick on
-      the shared `Checkbox`: "This key can only read". Its help line says: "Runs that no
-      member starts, such as scheduled runs, can then use every tool of this server. Turn
-      this on only when the key cannot change data at the source." (item 33 changed the
-      first sentence). A tick of one switch clears the other. A member without
+      the shared `Checkbox`: "This key can only read". Its help line says: "Chats that
+      cannot ask for approval, such as WhatsApp, can then use every tool of this server.
+      Turn this on only when the key cannot change data at the source." (item 33 changed
+      the first sentence). A tick of one switch clears the other. A member without
       `integrations:manage` sees it disabled. On a row that acts as an admin through OAuth
       (`acts_as` is set), the tick is disabled, and one more line says that the switch does
       not apply there. Until the list shows a saved pair, the panel draws the pair that the
@@ -1248,7 +1248,9 @@ block that the linter does not read:
       `mcp_read_only`. `decide()` stays the one gate.
     - **Who counts as a member.** The fact is true only in a run that a verified member started
       and watches in Metorite: the web chat, and a member's own `POST /agent/run` with a
-      thread. The executor passes `member_present` only with an authority from
+      thread. `POST /agent/run/async` answers 202 and runs in the background, so nobody
+      watches it. The route runs it inside `no_person_scope`, so it counts as a run with no
+      member, also with a thread. The executor passes `member_present` only with an authority from
       `_integration_authorizer`, a verified member of the run binding
       (`_verified_run_member`), and no batch run. A body's claim of a member (`user_email`
       with no session) is not verified, so it keeps `mcp_confirm`. The gate sets the fact
@@ -1345,7 +1347,7 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A12 | In a run with no member, the gate refuses a tool with `destructiveHint` true, `readOnlyHint` false, or no hints (item 33 amends: it waited for the card). A read-only tool that is not destructive runs at once. | `test_maf_mcp_confirm.py` |
 | A13 | Approve runs the tool. Deny and a timeout return a refusal, and the tool never runs. | `test_maf_mcp_confirm.py` |
 | A14 | A run with no member refuses a tool that does not say read-only. A run with no card channel refuses a tool that needs a card. Neither shows a card. | `test_maf_mcp_confirm.py` |
-| A15 | A WhatsApp run refuses a tool that needs a card, and parks nothing. A member's WhatsApp run calls a tool with no card (item 33). | `test_maf_mcp_confirm.py` |
+| A15 | A WhatsApp run refuses a tool that needs a card, and parks nothing. A member's WhatsApp run still refuses a tool that does not say read-only (item 33). | `test_maf_mcp_confirm.py::test_a_member_whatsapp_run_still_refuses_a_write` |
 | A16 | The card redacts sensitive arguments, shows every other argument whole, and labels the server's description. A call that the card cannot show whole is refused. | `test_maf_mcp_confirm.py` |
 | A17 | Each attach logs `mcp.tool_annotations`. Item 33: a destructive tool on the real `run_agent_stream` of a member runs with no card, and `permission.decision` logs `mcp_member_run`. | `test_maf_mcp_confirm.py` |
 | A18 | A later `tools/list` cannot relax a tool, and each change of hints is logged. | `test_maf_mcp_confirm.py` |
@@ -1369,7 +1371,7 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A36 | With both switches true on a row, every tool waits for the card. After an untrusted answer, a tool of a read-only-key server still waits for the card. The list loader shows `read_only` true for each tool of a read-only-key server. | `test_maf_mcp_confirm.py`, `test_maf_mcp_budget.py` |
 | A37 | `PATCH` sets the switch, keeps the headers, and writes one audit event. A body with both switches true gets 422, and so does a string value. `PATCH {"read_only_key": true}` on a row with `always_confirm` true gets 422, and so does a PATCH on an OAuth row. `PATCH {"always_confirm": true}` on a row with `read_only_key` true gets 422. On a row with both stored true, `PATCH {"always_confirm": false}` leaves the key off. A body with only `always_confirm` behaves as A33. A re-POST with no `read_only_key` turns it off, and its audit event records both flags. A member without `integrations:manage` gets 403. Another org's name is 404. A new server reads as false. R8, two orgs, the app role. | `test_mcp_read_only_key_r8.py` |
 | A38 | `GET /integrations/mcp` and the read model return the flag. The console tick sends `read_only_key`, and a tick of one switch clears the other. | `test_mcp_read_only_key_r8.py`, `alwaysConfirm.test.ts` |
-| A39 | Item 33. In a verified member's run in Metorite, each MCP tool runs with no card, whatever its hints say. Only a real `True` member fact counts. Always confirm and an untrusted answer still ask the card. A function of no known server still asks. A run with no member, a body's claim of a member, a run inside `no_person_scope`, and a WhatsApp run still refuse a tool that does not say read-only. | `test_maf_mcp_confirm.py` |
+| A39 | Item 33. In a verified member's run in Metorite, each MCP tool runs with no card, whatever its hints say. Only a real `True` member fact counts. Always confirm and an untrusted answer still ask the card. A function of no known server still asks. A run with no member, a body's claim of a member, a run inside `no_person_scope` (such as `POST /agent/run/async`), and a WhatsApp run still refuse a tool that does not say read-only. | `test_maf_mcp_confirm.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.

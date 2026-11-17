@@ -904,6 +904,10 @@ _SETTERS: dict[str, int] = {
     # WS-STU B6a: `run_as_read` is the run boundary of a run with no viewer.
     # Nobody watches it, so the whole run is marked. No tool reaches it.
     "apps/services/gateway/gateway/routes/studio/invoke.py": 1,
+    # MCP-NC1 review (task 3603): `POST /agent/run/async` answers 202 and runs
+    # in the background. Nobody watches that run, so its whole run is marked,
+    # and an MCP write there is refused, never run with no card.
+    "apps/services/gateway/gateway/routes/agent.py": 1,
 }
 #: Who may read the mark: the seams of the refusals. No tool reads it.
 _READERS = frozenset({

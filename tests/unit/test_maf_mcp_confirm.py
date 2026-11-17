@@ -64,7 +64,7 @@ Only the model wire is scripted, and the card is answered the way
 
 Mutation table. Each mutation was made by hand, and the named test failed.
 Rows M1 to M48 were measured at their own slices, and their test names were
-updated for MCP-NC1. Rows M11, M36a, M36b and M49 to M58 were measured on
+updated for MCP-NC1. Rows M11, M36a, M36b and M49 to M60 were measured on
 2026-11-17.
 
 | # | Mutation | Test that fails |
@@ -148,6 +148,8 @@ R8 half is ``tests/unit/test_mcp_read_only_key_r8.py``.
 | M56 | the gate ignores a run that refuses cards (WhatsApp) | ``test_a_member_whatsapp_run_still_refuses_a_write``, ``test_a_redis_fault_of_the_mark_on_whatsapp_still_refuses_a_write`` |
 | M57 | ``_person_present`` reads a fault as a person | ``test_a_fault_of_the_presence_check_counts_as_no_member`` |
 | M58 | the executor takes an unverified claim as a member | ``test_a_claimed_member_that_is_not_verified_keeps_mcp_confirm_end_to_end`` |
+| M59 | ``_refuses_cards`` reads a fault as no refusal | ``test_a_fault_of_the_card_refusal_check_counts_as_a_refusal`` |
+| M60 | ``POST /agent/run/async`` runs with no ``no_person_scope`` | ``test_a_write_on_the_async_route_with_a_thread_does_not_run`` |
 """
 from __future__ import annotations
 
@@ -763,6 +765,97 @@ async def test_a_redis_fault_of_the_mark_on_whatsapp_still_refuses_a_write(monke
     assert faults and faults[0]["fail_closed"] is False, "the probe never reached the fault"
     assert ran.count == 0 and run.parked is None
     assert ctx.result == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
+
+
+async def test_a_fault_of_the_card_refusal_check_counts_as_a_refusal(monkeypatch) -> None:
+    """MCP-NC1 review, item 6. ``_refuses_cards`` fails closed: a fault in the
+    check of a run that refuses cards reads as a refusal. So the gate gives
+    ``decide()`` no member, and a member's write does not run."""
+    from acb_skills import whatsapp_ui
+
+    def _broken() -> Any:
+        raise RuntimeError("the WhatsApp profile cannot be read")
+
+    monkeypatch.setattr(whatsapp_ui, "current_run", _broken)
+    assert _maf_mcp._refuses_cards() is True
+    fn = _function()
+    ctx = _ctx(fn)
+    ran = _Ran()
+    with _card_channel() as queue, structlog.testing.capture_logs() as logs:
+        await _bounded(_gate(fn, {"destructiveHint": True}, member=True).process(ctx, ran))
+    assert ran.count == 0, "a fault of the check let a member's write run"
+    assert queue.empty()
+    assert [e["reason"] for e in logs if e["event"] == "permission.decision"] == ["mcp_confirm"]
+    # ``_card_refusal`` reads the same profile, and its own fault refuses too.
+    assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
+
+
+async def test_a_write_on_the_async_route_with_a_thread_does_not_run(monkeypatch) -> None:
+    """MCP-NC1 review, item 4. ``POST /agent/run/async`` answers 202, and no
+    person watches the run. The route runs it inside ``no_person_scope``, so
+    the attach gives the gate no member. A write of an outside app on a
+    thread is refused with no card, and the server never runs it."""
+    import orchestrator.executor as ex
+    from acb_auth import UserContext
+    from acb_auth.roles import UserRole
+    from acb_common.no_person import no_person_present
+    from fastapi import BackgroundTasks
+    from gateway.routes import agent as agent_routes
+
+    from tests.unit._maf_mcp_fakes import install_offline, native_agent
+
+    async def _allowed(*_a: Any, **_k: Any) -> None:
+        return None
+
+    for seam in ("assert_can_run_agent_in_session", "_guard_run_thread",
+                 "_refuse_if_another_run_is_active"):
+        monkeypatch.setattr(agent_routes, seam, _allowed)
+    monkeypatch.setattr(agent_routes, "_resolve_agent_for_run", lambda *_a, **_k: "orchestrator")
+    install_offline(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    async def _run_agent(_agent: str, _payload: Any, **kw: Any) -> dict[str, Any]:
+        """The run boundary as the executor sees it: a member's thread, with
+        the authority that the executor would pass (``member_present=True``)."""
+        seen["marked"] = no_person_present()
+        seen["thread"] = kw.get("thread_id")
+        seen["member"] = kw.get("session_user")
+        agent = native_agent()
+        opened: list[Any] = []
+        await _maf_mcp.attach_mcp_tools(agent, [
+            _maf_mcp.McpServer(name="srv", url="https://a.example.com/mcp")], opened,
+            member_present=True)
+        try:
+            (tool,) = agent.mcp_tools
+            write = _function()
+            tool._functions = [write]
+            tool.__dict__["_ws8c_tool_meta"] = {"delete_record": _maf_mcp.ToolMeta(
+                hints={"destructiveHint": True}, description="d")}
+            gate = next(m for m in agent.middleware
+                        if isinstance(m, _maf_mcp.McpPermissionGate))
+            ran, ctx = _Ran(), _ctx(write)
+            await _bounded(gate.process(ctx, ran))
+            seen["ran"], seen["result"] = ran.count, ctx.result
+        finally:
+            await _maf_mcp.close_mcp_tools(opened)
+        return {"result": "ok"}
+
+    monkeypatch.setattr(ex, "run_agent", _run_agent)
+    req = agent_routes.AgentRunRequest(agent="orchestrator", thread_id="t-async",
+                                       payload={"message": "delete r-1"})
+    user = UserContext(email="member@h299.test", role=UserRole.EMPLOYEE,
+                       organization_id="00000000-0000-0000-0000-00000000c0de")
+    tasks = BackgroundTasks()
+    answer = await agent_routes.run_agent_async(req, tasks, user=user)
+    assert answer["status"] == "queued"
+    await tasks()
+    assert seen["thread"] == "t-async" and seen["member"] == "member@h299.test"
+    assert seen["marked"] is True, "the async route ran with no mark"
+    assert seen["ran"] == 0, "a write on the async route ran with no card"
+    # The mark also refuses each card (``ask_tools.cards_refused``), so the
+    # refusal names the channel that cannot show one.
+    assert seen["result"] == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
+    assert no_person_present() is False, "the mark leaked out of the run"
 
 
 # ── A16: what the card shows ─────────────────────────────────────────────────
