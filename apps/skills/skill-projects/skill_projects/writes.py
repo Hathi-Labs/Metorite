@@ -2222,7 +2222,7 @@ async def assign(task_id: str, assignees: str) -> str:
         shown.update({k: v for k, v in access.items() if k == "gives access to"})
     # Task 3635, 3636: the warning rows of the create cards, keyed, so the card
     # draws them before Approve: the strangers (`not in the directory`) and the
-    # people who cannot open the task (`suspended`, `no login yet`). Only the
+    # people who cannot open the task (`cannot open the task`). Only the
     # NEW holders are checked.
     shown.update(await _assignee_rows(added))
     context = _fields_block(shown, before={"assignees": ", ".join(current) or "(nobody)"})
@@ -2237,8 +2237,8 @@ async def assign(task_id: str, assignees: str) -> str:
     done = (await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})) or {}
     task["assignees"] = who
     out = ["Assigned:", *_task_line(task)]
-    # Task 3635: the gateway names the people it could not notify (a person
-    # outside the project's grant closure holds work that they cannot open).
+    # Task 3635: the gateway names the people it could not notify (a person who
+    # cannot open the task, by a grant or by the assignment itself).
     # Say so in plain words, so the assigner can fix it.
     skipped = [str(a) for a in done.get("not_notified") or [] if str(a).strip()]
     if skipped:
