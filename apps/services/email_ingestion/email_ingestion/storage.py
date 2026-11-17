@@ -150,7 +150,9 @@ MESSAGE_COLUMNS: tuple[str, ...] = (
 #: count of it would grow each mailbox after the backfill, and a mailbox near
 #: its limit would lose older mail with no change by the member. The R8 fence
 #: reads this tuple too, so a new column must go in one of the two lists.
-MESSAGE_DERIVED_COLUMNS: tuple[str, ...] = ("fts",)
+#: LOOP-19 (migration 456) added ``attachment_names``, a copy of the file names
+#: that ``email_attachments`` holds and the meter counts there already.
+MESSAGE_DERIVED_COLUMNS: tuple[str, ...] = ("fts", "attachment_names")
 ATTACHMENT_COLUMNS: tuple[str, ...] = (
     "filename", "mime_type", "provider_attachment_id", "download_url",
     "storage_path",
