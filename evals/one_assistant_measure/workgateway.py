@@ -207,6 +207,12 @@ PROFILE_PREFIX = "/auth/me/assistant-profile/"
 PROFILE_RESOLVE_ROUTE = "/auth/me/assistant-profile/resolve-person"
 
 
+#: The reads that the run makes for the context of a turn when the production flags are on
+#: (``--mirror-prod``): the Knowledge index (``knowledge_tools.index_block``) and the CRM facts
+#: (``org_facts_tools.crm_facts_for_run``). The synthetic org has no space and no fact.
+TURN_READS: dict[str, Any] = {"/knowledge/spaces": {"spaces": []}, "/org/facts": {"facts": []}}
+
+
 class WorkGateway:
     """Answers the ``/crm``, ``/projects`` and ``/studio`` routes of the measure's chats."""
 
@@ -235,7 +241,7 @@ class WorkGateway:
             url = str(request.url)
             if url.startswith(fake.base() + "/"):
                 path = request.url.path
-                if path.startswith(("/crm/", "/projects/", "/studio/", PROFILE_PREFIX)):
+                if path.startswith(("/crm/", "/projects/", "/studio/", PROFILE_PREFIX, *TURN_READS)):
                     return fake.answer(request, path)
             return await previous(transport, request)
 
@@ -273,6 +279,8 @@ class WorkGateway:
             return self._studio(method, path, params)
         if path.startswith(PROFILE_PREFIX):
             return self._profile(method, path)
+        if method == "GET" and path in TURN_READS:
+            return TURN_READS[path]
         return self._projects(method, path, params, body)
 
     @staticmethod

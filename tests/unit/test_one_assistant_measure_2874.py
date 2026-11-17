@@ -304,5 +304,20 @@ def test_the_case_6_chat_turns_on_the_profile_for_that_chat_only() -> None:
     miss = next(s for s in SCENARIOS_2874 if s.id == "t2874_first_name_miss")
     assert run.flag_for(miss, "pack")["assistant_profile_enabled"] is True
     assert "assistant_profile_enabled" not in run.flag_for(SCENARIOS_2874[0], "pack")
-    assert "assistant_profile_enabled" not in mirror.settings_for(ds.ORG)
+    assert mirror.settings_for(ds.ORG)["assistant_profile_enabled"] is True  # part 4: production has it
     assert set(FLAGS) == {"t2874_first_name_miss"}
+
+
+def test_every_mirrored_flag_has_a_reason_and_each_left_out_flag_is_absent() -> None:
+    data = mirror.load()
+    assert set(data["flags"]) <= set(data["why"])
+    assert all(data["why"][k].strip() for k in data["flags"])
+    settings = mirror.settings_for(ds.ORG)
+    for env, why in data["left_out"].items():
+        assert why.startswith("left out:")
+        assert env.lower() not in settings
+    for name in ("crm_enabled", "knowledge_enabled", "company_search_enabled", "decide_enabled",
+                 "tool_arg_shapes", "chat_first_tools", "context_recency", "chat_durable_asks"):
+        assert settings[name] is True
+    assert settings["ai_tier_routing"] == "*" and settings["crm_orgs"] == ds.ORG
+    assert settings["tool_search_orgs"] == ""

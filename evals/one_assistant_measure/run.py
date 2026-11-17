@@ -344,7 +344,8 @@ def pack_of_tool(name: str) -> str:
     raise KeyError(name)
 
 
-def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C901 - one plan per arm
+def scripted_models(sc: Scenario, arm: str,  # noqa: C901 - one plan per arm
+                    mirror_prod: bool = False) -> dict[str, ReplyModel]:
     """The known-good models of *sc* on *arm*, from the plan of each turn.
 
     On the ``pack`` arm a call of the ``email`` pack runs in the orchestrator's
@@ -427,7 +428,19 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                 held.add(slug)
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
-            if setup:
+            if setup and mirror_prod:
+                # Task 2874 part 4. With the production flags the request holds too many tools
+                # for ``email-setup`` to fit beside ``email`` (the cap of 110), so the loader
+                # refuses it. The rules of the pack then send a setup call to the email
+                # assistant by a hand-off, which the measure counts as legal.
+                n += 1
+                orch.append(tool_turn("call_agent", {"agent_name": EA, "message": turn.words},
+                                      call_id=f"call_{n}"))
+                for name, args in setup:
+                    n += 1
+                    subs.setdefault(EA, []).append(tool_turn(name, args, call_id=f"call_{n}"))
+                subs[EA].append(text_turn(plan.answer))
+            elif setup:
                 # With the base trim on (run 2 onward) the ``email-setup`` pack
                 # fits beside ``email``, so the loader reaches the email owner and
                 # a hand-off to it is refused. The model loads the setup pack and
@@ -891,7 +904,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         tap.install(harness._mp)
         fanout.install_timer(harness._mp, tap.events, harness.model_calls)
         if not live:
-            harness.models = models if models is not None else scripted_models(sc, arm)
+            harness.models = models if models is not None else (
+                scripted_models(sc, arm, True) if mirror_prod else scripted_models(sc, arm))
         member = Member()
         member.on_discard = gateway.trash_draft
         history = [dict(h) for h in sc.history]

@@ -415,6 +415,8 @@ and the key. Close the tunnel with Ctrl+C in that shell.
 
 An org list of `*` becomes the eval org. `TOOL_SEARCH_ORGS` stays empty. The switch is off by default. So the old results stay comparable.
 
+Part 4 (read 2026-11-17 06:10 UTC) mirrors 44 flags that change a turn. Each has a line in `why`, and each flag left out has a line in `left_out`. The scripted run then carries a median of 77 tools in a request (67 before), and 107 at most. A setup call plays as a hand-off to the email assistant, because `email-setup` no longer fits under the cap of 110.
+
 The results header records `mirror_prod`. `--merge` and `--compare` refuse files that ran with different values. Each key must be a real settings field, and the unit test checks it.
 
 ### Test one tier on another model (`--tier-map`)
