@@ -10221,8 +10221,10 @@ RELEASE_TASK = Tool(
         " review lane when the board has one. Started work (a handoff done, a"
         " branch, a commit or a pull request) puts it in To Do. A task that"
         " nobody started goes back to the lane it had. A started task never goes"
-        " to Backlog. Use finish_agent_run when the work is done. You can"
-        " release only your own run." + _UNTRUSTED_NOTE
+        " to Backlog. So attach each branch and pull request with"
+        " add_task_reference, or send a handoff done, before you release:"
+        " a task with neither reads as not started. Use finish_agent_run when"
+        " the work is done. You can release only your own run." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_RELEASE_INPUT,
