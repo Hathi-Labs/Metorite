@@ -143,9 +143,18 @@ def durable_on(monkeypatch, ask_db):
 
 @pytest.fixture
 def resume_on(monkeypatch):
+    """``CHAT_RESUME_ORGS`` names org A. Since the follow-up P2-2 of RESUME-2a,
+    a live approve then writes the SPENT mark (``late_approve.note_approved``)
+    with ``CHAT_LATE_APPROVE_ORGS`` off too. So the tenant Redis is a fake
+    here, never a shared server."""
     from acb_common import get_settings
 
+    from tests.unit.test_late_approve_grant import _Store
+
     monkeypatch.setattr(get_settings(), "chat_resume_orgs", _ORG_A)
+    store = _Store()
+    monkeypatch.setattr(late_approve, "_redis", lambda: store)
+    return store
 
 
 def _cards(r, tid: str) -> list[dict[str, Any]]:

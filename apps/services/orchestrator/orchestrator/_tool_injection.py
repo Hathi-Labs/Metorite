@@ -1113,12 +1113,13 @@ def _permission_gate(
     actually about to do, not just their name.
 
     ``facts`` are fields that the CALLER knows and the arguments do not
-    carry. The MCP gate passes ``mcp_tool`` and the server's
-    ``mcp_annotations`` (H-299), so ``decide()`` applies its MCP rule. They
-    are set after the argument mapping, so a tool argument cannot write them.
-    A caller that needs a fail-closed answer must not trust ``gate_error``:
-    the MCP gate shows a card for every code but ``mcp_read_only`` and
-    ``mcp_read_only_key`` (MCP-C2).
+    carry. The MCP gate passes ``mcp_tool``, the server's
+    ``mcp_annotations`` (H-299) and ``mcp_member_present`` (MCP-NC1), so
+    ``decide()`` applies its MCP rule. They are set after the argument
+    mapping, so a tool argument cannot write them. A caller that needs a
+    fail-closed answer must not trust ``gate_error``: the MCP gate shows a
+    card for every code but ``mcp_read_only``, ``mcp_read_only_key`` (MCP-C2)
+    and ``mcp_member_run`` (MCP-NC1).
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
@@ -3103,19 +3104,44 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
     plain object are left as they are. The mode is read BEFORE the check is
     imported, so a box with no ``acb_skills`` runs as before while the flag
     is ``off``, and skips the check with a warning while it is on.
+
+    WS-FIND FIND-7 (``find_engine.md`` §5.5): the same provider carries the
+    "not found" check to an agent that holds ``search_company``, while
+    ``FIND_CLAIM_CHECK`` is not ``off``. The flag is global, but the check
+    acts only for an org of ``FIND_ORGS``, because pass 2 exists only there.
+    The org is the run binding's (:func:`_run_org`), and the rule is
+    ``gateway.retrieval.find.find_allowed``, the one reader of ``FIND_ORGS``
+    that ``agents._find_enabled`` wraps for the tool list. No org, or a fault,
+    reads as off. For an org off the list, and with the flag ``off``, this
+    seam does what it did before.
     """
-    from acb_common.settings import crm_answer_check_mode
+    from acb_common.settings import crm_answer_check_mode, find_claim_check_mode
     from acb_skills.subagent_contract import INTERNAL_AGENTS
 
     mode = crm_answer_check_mode()
-    if mode == "off":
+    claim_mode = find_claim_check_mode()
+    if claim_mode != "off":
+        try:
+            from gateway.retrieval.find import find_allowed
+
+            org = _run_org()
+            find_on = bool(org) and find_allowed(org)
+        except Exception:  # a fault never turns the check on
+            find_on = False
+        if not find_on:
+            claim_mode = "off"
+    if mode == "off" and claim_mode == "off":
         return
     if str(agent_name or "") in INTERNAL_AGENTS:
         # WS-67 OA-9b hardening item 5: the check can retry, which adds a
         # model call to the fixed number of a spawn child.
         return
     try:
-        from acb_skills.answer_check import AnswerCheckProvider, holds_crm_tool
+        from acb_skills.answer_check import (
+            AnswerCheckProvider,
+            holds_crm_tool,
+            holds_search_tool,
+        )
         from agent_framework import Agent
     except ImportError as exc:
         _log.warning("executor.answer_check_unavailable", error=str(exc)[:200])
@@ -3126,10 +3152,13 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
         if not isinstance(agent, Agent):
             continue
         held = [_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool]
-        if not holds_crm_tool(held):
+        numbers = mode if mode != "off" and holds_crm_tool(held) else "off"
+        claims = claim_mode if claim_mode != "off" and holds_search_tool(held) else "off"
+        if numbers == "off" and claims == "off":
             continue
-        agents[i] = agent_with_providers(agent, [AnswerCheckProvider(mode)])
-        _log.info("executor.answer_check_on", agent=agent_name, mode=mode)
+        agents[i] = agent_with_providers(agent, [AnswerCheckProvider(numbers, claim_mode=claims)])
+        extra = {"claim_mode": claims} if claims != "off" else {}
+        _log.info("executor.answer_check_on", agent=agent_name, mode=numbers, **extra)
 
 
 def _apply_tool_result_spill(agents: list[Any], agent_name: str | None) -> None:
@@ -3563,6 +3592,26 @@ def _studio_open() -> bool:
         return False
 
 
+def _chat_tools_open() -> bool:
+    """True when ``STUDIO_CHAT_TOOLS_ORGS`` holds the org of this run (TOF-1b).
+
+    The reader is ``gateway.routes.studio.flags.chat_tools_allowed``, the one
+    that the catalog route uses. The org is the run's own
+    (:func:`_run_org_or_none`), never an argument (R5). It fails closed: no
+    org, no gateway or an error reads as closed. :func:`_turn_with_skills`
+    asks it once a turn at most. It asks for a turn with a skill to build, so
+    with the flag off a ``tool:`` action fails with ``chat_tools_off`` and
+    brings no pack. TOF-1c: when no name matches, the description pass asks
+    it first, and the build then uses that answer.
+    """
+    try:
+        from gateway.routes.studio.flags import chat_tools_allowed
+        return bool(chat_tools_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_chat_tools_flag_unread", error=str(exc)[:200])
+        return False
+
+
 async def _studio_member_open() -> bool:
     """True when the org is open (:func:`_studio_open`) AND the member of the
     run holds ``feature:studio`` (STU-J1-1).
@@ -3885,7 +3934,11 @@ async def _record_pack_call(
     (:func:`_pack_ws_lock`), so two pack calls at once each see the other's
     update, and none is lost. Condition 5: the mailbox event "Now working on
     <mailbox>" goes to the run's own queue, and a run with no queue gets it on
-    its relay stream (``executor._emit_to_run_or_relay``). Never raises."""
+    its relay stream (``executor._emit_to_run_or_relay``).
+
+    HRD-11a: then, under the same lock, the item in focus of the chat
+    (``executor._record_chat_focus``), for an email or a Projects owner. Only
+    a run with its own binding writes it (``CHAT_FOCUS_ORGS``). Never raises."""
     try:
         from orchestrator import executor as ex
 
@@ -3893,9 +3946,9 @@ async def _record_pack_call(
         call = {"id": "", "name": name, "args": args, "result": str(result), "success": True}
         async with _pack_ws_lock(ctx):
             before, _preamble = await ex._email_working_set_for(owner, ctx)
-            if before is None:
-                return
-            await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            if before is not None:
+                await ex._record_email_working_set(owner, ctx, before, [call], emit)
+            await ex._record_chat_focus(owner, ctx, [call])
     except Exception as exc:  # the working set never costs the call
         _log.warning("executor.pack_ws_unwritten", tool=name, error_type=type(exc).__name__)
 
@@ -4004,7 +4057,8 @@ def _pack_base_names(
 ) -> set[str]:
     """The names of the tools that :func:`_pack_base_count` counts. WS-STU F3
     reads them too: a skill pack loads only when the run holds each of its
-    tools (:func:`_skills_present`)."""
+    tools (:func:`_skills_present`). TOF-1b: a chat tool that these names
+    hold brings no pack (``skill_packs.pack_needs``)."""
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
@@ -4129,8 +4183,13 @@ async def _apply_tool_packs(
     if search_on:
         base += 1
     specialists = _specialist_counts(pool)
+    # TOF-1b: the code packs that each skill of the turn brings. A turn with no
+    # skill makes no map, and ``choose`` then gives the choice of F3.
+    skill_map = _skill_pack_map(turn, agent, agent_name=agent_name, tool_scope=tool_scope,
+                                agent_config=agent_config, disabled=disabled)
     choice = tool_packs.choose(
-        turn, allowed=allow, base_tools=base, specialists=specialists)
+        turn, allowed=allow, base_tools=base, specialists=specialists,
+        skill_packs=skill_map)
     loader_counted = False
     if offer_loader and tool_packs.loadable(allow, choice.slugs):
         # OA-7e: the load tool rides in the request too, so the cap counts
@@ -4143,7 +4202,9 @@ async def _apply_tool_packs(
         base += 1
         loader_counted = True
         choice = tool_packs.choose(
-            turn, allowed=allow, base_tools=base, specialists=specialists)
+            turn, allowed=allow, base_tools=base, specialists=specialists,
+            skill_packs=skill_map)
+    _log_skills_refused(choice.skills_refused)
     await tool_packs.drop_sticky(turn, choice.evicted)
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
@@ -4163,6 +4224,12 @@ async def _apply_tool_packs(
     skills = _skills_present(
         choice.skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
         agent_config=agent_config, disabled=disabled)
+    # TOF-1b: a skill that failed here leaves the run as it was without it.
+    builds, skills, holds = _keep_skill_packs(
+        builds, skills, holds, skill_map=skill_map, layers=choice.layers, pool=pool,
+        agent=agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled)
+    choice = await _evict_unheld_skill_packs(turn, choice, builds)
     if not builds and not offer_loader and not skills:
         return None
     loaded = [(build.slug, build.held) for build in builds]
@@ -4264,6 +4331,15 @@ async def _apply_tool_packs(
 # ``STUDIO_ORGS`` names the org and the member holds ``feature:studio``
 # (:func:`_studio_member_open`). Fences: ``tests/unit/test_skill_packs.py``
 # and ``tests/unit/test_skill_packs_r8.py`` (R8).
+# TOF-1b (``ai_studio_rows/TOF-1b.md``): a ``tool:`` action of a skill brings
+# the pack of its tool when the run base does not hold the tool. The action
+# loads only while ``STUDIO_CHAT_TOOLS_ORGS`` names the org
+# (:func:`_chat_tools_open`). ``tool_packs.choose`` adds the pack last, and
+# :func:`_apply_tool_packs` logs each skill that cannot bring its packs.
+# TOF-1c (``ai_studio_rows/TOF-1c.md``): when no name matches, the head
+# descriptions of the loadable skills give at most one skill
+# (``tool_search.match_skill_descriptions``). Only while
+# ``STUDIO_CHAT_TOOLS_ORGS`` names the org.
 
 
 async def _turn_with_skills(turn: Any) -> Any:
@@ -4276,9 +4352,17 @@ async def _turn_with_skills(turn: Any) -> Any:
     opens ``tenant_session()`` on the bound tenant, so RLS binds it. The
     store gives only the skills that the member may load
     (``skills_store.list_loadable``). The match reads the names, and only the
-    matched skills read a body, at most ``tool_packs.MAX_PACKS`` of them."""
+    matched skills read a body, at most ``tool_packs.MAX_PACKS`` of them.
+
+    TOF-1c: when no name matches, the description pass reads the head
+    descriptions of those same skills, and it names one skill at most. It
+    runs only when a head has a description and :func:`_chat_tools_open` is
+    True. That one read of the flag also serves the build. The pass writes
+    one ``executor.skill_matched`` line with the id and the hit count, and
+    never a word of the text. The description adds nothing to the prompt:
+    ``skill_packs.build`` makes the same pack as for a match by name."""
     from acb_common.db import current_tenant
-    from acb_skills import skill_packs, tool_packs
+    from acb_skills import skill_packs, tool_packs, tool_search
 
     words = str(getattr(turn, "words", "") or "")
     if not words.strip() or not _studio_open():
@@ -4296,19 +4380,32 @@ async def _turn_with_skills(turn: Any) -> Any:
         from acb_common.db import tenant_session
         from gateway.studio import skills_store
 
+        flag: bool | None = None
         async with tenant_session() as db:
             heads = await skills_store.list_loadable(db, member)
             named = [h.id for h in heads if skill_packs.matches(h.name, h.slug, words)]
+            # TOF-1c: a name wins. The pass needs a description and the flag.
+            if not named and any(h.description for h in heads):
+                flag = _chat_tools_open()
+                found = tool_search.match_skill_descriptions(
+                    words, {h.id: h.description for h in heads}) if flag else None
+                if found is not None:
+                    named = [found[0]]
+                    _log.info("executor.skill_matched", skill=found[0], hits=found[1])
             pairs = (await skills_store.loadable_versions(
                 db, member, named[:tool_packs.MAX_PACKS]) if named else [])
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.skills_unread", error_type=type(exc).__name__)
         return turn
     packs: list[Any] = []
+    # TOF-1b: one read of the flag a turn, and only for a turn with a skill to
+    # build. TOF-1c: the description pass may have read it already.
+    chat_tools = (flag if flag is not None else _chat_tools_open()) if pairs else False
     for skill, version in pairs:
         built = skill_packs.build(
             skill.id, skill.name, skill.description, version.version,
-            version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS)
+            version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS,
+            chat_tools=chat_tools)
         if isinstance(built, str):
             _log.info("executor.skill_refused", skill=skill.id, version=version.version,
                       reason=built)
@@ -4324,11 +4421,12 @@ def _skills_present(
 ) -> tuple[Any, ...]:
     """The skill packs of *skills* whose every tool the run holds.
 
-    A skill pack adds no tool. Its tools are the agent's own tools, the
-    platform tools that the injection adds (:func:`_pack_base_names`), or the
-    tools of a code pack of this turn (*holds*). A skill that names a tool
-    the run does not hold fails to load, so Mira gets no rule for a tool
-    that she cannot call."""
+    A skill pack adds no tool of its own. Its tools are the agent's own
+    tools, the platform tools that the injection adds
+    (:func:`_pack_base_names`), or the tools of a code pack of this turn
+    (*holds*). TOF-1b: a code pack that a skill brings is one of them. A
+    skill that names a tool the run does not hold fails to load, so Mira
+    gets no rule for a tool that she cannot call."""
     if not skills:
         return ()
     present = set(holds) | _pack_base_names(
@@ -4345,6 +4443,79 @@ def _skills_present(
     return tuple(kept)
 
 
+def _skill_pack_map(
+    turn: Any, agent: Any, *, agent_name: str | None, tool_scope: list[str] | None,
+    agent_config: dict[str, Any] | None, disabled: frozenset[str],
+) -> dict[str, tuple[str, ...]]:
+    """TOF-1b. The code packs that each skill of *turn* brings, by the slug of
+    the skill (``skill_packs.pack_needs``), or an empty map. The held tools
+    are the run base (:func:`_pack_base_names`), so a tool that the base
+    holds brings no pack. A turn with no skill reads nothing."""
+    skills = tuple(getattr(turn, "skills", ()) or ())
+    if not skills:
+        return {}
+    from acb_skills import skill_packs
+
+    return skill_packs.pack_needs(skills, _pack_base_names(
+        agent, agent_name=agent_name, tool_scope=tool_scope,
+        agent_config=agent_config, disabled=disabled))
+
+
+def _keep_skill_packs(
+    builds: list[PackBuild], skills: tuple[Any, ...], holds: set[str], *,
+    skill_map: Mapping[str, Sequence[str]], layers: Mapping[str, str],
+    pool: Sequence[Any], agent: Any, agent_name: str | None,
+    tool_scope: list[str] | None, agent_config: dict[str, Any] | None,
+    disabled: frozenset[str],
+) -> tuple[list[PackBuild], tuple[Any, ...], set[str]]:
+    """TOF-1b. The builds, the kept skills and the held names, less each build
+    of the layer "skill" (``Choice.layers``) that no kept skill needs.
+
+    :func:`_skills_present` can refuse a skill with ``tool_absent``, for
+    example when the guarded build dropped its tool. Then a pack that came
+    only for that skill leaves, so the run is as it was without the skill.
+    The need is the full map of ``skill_packs.pack_needs`` (*skill_map*). The
+    kept skills are checked again after each removal, because a removed pack
+    may hold a tool of one. With no map, the inputs come back as they were."""
+    while skill_map:
+        needed = {p for s in skills for p in skill_map.get(str(s.slug), ())}
+        gone = {b.slug for b in builds
+                if layers.get(b.slug) == "skill" and b.slug not in needed}
+        if not gone:
+            break
+        builds = [b for b in builds if b.slug not in gone]
+        holds = {_tool_name(t) for t in pool} | {
+            _tool_name(t) for b in builds for t in b.tools}
+        skills = _skills_present(
+            skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
+            agent_config=agent_config, disabled=disabled)
+    return builds, skills, holds
+
+
+async def _evict_unheld_skill_packs(turn: Any, choice: Any, builds: Sequence[PackBuild]) -> Any:
+    """TOF-1b. *choice*, with each pack of the layer "skill" that came out of
+    the sticky state and that the run holds no tool of back in ``evicted``.
+
+    ``tool_packs.choose`` takes a pack that a skill brings back out of
+    ``evicted``, so ``drop_sticky`` keeps its state. When its build then gives
+    no tool, or :func:`_keep_skill_packs` removes it, the run is as it was
+    without the skill: the pack leaves the sticky state, and
+    ``PackRun.gone`` names it, so ``left_line`` tells the model not to call
+    its tools. A pack of the layer "skill" that is in the sticky state of the
+    turn came out of ``evicted``, because a live sticky pack keeps the layer
+    "sticky". With no such pack, *choice* comes back as it was."""
+    from acb_skills import tool_packs
+
+    built = {b.slug for b in builds}
+    stuck = {str(getattr(e, "slug", "")) for e in getattr(turn, "sticky", ()) or ()}
+    lost = tuple(slug for slug in choice.slugs if choice.layers.get(slug) == "skill"
+                 and slug in stuck and slug not in built)
+    if not lost:
+        return choice
+    await tool_packs.drop_sticky(turn, lost)
+    return dataclasses.replace(choice, evicted=(*choice.evicted, *lost))
+
+
 def _log_skills_loaded(skills: Sequence[Any], skipped: Sequence[str]) -> None:
     """One ``executor.skill_loaded`` line for each skill pack of the run, in
     load order (§11.1, "model-visible means logged"). It names the skill,
@@ -4358,6 +4529,17 @@ def _log_skills_loaded(skills: Sequence[Any], skipped: Sequence[str]) -> None:
             place=place)
     if skipped:
         _log.info("executor.skills_skipped", skills=list(skipped), reason="cap")
+
+
+def _log_skills_refused(refused: Sequence[tuple[Any, str, Sequence[str]]]) -> None:
+    """TOF-1b. One ``executor.skill_refused`` line for each skill that could
+    not bring its packs (``Choice.skills_refused``). It names the skill, the
+    version, the reason (``pack_cap`` or ``pack_off``) and the packs that it
+    lacked, and never the text of the skill."""
+    for found, reason, packs in refused:
+        _log.info("executor.skill_refused", skill=getattr(found, "skill_id", ""),
+                  version=getattr(found, "version", None), reason=reason,
+                  packs=list(packs))
 
 
 def _loader_agent_ok(agent: Any) -> bool:
@@ -4742,10 +4924,11 @@ async def _inject_mcp_servers(
     A registry row always names its org, so there are no org-less "global"
     servers.
 
-    **The card** (H-299). *member_present* is True only when a member can
-    answer a confirmation card in this run. The executor passes it. The
-    default is False, so a caller that does not say refuses each MCP tool
-    that needs a card (``_maf_mcp.McpPermissionGate``).
+    **The card** (H-299, MCP-NC1). *member_present* is True only when a
+    member started this run. The executor passes it. Then a tool runs with no
+    card, unless its server is set to always confirm. The default is False,
+    so a caller that does not say refuses each MCP tool that does not say
+    read-only, and each tool that needs a card (``_maf_mcp.McpPermissionGate``).
 
     **No stdio** (D85). A stdio row starts a process on the host, so both
     paths drop it and log ``mcp.stdio_refused``.
@@ -4931,7 +5114,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
         out.append(_maf_mcp.McpServer(
             name=str(srv.name), url=str(srv.url), headers=_str_map(srv.headers),
             # H-300: the admin's "always confirm" switch. A row with no key
-            # reads as false, so the server keeps its H-299 behaviour.
+            # reads as false, so the gate applies the rule of item 33
+            # (MCP-NC1): no card in a verified member's run in Metorite, and
+            # the H-299 refusal of a write with no member and on WhatsApp.
             always_confirm=getattr(srv, "always_confirm", False) is True,
             # MCP-C2: the admin's read-only key, as the registry parsed it
             # once (``StoredServer.read_only_key``). Nothing parses it again.

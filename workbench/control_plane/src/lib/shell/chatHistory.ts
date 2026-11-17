@@ -92,6 +92,40 @@ export function dateGroups<T extends Pick<ChatSession, "updatedAt">>(
   return out.filter((g) => g.items.length > 0);
 }
 
+/** The group of the chats that the member pinned (CO-11). */
+export const PINNED_GROUP = "Pinned" as const;
+
+/** A group of the chat list: Pinned, or a day group. */
+export type ChatGroupLabel = typeof PINNED_GROUP | (typeof DATE_GROUPS)[number];
+
+/**
+ * True when the member pinned the chat and it is not archived (CO-11). An
+ * archive takes a chat out of Pinned. The server says the same thing, and the
+ * list keeps the rule too, for a mark that this page wrote first.
+ */
+export function isPinned(s: Pick<ChatSession, "pinnedAt" | "archivedAt">): boolean {
+  return Boolean(s.pinnedAt) && !s.archivedAt;
+}
+
+/**
+ * The chat list's groups (CO-11, `chat_organization.md` §18). With the pin
+ * switch on, the pinned chats come first, newest pin first, and each other
+ * chat goes to its day group. A pinned chat shows once, in Pinned. With the
+ * switch off this is `dateGroups`, so the list draws as before.
+ */
+export function chatGroups<T extends Pick<ChatSession, "updatedAt" | "pinnedAt" | "archivedAt">>(
+  sessions: readonly T[],
+  now: number,
+  pinsOn: boolean,
+): { label: ChatGroupLabel; items: T[] }[] {
+  if (!pinsOn) return dateGroups(sessions, now);
+  const at = (s: T) => Date.parse(s.pinnedAt ?? "") || 0;
+  const pinned = sessions.filter(isPinned).sort((a, b) => at(b) - at(a));
+  const rest = sessions.filter((s) => !isPinned(s));
+  const groups: { label: ChatGroupLabel; items: T[] }[] = dateGroups(rest, now);
+  return pinned.length > 0 ? [{ label: PINNED_GROUP, items: pinned }, ...groups] : groups;
+}
+
 /**
  * The words a search matches: the name and the last preview, folded. A
  * blank query keeps every chat.
@@ -128,4 +162,58 @@ export function splitSessions(
     open: shown.filter((s) => !s.archivedAt),
     archived: shown.filter((s) => Boolean(s.archivedAt)),
   };
+}
+
+/** The group of the daily briefs that nobody has answered (task 3564). */
+export const BRIEFS_GROUP = "Daily briefs" as const;
+
+/**
+ * True when the chat folds into Daily briefs (task 3564, owner 2026-11-16).
+ * The server marks a brief (`isBrief`). The chat folds only while the
+ * viewer owns it and nobody typed in it, because a reply makes it a real
+ * chat. A flag that the list leaves out never folds. A pinned or an archived
+ * chat keeps its own group: Pinned wins, and Archived holds the archived.
+ */
+export function isFoldedBrief(
+  s: Pick<ChatSession, "isBrief" | "hasUserMessage" | "isOwner" | "pinnedAt" | "archivedAt">,
+): boolean {
+  return (
+    s.isBrief === true &&
+    s.hasUserMessage === false &&
+    s.isOwner === true &&
+    !s.archivedAt &&
+    !isPinned(s)
+  );
+}
+
+/** The open chats, split into the main list and the folded daily briefs. */
+export function foldBriefs<T extends Parameters<typeof isFoldedBrief>[0]>(
+  open: readonly T[],
+): { main: T[]; briefs: T[] } {
+  return { main: open.filter((s) => !isFoldedBrief(s)), briefs: open.filter(isFoldedBrief) };
+}
+
+/** The open state of the Daily briefs group, and the chat it last opened for. */
+export interface BriefsOpenState {
+  open: boolean;
+  /** The active chat that the group opened for, or null. */
+  handled: string | null;
+}
+
+/**
+ * The group opens when the chat on screen is a folded brief, for any reason:
+ * the list loads late, or the member moves into one. It opens once for each
+ * active chat, so a member who closed it keeps it closed on a re-render. A
+ * move to a chat outside the group forgets the last one, so a return opens it
+ * again. Pure, so the tests read every transition.
+ */
+export function nextBriefsOpen(
+  state: BriefsOpenState,
+  activeId: string,
+  briefIds: readonly string[],
+): BriefsOpenState {
+  const inGroup = briefIds.includes(activeId);
+  if (!inGroup) return state.handled === null ? state : { ...state, handled: null };
+  if (state.handled === activeId) return state;
+  return { open: true, handled: activeId };
 }

@@ -533,6 +533,11 @@ joined later sees only what `query_history` lets them see today
 The `chat` source is not in the command bar. A member finds a conversation
 by its title in the sessions list, as today.
 
+**As built (HRD-21, task 3225).** The first slice of the source is built, with
+the scope of D-FIND-5 (`find_engine.md` §6). It reads the member's own solo
+chats with Mira, with no digest and no new index. Rooms and `since_join` stay
+for CX-4.
+
 ### 8.3 From atom to page
 
 An atom of kind `decision` or `procedure` in a session digest is a
