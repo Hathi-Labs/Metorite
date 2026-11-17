@@ -660,6 +660,19 @@ owner of the kind writes the gate number in its spec before the shadow week. A
 kind that spends credits needs the owner to flip it (CLAUDE.md §3a rule 3).
 LOOP-9 builds this.
 
+**LOOP-9 is BUILT, 2026-11-17** (task 3449, no migration, dark). The mode of a
+kind is `kind_mode(kind, org)` in `finding_contract.py`. It reads
+`PROACTIVE_KIND_MODES` (`kind=mode` pairs) and `PROACTIVE_KIND_ORGS`, and every
+doubt gives `off`. `deliver` gives a finding only for a kind in `on`.
+`shadowed` gives what delivery would have sent, for a kind in `shadow`, and it
+shows that to nobody. `finding_shadow.precision` matches each record to an act
+of the same member on the same record inside 24 hours, for each kind and each
+org, and it names no member. Fewer than 5 members is `too_few`. The gate number
+is `KindDeclaration.gate`, and a kind with no number never passes
+(`gate_passes`). Not built: the table that keeps the shadow records, and the
+job that calls `shadowed`. They are the next slice, and the flip to `on`
+stays the owner's.
+
 ### 7.7 Measures
 
 `feed_measure.py` is the one admin read of the measures. It gives counts for
@@ -790,7 +803,7 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-7** (task 3447) | 4 | The fields of §6.1, the declaration of §6.2, the rules of §6.4 and the fixture test | This spec §6, `my_day_feed.md` §4.1 | HX-0 | `test_finding_contract.py` passes. An R8 test shows that a recipient outside `visibility_scope` gets nothing | HIGH · AGENT-SAFE |
 | **ALN-7**, **ALN-8**, **ALN-9** | 4 | The checker (1381), the eval gate (1382), the person's card (1383) | `project_alignment.md` §6, §10 | Their own rows | Their own rows | HIGH, STD, STD. ALN-8 is OWNER-GATE above USD 0.50 |
 | **LOOP-8** (task 3448) | 4 | An email as a subject of the checker, heard by the owner of the mailbox only | `project_alignment.md` | LOOP-Q6, ALN-7 | Its row, written by its owner spec | HIGH · AGENT-SAFE |
-| **LOOP-9** (task 3449) | 4 | The shadow gate for a new kind (§7.6) | `my_day_feed.md` MD-6a-3, this spec §7.6 | LOOP-7 | A kind in shadow reaches no member. The measure gives its precision | STANDARD · AGENT-SAFE |
+| **LOOP-9** (task 3449) | 4 | The shadow gate for a new kind (§7.6) | `my_day_feed.md` MD-6a-3, this spec §7.6 | LOOP-7 | A kind in shadow reaches no member. The measure gives its precision | STANDARD · AGENT-SAFE · BUILT 2026-11-17, records table open |
 | **LOOP-10** (task 3450) | 5 | `metric_moved` from number baselines, with the driver as evidence | `my_day_feed.md` MD-9, `number_sense.md` | LOOP-7, the NUM baselines | Its row | STANDARD · AGENT-SAFE |
 | **LOOP-11** (task 3451) | 5 | A forecast that slips past the plan, as a commitment finding | `projects_reports.md` §6.8, this spec §4.2 | LOOP-7 | Its row | STANDARD · AGENT-SAFE |
 | **LOOP-12** (task 3452) | 6 | A connection declares its kinds in the `nudges` and `insights` points | `package_host.md`, this spec §6.2 | LOOP-7 | Its row | STANDARD · AGENT-SAFE |
