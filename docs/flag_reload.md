@@ -33,6 +33,17 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_FOCUS_ORGS` turns on the item in focus of a chat
+(`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
+the email or the Projects task that a tool call read or acted on last. The
+per-turn context then shows its kind, its id and its link, with the rule for
+"it", "this" and "mark it done". `*` lists every org, and the default is
+empty. Empty gives each prompt of before, byte for byte.
+
+Its one reader is `acb_skills.chat_focus.focus_on`. The executor asks it at
+the start of each turn, and each write and each block ask it again. So a
+reload applies to the next turn. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.
@@ -97,6 +108,22 @@ draws it yet, and no saved message keeps it. `*` lists every org, and the
 default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
+
+`CHAT_SEARCH_ORGS` opens the past chats of `search_company`
+(`find_engine.md` §3.1 rung 6, §6, HRD-21). For each listed org, the search
+reads the member's own solo chats with Mira, and never the current chat. `*`
+lists every org, and the default is empty. Empty gives the answer of before
+HRD-21, byte for byte. That includes the 422 of an unknown app: `apps=chat`
+gets it, and its list of keys has no `chat`.
+
+The search never shows a chat that holds the egress mark: the mark of an
+email-assistant run or another untrusted read. The SQL does not test the
+mark. `egress.marked_sessions` drops each marked chat after the read. So a
+chat that read mail with no mark can show (`find_engine.md` §6, limit 1).
+
+Its one reader is
+`gateway.retrieval.find.chat_search_named`, and each search asks it. A reload
+applies a change. The flip waits for the owner's preview (task 3225).
 
 `CHAT_TOPICS_ORGS` turns on the topics of the chat list
 (`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`

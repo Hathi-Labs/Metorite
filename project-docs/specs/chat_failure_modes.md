@@ -3,6 +3,8 @@
 **Status: ACCEPTED, 2026-11-12 (D217). BUILT: HRD-6 part 1 (the line of a slow
 tool), dark, 2026-11-13 (PR 2238). HRD-1 (an unknown tool name), 2026-11-14:
 the answer is live, and the auto-load is dark behind `CHAT_TOOL_AUTOLOAD`.
+HRD-1 follow-up (task 3599), 2026-11-17, with no flag: the trail shows a plain
+line in place of MAF's text, and a run tries one load for each name.
 HRD-4 (search in parallel, `find_tasks` on most of the words, task 2983), 2026-11-16.
 HRD-18a (names as people say them), 2026-11-14. HRD-22 (a late approve acts
 once, task 3231) is BUILT dark, 2026-11-14. Its flag is
@@ -21,6 +23,25 @@ with no flag. HRD-8b (task 3459) is open.**
 **HRD-9a (task 2988) is BUILT, 2026-11-16, with no flag. A card of a
 root-local tag, custom field or task type names the space and N, the count
 of projects that the change reaches. HRD-9b and HRD-9c are not built.**
+
+**HRD-11a (task 2990) is BUILT dark, 2026-11-16, behind the new flag
+`CHAT_FOCUS_ORGS`. The chat keeps the email or the Projects task that a tool
+call read or acted on last, for each chat and member. The per-turn context
+shows its kind, its id and its link after the OA-4 block, with the rule for
+"it", "this" and "mark it done". HRD-11b ("the next one") and the flag flip
+are not built.**
+
+**HRD-11a fix round 1 (2026-11-17) makes the item safe to lose.** A run whose
+calls name two or more different items keeps no item. A tool that makes,
+archives or moves a task or a project clears the item. An item older than 2
+hours shows no block. The rule yields to the member's words and to a newer
+item. §8 Q7 (a bare "this" and the page item) is OPEN and not built.
+
+**HRD-12a (task 2991) is BUILT dark, 2026-11-16, under the existing flag
+`CHAT_CONSTRAINTS`. The OA-4 store keeps a `decision` kind beside the limits,
+from the member's typed words only. The per-turn block and each delegated
+task show the decisions on their own line. HRD-12b (the Undo chip) and
+HRD-12c (the flag flip) are not built.**
 
 Owner ask of 2026-11-12, in chat. Epic task 2978 (project AI Chat Interface).
 It is part of WS-CHAT.
@@ -136,8 +157,8 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 
 | Id | The class | State today | The rule | Slice |
 |---|---|---|---|---|
-| E1 | "This", "it", "mark it done", "the next one" | Email has a working set of ids. Other apps send an app slug only | The turn carries the item in focus, from the last read or act and the open screen | HRD-11 |
-| E2 | A decision made earlier in the chat does not hold | OA-4 keeps corrections and limits, and it is off | OA-4 keeps decisions too, from the member's typed words, with Undo | HRD-12 |
+| E1 | "This", "it", "mark it done", "the next one" | Since D99 (commit 3c9442b2a, 2026-10-13) the dock sends the open item of the page as `system_context` on each turn (`src/lib/shell/AssistantDock.tsx` ~:925-933, `useAgentChat.ts` ~:621, `route.ts` ~:891). It carries the id and a "means it" line for the Projects, Tasks, Calendar, Email and Knowledge pages (`src/app/<app>/lib/assistantFacts.ts`). CRM sends none. The gap: outside email, nothing holds the item that the chat last read or acted on, and no rule maps "it" or "mark it done" to an item. A list read (`find_priority`, `query_inbox`) sets no `email_id`, so after a list "it" has no id | The turn carries the item in focus, from the last read or act and the open screen | HRD-11a, HRD-11b |
+| E2 | A decision made earlier in the chat does not hold | OA-4 keeps corrections and limits, and it is off | OA-4 keeps decisions too, from the member's typed words, with Undo | HRD-12a, HRD-12b, HRD-12c |
 | E3 | A chat that went wrong | WT-1 and WT-2 are dark and carry the newest typed message only | "Start clean" carries the decisions, the item in focus and the open cards | HRD-19 |
 
 ### 4.6 Names, dates and language (F)
@@ -154,7 +175,36 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 |---|---|---|---|---|
 | G1 | A double tap or a retried answer | The prompt save is idempotent. No write key on a card answer. A steer can repeat | Each card answer has a one-use key. A steer seen twice counts once | HRD-16 |
 | G2 | The phone sleeps during a stream | Live: detached runs, replay by `lastEventId`, durable asks on | No change | none |
-| G3 and G4 | Two devices, a send while offline, a send while the history loads | No design | An outbox sends once. A send waits for the load. The server's copy wins the fold | HRD-17 |
+| G3 and G4 | Two devices, a send while offline, a send while the history loads | Designed in §4.7a (2026-11-16). Not built | An outbox sends once. A send waits for the load. The server's copy wins the fold | HRD-17a to HRD-17f |
+
+### 4.7a The design of G3 and G4 (HRD-17, PROPOSED 2026-11-16)
+
+**What the code does today** (read on `origin/main`, 2026-11-16):
+
+- The browser makes the id of the member's message. It sends it as `userMessageId`, and the gateway reads it as `user_message_id` (`routes/agent.py`, near line 2984).
+- The server saves the member's turn under that id at run start. The browser's later save updates the same row. So the saved row is already written once.
+- The run is not deduped. A second send with the same id starts a second run, and that run cancels the first.
+- A browser network error settles the send as sent (`isDisconnect` in `useAgentChat.ts`). The send may never have reached the server, and nothing sends it again.
+- A send while the history loads is dropped. The send wrapper returns false (`AgentChat.tsx`, `loadingHistory`).
+- The history load keeps the server list when it has more messages. The slow poll lets content only grow. Nothing says that the server's copy of a message wins.
+- `projects_ai_chat.md` §19.6 says that a second tab can write older content before the fold.
+
+**The rules.**
+
+1. **One key for each send.** The key is the existing `user_message_id`. No second id exists. The server keys a send on organization, thread and `user_message_id`. A repeat joins the first run by replay and starts no run. A repeat while a run is live is a steer of that run, so it adds no second run either. A send with no id works as it does today. The key comes from the session and the run binding, never from the body alone. Slice HRD-17a.
+2. **The outbox.** A send that the server did not acknowledge waits in `src/lib/chatOutbox.ts`. The server acknowledges a send with its first stream event, or when a poll finds the row by id. The outbox releases entries in order, once, on the `online` event and after the history fold. Slices HRD-17b and HRD-17d.
+3. **Where it lives.** The outbox lives in memory, and `sessionStorage` keeps a copy for a reload of the same tab. It never uses `localStorage`. It clears on sign-out and on a member switch. A fence reads the source and refuses a `localStorage` write of message text. This is the proposed default of D-HRD-17-1.
+4. **The waiting state.** A waiting entry shows in the existing run-status line (`runStatus.ts`) with a Cancel. It adds no banner. A send while a run is live is a steer, and it stays on the steer path (`chatSteer.ts`). It never enters the outbox.
+5. **A send while the history loads** goes to the outbox. It goes out after the load settles. The composer stays open for typing. Slice HRD-17c.
+6. **The fold rule.** The client merges by message id. For an id on the server, the server copy wins. A local row whose id is not on the server stays only as an outbox entry. Order stays as the server sets it. Slice HRD-17e.
+7. **A second device** sees a sent message through the slow poll. It needs no new channel. A thread revision is not needed while the merge is by id.
+8. **No shrink before the seal.** HRD-17e first reads `_upsert_messages`. It checks whether a client write can shorten a stored row before the seal (`run_final_at`). If it can, the slice refuses the shorter write. That change is HIGH.
+
+**What this does not change.** The card-answer key stays in HRD-16. The steer path stays in `chat_run_continuity.md` §4.9. Replay by `lastEventId` stays as it is (G2).
+
+**Order and builders.** HRD-17a is a server slice. It is HIGH, because it changes the write path of the run start. It ships dark behind a new flag. The client slices HRD-17b to HRD-17f are STANDARD, and lane-ui builds them. They wait for RESUME-3a (PR 2443), which edits the same hook and stream. HRD-17d waits for HRD-17a, so that a resend is safe.
+
+A client slice that changes the look needs the owner's Visual review: light mode, compact density, a changed accent and 390 px.
 
 ### 4.8 Outbound safety and limits (H, I)
 
@@ -171,7 +221,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | 0 | none (it outranks the ladder) | The failures that production shows today stop. A member approves a parked card once on production, and the act runs (HRD-22) | HRD-1, HRD-2, HRD-3, HRD-22 |
 | 1 | 2999 | Ask for something hard to find: the chat finds it, or says what it tried | HRD-4, HRD-5, HRD-6 (and rung 0) |
 | 2 | 3000 | Every card tells the truth, and a shared change says how far it reaches | HRD-7 to HRD-10 |
-| 3 | 3001 | The chat keeps track: "mark it done", decisions, no empty promise | HRD-11 to HRD-13 |
+| 3 | 3001 | The chat keeps track: "mark it done", decisions, no empty promise | HRD-11a to HRD-13 |
 | 4 | 3002 | A pasted email cannot steer the chat, and your own words always do | HRD-14, HRD-15 |
 | 5 | 3003 | A double tap, a dead connection, a second phone or a misspelt name does no harm | HRD-16 to HRD-19 |
 
@@ -180,7 +230,7 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | Slice | Task | What | Fence (R7) | Tier |
 |---|---|---|---|---|
 | **HRD-0** | 2979 | This spec, the INDEX row and the WS-CHAT row | STE lint | LOW |
-| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-14:** the answer is live. D217 allows the auto-load, and it ships dark behind `CHAT_TOOL_AUTOLOAD` (default off) | `tests/unit/test_unknown_tool_answer.py` | STANDARD |
+| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-14:** the answer is live. D217 allows the auto-load, and it ships dark behind `CHAT_TOOL_AUTOLOAD` (default off). **Task 3599, BUILT 2026-11-17, with no flag:** a member saw MAF's text for `query_inbox` in the chat. The stream event of a step sent the `exception` of MAF's result, `'Function "query_inbox" not found.'`, before the HRD-1 rewrite. The saved step kept it. `event_translator.tool_result_fields` is now the one mapping of a result for the stream and for a batch sub-run. MAF's result shows `unknown_tool.MEMBER_LINE`, and the step stays failed. A run asks the loader once for each name. A turn with no unknown call is byte-identical. A new step saves no MAF text, so a count of B1 reads the saved steps for `MEMBER_LINE`, which also holds the sub-run calls. The log line `unknown_tool.answered` of the orchestrator misses them. **Not built:** the HRD-1 answer for the model of a sub-run (the worker, a delegated agent), and a client map for steps saved before the fix | `tests/unit/test_unknown_tool_answer.py`, `tests/unit/test_unloaded_pack_tool.py` | STANDARD |
 | **HRD-2** | 2981 | Print the hidden ids. Accept a task number and a `kind:` prefix | `tests/unit/test_tool_id_provenance.py` | STANDARD |
 | **HRD-3** | 2982 | One wrapper on each pack tool: text for each failure, and each argument in its declared shape | `tests/unit/test_every_pack_tool_answers_text.py`, `tests/unit/test_tool_argument_shapes.py` | STANDARD |
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |
@@ -197,13 +247,22 @@ the slice. "Dark" means that the code exists behind a flag that is off.
 | **CS-3** | 3438 | **The server sends the phase of a run** (Rung 1 of the chat ladder, demo task 2926, D211). CS-3a, BUILT 2026-11-16, dark behind `CHAT_RUN_PHASE_ORGS`: the server half, with no visible change. A streamed run sends the CUSTOM event `run_phase`. Its value is `{"phase": …}` and holds no other field. `gathering` goes right after `RUN_STARTED`, so it covers the setup of 0.5 to 1.7 s: the load, the tier wait, the session load and the compose. `asking` goes when the model stream of a native run opens. A run on the Tier 2 batch path or on a Copilot SDK agent sends `gathering` only. `acb_skills.run_phase` holds the closed set and the one flag reader. Only `executor._RunPhases` calls them, and only `run_agent_stream` uses it. Each phase goes by a direct yield, never by the run queue. So a phase is no output: `_n_emitted` stays False, and nothing seals the tier. The fold, `_is_answer_event`, the BFF route and `withCustomEvent` drop the name. The BFF route forwarded no phase in CS-3a. CS-3b opens that forward. AGENT-SAFE for the build. The flag flip is OWNER-GATE (`enforcement-flip`). **Done when:** with the flag on, a streamed run emits `run_phase` in order: `RUN_STARTED`, `gathering`, the setup, `asking`, then the first `TOOL_CALL_START` or `TEXT_MESSAGE_CONTENT`. It emits each phase at most once. `_n_emitted`, `_tier_run.seal()` and the usage rows are the same as with the flag off. No saved message holds the event. The flag off emits nothing. **Verify:** `uv run pytest tests/unit/test_run_phase_event.py tests/unit/test_progress_notice.py tests/unit/test_profile_used_event.py tests/unit/test_setup_laps.py tests/unit/test_chat_speed_slice2.py tests/unit/test_flag_doc_sorted.py`, and in `workbench/control_plane` `npx tsc --noEmit && npx vitest run src/lib/firstLine.test.ts src/lib/runStatus.test.ts src/lib/runPhaseDrop.test.ts src/lib/progressNotice.test.ts`. **CS-3b** (task 3462), the client half, is BUILT 2026-11-16: see the next row. | `tests/unit/test_run_phase_event.py`, `src/lib/runPhaseDrop.test.ts` | HIGH |
 | **CS-3b** | 3462 | **The client draws the run phase** (client only, dark because `CHAT_RUN_PHASE_ORGS` stays off). BUILT 2026-11-16. The BFF route forwards `run_phase` as a custom event and still saves nothing for it. The hook turns the value into a FIXED word from ONE table, `RUN_PHASE_WORDS` in `src/lib/runStep.ts` (`phaseWordOf`): `gathering` is "Gathering what I need" and `asking` is "Asking the model". An unknown name, or a value that is no string, draws nothing, and the client never draws a server string. The run row (`RunStatus.phaseWord`, the new `phase` action of `reduceRun`) and the header of the thinking trail (`ChatMessage.phaseWord`, live only) say the word in place of "Reading your message". The phase action does not move the run from `starting` to `working`, and the hook skips the run event after a phase. The first real step takes over, and a run with no phase keeps CS-1 exactly. A re-attach, the end of the run and the first event clear the word. No save names it. AGENT-SAFE. **Done when:** on the scripted turn of task 2875, gathering, then asking, show their words inside 2 s on the row and the header. The first tool or text replaces the word. A phase never sets `working`, never joins `customEvents`, and never reaches a saved row. A joined run shows no stale phase. **Verify:** in `workbench/control_plane` `npx vitest run src/lib/runPhaseWords.test.ts src/lib/runPhaseDrop.test.ts src/lib/firstLine.test.ts src/lib/runStatus.test.ts`. | `src/lib/runPhaseWords.test.ts`, `src/lib/runPhaseDrop.test.ts` | STANDARD |
 | **HRD-10** | 2989 | Changed since the card | `tests/unit/test_card_precondition.py` | HIGH |
-| **HRD-11** | 2990 | The item in focus | `tests/unit/test_focus_item.py` | STANDARD |
-| **HRD-12** | 2991 | Decisions in the session | `tests/unit/test_chat_constraints.py` | STANDARD |
+| **HRD-11a** | 2990 | **The item that the chat last read or acted on.** **BUILT 2026-11-16, dark behind `CHAT_FOCUS_ORGS`.** `acb_skills.chat_focus` holds the closed table `FOCUS_TOOLS`: the six tools of `_EMAIL_ID_TOOLS` (`email_id`), and nine tools of the core `projects` pack that read or act on one task (`task_id`). A tool sets the item only in a call of its own owner. A task id must also read as a UUID, and it is kept in the canonical form. The read of the stored item starts beside the load (`executor._EarlyReads`). `_prime_chat_focus` binds it with the run id after the OA-4 prime, in the new lap `focus`. A delegated run drops the binding (`_without_focus_key`). The block holds no title. **Fix round 1 (2026-11-17):** the binding holds a `RunFocus` record of the run. When the calls of one run name two or more different items, the run deletes the stored item and writes none, so calls in parallel never keep a random one. The closed table `CLEARS` names 15 Projects tools that make, archive, delete or move a task or a project, and a call of one that acted deletes the item. The stored value holds the time of its write. A read gives the item for `FOCUS_FRESH_S` (2 hours) only, and the TTL is the same. `NO_ACT` adds three leads: the refusal of the permission gate, the date check of `defer` and the body check of `comment`. The rule now says that "it", "this" and "mark it done" CAN mean the item, only when the member's words name no other item, and that a newer item wins. No live eval ran, so the fences prove the text, not what the model does with it. **Not built here:** "the next one" (HRD-11b), the CRM, Calendar and Knowledge kinds, the new task of `create_task` as the item (its id is in the result, not in an argument, so it clears the item), the email tools that make a new mail, §8 Q7, and the flag flip. STANDARD. An Opus builder builds it, because it edits a shared seam. AGENT-SAFE, dark behind a NEW flag, `CHAT_FOCUS_ORGS`. The default is empty, which is off. The flag FLIP is OWNER-GATE (`enforcement-flip`, `work_plan.md` §6.0 D4, D218 step 4). Scope: the server tracks the item that the chat last READ or ACTED on, for emails and Projects tasks only. "The next one" is HRD-11b. **Done when:** (1) a new module `packages/acb_skills/acb_skills/chat_focus.py` keeps ONE record for each chat and member at the key `cc:<org>:chat-focus:<session>:<member hash>`. It writes the record through `tenant_redis.key` inside `organization_scope`. The org comes from `current_tenant()`. The session and the member come from the artifact context. No part comes from a request field or a tool argument. (2) A closed table maps each tool to (kind, id argument). It starts with the email and task read and act tools. A fence fails when a tool in the table lacks that argument in its real signature. (3) Only a call that succeeded writes the record, and only when its result does not start with a `_NO_ACT` lead. An id that fails `_ok_id` writes nothing. A list read writes nothing. (4) `_record_pack_call` and the sub-run hook beside `_record_email_working_set` write the record. The text of the model never writes it. (5) With the flag on, the per-turn context of the orchestrator shows the kind, the id argument and the in-app link. It comes after the OA-4 block, with the rule for "it", "this" and "mark it done". (6) With the flag off, the preamble, the tools and the persona stay byte-identical. (7) A shared room, a batch (WhatsApp) run and a delegated run read and write nothing. (8) A scripted trajectory costs no spend. Turn 1 reads an email or a task. The next turn says "mark it done", "it" or "this". The model request of that turn holds the block with the correct kind and id. A live-model eval that costs more than USD 0.50 waits for the owner's OK. **Files:** `packages/acb_skills/acb_skills/email_chat_context.py` (`_ok_id` ~:113, `_EMAIL_ID_TOOLS` ~:69, `update_working_set` ~:271, `_data` ~:565, `orchestrator_block` ~:680), `apps/services/orchestrator/orchestrator/_tool_injection.py` (`_pack_call` ~:3696, `_record_pack_call` ~:3876), `apps/services/orchestrator/orchestrator/executor.py` (`_prime_email_context` ~:1174, `_record_email_working_set` ~:3187, the primes ~:7636, `_context_preamble_parts` ~:11523), `tests/unit/test_setup_laps.py` ~:29 (pins the lap names), new `tests/unit/test_focus_item.py` and new `evals/trajectories/test_focus_item_trajectory.py`. **Verify:** `uv run pytest tests/unit/test_focus_item.py tests/unit/test_email_working_set.py tests/unit/test_one_assistant_email.py tests/unit/test_chat_constraints.py tests/unit/test_pack_guards.py tests/unit/test_every_pack_tool_answers_text.py tests/unit/test_setup_laps.py tests/unit/test_native_session_persistence.py tests/unit/test_orchestrator_one_source.py tests/unit/test_flag_doc_sorted.py tests/unit/test_tenant_redis.py evals/trajectories/test_focus_item_trajectory.py evals/trajectories/test_context_assembly_trajectory.py evals/trajectories/test_pack_turn_trajectory.py -q`. Then `uv run ruff check <changed files>`. **Notes:** HRD-5 (lane chat-reach, in progress) edits `_tool_injection.py` near ~:2999 and ~:3061, `settings.py`, `flag_reload.md` and this spec, so merge main first. Open PRs 2439 (TOF-1b), 1923, 1902 and 2034 touch the same files. Lane cal-tasks owns the persona and tool-text lines. This slice keeps its rule in its own per-turn block, so it needs no persona line | `tests/unit/test_focus_item.py`, `evals/trajectories/test_focus_item_trajectory.py` | STANDARD |
+| **HRD-11b** | 3480 | **"The next one."** STANDARD, AGENT-SAFE, after HRD-11a, under the same flag, `CHAT_FOCUS_ORGS`. The record keeps the last list that the chat read and a cursor in it. "The next one" moves the cursor and names the item. Email and tasks come first. **Verify:** the HRD-11a commands, plus the new test of this slice | `tests/unit/test_focus_item.py` | STANDARD |
+| **HRD-12a** | 2991 | **Decisions in the session, server only.** STANDARD. An Opus builder builds it, because of the persona swap. AGENT-SAFE, dark under the EXISTING `CHAT_CONSTRAINTS` flag. The store gains a `decision` kind. The card drop stays as it is, and no Undo UI is built. **BUILT 2026-11-16, dark under `CHAT_CONSTRAINTS`.** `keep_correction` takes `kind`, `limit` by default or `decision`, so the tool count stays two and an old call keeps a limit. A bad kind gets `BAD_KIND`. The store writes a limit as a plain string, the old shape, and only a decision as `{kind, text}`. `clean` reads both shapes. After a flip and a roll back, a reader from before HRD-12a keeps each limit and loses only the decisions. It does not raise. The per-turn block and the task head tell the model that a decision is not a request, so the model does not act on it. The two kinds share `MAX_ITEMS`. `handoff.DECISIONS_LINE` puts the decisions after the limits, in the per-turn block and in the task head. With no decision, each text is the OA-4 text, byte for byte. The drop card of a decision has its own lead (`DROP_CARD_LEAD_DECISION`). The persona gains one line in `_CONSTRAINTS_SWAP`. No live eval ran, so the fences prove the text, not what the model does with it. **Not built here:** the Undo chip (HRD-12b) and the flag flip (HRD-12c). **Done when:** (1) a decision is kept only when `said_by_member(text, typed_words())` is true (`chat_constraints.py` ~:227, ~:252). Text from a tool result, a mail, a paste or the model is refused with NOT_SAID. (2) The store keeps `{kind, text}`. A stored list of plain strings in the old shape reads as kind `limit`. (3) `orchestrator_block` (~:439-451) shows the decisions on their own line. They hold for the rest of this chat. (4) `handoff.head_task` carries the decisions to each delegated task. (5) The card drop removes a decision. (6) With the flag off, the tools, the persona, the preamble and the task head stay byte-identical. (7) In the trajectory the member types "TEDx is done." in turn N. Turns N+1 and N+5 show it. A kept stranger line is refused. The member drops it on a card, and turn N+7 does not show it. **Files:** `packages/acb_skills/acb_skills/chat_constraints.py` (NAMESPACE ~:70, MAX_ITEMS ~:78, flag reader ~:117, clean ~:153-170 which drops any item that is not a string, keep ~:501-537, drop ~:540-589), `packages/acb_skills/acb_skills/handoff.py` (CONSTRAINTS_MARK ~:58, `head_task` ~:235), `apps/services/orchestrator/orchestrator/agents.py` (`_CONSTRAINTS_SWAP` ~:360-370, tools ~:1199-1207), `apps/services/orchestrator/orchestrator/executor.py` (`_prime_chat_constraints` ~:1217, block ~:1254, inheritance ~:1267), `packages/acb_common/acb_common/settings.py` ~:1342. **Verify:** `uv run pytest tests/unit/test_chat_constraints.py tests/unit/test_handoff_words.py tests/unit/test_no_unasked_draft.py tests/unit/test_tool_packs_off.py tests/unit/test_orchestrator_one_source.py tests/unit/test_native_session_persistence.py tests/unit/test_executor_briefing_block.py evals/trajectories/test_chat_constraints_trajectory.py evals/trajectories/test_handoff_words_trajectory.py -q`. **Notes:** lane cal-tasks owns the persona lines in `agents.py` ~:360-370 and ~:178-199, `chat_constraints.py` ~:444-451, ~:461-489 and ~:501-515, and `tool_packs.py` ~:205-206, ~:228-229 and ~:403 | `tests/unit/test_chat_constraints.py`, `evals/trajectories/test_chat_constraints_trajectory.py` | STANDARD |
+| **HRD-12b** | 3481 | **An Undo chip for a decision.** STANDARD, AGENT-SAFE, after HRD-12a. The chip calls a member route on the pattern of `/me/assistant-profile/undo` (`gateway/routes/admin/assistant_profile.py` ~:1306). **Verify:** the HRD-12a commands, plus the new test of this slice | `tests/unit/test_chat_constraints.py` | STANDARD |
+| **HRD-12c** | 3482 | **Turn on `CHAT_CONSTRAINTS`.** OWNER-GATE (`enforcement-flip`). The flag is a global bool. It is not an `*_ORGS` list and is not in `docs/flag_reload.md`, so the flip needs a restart of the orchestrator service. Take the evidence before and after, as the task says. The grant window ends 2026-11-30 | none (a flip, no code) | STANDARD |
 | **HRD-13** | 2992 | Claims and promises, in shadow first | `tests/unit/test_answer_claims.py` | STANDARD |
 | **HRD-14** | 2993 | A paste is framed as data | `tests/unit/test_paste_frame.py` | HIGH |
 | **HRD-15** | 2994 | The member's own words are obeyed | `evals/member_words/` | STANDARD |
 | **HRD-16** | 2995 | A card answer acts once | `tests/unit/test_card_answer_once.py` | HIGH |
-| **HRD-17** | 2996 | Offline, loading and two devices | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17** | 2996 | Offline, loading and two devices. The design is in §4.7a. The slices are HRD-17a to HRD-17f below. Not built | none (this is the parent row) | STANDARD |
+| **HRD-17a** | 3483 | The server runs one send once. A repeat of the same `user_message_id` in a thread joins the first run. Dark, behind a new flag | `tests/unit/test_send_once.py` | HIGH |
+| **HRD-17b** | 3484 | The chat outbox: in memory, with `sessionStorage` for a reload. It releases once and in order. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17c** | 3485 | A send while the history loads waits for the load. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17d** | 3486 | A send that lost its connection before the server answered is not marked sent. Builder: lane-ui | `src/hooks/useAgentChatDisconnect.test.ts` | STANDARD |
+| **HRD-17e** | 3487 | The server's copy wins the fold of a second device, and a shorter write before the seal is refused if the check says so. Builder: lane-ui, with a HIGH server part | `src/lib/chatFold.test.ts`, `tests/unit/test_chat_upsert_no_shrink_r8.py` | STANDARD |
+| **HRD-17f** | 3488 | The e2e test with the network off, and the Visual review. Builder: lane-ui | `e2e/chat_outbox.spec.ts` | STANDARD |
 | **HRD-18** | 2997 | Names as people say them. HRD-18a, BUILT 2026-11-14: the one matcher, the CRM search word by word with its near pass (`crm_platform.md` §19.5), `resolve_person` and `find_contact`. HRD-18b: the company search and the mail sender match | `tests/unit/test_name_variants.py`, `tests/unit/test_crm_near_search_r8.py` (R8) | STANDARD |
 | **HRD-19** | 2998 | Start clean | `tests/unit/test_continue_carries.py` | STANDARD |
 | **HRD-22** | 3231 | A late approve acts once. BUILT dark behind `CHAT_LATE_APPROVE_ORGS`, 2026-11-14 (`chat_run_continuity.md` S2, item 8). The flag flip on production is OWNER-GATE (`enforcement-flip`) | `tests/unit/test_late_approve_grant.py`, `tests/unit/test_late_approve_grant_r8.py` (R8 and a private real Redis) | HIGH |
@@ -262,6 +321,37 @@ decided them. They take no D number in `work_plan.md` §3.
 | **Q4** | What do org-wide rows show? | HRD-9b adds the count only. A copy for one space waits for an owner ruling |
 | **Q5** | What shows when the member cannot see the space? | No name. The card says "the space above it", plus N |
 
+**The questions of HRD-11a are PROPOSED** (2026-11-16). The owner has not
+decided them. They take no D number in `work_plan.md` §3.
+
+| # | Question | Proposed default |
+|---|---|---|
+| **Q1** | Does the focus carry a title? | No. It holds ids, kind and link only, as the email working set does. For a title, use `email_chat_context._data` (60 chars) and UntrustedFrame |
+| **Q2** | Which item wins? | An item that the member names wins. Then the last read or act of the chat answers "it", "this" and "mark it done". The open page item wins for "this task" and "this email" |
+| **Q3** | What does "the next one" do? | HRD-11b builds it |
+| **Q4** | Which kinds come first? | Email and task |
+| **Q5** | Does WhatsApp keep a focus? | No. A batch run reads and writes nothing |
+| **Q6** | How does the flag reload? | `CHAT_FOCUS_ORGS` reloads on SIGHUP, as the other `*_ORGS` flags do |
+| **Q7** | Does a bare "this" go to the stored item or to the open page item? | **OPEN** (review of HRD-11a, 2026-11-17). Safe default: the open page item wins for a bare "this" when the page facts name one. **NOT built:** the block still lets a bare "this" mean the stored item. Only "this task" and "this email" go to the page item |
+
+**The questions of HRD-12a are PROPOSED** (2026-11-16). The owner has not
+decided them. They take no D number in `work_plan.md` §3.
+
+| # | Question | Proposed default |
+|---|---|---|
+| **Q1** | How does a member undo a decision? | A chip with a member route (HRD-12b). Until then, the card drop |
+| **Q2** | What shape does the tool take? | A `kind` argument on `keep_correction`, default `limit`. The tool count stays two, and old calls work |
+| **Q3** | What is the cap? | One shared list of 10 |
+| **Q4** | What if a decision names no item? | Keep the sentence, and the model asks. Tie it to the focus item only after HRD-11a |
+| **Q5** | What is the flag? | Keep the global bool `CHAT_CONSTRAINTS`. The owner decides at the flip whether to add `CHAT_CONSTRAINTS_ORGS` |
+
+**D-HRD-17-1 is PROPOSED** (HRD-17, 2026-11-16). The owner has not decided it.
+It takes no D number in `work_plan.md` §3.
+
+| # | Question | Proposed default |
+|---|---|---|
+| **D-HRD-17-1** | Does an unsent message survive a closed tab? | No. It survives a reload of the same tab, in `sessionStorage`, and it clears on sign-out. A closed tab keeps no message text on a shared computer. The cost: a message typed offline is lost when the member closes the tab |
+
 Two limits wait for the owner, and the build keeps them as they are
 (`chat_run_continuity.md` S2 item 8). The 30 minutes start at the tap, not at
 the card. A parked card stays answerable for 7 days, so a card that parked 6
@@ -272,7 +362,7 @@ days ago can still act when its text and its act keys are still equal.
 - The steer path stays in `chat_run_continuity.md` §4.9 (task 2494).
 - The held email card and recipient safety stay in `email_app_master_plan.md` §21.
 - The shared status guard (PST-4) stays in `projects_settings.md`. HRD-9a to HRD-9c extend its pattern.
-- The constraints store (OA-4) and the way through (WT-1 to WT-4) stay in `one_assistant_context.md`. HRD-12 and HRD-19 extend them.
+- The constraints store (OA-4) and the way through (WT-1 to WT-4) stay in `one_assistant_context.md`. HRD-12a and HRD-19 extend them.
 - The card policy stays in `projects_ai_chat.md` §29.
 - The tool packs stay in WS-67 (`one_assistant_context.md`).
 - The model's behaviour fixes of 2026-11-11 stay in task 2874, and the speed in task 2875.
