@@ -495,7 +495,7 @@ FENCE_ROOTS = ("apps/services/gateway", "apps/services/orchestrator", "packages"
 #: because a job queue has a ``complete`` method too.
 ENTRY_POINTS = frozenset({
     "acompletion_with_fallback", "_llm_json", "complete", "completion_on_router",
-    "acompletion_stream_text"})
+    "acompletion_stream_text", "stream_on_router"})
 
 #: A cap below this needs a job: the thinking of DeepSeek V4 can fill it.
 CAP_LIMIT = 2000

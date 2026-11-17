@@ -296,10 +296,17 @@ _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 #: Routing them is what closes that, and routing means reaching the one Console
 #: client this fence guards.
 #:
-#: ⚠️ **It calls ``chat_completion_on_console`` and nothing else.** That hop
-#: allocates no seat and names no person, which is the property this list's own
-#: message already records for ``v1_compat``. ``resolve_for_signin`` — the seat
-#: allocator this fence exists for — is not reachable from it.
+#: ⚠️ **It calls the chat hop and no other door.** That is
+#: ``chat_completion_on_console`` and, since task 3542, its streamed twin
+#: ``stream_completion_on_console``, the same hop that ``v1_compat`` streams
+#: through. It also reads ``router_is_wired`` and the two error classes of
+#: the hop (``ConsoleRouterUnavailable``, ``ConsoleRouterVerdict``). Neither
+#: hop allocates a seat or names a person, which is the property this list's
+#: own message already records for ``v1_compat``. ``resolve_for_signin``, the
+#: seat allocator this fence exists for, is not reachable from it.
+#:
+#: Advisory (R7). No ``_ALLOWED_NAMES`` set pins the names that ``routed.py``
+#: reads from ``console_resolve``, so no test fails when that list grows.
 _THE_IN_PRODUCT_AI_CALLER = "packages/acb_llm/acb_llm/routed.py"
 #: ⚠️ **The EIGHTH entry — ``acb_llm/decide.py``, WS-31 CP-13c, 2026-09-24 —
 #: and the argument for it, because the paragraph above is this list's own
