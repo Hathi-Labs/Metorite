@@ -745,7 +745,7 @@ person.
 | `query_inbox` (pack `email`) | Each filter | A sender name tries its near spelling, in the email app's own function. The same zero line | HRD-18b, FIND-6 |
 | `find_contact` (pack `email`) | The address lookup | The one matcher | HRD-18a |
 | `find_tasks` (pack `projects`) | The task filters | Most of the words on a miss. The same zero line | HRD-4, FIND-6 |
-| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3) | HRD-18a, FIND-6 |
+| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3). FIND-6b closes the parity gaps | HRD-18a, FIND-6, FIND-6b |
 
 No app tool gets a second matcher, and no tool reads a second store. So no
 second read path exists.
@@ -785,11 +785,11 @@ second read path exists.
   read the member's saved aliases. A person row prints no address.
   `resolve_person` gives all three, and the table gives it the colleague
   address for an act. So FIND-6 keeps it in the core list, with the guard.
-- **Open question for the owner.** No decision records how `resolve_person`
-  leaves. One option adds a member source, the aliases and the address to
-  `GET /search/names`. Then `resolve_person` leaves one release later. A
-  second option gives `resolve_person` a pack. A third option keeps it in the
-  core list.
+- **How `resolve_person` leaves (decided by the planner, 2026-11-17).** Option
+  (a). FIND-6b (task 3665) gives `GET /search/names` the kind `member`, the
+  saved aliases (tier 1, `matched_by` alias) and the address of a person row.
+  One release after FIND-6b merges, a second PR takes `resolve_person` out of
+  `core_tools` and gives the pack cap its place back. The owner can override.
   `test_find_tools.py` names the gaps, so the slice that closes them must
   update the fence.
 
@@ -999,7 +999,8 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
 | **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
-| **FIND-6** (built, `resolve_person` stays until parity, §5.3) | 3243 | 2 | The family of find tools. It adds the zero line of `search_crm`, `query_inbox` and `find_tasks`, and the standing rule of §5.4. It adds failure text to the core find tools. After parity, `resolve_person` leaves the core list | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
+| **FIND-6** (built, `resolve_person` stays until parity, §5.3) | 3243 | 2 | The family of find tools. It adds the zero line of `search_crm`, `query_inbox` and `find_tasks`, and the standing rule of §5.4. It adds failure text to the core find tools. After parity, `resolve_person` leaves the core list | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." Its fences move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
+| **FIND-6b** | 3665 | 2 | `GET /search/names` gives the kind `member`, the saved aliases (tier 1, `matched_by` alias) and the address of a person row. One release later, `resolve_person` leaves `core_tools` and the pack cap gets its place back (D-FIND-3) | A name of a colleague gives the member, the alias match and the address, as `resolve_person` does. The pins of the gaps in `test_find_tools.py` change | `test_find_tools.py`, `test_resolve_name_tool.py` | STANDARD | FIND-6 |
 | **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |
 | **FIND-8** | 3246 | 3 | `contributes.search` made real: one entry in each shell manifest of an app with a source, `load_search()` in `shell_manifest.py`, the lockstep of §4.4, `BAR_APPS` and `TAU_DAYS` read from the manifest, and the `building_blocks.md` §3.1 row set right | No behaviour changes: the search suites pass unchanged. A source with no entry, or an entry with no source, fails the fence | `test_search_contributions.py`, new. `test_shell_manifests.py`, `test_shell_search.py` | STANDARD · AGENT-SAFE | FIND-3, HRD-18b |
