@@ -164,7 +164,7 @@ Measured on production on 2026-11-14, over the last 3 days (task 3232):
 | 3 | Near spelling | The near names of up to 3 words, from records the member can open. Then the query again with the best spelling | On a miss, pass 2 | 0.5 s for the lookup, inside the 2.5 s | `near` | HRD-18a, HRD-18b |
 | 4 | Related records | The records that link to the best hits: the contacts and the lead of a deal, the deals of a company, the mail from and to an address, and the mail of a company's own domain (no free-mail domain, the rule of KG-5) | When a pass found a person, contact, lead, deal or company | 1.0 s, at most 3 for each hit | `related` | FIND-3, then KG-6 |
 | 5 | Meaning | The vector half of each source that has one | The embed starts at 0 s, beside rung 1. A source waits at most 0.8 s for it | 3.0 s for the embed | `meaning` | KR-ZERO, KG-3b |
-| 6 | Past chats | The member's own chat sessions | Pass 1, when `CHAT_SEARCH_ORGS` names the org | 1.0 s | `chat` | HRD-21 |
+| 6 | Past chats | The member's own chat sessions | Pass 1, when `CHAT_SEARCH_ORGS` names the org | 1.5 s, as each source of pass 1. A LOCAL `statement_timeout` of 1.6 s stops its statement | `chat` | HRD-21 |
 | 7 | Outside sources | An outside app that an admin made a find source | On a miss after pass 2, or when the member names it | 3.0 s. The answer cap rises to 8 s | `outside` | FIND-10 |
 | 8 | Honest zero | The answer says what it searched, what it tried and where else to look | Each answer with a miss | None. Code writes it | none | KR-ZERO, FIND-4 |
 
@@ -659,7 +659,7 @@ bound tenant session. The tests of each rule are
 | Only the member's own chat | `chat_session.user_id` equals the address of the session, the rule of the chat's own list. RLS lets a chat of member B through, so this rule alone stops it |
 | Never a room or a shared chat | `rooms.SOLO_ROOM_SQL`, the one rule of a solo chat |
 | Never a chat with another agent | The agent is `orchestrator`, the chat has no channel, and no other agent has a seat or a row. The sandbox can cover a run of another agent (H-236). It never covers the orchestrator |
-| Never a `no_egress` chat | A chat that read the answer of the email agent holds the egress mark, and each run that it starts binds `no_egress`. `egress.marked_sessions` reads the marks in one `MGET`, read-only. A fault of Redis shows no chat, and the answer names `chat` as skipped |
+| Never a chat with the egress mark | An email-assistant run or another untrusted read marks its chat. Each run that a marked chat starts binds `no_egress`. The SQL does not test the mark. `egress.marked_sessions` reads the marks in one `MGET`, read-only, and drops each marked chat after the read. A fault of Redis shows no chat, and the answer names `chat` as skipped. Limit 1 names a chat with no mark |
 | Never the current chat | `s.id <> :current`. The tool sends the thread of its run (`executor.resolve_relay_thread_id`). The run route makes the chat row with that thread id, so the two are one value. With no current chat, or in a batch run, the route does not ask the source |
 | Never in a room | In a shared room the run acts as the room (`room:<thread>`), and the tool refuses before any call (`SHARED_ROOM`). A room of one that other members can read (visibility `org` or `people`) is not solo either. The tool sends the current chat only from a solo run (`executor.run_is_solo`), so the route asks no past chat there |
 | No text of another person | The search reads the title and the `user` and `assistant` rows. It never reads a `system` row or the tool events. The snippet comes only from a row that the member typed (`member_typed`, `typed_text`, not a card answer). A reply of Mira can restate a mail, so its text never prints. The statement returns the text of no other row |
@@ -673,8 +673,14 @@ Seven limits stay, and the review must know them:
    when it read mail before the marks existed. Such a chat gives a hit with
    its title, date, link and a snippet of the member's typed words. No reply
    of Mira prints, so no mail text reaches the model.
-   This departs from the acceptance row "never shows". The owner must accept
-   it at the preview, before the flip.
+   D-FIND-5 says that no `no_egress` session shows, so this falls short of
+   it. The owner must accept it at the preview, before the flip.
+
+   `search_company` writes no egress mark. Its email source gives Mira the
+   subject, the sender and a passage of each mail hit. So a Mira chat that
+   read mail through `search_company` has no mark, and its title and typed
+   snippet can show. The owner must accept this at the preview, or a
+   follow-up must add the mark before the `CHAT_SEARCH_ORGS` flip.
 2. **A title prints as the chat keeps it**, cut to 200 characters. It can
    hold the start of a pasted mail. The member already sees the same title in
    the list of chats. We accept this while the flag is dark.
@@ -766,7 +772,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-3** (built) | 3240 | 1 | Rung 4: the `related` and `open` abilities of the CRM, people and email sources, and the step on the best 5 hits, 3 for each hit, in 1.0 s. It builds the step and `Source.open` that KG-6 names. KG-6 then adds the `kb_links` edges to the same step | "Neuropeak order" finds the deal, and the thread from the address of its lead, in one call. A contact's mail in the mailbox of another member never shows. A record that the member cannot open leaves no trace. Org B never shows | `test_find_related.py`, new. `test_find_related_r8.py`, new | HIGH · AGENT-SAFE | FIND-2 |
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
-| **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a `no_egress` session and the current chat never show. The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
+| **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
 | **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |

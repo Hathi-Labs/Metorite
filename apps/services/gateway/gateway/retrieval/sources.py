@@ -850,7 +850,7 @@ async def _chat(user: UserContext, q: str, k: int, *, current: str | None = None
     The source applies its switch, ``CHAT_SEARCH_ORGS``, before any read, as
     the studio source does. Then ``gateway.chat_search`` reads the member's
     own solo chats with Mira on the web, as the member, with each rule in its
-    WHERE, and drops each ``no_egress`` chat. *current* is the chat that the
+    WHERE, and drops each chat with the egress mark. *current* is the chat that the
     search runs in: it never answers, and with none the read gives nothing.
 
     A hit names the title, the date of the last change and the link that

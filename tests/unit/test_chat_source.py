@@ -493,9 +493,11 @@ class _Db:
     def __init__(self, rows: list[Any]) -> None:
         self.rows = rows
         self.sql: list[str] = []
+        self.params: list[Any] = []
 
     async def execute(self, statement: Any, params: Any = None) -> Any:
         self.sql.append(str(statement))
+        self.params.append(params)
         return SimpleNamespace(fetchall=lambda: list(self.rows))
 
 
@@ -543,6 +545,29 @@ def test_the_reader_drops_each_marked_chat(monkeypatch) -> None:
     assert seen == [ORG]
     # The LOCAL statement limit first, then the one search.
     assert "statement_timeout" in db.sql[0] and len(db.sql) == 2
+
+
+def test_a_local_limit_of_1600_ms_comes_before_the_search(monkeypatch) -> None:
+    """R7 fence of the statement limit (``find_engine.md`` §3.1 rung 6).
+
+    The first statement sets ``statement_timeout`` to 1600 ms with
+    ``is_local`` true, so the limit ends with the read's transaction. The
+    search comes second, in the SAME session. The expected values are
+    literals, so a change of the value, of the scope or of the order fails."""
+    seen: list[str] = []
+    db = _Db([])
+    monkeypatch.setattr(chat_search, "tenant_session", _opener(db, seen))
+    hits = asyncio.run(chat_search.search_own_chats(member("chat"), "Snowflake", 5,
+                                                     current=HERE))
+    assert hits == []
+    assert chat_search.STATEMENT_MS == 1600
+    assert seen == [ORG], "the limit and the search must share one session"
+    assert len(db.sql) == 2
+    assert " ".join(db.sql[0].split()) == (
+        "SELECT set_config('statement_timeout', :ms, true)")
+    assert db.params[0] == {"ms": "1600"}
+    assert "FROM chat_session s" in db.sql[1]
+    assert "statement_timeout" not in db.sql[1]
 
 
 def test_a_fault_of_the_marks_raises(monkeypatch) -> None:

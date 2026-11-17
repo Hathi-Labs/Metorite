@@ -100,10 +100,15 @@ next run. A flip stays OWNER-GATE (`enforcement-flip`).
 
 `CHAT_SEARCH_ORGS` opens the past chats of `search_company`
 (`find_engine.md` §3.1 rung 6, §6, HRD-21). For each listed org, the search
-reads the member's own solo chats with Mira, and never the current chat or a
-chat that read mail. `*` lists every org, and the default is empty. Empty
-gives the answer of before HRD-21, byte for byte. That includes the 422 of an
-unknown app: `apps=chat` gets it, and its list of keys has no `chat`.
+reads the member's own solo chats with Mira, and never the current chat. `*`
+lists every org, and the default is empty. Empty gives the answer of before
+HRD-21, byte for byte. That includes the 422 of an unknown app: `apps=chat`
+gets it, and its list of keys has no `chat`.
+
+The search never shows a chat that holds the egress mark: the mark of an
+email-assistant run or another untrusted read. The SQL does not test the
+mark. `egress.marked_sessions` drops each marked chat after the read. So a
+chat that read mail with no mark can show (`find_engine.md` §6, limit 1).
 
 Its one reader is
 `gateway.retrieval.find.chat_search_named`, and each search asks it. A reload

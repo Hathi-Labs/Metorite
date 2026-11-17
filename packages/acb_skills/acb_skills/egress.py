@@ -475,9 +475,9 @@ async def marked_sessions(sessions: Iterable[str]) -> frozenset[str]:
     """The sessions of *sessions* that hold the mark, in the bound tenant.
 
     The read of the search of the member's past chats (WS-FIND HRD-21,
-    ``find_engine.md`` §6): a chat that read the answer of an agent of
-    :data:`UNTRUSTED_INPUT_AGENTS` is a ``no_egress`` chat, and the search
-    never shows it. It is read-only, unlike :func:`session_mark_state`: it
+    ``find_engine.md`` §6): the search drops each chat that holds the mark.
+    A chat that read mail with no mark is not dropped (§6, limit 1). It is
+    read-only, unlike :func:`session_mark_state`: it
     slides no TTL and adds nothing to the process cache. It reads the process
     cache first, then each other session in ONE ``MGET``.
 
