@@ -194,7 +194,10 @@ _SESSIONS_SQL = (
     "                 WHERE m.session_id = s.id AND m.role = 'user' "
     "                 LIMIT 1), false) AS has_user_message, "
     f"      {_IS_BRIEF_SQL} AS is_brief, "
-    "       me.role AS my_role, s.archived_at "
+    "       me.role AS my_role, s.archived_at, "
+    # CO-13: the link of a chat that continues another one. The
+    # title is found below, in this same result (§17.5).
+    "       s.continued_from "
     "FROM chat_session s "
     # One join on the participant key, so no query per row.
     "LEFT JOIN chat_session_participant me "
@@ -222,6 +225,20 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
         rows = s.execute(text(_SESSIONS_SQL), {"uid": user_id}).fetchall()
         if pins_on:
             pins = chat_pins.pinned_at_of(s, user_id)
+    # CO-13 (§17.5): the source of a continued chat is readable by this member
+    # exactly when it is a row of this list. The list holds every row that
+    # SESSION_VISIBLE_SQL passes, with no limit, under the bound tenant, so a
+    # source of another org or one that the member cannot read is not here.
+    # No second rule and no second query. A deleted source left a NULL link.
+    readable = {r.id: r.title for r in rows}
+
+    def _mark(link: str | None) -> dict | None:
+        if not link:
+            return None
+        if link in readable:
+            return {"id": link, "title": readable[link]}
+        return {"id": None, "title": None}
+
     listed = [
         {
             "id": r.id,
@@ -256,6 +273,9 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # D99 (migration 254): an archived chat stays in the list, and
             # the assistant shows it under "Archived".
             "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
+            # CO-13: null for a chat that continues nothing. An archived
+            # source stays in the list, so it keeps its title and its link.
+            "continuedFrom": _mark(r.continued_from),
         }
         for r in rows
     ]

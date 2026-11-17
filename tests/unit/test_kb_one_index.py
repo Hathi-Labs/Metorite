@@ -178,10 +178,12 @@ def test_the_door_check_sees_each_shape() -> None:
 
 
 def test_the_embeddings_door_does_not_block_the_event_loop() -> None:
-    """KB-3 review, 2026-10-16. The gateway calls its own ``/v1/embeddings``
-    on each Knowledge search and publish. The OpenAI client is synchronous,
-    so the route must hand the call to a worker thread. A direct call would
-    stall the event loop for every tenant for one OpenAI round trip."""
+    """KB-3 review, 2026-10-16. A synchronous call in the gateway's
+    ``/v1/embeddings`` route stalls the event loop for every tenant.
+
+    Since task 3553 (2449 S2) the route AWAITS ``embed.relay``, which uses
+    the async Console client. So the route holds no synchronous
+    ``embeddings.create`` and needs no worker thread."""
     import ast
     from pathlib import Path
 
@@ -199,11 +201,12 @@ def test_the_embeddings_door_does_not_block_the_event_loop() -> None:
         and isinstance(n.func.value, ast.Attribute)
         and n.func.value.attr == "embeddings"
     ]
-    assert not direct, "call client.embeddings.create through asyncio.to_thread"
-    threaded = [
+    assert not direct, "the route must not call a synchronous embeddings client"
+    awaited = [
         n for n in ast.walk(route)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "to_thread"
+        if isinstance(n, ast.Await)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name)
+        and n.value.func.id == "relay"
     ]
-    assert threaded, "the embeddings route must run the OpenAI call in a thread"
+    assert awaited, "the embeddings route must await embed.relay"
