@@ -81,6 +81,7 @@ This is not the faithfulness check of model text. That is
 from __future__ import annotations
 
 import heapq
+import itertools
 import math
 import re
 from bisect import bisect_left
@@ -361,6 +362,8 @@ def _kth_without(values: Sequence[float], at: int, k: int) -> float:
 
 def _times(ratio: float) -> str:
     """A ratio as "6 times", or "5.5 times" under 10."""
+    if ratio >= 1_000_000:
+        return "over a million times"
     whole = round(ratio)
     return f"{whole} times" if ratio >= 10 or abs(ratio - whole) < 0.05 else f"{ratio:.1f} times"
 
@@ -373,19 +376,26 @@ def outlier(
     :func:`concentration`. A bucket with no key, no value or no records is no
     bucket. Returns an empty list when fewer than :data:`OUTLIER_MIN_PEERS`
     peers exist, or when the peer median is zero or less."""
+    try:
+        iterator = iter(buckets)
+    except TypeError:
+        return []
     rows: list[tuple[str, float, int]] = []
-    for key, value, records in buckets:
+    for row in itertools.islice(iterator, OUTLIER_MAX_BUCKETS):
+        try:
+            key, value, records = row
+        except (TypeError, ValueError):
+            continue  # a row of another shape is no bucket
         number, count = _num(value), _count(records)
         if key is None or str(key) == "" or number is None or not count:
             continue
-        rows.append((str(key), number, count))
-        if len(rows) >= OUTLIER_MAX_BUCKETS:
-            break
+        rows.append((str(key)[:KEY_MAX_CHARS], number, count))
     if len(rows) - 1 < OUTLIER_MIN_PEERS:
         return []
     values = sorted(value for _k, value, _r in rows)
     total = sum(records for _k, _v, records in rows)
-    word = bucket if bucket.isalpha() and len(bucket) <= 20 else "bucket"
+    word = (bucket if isinstance(bucket, str) and bucket.isalpha() and len(bucket) <= 20
+            else "bucket")
     found: list[tuple[float, Finding]] = []
     for key, value, records in rows:
         at = bisect_left(values, value)
@@ -400,13 +410,13 @@ def outlier(
         if ratio > OUTLIER_RATIO:
             how = f"is {_times(ratio)} the median"
         elif ratio < 1 / OUTLIER_RATIO:
-            how = "is under one fifth of the median"
+            how = f"is under {round(100 / OUTLIER_RATIO)}% of the median"
         else:
             continue
         found.append((abs(math.log(max(ratio, 1e-300))), Finding(
             kind=OUTLIER, key=key, records=records, total_records=total,
             share=records / total, value_share=None,
-            sentence=f"{key} {how} of the other {len(rows) - 1} {word}s. Check why.",
+            sentence=f"{_word(key, 'bucket', 40)} {how} of the other {len(rows) - 1} {word}s. Check why.",
         )))
     found.sort(key=lambda pair: (-pair[0], pair[1].key))
     return [finding for _far, finding in found[:OUTLIER_MAX_FINDINGS]]
@@ -436,7 +446,7 @@ def coverage(
             sentence=f"{missing:,} of the records have no {_word(measure, 'value')}. Check why.",
         ))
     left_out: dict[str, int] = {}
-    for status, count in (by_status or {}).items():
+    for status, count in (by_status.items() if isinstance(by_status, Mapping) else ()):
         name, number = str(status).strip().lower(), _count(count)
         if name in COVERAGE_STATUSES and number:
             left_out[name] = left_out.get(name, 0) + number
@@ -465,7 +475,7 @@ def parts(
     :data:`PARTS_MAX`."""
     whole = _num(total)
     try:
-        listed = list(items)[: PARTS_MAX + 1]
+        listed = list(itertools.islice(items, PARTS_MAX + 1))
     except TypeError:
         return []
     if whole is None or not 2 <= len(listed) <= PARTS_MAX:
@@ -482,7 +492,10 @@ def parts(
             return []
         values.append(number)
         names.append(_word(name, "part", 30))
-    added = math.fsum(values)
+    try:
+        added = math.fsum(values)
+    except OverflowError:  # two finite floats can add up past the float range
+        return []
     gap = abs(added - whole)
     if gap <= PARTS_GAP_SHARE * abs(whole) or gap <= PARTS_GAP_MIN_UNITS:
         return []
@@ -525,6 +538,10 @@ def part_period(period_kind: Any, period_start: Any, as_of: Any) -> list[Finding
     start, today = _as_date(period_start), _as_date(as_of)
     if period_kind not in PERIOD_KINDS or start is None or today is None:
         return []
+    if period_kind != "week" and (
+        start.day != 1 or (period_kind == "quarter" and start.month not in (1, 4, 7, 10))
+    ):
+        return []  # a month or quarter that does not start on its first day is no period
     end = _period_end(period_kind, start)
     if end is None or not start <= today < end:
         return []
@@ -546,15 +563,20 @@ _MONTHS = ("January", "February", "March", "April", "May", "June", "July",
 
 # ── grouping ─────────────────────────────────────────────────────────────────
 
-_FIGURE = re.compile(
-    r"^(?P<cur>INR|Rs\.?|₹|USD|\$|EUR|€)?\s*(?P<num>[+-]?[\d,]+(?:\.\d+)?)"
-    r"\s*(?P<unit>crore|cr|lakh|lac|million|mn|billion|bn|thousand)?$",
+#: The digits of a figure at the start of a text, after an optional currency
+#: mark. Only the SHAPE of the grouping is read here. The scale words (lakh,
+#: crore, million, "L", "Cr", plurals) are read by ``number_check.find_figures``,
+#: the one reader of them (``tests/unit/test_number_check.py``).
+_LEAD = re.compile(
+    r"^(?:INR|Rs\.?|₹|USD|\$|EUR|€)?\s*(?P<num>[+-]?[\d,]+(?:\.\d+)?)(?=\s|[A-Za-z]|$)",
     re.IGNORECASE,
 )
 _INDIAN = re.compile(r"^\d{1,2}(,\d{2})*,\d{3}$")
 _WESTERN = re.compile(r"^\d{1,3}(,\d{3})+$")
-_UNITS = {"crore": 1e7, "cr": 1e7, "lakh": 1e5, "lac": 1e5, "million": 1e6,
-          "mn": 1e6, "billion": 1e9, "bn": 1e9, "thousand": 1e3}
+#: The longest figure text that the check reads. A longer text is no figure.
+GROUPING_MAX_CHARS = 200
+#: The longest text of a caller (a key, a part name) in a sentence.
+KEY_MAX_CHARS = 200
 
 
 def grouping(
@@ -566,22 +588,34 @@ def grouping(
     A finding when the digit grouping is neither Indian (3,35,68,33,347) nor
     western (335,683,334), or when the figure is more than *tolerance* (a
     share) and :data:`GROUPING_SCALE_RATIO` times or more away from
-    *source_value*. A text that is no figure (words, two numbers) gives no
+    *source_value*. The value of the figure, with its scale word, comes from
+    ``number_check.find_figures``. A text that is no figure (words, two
+    numbers, more than :data:`GROUPING_MAX_CHARS` characters) gives no
     finding: the check cannot judge it."""
-    if not isinstance(figure_text, str):
+    if not isinstance(figure_text, str) or len(figure_text) > GROUPING_MAX_CHARS:
         return []
-    match = _FIGURE.match(figure_text.strip())
+    text = figure_text.strip()
+    match = _LEAD.match(text)
     if match is None:
         return []
-    digits, shown = match.group("num"), " ".join(figure_text.split())
-    whole = digits.split(".")[0].lstrip("+-")
+    shown = _word(text, "figure", 40)
+    whole = match.group("num").split(".")[0].lstrip("+-")
     if "," in whole and not (_INDIAN.match(whole) or _WESTERN.match(whole)):
         return [_grouping(shown, f"{shown} has a wrong digit grouping.")]
     source, tol = _num(source_value), _num(tolerance)
     if source is None or source == 0 or tol is None or not 0 <= tol < 1:
         return []
-    unit = match.group("unit")
-    value = abs(float(digits.replace(",", ""))) * (_UNITS[unit.lower()] if unit else 1.0)
+    try:
+        from acb_common.number_check import find_figures
+
+        found = [f for f in find_figures(text) if not f.unreadable]
+    except Exception:  # a reader fault is no finding
+        return []
+    if len(found) != 1:
+        return []
+    value = _num(abs(found[0].value))
+    if value is None:
+        return []
     gap = abs(value - abs(source))
     if gap <= tol * abs(source):
         return []
@@ -619,9 +653,11 @@ __all__ = [
     "COVERAGE_SHARE",
     "COVERAGE_STATUSES",
     "GROUPING",
+    "GROUPING_MAX_CHARS",
     "GROUPING_SCALE_RATIO",
     "GROUPING_TOLERANCE",
     "INFO",
+    "KEY_MAX_CHARS",
     "MONTH_EDGE_IS_NORMAL",
     "OUTLIER",
     "OUTLIER_MAX_BUCKETS",
