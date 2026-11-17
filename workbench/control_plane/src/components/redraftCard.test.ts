@@ -61,6 +61,9 @@ import {
   UNCHANGED_LINE,
   UPDATING_LINE,
   cardDraftOf,
+  CHECK_TRAIL,
+  NOT_THE_SAME_LEAD,
+  changedLinkLine,
   changedText,
   changesOf,
   changingLine,
@@ -1242,5 +1245,61 @@ describe("P2: a steer carries at most MAX_CARD_DRAFTS versions, the edited ones 
     const route = read("app/api/agent/chat/route.ts");
     expect(route).toContain("body.cardDraft.slice(0, MAX_CARD_DRAFTS)");
     expect(route).not.toContain("body.cardDraft.length <= 8");
+  });
+});
+
+describe("the line about the card that this card replaces (HRD-8b)", () => {
+  // Mutation: drop `changeOf(value.changed)` from `linkOf`, or drop the
+  // `linkLine` paragraph of `NewMailCardForm` -> red.
+  const link = { revises: OLD, draft: 2 };
+
+  it("a card with no change says nothing", () => {
+    expect(changedLinkLine(undefined)).toBe("");
+    expect(changedLinkLine({})).toBe("");
+    const same = replyFromEvent({ ...FORM, ...link }, NEW)!;
+    expect(same.changed).toBeUndefined();
+  });
+
+  it("a changed Cc is named in plain words, with the people", () => {
+    const line = changedLinkLine({ cc: { added: ["x@y.test"], removed: ["geo@acme.test"] } });
+    expect(line).toBe(
+      `${NOT_THE_SAME_LEAD} The Cc list changed. Now also to x@y.test. No longer to geo@acme.test. ${CHECK_TRAIL}`,
+    );
+  });
+
+  it("a changed act names both acts, and the To list reads the same way", () => {
+    const line = changedLinkLine({
+      act: { was: "new", now: "forward" },
+      to: { added: ["a@b.test"], removed: [] },
+    });
+    expect(line).toContain("The card before it was a new mail. This card is a forward.");
+    expect(line).toContain("The To list changed. Now also to a@b.test.");
+    expect(line).not.toContain("No longer");
+  });
+
+  it("the form reads `changed` only with a link, and only the gateway's shape", () => {
+    const ok = replyFromEvent({ ...FORM, ...link, changed: { cc: { added: ["x@y.test"], removed: [] } } }, NEW)!;
+    expect(ok.revises).toBe(OLD);
+    expect(ok.changed).toEqual({ cc: { added: ["x@y.test"], removed: [] } });
+    // No link, no `changed`.
+    expect(replyFromEvent({ ...FORM, changed: { cc: { added: ["x@y.test"], removed: [] } } }, NEW)!.changed).toBeUndefined();
+    // A bad shape is dropped: an unknown act, an act that did not change, a word of a model.
+    const bad = replyFromEvent(
+      { ...FORM, ...link, changed: { act: { was: "new", now: "new" }, to: "all of them", cc: { added: [3], removed: "x" }, extra: 1 } },
+      NEW,
+    )!;
+    expect(bad.changed).toBeUndefined();
+    const unknown = replyFromEvent({ ...FORM, ...link, changed: { act: { was: "new", now: "weird" } } }, NEW)!;
+    expect(unknown.changed).toBeUndefined();
+  });
+
+  it("the card draws the line, and a card with none draws no line", () => {
+    const withLine = replyFromEvent({ ...FORM, ...link, changed: { cc: { added: ["x@y.test"], removed: [] } } }, NEW)!;
+    const html = renderToStaticMarkup(createElement(NewMailCardForm, { form: withLine, onAnswer: () => {}, onDiscard: () => {}, armed: true }));
+    expect(html).toContain("data-redraft-link-changed");
+    expect(html).toContain("The Cc list changed.");
+    const none = replyFromEvent({ ...FORM, ...link }, NEW)!;
+    const plain = renderToStaticMarkup(createElement(NewMailCardForm, { form: none, onAnswer: () => {}, onDiscard: () => {}, armed: true }));
+    expect(plain).not.toContain("data-redraft-link-changed");
   });
 });

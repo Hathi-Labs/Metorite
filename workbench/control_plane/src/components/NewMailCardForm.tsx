@@ -38,7 +38,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
-import { CHANGED_LEAD, REOPENED_CHECK_LINE, REOPENED_LINE, cardDraftOf, changedText, changesOf, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
+import { CHANGED_LEAD, REOPENED_CHECK_LINE, REOPENED_LINE, cardDraftOf, changedText, changesOf, changedLinkLine, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
   lineCount,
@@ -246,6 +246,8 @@ export default function NewMailCardForm({
     report.current?.(cardDraftOf(form, form.requestId ?? "", { subject, body, ticks }));
   }, [form, subject, body, ticks]);
   const label = draftLabel(form.draft);
+  // HRD-8b: what differs from the card that this card replaces, from the gateway.
+  const linkLine = changedLinkLine(form.changed);
   // The new text against the member's last version: never a claim of the model.
   const offered = recipientsFor(form, true);
   const changes = before
@@ -294,6 +296,11 @@ export default function NewMailCardForm({
         </div>
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
         {changes && <ChangedLine changes={changes} />}
+        {linkLine && (
+          <p className="break-words text-[11px] leading-relaxed text-foreground" data-redraft-link-changed="" role="status">
+            {linkLine}
+          </p>
+        )}
         {form.reopened && (
           <p className="break-words text-[11px] leading-relaxed text-foreground" data-redraft-reopened={fromKept ? "kept" : "check"} role="status">
             {fromKept ? REOPENED_LINE : REOPENED_CHECK_LINE}
