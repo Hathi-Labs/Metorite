@@ -77,6 +77,36 @@ PR_RULE = (
     " task N. Write the URL of the pull request, or call add_task_reference."
 )
 
+#: Task 3648 (owner, 2026-11-17). What each stage means, and the classes of
+#: task where the lane is not obvious, so the agent asks and does not guess.
+#: It follows the safety rules and the routine, so Claude Code's cut at 4096
+#: characters never moves a safety rule. The mechanics of release_task are in
+#: its own description. Fence: ``test_mcp_edge_prompts.py``
+#: ``TestTheLaneRule``.
+_LANE_RULE_TEMPLATE = (
+    " Move a task by what its stage means. Backlog holds a task that nobody"
+    " started and that is not planned soon. To Do holds a task planned to run"
+    " soon, and a started task that is paused or given back. In progress holds"
+    " work that moves now: a live run, or an open pull request that waits for"
+    " review or merge. Done holds work that is merged or delivered. A started"
+    " task never goes to Backlog. On a board with custom lanes, pick the lane"
+    " by its category, then by its name."
+    " When you are not sure which lane fits, do not guess. These classes need"
+    " a question: a task of a paused project, an umbrella whose first slice"
+    " merged and whose next slices did not start, a task with only its spec"
+    " merged, a task that waits for a production proof or an owner flip, and"
+    " a board whose lanes do not map to the stages. Ask the member once for"
+    " the whole class with {ask}. Name the class and the number of"
+    " tasks, give two to four options, and mark one as recommended. Then apply"
+    " the answer to every task of that class in this session, and state the"
+    " class and the answer in your report."
+)
+
+#: With the runs flag on, the agent asks through ``ask_on_task``. With it off,
+#: no run tool shows, so the agent asks in its reply and names no tool.
+LANE_RULE = _LANE_RULE_TEMPLATE.replace("{ask}", "ask_on_task")
+LANE_RULE_NO_RUNS = _LANE_RULE_TEMPLATE.replace("{ask}", "a question in your reply")
+
 #: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The one sentence that sends
 #: an agent to the images of a task. The prompt, the ``initialize``
 #: instructions and the ``get_task_context`` description each hold it. Fence:

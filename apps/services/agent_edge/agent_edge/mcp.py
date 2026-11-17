@@ -343,7 +343,8 @@ def instructions(scopes: Iterable[str] = ()) -> str:
         text += _RUN_INSTRUCTIONS
         if agent_oauth.answer_change_enabled():
             text += prompts.ANSWER_RULE
-    text += _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
+    text += _ROUTINE_INSTRUCTIONS + prompts.PR_RULE + (
+        prompts.LANE_RULE if runs else prompts.LANE_RULE_NO_RUNS)
     return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.

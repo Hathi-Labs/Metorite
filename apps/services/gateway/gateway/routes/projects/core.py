@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Awaitable, Callable, Iterable
+import re
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -3849,6 +3850,83 @@ async def apply_status_transition(
         "row": row, "from": old_status, "to": new_status,
         "recurred_to": successor, "runs_cleared": runs_cleared,
     }
+
+
+# ── The lane of a stage (task 3648) ─────────────────────────────────────────
+
+#: The owner's four stages, as the categories a lane holds. ``lane_for_stage``
+#: picks ONE lane of the project for a stage, by the category first and then
+#: by the NAME of the lane. A board may hold several lanes in one category
+#: (task 3648): "To do" and "Ready" are both ``todo``. This is the one helper
+#: for it. ``claim_task`` picks the started lane by position with
+#: :func:`load_default_status`, and the release of an agent run picks the
+#: others here.
+LANE_STAGE_TODO = "todo"
+LANE_STAGE_REVIEW = "review"
+
+#: A ``todo`` lane named "To do", "Todo", "To-do", "Ready" or "Next".
+_TODO_LANE_NAME = re.compile(r"^\s*(?:to[\s_-]?do|ready|next)(?:\W|$)", re.IGNORECASE)
+#: An in-progress lane named "Review", "In review" or "Code review". The
+#: board has no review CATEGORY, so a review lane is a started lane by name.
+_REVIEW_LANE_NAME = re.compile(r"\breview", re.IGNORECASE)
+
+
+def pick_lane(lanes: Sequence[Any], stage: str) -> Any | None:
+    """The lane of *stage* among *lanes*, or ``None``. Pure.
+
+    *lanes* are rows of ``pm_task_statuses`` of ONE board, in lane order
+    (:func:`status_order_sql`). For ``todo``: a ``todo`` lane named like "To
+    do", "Ready" or "Next", else the first ``todo`` lane. A board with no
+    ``todo`` lane gives ``None``: the caller keeps the task where it is, and
+    never falls back to backlog. For ``review``: an in-progress lane named
+    like "Review", else ``None`` (a board with no review lane has none)."""
+    if stage == LANE_STAGE_TODO:
+        pool = [lane for lane in lanes if lane.category == "todo"]
+        named = [lane for lane in pool if _TODO_LANE_NAME.match(str(lane.name or ""))]
+        return (named or pool or [None])[0]
+    if stage == LANE_STAGE_REVIEW:
+        for lane in lanes:
+            if lane.category == STARTED_CATEGORY and _REVIEW_LANE_NAME.search(
+                str(lane.name or ""),
+            ):
+                return lane
+        return None
+    raise ValueError(f"unknown stage: {stage!r}")
+
+
+async def board_lanes(db: Any, project_id: str) -> list[Any]:
+    """The lanes of the board of *project_id* (the owner of its statuses), in
+    lane order."""
+    home = await status_owner_id(db, str(project_id))
+    return list((await db.execute(
+        text(
+            "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid)"
+            f" ORDER BY {status_order_sql()}"
+        ),
+        {"root": home},
+    )).fetchall())
+
+
+async def lane_for_stage(db: Any, project_id: str, stage: str) -> Any | None:
+    """The lane of *stage* on the board of *project_id*, or ``None``."""
+    return pick_lane(await board_lanes(db, project_id), stage)
+
+
+def lane_like(lanes: Sequence[Any], name: str | None, category: str | None) -> Any | None:
+    """The lane that a task LEFT, found again: the lane of that name in that
+    category, else :func:`pick_lane` for a ``todo`` category, else the first
+    lane of the category. ``None`` when the category holds no lane or is
+    unknown. Never a closing or triage lane."""
+    if not category or category in CLOSING_CATEGORIES or category == TRIAGE_CATEGORY:
+        return None
+    pool = [lane for lane in lanes if lane.category == category]
+    wanted = str(name or "").strip().lower()
+    for lane in pool:
+        if wanted and str(lane.name or "").strip().lower() == wanted:
+            return lane
+    if category == "todo":
+        return pick_lane(lanes, LANE_STAGE_TODO)
+    return pool[0] if pool else None
 
 
 async def _runs_follow_the_task(
