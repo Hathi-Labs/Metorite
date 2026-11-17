@@ -25,10 +25,13 @@ export interface DecisionChipsViewProps {
   busyId: string | null;
   failedId: string | null;
   onUndo: (id: string) => void;
+  /** True while a reply streams. A turn that keeps or drops an item would write
+   *  the list again and bring an Undo back, so no Undo is offered then. */
+  locked?: boolean;
 }
 
 /** The chips, with no hook, so a test calls it as a function. */
-export function DecisionChipsView({ items, busyId, failedId, onUndo }: DecisionChipsViewProps) {
+export function DecisionChipsView({ items, busyId, failedId, onUndo, locked = false }: DecisionChipsViewProps) {
   if (items.length === 0) return null;
   return (
     <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs" data-testid="decision-chips">
@@ -44,7 +47,7 @@ export function DecisionChipsView({ items, busyId, failedId, onUndo }: DecisionC
             variant="ghost"
             size="sm"
             aria-label={CHIP_WORDS.undoLabel(d.text)}
-            disabled={busyId === d.id}
+            disabled={locked || busyId === d.id}
             onClick={() => onUndo(d.id)}
           >
             {CHIP_WORDS.undo}
@@ -103,5 +106,13 @@ export default function DecisionChips({ sessionId, enabled, settledKey }: Decisi
   );
 
   if (!enabled) return null;
-  return <DecisionChipsView items={items} busyId={busyId} failedId={failedId} onUndo={onUndo} />;
+  return (
+    <DecisionChipsView
+      items={items}
+      busyId={busyId}
+      failedId={failedId}
+      onUndo={onUndo}
+      locked={settledKey === null}
+    />
+  );
 }

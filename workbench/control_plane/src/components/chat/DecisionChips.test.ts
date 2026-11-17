@@ -61,4 +61,11 @@ describe("DecisionChipsView", () => {
     expect(html).toContain("Could not undo. Try again.");
     expect(html.indexOf("Could not undo")).toBeGreaterThan(html.indexOf("Pune vendor"));
   });
+
+  it("offers no Undo while a reply streams", () => {
+    const html = renderToStaticMarkup(
+      createElement(DecisionChipsView, { items: ITEMS, busyId: null, failedId: null, onUndo: vi.fn(), locked: true }),
+    );
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+  });
 });
