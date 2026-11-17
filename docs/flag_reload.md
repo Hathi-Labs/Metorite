@@ -117,6 +117,19 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
+(`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
+the default is `off`. It is not a `*_ORGS` or `*_MODES` key, so a reload does
+NOT apply it. Set the value, then restart `acb-gateway`. Its one reader is
+`acb_common.settings.find_claim_check_mode`.
+
+In `shadow`, an answer that says a record does not exist writes one
+`answer_check.claim` line. It does so when no `search_company` answer of the
+turn shows pass 2. The line holds codes and counts, and no text. In `on`, such
+an answer gets one more pass. That pass is the one retry of the run, which the
+number check of `CRM_ANSWER_CHECK` spends too. `shadow` is AGENT-SAFE, and `on`
+is an `enforcement-flip` after 7 days of shadow (D-FIND-8).
+
 `FIND_ORGS` turns on the new shape of a `search_company` hit
 (`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says
 how it matched (`matched_by`, `covers`, `of`), and the hit with the most of the

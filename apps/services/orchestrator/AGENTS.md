@@ -106,6 +106,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 22. **A run that holds a CRM tool gets the number check** (spec `crm_platform.md` §18.11.2).
    - `_tool_injection._apply_answer_check` runs at the end of `_inject_agent_tools`. Read `agents` again after injection. Do not attach the provider anywhere else.
    - Each new relay of a run queue must drop the hold beat (`_relayable`). Fences: `test_crm_answer_check.py`, `test_crm_answer_check_executor.py`.
+   - FIND-7: the same seam gives the "not found" check to an agent that holds `search_company`, while `FIND_CLAIM_CHECK` is not `off`. With the flag `off`, the seam attaches what it attached before. Fence: `test_answer_not_found.py`.
 22a. **A slow tool call gets one line for the member** (HRD-6 part 1, spec `chat_run_continuity.md` §4.11). It ships dark behind `CHAT_PROGRESS_NOTICE_ORGS`.
    - `_tool_injection._apply_progress_notice` runs right BEFORE `_apply_answer_check`, after `_apply_steer_turns`. Rule 22 keeps the number check last, so its recorder sits inside the timer, and the timer still wraps each tool call. It reads the org of the run binding only. Do not attach `acb_skills.progress_notice.ProgressNoticeProvider` anywhere else.
 22b. **A card stores the call that it guards** (RESUME-1a, task 3260, spec `chat_run_continuity.md` §4.12.4 item 1). It ships dark behind `CHAT_RESUME_ORGS`.

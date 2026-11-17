@@ -842,6 +842,45 @@ def format_trace(body: Any) -> str:
     return "\n".join(lines)
 
 
+# ── The second pass, as the answer shows it (FIND-7, ``find_engine.md`` §5.5) ─
+
+#: The first words of the line of a near spelling that the route proved
+#: (:func:`_near_line`).
+NEAR_HELD_OPENING = "No record holds «"
+#: The first words of the line of what a zero answer tried (:func:`_tried_parts`).
+TRIED_OPENING = "Tried: "
+
+
+def ran_second_pass(text: str) -> bool:
+    """True when *text*, an answer of this tool, shows that pass 2 of
+    ``find_engine.md`` §3.2 ran (FIND-7, §5.5).
+
+    It is the ONE reader of the mark, beside the code that writes each line.
+    ``acb_skills.answer_check`` reads it. A line of rung 2 opens with
+    :data:`EACH_WORD_OPENING` or :data:`BROADENED_OPENING`, in an answer and
+    in a trace. A line of rung 3 opens with :data:`NEAR_FOUND` or
+    :data:`NEAR_HELD_OPENING`, or the "Tried:" line ends with
+    :data:`NEAR_TRIED`. A trace (:data:`TRACE_HEADER`) counts too, because
+    the explain mode runs each rung.
+
+    Only the start of a line counts, and each such line comes from code.
+    :func:`_line` folds each line break of a title, a hint and a snippet, so
+    no text that another person wrote can start a line. Pass 2 shows nothing
+    for a query of one word whose near lookup found no name, so this gives
+    False there.
+    """
+    lines = str(text or "").splitlines()
+    if lines and lines[0].startswith(TRACE_HEADER):
+        return True
+    for line in lines:
+        if line.startswith((EACH_WORD_OPENING, BROADENED_OPENING, NEAR_FOUND,
+                            NEAR_HELD_OPENING)):
+            return True
+        if line.startswith(TRIED_OPENING) and f" {NEAR_TRIED} " in line:
+            return True
+    return False
+
+
 @_read_tool
 async def search_company(query: str, apps: str | None = None) -> str:
     """Find the company's records that match the words, in every app the member holds.
@@ -943,6 +982,7 @@ __all__ = [
     "context_recency_enabled",
     "format_answer",
     "format_trace",
+    "ran_second_pass",
     "search_company",
     "search_company_dated",
 ]

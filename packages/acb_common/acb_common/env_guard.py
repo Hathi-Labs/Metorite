@@ -169,6 +169,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # how they matched. It changes the order and the text of each answer, so
     # only the owner writes it (work_plan.md section 6 D4).
     "FIND_ORGS",
+    # WS-FIND FIND-7 (find_engine.md section 5.5): the "not found" check of a
+    # chat answer. `on` gives the chat one more pass and spends model tokens,
+    # so only the owner writes it (D-FIND-8).
+    "FIND_CLAIM_CHECK",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",

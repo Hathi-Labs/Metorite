@@ -26,6 +26,13 @@ tried, and at most 3 "Where else" lines. `search_company(explain=true)`
 answers the trace of §3.7 with no record. Each search writes one
 `search.company.ladder` line.
 
+**FIND-7 is built** (task 3244, 2026-11-17, see "As built" in §5.5). Behind
+`FIND_CLAIM_CHECK`, the harness reads the final answer of each chat run. An
+answer that says a record does not exist needs a `search_company` answer of
+the same run that shows pass 2. In `shadow`, a miss writes one
+`answer_check.claim` line with no text. In `on`, it gets one more pass. The
+flag is `off` on every box.
+
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
 extends §20 and replaces nothing in it. It adds no second read path and no
@@ -571,6 +578,76 @@ search with all the words.
 The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 (D-FIND-8).
 
+**As built (FIND-7, task 3244).**
+
+- **The home.** `CheckClaims` in `acb_skills/answer_check.py` is a second
+  chat middleware on the one provider, `AnswerCheckProvider`. The one seam,
+  `_tool_injection._apply_answer_check`, attaches it to an agent whose own
+  tools hold `search_company`. A spawn child gets no check. It sits inside the
+  number check, so it reads the model's own text before a note joins it.
+- **The final answer only.** The check reads a model response that calls no
+  tool. A step that calls a tool is no answer, because the run goes on.
+- **The mark of pass 2.** `company_search_tools.ran_second_pass` is the one
+  reader, beside the code that writes each line. A line of rung 2 starts with
+  "Each word alone:". A line of rung 3 starts with "Near spellings:" or
+  "No record holds «", or the "Tried:" line ends with "Near spellings tried:".
+  A trace counts too, because the explain mode runs each rung. The tool folds
+  each line break of a record, so no record can start such a line.
+- **Why not the log line.** `search.company.ladder` is a log line of the
+  gateway. The harness reads only the text of the tool answer.
+- **The matcher.** `not_found_claim` has 5 rules with closed codes:
+  `no_such`, `could_not_find`, `no_record_of`, `there_is_no_named` and
+  `does_not_exist`. Each rule needs a record noun from a closed list, or a
+  name in a place of records, such as "Sharath in the CRM". A preposition
+  between "find" and the noun ends a claim, so "any errors in the invoice"
+  is no claim. A question, a condition ("if", "unless", "whether"), a quote,
+  a quoted block and code are no claim.
+- **The flag.** `FIND_CLAIM_CHECK` takes `off`, `shadow` or `on`, for every
+  org of the box. `acb_common.settings.find_claim_check_mode` is its one
+  reader. It is not a `*_ORGS` or `*_MODES` key, so a change needs a restart.
+- **`shadow`.** The check writes at most one `answer_check.claim` line for a
+  run, and changes nothing. The outcome is `shadow_miss` or `shadow_pass`.
+- **`on`.** The check holds an answer once a find tool answered in the run
+  (`FIND_TOOLS`, the tools of §5.2 and §5.3). A claim with no pass 2 gets
+  one more model request, with the fixed text `CLAIM_RETRY_NOTE`. After it,
+  the answer goes as it is.
+- **The one retry.** NUM-3 and HRD-13 are not built. So the check shares
+  `RunLedger.retried` with the number check of CRM-Q29. The check that
+  finds a fault first spends it. A later claim logs `retry_spent`.
+- **The log line.** `answer_check.claim` holds `mode`, `outcome`, `rule`,
+  `searches` and `finds`. It holds no word of the answer, of a record or of
+  the member. The run context adds the run id, as for `answer_check.checked`.
+- **Off.** With the flag `off`, the seam attaches what it attached before,
+  and the log line `executor.answer_check_on` keeps its fields. Fence:
+  `tests/unit/test_answer_not_found.py`.
+
+**The limits of FIND-7.**
+
+1. The matcher reads English only.
+2. The matcher misses a claim with no record noun and no place, such as "I
+   could not find Neuropeak". It also misses a claim in a question or a
+   condition. It misses a name in lower case, such as "nuropeak in the CRM".
+3. The matcher misses a claim with a preposition before its noun. An
+   example is "I could not find anything like that order". The matcher does
+   not read "no mention of" or "no trace of". A summary of a mail uses them
+   for what the mail holds.
+4. The matcher fires on an old fault that the answer reports. An example is
+   "Earlier I could not find the order, but here it is".
+5. The check reads the text of the answer, not the text of a card.
+6. Pass 2 shows no line for a query of one word whose near lookup found no
+   name. So the check fires after such a search.
+7. Pass 2 does not run when the first pass has a hit with every content
+   word. It does not run with `CONTEXT_RECENCY` off, or for a query with an
+   operator. With `FIND_ORGS` off, it runs only when the first pass finds no
+   hit. In each case the check fires on a claim.
+8. In `on`, an answer before the first find tool of the run is not held. It
+   streams as it is, and the check logs `unheld_miss`.
+9. In `on`, the member sees a held answer only when it is complete, as with
+   the number check.
+10. A search of a sub-agent does not count for the run of its parent.
+11. The check does not compare the words of the search with the words of the
+    member. Any `search_company` answer of the run that shows pass 2 passes.
+
 ## 6. Privacy and tenancy
 
 - **Tenancy is a row (D15).** Each lookup runs in the bound tenant session. No
@@ -659,7 +736,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **HRD-21** | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a `no_egress` session and the current chat never show. The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
-| **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
+| **FIND-7** (built) | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |
 | **FIND-8** | 3246 | 3 | `contributes.search` made real: one entry in each shell manifest of an app with a source, `load_search()` in `shell_manifest.py`, the lockstep of §4.4, `BAR_APPS` and `TAU_DAYS` read from the manifest, and the `building_blocks.md` §3.1 row set right | No behaviour changes: the search suites pass unchanged. A source with no entry, or an entry with no source, fails the fence | `test_search_contributions.py`, new. `test_shell_manifests.py`, `test_shell_search.py` | STANDARD · AGENT-SAFE | FIND-3, HRD-18b |
 | **FIND-9** | 3247 | 3 | The Studio source of §4.5: one source for each install that declares `contributes.search`, over the object query of C2a, as the member | A near name finds a Studio record. A member outside the scope of the install gets nothing. Org B gets nothing | `test_find_studio_source_r8.py`, new | HIGH · AGENT-SAFE. It follows `STUDIO_ORGS` | FIND-8 |
@@ -720,6 +797,9 @@ uv run python -m evals.search_company.run --fixture
 
 # Each slice adds its own fence from §9.2, for example FIND-2
 uv run pytest tests/unit/test_find_matched_by.py -q
+
+# FIND-7, the "not found" check, with the number check that shares its retry
+uv run pytest tests/unit/test_answer_not_found.py tests/unit/test_crm_answer_check.py -q
 ```
 
 ## 13. What this spec does not own

@@ -50,6 +50,28 @@ of ``CRM_ANSWER_CHECK``: ``off`` (the default), ``shadow`` or ``on``.
 no retry.
 
 No log line holds a number or a text. Fence: ``tests/unit/test_crm_answer_check.py``.
+
+**The "not found" check** (WS-FIND FIND-7, ``find_engine.md`` §5.5). The
+same provider adds :class:`CheckClaims` to a run of an agent that holds
+``search_company``, when ``FIND_CLAIM_CHECK`` is not ``off``
+(``acb_common.settings.find_claim_check_mode``, the one reader). It reads the
+final answer of each model request (a response with no tool call). An answer
+that :func:`not_found_claim` reads as "the record does not exist" needs a
+``search_company`` answer in the same run that shows pass 2
+(``company_search_tools.ran_second_pass``).
+
+* ``shadow`` logs one ``answer_check.claim`` line for the run, and changes
+  nothing.
+* ``on`` holds the answer once the run read a result of :data:`FIND_TOOLS`.
+  A claim with no pass 2 gets ONE more model request with
+  :data:`CLAIM_RETRY_NOTE`. That is the one retry of the run, which the
+  number check spends too (``RunLedger.retried``). After it, the answer goes
+  as it is (D-FIND-8). An answer before any find result is not held: the
+  check logs it as ``unheld_miss``.
+
+The claim line holds the mode, the outcome, the rule code and two counts. It
+holds no text of the answer and no word of a record. Fence:
+``tests/unit/test_answer_not_found.py``.
 """
 
 from __future__ import annotations
@@ -95,6 +117,7 @@ from agent_framework import (
     ResponseStream,
 )
 
+from acb_skills.company_search_tools import ran_second_pass
 from acb_skills.crm_tools import CRM_TOOL_NAMES
 from acb_skills.egress import DELEGATION_TOOLS, is_delegation_tool
 from acb_skills.tool_guard import tool_name
@@ -276,6 +299,190 @@ _CODE_LIKE = re.compile(
     r"|\breturn\s+[\w.$\[\]]+\s*;",
     re.MULTILINE,
 )
+
+# ── The "not found" check (WS-FIND FIND-7, ``find_engine.md`` §5.5) ────────
+
+#: The tool whose answer shows pass 2 (``company_search_tools.ran_second_pass``).
+#: An agent that holds it gets the claim check.
+CLAIM_SEARCH_TOOL = "search_company"
+
+#: The find tools of the chat (``find_engine.md`` §5.2 and §5.3). A result of
+#: one of them arms the hold of the claim check in ``on``. ``resolve_name`` is
+#: the tool of FIND-5, and a name that no run holds arms nothing.
+FIND_TOOLS: frozenset[str] = frozenset({
+    CLAIM_SEARCH_TOOL, "resolve_name", "search_crm", "crm_list_records",
+    "query_inbox", "find_contact", "find_tasks", "resolve_person",
+})
+
+#: The text of the one more pass (D-FIND-8). It is fixed: no word of the
+#: answer, of a record or of the member goes into it.
+CLAIM_RETRY_NOTE = (
+    "A check of your answer found that it says a record does not exist, or that "
+    "you could not find it. No search_company answer of this turn shows its second "
+    "pass: each word alone and the near spellings. Before you say that a record "
+    "does not exist, call search_company once with all the words of the member's "
+    "request: the names, the kind of record and any number. Read how each hit "
+    "matched, and read the 'Each word alone' and 'Where else' lines. Then answer "
+    "again. If the search still finds nothing, say what you searched, the "
+    "spellings it tried and where else to look."
+)
+
+#: The rule codes of :func:`not_found_claim`, for the log. A closed list.
+CLAIM_RULES: tuple[str, ...] = (
+    "no_such", "could_not_find", "no_record_of", "there_is_no_named", "does_not_exist",
+)
+
+#: The outcomes of the claim line, for the log. A closed list.
+CLAIM_OUTCOMES: tuple[str, ...] = (
+    "shadow_pass", "shadow_miss", "pass", "retry", "retry_spent",
+    "after_retry_miss", "unheld_miss",
+)
+
+#: The kinds of record whose absence an answer can claim. Plain English only.
+_RECORD_NOUN = (
+    r"(?:orders?|deals?|leads?|contacts?|customers?|clients?|compan(?:y|ies)"
+    r"|accounts?|persons?|people|records?|entr(?:y|ies)|invoices?"
+    r"|quot(?:e|es|ation|ations)|payments?|e-?mails?|mails?|messages?|threads?"
+    r"|conversations?|tasks?|projects?|tickets?|vendors?|suppliers?|shipments?"
+    r"|match(?:es)?|results?)"
+)
+#: The curly quote marks, by code point: a single pair, then a double pair.
+_LSQUO, _RSQUO, _LDQUO, _RDQUO = chr(0x2018), chr(0x2019), chr(0x201C), chr(0x201D)
+#: A straight and a curly apostrophe, for a class of a pattern.
+_APOS = "'" + _RSQUO
+#: The quote marks that :func:`_claim_in` takes off a word of the span.
+_QUOTE_MARKS = "«»\"'" + _LSQUO + _RSQUO + _LDQUO + _RDQUO
+#: "could not", "can't", "didn't", "was not able to", "unable to", with a
+#: straight or a curly apostrophe.
+_CANNOT = (
+    rf"(?:could(?:n[{_APOS}]t|\s+not)|can(?:[{_APOS}]t|not|\s+not)|did(?:n[{_APOS}]t|\s+not)"
+    rf"|(?:was|were|am|is|are)(?:n[{_APOS}]t|\s+not)\s+able\s+to|unable\s+to)"
+)
+#: A word that ends the span between the verb and the record: "find TIME to
+#: update the deal" and "find a WAY to export the deal" are no claim. A
+#: preposition ends it too: "find any errors IN the invoice" and "find any
+#: issues WITH the order" say what a record holds, not that it is missing.
+_SPAN_STOP = frozenset({
+    "to", "time", "way", "ways", "chance", "moment", "how", "where", "why", "when",
+    "what", "which", "who", "whether", "room", "space", "reason", "need", "words",
+    "setting", "settings", "option", "options", "button", "field", "fields",
+    "with", "in", "on", "of", "for", "about", "at", "from", "by", "into", "within",
+    "inside", "regarding", "across", "between", "among", "under", "over", "after",
+    "before", "during", "than", "like", "wrong",
+})
+#: One word of the span, a quoted name too: "find «Neuropeak» in the CRM".
+_SPAN_WORD = r"[^\s.!?,;:]+"
+#: The places of the company's records: "I could not find Sharath IN THE CRM".
+_PLACE = (
+    r"(?:crm|inbox|mailbox|mails?|e-?mails?|records|system|database|projects|tasks"
+    rf"|people|contacts|whatsapp|knowledge(?:\s+base)?|company(?:[{_APOS}]s)?\s+records)"
+)
+#: Each rule of a claim, in order: its code and its pattern. Each pattern
+#: needs a record noun, or a name in a place of records, so "I could not
+#: find the time" is no claim.
+_CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("no_such", re.compile(
+        rf"\bno\s+such\s+(?:{_SPAN_WORD}\s+){{0,2}}?{_RECORD_NOUN}\b", re.I)),
+    ("could_not_find", re.compile(
+        rf"\b{_CANNOT}\s+(?:find|locate|track\s+down)\b"
+        rf"(?P<span>(?:\s+{_SPAN_WORD}){{0,4}}?)\s+"
+        rf"(?:{_RECORD_NOUN}\b|any(?:thing|one|body)\s+(?:for|about|on|matching|named"
+        r"|called|under|from|related|with)\b)",
+        re.I)),
+    # A name in a place of records: "I could not find Sharath in the CRM".
+    # :func:`_claim_in` needs a name: a capital or a digit on each word, or a
+    # quote mark first. So "find any errors in the system" is no claim.
+    ("could_not_find", re.compile(
+        rf"\b{_CANNOT}\s+(?:find|locate|track\s+down)\b"
+        rf"(?P<name>(?:\s+{_SPAN_WORD}){{1,4}}?)\s+"
+        rf"in\s+(?:the|your|our|any)\s+{_PLACE}\b",
+        re.I)),
+    ("no_record_of", re.compile(
+        r"\bno\s+(?:records?|match(?:es)?|results?|entr(?:y|ies))\s+"
+        r"(?:of|for|matching|named|called|about|from|with|under)\b", re.I)),
+    ("there_is_no_named", re.compile(
+        rf"\bthere(?:\s+is|\s+are|\s+was|\s+were|[{_APOS}]s)\s+no\s+{_RECORD_NOUN}\s+"
+        r"(?:named|called|matching|by\s+the\s+name|with\s+the\s+name|under\s+the\s+name)\b",
+        re.I)),
+    ("does_not_exist", re.compile(
+        rf"\b{_RECORD_NOUN}\b[^.!?\n]{{0,60}}?\b(?:does|do|did)(?:n[{_APOS}]t|\s+not)\s+"
+        r"(?:seem\s+to\s+|appear\s+to\s+)?exist\b", re.I)),
+)
+#: A clause that makes a claim a condition or a doubt: "If I can't find the
+#: order, ..." is no claim.
+_HEDGE = re.compile(r"\b(?:if|unless|whether|in\s+case)\b", re.I)
+#: Code, and a line that quotes a block. Neither is prose of the answer.
+_CODE = re.compile(r"```.*?```|`[^`\n]*`|^[ \t]*>.*$", re.S | re.M)
+#: A quote inside a sentence. A record can hold the words "no such order",
+#: and a claim that STARTS inside a quote is the record's text, not the
+#: answer's. A name in a quote ("I could not find «Neuropeak»") stays.
+_QUOTE = re.compile(
+    "«[^»\\n]*»|\u201c[^\u201d\\n]*\u201d|\u2018[^\u2019\\n]*\u2019|\"[^\"\\n]*\""
+    r"|(?<!\w)'[^'\n]*'(?!\w)"
+)
+#: The end of a sentence or of a line, for the claim check.
+_CLAIM_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _is_name(span: str) -> bool:
+    """True when *span* reads as the name of a record: a quote mark first, or
+    a capital letter or a digit at the start of each word."""
+    words = span.split()
+    if not words:
+        return False
+    if words[0][:1] in _QUOTE_MARKS:
+        return True
+    return all(word.strip(_QUOTE_MARKS)[:1].isupper() or word.strip(_QUOTE_MARKS)[:1].isdigit()
+               for word in words)
+
+
+def _claim_in(sentence: str) -> str | None:
+    """The rule code of the first claim of one *sentence*, or None."""
+    quoted = [m.span() for m in _QUOTE.finditer(sentence)]
+    for rule, pattern in _CLAIM_PATTERNS:
+        for match in pattern.finditer(sentence):
+            at = match.start()
+            if any(start <= at < end for start, end in quoted):
+                continue
+            if _HEDGE.search(sentence[:at]):
+                continue
+            groups = match.groupdict()
+            span = groups.get("span") or ""
+            if any(word.strip(_QUOTE_MARKS).lower() in _SPAN_STOP for word in span.split()):
+                continue
+            if "name" in groups and not _is_name(groups["name"] or ""):
+                continue
+            return rule
+    return None
+
+
+def not_found_claim(text: str) -> str | None:
+    """The rule code of :data:`CLAIM_RULES` of the first sentence of *text*
+    that says a record does not exist, or None (FIND-7, ``find_engine.md``
+    §5.5).
+
+    The rules are CONSERVATIVE, because a false hold in ``on`` costs a model
+    request. Each rule needs a record noun from a closed list, or a name in a
+    place of records ("Sharath in the CRM"). A preposition between "find" and
+    the noun ends the claim, so "any errors in the invoice" is none. A
+    question, a sentence with a condition ("if", "unless", "whether"), a
+    claim that starts inside a quote, a quoted block and code are no claim.
+    It reads English only. Pure.
+    """
+    plain = _CODE.sub(" ", str(text or ""))
+    for sentence in _CLAIM_SENTENCE.split(plain):
+        sentence = sentence.strip()
+        if not sentence or sentence.endswith("?"):
+            continue
+        rule = _claim_in(sentence)
+        if rule is not None:
+            return rule
+    return None
+
+
+def holds_search_tool(names: Iterable[str]) -> bool:
+    """True when *names* holds the tool that the claim check needs (FIND-7)."""
+    return any(name == CLAIM_SEARCH_TOOL for name in names)
 
 
 def holds_crm_tool(names: Iterable[str]) -> bool:
@@ -527,6 +734,21 @@ class RunLedger:
     gaps: list[tuple[str, str, str, int, Decimal]] = field(default_factory=list)
     #: Round 8: a CRM read of the run holds a question that is still open.
     open_question: bool = False
+    #: FIND-7: False when the number check is off for the run. Then the
+    #: ledger reads no figure, and only the claim check reads it.
+    numbers: bool = True
+    #: FIND-7: True when the claim check is on for the run. Else the ledger
+    #: counts no find result, as before FIND-7.
+    claims: bool = False
+    #: FIND-7: the results of :data:`FIND_TOOLS` and of ``search_company``.
+    finds: int = 0
+    searches: int = 0
+    #: FIND-7: a ``search_company`` answer of the run showed pass 2.
+    second_pass: bool = False
+    #: FIND-7: the claim check spent the retry of the run, or logged the one
+    #: line of ``shadow``.
+    claim_retried: bool = False
+    claim_logged: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False,
                                   compare=False)
 
@@ -540,7 +762,15 @@ class RunLedger:
         result takes part in a derived figure (a sum, a difference or a
         percent of two), and ``acb_common.number_check`` caps the share of
         each result in that pool.
+
+        FIND-7: with :attr:`claims`, a result of :data:`FIND_TOOLS` counts for
+        the claim check first. With :attr:`numbers` False, nothing else
+        happens.
         """
+        if self.claims:
+            self._note_find(tool, text)
+        if not self.numbers:
+            return
         if tool in FALLBACK_TOOLS:
             # One character more than the fallback shows, so it still
             # knows that a long result was cut.
@@ -559,6 +789,23 @@ class RunLedger:
             self.book.settle()
         if tool in ARM_TOOLS and not is_refusal(text):
             self._note_read(tool, text, arguments)
+
+    def _note_find(self, tool: str, text: str) -> None:
+        """FIND-7: count a result of a find tool, and keep whether a
+        ``search_company`` answer showed pass 2. It reads the lines that the
+        tool's own code writes (``company_search_tools.ran_second_pass``)."""
+        if tool not in FIND_TOOLS:
+            return
+        try:
+            shown = tool == CLAIM_SEARCH_TOOL and ran_second_pass(text)
+        except Exception as exc:  # the claim count never costs a number source
+            _log.warning("answer_check.claim_record_failed", error=type(exc).__name__)
+            shown = False
+        with self._lock:
+            self.finds += 1
+            if tool == CLAIM_SEARCH_TOOL:
+                self.searches += 1
+                self.second_pass = self.second_pass or shown
 
     def _note_read(self, tool: str, text: str, arguments: Any) -> None:
         """Keep what the note of round 8 needs from one CRM read: its line
@@ -1103,6 +1350,152 @@ class CheckAnswers(ChatMiddleware):
         )
 
 
+class CheckClaims(ChatMiddleware):
+    """The "not found" check of ONE run (WS-FIND FIND-7, ``find_engine.md`` §5.5).
+
+    It sits INSIDE :class:`CheckAnswers`, so it reads the model's own text,
+    before the number check adds a note. Both share the ledger, so the run
+    has ONE retry in all (``RunLedger.retried``).
+
+    It judges only a final answer: a response with no tool call. A step that
+    calls a tool is no answer, because the run goes on.
+    """
+
+    def __init__(self, ledger: RunLedger, mode: str) -> None:
+        self._ledger = ledger
+        self._mode = mode
+        self._last_beat = 0.0
+
+    #: The one drain of a held stream, with its sign of life.
+    _drain = CheckAnswers._drain
+
+    def _claim(self, response: ChatResponse) -> str | None:
+        """The rule of a claim of a final answer, or None. A check that
+        raises gives None, so the answer goes out unchanged."""
+        try:
+            if _calls(response):
+                return None
+            return not_found_claim(response.text or "")
+        except Exception as exc:
+            _log.warning("answer_check.claim_failed", mode=self._mode,
+                         error=type(exc).__name__)
+            return None
+
+    def _log(self, outcome: str, rule: str) -> None:
+        # The run id comes from the bound run context (``acb_common._log``).
+        # The line holds codes and counts, never a word of the answer.
+        _log.info(
+            "answer_check.claim", mode=self._mode, outcome=outcome, rule=rule,
+            searches=self._ledger.searches, finds=self._ledger.finds,
+        )
+
+    def _miss(self, response: ChatResponse) -> str | None:
+        """The rule of a claim that has no pass 2 in the run, or None. A
+        claim WITH pass 2 logs ``pass`` in ``on``."""
+        rule = self._claim(response)
+        if rule is None:
+            return None
+        if self._ledger.second_pass:
+            if self._mode == ON:
+                self._log("pass", rule)
+            return None
+        return rule
+
+    async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
+        if self._mode == SHADOW:
+            await call_next()
+            self._watch(context, unheld=False)
+            return
+        if not self._ledger.finds:
+            # No find tool has answered in this run yet, so the answer is not
+            # held: the member reads it as it streams. The check logs it.
+            await call_next()
+            self._watch(context, unheld=True)
+            return
+        await call_next()
+        if isinstance(context.result, ResponseStream):
+            context.result = ResponseStream(
+                self._held(context, call_next, context.result),
+                finalizer=ChatResponse.from_updates,
+            )
+        elif isinstance(context.result, ChatResponse):
+            context.result = await self._checked(context, call_next, context.result)
+
+    # shadow, and an unheld answer of on: look at the end, change nothing
+
+    def _watch(self, context: Any, *, unheld: bool) -> None:
+        def _look(response: ChatResponse) -> ChatResponse:
+            rule = self._claim(response)
+            if rule is None or self._ledger.claim_logged:
+                return response
+            if unheld:
+                if not self._ledger.second_pass:
+                    self._log("unheld_miss", rule)
+                return response
+            self._ledger.claim_logged = True
+            self._log("shadow_pass" if self._ledger.second_pass else "shadow_miss", rule)
+            return response
+
+        if isinstance(context.result, ResponseStream):
+            context.result.with_result_hook(_look)
+        elif isinstance(context.result, ChatResponse):
+            _look(context.result)
+
+    # on: hold, check, one more pass, then the answer as it is
+
+    def _retry_messages(self, messages: list[Any], response: ChatResponse) -> list[Any]:
+        return [*messages, Message("assistant", [response.text or ""]),
+                Message("user", [CLAIM_RETRY_NOTE])]
+
+    def _spend(self, rule: str) -> bool:
+        """True when this claim takes the one retry of the run. A retry that
+        is spent logs why the answer goes as it is."""
+        if not self._ledger.retried:
+            self._ledger.retried = True
+            self._ledger.claim_retried = True
+            self._log("retry", rule)
+            return True
+        self._log("after_retry_miss" if self._ledger.claim_retried else "retry_spent", rule)
+        return False
+
+    def _after(self, response: ChatResponse) -> None:
+        """The answer of the one more pass goes as it is (D-FIND-8). Log a
+        claim that it still makes."""
+        rule = self._miss(response)
+        if rule is not None:
+            self._log("after_retry_miss", rule)
+
+    async def _held(
+        self, context: Any, call_next: Callable[[], Any], stream: ResponseStream,
+    ) -> AsyncIterator[ChatResponseUpdate]:
+        updates, response = await self._drain(stream)
+        messages = list(context.messages)
+        rule = self._miss(response)
+        if rule is None or not self._spend(rule):
+            for update in updates:
+                yield update
+            return
+        context.messages = self._retry_messages(messages, response)
+        await call_next()
+        retry_updates, second = await self._drain(context.result)
+        self._after(second)
+        for update in retry_updates:
+            yield update
+
+    async def _checked(
+        self, context: Any, call_next: Callable[[], Any], response: ChatResponse,
+    ) -> ChatResponse:
+        messages = list(context.messages)
+        rule = self._miss(response)
+        if rule is None or not self._spend(rule):
+            return response
+        context.messages = self._retry_messages(messages, response)
+        await call_next()
+        second = context.result
+        self._after(second)
+        return second
+
+
 def _role(message: Any) -> str:
     role = getattr(message, "role", "")
     return str(getattr(role, "value", role) or "")
@@ -1157,28 +1550,44 @@ class AnswerCheckProvider(ContextProvider):
     of the agent (``agent_with_providers``), never to a shared agent object.
     Each ``run`` call gets a new ledger, so nothing carries from one run to
     the next.
+
+    *mode* is the mode of the number check, and *claim_mode* the mode of the
+    "not found" check (FIND-7). A check with the mode ``off`` adds no
+    middleware. :class:`CheckClaims` goes after :class:`CheckAnswers`, so it
+    is the inner one.
     """
 
-    def __init__(self, mode: str) -> None:
+    def __init__(self, mode: str, claim_mode: str = OFF) -> None:
         super().__init__(SOURCE_ID)
         self.mode = mode
-        self.ledger = RunLedger()
+        self.claim_mode = claim_mode
+        self.ledger = self._ledger()
+
+    def _ledger(self) -> RunLedger:
+        return RunLedger(numbers=self.mode != OFF, claims=self.claim_mode != OFF)
 
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
     ) -> None:
-        self.ledger = RunLedger()
-        context.extend_middleware(
-            SOURCE_ID,
-            [CheckAnswers(self.ledger, self.mode), RecordToolResults(self.ledger)],
-        )
+        self.ledger = self._ledger()
+        chat: list[Any] = []
+        if self.mode != OFF:
+            chat.append(CheckAnswers(self.ledger, self.mode))
+        if self.claim_mode != OFF:
+            chat.append(CheckClaims(self.ledger, self.claim_mode))
+        context.extend_middleware(SOURCE_ID, [*chat, RecordToolResults(self.ledger)])
 
 
 __all__ = [
     "ARM_TOOLS",
+    "CLAIM_OUTCOMES",
+    "CLAIM_RETRY_NOTE",
+    "CLAIM_RULES",
+    "CLAIM_SEARCH_TOOL",
     "CRM_ASSISTANT_READS",
     "DISPLAY_TOOLS",
     "FALLBACK_TOOLS",
+    "FIND_TOOLS",
     "HEARTBEAT_S",
     "HOLD_EVENT",
     "MEMBER_MESSAGE",
@@ -1191,6 +1600,7 @@ __all__ = [
     "SHADOW",
     "AnswerCheckProvider",
     "CheckAnswers",
+    "CheckClaims",
     "RecordToolResults",
     "RunLedger",
     "answer_check_mode",
@@ -1199,8 +1609,10 @@ __all__ = [
     "empty_group",
     "fallback_text",
     "holds_crm_tool",
+    "holds_search_tool",
     "many_failed",
     "member_words",
+    "not_found_claim",
     "note_text",
     "read_line",
     "retry_note",
