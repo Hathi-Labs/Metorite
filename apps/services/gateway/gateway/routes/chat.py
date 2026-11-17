@@ -974,6 +974,113 @@ _MESSAGE_UPSERT_SQL = """
     RETURNING id, (xmax = 0) AS inserted
 """
 
+
+def _replace_once(sql: str, old: str, new: str) -> str:
+    """*sql* with the one *old* line set to *new*. It raises when *old* is not
+    there exactly once, so a change of the base text breaks the import."""
+    if sql.count(old) != 1:
+        raise RuntimeError(f"the upsert text holds {sql.count(old)} of {old!r}")
+    return sql.replace(old, new)
+
+
+#: 🔴 **No shrink before the seal** (HRD-17e-1, task 3646,
+#: ``chat_failure_modes.md`` §6). A client write may update an agent row of
+#: a run before the fold seals it. ``content`` is a plain overwrite, so an
+#: old second tab can write older, shorter text. ``gateway/chat_no_shrink.py``
+#: holds the two flags and the log line.
+#:
+#: Each variant comes from ``_MESSAGE_UPSERT_SQL`` by a replace of one line,
+#: so the write rules stay in one text. ``_no_shrink_sql`` gives a variant
+#: only to a client write of an agent row of a listed org. Each other write,
+#: and each write of an org on no list, runs ``_MESSAGE_UPSERT_SQL`` byte for
+#: byte, with no extra read.
+#:
+#: * **Shadow** is the same write. The CTE ``prior`` reads the stored length
+#:   in the same statement, through the primary key, so it adds no round
+#:   trip. Under READ COMMITTED the CTE reads the snapshot of the statement,
+#:   and the ``DO UPDATE`` acts on the newest row. So a write that races
+#:   another write can log a length that is one write old.
+#: * **Enforce** keeps the stored ``content`` when the new text has fewer
+#:   characters. A shorter text can never start with the longer stored one,
+#:   so the length test is the whole rule. A longer text, an equal text and
+#:   a text of equal length pass. ``RETURNING`` says whether the guard kept
+#:   the stored text (``kept``). The other columns merge as before.
+#:
+#: The lengths are ``char_length``, a count of characters and not of bytes.
+#: ``content`` is ``NOT NULL`` (``02_chat_history.sql``). A NULL would fail
+#: the test and take the plain overwrite.
+_CONTENT_OVERWRITE = "        content        = EXCLUDED.content,\n"
+_UPSERT_RETURNING = "    RETURNING id, (xmax = 0) AS inserted\n"
+
+_NO_SHRINK_SHADOW_SQL = (
+    "\n    WITH prior AS (\n"
+    "        SELECT char_length(content) AS old_chars,\n"
+    "               starts_with(content, CAST(:content AS text)) AS prefix\n"
+    "        FROM chat_message\n"
+    "        WHERE session_id = CAST(:sid AS text) AND id = CAST(:id AS text))"
+    + _replace_once(
+        _MESSAGE_UPSERT_SQL, _UPSERT_RETURNING,
+        "    RETURNING id, (xmax = 0) AS inserted,\n"
+        "        (SELECT old_chars FROM prior) AS old_chars,\n"
+        "        char_length(CAST(:content AS text)) AS new_chars,\n"
+        "        (SELECT prefix FROM prior) AS prefix\n",
+    )
+)
+
+_NO_SHRINK_ENFORCE_SQL = _replace_once(
+    _replace_once(
+        _MESSAGE_UPSERT_SQL, _CONTENT_OVERWRITE,
+        "        content        = CASE\n"
+        "            WHEN char_length(EXCLUDED.content) < char_length(chat_message.content)\n"
+        "            THEN chat_message.content ELSE EXCLUDED.content END,\n",
+    ),
+    _UPSERT_RETURNING,
+    "    RETURNING id, (xmax = 0) AS inserted,\n"
+    "        (content IS DISTINCT FROM CAST(:content AS text)) AS kept,\n"
+    "        char_length(content) AS old_chars,\n"
+    "        char_length(CAST(:content AS text)) AS new_chars,\n"
+    "        starts_with(content, CAST(:content AS text)) AS prefix\n",
+)
+
+
+def _no_shrink_sql(mode: str, *, kind: str | None, author_from_run: bool, mint: bool) -> str:
+    """The upsert text of one write (HRD-17e-1). THE choice of the guard.
+
+    Only a client write of an agent row of a listed org gets a variant. The
+    fold (``author_from_run``), the mint, a human row and a system row get
+    ``_MESSAGE_UPSERT_SQL``, the same object, in every mode.
+    """
+    from gateway.chat_no_shrink import OFF, ON
+
+    if mode == OFF or kind != "agent" or author_from_run or mint:
+        return _MESSAGE_UPSERT_SQL
+    return _NO_SHRINK_ENFORCE_SQL if mode == ON else _NO_SHRINK_SHADOW_SQL
+
+
+def _note_shrink(sql: str, row: Any, *, session_id: str, message_id: str,
+                 organization_id: str | None) -> None:
+    """Log a shorter client write that the guard saw (HRD-17e-1). No text."""
+    from gateway import chat_no_shrink
+
+    if row is None or getattr(row, "inserted", False) is True:
+        return
+    if sql is _NO_SHRINK_ENFORCE_SQL:
+        if not row.kept:
+            return
+        event = chat_no_shrink.REFUSED_EVENT
+    elif sql is _NO_SHRINK_SHADOW_SQL:
+        if row.old_chars is None or row.new_chars >= row.old_chars:
+            return
+        event = chat_no_shrink.SHADOW_EVENT
+    else:
+        return
+    chat_no_shrink.log_shrink(
+        event, session_id=session_id, message_id=message_id,
+        organization_id=organization_id, old_chars=row.old_chars,
+        new_chars=row.new_chars, prefix=bool(row.prefix),
+    )
+
+
 #: A new row moves its chat's ``updated_at`` (WS-63 PZ-33b round 4). The seed
 #: of the summary job reads only the chats that a row reached in its window,
 #: and it finds them by ``updated_at`` (``assistant_summaries.IDLE_SQL``). So
@@ -1070,6 +1177,12 @@ def _upsert_messages(
     is in the return value. A client may still update an agent row that the
     server created, under the S13 rules.
 
+    HRD-17e-1: for an org that ``CHAT_NO_SHRINK_SHADOW_ORGS`` or
+    ``CHAT_NO_SHRINK_ORGS`` names, a client write of an agent row runs a
+    variant of the upsert (``_no_shrink_sql``). Shadow logs a shorter write.
+    Enforce keeps the stored text, and the id still counts as saved, because
+    the other columns merge. Each other write runs ``_MESSAGE_UPSERT_SQL``.
+
     🔴 **Every value passes through ``acb_common.pg_text.storable`` before
     the bind** (incident 2026-10-09). A tool result can hold the raw bytes of
     a file, and Postgres refuses a NUL in ``text`` and ``\\u0000`` in
@@ -1088,10 +1201,15 @@ def _upsert_messages(
     if not messages:
         return []
 
+    from gateway.chat_no_shrink import no_shrink_mode
+
     authority_json = json.dumps(authority) if authority else None
     # An empty member is no member: store NULL, so only the fold may update.
     run_member = (actor_email or "").strip().lower() or None
     typed_mark = None if member_typed is None else bool(member_typed)
+    # HRD-17e-1: the org is the tenant of this write, which the caller took
+    # from the session. A settings read, and no query.
+    shrink_mode = no_shrink_mode(organization_id)
     declined: list[str] = []
     inserted = False
 
@@ -1128,8 +1246,10 @@ def _upsert_messages(
                 "progress_lines": m.progress_lines, "reasoning": m.reasoning,
                 "agent_state": m.agent_state, "custom_events": events,
             })
+            sql = _no_shrink_sql(shrink_mode, kind=kind,
+                                 author_from_run=bool(author_from_run), mint=bool(mint))
             result = s.execute(
-                text(_MESSAGE_UPSERT_SQL),
+                text(sql),
                 {
                     "id": m.id,
                     "sid": session_id,
@@ -1164,6 +1284,9 @@ def _upsert_messages(
                 declined.append(m.id)
             elif getattr(row, "inserted", False) is True:
                 inserted = True
+            if sql is not _MESSAGE_UPSERT_SQL:
+                _note_shrink(sql, row, session_id=session_id, message_id=m.id,
+                             organization_id=organization_id)
         if inserted:
             s.execute(text(_TOUCH_SESSION_SQL), {"sid": session_id})
     return declined

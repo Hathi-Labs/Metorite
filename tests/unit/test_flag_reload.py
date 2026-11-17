@@ -192,6 +192,27 @@ def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not door_ops_allowed("globex")
 
 
+def test_chat_no_shrink_orgs_reload_and_their_reader_follows(env, monkeypatch) -> None:
+    """HRD-17e-1, chat_failure_modes.md §6. The reload list holds both keys,
+    and the one reader of the guard sees each change with no restart."""
+    from gateway.chat_no_shrink import ON, SHADOW, no_shrink_mode
+
+    assert fr.reloadable("CHAT_NO_SHRINK_ORGS")
+    assert fr.reloadable("CHAT_NO_SHRINK_SHADOW_ORGS")
+    monkeypatch.setenv("CHAT_NO_SHRINK_ORGS", "")
+    monkeypatch.setenv("CHAT_NO_SHRINK_SHADOW_ORGS", "")
+    get_settings.cache_clear()
+    assert no_shrink_mode("acme") == "off"
+    env(**{**_START, "CHAT_NO_SHRINK_SHADOW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_NO_SHRINK_SHADOW_ORGS",)
+    assert no_shrink_mode("acme") == SHADOW
+    assert no_shrink_mode("globex") == "off"
+    env(**{**_START, "CHAT_NO_SHRINK_SHADOW_ORGS": "acme", "CHAT_NO_SHRINK_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_NO_SHRINK_ORGS",)
+    assert no_shrink_mode("acme") == ON
+    assert no_shrink_mode(None) == "off"
+
+
 def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-CO CO-11, chat_organization.md §18. The reload list holds the key,
     and the one reader of the pin switch sees a change with no restart."""

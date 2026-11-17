@@ -174,6 +174,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # so only the owner writes it. The `CHAT_` prefix covers it too, and the
     # exact name keeps the fence if that prefix ever narrows.
     "CHAT_SEARCH_ORGS",
+    # chat_failure_modes.md section 6 HRD-17e-1: the orgs whose chat save
+    # keeps the longer stored reply, and the orgs that only log it. It changes
+    # what a save writes, so only the operator writes it. The `CHAT_` prefix
+    # covers both too.
+    "CHAT_NO_SHRINK_ORGS", "CHAT_NO_SHRINK_SHADOW_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
