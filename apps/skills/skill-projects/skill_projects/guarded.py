@@ -1221,7 +1221,7 @@ async def bulk_update(
     impact = _bulk_impact(body, len(tasks))
     rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
     # Task 3634 and 3636: an address to ADD that the people directory does not
-    # know, or whose person cannot open the task (suspended, no login), is named
+    # know, or whose person cannot open the task (not active, no login), is named
     # on the card as the create cards name it (H-162), so the member sees it
     # before the Approve. One lookup. A change with no address to add reads
     # nothing. One fence round a comma list, and each address once.
