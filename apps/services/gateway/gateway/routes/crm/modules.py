@@ -153,6 +153,13 @@ class ModuleListResponse(ListResponse):
     as columns by the CRM-Q4 rules."""
 
     field_defs: list[ModuleFieldDef] = Field(default_factory=list)
+    #: CRM-Q34-7: no record holds each word of ``q``, so the rows hold one of
+    #: these stored names, near spellings of a word. Each such row carries
+    #: ``near: true`` and its stored name in ``matched``. Absent otherwise.
+    near: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-7: ``q`` found no record. At most 3 stored names nearest to
+    #: ``q``, for the next call. Absent otherwise.
+    nearest: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class ModuleRecordPage(BaseModel):
@@ -515,6 +522,8 @@ async def list_module_records(
     """One page of a mirrored module's records. 404 for a module that the
     profile does not mirror. ``q`` matches ``name``, and ``sort`` is one of
     :data:`MODULE_RECORDS` ``sorts``. A NUL in the query is a 422 (CRM-Q25c).
+    For an org on ``CRM_MODULE_FIND_ORGS``, ``q`` finds across the module
+    instead (CRM-Q34-7, :func:`_find_page`).
 
     Field filters (CRM-U9): ``owner`` (``me`` is the caller), the
     ``updated_from`` and ``updated_to`` days, and ``custom.<key>=<value>`` or
@@ -522,6 +531,8 @@ async def list_module_records(
     of the four core lists. A key that the module has no definition for is
     ignored, so a stale link or view still opens the list (CRM-Q8 prune).
     """
+    from gateway.routes.crm.flags import module_find_allowed
+
     if request is not None:
         refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
@@ -530,6 +541,11 @@ async def list_module_records(
             db, module, updated_from, updated_to,
             custom_pairs(request.query_params if request is not None else None),
         )
+        if q is not None and module_find_allowed(current_tenant()):
+            return await _find_page(
+                db, module, q, sort=sort, direction=direction, page=page,
+                page_size=page_size, owner=resolve_owner(owner, user),
+                extra_where=extra_where, extra_params=extra_params, user=user)
         query = list_contract(
             MODULE_RECORDS, q=q, sort=sort, direction=direction,
             page=page, page_size=page_size, owner=resolve_owner(owner, user),
@@ -551,6 +567,80 @@ async def list_module_records(
         rows=[_record(r).model_dump() for r in rows], total=int(total),
         field_defs=defs,
     )
+
+
+async def _find_page(
+    db: Any, module: str, q: str, *, sort: str | None, direction: str, page: int,
+    page_size: int, owner: str | None, extra_where: tuple[str, ...],
+    extra_params: dict[str, Any], user: UserContext,
+) -> ModuleListResponse:
+    """One page of the module list with ``q`` across the module (CRM-Q34-7).
+
+    The list contract builds every other filter, and ``field_sql.find_where``
+    builds ``q``: the ONE predicate that the module total uses too. The count
+    and the page read the detoasted copy once for each row. When the count is
+    0, the near pass of ``field_sql.find_near`` runs: its rows carry
+    ``near: true`` and the stored name in ``matched``. A ``q`` that still
+    finds no row gives ``nearest``."""
+    from gateway.routes.crm.field_sql import (
+        DETOAST_JOIN,
+        find_near,
+        find_where,
+        find_words,
+        module_scope,
+        row_near_name,
+    )
+
+    words = find_words(q)
+    scope = await module_scope(db, module)
+    query = list_contract(
+        MODULE_RECORDS, q=None, sort=sort, direction=direction,
+        page=page, page_size=page_size, owner=owner,
+        extra_where=("module = :module", *extra_where),
+        extra_params={"module": module, **extra_params},
+    )
+    where, params = query.where, dict(query.params)
+    if words:
+        exact = find_where(scope, words)
+        where, params = f"{where} AND {exact.sql}", {**params, **exact.params}
+    source = DETOAST_JOIN if words else ""
+
+    async def read(where_sql: str, args: dict[str, Any]) -> tuple[int, list[Any]]:
+        total = int((await db.execute(
+            text(f"SELECT count(*) FROM crm_module_records{source}{where_sql}"), args,
+        )).scalar() or 0)
+        if not total:
+            return 0, []
+        rows = (await db.execute(
+            text(
+                f"SELECT {_COLUMNS} FROM crm_module_records{source}{where_sql} "
+                f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
+            ),
+            {**args, "limit": query.limit, "offset": query.offset},
+        )).fetchall()
+        return total, rows
+
+    total, rows = await read(where, params)
+    wired = [_record(r).model_dump() for r in rows]
+    near: list[str] | None = None
+    nearest: list[str] | None = None
+    if words and not total:
+        hit = await find_near(db, scope, words, query.where, query.params)
+        if hit.near:
+            again = find_where(scope, words, hit.near)
+            total, rows = await read(f"{query.where} AND {again.sql}",
+                                     {**query.params, **again.params})
+            wired = [_record(r).model_dump() for r in rows]
+            for row in wired:
+                row["near"] = True
+                row["matched"] = row_near_name(scope, row.get("name"), row.get("fields") or {},
+                                               hit)
+            near = hit.names() if total else None
+        if not total:
+            nearest = list(hit.nearest)
+    defs = await _field_defs(db, module, user.organization_id)
+    return ModuleListResponse(rows=wired, total=total, field_defs=defs, near=near,
+                              nearest=nearest)
 
 
 @router.get("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)

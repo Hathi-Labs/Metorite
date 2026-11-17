@@ -154,6 +154,11 @@
 > `crm-rung0-mt-c18dfcf9`, not merged. No migration and no flag. §18.17 holds
 > the slices and their status.
 
+> **Built dark: CRM-Q34-7 (task 3700, 2026-11-17).** `q` on a module list and
+> a module total finds across the module, behind `CRM_MODULE_FIND_ORGS`
+> (empty). Built on `crm-q34-7-mt-66a5c0f2`, not merged. No migration.
+> §18.17.2 holds the slice.
+
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
 > the sync design (§7.1) that this plan reuses. Do not re-derive them here.
@@ -8477,6 +8482,54 @@ Status: a second builder takes it, in `crm_tools.py` only.
 
 `q` on a module (CRM-Q34-7) is Rung 1, dark behind a new flag. One filter
 builder for a module list and a module total (CRM-Q34-4) is Rung 1 too.
+
+**CRM-Q34-7 · `q` finds across a module.**
+Status: built dark 2026-11-17 on `crm-q34-7-mt-66a5c0f2` (task 3700), not
+merged. Flag `CRM_MODULE_FIND_ORGS`, empty. A flip is `enforcement-flip`.
+
+- **Outcome.** `q` works on `GET /crm/modules/{module}/records`, and on
+  `GET /crm/aggregate` with `entity=module:<Name>`. It finds the records
+  that hold each word of `q` in the name, a lookup name or a text value.
+  Case does not matter.
+  The total counts exactly the rows that the list shows for the same `q`.
+- **The one predicate.** `field_sql.find_where`. The total (`aggregate._read`)
+  and the list (`modules._find_page`) both call it. Each row builds ONE text,
+  `concat_ws` of the name and each value, over the detoasted copy
+  (`DETOAST_JOIN`). Then `ILIKE ALL` takes one pattern for each word.
+- **The fields.** The fields of type `text`, `textarea`, `email`, `phone`,
+  `url` and `lookup` in the field definitions of the module, by position. A
+  lookup gives its name. At most 40 fields (`FIND_KEYS_MAX`), because
+  Postgres takes at most 100 arguments in one call. A field past the cap is
+  not searched.
+- **The words.** At most 200 characters and 8 words. A longer `q` is a 422
+  `unfit_q`, and a NUL is the 422 of `refuse_nul`. `%`, `_` and `\` in `q` are
+  literal: `like_pattern` escapes them. The core lists do not escape them
+  (`core.search_where`), and this slice does not change them.
+- **The near pass.** Only when the exact pass counts no row. ONE read takes
+  at most 2,000 stored names (`NEAR_NAMES_SCAN`) under the same filters. A
+  stored name is the record name or a lookup name. The most frequent come
+  first, then the order is by name.
+  `acb_common.name_match` scores them in Python. A `q` of at most 3 words
+  gets the pass. Each word of 4 letters or more also matches a row that
+  holds one of its 10 nearest names (`NEAR_SCORE`). The answer then carries `near`: the names it
+  counted. Each list row of the near pass carries `near: true` and its name
+  in `matched`.
+- **A zero.** When no row matches, the answer carries `nearest`: at most 3
+  stored names whose `name_score` against `q` reaches
+  `NEAR_CANDIDATE_SIMILARITY`. Each name is one line of at most 60
+  characters. The chat tools quote each name.
+- **Visibility.** The reads run in the member's tenant session, so RLS keeps
+  them in the org. A module record has no visibility of its own: the CRM
+  access rule admits the member to every record of the org, or to none.
+- **Flag off.** `q` on a module total is the 422 of CRM-Q34-2, and the list
+  matches the record name only, byte for byte.
+- **Not in this slice.** `field.<key>` on the module list (CRM-Q34-4), and an
+  index of the row text (no migration).
+- **Fences.** `tests/unit/test_crm_module_find.py` holds the AST fence on
+  the one builder, the flag, the caps, the escape and the near bounds.
+  `tests/unit/test_crm_module_find_r8.py` proves that the list and the total
+  agree and that org B stays out. It also proves that 30,000 rows of 3 KB
+  answer inside the 10 s timeout.
 
 ## 19. The daily-use UX (2026-10-12)
 

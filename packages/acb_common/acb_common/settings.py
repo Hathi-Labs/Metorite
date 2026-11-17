@@ -311,6 +311,16 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_fill_rank_r8.py.
     crm_fill_rank_orgs: str = ""
+    # `crm_module_find_orgs` (WS-53 CRM-Q34-7, 2026-11-17) lists the
+    # organization ids whose module list and module total take `q` across
+    # the record name, each lookup name and each text value
+    # (`crm_platform.md` §18.17), in the grammar of `crm_orgs`. Default empty
+    # means NO organization (fail closed). An org outside the list keeps the
+    # 422 of `q` on a module total and the list search of the record name
+    # only. The one reader is `gateway.routes.crm.flags`. A name in the list
+    # spends nothing, so a flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_module_find.py.
+    crm_module_find_orgs: str = ""
     # `crm_note_search_orgs` (WS-53 CRM-Q27, 2026-10-16) lists the
     # organization ids that get search of CRM note text by meaning
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default

@@ -34,6 +34,13 @@ gateway reads them.
   §18.9.3). The grammar is the one of ``CRM_ORGS``. An empty list allows no
   organization: the sync does no fill work, and the routes serve no fill
   numbers and no labels. :func:`fill_rank_allowed` is the one check.
+* ``CRM_MODULE_FIND_ORGS`` — the organization ids whose module list and
+  module total take ``q`` across the record name, each lookup name and each
+  text value (WS-53 CRM-Q34-7, ``crm_platform.md`` §18.17). The grammar is
+  the one of ``CRM_ORGS``. An empty list allows no organization: ``q`` on a
+  module total is the 422 of CRM-Q34-2, and the module list matches the
+  record name only, as before. :func:`module_find_allowed` is the one check.
+  A name in the list spends nothing, so its flip is gate ``enforcement-flip``.
 * ``CRM_NOTE_SEARCH_ORGS`` — the organization ids that get search of note
   text by meaning (WS-53 CRM-Q27, ``crm_platform.md`` §18.11.2). The grammar
   is the one of ``CRM_ORGS``. An empty list allows no organization: the sync
@@ -227,6 +234,27 @@ def fill_rank_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_fill_rank_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_module_find_orgs() -> frozenset[str]:
+    """The organization ids whose module reads take ``q`` across a module
+    (CRM-Q34-7). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_module_find_orgs or ""))
+
+
+def module_find_allowed(organization_id: str | None) -> bool:
+    """True when ``q`` on a module list and a module total finds across the
+    module for this org (CRM-Q34-7, ``crm_platform.md`` §18.17).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND
+    a place on ``CRM_MODULE_FIND_ORGS``, or ``*`` there. It reads the
+    settings and nothing else, and no module reads it at import, so a SIGHUP
+    reload applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_module_find_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 
