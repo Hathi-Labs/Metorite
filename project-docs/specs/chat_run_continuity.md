@@ -2216,7 +2216,7 @@ member never heard what the reply had made. So these rules hold:
   task when each write after the create landed, with no chat file.
 - `create_tasks`, `create_tags` and `create_types` name a full batch only.
   The member ticked each row, and each row landed with its follow-ups.
-- `set_reminder` names a new reminder when an id comes back. The CRM tool
+- `set_reminder` names a new reminder when an id comes back and its card showed (a held chat: in a normal chat the tool shows no card, so the line does not name it). The CRM tool
   `update_deal_status` names a move when the move landed.
 - The line never names a partial batch or a row that was left out. It never
   names a reminder that was already set, or a deal move that the mirror
