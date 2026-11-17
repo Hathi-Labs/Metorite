@@ -23,7 +23,7 @@ KNOWN, OFF, NOLOGIN, STRANGER = "k@y.test", "off@y.test", "nl@y.test", "x@y.test
 
 def _directory(call: dict) -> Any:
     """The directory answers only the addresses that it is asked about."""
-    asked = {a for a in str(call.get("params", {}).get("emails", "")).split(",") if a}
+    asked = {a.lower() for a in str(call.get("params", {}).get("emails", "")).split(",") if a}
     if call["path"] == "/projects/people/names":
         every = {KNOWN: "Kim", OFF: "Olga", NOLOGIN: "Nat"}
         return {"names": {a: n for a, n in every.items() if a in asked}}
@@ -36,7 +36,7 @@ async def test_the_check_splits_strangers_from_the_unreachable(monkeypatch) -> N
     fake_gateway(monkeypatch, _directory)
     strangers, cannot = await writes._address_check([KNOWN, OFF.upper(), NOLOGIN, STRANGER, "agent:x"])
     assert strangers == [STRANGER]
-    assert cannot == [OFF.upper(), NOLOGIN]
+    assert cannot == [OFF.upper(), NOLOGIN]  # the card keeps the case that the member typed
     assert await writes._unknown_addresses([KNOWN, STRANGER]) == [STRANGER]
 
 
