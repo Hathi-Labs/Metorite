@@ -72,6 +72,15 @@ instruction of that verdict (:data:`NAME_NEXT`). With no member it
 answers a sentence and calls nothing, and each failure is a sentence. The
 orchestrator holds it in ``core_tools`` only for an org of ``FIND_ORGS``,
 so the tool list of every other org does not change.
+
+**The family** (WS-FIND FIND-6, ``find_engine.md`` §5.3 and §5.4).
+:func:`find_on` is the one org rule of ``FIND_ORGS`` outside the gateway.
+:func:`with_zero_pointer` ends a zero answer of ``search_crm``,
+``query_inbox`` and ``find_tasks`` with :data:`FIND_POINTER`, only in a pack
+call of an org of ``FIND_ORGS`` with company search on. The orchestrator
+wraps the core find tools of such an org in the HRD-3 guard
+(``pack_tool_guard.guard``), so a failure is text with a next step. Each
+function of this module still raises as before, so its fences hold.
 """
 
 from __future__ import annotations
@@ -151,6 +160,69 @@ def context_recency_enabled() -> bool:
         return getattr(get_settings(), "context_recency", False) is True
     except Exception:
         return False
+
+
+def find_on(org: str | None = None) -> bool:
+    """True when ``FIND_ORGS`` names the organization (WS-FIND). Fails closed.
+
+    The rule is ``gateway.retrieval.find.find_allowed``, the one reader of the
+    flag. *org* is the organization of the caller's server-side
+    ``UserContext``. With none, the bound tenant and then the run's org
+    answer. A caller with none of them gets False. Never raises. The
+    orchestrator (``agents._find_enabled``) and :func:`zero_pointer` ask it.
+    """
+    try:
+        from gateway.retrieval.find import find_allowed
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return find_allowed(org)
+    except Exception:
+        return False
+
+
+#: The zero line of an app search tool (WS-FIND FIND-6, ``find_engine.md``
+#: §5.3), in the words of the spec. Fixed text: it holds no word of the query,
+#: no record and no count.
+FIND_POINTER = "search_company also tries near spellings, linked records and the other apps."
+
+
+def zero_pointer() -> str:
+    """:data:`FIND_POINTER`, or ``""`` (FIND-6, §5.3). Each gate fails closed.
+
+    1. The call is a pack call of the one assistant (``egress._in_pack_call``).
+       So the model that reads the line holds ``search_company``. A sub-run of
+       a specialist holds no such tool, and it gets no line.
+    2. ``COMPANY_SEARCH_ENABLED`` is on, so the core list holds the tool.
+    3. ``FIND_ORGS`` names the org of the run (:func:`find_on`).
+    """
+    try:
+        from acb_skills.egress import _in_pack_call
+
+        if not _in_pack_call():
+            return ""
+    except Exception:
+        return ""
+    if not company_search_enabled() or not find_on():
+        return ""
+    return FIND_POINTER
+
+
+def with_zero_pointer(zero: str) -> str:
+    """*zero*, the zero answer of ``search_crm``, ``query_inbox`` or
+    ``find_tasks``, with :data:`FIND_POINTER` as its last line when
+    :func:`zero_pointer` gives it. Else *zero* itself, byte for byte.
+
+    A tool calls it only on its zero branch, after a read that answered. A
+    failure raises before that branch, so a failure never gets the line."""
+    pointer = zero_pointer()
+    return f"{zero}\n{pointer}" if pointer else zero
 
 
 # ── Transport (the pattern of crm_tools.py) ────────────────────────────────
@@ -1280,6 +1352,7 @@ async def resolve_name(name: str, kinds: str | None = None) -> str:
 __all__ = [
     "BROADENED_OPENING",
     "DATED_HEADER",
+    "FIND_POINTER",
     "HEADER",
     "MOST_WORDS",
     "NAME_NEXT",
@@ -1287,10 +1360,13 @@ __all__ = [
     "TRACE_HEADER",
     "company_search_enabled",
     "context_recency_enabled",
+    "find_on",
     "format_answer",
     "format_names",
     "format_trace",
     "resolve_name",
     "search_company",
     "search_company_dated",
+    "with_zero_pointer",
+    "zero_pointer",
 ]
