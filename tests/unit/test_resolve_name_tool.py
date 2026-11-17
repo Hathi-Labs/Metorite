@@ -1287,8 +1287,9 @@ class TestTheCoreList:
         # (test_find_tools.py), so a failure is text with a next step.
         assert any(getattr(t, "__wrapped__", None) is cst.resolve_name
                    for t in lit.kwargs["tools"])
-        # Only the tool joins the list. The persona gains the standing rule of
-        # FIND-6 (find_engine.md §5.4) and nothing else.
+        # Only the tool joins the list. With CONTEXT_RECENCY on, the persona
+        # gains the standing rule of FIND-6 (find_engine.md §5.4) and nothing
+        # else (test_find_tools.py). This build has recency off, so no rule.
         assert [n for n in _tool_names(lit) if n != "resolve_name"] == _tool_names(dark)
         rule = pkg._mod.FIND_STANDING_RULE
         assert lit.kwargs["instructions"].replace(rule, "", 1) == dark.kwargs["instructions"]

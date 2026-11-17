@@ -920,8 +920,8 @@ KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
 
 WS-FIND FIND-6 (`find_engine.md` §5.4) ends the paragraph with the standing
-rule. Only an org of `FIND_ORGS` gets it, and every other org keeps the
-paragraph above, byte for byte:
+rule. Only an org of `FIND_ORGS` with `CONTEXT_RECENCY` on gets it. Every
+other org keeps the paragraph above, byte for byte:
 
 > When the member names a person, a company or a record, call
 > `search_company` once, with all their words. Read how each hit matched. A

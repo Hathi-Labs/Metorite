@@ -77,7 +77,8 @@ so the tool list of every other org does not change.
 :func:`find_on` is the one org rule of ``FIND_ORGS`` outside the gateway.
 :func:`with_zero_pointer` ends a zero answer of ``search_crm``,
 ``query_inbox`` and ``find_tasks`` with :data:`FIND_POINTER`, only in a pack
-call of an org of ``FIND_ORGS`` with company search on. The orchestrator
+call of an org of ``FIND_ORGS``, with company search and ``CONTEXT_RECENCY``
+on. The orchestrator
 wraps the core find tools of such an org in the HRD-3 guard
 (``pack_tool_guard.guard``), so a failure is text with a next step. Each
 function of this module still raises as before, so its fences hold.
@@ -196,11 +197,16 @@ FIND_POINTER = "search_company also tries near spellings, linked records and the
 def zero_pointer() -> str:
     """:data:`FIND_POINTER`, or ``""`` (FIND-6, §5.3). Each gate fails closed.
 
-    1. The call is a pack call of the one assistant (``egress._in_pack_call``).
-       So the model that reads the line holds ``search_company``. A sub-run of
-       a specialist holds no such tool, and it gets no line.
+    1. The call is a pack call (``egress._in_pack_call``). So the model that
+       reads the line is the one assistant, which holds ``search_company``. A
+       sub-run of a specialist holds no such tool, and it gets no line. The
+       one exception is a spawn child (OA-9c): it gets a pack call but no
+       ``search_company`` (a limit of ``find_engine.md`` §5.3).
     2. ``COMPANY_SEARCH_ENABLED`` is on, so the core list holds the tool.
-    3. ``FIND_ORGS`` names the org of the run (:func:`find_on`).
+    3. ``CONTEXT_RECENCY`` is on (:func:`context_recency_enabled`). The route
+       runs the ladder (near spellings, linked records) only then, so only
+       then is the line true.
+    4. ``FIND_ORGS`` names the org of the run (:func:`find_on`).
     """
     try:
         from acb_skills.egress import _in_pack_call
@@ -209,7 +215,7 @@ def zero_pointer() -> str:
             return ""
     except Exception:
         return ""
-    if not company_search_enabled() or not find_on():
+    if not company_search_enabled() or not context_recency_enabled() or not find_on():
         return ""
     return FIND_POINTER
 

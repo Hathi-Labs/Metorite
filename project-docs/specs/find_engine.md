@@ -41,10 +41,10 @@ contact, lead, company and mail sender that holds one name, exact or near.
 **FIND-6 is built** (task 3243, 2026-11-17, see "As built" in §5.3 and
 §5.4). Behind `FIND_ORGS`, with company search on, the core list holds
 `search_company` and `resolve_name`. Each find tool of the core list answers
-a failure as text. A zero of `search_crm`, `query_inbox` and `find_tasks`
-ends with the pointer, and the persona holds the standing rule.
-`resolve_person` stays in the core list, because the parity of D-FIND-3 does
-not hold yet (§5.3).
+a failure as text. With `CONTEXT_RECENCY` on too, a zero of `search_crm`,
+`query_inbox` and `find_tasks` ends with the pointer, and the persona holds
+the standing rule. `resolve_person` stays in the core list, because the
+parity of D-FIND-3 does not hold yet (§5.3).
 
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
@@ -755,13 +755,19 @@ second read path exists.
 - **The zero line.** `company_search_tools.with_zero_pointer` ends a zero
   answer with `FIND_POINTER`, the sentence of the table, on its own line.
   `search_crm` gives it after "Nothing in … matches". `find_tasks` gives it
-  after "No task matches". `query_inbox` gives it when the total is 0, so a
-  page past the end of a total gets none.
+  after "No task matches". `query_inbox` gives it only when the route sends
+  the integer 0 as the total. A page past the end of a total gets none. The
+  tool also gives no pointer for a missing total, `None`, a text or a bool.
 - **The gates.** Each gate fails closed. The call is a pack call of the one
   assistant (`egress._in_pack_call`). `COMPANY_SEARCH_ENABLED` is on.
+  `CONTEXT_RECENCY` is on (`company_search_tools.context_recency_enabled`).
   `FIND_ORGS` names the org of the run (`company_search_tools.find_on`, which
   asks `find.find_allowed`). A sub-run of a specialist holds no
-  `search_company`, so it gets no line.
+  `search_company`, so it gets no line. A spawn child is the one exception
+  (see the limits).
+- **Why `CONTEXT_RECENCY`.** The route runs the ladder only with it on
+  (`company.py`, `find_on`). With it off, `search_company` tries no near
+  spelling and no linked record, so the pointer would not be true.
 - **A failure is no zero.** A read that fails raises before the zero branch.
   The HRD-3 guard of the pack call then answers it, with no pointer.
 - **A near answer is no zero.** A `search_crm` answer with near spellings
@@ -770,8 +776,10 @@ second read path exists.
   wraps `search_company`, `resolve_name` and `resolve_person` in
   `pack_tool_guard.guard`, the one guard of HRD-3. A failure then reads "The
   tool failed (<class>). Nothing changed.", with a next step. The text names
-  the class of the error, never its message. Each other org keeps the tool
-  objects of before, so MAF answers its failure as before.
+  the class of the error, never its message. The guard needs no
+  `CONTEXT_RECENCY`, and neither does `resolve_name`: `GET /search/names`
+  does not read it. Each other org keeps the tool objects of before, so MAF
+  answers its failure as before.
 - **`resolve_person` stays (D-FIND-3).** The parity does not hold.
   `resolve_name` has no source that gives a member (`app_user`). It does not
   read the member's saved aliases. A person row prints no address.
@@ -791,9 +799,12 @@ second read path exists.
   `search_company`. Its pack call still opens the gate, so its zero line
   names a tool that it does not hold. The parent reads the answer, and the
   parent holds the tool.
-- The row FIND-6 says that no find tool answers "Error: Function failed.". As
-  built, that holds for an org of `FIND_ORGS` only, because the slice ships
-  dark. Each other org keeps the answer of MAF.
+- The row FIND-6 says that no find tool answers "Error: Function failed.".
+  As built, the text covers the core find tools of the one assistant, and its
+  pack calls through the HRD-3 guard. A delegated sub-run of a specialist
+  keeps the text of MAF for an exception that is no refusal, because its
+  tools have `refusals_as_text` only. An org off `FIND_ORGS` also keeps the
+  text of MAF for the find tools of its core list.
 - `failure_text` names the class of the error, such as `RuntimeError`. That
   is the choice of HRD-3.
 
@@ -814,18 +825,20 @@ A change to the persona moves its fences in the same PR.
 **As built (FIND-6).** `orchestrator/agents.py` holds the rule as
 `FIND_STANDING_RULE`, in the words above. One exact swap (`_FIND_SWAP`) puts
 it at the end of rule 1, right before rule 2. So it closes the grounding
-paragraph, also after the sentences of CX-1. It needs `FIND_ORGS` and
-`COMPANY_SEARCH_ENABLED`. With either off, the persona is the persona of
-before, byte for byte, and `test_find_tools.py` pins its hash.
+paragraph, after the sentences of CX-1. It needs `FIND_ORGS`,
+`COMPANY_SEARCH_ENABLED` and `CONTEXT_RECENCY`. With one of them off, the
+persona is the persona of before, byte for byte, and `test_find_tools.py`
+pins its hash.
 
 - **The goldens.** The preamble goldens did not move. `test_native_session_persistence.py`
   and `evals/trajectories/test_native_structured_history_trajectory.py` pin
   the per-turn context with a stand-in persona, not this persona. The new
   `evals/trajectories/test_find_family_trajectory.py` pins the rule and the
   tool list of the real run.
-- **"Where else" needs the dated tool.** The line prints only with
-  `CONTEXT_RECENCY` on. With it off, the rule names a line that the answer
-  does not print.
+- **Why `CONTEXT_RECENCY`.** The route runs the ladder only with it on, and
+  only the dated tool prints how a hit matched and the "Where else" line.
+  With it off, the rule would name lines that the answer does not print. So
+  an org of `FIND_ORGS` with it off gets `resolve_name` and no rule.
 - **Two texts differ.** The docstring of `search_company` says "put one name
   in each call". The rule says to call it once, with all the words. The
   slice kept the docstring, because every org reads it.

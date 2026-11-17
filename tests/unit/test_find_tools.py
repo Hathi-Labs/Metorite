@@ -2,18 +2,21 @@
 
 Spec: ``project-docs/specs/find_engine.md`` §5.3, §5.4 and the row FIND-6 of
 §9.2. Everything here is dark behind ``FIND_ORGS`` (with
-``COMPANY_SEARCH_ENABLED`` on), and an org off the list keeps the text and
-the tool objects of ``origin/main`` ``d7970121a``, byte for byte.
+``COMPANY_SEARCH_ENABLED`` on). An org off the list keeps the text and the
+tool objects of main at the time of the slice, byte for byte. The pins hold
+for ``d7970121a`` and for ``d99180486`` too.
 
 1. **The core list.** With ``FIND_ORGS`` on, it holds ``search_company`` and
-   ``resolve_name``. ``resolve_person`` stays while the profile is on: the
-   parity of D-FIND-3 does not hold (§5.3, as built). The two parts that
-   ``resolve_name`` lacks are pinned below, so the slice that adds them
-   must come back here.
-2. **The standing rule** of §5.4 closes the grounding paragraph, only on.
+   ``resolve_name``, with or without ``CONTEXT_RECENCY``. ``resolve_person``
+   stays while the profile is on: the parity of D-FIND-3 does not hold
+   (§5.3, as built). The three parts that ``resolve_name`` lacks are pinned
+   below, so the slice that adds them must come back here.
+2. **The standing rule** of §5.4 closes the grounding paragraph, only with
+   ``FIND_ORGS`` and ``CONTEXT_RECENCY`` on. The route runs the ladder, and
+   the dated tool prints how a hit matched and "Where else", only then.
 3. **The zero line** of ``search_crm``, ``query_inbox`` and ``find_tasks``
-   ends with the pointer of §5.3, only in a pack call of an org on the list,
-   and only on a zero. A failure is no zero.
+   ends with the pointer of §5.3, only in a pack call of an org on the list
+   with ``CONTEXT_RECENCY`` on, and only on a zero. A failure is no zero.
 4. **Failure text.** Each core find tool of an org on the list answers a
    failure through the HRD-3 guard (``pack_tool_guard.guard``): the class of
    the error, never its message, and never "Error: Function failed.".
@@ -54,7 +57,7 @@ FIND_NAMES = ("search_company", "resolve_name", "resolve_person")
 CRM_DIR = "apps/agents/agent-crm"
 EMAIL_DIR = "apps/agents/agent-email-assistant"
 
-#: The persona of ``origin/main`` ``d7970121a`` for each mix of
+#: The persona of main (``d7970121a``, and ``d99180486`` too) for each mix of
 #: (company_search, recency, proposals, profile, constraints, spawn,
 #: card_writes), as sha256. A later change of the persona must update it,
 #: as the goldens of ``test_native_session_persistence.py`` are.
@@ -92,14 +95,18 @@ def _words(text: str) -> str:
 
 @pytest.fixture()
 def flags(monkeypatch):
-    """``COMPANY_SEARCH_ENABLED`` on and ``FIND_ORGS`` as the test sets it."""
+    """``COMPANY_SEARCH_ENABLED`` on, and ``FIND_ORGS`` and ``CONTEXT_RECENCY``
+    as the test sets them. ``CONTEXT_RECENCY`` starts off, and a call that
+    does not name it keeps its value."""
     settings = get_settings()
     monkeypatch.setattr(settings, "company_search_enabled", True, raising=False)
     monkeypatch.setattr(settings, "context_recency", False, raising=False)
 
-    def _set(find: str, *, company_search: bool = True) -> None:
+    def _set(find: str, *, company_search: bool = True, recency: bool | None = None) -> None:
         monkeypatch.setattr(settings, "company_search_enabled", company_search, raising=False)
         monkeypatch.setattr(settings, "find_orgs", find, raising=False)
+        if recency is not None:
+            monkeypatch.setattr(settings, "context_recency", recency, raising=False)
 
     return _set
 
@@ -118,8 +125,8 @@ def build(monkeypatch, flags):
     monkeypatch.setattr(mod, "_load_specialist_agents_as_tools", lambda: [])
 
     def _build(find: str, *, profile: bool = False, org: str | None = ORG,
-               company_search: bool = True) -> _FakeAgent:
-        flags(find, company_search=company_search)
+               company_search: bool = True, recency: bool = False) -> _FakeAgent:
+        flags(find, company_search=company_search, recency=recency)
         monkeypatch.setattr(get_settings(), "assistant_profile_enabled", profile, raising=False)
         return mod.build_orchestrator_agent(with_history=False, organization_id=org)
 
@@ -142,12 +149,17 @@ def _tool(agent: _FakeAgent, name: str) -> Any:
 
 
 class TestTheCoreList:
-    def test_on_it_holds_search_company_and_resolve_name(self, build):
-        """The DONE WHEN of FIND-6. Mutation: drop the insert of
-        ``resolve_name`` → red."""
-        assert _find_tools(build(ORG)) == ["search_company", "resolve_name"]
-        assert _names(build(ORG))[:4] == [
+    @pytest.mark.parametrize("recency", [False, True], ids=["plain", "recency"])
+    def test_on_it_holds_search_company_and_resolve_name(self, build, recency):
+        """The DONE WHEN of FIND-6. ``GET /search/names`` reads no
+        ``CONTEXT_RECENCY``, so ``resolve_name`` joins either way. Mutation:
+        drop the insert of ``resolve_name``, or gate it on recency → red."""
+        lit = build(ORG, recency=recency)
+        assert _find_tools(lit) == ["search_company", "resolve_name"]
+        assert _names(lit)[:4] == [
             "search_company", "resolve_name", "read_page", "list_spaces"]
+        raw = cst.search_company_dated if recency else cst.search_company
+        assert _tool(lit, "search_company").__wrapped__ is raw
 
     def test_off_the_list_is_the_list_of_main(self, build):
         """An org off the list, and an empty list, keep the find tools of
@@ -181,12 +193,23 @@ class TestTheCoreList:
         assert [n for n in _names(lit) if n != "resolve_name"] == _names(dark)
 
     def test_the_gaps_of_parity_are_still_open(self):
-        """The two reasons that ``resolve_person`` stays (§5.3, as built).
-        The slice that closes them must update this case and §5.3."""
-        from gateway.retrieval import names
+        """The three reasons that ``resolve_person`` stays (§5.3, as built):
+        no member, no saved alias and no address. The slice that closes them
+        must update this case and §5.3."""
+        from gateway.retrieval import names, sources
+        from gateway.routes.admin import assistant_profile_people as people
 
         assert "member" not in names.KINDS, (
             "resolve_name now gives members: revisit D-FIND-3 and the core list")
+        # The aliases: resolve_person reads the member's saved aliases first
+        # (`_alias_tier`, through the profile store). The name route reads no
+        # profile store, and it has no kind for an alias.
+        assert callable(people._alias_tier)
+        assert "alias" not in names.KINDS
+        for module in (names, sources):
+            body = Path(module.__file__).read_text(encoding="utf-8")
+            assert "stored_profile" not in body and "assistant_profile" not in body, (
+                "the name route now reads the saved aliases: revisit D-FIND-3")
         text = cst.format_names({"verdict": "one", "rows": [{
             "app": "people", "kind": "person", "match": "exact", "name": "Raj Rao",
             "id": "6d000000-0000-4000-8000-000000000001", "href": "/people/x",
@@ -208,31 +231,41 @@ class TestTheStandingRule:
         """Mutation: change one word of ``FIND_STANDING_RULE`` → red."""
         assert _words(_orch().FIND_STANDING_RULE) == _words(_rule_from_spec())
 
-    @pytest.mark.parametrize("recency", [False, True], ids=["plain", "recency"])
-    def test_it_closes_the_grounding_paragraph(self, recency):
+    def test_it_closes_the_grounding_paragraph(self):
         """The rule sits once, right before rule 2, after the CX-1
-        sentences too. Mutation: anchor it on rule 1 → red with recency."""
+        sentences. Mutation: anchor it on rule 1 → red."""
         mod = _orch()
-        on = mod._orchestrator_instructions(True, recency, find=True)
+        on = mod._orchestrator_instructions(True, True, find=True)
         assert on.count(mod.FIND_STANDING_RULE) == 1
         assert mod.FIND_STANDING_RULE + "2. For specialist work:" in on
-        if recency:
-            assert on.index(mod._RECENCY_SWAP[1]) < on.index(mod.FIND_STANDING_RULE)
+        assert on.index(mod._RECENCY_SWAP[1]) < on.index(mod.FIND_STANDING_RULE)
+
+    def test_without_recency_there_is_no_rule(self):
+        """With ``CONTEXT_RECENCY`` off, the route runs no ladder and the
+        plain tool prints neither how a hit matched nor "Where else". So the
+        rule would promise a line that never prints. Mutation: drop
+        ``recency`` from the gate of ``_FIND_SWAP`` → red."""
+        mod = _orch()
+        assert (mod._orchestrator_instructions(True, False, find=True)
+                == mod._orchestrator_instructions(True, False))
 
     @pytest.mark.parametrize("mix", sorted(MAIN_PERSONA), ids=str)
     def test_on_is_the_persona_of_main_plus_the_rule(self, mix):
-        """Mutation: a second change rides with the swap → red."""
+        """With company search and recency on, the rule and nothing else.
+        Else the persona of main. Mutation: a second change rides with the
+        swap → red."""
         mod = _orch()
         cs, rec, prop, prof, cons, spawn, card = mix
         kw = dict(profile=prof, constraints=cons, spawn=spawn, card_writes=card)
         on = mod._orchestrator_instructions(cs, rec, prop, find=True, **kw)
         off = mod._orchestrator_instructions(cs, rec, prop, find=False, **kw)
-        if cs:
+        if cs and rec:
             assert on.replace(mod.FIND_STANDING_RULE, "", 1) == off
             assert mod.FIND_STANDING_RULE in on
         else:
-            # The rule names search_company, so it needs the tool.
+            # The rule names search_company and the lines of the dated tool.
             assert on == off
+            assert _sha(on) == MAIN_PERSONA[mix]
 
     @pytest.mark.parametrize("mix", sorted(MAIN_PERSONA), ids=str)
     def test_off_is_the_persona_of_main_byte_for_byte(self, mix):
@@ -245,15 +278,25 @@ class TestTheStandingRule:
         assert "Where else" not in off
 
     def test_the_build_follows_the_org(self, build):
-        """Mutation: read ``FIND_ORGS`` for the persona from another org →
-        red."""
-        lit, dark, other = build(ORG), build(""), build(OTHER)
+        """With recency on. Mutation: read ``FIND_ORGS`` for the persona from
+        another org → red."""
+        lit = build(ORG, recency=True)
+        dark, other = build("", recency=True), build(OTHER, recency=True)
         assert _orch().FIND_STANDING_RULE in lit.kwargs["instructions"]
         assert dark.kwargs["instructions"] == other.kwargs["instructions"]
         assert _sha(dark.kwargs["instructions"]) == MAIN_PERSONA[
-            (True, False, False, False, False, False, False)]
+            (True, True, False, False, False, False, False)]
         assert (lit.kwargs["instructions"].replace(_orch().FIND_STANDING_RULE, "", 1)
                 == dark.kwargs["instructions"])
+
+    def test_the_build_without_recency_keeps_the_persona_of_main(self, build):
+        """An org of ``FIND_ORGS`` with recency off gets ``resolve_name`` and
+        the persona of main, byte for byte. Mutation: pass ``find`` with no
+        recency gate → red."""
+        lit = build(ORG, recency=False)
+        assert "resolve_name" in _names(lit)
+        assert _sha(lit.kwargs["instructions"]) == MAIN_PERSONA[
+            (True, False, False, False, False, False, False)]
 
 
 # ── 3. The zero line of the app search tools ────────────────────────────────
@@ -348,7 +391,8 @@ TOOLS = sorted(ZERO_OF_MAIN)
 
 @pytest.fixture()
 def apps(monkeypatch, flags):
-    flags(ORG)
+    """The org on ``FIND_ORGS``, with ``CONTEXT_RECENCY`` on."""
+    flags(ORG, recency=True)
     return _Apps(monkeypatch)
 
 
@@ -379,6 +423,17 @@ class TestTheZeroLine:
     def test_without_company_search_no_pointer(self, apps, flags, tool):
         """The pointer names a tool that the core list must hold."""
         flags(ORG, company_search=False)
+        zero, owner, _slug = ZERO_OF_MAIN[tool]
+        with _bind(pack=owner):
+            assert apps.call(tool) == zero
+
+    @pytest.mark.parametrize("tool", TOOLS)
+    def test_without_recency_no_pointer(self, apps, flags, tool):
+        """With ``CONTEXT_RECENCY`` off, the route runs no ladder, so
+        ``search_company`` tries no near spelling and no linked record. The
+        zero is the zero of main. Mutation: drop the recency gate of
+        ``zero_pointer`` → red."""
+        flags(ORG, recency=False)
         zero, owner, _slug = ZERO_OF_MAIN[tool]
         with _bind(pack=owner):
             assert apps.call(tool) == zero
@@ -437,6 +492,36 @@ class TestTheZeroLine:
             out = asyncio.run(apps.email.query_inbox(query="zzq", offset=50))
         assert cst.FIND_POINTER not in out
 
+    @pytest.mark.parametrize("answer", [
+        {"emails": []},
+        {"emails": [], "total": None},
+        {"emails": [], "total": "0"},
+        {"emails": [], "total": True},
+        {"emails": [], "total": False},
+        {"emails": [], "total": 0.0},
+    ], ids=["missing", "none", "text", "true", "false", "float"])
+    @pytest.mark.parametrize("offset", [0, 50])
+    def test_only_an_integer_total_of_zero_is_a_zero(self, apps, answer, offset):
+        """``query_inbox`` gives the pointer only when the route sends the
+        integer 0 as the total. A missing total, None, a text, a bool or a
+        float is no proof of a zero. A total that ``page_line`` cannot read
+        raises, and the guard of the pack call answers it, with no pointer.
+        Mutation: read ``not total`` as the zero → red."""
+        apps.answer = dict(answer)
+        with _bind(pack="email-assistant"):
+            try:
+                out = asyncio.run(apps.email.query_inbox(query="zzq", offset=offset))
+            except TypeError:
+                out = ""
+        assert cst.FIND_POINTER not in out
+
+    def test_the_integer_zero_is_a_zero(self, apps):
+        """Non-vacuity of the case above."""
+        apps.answer = {"emails": [], "total": 0}
+        with _bind(pack="email-assistant"):
+            out = asyncio.run(apps.email.query_inbox(query="zzq"))
+        assert out == f"No emails matched those filters.\n{cst.FIND_POINTER}"
+
     def test_a_near_only_crm_answer_is_no_zero(self, apps):
         """Near rows are rows that the member sees. Mutation: give the
         pointer to the near answer → red."""
@@ -456,14 +541,17 @@ class TestTheZeroLine:
 
     def test_the_gates_of_the_helper(self, flags):
         """Each gate alone closes it. Mutation: drop one gate → red."""
-        flags(ORG)
+        flags(ORG, recency=True)
         with _bind(pack="crm-assistant"):
             assert cst.zero_pointer() == cst.FIND_POINTER
             assert cst.with_zero_pointer("x") == f"x\n{cst.FIND_POINTER}"
         with _bind(pack=None):
             assert cst.zero_pointer() == ""
             assert cst.with_zero_pointer("x") == "x"
-        flags("")
+        flags(ORG, recency=False)
+        with _bind(pack="crm-assistant"):
+            assert cst.zero_pointer() == ""
+        flags("", recency=True)
         with _bind(pack="crm-assistant"):
             assert cst.zero_pointer() == ""
         flags(ORG, company_search=False)

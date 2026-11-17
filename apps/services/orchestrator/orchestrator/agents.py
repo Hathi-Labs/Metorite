@@ -272,10 +272,12 @@ _RECENCY_SWAP: tuple[str, str] = (
 
 
 # WS-FIND FIND-6 (find_engine.md §5.4, knowledge_base.md §8.2). With
-# FIND_ORGS naming the org, and company search on, the grounding paragraph
-# (rule 1) ends with the standing rule, by one more exact swap. It sits right
-# before rule 2, so it closes the paragraph with or without the CX-1
-# sentences. Off, the persona does not change, byte for byte.
+# FIND_ORGS naming the org, company search on and CONTEXT_RECENCY on, the
+# grounding paragraph (rule 1) ends with the standing rule, by one more exact
+# swap. It sits right before rule 2, so it closes the paragraph after the CX-1
+# sentences. The route runs the ladder only with CONTEXT_RECENCY on, and only
+# the dated tool prints how a hit matched and the "Where else" line. Off, the
+# persona does not change, byte for byte.
 # Fence: tests/unit/test_find_tools.py.
 FIND_STANDING_RULE = (
     "   When the member names a person, a company or a record, call search_company\n"
@@ -413,8 +415,10 @@ def _orchestrator_instructions(
 
     *recency* (CX-1) adds the swap of :data:`_RECENCY_SWAP`, and *proposals*
     (KB-5a) the swap of :data:`_PROPOSALS_SWAP`. *find* (WS-FIND FIND-6) adds
-    the standing rule of :data:`_FIND_SWAP`. Each acts only when
-    *company_search* is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
+    the standing rule of :data:`_FIND_SWAP`, only with *recency* on too. The
+    route runs the ladder, and the dated tool prints how a hit matched and
+    the "Where else" line, only then. Each acts only when *company_search*
+    is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
     on its own, and *card_writes* (PZ-32) then adds :data:`_PROFILE_CARD_SWAP`.
     *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP` on its own.
     *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
@@ -426,7 +430,7 @@ def _orchestrator_instructions(
         (_COMPANY_SEARCH_SWAPS if company_search else ())
         + ((_RECENCY_SWAP,) if company_search and recency else ())
         + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
-        + ((_FIND_SWAP,) if company_search and find else ())
+        + ((_FIND_SWAP,) if company_search and recency and find else ())
         + ((_PROFILE_SWAP,) if profile else ())
         + ((_PROFILE_CARD_SWAP,) if profile and card_writes else ())
         + ((_CONSTRAINTS_SWAP,) if constraints else ())
@@ -1170,7 +1174,10 @@ def build_orchestrator_agent(
     # WS-67 OA-4: read once, so the persona line and the two tools agree.
     constraints_on = _chat_constraints_enabled()
     # WS-FIND FIND-6: read once, so the standing rule, `resolve_name` and the
-    # guard of the find tools agree. It acts only with company search on.
+    # guard of the find tools agree. It acts only with company search on. The
+    # rule also needs `recency` (`_orchestrator_instructions`), and
+    # `resolve_name` and the guard do not: `GET /search/names` reads no
+    # CONTEXT_RECENCY.
     find_on = company_search and _find_enabled(organization_id)
 
     # Build the instructions; append memory context when present.

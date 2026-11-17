@@ -8,7 +8,8 @@ routing harness (``evals/routing/harness.py``). A scripted ``ReplyModel``
 makes the choices, so this proves the path and never the choice. The tool is
 the real ``search_company``. Only its gateway is a fake.
 
-With ``COMPANY_SEARCH_ENABLED`` on and ``FIND_ORGS`` naming the org:
+With ``COMPANY_SEARCH_ENABLED`` and ``CONTEXT_RECENCY`` on, and ``FIND_ORGS``
+naming the org:
 
 1. The first model request offers ``search_company`` and ``resolve_name``.
    Its system message holds the standing rule of §5.4, once.
@@ -16,6 +17,8 @@ With ``COMPANY_SEARCH_ENABLED`` on and ``FIND_ORGS`` naming the org:
    fixed text of the HRD-3 guard (``pack_tool_guard.failure_text``), never
    "Error: Function failed.", and the run ends with no error.
 
+With ``CONTEXT_RECENCY`` off, the org still gets ``resolve_name``, but no
+rule: the route runs no ladder, and the plain tool prints no "Where else".
 With ``FIND_ORGS`` empty, the request offers no ``resolve_name`` and holds
 no rule. The unit fence is ``tests/unit/test_find_tools.py``.
 """
@@ -74,11 +77,12 @@ def _wire(monkeypatch: pytest.MonkeyPatch, gw: _Gateway) -> None:
 
 
 def _run(monkeypatch: pytest.MonkeyPatch, turns: list[list[dict[str, Any]]], *,
-         find: str) -> tuple[RunRecord, ReplyModel, _Gateway]:
+         find: str, recency: bool = True) -> tuple[RunRecord, ReplyModel, _Gateway]:
     from acb_common import get_settings
 
     settings = get_settings()
     monkeypatch.setattr(settings, "company_search_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "context_recency", recency, raising=False)
     monkeypatch.setattr(settings, "find_orgs", find, raising=False)
     gw = _Gateway()
     _wire(monkeypatch, gw)
@@ -125,7 +129,7 @@ def test_on_the_family_is_offered_and_a_failure_is_text(monkeypatch) -> None:
         tool_turn("search_company", {"query": "Sharat"}, call_id="call_1"),
         text_turn(SORRY),
     ]
-    record, model, gw = _run(monkeypatch, turns, find=ds.ORG)
+    record, model, gw = _run(monkeypatch, turns, find=ds.ORG, recency=True)
 
     # 1. The family is offered, and the persona holds the standing rule once.
     first = model.bodies[0]
@@ -147,10 +151,26 @@ def test_on_the_family_is_offered_and_a_failure_is_text(monkeypatch) -> None:
 def test_off_the_request_is_the_request_of_before(monkeypatch) -> None:
     from orchestrator.agents import FIND_STANDING_RULE
 
-    record, model, gw = _run(monkeypatch, [text_turn("Hello.")], find="")
+    record, model, gw = _run(monkeypatch, [text_turn("Hello.")], find="", recency=True)
     first = model.bodies[0]
     assert "search_company" in _offered(first)
     assert "resolve_name" not in _offered(first)
+    assert FIND_STANDING_RULE not in _system(first)
+    assert "Where else" not in _system(first)
+    assert gw.calls == []
+    assert record.answer == "Hello."
+
+
+def test_without_recency_the_org_gets_resolve_name_and_no_rule(monkeypatch) -> None:
+    """``GET /search/names`` reads no ``CONTEXT_RECENCY``, so the tool joins.
+    The route runs no ladder and the plain tool prints no "Where else", so
+    the rule stays out."""
+    from orchestrator.agents import FIND_STANDING_RULE
+
+    record, model, gw = _run(monkeypatch, [text_turn("Hello.")], find=ds.ORG,
+                             recency=False)
+    first = model.bodies[0]
+    assert {"search_company", "resolve_name"} <= _offered(first)
     assert FIND_STANDING_RULE not in _system(first)
     assert "Where else" not in _system(first)
     assert gw.calls == []
