@@ -26,15 +26,26 @@ The rules:
 5. **The tool gate.** An MCP function goes through the same
    ``permission_policy.decide()`` gate as an injected platform tool
    (:class:`McpPermissionGate`). The tools keep the ``approval_mode`` of MAF.
-6. **The confirmation card** (H-299). The gate gives ``decide()`` the hints
-   that the server sent in ``tools/list``. A tool needs the member's card
-   unless it says read-only and does not say destructive, so a tool with no
-   hints needs the card. The card is ``ask_tools.request_confirmation``, the
-   one card seam. Deny and a timeout return a refusal, and the tool never
-   runs. A run with no member, a batch run and a WhatsApp run cannot show the
-   card, so such a tool is refused there. The hints are the server's claim,
-   and a hostile server can lie. Each attach logs them as
-   ``mcp.tool_annotations``, so an admin can audit them.
+6. **The confirmation card** (H-299, amended by MCP-NC1). The gate gives
+   ``decide()`` the hints that the server sent in ``tools/list``, and the
+   fact ``mcp_member_present``. **MCP-NC1** (owner directive, 2026-11-16,
+   task 3603): in a run that a verified member started and watches, a tool
+   runs with no card, whatever its hints say (``mcp_member_run``). The fact
+   is false with no verified member, inside ``no_person_scope``, for a
+   server that the gate cannot find, and in a run that refuses cards (a
+   WhatsApp run, a stream with no cards, :func:`_refuses_cards`). There a
+   tool that does not say read-only and not destructive is refused, as
+   before. So a tool with no hints is refused there. A batch, scheduled,
+   webhook or headless run gets no MCP server at all (``executor``,
+   ``_batch_thread``). The card is ``ask_tools.request_confirmation``,
+   the one card seam, and it now shows only for "always confirm", for an
+   untrusted answer (step 3a of ``decide()``), and for a gate fault. Deny and
+   a timeout return a refusal, and the tool never runs. A run with no member,
+   a batch run and a WhatsApp run cannot show the card, so a tool that needs
+   one is refused there. The hints are the server's claim, and a hostile
+   server can lie. Each attach logs them as ``mcp.tool_annotations``, and
+   each call logs ``permission.decision`` with its code, so an admin can
+   audit them.
    **Always confirm** (H-300): an admin can set a server to "always
    confirm" (``provider_meta.always_confirm`` on its registry row). Then
    EVERY tool of that server needs the card, whatever its hints say. The flag
@@ -44,7 +55,9 @@ The rules:
    **The read-only key** (MCP-C2, item 32): an admin can say that the key
    of a server can only read (``provider_meta.read_only_key``). Then NO tool
    of that server waits for the card, whatever its hints say, also in a run
-   with no member. The registry parses the key once
+   with no member. After MCP-NC1 the key changes only a run where the
+   member fact is false, such as a WhatsApp run, which then runs each tool.
+   The registry parses the key once
    (``StoredServer.read_only_key``), and the flag goes the same path:
    :class:`McpServer`, the tool (:func:`server_read_only_key`), and
    ``decide()`` as the fact ``mcp_read_only_key``. ``decide()`` answers
@@ -454,9 +467,10 @@ def _record_tool_list(meta: dict[str, ToolMeta], result: Any, server: str = "") 
     """Keep the hints and the description of each tool on one page.
 
     A later list (``notifications/tools/list_changed``) can only make a tool
-    stricter in this run. A tool that needed the card keeps its old hints,
-    so a server cannot list a tool as destructive at the attach and then
-    relax it. Each change of the hints of a known tool is logged as
+    stricter in this run. A tool whose hints did not show a read keeps its
+    old hints, so a server cannot list a tool as destructive at the attach
+    and then relax it. After MCP-NC1 the hints still decide a run with no
+    member, so this guard stays. Each change of the hints of a known tool is logged as
     ``mcp.tool_annotations_changed``, so the audit sees every claim that
     decided a call (review of PR #888, P2)."""
     from acb_skills.permission_policy import mcp_needs_confirmation
@@ -817,9 +831,11 @@ async def attach_mcp_tools(
     the run starts, so one such server would fail every run of the agent
     (review of PR #869).
 
-    *member_present* says that a member can answer a card in this run
-    (H-299). It goes to the run's :class:`McpPermissionGate`. False, the
-    default, refuses each tool that needs a card.
+    *member_present* says that a member started this run and can answer a
+    card (H-299). It goes to the run's :class:`McpPermissionGate`. True runs
+    a tool that does not say read-only with no card (MCP-NC1). False, the
+    default, refuses such a tool and each tool that needs a card. A run that
+    no person watches (:func:`_person_present`) counts as False.
 
     WS-8c items 23 to 30: the run attaches :data:`MAX_SERVERS` servers or
     fewer, in name order, and logs ``mcp.server_cap`` with the rest. The cap
@@ -931,13 +947,29 @@ async def attach_mcp_tools(
     middleware = [m for m in list(getattr(agent, "middleware", None) or [])
                   if not isinstance(m, McpPermissionGate)]
     agent.middleware = [*middleware, McpPermissionGate(
-        tools=list(agent.mcp_tools), member_present=member_present,
+        tools=list(agent.mcp_tools),
+        # MCP-NC1: a run that no person watches (AUTO-7a) is not a member's
+        # run, also when it names a member, so it asks no card it cannot show.
+        member_present=member_present and _person_present(),
     )]
     names = [t.name for t in tools]
     _log.info("mcp.attached", servers=names,
               always_confirm=[t.name for t in tools if server_always_confirms(t)],
               read_only_key=[t.name for t in tools if server_read_only_key(t)])
     return names
+
+
+def _person_present() -> bool:
+    """False inside ``acb_common.no_person.no_person_scope`` (AUTO-7a, D131
+    rule 4): a job, a workflow of an unattended trigger, or a Studio run with
+    no viewer. MCP-NC1 runs a member's tool with no card only when a person
+    watches the run. A fault reads as no person, so it fails closed."""
+    try:
+        from acb_common.no_person import no_person_present
+
+        return not no_person_present()
+    except Exception:
+        return False
 
 
 def _arguments(context: Any) -> dict[str, Any] | None:
@@ -1215,17 +1247,23 @@ ALWAYS_CONFIRM_LINE = "This server is set to always confirm."
 
 
 def _hint_line(hints: dict[str, bool] | None, always_confirm: bool = False) -> str:
-    if always_confirm:
-        from acb_skills.permission_policy import mcp_needs_confirmation
+    """The first sentence of a card: what the server says about the tool.
 
-        if not mcp_needs_confirmation(hints):
-            return f"{ALWAYS_CONFIRM_LINE} The server marks this tool as read-only."
-        return f"{ALWAYS_CONFIRM_LINE} {_hint_line(hints)}"
+    MCP-NC1: a card shows for "always confirm", for an untrusted answer and
+    for a gate fault, and each of them can show a read-only tool. So the
+    sentence says "read-only" whenever the hints say so, with or without the
+    switch line."""
+    from acb_skills.permission_policy import mcp_needs_confirmation
+
     if not hints:
-        return "The server sent no hints for this tool."
-    if hints.get("destructiveHint") is True:
-        return "The server marks this tool as destructive."
-    return "The server does not mark this tool as read-only."
+        line = "The server sent no hints for this tool."
+    elif not mcp_needs_confirmation(hints):
+        line = "The server marks this tool as read-only."
+    elif hints.get("destructiveHint") is True:
+        line = "The server marks this tool as destructive."
+    else:
+        line = "The server does not mark this tool as read-only."
+    return f"{ALWAYS_CONFIRM_LINE} {line}" if always_confirm else line
 
 
 def acts_as_line(acts_as: tuple[str, str] | None) -> str:
@@ -1302,6 +1340,25 @@ def _card_refusal(member_present: bool) -> tuple[str, str] | None:
     except Exception:
         return NO_MEMBER_TEXT, "card_check_failed"
     return None
+
+
+def _refuses_cards() -> bool:
+    """True in a run that refuses each card: a WhatsApp run, and a stream that
+    does not show cards (``ask_tools.cards_refused``). A fault reads as True.
+
+    MCP-NC1 keeps WhatsApp as it was until the owner decides: such a run is
+    not a member's run for the MCP rule. ``decide()`` then answers
+    ``mcp_confirm`` for a tool that does not say read-only, and
+    :func:`_card_refusal` refuses it with ``no_card_channel``. A Redis fault
+    of the session mark reads as clear there (``egress._card_can_show``), so
+    this check, not step 3a, keeps a write out of WhatsApp."""
+    try:
+        from acb_skills.ask_tools import cards_refused
+        from acb_skills.whatsapp_ui import current_run
+
+        return current_run() is not None or bool(cards_refused())
+    except Exception:
+        return True
 
 
 def _tool_functions(tool: Any) -> list[Any]:
@@ -1388,7 +1445,9 @@ def _make_gate_class() -> type:
         ``mcp_read_only`` does, with no card. *tools* are the MCP
         tools of the run, so the gate can find the server of a function.
         *member_present* is False for a run with no member, and then a tool
-        that needs a card is refused.
+        that needs a card is refused. MCP-NC1: it goes to ``decide()`` as
+        ``mcp_member_present``, and ``mcp_member_run`` runs the tool with no
+        card, as ``mcp_read_only`` does.
 
         WS-8c item 27: a loader of progressive disclosure passes with no
         card, when it is a loader of a tool of this run
@@ -1405,7 +1464,11 @@ def _make_gate_class() -> type:
 
         async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
             from acb_skills.egress import _from_mcp
-            from acb_skills.permission_policy import MCP_READ_ONLY, MCP_READ_ONLY_KEY
+            from acb_skills.permission_policy import (
+                MCP_MEMBER_RUN,
+                MCP_READ_ONLY,
+                MCP_READ_ONLY_KEY,
+            )
             from acb_skills.tool_guard import tool_name
 
             from orchestrator._tool_injection import _permission_gate
@@ -1438,13 +1501,19 @@ def _make_gate_class() -> type:
                 facts={"mcp_tool": True,
                        "mcp_annotations": meta.hints if meta is not None else None,
                        "mcp_always_confirm": always,
-                       "mcp_read_only_key": read_only_key},
+                       "mcp_read_only_key": read_only_key,
+                       # MCP-NC1: a member's run needs no card. A server
+                       # that the gate cannot find keeps the card, because
+                       # its "always confirm" cannot be read. A run that
+                       # refuses cards (WhatsApp) keeps the H-299 refusal.
+                       "mcp_member_present": (self.member_present and owner is not None
+                                              and not _refuses_cards())},
                 after_untrusted_answer=await session_is_marked(),
             )
             if not allowed:
                 context.result = f"[blocked by permission policy: {reason}]"
                 return
-            if reason in (MCP_READ_ONLY, MCP_READ_ONLY_KEY):
+            if reason in (MCP_READ_ONLY, MCP_READ_ONLY_KEY, MCP_MEMBER_RUN):
                 await call_next()
                 return
             refusal = _card_refusal(self.member_present)
