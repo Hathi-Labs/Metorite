@@ -406,6 +406,7 @@ and adds no second spec of the same topic.
 | Capability | State | Where |
 |---|---|---|
 | Chat list by date, rename, archive, Delete of an archived chat, client search | LIVE (CO-0) | §3 |
+| Daily briefs fold into one closed group at the end of the list, before Archived (task 3564) | BUILT, no flag | `isFoldedBrief` in `src/lib/shell/chatHistory.ts`. A brief folds only while the viewer owns it and nobody replied. Pinned and Archived win |
 | A summary of each solo chat (PZ-33a, PZ-33b), and its Settings controls (PZ-35) | BUILT, dark | `personalization.md` §15.3 and §15.5 |
 | The briefing: the newest 3 summaries and the due tasks (PZ-34) | LIVE, with no summaries | `personalization.md` §15.4 |
 | The continue route and its pill (WT-1, WT-2) | BUILT, dark | `one_assistant_context.md` §9 |
