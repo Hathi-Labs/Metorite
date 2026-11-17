@@ -1761,6 +1761,16 @@ async def query_inbox(
     near = _near_sender_line(data.get("near"), found=bool(total))
     if not emails:
         empty = page_line(total, start, 0) or "No emails matched those filters."
+        sent = data.get("total")  # the route's own value: no default
+        if isinstance(sent, int) and not isinstance(sent, bool) and sent == 0:
+            # WS-FIND FIND-6 (§5.3): a zero ends with the fixed pointer to
+            # search_company, only in a pack call of an org of FIND_ORGS. Only
+            # a total that is the integer 0 is a zero. A page past the end, and
+            # an answer with no total, are no zero. A failure raises before
+            # this line.
+            from acb_skills.company_search_tools import with_zero_pointer
+
+            empty = with_zero_pointer(empty)
         return f"{near}\n{empty}" if near else empty
     shown = emails
     labels = {} if account_id else await _account_labels()
