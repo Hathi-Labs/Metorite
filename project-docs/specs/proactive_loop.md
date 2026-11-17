@@ -169,6 +169,10 @@ because it sits in the section that LOOP-0 extends.
    `number_sense.py`. The module exists, with the concentration check
    (task 3129). NUM-1 must extend it and not write a second one.
 
+LOOP-1 (task 3441) fixed items 2 to 4 on 2026-11-16: task 602 holds the
+evidence, `chat_run_continuity.md` §8 and `number_sense.md` state the fact of
+`main`.
+
 ---
 
 ## 3. Scope and non-goals
