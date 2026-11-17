@@ -37,7 +37,6 @@ import contextvars as _contextvars
 import json as _json
 import re as _re
 from collections.abc import Iterator as _Iterator
-from collections.abc import Mapping as _Mapping
 from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Any
 from typing import NamedTuple as _NamedTuple
@@ -1650,11 +1649,11 @@ class ApprovedActs:
     """The approved acts that ran in one reply (task 3595, PARK-LINE).
 
     Each entry is the title of a card that the member approved, whose tool
-    then returned with no raise and no "not done" text
-    (:func:`result_says_not_run`). A park names them in one line
-    (:func:`take_park_line`) as inert acts (:func:`card_act`), so the member
-    hears what the reply made before it stopped at a card. The same title
-    twice stays twice: two tasks are two acts."""
+    then said at its own success site that the act ran (:func:`act_ran`). A
+    park names them in one line (:func:`take_park_line`) as inert acts
+    (:func:`card_act`), so the member hears what the reply made before it
+    stopped at a card. The same title twice stays twice: two tasks are two
+    acts."""
 
     __slots__ = ("acts",)
 
@@ -1662,7 +1661,7 @@ class ApprovedActs:
         self.acts: list[str] = []
 
     def ran(self, title: str) -> None:
-        """The tool of the approved card titled *title* returned."""
+        """The act of the approved card titled *title* ran."""
         self.acts.append(str(title))
 
     def take(self) -> list[str]:
@@ -1677,11 +1676,40 @@ _RUN_APPROVED_ACTS: _contextvars.ContextVar[ApprovedActs | None] = _contextvars.
 )
 
 #: The title of the last card of this frame, or None. :func:`request_confirmation`
-#: sets it as it sets :data:`_LAST_OUTCOME` to None. The gate wrapper of
-#: ``_tool_injection`` clears it before each tool call (:func:`forget_card_title`),
-#: so a title of an earlier call never names this call's act.
+#: sets it as it sets :data:`_LAST_OUTCOME` to None (:func:`_open_card_frame`).
+#: The gate wrapper of ``_tool_injection`` clears it before each tool call
+#: (:func:`forget_card_marks`), so a title of an earlier call never names this
+#: call's act.
 _LAST_TITLE: _contextvars.ContextVar[str | None] = _contextvars.ContextVar(
     "acb_last_card_title", default=None)
+
+#: True when the tool of THIS call said that the act of its last card ran
+#: (:func:`act_ran`). A new card sets it to False, and so does the gate
+#: wrapper before each call. The park line names an act ONLY on this proof:
+#: the default is "not named", so a tool that never calls :func:`act_ran`
+#: names nothing (task 3595, the redesign after two reviews).
+_ACT_RAN: _contextvars.ContextVar[bool] = _contextvars.ContextVar(
+    "acb_card_act_ran", default=False)
+
+
+def _open_card_frame(title: str) -> None:
+    """A new card of this frame, titled *title*: no act of it ran yet.
+    :func:`request_confirmation` calls it on every card."""
+    _LAST_TITLE.set(title)
+    _ACT_RAN.set(False)
+
+
+def act_ran() -> None:
+    """The act of this call's card really ran (task 3595, PARK-LINE).
+
+    A tool calls it at its SUCCESS SITE only: after the write succeeded and
+    its receipt names what the write made (an id came back, each row of a
+    batch landed). Never before the write, and never on a partial or a
+    refused path. The park line of the reply then names the act, if the
+    member approved the card. A tool that never calls it names nothing,
+    which is the safe side. ``tests/unit/test_park_made_line.py`` holds the
+    list of the tools that call it."""
+    _ACT_RAN.set(True)
 
 
 def open_approved_acts_for_run() -> _contextvars.Token[ApprovedActs | None]:
@@ -1703,106 +1731,27 @@ def release_approved_acts(token: _contextvars.Token[ApprovedActs | None] | None)
         _RUN_APPROVED_ACTS.set(None)
 
 
-def forget_card_title() -> None:
-    """Clear the title of the last card of this frame. The gate wrapper calls
-    it just before a tool runs, so only a card of that call names an act."""
+def forget_card_marks() -> None:
+    """Clear the title of the last card and the proof of its act. The gate
+    wrapper calls it just before a tool runs, so only a card of that call,
+    and only the success site of that call, names an act."""
     _LAST_TITLE.set(None)
+    _ACT_RAN.set(False)
 
 
-def card_records_no_act() -> None:
-    """The card of this call approves a PLAN or a PREVIEW, not an act (task
-    3595, review P2). A tool calls it right after its card, so the park line
-    never names the plan as an act that ran. ``studio_plan`` is one: its
-    approve only records a plan, and ``studio_save`` and ``studio_publish``
-    ask their own cards for the acts."""
-    _LAST_TITLE.set(None)
+def note_approved_act() -> bool:
+    """Record the act of this call's last card. True when it recorded.
 
-
-#: The words of a tool result that says that the act did not run, or ran in
-#: part (task 3595). A Projects receipt of a partial write says "NOT saved",
-#: "may or may not", "stopped:", "not tried:" or "could not"
-#: (``writes._create_stopped``, ``forms._stopped``). A batch receipt that
-#: left rows out says "left out:" or "unticked". A result that holds one
-#: outside its « » fences and its quotes is never named as run: a line that
-#: leaves out an act is the safe side.
-_NOT_RUN_MARKS: tuple[str, ...] = (
-    "not saved", "not done", "not created", "not sent", "not tried",
-    "not scheduled", "not converted", "not finished", "nothing changed",
-    "may or may not", "may not", "may have been", "stopped:", "unknown:", "nothing was",
-    "refused", "failed", "could not", "couldn't", "unable to", "error:",
-    "[blocked", "[not run", "did not land", "left out", "unticked", "already set",
-)
-
-#: The first words of a result that did nothing (task 3595, review P1). The
-#: email, CRM and Projects texts of an act that did not run start with one:
-#: "Not scheduled.", "Nothing was changed.", "No task of the 3 ...".
-_NOT_RUN_FIRST_WORDS = frozenset({
-    "not", "nothing", "no", "none", "error", "errors", "refused", "failed",
-    "unknown", "stopped", "blocked", "unable", "cannot", "can't", "couldn't",
-})
-
-#: Member data inside a result: a « » fence (``acb_common.tool_refusals.data``),
-#: or a quoted title ('Fix failed payment', "Fix it"). A quote opens and
-#: closes only beside a non-word character, so the "'" of "couldn't" is no
-#: quote. A fence with no end stays, so the check reads its words.
-_RESULT_DATA = _re.compile(
-    r"«[^«»]*»|(?<!\w)'[^'\n]*'(?!\w)|(?<!\w)\"[^\"\n]*\"(?!\w)|“[^“”\n]*”")
-
-
-def _mapping_ran(result: Any) -> bool:
-    """A result in the shape ``{"ok": ...}`` ran only when ``ok`` is True and
-    it holds no ``error``. The Studio tools answer in this shape
-    (``studio_tools._result``). A mapping with no ``ok`` gives no proof."""
-    return result.get("ok") is True and not result.get("error")
-
-
-def result_says_not_run(result: Any) -> bool:
-    """True when the tool *result* does not prove that its act ran in full.
-
-    Fail safe (task 3595, review P1): when unsure, the line does not name
-    the act, so it never claims more than ran. So it is True when:
-
-    * the result is a mapping, or a JSON object as text, whose ``ok`` is not
-      True (:func:`_mapping_ran`), or a JSON text that does not parse;
-    * the result is no text and no mapping (None, a list, an object);
-    * the text is empty, or starts with a lead of a card that did nothing
-      (:data:`CARD_NOT_DONE_LEADS`), or its first word is in
-      :data:`_NOT_RUN_FIRST_WORDS` ("Not scheduled.", "[not run");
-    * the text holds a word of :data:`_NOT_RUN_MARKS` OUTSIDE its member
-      data (:data:`_RESULT_DATA`), in any case. A title such as «Fix failed
-      payment» is data, so it never hides the act."""
-    if isinstance(result, _Mapping):
-        return not _mapping_ran(result)
-    if not isinstance(result, str):
-        return True
-    text = result.strip()
-    if not text:
-        return True
-    if text.startswith("{"):
-        try:
-            parsed = _json.loads(text)
-        except ValueError:
-            return True
-        return not (isinstance(parsed, _Mapping) and _mapping_ran(parsed))
-    if text.startswith((*CARD_NOT_DONE_LEADS, "Error")):
-        return True
-    first = _re.match(r"[^\w']*([\w']+)", text.replace("\u2019", "'"))
-    if first and first.group(1).casefold() in _NOT_RUN_FIRST_WORDS:
-        return True
-    outside = _RESULT_DATA.sub(" ", text).casefold()
-    return any(mark in outside for mark in _NOT_RUN_MARKS)
-
-
-def note_approved_act(result: Any) -> bool:
-    """Record the act of this call's last card when the member approved it
-    and the tool *result* does not say that it did not run. True when it
-    recorded. The gate wrapper calls it after a normal return only, so a
-    raise records nothing. No record (a batch run, a test) records nothing."""
+    It records only on three proofs together: the member approved the card
+    (:func:`last_card_outcome`), the tool said at its success site that the
+    act ran (:func:`act_ran`), and the run has a record. The gate wrapper
+    calls it after a normal return only, so a raise records nothing. It
+    reads no result text: a text cannot prove an act."""
     holder = _RUN_APPROVED_ACTS.get()
     title = _LAST_TITLE.get()
     if holder is None or title is None or _LAST_OUTCOME.get() != CARD_APPROVED:
         return False
-    if result_says_not_run(result):
+    if not _ACT_RAN.get():
         return False
     holder.ran(title)
     return True
@@ -2688,8 +2637,8 @@ async def request_confirmation(
     _LAST_OUTCOME.set(None)
     _title = str(title or "Confirm action").strip()[:120]
     # Task 3595: the title of this card, beside its outcome, on every way
-    # out. The gate wrapper names the act of an approved card by it.
-    _LAST_TITLE.set(_title)
+    # out, and no proof yet that its act ran (:func:`act_ran`).
+    _open_card_frame(_title)
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
     #: True when a field lost text to the clip above.

@@ -31,7 +31,7 @@ release keeps the work.
 | §4.12 — the retention of a waiting card's row (task 3435) | **BUILT** 2026-11-16, branch `stu-pa-prune`, no new flag and no migration. A prune hook of the job worker clears the stored call of each expired row and deletes a row 7 days after it expires. The member purge deletes the rows that asked a leaver. The prune runs only with `JOB_QUEUE` on, and `JOB_QUEUE` is off on production (§4.12.6, step 1a) |
 | §4.12 RESUME-2a — a late Approve runs the stored call once, in a new reply (task 3261) | **BUILT** 2026-11-16, branch `stu-resume2`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`. The fixes of the review of 2026-11-16 (P1-A, P1-B, P2) are built. The follow-ups of the re-review of 2026-11-16 (P2-1, P2-2, P2-3, task 3467) are built, branch `stu-resume-fu`. The flip needs these first: the prune of task 3435, RESUME-3a (PR 2443), and the flag order of §4.12.4 item 2. The case B defect of the audit of 2026-11-16 (a continuation that skipped the session left a stale hit) is fixed by RESUME-4a-1 (PR 2451, merged). No migration. Case B only: RESUME-2b (task 3460) and RESUME-2c (task 3461) are not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 | §4.12 RESUME-3a — the chat takes a resumed run, case B (task 3262) | **BUILT** 2026-11-16, branch `stu-resume3`. No flag of its own. The park words and the quiet end of a park show where `CHAT_DURABLE_ASKS` is on. Only the resume route (`_resume_from_row`, with both resume flags on) sends the 429 cap reason. The `resumed` path shows only where RESUME-2a answers `resumed`. RESUME-3b (task 3475) and RESUME-3c (task 3476) are not built |
-| §4.12.7 PARK-LINE — a parked reply names the approved acts that it ran (task 3595, slice 3595-a) | **BUILT** 2026-11-17, branch `stu-park-line`. No flag and no migration, so it is live at the merge. Slice 3595-b is not built |
+| §4.12.7 PARK-LINE — a parked reply names the approved acts that it ran (task 3595, slice 3595-a) | **BUILT** 2026-11-17, branch `stu-park-line`. The rule of an act that ran is positive proof by the tool (`act_ran`). No flag and no migration, so it is live at the merge. Slice 3595-b is not built |
 | §4.12 RESUME-4a-1 — a continuation marks the stored native session stale (task 3478) | **BUILT** 2026-11-16, branch `stu-resume4a`, dark behind `CHAT_RESUME_ORGS` AND `CHAT_LATE_APPROVE_ORGS`, with `MAF_NATIVE_SESSIONS` on. No migration and no new flag. RESUME-4a-2 (the late decline) waits for D-RES-9. RESUME-4b (task 3479) is not built. The production flip is OWNER-GATE (`enforcement-flip`) |
 
 **This spec owns** how a member sees and resumes an assistant run that they
@@ -2198,24 +2198,38 @@ member never heard what the reply had made. So these rules hold:
   words have no word "done", no link and no id. Each act is inert text from
   its card title (`card_act`), so a title such as "Mark this task done?"
   keeps its own words.
-- An act ran when three things hold. The member approved its card, its tool
-  returned with no raise, and its result proves that the act ran in full
-  (`ask_tools.result_says_not_run`). A Studio result proves it only with
-  `ok` True, as a mapping or as JSON text. A text proves it when its first
-  word is not a word of an act that did nothing, such as "Not", "Nothing" or
-  "[not run". The text must also hold no mark of a write that failed in part,
-  such as "NOT saved", "stopped:", "failed" or "left out". The check reads the
-  marks outside the « » fences and the quoted titles, because a title such as
-  «Fix failed payment» is member data.
-- The check fails safe. When unsure, the line does not name the act, so it
-  never claims more than ran. A result with no text and no `ok`, an empty
-  text, a partial batch and a batch with rows left out are not named.
-- A card that approves a plan or a preview records no act. `studio_plan` calls
-  `ask_tools.card_records_no_act` after its card "Build X?".
-- The receipt of a batch says "To retry a row that is not in this list". The
-  old hint said "a failed row", and that mark hid each full batch.
+- An act ran only on positive proof from its own tool. The tool calls
+  `ask_tools.act_ran()` at its success site, after the write landed in full.
 - The gate wrapper `_tool_injection._agated` records the act after a normal
-  return. A tool that delegates records nothing itself.
+  return. It records only when the tool gave that proof and the member
+  approved the card. A raise records nothing. A tool that delegates records
+  nothing itself.
+- The proof belongs to one call. The wrapper clears it before each call
+  (`forget_card_marks`), and each new card clears it too.
+- The rule fails safe. A tool that never calls `act_ran` names nothing. The
+  wrapper reads no result text, because a text cannot prove an act.
+- Two reviews found real texts of acts that did not run, and the old text
+  check read them as run. So this change removed `result_says_not_run`, its
+  word lists and `card_records_no_act`.
+- These tools opt in, each at its success site only. `create_project` names
+  a project and a child project when an id comes back. `create_task` names a
+  task when each write after the create landed, with no chat file.
+- `create_tasks`, `create_tags` and `create_types` name a full batch only.
+  The member ticked each row, and each row landed with its follow-ups.
+- `set_reminder` names a new reminder when an id comes back. The CRM tool
+  `update_deal_status` names a move when the move landed.
+- The line never names a partial batch or a row that was left out. It never
+  names a reminder that was already set, or a deal move that the mirror
+  refused.
+- It never names a plan or a preview card, such as "Build X?" of
+  `studio_plan`. It never names a tool that is not on the list.
+- Examples of tools that are not on the list: `nudge_task`, `propose_edit`,
+  `propose_page`, the profile writes, `bulk_update` and `manage_inbox`.
+  `schedule_send` is not on it either, because its card only schedules.
+- A new opt-in changes `ACT_RAN_SITES` in `test_park_made_line.py`, so a
+  reviewer reads its success site. `packages/acb_skills/AGENTS.md` gives
+  the rule to tool authors.
+- The receipt of a batch says "To retry a row that is not in this list".
 - Only a run that is not delegated opens the record
   (`executor._open_approved_acts`). So a child run writes into its parent's
   record, and one line names both.
@@ -2376,7 +2390,7 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `workbench/control_plane/src/components/RunStatusRow.tsx` | The status row and `useSteadyRunView` (§4.10) |
 | `workbench/control_plane/src/lib/chatResume.ts` | The line of an Approve from another device, and the stale card set (§4.12 RESUME-3a). Fence: `chatResume.test.ts` |
 | `workbench/control_plane/src/lib/respondInput.ts` | The answer POST: `resumedOf` and the cap reason (§4.12 RESUME-3a) |
-| `packages/acb_skills/acb_skills/ask_tools.py` | `ApprovedActs`, `note_approved_act`, `result_says_not_run`, `card_records_no_act` and `park_line` (§4.12.7 PARK-LINE). `studio_tools.studio_plan` calls `card_records_no_act` |
+| `packages/acb_skills/acb_skills/ask_tools.py` | `ApprovedActs`, `act_ran`, `note_approved_act` and `park_line` (§4.12.7 PARK-LINE). The tools of `ACT_RAN_SITES` in `test_park_made_line.py` call `act_ran` |
 
 ---
 

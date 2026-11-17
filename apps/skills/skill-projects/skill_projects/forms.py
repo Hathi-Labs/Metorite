@@ -60,6 +60,7 @@ from skill_projects.writes import (
     MAX_BATCH,
     AgentAssigneeRefused,
     _access_lines,
+    _act_ran,
     _confirm,
     _date_arg,
     _fields_block,
@@ -1904,6 +1905,10 @@ async def _write_batch(
             after = ("assignees", exc)
         if after is not None:
             out.unsaved.append(_unsaved(task, after[1]))
+    if out.made and len(out.made) == len(chosen) and not out.unsaved and not left:
+        # Task 3595: a FULL batch only. Each row of the card is ticked, and
+        # each one exists with its follow-ups. A partial is never named.
+        _act_ran()
     lanes = await _lane_names(pid)
     return _batch_receipt(node, chosen, left, out, lanes, names or {})
 
@@ -2275,6 +2280,8 @@ async def _vocab_write(plan: _VocabPlan, ticked: Any) -> str:
             (refused if known else unknown).append(line)
             continue
         made.append((p, row if isinstance(row, dict) else {}))
+    if made and len(made) == len(chosen) and not left:
+        _act_ran()  # Task 3595: a FULL batch only, each row ticked and made.
     return _vocab_receipt(plan, chosen, left, made, refused, unknown)
 
 

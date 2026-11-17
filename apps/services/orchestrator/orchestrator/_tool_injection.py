@@ -1089,27 +1089,29 @@ def _card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     return card_call(fn, args, kwargs, keyless=is_delegation_tool(fn))
 
 
-def _forget_card_title() -> None:
-    """``acb_skills.ask_tools.forget_card_title`` (task 3595). A fault is
-    no act, so it records nothing later either."""
+def _forget_card_marks() -> None:
+    """``acb_skills.ask_tools.forget_card_marks`` (task 3595): no title and
+    no proof of an act carry into this call. A fault is no act, so it
+    records nothing later either."""
     try:
-        from acb_skills.ask_tools import forget_card_title
+        from acb_skills.ask_tools import forget_card_marks
     except Exception:
         return
-    forget_card_title()
+    forget_card_marks()
 
 
-def _note_approved_act(result: Any) -> None:
+def _note_approved_act() -> None:
     """``acb_skills.ask_tools.note_approved_act`` for one call that returned
-    (task 3595, PARK-LINE). It records the act of the call's card when the
-    member approved it and the result does not say "not done". A park then
+    (task 3595, PARK-LINE). It records the act of the call's card only when
+    the member approved it AND the tool said at its success site that the
+    act ran (``ask_tools.act_ran``). It reads no result text. A park then
     names it. A delegation tool records nothing itself: each tool of its
     child run records its own act into the parent's record. It never
     raises, so the tool's result always reaches the model."""
     try:
         from acb_skills.ask_tools import note_approved_act
 
-        note_approved_act(result)
+        note_approved_act()
     except Exception:  # a line is never worth a lost result
         _log.debug("park_line.note_failed", exc_info=True)
 
@@ -1248,12 +1250,12 @@ def _gate_injected_tool(fn: Any) -> Any:
             # outside a WhatsApp run with writes on. Task 3130: the act key
             # of each card that this call draws.
             with _whatsapp_tool_call(fn, args, kwargs), _card_call(fn, args, kwargs):
-                _forget_card_title()
+                _forget_card_marks()
                 result = await fn(*args, **kwargs)
-            # Task 3595: an approved card whose tool returned is an act that
-            # ran in this reply. A raise never reaches this line.
+            # Task 3595: an approved card whose tool said "the act ran" at
+            # its success site. A raise never reaches this line.
             if not is_delegation_tool(fn):
-                _note_approved_act(result)
+                _note_approved_act()
             return result
         return _register_platform_wrapper(fn, _agated)
 

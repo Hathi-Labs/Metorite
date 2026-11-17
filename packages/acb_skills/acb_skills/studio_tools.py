@@ -1042,9 +1042,6 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     answer = await ask_tools.request_confirmation(
         title, detail, context, non_interactive_default="deny", close_on_steer=True,
         responder=_current_user_email() or None, fenced=True)
-    # Task 3595 (review P2): this card approves a PLAN. The approve records
-    # the plan and builds nothing, so the park line never names it as an act.
-    ask_tools.card_records_no_act()
     extra: dict[str, Any] = {}
     if answer is True:
         decision = "approved"

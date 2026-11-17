@@ -1366,6 +1366,10 @@ async def update_deal_status(
         await _patch(f"/crm/deals/{record}", payload)
     except _MirrorBlocked as blocked:
         return _mirror_message(blocked)
+    # Task 3595 (PARK-LINE): the move landed, so the park line may name it.
+    from acb_skills.ask_tools import act_ran
+
+    act_ran()
     return f"Moved {title} to {lane}."
 
 
