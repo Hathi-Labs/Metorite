@@ -8473,6 +8473,11 @@ Status: a second builder takes it, in `crm_tools.py` only.
   filters". A 422 spends no `AGGREGATE_BUDGET` count. `status=` on a module
   names `field_filters {'@status': <value>}`.
 
+**SEM-6 · The scripted replay of the refusal shapes.** Status: built 2026-11-17
+(task 3723), no flag, no model. `evals/semantic/` sends the shapes of
+CRM-Q34-1 to CRM-Q34-3 to the real routes on a synthetic org, and asks 20 fixed
+questions. Its fence is `tests/unit/test_semantic_eval_scripted.py`.
+
 #### 18.17.2 Rung 1
 
 `q` on a module (CRM-Q34-7) is Rung 1, dark behind a new flag. One filter
