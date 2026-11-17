@@ -468,3 +468,35 @@ def test_the_form_check_keeps_the_shape_of_changed_and_refuses_the_rest():
     ):
         with pytest.raises(ValueError):
             _new_mail_changed(bad)
+
+
+def test_the_agent_copies_changed_into_the_plain_new_mail_form():
+    """The plain card is the common path: ``_new_mail_form`` copies ``changed`` with the link.
+    Mutation: delete the copy in ``agents._new_mail_form`` -> red."""
+    from acb_skills.ask_tools import clean_reply_form
+
+    changed = {"cc": {"added": ["x@y.test"], "removed": []}}
+    prep = {"to": [F.KNOWN], "cc": [F.COLLEAGUE, "x@y.test"], "bcc": [], "subject": "Rates",
+            "body": "Hi", "revises": "a" * 32, "draft": 2, "changed": changed}
+    form = agents._new_mail_form(prep, [])
+    assert form["revises"] == "a" * 32 and form["changed"] == changed
+    assert clean_reply_form(form)["changed"] == changed
+    # No link, no `changed`: the tool copies it only with the link it belongs to.
+    assert "changed" not in agents._new_mail_form({**prep, "revises": ""}, [])
+
+
+def test_the_form_check_refuses_changed_with_no_link():
+    from acb_skills.ask_tools import clean_reply_form
+
+    form = {**_plain_form_for_changed(), "changed": {"cc": {"added": ["x@y.test"], "removed": []}}}
+    with pytest.raises(ValueError):
+        clean_reply_form(form)
+    ok = clean_reply_form({**form, "revises": "a" * 32, "draft": 2})
+    assert ok["changed"] == {"cc": {"added": ["x@y.test"], "removed": []}}
+
+
+def _plain_form_for_changed() -> dict:
+    people = {"to": [F.KNOWN], "cc": []}
+    return {"kind": "new", "mailbox": "Work", "subject": "Rates", "body": "Hi",
+            "recipients": {"reply": people, "reply_all": people}, "files": [],
+            "notices": [], "note": ""}

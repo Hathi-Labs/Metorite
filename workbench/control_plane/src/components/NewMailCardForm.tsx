@@ -297,7 +297,7 @@ export default function NewMailCardForm({
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
         {changes && <ChangedLine changes={changes} />}
         {linkLine && (
-          <p className="break-words text-[11px] leading-relaxed text-foreground" data-redraft-link-changed="" role="status">
+          <p className="mt-0.5 break-words text-[11px] font-medium leading-relaxed text-foreground" data-redraft-link-changed="">
             {linkLine}
           </p>
         )}

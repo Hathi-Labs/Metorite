@@ -411,8 +411,8 @@ const ACT_WORDS: Record<string, string> = { new: "a new mail", forward: "a forwa
 
 function peopleWords(label: "To" | "Cc", p: { added: string[]; removed: string[] }): string {
   const parts = [`The ${label} list changed.`];
-  if (p.added.length) parts.push(`Now also to ${p.added.join(", ")}.`);
-  if (p.removed.length) parts.push(`No longer to ${p.removed.join(", ")}.`);
+  if (p.added.length) parts.push(`Added to ${label}: ${p.added.join(", ")}.`);
+  if (p.removed.length) parts.push(`Removed from ${label}: ${p.removed.join(", ")}.`);
   return parts.join(" ");
 }
 

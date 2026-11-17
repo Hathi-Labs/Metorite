@@ -700,7 +700,7 @@ async def revise_new_mail_card(
        seconds (rule 7, :func:`member_unticked`).
     4. Spend the record (``take_record``, strict), so a late answer finds no
        record and sends nothing.
-    5. Write the link of the thread, ``{card_id, draft, to}``, for 900
+    5. Write the link of the thread, ``{card_id, draft, to, act, cc}``, for 900
        seconds. ``draft`` is the draft number of the old card plus one. The
        link is a label, so a fault here only logs (fix round 6).
     6. Delete the snapshot. A fault here only logs, because the TTL clears it.

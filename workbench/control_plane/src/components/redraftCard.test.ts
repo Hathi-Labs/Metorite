@@ -1263,7 +1263,7 @@ describe("the line about the card that this card replaces (HRD-8b)", () => {
   it("a changed Cc is named in plain words, with the people", () => {
     const line = changedLinkLine({ cc: { added: ["x@y.test"], removed: ["geo@acme.test"] } });
     expect(line).toBe(
-      `${NOT_THE_SAME_LEAD} The Cc list changed. Now also to x@y.test. No longer to geo@acme.test. ${CHECK_TRAIL}`,
+      `${NOT_THE_SAME_LEAD} The Cc list changed. Added to Cc: x@y.test. Removed from Cc: geo@acme.test. ${CHECK_TRAIL}`,
     );
   });
 
@@ -1273,8 +1273,8 @@ describe("the line about the card that this card replaces (HRD-8b)", () => {
       to: { added: ["a@b.test"], removed: [] },
     });
     expect(line).toContain("The card before it was a new mail. This card is a forward.");
-    expect(line).toContain("The To list changed. Now also to a@b.test.");
-    expect(line).not.toContain("No longer");
+    expect(line).toContain("The To list changed. Added to To: a@b.test.");
+    expect(line).not.toContain("Removed from");
   });
 
   it("the form reads `changed` only with a link, and only the gateway's shape", () => {

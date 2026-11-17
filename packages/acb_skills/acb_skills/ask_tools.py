@@ -1100,6 +1100,8 @@ def _new_mail_redraft(form: dict) -> dict:
             raise ValueError("a new-mail form names the card it revises and its draft")
         out["revises"], out["draft"] = revises, draft
     if "changed" in form:
+        if "revises" not in out:
+            raise ValueError("a new-mail form names what changed only with the card it revises")
         out["changed"] = _new_mail_changed(form["changed"])
     return out
 
