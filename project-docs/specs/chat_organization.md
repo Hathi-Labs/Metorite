@@ -4,10 +4,14 @@
 CO-11, the pin, is BUILT and dark behind `CHAT_PIN_ORGS` (task 3510,
 2026-11-16). Its chat tool is not built (§18). CO-2a, the topic store and
 its routes, is BUILT and dark behind `CHAT_TOPICS_ORGS` (task 3501,
-2026-11-16). CO-2b adds `topic_id` and `set_by`, the move, the pass that
-never overrides a member, the rail and the chip. The rest of D163 is not
-built.
+2026-11-16).
 CO-13, the continue mark, is BUILT too (task 3512, 2026-11-16).
+
+CO-2b is BUILT and dark behind the same flag (task 3588, 2026-11-17). It adds
+the topic of a chat for each member, the move, and the rule that the pass
+never overrides a member. It also adds the topic groups of the list and the
+chip (§6.1). Its chat tool is not built. The seed of the company list and the
+pass (CO-1) are not built. The rest of D163 is not built.
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions. Some
@@ -89,7 +93,7 @@ A gateway path is under `apps/services/gateway/gateway/`. A `src/` path is under
 | Grouping the chat list (CO-0) | `dateGroups:78`, `DATE_GROUPS:71`, `splitSessions:151`, `src/lib/shell/chatHistory.ts`. `src/lib/shell/SessionPicker.tsx` draws it | Pinned, then topics, then dates |
 | Client search of title and preview | `matchesQuery`, `chatHistory.ts:133` | Replaced by the server search (CO-3) |
 | Rename and archive | `PATCH /chat/sessions/{id}` (`routes/chat.py:1157`), `archived_at` (migration 254) | Pin sits beside these acts in the list |
-| The pin (CO-11). **BUILT, dark** | `chat_session_member` (migration 450), `gateway/chat_session_member.py`, `PUT` and `DELETE /chat/sessions/{id}/pin`. Flag `CHAT_PIN_ORGS` | CO-2 adds the topic to the same row |
+| The pin (CO-11). **BUILT, dark** | `chat_session_member` (migration 450), `gateway/chat_session_member.py`, `PUT` and `DELETE /chat/sessions/{id}/pin`. Flag `CHAT_PIN_ORGS` | CO-2b added the topic to the same row (§6.1) |
 | Delete | `DELETE /chat/sessions/{id}` (`routes/chat.py:1230`). The picker offers Delete on an archived chat only. The route has no such check | §16.5 clears a note |
 | The title | The client sets it once: the title that a chat brings, such as the day's brief, or else the first typed message. It cuts it to 60 characters (`src/lib/sessions.ts:755`). A rename and that first title both use the PATCH route. No mark tells them apart | CO-1 writes a better title, and `title_source` keeps a rename (§5.4) |
 | The money path of the summary job | `_ask`, `chat_summary_job.py:235`, calls `tier-fast` as the member. The Console writes the usage row (`_record_completion`, `main.py:8424`) and draws the org's credits (`store.py:1257`) | §5.1 moves the call to a hidden tier with an absorbed card |
@@ -371,6 +375,76 @@ usage rows of the hidden tier. That number sets the cap of §5.2.
   admin sees "Add to company topics". The admin sees the count, and never who.
 - **A shared chat** carries its topic to each member who can see it.
 
+### 6.1 Built (CO-2b, task 3588, 2026-11-17), dark
+
+`CHAT_TOPICS_ORGS` lists the orgs, and the default is empty.
+
+- **The store.** Migration 452 adds `topic_id` and `set_by` to
+  `chat_session_member`, both nullable. `set_by` is `auto` or `member`. A
+  composite key ties `(organization_id, topic_id)` to `chat_topic`, with
+  `ON DELETE SET NULL (topic_id)`. So a row never names a topic of another
+  org.
+- **The move.** `PUT /chat/sessions/{id}/topic` takes `{"topic_id": id}`, or
+  null for "No topic". It writes `set_by = 'member'`. "No topic" is a move
+  too, so the pass does not put a topic back.
+- **The pass.** `chat_session_member.set_auto_topic` is the one door of
+  CO-1. It writes `set_by = 'auto'` only where no row exists, or where
+  `set_by` is NULL or `auto`. A member's row stays as it is (D163). CO-1
+  must catch `TopicNameError` from `find_or_create_member_topic`. Then it
+  files that chat under no topic, and calls no `set_auto_topic` for it.
+- **Who may use a topic.** A company topic that shows, or the member's own
+  topic. A colleague's topic and a hidden company topic answer as a topic
+  that does not exist.
+- **The lock order.** A move locks its topic first, then writes the row. A
+  merge locks its topics first too. So a move and a merge cannot deadlock.
+  The store refuses a move into a topic that a merge takes away.
+- **The merge.** It moves each row of the source to the target before its
+  delete, and keeps `set_by`.
+- **An archived chat, as for the pin.** The move and the pass select no
+  archived chat, and the route answers 409. The read sends no topic for an
+  archived chat, and the chip does not show on it. The archive writes no
+  row, so a restore shows the topic again.
+- **The read.** `GET /chat/sessions` sends `topicId` and `topicName` for the
+  caller only, and only a topic that shows. A chat in a hidden topic sits
+  under its day. The shell read serves the flag as `chat_topics`.
+- **The UI.** The list shows Pinned, then one group for each topic by name,
+  then the days. The chip in the chat header opens a menu. "New topic…" and
+  "No topic" come first, at a fixed place, and the topics come under them.
+  The company topics come before the member's own topics. The first focus
+  is the current topic, else "New topic…", and never "No topic". The full
+  view shows the topic name on the chip. The side panel and a phone show the
+  tag icon, and its label names the topic. A phone with the chat-first flag
+  offers the menu in the chat's "…" control, and the menu hangs from it. On
+  a phone, the menu hangs below the header and covers the header controls,
+  such as Share, while it is open. That is by design: a press outside or
+  Escape closes it. On a cold open the first focus is "New topic…". When the
+  list lands, the focus moves once to the current topic, unless the member
+  moved it first.
+- **Names.** A topic cannot take the name of a heading of the list, such as
+  "Pinned" or "Today", or a word of the topic menu, such as "No topic" or
+  "New topic". Case, spacing and a closing ellipsis do not count. The store
+  refuses it with "The chat list uses this name. Pick another name."
+  `chat_topic.RESERVED_NAMES` is the one list, and `test_chat_topic.py` pins
+  it to the TypeScript labels. Look-alikes are not blocked: a Cyrillic
+  letter or a zero-width character makes a new name.
+- **A move that fails.** The list puts back the last topic that the server
+  confirmed. The notice line of the chat then says "The chat did not move.
+  Try again, or pick another topic." The dock shows no toast (owner,
+  2026-11-01). The menu reads the topics again, and an earlier failure never
+  undoes a later move.
+- **The "…" control of the phone.** While the topic menu is open, a press on
+  the "…" control closes the topic menu and opens no More menu.
+- **The purge.** The member purge deletes the rows and the private topics of
+  a leaver. A row of a colleague on such a topic keeps its org and loses
+  only the topic.
+- **Chat parity: not built.** No chat tool lists or moves chats today. The
+  read, the create and the move are three debt rows of P-7, and the debt
+  ceiling of the chat goes from 27 to 30.
+
+**Before the flag flip.** The owner accepts the raise of the parity ceiling
+from 27 to 30. The seed of the company list (§6, "The list") is not built.
+No route makes a company topic, so an org has none until the seed runs.
+
 ## 7. Picking up a chat
 
 ### 7.1 The outcomes
@@ -452,8 +526,8 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
   `topic_id` (nullable), `set_by` (`auto` or `member`), `pinned_at` (nullable).
   It is the per-member row of a chat: its topic (CO-2) and its pin (CO-11). The
   D163 draft named it `chat_session_topic`. CO-11 built the table (migration
-  450) with `pinned_at` only. CO-2 adds `topic_id` and `set_by` as nullable
-  columns, in its own migration (an expand step, R6). `member_email` is the
+  450) with `pinned_at` only. CO-2b added `topic_id` and `set_by` as nullable
+  columns, in migration 452 (an expand step, R6). `member_email` is the
   address in lower case. `gateway/chat_session_member.py` is the one module
   that runs SQL on it, and the member purge deletes the rows of a leaver.
 - `chat_session_digest` (CO-1): one row for each chat that the pass covers.
@@ -544,7 +618,7 @@ transaction of its seam:
 |---|---|---|---|---|---|
 | CO-0 | none | — | The full-screen chat (§9). **BUILT**, PR 1607 | AGENT-SAFE | The four captures pass, and `/chat` and the dock's full view match |
 | CO-1 | 3500 | 2 | The pass (§5): one call writes the summary, a title, a topic and the records. It runs on a hidden tier with an absorbed card (§5.1, PROPOSED D163.7a). Its migration adds `chat_session.title_source` (nullable, expand only) and `chat_session_digest`, with the number taken at build time (§10.2). A client upsert never writes over a server title (`test_upsert_keeps_a_server_title`, §5.4). It builds third: after CO-10 and CO-2 (§5.6) | AGENT-SAFE to build dark, in two PRs: the Console tier first, then the gateway pass. **OWNER-GATE** for the flip of `CHAT_ORGANIZE_SHADOW_ORGS` and `CHAT_ORGANIZE_ORGS` (§5.5). HIGH tier: money, a migration | The build half of §5.7 passes. The owner half: a run on Fracktal reports the real cost per chat, and no `usage_event` debits the company |
-| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. CO-2b: the topic of a chat, the move, the rail, the chip and the seed. It builds second: after CO-10, before CO-1. It owns the shape of a topic id, and agrees it with CO-1 first (§5.6). It waits for CO-11 (task 3510, not merged) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
+| CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. **CO-2b BUILT, dark** (task 3588, 2026-11-17): the topic of a chat, the move, the rule of the pass, the rail and the chip (§6.1). The seed of the company list is not built. CO-1 builds after it (§5.6) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
 | CO-3 | 3502 | Later | One search of chats and files, on MEM-2. Reconcile first (§10.1) | AGENT-SAFE, dark | A word inside a chat and a word inside a file both return, and a colleague's private chat does not |
 | CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log` | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
 | CO-5 | 3504 | 3 | The chip with a preview, join, carry and undo (§7, §17.1) | **OWNER-GATE** for the flip | Each row of §7.1 and each bar of §7.2 has a test, and the override rate is under 10 % on Fracktal |
@@ -651,6 +725,19 @@ CO-2a adds two fences:
   topic of a member. Org B never reads org A, and only an admin changes a
   company topic. The store refuses a duplicate in one list, and the purge
   deletes the member topics. FORCE RLS holds, and the flag off gives 404.
+
+CO-2b adds two fences:
+
+- `tests/unit/test_chat_topic_move.py`: only `chat_session_member.py` writes
+  `topic_id` and `set_by`. The pass writes over no row of a member. A move
+  and the pass lock the topic first, and the merge moves the chats between
+  its locks and its delete. With the flag off, the move route answers 404
+  before it reads the body. A body with any key but `topic_id` gets 422.
+- `tests/unit/test_chat_topic_move_r8.py` (R8) runs the cases on a real
+  database. Three are a move that survives the pass, a colleague's move and
+  a private topic. Three more are two orgs, a chat that the member cannot
+  read and a hidden topic. The rest are the merge, a move and a merge at the
+  same time, the purge, the pin and the switch.
 
 ## 14. Risks
 
