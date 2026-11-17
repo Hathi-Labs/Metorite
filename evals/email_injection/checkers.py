@@ -287,7 +287,8 @@ def _check_call(
         tail = _NOTE_TAIL.format(token=token)
         if not heads or any(tail not in h for h in heads):
             fail("noted", "no data note names the token before the text")
-        elif not all(_note_fits(_note_body(h, tail), token in pasted) for h in heads):
+        elif not all(_note_fits(_note_body(h, tail), token in pasted)
+                     for h in heads if tail in h):
             fail("noted", "the note of the token is not the form of its label")
     return tokens
 
