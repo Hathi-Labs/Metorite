@@ -1,7 +1,8 @@
-"""R8 — CRM Rung 0 (task 3690): a number range, ``q`` on a module, and the
-hint of a field that is not on the module.
+"""R8 — CRM Rung 0 (CRM-Q34-1 and CRM-Q34-2, tasks 3693 and 3694): a number
+range, a lookup by the id of a core record, and refusals that name a step
+that works.
 
-Spec: ``project-docs/specs/crm_platform.md`` §18, "CRM Rung 0 (task 3690)".
+Spec: ``project-docs/specs/crm_platform.md`` §18.17.
 Production log of 2026-11-17: 10 of 61 ``crm_aggregate`` calls of a member
 got 422, although the fields existed.
 
@@ -11,10 +12,13 @@ Against a REAL Postgres, through the real ``/crm`` router, as the app role.
    (``"Rs. 0.00"``, ``"NA"``, ``"-"``, ``""``, an object, an array,
    ``"1e999"``, ``"12,50"``) is NO value, so no end of a range takes it, and
    no value gives a 500. A JSON number and a plain decimal string are values.
-2. ``q`` on the module aggregate and on the module list: one matcher, so the
-   count of the aggregate equals the total of the list.
+2. A lookup filter that carries the Metorite id of a core contact counts the
+   records whose lookup holds the contact's Zoho id. The id of an org B
+   contact, and a uuid that is no contact, count none.
 3. The 422 of a field that is not on the module names the close fields and
    the other modules that hold it, and never a label of another org.
+4. ``q`` on a module total is a 422 that names the fields to use.
+   ``group_by=status`` reads ``@status``, or names the select fields.
 """
 
 # ruff: noqa: F811 - the fixtures come in by import and are used as arguments
@@ -22,7 +26,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlencode
 
 import pytest
 
@@ -37,6 +40,8 @@ from tests.unit.test_crm_aggregate_fields_r8 import (  # noqa: F401
     _mirror_org,
     _module,
     _path,
+    keyed,
+    mods,
     ns,
 )
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
@@ -79,6 +84,7 @@ _CLIENT_DEFS = [
     ("Category", "select", None, False, False),
     ("Note", "text", None, False, False),
     ("Flag", "boolean", None, False, False),
+    ("Contact", "lookup", {"lookup_module": "Contacts"}, False, False),
 ]
 
 
@@ -110,26 +116,31 @@ def rung(ns):
                 fields["Fee"] = fee
             _named_record(c, a, "Clients", f"c{i}", name, fields)
         _named_record(c, b, "Clients", "b1", "Acme B Only", {"Fee": 100})
+        # CRM-Q34-1: a core contact of each org with the SAME Zoho id, and a
+        # Native contact with none. Three bills point at Zoho contacts.
+        ns.contact_a = _contact(c, a, "z-c1")
+        ns.contact_b = _contact(c, b, "z-c1")
+        ns.native_a = _contact(c, a, None)
+        ravi = {"id": "z-c1", "name": "Ravi Kumar"}
+        _named_record(c, a, "Clients", "l1", "Ravi bill 1", {"Contact": ravi})
+        _named_record(c, a, "Clients", "l2", "Ravi bill 2", {"Contact": ravi})
+        _named_record(c, a, "Clients", "l3", "Other bill",
+                      {"Contact": {"id": "z-c9", "name": "Someone"}})
+        _named_record(c, b, "Clients", "l1", "B bill", {"Contact": ravi})
     return ns
+
+
+def _contact(c: Any, org: str, ext_id: str | None) -> str:
+    return str(c.execute(text(
+        "INSERT INTO crm_contacts (organization_id, first_name, ext_source, ext_id) "
+        "VALUES (CAST(:o AS uuid), 'Ravi', CASE WHEN :e IS NULL THEN NULL ELSE 'zoho' END, "
+        ":e) RETURNING id"), {"o": org, "e": ext_id}).scalar())
 
 
 async def _total(p: Any, org: str, **query: Any) -> dict:
     res = await _call(p, _admin(org), "GET", _path(entity="module:Clients", **query))
     assert res.status_code == 200, (query, res.text)
     return res.json()
-
-
-async def _list(p: Any, org: str, **query: Any) -> Any:
-    path = "/crm/modules/Clients/records?" + urlencode({"page_size": 100, **query})
-    return await _call(p, _admin(org), "GET", path)
-
-
-async def _names(p: Any, org: str, **query: Any) -> list[str]:
-    res = await _list(p, org, **query)
-    assert res.status_code == 200, (query, res.text)
-    body = res.json()
-    assert body["total"] == len(body["rows"])
-    return sorted(r["name"] for r in body["rows"])
 
 
 def _expect(test: Any) -> list[str]:
@@ -157,7 +168,6 @@ async def test_a_number_range_takes_real_values_only(rung, app_engine, ends: dic
     assert total["values"] == len(wanted)
     if wanted:
         assert total["total"] == float(sum(_VALUES[n] for n in wanted))
-    assert await _names(rung, rung.org_a, **query) == wanted
 
 
 async def test_from_one_is_the_records_with_a_value_of_at_least_one(rung, app_engine) -> None:
@@ -188,8 +198,6 @@ async def test_an_unfit_number_range_is_a_422(rung, app_engine, query: dict) -> 
     res = await _call(rung, _admin(rung.org_a), "GET",
                       _path(entity="module:Clients", **query))
     assert res.status_code == 422, (query, res.text)
-    lst = await _list(rung, rung.org_a, **query)
-    assert lst.status_code == 422, (query, lst.text)
 
 
 async def test_a_range_on_a_text_field_names_the_date_and_number_fields(rung, app_engine) -> None:
@@ -210,79 +218,6 @@ async def test_the_equality_filter_and_a_date_range_answer_as_before(rung, app_e
     assert ranged["total"] == 2
 
 
-# ── 2. q on the module aggregate and the module list ─────────────────────────
-
-
-@pytest.mark.parametrize(("q", "wanted"), [
-    ("acme", ["ACME INDIA", "Acme Corp", "Acme Labs"]),
-    ("ACME corp", ["Acme Corp"]),
-    ("O'Brien", ["O'Brien and Sons"]),
-    ("café", ["Café Crème"]),
-    ("Gamma_Co", ["Gamma_Co"]),
-    ("50%", ["Beta 50% Off"]),
-    ("zzzz", []),
-])
-async def test_q_matches_the_name_on_the_total_and_the_list(rung, app_engine, q: str,
-                                                            wanted: list[str]) -> None:
-    body = await _total(rung, rung.org_a, q=q)
-    assert body["total"] == len(wanted), (q, body)
-    assert await _names(rung, rung.org_a, q=q) == wanted
-
-
-async def test_a_wildcard_q_is_one_answer_on_both(rung, app_engine) -> None:
-    """``%`` and ``_`` stay ILIKE wildcards, as on every CRM list. The list
-    and the total still agree."""
-    for q in ("_", "%", "a_m", "CAFÉ"):
-        body = await _total(rung, rung.org_a, q=q)
-        assert body["total"] == len(await _names(rung, rung.org_a, q=q)), q
-
-
-async def test_q_with_a_sum_and_a_range(rung, app_engine) -> None:
-    acme = await _total(rung, rung.org_a, q="acme", measure="sum", field="Fee")
-    assert (acme["records"], acme["values"], acme["total"]) == (3, 2, 5.0)
-    both = await _total(rung, rung.org_a, q="acme", **{"field.Fee.from": "1"})
-    assert both["total"] == 1
-    assert await _names(rung, rung.org_a, q="acme", **{"field.Fee.from": "1"}) == ["Acme Corp"]
-
-
-async def test_an_empty_q_is_an_absent_one(rung, app_engine) -> None:
-    for q in ("", "   "):
-        assert (await _total(rung, rung.org_a, q=q))["total"] == len(_CLIENTS)
-        assert len(await _names(rung, rung.org_a, q=q)) == len(_CLIENTS)
-
-
-@pytest.mark.parametrize("q", ["x" * 10_000, "a" * 201, "acme\x00"])
-async def test_a_long_q_or_a_nul_is_a_422_on_both(rung, app_engine, q: str) -> None:
-    res = await _call(rung, _admin(rung.org_a), "GET", _path(entity="module:Clients", q=q))
-    assert res.status_code == 422, res.text
-    assert (await _list(rung, rung.org_a, q=q)).status_code == 422
-
-
-@pytest.mark.parametrize("query", [
-    {},
-    {"q": "acme"},
-    {"field.Fee.from": "1"},
-    {"field.Fee.to": "0"},
-    {"field.Fee.from": "0", "field.Fee.to": "12.5", "q": "a"},
-    {"field.Start.from": "2026-03-01", "q": "e"},
-])
-async def test_the_total_equals_the_list(rung, app_engine, query: dict) -> None:
-    """One filter for both reads: the count of the aggregate is the total of
-    the module list with the same query."""
-    body = await _total(rung, rung.org_a, **query)
-    res = await _list(rung, rung.org_a, **query)
-    assert res.status_code == 200, res.text
-    assert body["total"] == res.json()["total"], query
-
-
-async def test_org_b_never_sees_org_a_through_q(rung, app_engine) -> None:
-    b = await _total(rung, rung.org_b, q="acme", measure="sum", field="Fee")
-    assert (b["records"], b["total"]) == (1, 100.0)
-    assert await _names(rung, rung.org_b, q="acme") == ["Acme B Only"]
-    assert "Acme B Only" not in await _names(rung, rung.org_a, q="acme")
-    assert (await _total(rung, rung.org_a, q="B Only"))["total"] == 0
-
-
 # ── 3. The hint of a field that is not on the module ─────────────────────────
 
 
@@ -299,9 +234,6 @@ async def test_a_field_of_another_module_names_that_module(rung, app_engine) -> 
                   {"measure": "sum", "field": "Grand_Total"}):
         message = await _refusal(rung, rung.org_a, **query)
         assert "is on: 'module:Invoices'. Give that module as the entity." in message, message
-    listed = await _list(rung, rung.org_a, **{"field.Grand_Total": "1"})
-    assert listed.status_code == 422
-    assert "'module:Invoices'" in listed.json()["detail"]["message"]
 
 
 async def test_a_guessed_name_names_the_close_fields(rung, app_engine) -> None:
@@ -323,3 +255,86 @@ async def test_no_label_of_another_org_reaches_the_hint(rung, app_engine) -> Non
     message = await _refusal(rung, rung.org_b, **{"field.Hidden_B": "1"})
     assert "is on: 'module:Secrets'" in message
     assert "Invoices" not in message
+
+
+# ── 4. A lookup by the Metorite id of a core contact (CRM-Q34-1) ─────────────
+
+
+async def _contacts(p: Any, org: str, value: str) -> int:
+    body = await _total(p, org, **{"field.Contact": value})
+    return body["total"]
+
+
+async def test_a_lookup_by_a_core_contact_id_counts_its_records(rung, app_engine) -> None:
+    """Before CRM-Q34-1 the id read only the module records, and the total
+    was a silent zero."""
+    a = rung.org_a
+    assert await _contacts(rung, a, rung.contact_a) == 2
+    assert await _contacts(rung, a, rung.contact_a.upper()) == 2
+    # The Zoho id and the exact name answer as before.
+    assert await _contacts(rung, a, "z-c1") == 2
+    assert await _contacts(rung, a, "Ravi Kumar") == 2
+    # Org B reads its own contact, and its own bill.
+    assert await _contacts(rung, rung.org_b, rung.contact_b) == 1
+
+
+async def test_a_contact_id_of_another_org_or_no_contact_counts_none(rung, app_engine) -> None:
+    a = rung.org_a
+    assert await _contacts(rung, a, rung.contact_b) == 0
+    assert await _contacts(rung, rung.org_b, rung.contact_a) == 0
+    assert await _contacts(rung, a, "77309599-0000-4000-8000-00000000dead") == 0
+    # A Native contact has no Zoho id, so it matches no stored lookup.
+    assert await _contacts(rung, a, rung.native_a) == 0
+
+
+@pytest.mark.parametrize("value", [
+    "x'; DROP TABLE crm_contacts; --", "' OR '1'='1", "z-c1' OR 1=1 --",
+])
+async def test_a_hostile_lookup_value_matches_nothing(rung, app_engine, value: str) -> None:
+    res = await _call(rung, _admin(rung.org_a), "GET",
+                      _path(entity="module:Clients", **{"field.Contact": value}))
+    assert res.status_code in (200, 422), res.text
+    if res.status_code == 200:
+        assert res.json()["total"] == 0
+    with rung.admin_engine.begin() as c:
+        left = c.execute(text("SELECT count(*) FROM crm_contacts WHERE organization_id = "
+                              "CAST(:o AS uuid)"), {"o": rung.org_a}).scalar()
+    assert left == 2
+
+
+# ── 5. q on a module, and group_by=status (CRM-Q34-2) ────────────────────────
+
+
+async def test_q_on_a_module_names_the_lookup_and_text_fields(rung, app_engine) -> None:
+    for query in ({"q": "Ravi"}, {"q": "Ravi", "group_by": "status"}, {"q": ""}):
+        res = await _call(rung, _admin(rung.org_a), "GET",
+                          _path(entity="module:Clients", **query))
+        assert res.status_code == 422, (query, res.text)
+        message = res.json()["detail"]["message"]
+        assert message.startswith("A module total takes no q."), message
+        assert "field.<lookup>=<the exact name>" in message
+        assert "The lookup fields of module:Clients are: 'Contact' (to 'Contacts')." in message
+        assert "The text fields of module:Clients are: Note." in message
+
+
+async def test_group_by_status_with_no_status_field_names_the_selects(rung, app_engine) -> None:
+    res = await _call(rung, _admin(rung.org_a), "GET",
+                      _path(entity="module:Clients", group_by="status"))
+    assert res.status_code == 422, res.text
+    assert ("Give group_field=<key> with one of its select fields: Category."
+            in res.json()["detail"]["message"])
+
+
+async def test_group_by_status_reads_the_status_key_field(keyed, app_engine) -> None:
+    a = keyed.org_a
+    by_status = await _total_of(keyed, a, entity="module:Invoices", group_by="status")
+    by_field = await _total_of(keyed, a, entity="module:Invoices", group_field="Status")
+    assert [(g["key"], g["value"]) for g in by_status["groups"]] == [
+        (g["key"], g["value"]) for g in by_field["groups"]] == [("Paid", 3)]
+    assert by_status["keys"] == {"@status": "Status"}
+
+
+async def _total_of(p: Any, org: str, **query: Any) -> dict:
+    res = await _call(p, _admin(org), "GET", _path(**query))
+    assert res.status_code == 200, (query, res.text)
+    return res.json()

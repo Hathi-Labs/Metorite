@@ -521,23 +521,7 @@ async def list_module_records(
     ``custom.<key>.in=a,b`` over the ``fields`` JSONB. They are the filters
     of the four core lists. A key that the module has no definition for is
     ignored, so a stale link or view still opens the list (CRM-Q8 prune).
-
-    Task 3690: ``q`` and the ``field.<key>`` filters of the module aggregate
-    go through ``field_sql.module_filter``, the one filter of a module read.
-    So the total of the list equals the count of the aggregate with the same
-    filters. An unknown ``field.<key>`` is a 422 that names the close fields.
     """
-    from gateway.routes.crm.field_sql import (
-        DEFAULT_ZONE,
-        MODULE_COLUMN,
-        FieldScope,
-        crm_zone,
-        field_hint,
-        field_pairs,
-        module_filter,
-        module_scope,
-    )
-
     if request is not None:
         refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
@@ -546,30 +530,18 @@ async def list_module_records(
             db, module, updated_from, updated_to,
             custom_pairs(request.query_params if request is not None else None),
         )
-        # Task 3690: `q` and the field.<key> filters of the module aggregate,
-        # through the one filter of a module read, so the list and the total
-        # cover the same records. A list with no field filter reads no scope.
-        pairs = field_pairs(request.query_params if request is not None else None)
-        try:
-            scope = (await module_scope(db, module) if pairs else
-                     FieldScope(column=MODULE_COLUMN, owner=f"module:{module}", fields={}))
-            zone = await crm_zone(db, current_tenant()) if pairs else DEFAULT_ZONE
-            where, _matches = await module_filter(db, scope, module, pairs, zone=zone, q=q)
-        except HTTPException as exc:
-            raise await field_hint(db, module, exc) from None
         query = list_contract(
-            MODULE_RECORDS, q=None, sort=sort, direction=direction,
+            MODULE_RECORDS, q=q, sort=sort, direction=direction,
             page=page, page_size=page_size, owner=resolve_owner(owner, user),
-            extra_where=(where.sql.removeprefix(" WHERE "), *extra_where),
-            extra_params={**where.params, **extra_params},
+            extra_where=("module = :module", *extra_where),
+            extra_params={"module": module, **extra_params},
         )
         total = (await db.execute(
-            text(f"SELECT count(*) FROM crm_module_records{where.source}{query.where}"),
-            query.params,
+            text(f"SELECT count(*) FROM crm_module_records{query.where}"), query.params,
         )).scalar() or 0
         rows = (await db.execute(
             text(
-                f"SELECT {_COLUMNS} FROM crm_module_records{where.source}{query.where} "
+                f"SELECT {_COLUMNS} FROM crm_module_records{query.where} "
                 f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
             ),
             {**query.params, "limit": query.limit, "offset": query.offset},

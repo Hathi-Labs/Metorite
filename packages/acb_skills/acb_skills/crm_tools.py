@@ -1855,9 +1855,7 @@ async def crm_aggregate(
     cannot group: filter on it instead. Field keys and what each can do come
     from crm_list_fields. A core entity takes the filters of
     crm_list_records. A module takes field_filters: {key: value}, or
-    {'key.from': x, 'key.to': x} for a date or a number field (each end
-    inclusive), and q, a part of the record name. When a field is not on
-    the module, the error names the close fields and the module that has it.
+    {'key.from': date, 'key.to': date} for a date field.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
     '@parent' (crm_list_modules names the key fields). On a module, term is

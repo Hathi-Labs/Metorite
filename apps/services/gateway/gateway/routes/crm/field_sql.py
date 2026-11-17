@@ -67,7 +67,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from gateway.routes.crm.fields import custom_defs
-from gateway.routes.crm.modules import _field_defs
+from gateway.routes.crm.modules import KNOWN_TARGETS, _field_defs
 from sqlalchemy import text
 
 #: The query-string prefix of a module field filter: ``field.<key>=<value>``,
@@ -599,6 +599,58 @@ def _type_words(types: tuple[str, ...]) -> str:
     return ", ".join(types)
 
 
+#: CRM-Q34-2: the stored types of a text field, for the 422 of ``q``.
+TEXT_TYPES: tuple[str, ...] = ("text", "textarea", "email", "phone", "url")
+#: The most lookup fields that the 422 of ``q`` names, each with its target.
+Q_LOOKUPS_MAX = 10
+STATUS_WORD = "@status"
+
+
+def q_refusal(scope: FieldScope) -> HTTPException:
+    """The 422 of ``q`` on a module total (CRM-Q34-2). It names the step
+    that works first, then the lookup fields of the module, each with its
+    target module, then its text fields. The tool cuts a refusal at 800
+    characters, so the step comes first."""
+    lookups = sorted(
+        (k, ref) for k, ref in scope.fields.items()
+        if k not in KEY_WORDS and ref.type == "lookup"
+    )
+    named = ", ".join(
+        f"{_quoted(k)} (to {_quoted(ref.lookup_module)})" if ref.lookup_module else _quoted(k)
+        for k, ref in lookups[:Q_LOOKUPS_MAX]
+    ) or "none"
+    more = len(lookups) - Q_LOOKUPS_MAX
+    if more > 0:
+        named += f", and {more} more"
+    return _refuse(
+        "A module total takes no q. To count the records of one name, give "
+        "field.<lookup>=<the exact name>. A lookup matches the exact stored name "
+        "or the record id. A text field takes field.<key>=<value> in any case. "
+        f"The lookup fields of {scope.owner} are: {named}. "
+        f"The text fields of {scope.owner} are: {scope.choices(TEXT_TYPES)}.",
+    )
+
+
+def status_field(scope: FieldScope) -> str:
+    """``group_by=status`` on a module (CRM-Q34-2): the key word
+    :data:`STATUS_WORD` when the catalogue names a status field of the
+    module, else a 422 that names the select fields of the module. With an
+    open question for the status, the 422 keeps its ``no_key_field`` detail,
+    so the chat can ask it (CRM-Q32-8)."""
+    if STATUS_WORD in scope.fields:
+        return STATUS_WORD
+    detail: dict[str, Any] = (
+        scope._no_key_field(STATUS_WORD) if scope.catalogue
+        else {"code": "unfit_field", "message": ""}
+    )
+    detail["message"] = (
+        f"{scope.owner} names no status field, so group_by=status cannot group it. "
+        "Give group_field=<key> with one of its select fields: "
+        f"{scope.choices(('select',))}. {detail['message']}"
+    ).strip()
+    raise HTTPException(status_code=422, detail=detail)
+
+
 def check_measure(scope: FieldScope, key: str | None) -> FieldRef:
     """The field of a ``sum``, ``avg``, ``min`` or ``max``, or a 422."""
     ref = scope.ref(key)
@@ -1106,6 +1158,20 @@ _LOOKUP_ID_SQL = (
     f"AND module = :{_MODULE} AND id = CAST(:agf_id AS uuid)"
 )
 
+#: CRM-Q34-1: the Zoho id of ONE core record, by its Metorite id, for a
+#: lookup whose target is a core entity (``Contacts``, ``Accounts``,
+#: ``Leads``, ``Deals``). Each table name comes from
+#: ``modules.KNOWN_TARGETS``, the one map that ``resolve_links`` reads, and
+#: never from the caller. The org and the id are bound, and RLS holds the
+#: session too. A Native record has no Zoho id, so it finds nothing.
+_CORE_LOOKUP_ID_SQL: dict[str, str] = {
+    module: (
+        f"SELECT ext_id FROM {entity.table} WHERE organization_id = "
+        "CAST(:agf_org AS uuid) AND id = CAST(:agf_id AS uuid)"
+    )
+    for module, entity in KNOWN_TARGETS.items()
+}
+
 
 def lookup_targets(scope: FieldScope, pairs: Sequence[tuple[str, str]],
                    ) -> dict[int, tuple[str, str]]:
@@ -1131,44 +1197,29 @@ async def lookup_ids(db: Any, org: str, scope: FieldScope,
     ``crm_list_module_records`` and sends its Metorite id, while the stored
     lookup holds the Zoho id. One read by primary key for each such filter,
     in the caller's tenant session. An id of another module or another org
-    finds nothing, and the filter then matches as before."""
+    finds nothing, and the filter then matches as before.
+
+    CRM-Q34-1: a lookup whose target is a core entity reads the core table
+    of :data:`_CORE_LOOKUP_ID_SQL`. Before, it read the module records, found
+    nothing, and the total was a silent zero."""
     out: dict[int, str] = {}
     for index, (module, ident) in lookup_targets(scope, pairs).items():
-        ext = (await db.execute(text(_LOOKUP_ID_SQL), {
-            "agf_org": str(org), _MODULE: module, "agf_id": ident,
+        core = _CORE_LOOKUP_ID_SQL.get(module)
+        ext = (await db.execute(text(core or _LOOKUP_ID_SQL), {
+            "agf_org": str(org), "agf_id": ident,
+            **({} if core else {_MODULE: module}),
         })).scalar()
         if ext:
             out[index] = str(ext)
     return out
 
 
-def name_clause(q: str | None) -> tuple[str | None, dict[str, Any]]:
-    """THE name matcher of a module read (task 3690): ``q`` on the record
-    name, and its bound values. ``(None, {})`` when *q* holds nothing.
-
-    It is ``core.search_where`` over ``modules.MODULE_RECORDS``, the ONE
-    search predicate of ``?q=`` that the module list ran before. So the
-    module list, the module aggregate and the overlay match one way. Each
-    word must be in the name, in any case. ``%`` and ``_`` stay ILIKE
-    wildcards, as on every CRM list. A ``q`` of more than ``MAX_Q_CHARS``
-    characters is a 422, and a NUL is a 422 (``records.refuse_nul``)."""
-    from gateway.routes.crm.core import search_where
-    from gateway.routes.crm.modules import MODULE_RECORDS
-    from gateway.routes.crm.records import refuse_nul
-
-    if not q or not q.strip():
-        return None, {}
-    refuse_nul([("q", q)])
-    return search_where(MODULE_RECORDS, q)
-
-
 def module_where(
     scope: FieldScope, module: str, pairs: list[tuple[str, str]], *, zone: str,
     matches: Mapping[int, Sequence[str]] | None = None,
-    ids: Mapping[int, str] | None = None, q: str | None = None,
+    ids: Mapping[int, str] | None = None,
 ) -> WhereSql:
-    """The WHERE clause of one module: the module, each field filter, and
-    ``q`` on the name (:func:`name_clause`, task 3690).
+    """The WHERE clause of one module: the module, and each field filter.
 
     Each name is checked against *scope* first, so an unknown name is a 422
     before any statement runs. A range on a datetime field reads *zone*,
@@ -1188,33 +1239,8 @@ def module_where(
         params.update(keys)
         params[v] = bound
         sources.append(source)
-    named, named_params = name_clause(q)
-    if named:
-        clauses.append(named)
-        params.update(named_params)
     return WhereSql(sql=" WHERE " + " AND ".join(clauses), params=params,
                     source=from_source(*sources))
-
-
-async def module_filter(
-    db: Any, scope: FieldScope, module: str, pairs: list[tuple[str, str]], *,
-    zone: str, q: str | None = None,
-) -> tuple[WhereSql, dict[int, list[str]]]:
-    """THE filter of a module read (task 3690): the module list
-    (``modules.list_module_records``) and the module aggregate both call it,
-    so a total and the list with the same filters cover the same records.
-
-    It reads the stored variants of each text filter (:func:`text_matches`)
-    and the Zoho id of each lookup filter by a Metorite id
-    (:func:`lookup_ids`), in the caller's tenant session, then builds
-    :func:`module_where`. Returns the clause and the variants."""
-    from gateway.routes.crm.core import current_tenant
-
-    org = str(current_tenant())
-    matches = await text_matches(db, org, scope, module, pairs) if pairs else {}
-    ids = await lookup_ids(db, org, scope, pairs) if pairs else {}
-    where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids, q=q)
-    return where, matches
 
 
 # ── The overlay of an empty core slot (CRM-Q20-3a, §18.13.5) ────────────────
@@ -1228,6 +1254,7 @@ OVERLAY_REFUSED: tuple[str, ...] = (
 
 #: The bound names of the overlay clauses.
 _OWNER = "agf_owner"
+_Q = "agf_q"
 _UPDATED_FROM = "agf_uf"
 _UPDATED_TO = "agf_ut"
 
@@ -1326,13 +1353,15 @@ def overlay_where(
             pairs.append((f"{close.key}.from", close_from))
         if close_to:
             pairs.append((f"{close.key}.to", close_to))
-    # Task 3690: `q` goes through the one name matcher of a module read.
-    where = module_where(scope, str(overlay.module), pairs, zone=zone, ids=ids, q=q)
+    where = module_where(scope, str(overlay.module), pairs, zone=zone, ids=ids)
     clauses = [where.sql]
     params = dict(where.params)
     if owner:
         clauses.append(f"lower(owner_email) = :{_OWNER}")
         params[_OWNER] = owner.strip().lower()
+    if q and q.strip():
+        clauses.append(f"name ILIKE :{_Q}")
+        params[_Q] = f"%{q.strip()}%"
     if updated_from:
         clauses.append("coalesce(ext_modified_at, updated_at) >= "
                        + day_start(f"CAST(:{_UPDATED_FROM} AS date)"))

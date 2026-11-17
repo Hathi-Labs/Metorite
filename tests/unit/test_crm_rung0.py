@@ -1,14 +1,13 @@
-"""CRM Rung 0 (task 3690): the module list and the module aggregate share
-ONE filter, and ONE name matcher. Database-free, so it never skips.
+"""CRM Rung 0 (CRM-Q34-1 and CRM-Q34-2, tasks 3693 and 3694): a number
+range, a lookup by the id of a core record, and refusals that name a step
+that works. Database-free, so it never skips.
 
-Spec: ``project-docs/specs/crm_platform.md`` §18, "CRM Rung 0 (task 3690)".
-The behaviour is proved in ``test_crm_rung0_r8.py``.
+Spec: ``project-docs/specs/crm_platform.md`` §18.17. The behaviour is proved
+in ``test_crm_rung0_r8.py``.
 
-The fence: ``aggregate._read`` and ``modules.list_module_records`` both call
-``field_sql.module_filter``. ``module_filter`` calls ``module_where``, and
-``module_where`` calls ``name_clause``. ``overlay_where`` calls
-``module_where`` and holds no matcher of its own. ``name_clause`` calls
-``core.search_where``, the one search predicate of ``?q=``.
+The fence: ``aggregate._read`` reads the lookup ids, refuses ``q`` after it
+reads the fields of the module, and reads ``@status`` for a status group.
+``aggregate._compute`` adds the field hint to each 422 of a module read.
 """
 
 from __future__ import annotations
@@ -24,16 +23,10 @@ _CRM = (
     / "apps" / "services" / "gateway" / "gateway" / "routes" / "crm"
 )
 
-#: function → the calls it must make, by file.
-_PINS: dict[str, dict[str, set[str]]] = {
-    "aggregate.py": {"_read": {"module_filter"}},
-    "modules.py": {"list_module_records": {"module_filter"}},
-    "field_sql.py": {
-        "module_filter": {"module_where"},
-        "module_where": {"name_clause"},
-        "overlay_where": {"module_where"},
-        "name_clause": {"search_where"},
-    },
+#: function → the calls it must make, in ``aggregate.py``.
+_PINS: dict[str, set[str]] = {
+    "_read": {"lookup_ids", "module_where", "q_refusal", "status_field"},
+    "_compute": {"field_hint"},
 }
 
 
@@ -48,58 +41,27 @@ def _calls(source: str, name: str) -> set[str] | None:
     return None
 
 
-def _strings(source: str) -> list[str]:
-    """Each string constant of *source* that is no docstring."""
-    tree = ast.parse(source)
-    docs = {
-        id(n.body[0].value) for n in ast.walk(tree)
-        if isinstance(n, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
-        and n.body and isinstance(n.body[0], ast.Expr)
-        and isinstance(n.body[0].value, ast.Constant)
-    }
-    return [n.value for n in ast.walk(tree)
-            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
-
-
-def _offenders(sources: dict[str, str]) -> list[str]:
+def _offenders(source: str) -> list[str]:
     found = []
-    for file, pins in _PINS.items():
-        for function, wanted in pins.items():
-            calls = _calls(sources[file], function)
-            if calls is None:
-                found.append(f"{file}: no function {function}")
-                continue
-            found.extend(f"{file}: {function} does not call {w}" for w in wanted - calls)
-    # A second matcher: an ILIKE in the field SQL, or in the module list.
-    for file in ("field_sql.py", "modules.py"):
-        found.extend(f"{file}: ILIKE in {s[:40]!r}"
-                     for s in _strings(sources[file]) if "ILIKE" in s.upper())
+    for function, wanted in _PINS.items():
+        calls = _calls(source, function)
+        if calls is None:
+            found.append(f"no function {function}")
+            continue
+        found.extend(f"{function} does not call {w}" for w in sorted(wanted - calls))
     return found
 
 
-def _sources() -> dict[str, str]:
-    return {f: (_CRM / f).read_text(encoding="utf-8") for f in _PINS}
+def test_the_module_read_calls_each_rung0_step() -> None:
+    assert _offenders((_CRM / "aggregate.py").read_text(encoding="utf-8")) == []
 
 
-def test_the_list_and_the_aggregate_share_one_filter() -> None:
-    assert _offenders(_sources()) == []
-
-
-def test_the_fence_sees_a_second_path() -> None:
-    """The fence on the fence: each kind of drift turns it red."""
-    sources = _sources()
-    good = _offenders(sources)
-    assert good == []
-    drift = dict(sources)
-    drift["modules.py"] = sources["modules.py"].replace("module_filter(", "other_filter(")
-    assert "modules.py: list_module_records does not call module_filter" in _offenders(drift)
-    drift = dict(sources)
-    drift["field_sql.py"] = sources["field_sql.py"] + "\nX = 'name ILIKE :agf_q'\n"
-    assert any("ILIKE" in o for o in _offenders(drift))
-    drift = dict(sources)
-    drift["field_sql.py"] = sources["field_sql.py"].replace(
-        "named, named_params = name_clause(q)", "named, named_params = None, {}")
-    assert "field_sql.py: module_where does not call name_clause" in _offenders(drift)
+def test_the_fence_sees_a_missing_step() -> None:
+    source = (_CRM / "aggregate.py").read_text(encoding="utf-8")
+    assert "_read does not call q_refusal" in _offenders(
+        source.replace("raise q_refusal(scope)", "pass"))
+    assert "_compute does not call field_hint" in _offenders(
+        source.replace("raise await field_hint(", "raise (lambda *a: a)("))
 
 
 # ── The pure parts ───────────────────────────────────────────────────────────
@@ -175,26 +137,6 @@ def test_the_quote_of_org_text_is_cut_and_closed() -> None:
     assert len(quoted) == fs.HINT_CHARS + 2
 
 
-@pytest.mark.parametrize("q", ["x" * 10_000, "a\x00b"])
-def test_name_clause_refuses_a_long_q_and_a_nul(q: str) -> None:
-    from gateway.routes.crm import field_sql as fs
-
-    with pytest.raises(HTTPException) as exc:
-        fs.name_clause(q)
-    assert exc.value.status_code == 422
-
-
-def test_name_clause_is_the_list_search() -> None:
-    from gateway.routes.crm import field_sql as fs
-    from gateway.routes.crm.core import search_where
-    from gateway.routes.crm.modules import MODULE_RECORDS
-
-    for q in ("acme", "ACME corp", "50%", "O'Brien", "_"):
-        assert fs.name_clause(q) == search_where(MODULE_RECORDS, q)
-    assert fs.name_clause("") == (None, {}) and fs.name_clause("  ") == (None, {})
-    assert fs.name_clause(None) == (None, {})
-
-
 async def test_the_hint_passes_each_other_refusal_through() -> None:
     from gateway.routes.crm import field_sql as fs
 
@@ -210,7 +152,78 @@ async def test_the_hint_passes_each_other_refusal_through() -> None:
         assert await fs.field_hint(_NoDb(), "Clients", exc) is exc
 
 
-def test_a_module_aggregate_takes_q() -> None:
+def test_q_stays_out_of_the_module_params() -> None:
+    """``q`` on a module total is Rung 1 (CRM-Q34-7). Tonight it is a 422."""
     from gateway.routes.crm import aggregate as agg
 
-    assert "q" in agg.MODULE_PARAMS
+    assert "q" not in agg.MODULE_PARAMS
+
+
+def _lookup_scope(catalogue: bool = False, status: bool = False):
+    from gateway.routes.crm import field_sql as fs
+
+    def ref(key: str, kind: str, target: str | None = None) -> fs.FieldRef:
+        return fs.FieldRef(key=key, type=kind, label=key, lookup_module=target)
+
+    fields = {
+        "Client": ref("Client", "lookup", "Contacts"),
+        "Project": ref("Project", "lookup", "Projects"),
+        "Remarks": ref("Remarks", "text"),
+        "Stage": ref("Stage", "select"), "Kind": ref("Kind", "select"),
+        "Fee": ref("Fee", "currency"),
+    }
+    if status:
+        fields["@status"] = fields["Stage"]
+    return fs.FieldScope(column="fields", owner="module:Bills", fields=fields,
+                         catalogue=catalogue)
+
+
+def test_q_on_a_module_names_the_step_and_the_fields() -> None:
+    """CRM-Q34-2 item 1: the step that works comes first, then each lookup
+    with its target module, then the text fields."""
+    from gateway.routes.crm import field_sql as fs
+
+    message = fs.q_refusal(_lookup_scope()).detail["message"]
+    assert message.startswith(
+        "A module total takes no q. To count the records of one name, give "
+        "field.<lookup>=<the exact name>.")
+    assert ("The lookup fields of module:Bills are: 'Client' (to 'Contacts'), "
+            "'Project' (to 'Projects').") in message
+    assert "The text fields of module:Bills are: Remarks." in message
+    assert len(message) < 800
+
+
+def test_q_on_a_wide_module_keeps_the_step_inside_the_cut() -> None:
+    from gateway.routes.crm import field_sql as fs
+
+    wide = {f"L{i:02d}": fs.FieldRef(key=f"L{i:02d}", type="lookup", label="x",
+                                     lookup_module="M" * 80) for i in range(40)}
+    scope = fs.FieldScope(column="fields", owner="module:Bills", fields=wide)
+    message = fs.q_refusal(scope).detail["message"]
+    assert message[:800].count("field.<lookup>=<the exact name>") == 1
+    assert "and 30 more" in message
+    assert ("M" * 61) not in message
+
+
+def test_group_by_status_reads_the_status_field() -> None:
+    """CRM-Q34-2 item 2: with a status key field, ``@status``. With none, a
+    422 that names the select fields. An open question keeps its detail."""
+    from gateway.routes.crm import field_sql as fs
+
+    assert fs.status_field(_lookup_scope(status=True)) == "@status"
+    for catalogue, code in ((False, "unfit_field"), (True, "no_key_field")):
+        with pytest.raises(HTTPException) as exc:
+            fs.status_field(_lookup_scope(catalogue=catalogue))
+        detail = exc.value.detail
+        assert detail["code"] == code
+        assert detail["message"].startswith(
+            "module:Bills names no status field, so group_by=status cannot group it. "
+            "Give group_field=<key> with one of its select fields: Kind, Stage.")
+
+
+def test_a_module_takes_group_by_status_at_the_check() -> None:
+    from gateway.routes.crm import aggregate as agg
+
+    assert agg._check("module:Bills", "count", "status", None, None, None) == (None, "Bills")
+    with pytest.raises(HTTPException):
+        agg._check("module:Bills", "count", "pipeline", None, None, None)

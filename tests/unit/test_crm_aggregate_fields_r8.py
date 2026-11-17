@@ -497,6 +497,7 @@ async def test_a_422_names_the_valid_choices(mods, app_engine) -> None:
     {"measure": "weighted", "group_by": "owner"},
     {"group_by": "status"},
     {"group_by": "close_month"},
+    {"group_by": "owner", "q": "widget"},                              # a list filter
     {"group_by": "owner", "owner": "me"},
     {"group_by": "owner", "field.Nope": "1"},
     {"group_by": "owner", "field.Description.from": "2026-01-01"},
