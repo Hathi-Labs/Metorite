@@ -230,7 +230,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- projects-authority (WS-ALN ALN-4) --
     "project_authorities": ("which page is the authority page of this project?",),
     "pin_authority": ("pin this page as the authority of the project",),
-    "unpin_authority": ("remove the authority page of the project",),
+    "unpin_authority": ("remove the authority page of the project",
+                        # CO-11b (task 3563): the three phrases that took the
+                        # place of the bare "unpin".
+                        "unpin this page from the project",
+                        "unpin the page from the board", "unpin a page"),
     # WS-39 LP-1a: the updates of a project sit in the same pack.
     "list_project_updates": ("show the project updates of Website Relaunch",),
     "post_project_update": ("post a project update: the vendor slipped a week",),
@@ -343,6 +347,13 @@ REQUESTS: dict[str, tuple[str, ...]] = {
 #: rules of the loader show the member's model where the tools are.
 KNOWN_GAPS: dict[str, str] = {
     "summarise the Website Relaunch project": "a name sits between 'the' and 'project'",
+    # CO-11b (task 3563): the bare "unpin" left the authority words, so "unpin
+    # this chat" loads no pack. cal-tasks approved exactly three phrases:
+    # "unpin this page", "unpin the page" and "unpin a page". These asks of
+    # the authority pack load no pack by their words now.
+    "unpin that page": "only this, the and a stand before 'page' in the words",
+    "unpin the authority": "the bare 'unpin' is out, and 'authority' alone is no word",
+    "unpin the doc from the project": "the bare 'unpin' is out, and 'doc' is no word",
 }
 
 #: Ordinary turns and the packs that they load. A change of a word list must

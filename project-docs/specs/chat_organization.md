@@ -709,25 +709,48 @@ and the default is empty.
   - Both acts are `COVERED` in `acb_skills/chat_parity.py`. The debt ceiling
     of the chat is 25 again.
   - `tool_packs.py` no longer loads the authority pack for a bare "unpin".
-    It needs "unpin this page", "unpin the page" or "unpin a page".
+    It needs "unpin this page", "unpin the page" or "unpin a page". The
+    cal-tasks session approved exactly these three phrases.
+  - So three asks of the authority pack now load no pack by their words:
+    "unpin that page", "unpin the authority" and "unpin the doc from the
+    project". `KNOWN_GAPS` in `tests/unit/test_pack_requests.py` lists them.
+  - **WhatsApp is open.** A WhatsApp thread is a `chat_session` row with
+    `channel = 'whatsapp'` (`whatsapp_channel/bot_run.py`), and the web chat
+    list shows it. Today the tool refuses in a WhatsApp run. It does not read
+    `assistant_profile.channel_writes()`, the writes switch of WhatsApp. §19
+    question 9 asks the owner.
   - Fences: `tests/unit/test_chat_pin_tool.py`,
-    `tests/unit/test_chat_pin_tool_r8.py` (R8), the two rows of `CONTROLS` in
-    `tests/unit/test_pack_requests.py`, and the two pin cases of
-    `tests/unit/test_exact_tool_count.py`.
+    `tests/unit/test_chat_pin_tool_r8.py` (R8), the two rows of `CONTROLS` and
+    the three rows of `unpin_authority` in `tests/unit/test_pack_requests.py`,
+    and the two pin cases of `tests/unit/test_exact_tool_count.py`.
 
 **Before the flag flip.** The owner does three things first:
 
 1. Accept §18. It is still PROPOSED (§15 to §20).
 2. Answer §19 question 8: does a restore show the pin again?
-3. Accept the trade of the tool count. With the flag on, `pin_chat` rides in
-   each request, as `find_tools` does (D222 decision 13). The agent ran the
-   golden matrix of `tests/unit/test_studio_split_matrix.py` once, with a
-   base one tool larger. It shows three changes at the cap of 110 tools.
-   Only the first has a test (`tests/unit/test_exact_tool_count.py`):
-   - A Studio turn with the email words drops the pack `studio-more`.
-   - In a Studio turn, the loader no longer offers the pack `email`.
-   - With the email pack and a sticky Projects pair, the loader no longer
-     offers `crm-records` or `projects-cycles`.
+3. Choose one of two options for the tool count. Accept the trade below,
+   or give `pin_chat` a flag of its own. A new flag needs an owner decision.
+   - `CHAT_PIN_ORGS` is also the flag of the pin in the chat list (CO-11).
+     So the visible pin cannot turn on without this trade.
+   - With the flag on, `pin_chat` rides in each request, as `find_tools`
+     does with `TOOL_SEARCH_ORGS` (D222 decision 13). A request holds 110
+     tools at most.
+   - The golden matrix of `tests/unit/test_studio_split_matrix.py` has 16
+     cases in 2 held states, so 32 rows. The agent ran it with a base one
+     tool larger. Then 11 rows of 6 cases change:
+     - `studio_with_email`: the pack `studio-more` leaves, in both states.
+     - `studio_alone` and `studio_with_workflow_words_and_studio_workflows_off`:
+       the loader no longer offers `email`, in both states.
+     - The two cases `projects_plan_and_reports_sticky_*`: the loader no
+       longer offers `crm-records` with the hold off. In both states, the
+       CRM specialist no longer leaves through the loader.
+     - `calendar_projects_and_calendar_day_sticky_with_email`: the loader no
+       longer offers `projects-cycles` with the hold off.
+   - With `pin_chat` and `find_tools` both on, the base is two tools larger.
+     Then 13 rows of 7 cases change. In `studio_with_email_and_crm_records`,
+     the core pack `studio` itself leaves. No test measures this case.
+   - Only the `studio-more` case has a test
+     (`tests/unit/test_exact_tool_count.py`).
 
    The old item 3, the raise of the debt ceiling from 25 to 27, is moot.
    CO-11b paid both rows.
@@ -765,6 +788,11 @@ owner answers on task 3491 or on the slice.
    archive, so a restore shows the pin again. Recommend YES. The archive is
    an act of the owner of the chat, and the pin is an act of each member. A no
    needs one more statement: the archive clears the pin of each member.
+9. **Does a WhatsApp turn pin its chat?** A WhatsApp thread is a row of the
+   web chat list. The owner rule says that a channel changes delivery, never
+   function. Today `pin_chat` refuses on WhatsApp (CO-11b). A yes lets
+   it pin there, under the writes switch of WhatsApp
+   (`assistant_profile.channel_writes()`). No recommendation yet.
 
 ## 20. Sources
 
