@@ -253,7 +253,7 @@ def test_each_seam_calls_the_one_writer(rel: str) -> None:
     for needle in _SEAMS[rel]:
         assert needle in src, (rel, needle)
     # A seam passes the org of the session, never a request value.
-    assert "org=user.organization_id" in src
+    assert "org=member_actions.org_of(user)" in src
     assert "req.organization" not in src
 
 

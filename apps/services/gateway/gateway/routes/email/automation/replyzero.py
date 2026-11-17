@@ -3058,7 +3058,7 @@ async def resolve_thread(
             # record, with no text. Dark behind MEMBER_ACTIONS_ORGS, and it never
             # fails the act (acb_common.member_actions.record_act).
             await member_actions.record_act(
-                db, org=user.organization_id or "", member=user.email or "",
+                db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="mark_done", via="app", item_kind="thread",
                 item_id=req.thread_id, mailbox_id=req.account_id,
                 features=await act_features.of_thread(

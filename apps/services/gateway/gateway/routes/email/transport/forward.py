@@ -372,7 +372,7 @@ async def _record_forward(
     The row holds the sender domain and the recipients, never a subject or a
     body. Dark behind MEMBER_ACTIONS_ORGS, and it never fails the forward."""
     await member_actions.record_act(
-        db, org=user.organization_id or "", member=user.email or "",
+        db, org=member_actions.org_of(user), member=user.email or "",
         app="email", act="forward", via="app", item_kind="email",
         item_id=str(row.id), mailbox_id=str(row.account_id),
         features=act_features.of_address(row.from_address),
