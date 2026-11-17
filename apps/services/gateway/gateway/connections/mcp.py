@@ -24,14 +24,18 @@ and §7.3. The shape follows :mod:`gateway.connections.github`.
 * **Always confirm (H-300).** ``provider_meta.always_confirm`` is the admin's
   switch: with it ``true``, every tool of the server needs the member's card,
   whatever its hints say (``orchestrator._maf_mcp.McpPermissionGate``). A new
-  server gets ``true`` (:func:`save`). A row with no key reads as ``false``,
-  so a server that was stored before H-300 keeps its behaviour, and the move
-  of an old row writes ``false`` for the same reason. Any value but a real
-  ``false`` reads as ``true``, so a damaged value fails closed.
+  server gets ``false`` (:func:`save`, MCP-NC1, owner directive 2026-11-16):
+  with the switch off, a member's run calls each tool with no card. A row
+  that a save stored ``true`` keeps ``true`` until an admin turns it off, and
+  a re-register that names no switch keeps it too. A row with no key reads
+  as ``false``, and the move of an old row writes ``false``. Any value but a
+  real ``false`` reads as ``true``, so a damaged value fails closed.
   :func:`set_always_confirm` changes it on one row.
 * **The read-only key (MCP-C2, item 32).** ``provider_meta.read_only_key`` is
   the admin's statement that the key of the server can only read: with it,
-  no tool of the server needs the card. :func:`_read_only_key` is the ONE
+  no tool of the server needs the card. After MCP-NC1 it changes only a run
+  that is not a verified member's own run in Metorite, such as a WhatsApp
+  run, which then runs each tool. :func:`_read_only_key` is the ONE
   parse, into ``StoredServer.read_only_key``. It is true only for a real
   ``true`` on a row that is not an OAuth row and does not read as always
   confirm. A new server gets ``false``, and so does a row with no key.
@@ -880,16 +884,18 @@ async def save(
     transport: str = "http-sse",
     agent_scope: Sequence[str] = ("*",),
     enabled: bool = True,
-    always_confirm: bool = True,
+    always_confirm: bool | None = None,
     read_only_key: bool = False,
 ) -> StoredServer:
     """Add a server of *org*, or replace the one of that name.
 
     The caller checks the name, the transport and the URL first. The headers
-    go into the blob only. *always_confirm* is the H-300 switch, and a new
-    server gets ``True`` unless the caller says otherwise. *read_only_key* is
-    the MCP-C2 switch, and a new server gets ``False``. A save is a full
-    register, so both keys are written, and a caller that names no
+    go into the blob only. *always_confirm* is the H-300 switch. ``None``
+    keeps the switch of a row that exists, as :func:`_always_confirm` reads
+    it, and gives a new server ``False`` (MCP-NC1, task 3603). So a
+    re-register that names no switch never turns a stored ``true`` off.
+    *read_only_key* is the MCP-C2 switch, and a new server gets ``False``. A
+    save is a full register for the key, so a caller that names no
     *read_only_key* turns it off. Both on, or the key on an OAuth row,
     raises :class:`McpSwitchRefused`, and nothing is written.
 
@@ -902,10 +908,14 @@ async def save(
     if transport not in _HTTP_TRANSPORTS or not url:
         raise ValueError("an MCP server in the registry is http-sse with a url")
     org = _org(org)
-    meta = _meta(name, label, description, transport, url, agent_scope,
-                 always_confirm=always_confirm, read_only_key=read_only_key)
     async with tenant_session(org) as db:
         locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
+        if always_confirm is None:
+            # MCP-NC1 review (F7): keep the stored switch, under the row lock.
+            always_confirm = locked is not None and _always_confirm(
+                locked[0].provider_meta or {})
+        meta = _meta(name, label, description, transport, url, agent_scope,
+                     always_confirm=always_confirm, read_only_key=read_only_key)
         # MCP-C2: the row after the save holds exactly these two switches.
         _check_switches(always_confirm=bool(always_confirm), read_only_key=bool(read_only_key),
                         oauth=locked is not None and _is_oauth(locked[0]))

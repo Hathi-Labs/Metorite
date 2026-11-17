@@ -18,13 +18,16 @@ The CALLER gives it two things:
 **The one class rule** (:func:`mcp_tool_class`). A tool is class A when
 ``acb_skills.permission_policy.mcp_needs_confirmation`` says that it needs no
 confirmation AND its server has no ``always_confirm``. Each other tool is
-class B. The gate of a run (``orchestrator._maf_mcp``) calls the same seam
-on the same hints, so the catalog and the gate agree. A ``destructiveHint``
-tool is a write, so it is B, and no MCP tool is class C. ⚠️ The admin's
-read-only key (``read_only_key``) lets a run skip the card, but it never
-makes a catalog row class A. The class of a row comes from the hints and
-"always confirm" only, so the catalog can be stricter than the gate and
-never looser.
+class B. A ``destructiveHint`` tool is a write, so it is B, and no MCP tool
+is class C. The class is a read test, and the preview reads class A only, so
+a preview sends nothing (I11). ⚠️ MCP-NC1 (owner directive, 2026-11-16, task
+3603): the gate of a verified member's run in Metorite
+(``orchestrator._maf_mcp``) runs a class B tool with no card, unless its
+server is set to always confirm. WhatsApp still refuses it. The admin's
+read-only key (``read_only_key``) lets such a refused run use the tool, but
+it never makes a catalog row class A. The class of a row comes from the
+hints and "always confirm" only, so the catalog can be stricter than the gate
+and never looser.
 
 **Data only.** A row holds the server key, the tool name, the description
 and the hints, and nothing else of the server: no url, no header, no scope.
@@ -78,8 +81,10 @@ def mcp_tool_class(hints: Any, *, always_confirm: bool) -> str:
     """The ONE class rule of an MCP tool: ``A`` or ``B``.
 
     ``A`` only when the server has no "always confirm" and the live seam
-    ``mcp_needs_confirmation`` says the tool needs no confirmation. Each
-    other case, a missing hint and a damaged value too, is ``B``."""
+    ``mcp_needs_confirmation`` says the hints show a read. Each other case,
+    a missing hint and a damaged value too, is ``B``. MCP-NC1 leaves this
+    rule as it was: a member's run calls a ``B`` tool with no card, and a
+    preview still never calls one."""
     if always_confirm is not False or mcp_needs_confirmation(hints):
         return "B"
     return "A"
