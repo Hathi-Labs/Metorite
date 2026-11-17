@@ -38,6 +38,16 @@ What it holds (R7):
    thread. A failing mark never fails the run. The mark is ONE bound UPDATE
    that names ``organization_id``. The R8 half is
    ``tests/unit/test_resume_native_stale_r8.py``.
+10. RESUME-2b (task 3460), case A: a late Approve of a parked card whose
+    reply is the last turn goes on in the SAME reply. The run keeps the
+    parked run's id and its reply row, the stream is kept (no reset), and
+    the parked ``RUN_FINISHED`` goes (XDEL) before the thread reads as
+    active. Each doubt gives case B: an open row, no ``message_id``, a
+    stream that expired, was stopped or holds another run, and a reply that
+    is not the last turn. A parked end that goes before the start gives
+    case B under the same claim. D-RES-7: a park keeps the stream 24 hours
+    only with both flags on, and both ``mark_inactive`` calls keep it. The
+    stored call names its reply row from the run's record only.
 
 Run::
 
@@ -192,7 +202,11 @@ def launches(monkeypatch):
 
     async def _endpoint(req, _request, *, user, background_tasks, _continuation):
         seen.append({"req": req, "user": user, "launch": _continuation})
-        return agent_routes._ContinuationStarted(run_id=req.run_id, thread_id=req.thread_id)
+        # As the run route answers: the request's reply row, else a new one.
+        return agent_routes._ContinuationStarted(
+            run_id=req.run_id, thread_id=req.thread_id,
+            message_id=req.assistant_message_id or f"minted-{req.run_id}",
+            same_reply=_continuation.same_reply)
 
     async def _ok(*_a, **_k):
         return None
@@ -1601,3 +1615,399 @@ def test_a_stale_row_loads_as_a_digest_drop_and_the_room_still_wins():
     fresh = store.StoredRow({}, store.transcript_digest(covered), "fp")
     assert store._decide(store.LoadState(chat_exists=True, stored=fresh), covered=covered,
                          fingerprint="fp", browser_history=None) == (store.HIT, "")
+
+
+# ---------------------------------------------------------------------------
+# 12. RESUME-2b (task 3460): case A, the same reply, and D-RES-7
+# ---------------------------------------------------------------------------
+
+_RUN = "run-parked-a"
+_REPLY = "reply-parked-a"
+
+
+@pytest.fixture
+def streams(liveness, monkeypatch):
+    """The fake Redis of ``liveness``, with the stream reads of RESUME-2b
+    (XRANGE, XREVRANGE, XDEL). It keeps each EXPIRE, and the order of each
+    XDEL and each SET."""
+    r = liveness
+    r.ops = []
+    r.expires = []
+    real_set = r.set
+
+    async def xrevrange(key, max="+", min="-", count=None):
+        entries = list(reversed(r.store.get(key) or []))
+        return entries[:count] if count else entries
+
+    async def xrange(key, min="-", max="+", count=None):
+        entries = list(r.store.get(key) or [])
+        return entries[:count] if count else entries
+
+    async def xdel(key, *ids):
+        entries = r.store.get(key) or []
+        kept = [(eid, f) for eid, f in entries if eid not in ids]
+        r.store[key] = kept
+        r.ops.append(("xdel", key))
+        return len(entries) - len(kept)
+
+    async def expire(key, seconds, **_kw):
+        r.expires.append((key, seconds))
+        return True
+
+    async def set_(key, value, **kw):
+        r.ops.append(("set", key))
+        return await real_set(key, value, **kw)
+
+    r.xrevrange, r.xrange, r.xdel, r.expire, r.set = xrevrange, xrange, xdel, expire, set_
+    monkeypatch.setattr(stream_relay, "_PARKED_STREAMS", {})
+    return r
+
+
+def _parked_stream(r, tid: str, *, run_id: str = _RUN, parked: bool = True,
+                   after: tuple[dict[str, Any], ...] = ()) -> None:
+    """The stream of a run whose card parked: the head, the open call, the
+    card and the parked end. *after* lands after that end."""
+    from tests.unit.test_chat_deploy_recovery import _seed_events
+
+    end: dict[str, Any] = {"type": "RUN_FINISHED", "threadId": tid}
+    if parked:
+        end["parked"] = True
+    _seed_events(r, tid, [
+        {"type": "RUN_STARTED", "runId": run_id, "threadId": tid},
+        {"type": "TEXT_MESSAGE_CONTENT", "messageId": "seg-1", "delta": "Let me move it."},
+        {"type": "TOOL_CALL_START", "toolCallId": "call_abc",
+         "toolCallName": "update_deal_status"},
+        {"type": "CUSTOM", "name": "confirmation_requested", "value": {"request_id": "x"}},
+        end, *after,
+    ])
+
+
+def _entries(r, tid: str) -> list[dict[str, Any]]:
+    return _events(r, tid)
+
+
+def test_parked_end_of_reads_only_the_parked_end_of_the_run(streams):
+    """Mutation: drop the ``runId`` test of ``parked_end_of`` -> the stream
+    of another run reads as parked -> red. Drop the ``parked`` test -> a
+    Stop's end reads as parked -> red."""
+    tid = "t-pe"
+    _parked_stream(streams, tid)
+    last = streams.store[f"cc:stream:{tid}"][-1][0]
+    assert asyncio.run(stream_relay.parked_end_of(tid, _RUN)) == last
+    assert asyncio.run(stream_relay.parked_end_of(tid, "run-other")) is None
+    assert asyncio.run(stream_relay.parked_end_of(tid, "")) is None
+    assert asyncio.run(stream_relay.parked_end_of("t-none", _RUN)) is None, "expired"
+
+    _parked_stream(streams, "t-stop", after=({"type": "RUN_FINISHED", "cancelled": True},))
+    assert asyncio.run(stream_relay.parked_end_of("t-stop", _RUN)) is None, "a Stop came after"
+    _parked_stream(streams, "t-done", parked=False)
+    assert asyncio.run(stream_relay.parked_end_of("t-done", _RUN)) is None, "no park"
+
+    from tests.unit.test_chat_deploy_recovery import _seed_events
+
+    _seed_events(streams, "t-trim", [{"type": "TEXT_MESSAGE_CONTENT", "delta": "x"}] * 3
+                 + [{"type": "RUN_FINISHED", "parked": True}])
+    assert asyncio.run(stream_relay.parked_end_of("t-trim", _RUN)) is None, "no head"
+
+
+def _gen_lines(*events: dict[str, Any]):
+    async def _gen():
+        for evt in events:
+            yield f"data: {json.dumps(evt)}\n\n"
+    return _gen()
+
+
+def test_keep_stream_goes_on_in_the_parked_stream(streams):
+    """Case A: no reset, the parked end goes, and the run's events follow the
+    parked part. The XDEL comes before the thread reads as active.
+    Mutation: ``reset=True`` -> the parked part is gone -> red. XDEL after
+    ``mark_active`` -> the order test -> red."""
+    tid = "t-keep"
+    _parked_stream(streams, tid)
+
+    async def go() -> None:
+        task = await stream_relay.start_detached(
+            tid, _gen_lines({"type": "RUN_STARTED", "runId": _RUN, "threadId": tid},
+                            {"type": "TEXT_MESSAGE_CONTENT", "delta": "The deal moved."},
+                            {"type": "RUN_FINISHED", "threadId": tid}),
+            tee=True, exclusive=True, keep_stream=True, actor=_ALICE,
+            organization_id=_ORG_A, record={"runId": _RUN, "messageId": _REPLY})
+        await asyncio.wait_for(task, timeout=10)
+
+    asyncio.run(go())
+    kinds = [(e.get("type"), e.get("parked"), e.get("delta")) for e in _entries(streams, tid)]
+    assert kinds == [
+        ("RUN_STARTED", None, None), ("TEXT_MESSAGE_CONTENT", None, "Let me move it."),
+        ("TOOL_CALL_START", None, None), ("CUSTOM", None, None),
+        ("RUN_STARTED", None, None), ("TEXT_MESSAGE_CONTENT", None, "The deal moved."),
+        ("RUN_FINISHED", None, None),
+    ]
+    assert _entries(streams, tid)[0]["runId"] == _RUN
+    order = [op for op in streams.ops if op[1] in (f"cc:stream:{tid}", f"cc:active:{tid}")]
+    assert order.index(("xdel", f"cc:stream:{tid}")) < order.index(("set", f"cc:active:{tid}"))
+
+
+def test_keep_stream_refuses_before_any_state_change(streams, monkeypatch):
+    """A stream with no parked end of the run: ``ParkedStreamGone`` (a
+    ``SupersedeRefused``), before any write. A fault of the check refuses
+    too. Mutation: fall through to ``mark_active`` -> the thread reads as
+    active -> red."""
+    tid = "t-gone"
+    _parked_stream(streams, tid, after=({"type": "RUN_FINISHED", "cancelled": True},))
+    before = list(streams.store[f"cc:stream:{tid}"])
+
+    async def go(t: str) -> None:
+        await stream_relay.start_detached(
+            t, _gen_lines(), exclusive=True, keep_stream=True, actor=_ALICE,
+            organization_id=_ORG_A, record={"runId": _RUN})
+
+    with pytest.raises(stream_relay.ParkedStreamGone) as refused:
+        asyncio.run(go(tid))
+    assert isinstance(refused.value, stream_relay.SupersedeRefused)
+    assert f"cc:active:{tid}" not in streams.store
+    assert streams.store[f"cc:stream:{tid}"] == before and streams.ops == []
+    assert stream_relay._DETACHED_TASKS.get(tid) is None
+
+    async def _down(*_a, **_k):
+        raise ConnectionError("redis down")
+
+    _parked_stream(streams, "t-fault")
+    monkeypatch.setattr(stream_relay, "parked_end_of", _down)
+    with pytest.raises(stream_relay.ParkedStreamGone):
+        asyncio.run(go("t-fault"))
+    assert "cc:active:t-fault" not in streams.store
+
+
+def _stream_key_expires(r, tid: str) -> list[int]:
+    return [s for k, s in r.expires if k == f"cc:stream:{tid}"]
+
+
+def test_a_park_keeps_the_stream_24h_with_both_flags(resume_on, ask_db, streams):
+    """D-RES-7. The park sets 24 hours where it ends the stream, and both
+    ``mark_inactive`` calls of the run keep them. The next run of the thread
+    ends them. Mutation: expire with ``STREAM_TTL_SECONDS`` in
+    ``mark_inactive`` -> the last life is 1 hour -> red."""
+    tid = "t-park24"
+    out = _run(streams, tid, deal_id="d-neuro", stage="Payment Complete")
+    assert out.get("parked"), out
+    day = stream_relay.PARKED_STREAM_TTL_SECONDS
+    assert day == 24 * 3600
+    assert _stream_key_expires(streams, tid)[-1] == day, "the park set 24 hours"
+    asyncio.run(stream_relay.mark_inactive(tid))  # the executor's finally
+    asyncio.run(stream_relay.mark_inactive(tid))  # the drain's finally
+    assert _stream_key_expires(streams, tid)[-2:] == [day, day]
+    asyncio.run(stream_relay.mark_active(tid, reset=True))
+    asyncio.run(stream_relay.mark_inactive(tid))
+    assert _stream_key_expires(streams, tid)[-1] == stream_relay.STREAM_TTL_SECONDS
+
+
+@pytest.mark.parametrize("flag", ["chat_resume_orgs", "chat_late_approve_orgs"])
+def test_a_park_keeps_the_life_of_before_with_either_flag_off(flag, resume_on, ask_db,
+                                                              streams, monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), flag, "")
+    tid = f"t-park-off-{flag}"
+    out = _run(streams, tid, deal_id="d-neuro", stage="Payment Complete")
+    assert out.get("parked"), out
+    asyncio.run(stream_relay.mark_inactive(tid))
+    assert stream_relay.PARKED_STREAM_TTL_SECONDS not in _stream_key_expires(streams, tid)
+    assert _stream_key_expires(streams, tid)[-1] == stream_relay.STREAM_TTL_SECONDS
+
+
+def test_the_stored_call_names_the_reply_row_of_the_run(resume_on, ask_db, liveness):
+    """The reply row comes from the run's ``run_liveness`` record, server
+    side, never from an event. With no record the call has no key, and the
+    rest of the shape stays version 1. Mutation: drop the key in
+    ``pending_ask._record`` -> red."""
+    from orchestrator.run_liveness import record_instance_run
+
+    tid = "t-mid"
+    asyncio.run(record_instance_run(tid, {"messageId": "m-reply-1", "runId": "r-1",
+                                          "agent": "orchestrator", "org": _ORG_A}))
+    out = _run(liveness, tid, deal_id="d-neuro", stage="Payment Complete")
+    assert out.get("parked"), out
+    (row,) = [v for (o, _rid), v in ask_db.rows.items() if v["thread_id"] == tid]
+    assert row["stored_call"]["message_id"] == "m-reply-1"
+    assert row["run_id"] == "r-1"
+    base = {k: v for k, v in row["stored_call"].items() if k != "message_id"}
+    assert base["v"] == 1 and base["kind"] == "confirmation"
+
+    out2 = _run(liveness, "t-no-mid", deal_id="d-neuro", stage="Payment Complete")
+    assert out2.get("parked"), out2
+    (row2,) = [v for (o, _rid), v in ask_db.rows.items() if v["thread_id"] == "t-no-mid"]
+    assert "message_id" not in row2["stored_call"]
+
+
+def _case_a_row(db: _ResumeDb, tid: str, **over: Any) -> str:
+    rid = _park_row(db, tid=tid, stored=_stored(message_id=_REPLY), **over)
+    db.rows[(_ORG_A, rid)]["run_id"] = _RUN
+    return rid
+
+
+@pytest.fixture
+def last_turn(monkeypatch):
+    """``routes.chat.reply_is_last_turn`` as a recorder. ``answer`` sets what
+    it gives, and an exception raises."""
+    from gateway.routes import chat as chat_routes
+
+    state: dict[str, Any] = {"answer": True, "calls": []}
+
+    def _last(session_id, message_id, *, organization_id):
+        state["calls"].append((session_id, message_id, organization_id))
+        if isinstance(state["answer"], BaseException):
+            raise state["answer"]
+        return state["answer"]
+
+    monkeypatch.setattr(chat_routes, "reply_is_last_turn", _last)
+    return state
+
+
+def test_case_a_goes_on_in_the_same_reply(
+    resume_on, ask_db, streams, no_persist, launches, last_turn, monkeypatch,
+):
+    """The parked turn is the last turn, and its stream ends in the park:
+    the continuation keeps the parked run's id and its reply row. The 200
+    names both. Mutation: build the request of case B always -> a new run id
+    -> red."""
+    tid = "t-case-a"
+    rid = _case_a_row(ask_db, tid)
+    _parked_stream(streams, tid)
+    res = _approve(monkeypatch, tid, rid)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["resumed"] is True and body["sameReply"] is True
+    assert body["runId"] == _RUN and body["messageId"] == _REPLY
+    (seen,) = launches
+    assert seen["launch"].same_reply is True
+    req = seen["req"]
+    assert req.run_id == _RUN and req.assistant_message_id == _REPLY
+    assert req.payload == {"message": "", "source": "chat"}, "no words, no prompt id"
+    assert last_turn["calls"] == [(tid, _REPLY, _ORG_A)]
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+
+
+@pytest.mark.parametrize("case", [
+    "not_last_turn", "no_message_id", "stream_gone", "other_run", "stopped",
+    "open_row", "no_run_id", "check_fault",
+])
+def test_each_doubt_gives_a_new_reply(
+    case, resume_on, ask_db, streams, no_persist, launches, last_turn, monkeypatch,
+):
+    """Each doubt takes case B: a new run id, a new reply row, and
+    ``sameReply`` False. The card still runs once. Mutation: drop any one
+    test of ``_same_reply_of`` -> its case resumes in the old reply -> red."""
+    tid = f"t-doubt-{case}"
+    over: dict[str, Any] = {}
+    if case == "open_row":
+        over["state"] = "open"
+    rid = _case_a_row(ask_db, tid, **over)
+    if case == "no_message_id":
+        ask_db.rows[(_ORG_A, rid)]["stored_call"] = _stored()
+    if case == "no_run_id":
+        ask_db.rows[(_ORG_A, rid)]["run_id"] = None
+    if case == "other_run":
+        _parked_stream(streams, tid, run_id="run-newer")
+    elif case == "stopped":
+        _parked_stream(streams, tid, after=({"type": "RUN_FINISHED", "cancelled": True},))
+    elif case != "stream_gone":
+        _parked_stream(streams, tid)
+    if case == "not_last_turn":
+        last_turn["answer"] = False
+    if case == "check_fault":
+        last_turn["answer"] = RuntimeError("db down")
+    res = _approve(monkeypatch, tid, rid)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["resumed"] is True and body["sameReply"] is False
+    assert body["runId"] != _RUN and body["messageId"] != _REPLY
+    (seen,) = launches
+    assert seen["launch"].same_reply is False
+    assert seen["req"].assistant_message_id is None and seen["req"].run_id == body["runId"]
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered", "the card runs once"
+
+
+def test_the_run_route_keeps_the_stream_only_in_case_a(monkeypatch, liveness):
+    """The run route passes ``keep_stream`` from the launch only, keeps the
+    request's reply row, and answers it. Mutation: pass ``keep_stream=True``
+    always -> red."""
+    from gateway.routes import agent as agent_routes
+    from starlette.background import BackgroundTasks
+
+    seen = _stream_world(monkeypatch)
+    for same in (True, False):
+        launch = agent_routes.ResumeLaunch(stored=_stored(message_id=_REPLY), request_id="a" * 32,
+                                           title=_TITLE, same_reply=same)
+        req = agent_routes.AgentRunRequest(
+            agent="orchestrator", thread_id="t-route", run_id=_RUN if same else "run-b",
+            assistant_message_id=_REPLY if same else None,
+            payload={"message": "", "source": "chat"})
+        started = asyncio.run(agent_routes.run_agent_stream_endpoint(
+            req, None, user=_user(), background_tasks=BackgroundTasks(), _continuation=launch))
+        kw = seen["starts"][-1]["kw"]
+        assert kw["keep_stream"] is same and kw["exclusive"] is True
+        assert kw["organization_id"] == _ORG_A
+        assert started.same_reply is same
+        if same:
+            assert started.message_id == _REPLY and kw["record"]["messageId"] == _REPLY
+            assert started.run_id == _RUN and kw["record"]["runId"] == _RUN
+        else:
+            assert started.message_id and started.message_id != _REPLY
+            assert kw["record"]["messageId"] == started.message_id
+
+
+def test_a_lost_parked_end_starts_a_new_reply_under_the_same_claim(
+    resume_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The parked end goes between ``_same_reply_of`` and the start. The
+    run route raises before anything began, and the SAME claim and cap slot
+    start case B: the old row keeps its words, and no Approve is lost.
+    Mutation: drop the ``except _SameReplyGone`` of ``_resume_from_row`` ->
+    409 and a given-back claim -> red."""
+    from gateway.routes import agent as agent_routes
+
+    seen = _stream_world(monkeypatch)
+    calls: list[dict[str, Any]] = []
+
+    async def _start(thread_id, gen, **kw):
+        calls.append(kw)
+        if kw.get("keep_stream"):
+            raise stream_relay.ParkedStreamGone(thread_id, "no parked stream", _ALICE)
+
+    async def _same(*_a, **_k):
+        return _RUN, _REPLY
+
+    monkeypatch.setattr(stream_relay, "start_detached", _start)
+    monkeypatch.setattr(agent_routes, "_same_reply_of", _same)
+    rid = _case_a_row(ask_db, "t-lost")
+    res = _resume_now("t-lost", rid)
+    assert isinstance(res, dict), res
+    assert res["resumed"] is True and res["sameReply"] is False
+    assert res["runId"] != _RUN and res["messageId"] != _REPLY
+    assert [c["keep_stream"] for c in calls] == [True, False]
+    assert calls[1]["record"]["runId"] == res["runId"]
+    assert ask_db.restores == [] and ask_db.claims == [rid], "one claim, never given back"
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+    assert seen["admits"] == 1, "ONE slot for both tries: the slot of the late Approve"
+
+
+def test_the_case_a_checks_read_server_facts_only():
+    """R11, and the order of ``start_detached``. The ids of case A come from
+    the row and the stored call, never from the request. The parked check
+    comes before the exclusive check, so no await falls between that check
+    and the cancel. The XDEL comes before ``mark_active``."""
+    from gateway.routes import agent as agent_routes
+
+    same = inspect.getsource(agent_routes._same_reply_of)
+    assert "req." not in same and "payload" not in same
+    assert 'row.get("run_id")' in same and 'stored.get("message_id")' in same
+    route = inspect.getsource(agent_routes._resume_from_row)
+    assert route.index("pending_ask.claim_stored_call, org") < route.index(
+        "await _same_reply_of(")
+    src = inspect.getsource(stream_relay.start_detached)
+    assert src.index("await parked_end_of(") < src.index("if exclusive or keep_stream:")
+    assert src.index("r.xdel(") < src.index("await mark_active(")
+    assert "reset=not keep_stream" in src
+    park = inspect.getsource(pending_ask.park)
+    assert park.index('"parked": True') < park.index("keep_parked_stream(thread_id)")
+    assert "chat_resume_on(org) and late_approve_on(org)" in park

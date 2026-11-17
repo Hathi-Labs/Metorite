@@ -629,6 +629,61 @@ def _unpin_session(
         return chat_pins.unpin(s, session_id, viewer=user_id)
 
 
+#: The rows that a reader sees (S14, §20): every row but the empty agent row
+#: that the gateway mints before the first checkpoint. The names are bare, so
+#: they bind to the nearest ``chat_message`` of the statement. ONE predicate:
+#: :func:`_get_messages` and :data:`_LAST_TURN_SQL` both use it.
+_SHOWN_ROW_SQL = (
+    "NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
+    "THEN 'agent' ELSE 'other' END) = 'agent' "
+    "AND content = '' "
+    "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
+    "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
+    "AND COALESCE(reasoning, '') = '')"
+)
+
+#: RESUME-2b (``chat_run_continuity.md`` §4.12.4 item 2, case A): the reply
+#: row *mid* is the last turn of its chat. One row back means it exists, and
+#: its column is True when no row that a reader sees comes after it. "After"
+#: is a larger ``timestamp_ms``, the order of :func:`_get_messages`. A row
+#: with the same ``timestamp_ms`` is not after it: the member's own turn and
+#: its reply can share one millisecond. The org stands beside RLS (R5).
+_LAST_TURN_SQL = (
+    "SELECT NOT EXISTS ("
+    "  SELECT 1 FROM chat_message "
+    "  WHERE session_id = r.session_id AND organization_id = r.organization_id "
+    "    AND id <> r.id AND timestamp_ms > r.timestamp_ms AND " + _SHOWN_ROW_SQL
+    + ") FROM chat_message r "
+    "WHERE r.organization_id = CAST(:org AS uuid) AND r.session_id = :sid "
+    "  AND r.id = :mid"
+)
+
+
+def reply_is_last_turn(
+    session_id: str, message_id: str, *, organization_id: str | None,
+) -> bool:
+    """True when the reply row *message_id* is the last turn of the chat
+    *session_id* (RESUME-2b, case A), else False.
+
+    ``gateway.routes.agent._same_reply_of`` is the one caller. A late Approve
+    goes on in the same reply only when nothing shows after it. The org is the
+    session's: the read opens ``tenant_session(organization_id)``, and the SQL
+    names the org beside RLS. A missing row, another org and no org give
+    False. Sync: call it through ``asyncio.to_thread``. Fence:
+    ``tests/unit/test_resume_continuation_r8.py`` (R8)."""
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    if not organization_id or not session_id or not message_id:
+        return False
+    with tenant_session(organization_id) as s:
+        row = s.execute(
+            text(_LAST_TURN_SQL),
+            {"org": organization_id, "sid": session_id, "mid": message_id},
+        ).first()
+    return row is not None and bool(row[0])
+
+
 def _get_messages(
     session_id: str,
     user_id: str,
@@ -683,12 +738,7 @@ def _get_messages(
             # content before the first checkpoint. A reader does not see it
             # until it holds content, a tool event, a custom event or
             # reasoning. SQL, not Python, so a LIMIT does not count it.
-            " AND NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
-            "THEN 'agent' ELSE 'other' END) = 'agent' "
-            "AND content = '' "
-            "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
-            "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
-            "AND COALESCE(reasoning, '') = '')"
+            " AND " + _SHOWN_ROW_SQL
         )
         params: dict = {"sid": session_id}
         if before is not None:
