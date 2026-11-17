@@ -520,8 +520,8 @@ async def acompletion_stream_text(
     duplicate it. On failure the error propagates and the caller decides.
     The email drafters make no second model call. An interactive draft raises
     with copy for the member (task 3541). The rule path returns its NO_DRAFT
-    sentinel. ``_llm_compose_assist`` raises for a Router refusal or outage,
-    and keeps the owner's own text for any other failure.
+    sentinel. ``_llm_compose_assist`` raises for a Router refusal, an outage
+    or a stream timeout, and keeps the owner's own text for any other failure.
 
     Usage is emitted post-stream via ``litellm.stream_chunk_builder`` so
     streamed calls stay visible in observability like non-streamed ones.

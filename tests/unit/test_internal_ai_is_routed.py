@@ -937,7 +937,7 @@ class TestTheStreamedArmThroughTheREALClient:
 
     async def test_the_TOTAL_bound_through_the_real_client(self, monkeypatch, routed):
         """The real clock and the real client. A frame every 0.1 s keeps the
-        idle bound (30 s) away, so the total bound (0.3 s) ends the stream. The
+        idle bound (30 s) away, so the total bound (1.0 s) ends the stream. The
         guard of 5 s turns a bound that never fires into a plain
         ``TimeoutError``."""
         from acb_llm import context as ctx
@@ -947,7 +947,7 @@ class TestTheStreamedArmThroughTheREALClient:
                 yield _frame(content="x")
                 await asyncio.sleep(0.1)
 
-        monkeypatch.setattr(ctx, "STREAM_TOTAL_S", 0.3)
+        monkeypatch.setattr(ctx, "STREAM_TOTAL_S", 1.0)
         state = {"closed": False}
         self._wire(monkeypatch, source=frames, state=state)
         seen = _Seen()
