@@ -110,6 +110,7 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - A chat message that closes that card (REVISED) makes the tool spend the old card through `POST /email/new-card/revise` (§18.11). The gateway answers the member's own version as a neutral data block, and the tool adds it to its REVISED text. Only an edit card sends the run's thread (`_run_thread`). A failure of the route gives the REVISED text alone, and nothing sends. A 503 gets one more try, because the route spent nothing. A second 503 shows the SAME card again with `reopened`, at most three times (`_ask_until_revised`). The model then reads `_REVISE_UNREAD` before the member's answer. A 409 gives the REVISED text, because the record is gone. The tool copies the gateway's `ticked` start and `unticked` names to the new card's form, and sets neither (rule 7). Fence: `test_email_redraft_snapshot.py`.
   - A card that a chat message closes answers with the text of its own act, from `_closed_by_message(act)` (HRD-8a). The text names the tool of that act and no other send tool, so a forward stays a forward. Only `compose_reply` gives `_CARD_REVISED`. A new kind of held card needs its act in `_HELD_KIND_ACTS`. Fence: `test_redraft_keeps_act.py`.
   - `narrow_and_read` exists only when `NARROWING_AGENTS` names `email-assistant`. Setting that flag on production is OWNER-GATE. Fence: `test_email_narrow_source.py`.
+  - A zero of `query_inbox` ends with the pointer of `acb_skills.company_search_tools.with_zero_pointer` (WS-FIND FIND-6). Only a total that the route sends as the integer 0 is a zero. A page past the end and a missing total get none. Do not write the sentence here. Fence: `test_find_tools.py`.
 - agent-whatsapp-assistant/ -- WhatsApp inbox briefing, triage and reply drafting (drafts only).
   - `narrow_and_read` exists only when `NARROWING_AGENTS` names `whatsapp-assistant` (OWNER-GATE on production). Its READ writes no row and sends no read receipt. Fences: `test_whatsapp_narrow_source.py`, `test_whatsapp_read_no_mark.py` (R8).
 - agent-crm/ -- CRM assistant (`crm-assistant`). ⚠️ **The directory is `agent-crm`, the agent is `crm-assistant`**, and the `local_path` in `_AGENT_REGISTRY` is the whole mapping.
@@ -120,6 +121,7 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - It imports the read tools of `acb_skills.crm_tools` and keeps no copy. A Mirror run drops the record writes (orchestrator contract 19). Fence: `test_crm_mirror_run_tools.py`.
   - Each call sends `X-Actor-Via: chat:crm-assistant`, so the Change history row says `chat`. `crm_create_pipeline` leaves the run of an org off `CRM_PIPELINES_ORGS`. Fence: `test_crm_pipelines_native.py`.
   - `crm_create_pipeline` makes a lead pipeline too, with `kind="lead"` and an optional `feeds` (CRM-M4a). Its card names the kind and the fed deal pipeline, and a deal body sends neither key. Fence: `test_crm_agent_write.py`.
+  - A zero of `search_crm` ("Nothing in … matches") ends with the pointer of `acb_skills.company_search_tools.with_zero_pointer` (WS-FIND FIND-6). A near answer gets none. Fence: `test_find_tools.py`.
 - agent-projects/ -- Projects assistant (`projects-assistant`, spec `projects_ai_chat.md`). ⚠️ **The directory is `agent-projects`, the agent is `projects-assistant`.** Its tools live in `apps/skills/skill-projects`, and `agents.py` holds identity only.
   - Every tool calls `/projects/*` as the acting member, so the route's rule is the one authority.
   - **The route manifest is the allowlist.** `skill_projects.manifest.MANIFEST` maps every `/projects` route to a tool and a class: A (read), B (reversible write), C (hard-to-undo write) or X (excluded). The client refuses a route that the manifest does not carry.
@@ -146,6 +148,7 @@ packages imported as tool providers. (Distinct from the repo-root `skills/` fold
 which holds SKILL.md and subprocess-script skills for the DOE-v2 registry agents.)
 - skill-my-tasks/ -- the My Tasks tools (capture, clarify, organize, engage) over the gateway lens routes
 - skill-projects/ -- the Projects tool family for `projects-assistant` over the gateway `/projects` API. `manifest.py` is the route allowlist and the coverage record (see `agent-projects/` above)
+  - A zero of `find_tasks` ends with the pointer of `acb_skills.company_search_tools.with_zero_pointer` (WS-FIND FIND-6). `reads._with_zero_pointer` imports it as the other optional imports here. Fence: `test_find_tools.py`.
 
 ## Conventions
 - Each service, agent and skill has its own pyproject.toml and is a uv workspace member (`apps/services/*`, `apps/agents/*`, `apps/skills/*` — see root `pyproject.toml`)

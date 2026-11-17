@@ -68,7 +68,8 @@ def test_only_per_org_and_mode_flags_reload() -> None:
         assert fr.reloadable(key), key
     for key in ("DATABASE_URL", "PGPASSWORD", "PGSSLMODE", "CALENDAR_REMINDERS",
                 "JOB_QUEUE", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE", "DB_POOL_SIZE",
-                "EMAIL_SYNC_ENABLED", "TOOL_RESULT_SPILL", "GATEWAY_INTERNAL_TOKEN"):
+                "EMAIL_SYNC_ENABLED", "TOOL_RESULT_SPILL", "GATEWAY_INTERNAL_TOKEN",
+                "FIND_CLAIM_CHECK"):
         assert not fr.reloadable(key), key
 
 
@@ -265,6 +266,21 @@ def test_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert fr.reload_flags().applied == ("FIND_ORGS",)
     assert find_allowed("acme")
     assert not find_allowed("globex")
+
+def test_chat_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-FIND HRD-21, find_engine.md section 8. The reload list holds the key,
+    and the one reader of the switch of the past chats sees a change with no
+    restart."""
+    from gateway.retrieval.find import chat_search_named
+
+    assert fr.reloadable("CHAT_SEARCH_ORGS")
+    monkeypatch.setenv("CHAT_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not chat_search_named("acme")
+    env(**{**_START, "CHAT_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_SEARCH_ORGS",)
+    assert chat_search_named("acme")
+    assert not chat_search_named("globex")
 
 def test_studio_chat_tools_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-TOF TOF-1a, ai_studio.md §14 TOF-1a. The reload list holds the key,

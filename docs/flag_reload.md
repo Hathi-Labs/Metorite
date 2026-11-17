@@ -50,6 +50,17 @@ later turn of the chat then gets one line for each of the last 5 sent mails,
 in its run context. The run asks the flag at the start of each turn, so a
 reload applies at the next turn.
 
+`CHAT_FOCUS_ORGS` turns on the item in focus of a chat
+(`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
+the email or the Projects task that a tool call read or acted on last. The
+per-turn context then shows its kind, its id and its link, with the rule for
+"it", "this" and "mark it done". `*` lists every org, and the default is
+empty. Empty gives each prompt of before, byte for byte.
+
+Its one reader is `acb_skills.chat_focus.focus_on`. The executor asks it at
+the start of each turn, and each write and each block ask it again. So a
+reload applies to the next turn. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.
@@ -115,6 +126,22 @@ default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_SEARCH_ORGS` opens the past chats of `search_company`
+(`find_engine.md` §3.1 rung 6, §6, HRD-21). For each listed org, the search
+reads the member's own solo chats with Mira, and never the current chat. `*`
+lists every org, and the default is empty. Empty gives the answer of before
+HRD-21, byte for byte. That includes the 422 of an unknown app: `apps=chat`
+gets it, and its list of keys has no `chat`.
+
+The search never shows a chat that holds the egress mark: the mark of an
+email-assistant run or another untrusted read. The SQL does not test the
+mark. `egress.marked_sessions` drops each marked chat after the read. So a
+chat that read mail with no mark can show (`find_engine.md` §6, limit 1).
+
+Its one reader is
+`gateway.retrieval.find.chat_search_named`, and each search asks it. A reload
+applies a change. The flip waits for the owner's preview (task 3225).
+
 `CHAT_TOPICS_ORGS` turns on the topics of the chat list
 (`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`
 lists the company topics and the member's own topics. A member makes a
@@ -126,6 +153,12 @@ Its one reader is `gateway.chat_topic.topics_allowed`, and each topic route
 asks it first. So a reload applies at the next request. The flip stays
 OWNER-GATE (`enforcement-flip`), after the owner preview.
 
+CO-2b adds three readers of the same flag. `PUT /chat/sessions/{id}/topic`
+moves a chat, and answers 404 with the org off. The chat list sends
+`topicId` and `topicName` only with the org on. `GET /auth/me/shell` gives
+the answer to the client as `chat_topics`, so a tab shows a change at its
+next shell read.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
@@ -133,6 +166,28 @@ default is empty. Its one reader is `gateway.core_events.core_events_allowed`,
 and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
+`FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
+(`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
+the default is `off`. The flag is global, but the check acts only for an org
+of `FIND_ORGS`, because pass 2 exists only there. It is not a `*_ORGS` or
+`*_MODES` key, so a reload does NOT apply it. Set the value, then restart
+`acb-gateway`. Its one reader is `acb_common.settings.find_claim_check_mode`.
+
+In `shadow`, the first answer of a run that says a record does not exist
+writes one `answer_check.claim` line. The outcome is `shadow_miss` when no
+`search_company` answer of the turn shows pass 2, and `shadow_pass` when one
+does. The line holds `mode`, `outcome`, `rule`, `searches`, `finds` and
+`armed`, and no text. `armed` is true when a `search_company` or
+`resolve_name` answer came before the claim, and false when only an app's
+search tool ran, or none.
+
+In `on`, the check holds an answer after the first result of any find tool
+in the turn, an app's search tool too. Then a claim with no pass 2 gets one
+more pass. That pass is the one retry of the run, which the number check of
+`CRM_ANSWER_CHECK` spends too. A claim before any find result is not held,
+and the line says `unheld_miss`. `shadow` is AGENT-SAFE, and `on` is an
+`enforcement-flip` after 7 days of shadow (D-FIND-8).
 
 `FIND_ORGS` turns on the new shape of a `search_company` hit
 (`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says
@@ -151,10 +206,34 @@ rung 4). The search follows the links of its first 5 hits that are a deal,
 lead, contact, person or company. It shows at most 3 records for each hit,
 in the answer key `related`. Each record is one that the member can open.
 
+The flag also opens the honest zero, the explain mode and the log line of
+FIND-4 (`find_engine.md` §3.6, §3.7). The answer names why the search skipped
+each app. A zero answer adds at most 3 "Where else" lines from a closed list,
+and no line names a record. No line says that a record does not exist.
+
+`search_company(explain=true)` answers a trace of each step, with no record.
+Each search writes one `search.company.ladder` log line. It holds counts,
+times, `miss` and `explain`, and no word.
+
 The flag also opens the sender near spelling of `GET /email/messages`, for a
 caller that sends `near_sender`. Only `query_inbox` sends it. When
 `from_email` finds no mail, the tool tries the near spelling of the sender and
 names it. That part needs no `CONTEXT_RECENCY`.
+
+The flag also opens the chat tool `resolve_name` and its route
+`GET /search/names` (FIND-5, `find_engine.md` §5.2). The route gives each
+person, contact, lead, company and mail sender that holds one name. An org
+off the list gets 404. The orchestrator gives the tool only to an org on the
+list, so the tool list of each other org does not change. That part needs no
+`CONTEXT_RECENCY`. The next chat turn after a reload reads the change.
+
+The flag also opens the family of FIND-6 (`find_engine.md` §5.3, §5.4). Each
+find tool of the core list answers a failure as text, and that part needs no
+`CONTEXT_RECENCY`. Two parts act only with `CONTEXT_RECENCY` on, because the
+search runs its ladder only then. The persona ends its grounding paragraph
+with the standing rule. A zero of `search_crm`, `query_inbox` and
+`find_tasks` ends with a pointer to `search_company`. The next chat turn
+after a reload reads the change.
 
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the

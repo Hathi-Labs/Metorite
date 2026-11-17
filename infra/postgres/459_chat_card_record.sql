@@ -1,5 +1,5 @@
 -- ============================================================================
--- 454_chat_card_record.sql - the card record: each approved write card of a
+-- 459_chat_card_record.sql - the card record: each approved write card of a
 -- chat, with no model text (WS-CO CO-17, task 3516).
 --
 -- What: one new table. `chat_card_record` holds one row for each write card
@@ -45,7 +45,7 @@
 -- with USING and WITH CHECK. `REFERENCES` comes before `DEFAULT` (the
 -- tenancy ratchet).
 --
--- The number is taken at build time (R1): 454 was booked for this task. Check
+-- The number is taken at build time (R1): 459 was booked for this task. Check
 -- it again at merge. Pinned by tests/unit/test_card_record.py and
 -- tests/unit/test_card_record_r8.py, which find this file by CONTENT.
 -- ============================================================================
