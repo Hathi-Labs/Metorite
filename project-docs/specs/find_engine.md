@@ -393,12 +393,17 @@ switch stays off.
 - **The map.** `company._declared` builds it once in `_find_tail`, from
   `REGISTRY`. It holds each app that answered the first pass and is open to
   the member. It also holds the past chats when they answered. A dark Studio
-  is not open to the member, so it changes no answer. An app that the route
-  did not ask changes nothing.
+  search changes no answer (the same answer as for a member with no
+  `feature:studio`). An app that the route did not ask changes nothing.
+  **Open for the audit slice:** `_studio_open` needs `STUDIO_ORGS` and
+  `STUDIO_SEARCH_ORGS`, but the Studio routes gate on `studio_allowed` alone.
+  A member with `feature:studio` can open a Studio record that no search
+  reads. The audit slice must decide: fail closed for such a member, or keep
+  the identity that `test_company_search_studio_off.py` fences.
 - **No source declares it yet.** No slice has audited a source. The text
   above names fields that the searches of Email, Tasks, WhatsApp and People
-  do not read. The fence `test_find_absence_declared.py` fails when a source
-  declares it.
+  do not read (the People preferred name is named below, in the rule). The
+  fence `test_find_absence_declared.py` fails when a source declares it.
 - **The audit slice.** A later slice audits each source. For each source
   that it sets `True`, it names the evidence in this section and changes the
   fence. Only then may it set `find.ABSENCE_CLAIMS` to `True`.

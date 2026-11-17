@@ -282,8 +282,9 @@ def test_no_source_declares_yet():
     assert declared == [], (
         f"{declared} declare Source.proves_absence. find_engine.md §3.6: a source "
         "declares it only after an audit shows that its search reads every field "
-        "that its hits print. That slice names its evidence in §3.6, and it "
-        "changes this fence.")
+        "that its hits print AND every field that holds a word a member can type "
+        "(Email To and Cc is the second kind). That slice names its evidence in "
+        "§3.6, and it changes this fence.")
     (field,) = [f for f in dataclasses.fields(sources.Source) if f.name == "proves_absence"]
     assert field.default is False
     assert find.ABSENCE_CLAIMS is False
