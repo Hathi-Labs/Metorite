@@ -42,6 +42,20 @@ R7, each with the mutation that turns it red:
 * ``test_a_refusal_after_the_claim_gives_the_row_back`` (review, P2) — drop
   ``_give_back_claim``, or a predicate of ``pending_ask._RESTORE_SQL``.
 
+RESUME-4a-2 (task 3478, D-RES-9), the late decline:
+
+* ``test_a_late_decline_closes_once_and_no_tool_runs`` — the 200 body, the
+  row ``closed`` once, the note of a decline, and ZERO PATCHes. Let the
+  decline run the tool, and a PATCH goes out.
+* ``test_two_declines_at_once_and_exactly_one_wins`` — split the decline
+  claim into a read and a move, and both win.
+* ``test_another_member_thread_or_org_declines_nothing`` — drop the actor
+  predicate of ``_CLAIM_DECLINED_SQL``, and Bob closes Alice's card.
+* ``test_an_expired_row_declines_nothing``.
+* ``test_a_refusal_after_the_decline_claim_gives_the_row_back`` — keep
+  ``state = 'answered'`` in the restore, and the closed row stays closed.
+* ``test_flag_off_a_late_decline_is_as_before`` — drop the flag test.
+
 ``HELD_R8_REDIS_URL`` names a PRIVATE Redis, because the suite runs FLUSHDB.
 Never point it at a shared server. With it or the database unset, the suite
 skips, and a skip is not a pass. Run::
@@ -279,6 +293,21 @@ async def _answer(tid: str, rid: str, member: str, org: str, *, answer: str = "A
     from gateway.routes import agent as agent_routes
 
     req = agent_routes.UserInputResponseRequest(request_id=rid, answer=answer, thread_id=tid)
+    user = UserContext(email=member, role=UserRole.EMPLOYEE, organization_id=org)
+    try:
+        return await agent_routes.respond_user_input(req, user)
+    except HTTPException as exc:
+        return exc
+
+
+async def _decline(tid: str, rid: str, member: str, org: str) -> Any:
+    """A late "Not now" (``declined: true``) as *member* of *org*."""
+    from acb_auth import UserContext, UserRole
+    from fastapi import HTTPException
+    from gateway.routes import agent as agent_routes
+
+    req = agent_routes.UserInputResponseRequest(
+        request_id=rid, answer="", thread_id=tid, declined=True)
     user = UserContext(email=member, role=UserRole.EMPLOYEE, organization_id=org)
     try:
         return await agent_routes.respond_user_input(req, user)
@@ -767,6 +796,219 @@ def test_a_refusal_after_the_claim_gives_the_row_back(scene, monkeypatch):
                 w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is True
             assert pending_ask.restore_stored_call(
                 w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is False, "once"
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# RESUME-4a-2 (task 3478, D-RES-9): a late decline reaches the model
+# ---------------------------------------------------------------------------
+
+def test_a_late_decline_closes_once_and_no_tool_runs(scene, monkeypatch):
+    """A late "Not now" of a parked plain card: 200 ``resumed`` and
+    ``declined``, the row ``closed`` once with no stored call, ONE
+    continuation whose note says that nothing was done, no new card, no
+    member turn, and ZERO writes on the fake CRM transport."""
+    from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
+
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            rid = await _park(r, tid, w.org_a)
+            res = await _decline(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict), res
+            assert res == {"ok": True, "resumed": True, "declined": True,
+                           "threadId": tid, "runId": res["runId"]}
+            assert isinstance(res["runId"], str) and res["runId"]
+            await _settle()
+            assert PATCHES == [], "no tool ran"
+            assert _row(w, w.org_a, rid) == ("closed", None, True)
+            assert len(STARTED) == 1 and len(NOTES) == 1
+            assert card_outcome_text(CARD_DECLINED) in NOTES[0]
+            assert "<<<card-values>>>" in NOTES[0] and "Metorite ran the tool" not in NOTES[0]
+            assert len(_cards(r, tid)) == 1, "no new card"
+            assert _user_rows(w, tid) == 0, "no member turn"
+            again = await _decline(tid, rid, _ALICE, w.org_a)
+            assert getattr(again, "status_code", None) == 409
+            approve = await _answer(tid, rid, _ALICE, w.org_a)
+            assert getattr(approve, "status_code", None) == 409
+            await _settle()
+            assert len(STARTED) == 1 and PATCHES == [], "a second answer runs nothing"
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_two_declines_at_once_and_exactly_one_wins(scene):
+    w, r = scene
+    tid = w.t_alice
+    rid = asyncio.run(_park(r, tid, w.org_a))
+    results: list[Any] = []
+    gate = threading.Barrier(2)
+
+    def _claim() -> None:
+        gate.wait()
+        results.append(pending_ask.claim_declined_call(
+            w.org_a, rid, member=_ALICE, thread_id=tid))
+
+    threads = [threading.Thread(target=_claim) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    won = [x for x in results if x is not None]
+    assert len(results) == 2 and len(won) == 1, results
+    assert won[0]["tool"] == "update_deal_status" and won[0]["arguments"]["deal_id"] == "d-neuro"
+    assert _row(w, w.org_a, rid) == ("closed", None, True)
+    assert pending_ask.claim_stored_call(
+        w.org_a, rid, member=_ALICE, thread_id=tid, answer="APPROVE") is None, "no Approve after"
+
+
+def test_another_member_thread_or_org_declines_nothing(scene, monkeypatch):
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            from gateway.routes import agent as agent_routes
+
+            rid = await _park(r, tid, w.org_a)
+            real_room = agent_routes._resolve_room
+
+            class _SharedRoom:
+                can_send = True
+                is_shared = True
+
+            monkeypatch.setattr(agent_routes, "_resolve_room", lambda *_a, **_k: _SharedRoom())
+            bob = await _decline(tid, rid, _BOB, w.org_a)
+            assert getattr(bob, "status_code", None) == 409
+            monkeypatch.setattr(agent_routes, "_resolve_room", real_room)
+            other = await _decline("t-other-thread", rid, _ALICE, w.org_a)
+            assert getattr(other, "status_code", None) in (403, 409)
+            carol = await _decline(tid, rid, _CAROL, w.org_b)
+            assert getattr(carol, "status_code", None) in (403, 409)
+            assert STARTED == [] and PATCHES == []
+            assert _row(w, w.org_a, rid)[0] == "parked", "nobody moved the row"
+            for member, thread, org in ((_BOB, tid, w.org_a), (_ALICE, "t-x", w.org_a),
+                                        (_ALICE, tid, w.org_b)):
+                assert pending_ask.claim_declined_call(
+                    org, rid, member=member, thread_id=thread) is None
+            assert _row(w, w.org_a, rid) == ("parked", None, False)
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_an_expired_row_declines_nothing(scene, monkeypatch):
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            rid = await _park(r, tid, w.org_a)
+            with w.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE chat_pending_ask SET expires_at = now() - interval '1 minute' "
+                    "WHERE organization_id = CAST(:o AS uuid) AND request_id = :r"),
+                    {"o": w.org_a, "r": rid})
+            res = await _decline(tid, rid, _ALICE, w.org_a)
+            assert getattr(res, "status_code", None) == 409
+            assert pending_ask.claim_declined_call(
+                w.org_a, rid, member=_ALICE, thread_id=tid) is None
+            assert STARTED == [] and PATCHES == []
+            assert _row(w, w.org_a, rid)[0] == "parked"
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_refusal_after_the_decline_claim_gives_the_row_back(scene, monkeypatch):
+    """The run route refuses once after the decline claim. The real
+    ``restore_stored_call(declined=True)`` puts the ``closed`` row back to
+    ``parked`` WITH its stored call, so a second decline resumes it. The
+    give-back of an Approve never moves a closed row, and the give-back of
+    another member, thread or org moves nothing."""
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            rid = await _park(r, tid, w.org_a)
+            REFUSE.append(True)
+            refused = await _decline(tid, rid, _ALICE, w.org_a)
+            assert getattr(refused, "status_code", None) == 409, refused
+            assert _row(w, w.org_a, rid) == ("parked", None, False), "the row waits again"
+            stored = pending_ask.read_stored_call(w.org_a, rid)
+            assert stored is not None and stored["arguments"]["deal_id"] == "d-neuro"
+            res = await _decline(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["declined"] is True, res
+            await _settle()
+            assert PATCHES == [] and _row(w, w.org_a, rid) == ("closed", None, True)
+            assert pending_ask.restore_stored_call(
+                w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is False, \
+                "the give-back of an Approve never moves a closed row"
+            for member, thread, org in ((_BOB, tid, w.org_a), (_ALICE, "t-x", w.org_a),
+                                        (_ALICE, tid, w.org_b)):
+                assert pending_ask.restore_stored_call(
+                    org, rid, member=member, thread_id=thread, stored=stored,
+                    declined=True) is False
+            assert _row(w, w.org_a, rid) == ("closed", None, True)
+            assert pending_ask.restore_stored_call(
+                w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored,
+                declined=True) is True
+            assert _row(w, w.org_a, rid) == ("parked", None, False)
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("flag", ["chat_resume_orgs", "chat_late_approve_orgs"])
+def test_flag_off_a_late_decline_is_as_before(flag, scene, monkeypatch):
+    """Either flag off: no stored call is read, no run starts, and the answer
+    is the late decline of before (``{"ok": true, "declined": true}``)."""
+    from acb_common import get_settings
+
+    w, r = scene
+    tid = w.t_alice
+    reads: list[str] = []
+    real = pending_ask.read_stored_call
+
+    def _spy(org, rid):
+        reads.append(rid)
+        return real(org, rid)
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            rid = await _park(r, tid, w.org_a)
+            monkeypatch.setattr(get_settings(), flag, "")
+            monkeypatch.setattr(pending_ask, "read_stored_call", _spy)
+            res = await _decline(tid, rid, _ALICE, w.org_a)
+            assert res == {"ok": True, "declined": True}, res
+            assert reads == [] and STARTED == [] and PATCHES == []
+            assert _row(w, w.org_a, rid) == ("closed", None, True)
         finally:
             await client.flushdb()
             await client.aclose()
