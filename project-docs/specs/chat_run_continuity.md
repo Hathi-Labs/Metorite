@@ -1990,8 +1990,11 @@ the same reply. It needs no migration and no new flag.
   and a shared room with no label give case B too.
 - **The window after the check (round 2, P1).** A change can come after the
   check and before the executor reads the access of the run. So the final
-  fold of a same-reply run reads the label of now again. When it differs from
-  the row's label, part two goes into the fallback row.
+  fold of a same-reply run reads the label of now again
+  (`chat_fold._same_label_as_row`). Part two goes into the fallback row when
+  the label differs from the row's label, or a member joined after the row.
+  With no label, a room that is shared now, or a room read that failed, sends
+  it there too.
 - **A member who came back (round 2, P2-b).** A set of members cannot show a
   member who left and came back. Such a member has a history waterline
   (`join_message_ts`) later than the reply row, so a reload hides part two
@@ -2013,9 +2016,11 @@ the same reply. It needs no migration and no new flag.
   before the thread reads as active. The restart sweep reads the fallback row
   from the record of the run (`sameReplyFallbackId`).
 - **The head decides (round 2, P2-a).** The executor marks the `RUN_STARTED`
-  of a continuation `resumed`, so the stream tells part one's start from a
-  continuation's start (`stream_relay.part_one_at_head`). The fold of a
-  same-reply run (`chat_fold.same_reply_events`) takes three paths. With no
+  of a same-reply run `resumed` (`_same_reply_run`, from the server's kwarg).
+  So the stream tells part one's start from a continuation's start
+  (`stream_relay.part_one_at_head`). A case B run starts a stream of its own,
+  so its start has no mark. A later Approve can then go on in its reply. The
+  fold of a same-reply run (`chat_fold.same_reply_events`) takes three paths. With no
   continuation start, nothing new goes to a row. With part one's start at the
   head, the whole replay goes into the reply row. Else a trim took part one,
   and the events from the last continuation start go into a fresh fallback
@@ -2346,12 +2351,12 @@ the answer only, and start no run. RESUME-4a-2 waits for this decision.
 |---|---|
 | The park, and the run cancel | `apps/services/orchestrator/orchestrator/pending_ask.py` `park` (980), and `executor.py` `wait_user_future` (2792, the park at 2855-2861) |
 | The row columns, the claim, and the reply row of a stored call | `pending_ask.py` `_COLUMNS` (213), `claim_stored_call` (493), `_run_facts` (774), `_record` (806) |
-| The late answer, the resume, and the 409 | `apps/services/gateway/gateway/routes/agent.py` `_late_answer_from_row` (3742), `_resume_from_row` (3902), `_continuation_request` (4060), `_same_reply_of` (4081), `_same_members_as_park` (4134), and the `run_restarted` 409 (4413) |
-| The last turn of a chat (RESUME-2b) | `apps/services/gateway/gateway/routes/chat.py` `_SHOWN_ROW_SQL` (681), `_LAST_TURN_SQL` (698), `reply_turn` (738). The fold of part one: `apps/services/gateway/gateway/chat_fold.py` `same_reply_events` (500) |
-| The parked stream (RESUME-2b, D-RES-7) | `stream_relay.py` `PARKED_STREAM_TTL_SECONDS` (95), `ParkedStreamGone` (154), `mark_inactive` (537), `keep_parked_stream` (567), `parked_end_of` (598) |
+| The late answer, the resume, and the 409 | `apps/services/gateway/gateway/routes/agent.py` `_late_answer_from_row` (3745), `_resume_from_row` (3905), `_continuation_request` (4063), `_same_reply_of` (4084), `_same_label_as_park` (4142), and the `run_restarted` 409 (4423) |
+| The last turn of a chat (RESUME-2b) | `apps/services/gateway/gateway/routes/chat.py` `_SHOWN_ROW_SQL` (681), `_LAST_TURN_SQL` (701), `label_of` (739), `reply_turn` (761). The fold of part one: `apps/services/gateway/gateway/chat_fold.py` `_same_label_as_row` (505), `same_reply_events` (556). The mark of a same-reply start: `executor.py` `_same_reply_run` (7037) |
+| The parked stream (RESUME-2b, D-RES-7) | `stream_relay.py` `PARKED_STREAM_TTL_SECONDS` (95), `ParkedStreamGone` (154), `mark_inactive` (537), `keep_parked_stream` (567), `parked_end_of` (598), `part_one_at_head` (624) |
 | The resend, and the note of a resume | `apps/services/gateway/gateway/chat_recovery.py` `card_answer_after_restart` (731), `card_answer_from_ask` (762), `compose_card_answer` (150), `compose_resumed_call_note` (194) |
 | The stop | `apps/services/gateway/gateway/routes/drain.py`, `deploy/hostinger/gateway-drain.sh` (60 s), `deploy/hostinger/acb-gateway.service` (`TimeoutStopSec=75`) |
-| The control bus, and the starter | `apps/services/orchestrator/orchestrator/stream_relay.py` `_deliver_control` (1260), `cancel_run` (1823), `mark_active` (397), `start_detached` (1439) |
+| The control bus, and the starter | `apps/services/orchestrator/orchestrator/stream_relay.py` `_deliver_control` (1274), `cancel_run` (1837), `mark_active` (397), `start_detached` (1453) |
 | The card gate | `packages/acb_skills/acb_skills/ask_tools.py` `request_confirmation` (2332), `act_keys` (1923), `card_call` (1936). The gate wrapper is `apps/services/orchestrator/orchestrator/_tool_injection.py` `_agated` (1192) |
 | The stored call of WhatsApp | `apps/services/gateway/gateway/routes/whatsapp_channel/acts.py` `_run` (710), and `packages/acb_skills/acb_skills/whatsapp_acts.py` `confirming` (287), `card_text` (202) |
 | The native session, and the prologue | `apps/services/orchestrator/orchestrator/native_session_store.py` (rule 6, `begin_turn` 516, `finish_turn` 660). `executor.py` `_resume_prologue` (6847), `_native_session_skip` (10567) and `no_current_turn` (10604) |
@@ -2429,7 +2434,7 @@ the stop, and RESUME-6 lets a cut run go on by itself.
 | `workbench/control_plane/src/hooks/useAgentChat.ts` | The reattach loop |
 | `workbench/control_plane/src/lib/nav.ts` | `NavPane.agent` |
 | `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`), and `reply_turn` (RESUME-2b) |
-| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2), the grant write of a late approve (S2 item 8), `_resume_from_row` (RESUME-2a), and `_same_reply_of` and `_same_members_as_park` (RESUME-2b) |
+| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2), the grant write of a late approve (S2 item 8), `_resume_from_row` (RESUME-2a), and `_same_reply_of` and `_same_label_as_park` (RESUME-2b) |
 | `packages/acb_skills/acb_skills/late_approve.py` | A late approve acts once: the flag, the offer, the grant and its one use (S2 item 8) |
 | `packages/acb_skills/acb_skills/stored_call.py` | A card stores its call: the flag, the shape and the call id (§4.12 RESUME-1a), and the stored-call yes (RESUME-2a) |
 | `apps/services/orchestrator/orchestrator/pending_ask.py` | The row of a waiting card, and its stored call: `bind_call`, `read_stored_call` (S2, §4.12 RESUME-1a), `claim_stored_call` (RESUME-2a), the reply row of the call and the 24 h of a parked stream (RESUME-2b), and the retention `prune` and `prune_hook` (task 3435) |

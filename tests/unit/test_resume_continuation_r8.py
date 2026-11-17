@@ -865,7 +865,7 @@ def relay_scene(as_app, monkeypatch):
             rid = (resume_call or {}).get("request_id")
             # The executor marks the start of a continuation (P2-a).
             start = {"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
-                     **({"resumed": True} if resume_call is not None else {})}
+                     **({"resumed": True} if (resume_call or {}).get("same_reply") else {})}
             n = len(RUNS.get(thread_id, [])) + 2
             events = [
                 start,
@@ -1455,6 +1455,59 @@ def test_a_continuation_that_never_started_writes_nothing_new(relay_scene, monke
             events = await _stream(client, tid)
             assert [e.get("resumed") for e in events if e["type"] == "RUN_STARTED"] == [None]
             assert {r[0]: r[1] for r in _assistant_rows(w, tid)} == before, "nothing new"
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_case_b_run_that_parks_again_can_go_on_in_its_own_reply(relay_scene, monkeypatch):
+    """Advisor of round 2. A case B run starts a stream of its own, and its
+    start carries no mark. So when that run parks again, a late Approve of
+    its new card goes on in ITS reply (case A). Mutation: mark every
+    continuation start -> the head of the case B stream is marked -> case
+    B again -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            rid, _run_id, mid = await _parked_turn(w, tid, w.org_a)
+            await client.delete(f"cc:stream:{tid}")  # the stream expired: case B
+            PARK_AT_END.append(True)
+            first = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(first, dict) and first["sameReply"] is False, first
+            await _run_ends(tid)
+            await _quiet()
+            run_b, row_b = first["runId"], first["messageId"]
+            starts = [e.get("resumed") for e in await _stream(client, tid)
+                      if e["type"] == "RUN_STARTED"]
+            assert starts == [None], "a case B start carries no mark"
+            rid2 = uuid.uuid4().hex
+            assert pending_ask.insert_ask(w.org_a, {
+                "request_id": rid2, "thread_id": tid, "run_id": run_b,
+                "actor_email": _ALICE, "agent_name": "orchestrator", "kind": "confirmation",
+                "question": _TITLE_A, "payload": {"request_id": rid2, "title": _TITLE_A},
+                "stored_call": {"v": 1, "kind": "confirmation", "tool": "update_deal_status",
+                                "module": "agent:orchestrator", "agent": "orchestrator",
+                                "arguments": {"deal_id": "d-orbit", "stage": "Won"},
+                                "call_id": "call_def", "card_text": "y", "act_keys": [],
+                                "digest": "e", "message_id": row_b}})
+            assert pending_ask.move_ask(w.org_a, rid2, to="parked",
+                                        from_states=("open",)) is not None
+            second = await _answer(tid, rid2, _ALICE, w.org_a)
+            assert isinstance(second, dict) and second["sameReply"] is True, second
+            assert second["runId"] == run_b and second["messageId"] == row_b
+            await _run_ends(tid)
+            await _quiet()
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            assert set(rows) == {mid, row_b}, rows
+            assert "The deal moved." in rows[row_b] and "Part 3." in rows[row_b]
+            assert "The deal moved." not in rows[mid]
         finally:
             await _quiet()
             await client.flushdb()

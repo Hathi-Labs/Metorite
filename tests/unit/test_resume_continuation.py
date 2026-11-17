@@ -1980,6 +1980,7 @@ def test_the_run_route_keeps_the_stream_only_in_case_a(monkeypatch, liveness):
             req, None, user=_user(), background_tasks=BackgroundTasks(), _continuation=launch))
         kw = seen["starts"][-1]["kw"]
         assert kw["keep_stream"] is same and kw["exclusive"] is True
+        assert seen["run_kwargs"][-1]["resume_call"]["same_reply"] is same, "the mark"
         assert kw["organization_id"] == _ORG_A
         assert started.same_reply is same
         asyncio.run(kw["on_complete"]())
@@ -2047,7 +2048,11 @@ def test_the_case_a_checks_read_server_facts_only():
     assert "await _same_label_as_park(org, thread_id, member, turn.label)" in same
     assert "or turn.late_join" in same
     run = inspect.getsource(executor.run_agent_stream)
-    assert '**({"resumed": True} if resume_call is not None else {})' in run, "the mark"
+    assert '**({"resumed": True} if _same_reply_run(resume_call) else {})' in run, "the mark"
+    # Only a same-reply run is marked: a case B run starts a stream of its own.
+    assert executor._same_reply_run({"same_reply": True}) is True
+    for kw in (None, {}, {"same_reply": False}, {"same_reply": "true"}, {"same_reply": 1}):
+        assert executor._same_reply_run(kw) is False, kw
     assert "member=me)" in inspect.getsource(agent_routes._resume_from_row)
     from gateway.routes import chat as chat_routes
 
@@ -2231,8 +2236,14 @@ def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
     events: list[dict[str, Any]] = []
     row_label: list[Any] = [None]
 
+    late: list[bool] = [False]
+    room: list[Any] = [_RoomNow(shared=False)]
+
     def _turn(session_id, message_id, *, organization_id):
-        return chat_routes.ReplyTurn(last=True, label=row_label[0])
+        return chat_routes.ReplyTurn(last=True, label=row_label[0], late_join=late[0])
+
+    def _room(session_id, email, *, organization_id):
+        return room[0]
 
     async def _replay(*_a, **_k):
         return [dict(e) for e in events]
@@ -2250,6 +2261,9 @@ def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
     monkeypatch.setattr(chat_routes, "_ensure_session", lambda *_a, **_k: None)
     monkeypatch.setattr(chat_routes, "_upsert_messages", _upsert)
     monkeypatch.setattr(chat_routes, "reply_turn", _turn)
+    from gateway import rooms
+
+    monkeypatch.setattr(rooms, "resolve_room_access", _room)
 
     def fold(fallback: str | None) -> None:
         asyncio.run(chat_fold.persist_final_assistant_message(
@@ -2268,6 +2282,20 @@ def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
     assert writes == [("fb-row", " Part two.")], "another label: part two in its own row"
     row_label[0] = None
     writes.clear()
+    # The backstop of the fold (advisor of round 2): a member who came back
+    # in the window, and a room that is shared now while the label read failed
+    # open to no label, each send part two to its own row.
+    late[0] = True
+    fold("fb-row")
+    assert writes == [("fb-row", " Part two.")], "a later waterline"
+    late[0] = False
+    writes.clear()
+    for now in (_RoomNow(shared=True), _RoomNow(shared=False, failed=True), None):
+        room[0] = now
+        fold("fb-row")
+        assert writes == [("fb-row", " Part two.")], now
+        writes.clear()
+    room[0] = _RoomNow(shared=False)
     events[:] = whole[2:]  # a trim took part one
     fold("fb-row")
     assert writes == [("fb-row", " Part two.")], "part one is never written over"

@@ -504,23 +504,41 @@ _NOT_READ: Any = object()
 
 async def _same_label_as_row(
     thread_id: str, message_id: str, authority: Any, organization_id: str | None,
+    member: str,
 ) -> bool:
-    """True when *authority*, the label of the fold now, equals the label of
-    the row *message_id* (RESUME-2b, review round 2, P1). The row keeps its
-    first label (``COALESCE`` in ``routes.chat._MESSAGE_UPSERT_SQL``), so a
-    part two at another intersection must go to its own row. A row that is
-    not there, and a fault, give False."""
+    """True when part two of a same-reply run may go into the row
+    *message_id* (RESUME-2b, review round 2, P1). The row keeps its first
+    label (``COALESCE`` in ``routes.chat._MESSAGE_UPSERT_SQL``), so a part
+    two at another intersection must go to its own row.
+
+    The tests are the tests of the gateway's check at the Approve
+    (``routes.agent._same_label_as_park``), read again at the end of the run:
+
+    * *authority*, the label of the fold now, equals the row's label.
+    * No participant joined after the row (``ReplyTurn.late_join``).
+    * With no label, the room of *member* is still solo. The read of the
+      label fails open to no label, so this room read is the backstop.
+
+    A row that is not there, a failed room read, and a fault give False."""
     import asyncio
 
     try:
+        from gateway.rooms import resolve_room_access
         from gateway.routes.chat import label_of, reply_turn
 
         turn = await asyncio.to_thread(
             reply_turn, thread_id, message_id, organization_id=organization_id)
+        if turn is None or turn.late_join or label_of(authority) != turn.label:
+            return False
+        if turn.label is None:
+            room = await asyncio.to_thread(
+                resolve_room_access, thread_id, member, organization_id=organization_id)
+            if room is None or room.resolve_failed or room.is_shared:
+                return False
     except Exception as exc:  # fail closed: the fallback row
         _log.warning("chat_fold.same_reply_label_read_failed", error=type(exc).__name__)
         return False
-    return turn is not None and label_of(authority) == turn.label
+    return True
 
 
 def same_reply_tail(events: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
@@ -664,7 +682,7 @@ async def persist_final_assistant_message(
                 # goes into it only when its label is the row's label.
                 _authority = await _run_authority(thread_id, user_id)
                 if not await _same_label_as_row(
-                        thread_id, message_id, _authority, organization_id):
+                        thread_id, message_id, _authority, organization_id, user_id):
                     events, target = same_reply_tail(events, _run), same_reply_fallback_id
                     _log.warning("chat_fold.same_reply_label_changed",
                                  thread_id=thread_id[:12])

@@ -110,9 +110,12 @@ class ResumeLaunch(BaseModel):
     same_reply: bool = False
 
     def as_kwarg(self) -> dict[str, Any]:
-        """The ``resume_call`` kwarg of ``executor.run_agent_stream``."""
+        """The ``resume_call`` kwarg of ``executor.run_agent_stream``.
+        ``same_reply`` makes the executor mark the run's ``RUN_STARTED``
+        ``resumed`` (RESUME-2b, review round 2, P2-a). A case B run starts a
+        stream of its own, so its start is part one of a later case A."""
         return {"stored": dict(self.stored), "request_id": self.request_id,
-                "title": self.title}
+                "title": self.title, "same_reply": bool(self.same_reply)}
 
 
 class _ContinuationStarted(BaseModel):
