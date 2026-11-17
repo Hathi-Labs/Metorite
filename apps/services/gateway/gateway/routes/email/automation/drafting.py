@@ -2906,8 +2906,9 @@ async def _compose_assist_run(
         try:
             # No session stays open over the provider fetch (PR-A1): the
             # loader lists the files in a short session of its own. No
-            # images: the composer streams, and a streamed call has no
-            # Router hop to choose a model that reads them (P1-c).
+            # images: the composer streams, and the streamed call sends no
+            # `vision` task, so the Router does not pick a model that reads
+            # them (P1-c). Neither task 3541 nor task 3542 added one.
             ctx["_files"] = await load_draft_files(
                 None, req.message_id, user, budget_s=COMPOSE_FILES_BUDGET_S,
                 vision=False)

@@ -438,8 +438,10 @@ async def _complete_with_fallback(
 # ── The three bounds of a model stream (WS-17 EM-T17 PR-A) ─────────────────
 # `email_app_master_plan.md` §17.3.7. Before them a stream had no timeout: a
 # provider that sent no chunk, or stopped half-way, held the email composer
-# open with no end (§17.1.3, cause S1). The Router's 120 s bound does not
-# cover this path, because it calls litellm directly (H-287).
+# open with no end (§17.1.3, cause S1). With routing off, this path calls
+# litellm directly, so no Router bound covers it (H-287). With routing on, it
+# streams through the Router (task 3542, `_routed_text`), and the same three
+# bounds hold there.
 #
 # A test makes a bound short by setting the constant. `_stream_text` reads
 # each one at call time for that reason. Fence: tests/unit/test_llm_stream_bounds.py.

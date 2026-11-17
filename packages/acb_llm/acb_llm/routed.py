@@ -408,14 +408,35 @@ def _refusal(tier: str, status: int, body: Any, *, stream: bool = False) -> Rout
 # `/v1` relay does, and it calls no `_emit_usage`. The buffered
 # `completion_on_router` emits none either.
 #
-# ⚠️ **A stream that ends early meters only what the Console saw.** The usage
-# frame comes last, just before `[DONE]`. When the caller cancels, or a bound
-# ends the stream, this client closes it, and the Console closes the provider
-# stream. Its row then holds the counts seen before the close, which can be
-# zero. The buffered call, as read in the code and not run, goes on after its
-# caller leaves: `main.chat_completions` is a sync route that runs
-# `call_chain` to its end, so the Console meters all of it. The early-end
-# rule is the Console's (CP-4b done-when 3), and the `/v1` relay meets it too.
+# ⚠️ **Gap 1: a routed draft that ends early bills ZERO.** This is a Console
+# task, not this slice. The usage frame comes last, just before `[DONE]`. The
+# member can close the composer, or a bound can fire, before the Console sees
+# that frame. Then this client closes the stream, and the Console closes the
+# provider stream.
+#
+# `relay_stream` meters the counts that it saw. For a provider that sends
+# usage last, they are zero (`customer_console/router.py` 1335-1346).
+# `_record_completion` then marks the row `usage_unreadable`, logs the ERROR
+# `router.usage_unreadable`, and bills zero (`main.py` 8533-8558). The
+# operator report counts that row in `unbilled_calls` (`store.py` 1825-1833).
+#
+# CP-4b done-when 3 (`customer_console.md`, about line 1443) says that the
+# Console still meters an abandoned stream for what the provider delivered.
+# The Console does not do that for a provider that sends usage last. The
+# buffered call of task 3541 ran to its end after its caller left, so the
+# Console billed all of it. We read that in the code (`main.chat_completions`
+# is a sync route that runs `call_chain` to its end), and we did not run it.
+#
+# ⚠️ **Gap 2: a cancel before the Console sends its headers.** This is a
+# Console task too, not this slice. The Console route is sync. It pulls the
+# first provider chunk before it returns. So it does not see a client that
+# leaves in that time (`main.py` 9476-9510, the §8.6 window). A cancel, or the
+# 45 s first-chunk bound, can land there.
+#
+# Then `_streamed_completion` never starts (`main.py` 9148-9151). The Console
+# writes no usage row, and no Console code closes the provider stream. The
+# hold stays until `_hold_sweeper` frees it, after
+# `HOLD_SWEEP_OLDER_THAN_SECONDS` (1800 s).
 
 #: The largest SSE line, or the data of one event, that the parser holds. A
 #: chunk frame of a draft is under 1 KB, and a whole answer of 3,000 tokens is

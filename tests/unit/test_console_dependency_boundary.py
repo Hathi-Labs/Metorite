@@ -304,6 +304,9 @@ _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 #: hop allocates a seat or names a person, which is the property this list's
 #: own message already records for ``v1_compat``. ``resolve_for_signin``, the
 #: seat allocator this fence exists for, is not reachable from it.
+#:
+#: Advisory (R7). No ``_ALLOWED_NAMES`` set pins the names that ``routed.py``
+#: reads from ``console_resolve``, so no test fails when that list grows.
 _THE_IN_PRODUCT_AI_CALLER = "packages/acb_llm/acb_llm/routed.py"
 #: ⚠️ **The EIGHTH entry — ``acb_llm/decide.py``, WS-31 CP-13c, 2026-09-24 —
 #: and the argument for it, because the paragraph above is this list's own
