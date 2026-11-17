@@ -24,6 +24,18 @@ from tests.unit.test_projects_agent_writes import UUID, responder
 STRANGER, KNOWN, OFF = "z@y.test", "k@y.test", "off@y.test"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_task():
+    """``assign`` writes the new holders onto the task dict that the fake
+    gateway hands out, and the dict is shared by the whole module. Each test
+    starts from the holder of the fixture."""
+    from tests.unit.test_projects_agent_writes import TASK
+
+    TASK["assignees"] = ["a@x.io"]
+    yield
+    TASK["assignees"] = ["a@x.io"]
+
+
 def _gateway(not_notified: list[str] | None = None):
     def respond(call: dict) -> Any:
         if call["path"] == "/projects/people/names":
