@@ -3697,10 +3697,13 @@ async def run_agent_stream_endpoint(
         agent_gen = _send_claim.watch(agent_gen)
 
         async def _persist_then_settle() -> None:
+            # The Stop mark is read FIRST: a new send of the thread clears it
+            # while the fold below runs.
+            _stopped = await _send_claim.was_stopped()
             try:
                 await _persist_on_complete()
             finally:
-                await _send_claim.settle_end()
+                await _send_claim.settle_end(stopped=_stopped)
 
         _detached["on_complete"] = _persist_then_settle
 
@@ -3826,6 +3829,15 @@ async def run_agent_stream_endpoint(
             await _release_send_claim()
             async for line in agent_gen:
                 yield line
+        finally:
+            # HRD-17a: a cancel while `start_detached` ran (the client left)
+            # starts no drain, so no run end settles the key. With no drain
+            # and no pulled line, the run never began, and the key goes.
+            if _send_claim is not None and not _send_claim.pulled:
+                from orchestrator.stream_relay import get_detached_task as _task_of
+
+                if _task_of(thread_id) is None:
+                    _send_claim.release_soon()
 
     return StreamingResponse(
         _serve(),

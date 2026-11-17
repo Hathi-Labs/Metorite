@@ -135,7 +135,9 @@ def world(monkeypatch) -> World:
     monkeypatch.setattr(stream_relay, "replay_events", _replay)
     monkeypatch.setattr(stream_relay, "is_active", _is_active)
     monkeypatch.setattr(steer, "was_stopped", _was_stopped)
-    monkeypatch.setattr(send_once, "WAIT_SECONDS", 0.2)
+    # Wide against a busy CI shard: each event of a wait test lands at
+    # 0.05 s, and a wait test asserts only a lower bound.
+    monkeypatch.setattr(send_once, "WAIT_SECONDS", 1.0)
     monkeypatch.setattr(send_once, "POLL_SECONDS", 0.01)
     return w
 
@@ -536,11 +538,28 @@ async def test_an_old_run_gets_finished_at_once(world) -> None:
     held["at"] = 1.0
     world.raw.kv[_key()] = json.dumps(held)
     world.started(THREAD, RUN_NEW)
-    loop = asyncio.get_running_loop()
-    t0 = loop.time()
-    out = await _begin()
+    reads: list[str] = []
+    real = send_once._stream_run_id
+
+    async def _counted(thread_id: str) -> str:
+        reads.append(thread_id)
+        return await real(thread_id)
+
+    send_once._stream_run_id = _counted
+    try:
+        out = await _begin()
+    finally:
+        send_once._stream_run_id = real
     assert (out.kind, out.run_id) == (send_once.FINISHED, RUN)
-    assert loop.time() - t0 < send_once.WAIT_SECONDS / 2
+    assert reads == [THREAD], "one look at the stream, and no wait"
+
+
+async def test_release_soon_deletes_the_claim_in_its_own_task(world) -> None:
+    first = await _begin()
+    first.claim.release_soon()
+    assert send_once._RELEASES  # held until it ends
+    await asyncio.gather(*list(send_once._RELEASES))
+    assert _held(world) is None and not send_once._RELEASES
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -904,6 +923,50 @@ def test_route_a_stop_deletes_the_key(route) -> None:
     route.stopped = True  # the Stop route marked the thread
     _post(_send())
     assert _held(route) is None
+
+
+def test_route_a_stop_mark_cleared_during_the_fold_still_deletes(route, monkeypatch) -> None:
+    """A new send of the thread clears the Stop mark while the stopped run
+    folds. The end reads the mark before the fold, so the key still goes."""
+    from gateway import chat_fold
+
+    async def _fold_then_clear(*_a, **_k):
+        route.stopped = False
+        return None
+
+    monkeypatch.setattr(chat_fold, "persist_final_assistant_message", _fold_then_clear)
+    route.stopped = True
+    _post(_send())
+    assert _held(route) is None
+
+
+class _Gone(BaseException):
+    """The cancel of a request whose client left while the run started."""
+
+
+def test_route_a_cancel_before_the_run_began_releases_the_key(route, monkeypatch) -> None:
+    released: list[str] = []
+    monkeypatch.setattr(send_once.SendClaim, "release_soon",
+                        lambda self: released.append(self.value))
+    route.detached_fault = _Gone()
+    try:
+        _post(_send())
+    except BaseException as exc:
+        assert isinstance(exc, _Gone) or "_Gone" in repr(exc)
+    else:
+        raise AssertionError("the cancel did not reach the test")
+    assert route.runs == []
+    assert len(released) == 1 and json.loads(released[0])["run_id"], (
+        "the key held the moved run id, and the end of the request lets it go")
+
+
+def test_route_a_cancel_after_the_drain_began_keeps_the_key(route, monkeypatch) -> None:
+    """A client that leaves a live run leaves its drain: the run end settles."""
+    released: list[str] = []
+    monkeypatch.setattr(send_once.SendClaim, "release_soon",
+                        lambda self: released.append(self.value))
+    _post(_send())
+    assert released == [] and _held(route)["run_id"]
 
 
 def test_route_a_clean_run_keeps_the_key(route) -> None:

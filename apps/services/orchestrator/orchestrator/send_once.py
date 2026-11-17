@@ -84,11 +84,20 @@ WAIT_SECONDS = 2.0
 FRESH_SECONDS = 10.0
 #: The step of that wait.
 POLL_SECONDS = 0.1
-#: The most rounds of one :func:`begin`. A round is one SET NX and one read.
-#: The wait takes about 20 rounds, so this bound is never the normal end.
-MAX_ROUNDS = 60
+#: The most full waits of one :func:`begin`. Each new value of the key gets
+#: its own wait, so a slow chain of claims cannot hold a request forever.
+MAX_WAITS = 3
 #: The most stale claims that one :func:`begin` deletes before it gives up.
 MAX_STALE_TAKES = 2
+
+
+def _max_rounds() -> int:
+    """The most rounds of one :func:`begin`. A round is one SET NX and one
+    read. It follows the wait, so the bound is never the normal end."""
+    return MAX_WAITS * (int(WAIT_SECONDS / POLL_SECONDS) + 2) + 4
+
+#: The release tasks of :meth:`SendClaim.release_soon`, held until each ends.
+_RELEASES: set[asyncio.Task[None]] = set()
 
 #: A send id that keys a send (R7). Anything else counts as no id.
 ID_RE = re.compile(r"\A[A-Za-z0-9_-]{8,64}\Z")
@@ -230,6 +239,8 @@ class SendClaim:
     lost: bool = False
     #: The key is gone or released. No call writes it again.
     closed: bool = False
+    #: The run pulled its first line, so a drain owns it and settles the key.
+    pulled: bool = False
 
     async def start(self, run_id: str) -> bool:
         """Move the claim to the run. The route calls it right BEFORE
@@ -279,14 +290,31 @@ class SendClaim:
         except Exception as exc:
             _log.warning("send_once.release_failed", error=type(exc).__name__)
 
-    async def settle_end(self) -> None:
-        """At the end of the run (R4): delete the key after a ``RUN_ERROR``, a
-        Stop or a run that never started. A clean end keeps it."""
-        stopped = False
+    def release_soon(self) -> None:
+        """:meth:`release` in its own task, for a caller that a cancel may
+        stop at its next await. The task keeps a strong reference until it
+        ends, so it is never lost half way."""
+        if self.closed:
+            return
+        task = asyncio.get_running_loop().create_task(self.release())
+        _RELEASES.add(task)
+        task.add_done_callback(_RELEASES.discard)
+
+    async def was_stopped(self) -> bool:
+        """True when a Stop ended the run of the thread. False on error."""
         with contextlib.suppress(Exception):
             from orchestrator.steer import was_stopped
 
-            stopped = await was_stopped(self.thread_id)
+            return bool(await was_stopped(self.thread_id))
+        return False
+
+    async def settle_end(self, *, stopped: bool | None = None) -> None:
+        """At the end of the run (R4): delete the key after a ``RUN_ERROR``, a
+        Stop or a run that never started. A clean end keeps it. The caller
+        passes *stopped* when it read the Stop mark earlier, before a new
+        send of the thread can clear it."""
+        if stopped is None:
+            stopped = await self.was_stopped()
         if self.errored or stopped or not self.started:
             await self.release()
 
@@ -295,6 +323,7 @@ class SendClaim:
         (R4). A run that raises counts as one. It writes nothing, so a tier
         fallback or a parallel restart inside the run never touches the key
         (R9)."""
+        self.pulled = True
         try:
             async for line in gen:
                 if _event_type(line) == "RUN_ERROR":
@@ -392,7 +421,7 @@ async def begin(
             deadline = loop.time() + WAIT_SECONDS
             seen: Any = None
             stale_takes = 0
-            for _ in range(MAX_ROUNDS):
+            for _ in range(_max_rounds()):
                 if await r.set(k, claim_value, nx=True, ex=CLAIM_TTL_SECONDS):
                     return Outcome(NEW, claim=SendClaim(
                         org=org, thread_id=thread_id, member=_member(member),
