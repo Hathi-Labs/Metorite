@@ -169,6 +169,49 @@ async def names_of(db: Any, emails: Any) -> dict[str, str]:
     return {str(r.email): str(r.name) for r in rows if r.name}
 
 
+#: Why a person in the directory cannot open a task that is given to them
+#: (task 3636): the ``people`` row is not membership. ``inactive`` is a former
+#: person (``people.status`` alumni) or a member whose ``app_user`` is suspended
+#: or removed. ``no_login`` is a person with no ``app_user`` row in THIS
+#: organization (a contractor or an imported person), or one who is only
+#: invited. Both read the bound tenant, so a member of another customer never
+#: shows as having a login here (the rule of :func:`has_login`).
+#: ``NULLIF(…, '')`` fails closed.
+_REACH_SQL = (
+    "SELECT lower(p.email) AS email, p.status AS status, "
+    "  (SELECT u.status FROM app_user u WHERE lower(u.email) = lower(p.email) "
+    "    AND u.organization_id = CAST(NULLIF("
+    "          current_setting('app.tenant_id', true), '') AS uuid) LIMIT 1) AS login "
+    "FROM people p WHERE lower(p.email) = ANY(:emails) AND p.name <> ''"
+)
+
+#: The two answers of :func:`not_reachable`.
+INACTIVE = "inactive"
+NO_LOGIN = "no_login"
+#: The ``app_user`` statuses of a person who was let go.
+_LET_GO = frozenset({"suspended", "removed"})
+
+
+async def not_reachable(db: Any, emails: Any) -> dict[str, str]:
+    """Each address of *emails* that the directory names, and whose person
+    cannot open a task given to them: ``inactive`` first, then ``no_login``.
+    An address that the directory does not know is ABSENT (it is a stranger,
+    which :func:`names_of` tells by its absence). The keys are lower case. One
+    read, in the caller's tenant session."""
+    wanted = sorted({str(e).strip().lower() for e in emails or () if str(e).strip()})
+    if not wanted:
+        return {}
+    rows = (await db.execute(text(_REACH_SQL), {"emails": wanted})).fetchall()
+    out: dict[str, str] = {}
+    for r in rows:
+        login = str(r.login or "").strip().lower()
+        if str(r.status or "").strip().lower() == "alumni" or login in _LET_GO:
+            out[str(r.email)] = INACTIVE
+        elif login != "active":
+            out[str(r.email)] = NO_LOGIN
+    return out
+
+
 # ── The shared read seam ────────────────────────────────────────────────────
 #
 # `person_payload` and its two helpers live HERE, in the leaf module, and not

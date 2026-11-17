@@ -148,6 +148,38 @@ async def person_names(
     return NamesResponse(names=names)
 
 
+class ReachResponse(BaseModel):
+    #: lowercased address -> ``inactive`` or ``no_login``. Only a person that
+    #: the directory names AND who cannot open a task given to them is listed.
+    #: A stranger is absent (``/people/names`` tells that), and so is a person
+    #: who can. Its own route, because ``NamesResponse`` is one field on
+    #: purpose (``test_projects_assignees``).
+    not_reachable: dict[str, str]
+
+
+@router.get("/people/reach", response_model=ReachResponse)
+async def person_reach(
+    emails: str = "",
+    user: UserContext = Depends(get_current_user),
+) -> ReachResponse:
+    """Task 3636: which of these addresses are a known person who cannot open
+    a task that is given to them: a former or suspended person (``inactive``),
+    or one with no sign-in in this organization (``no_login``). The card of a
+    chat write warns on it BEFORE Approve. The address list and the cap are the
+    ones of ``/people/names``, and a read changes nothing."""
+    wanted = [
+        part.strip().lower()
+        for part in (emails or "").split(",")
+        if part.strip() and not part.strip().startswith("agent:")
+    ][:MAX_NAME_LOOKUP]
+    if not wanted:
+        return ReachResponse(not_reachable={})
+    from gateway.routes.people.core import _tenant_session, not_reachable
+
+    async with _tenant_session() as db:
+        return ReachResponse(not_reachable=await not_reachable(db, wanted))
+
+
 @router.get("/assignees", response_model=PickerResponse)
 async def suggest_assignees(
     q: str = "",

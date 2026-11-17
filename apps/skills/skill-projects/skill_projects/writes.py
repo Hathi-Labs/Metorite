@@ -526,22 +526,73 @@ async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     )
 
 
-async def _unknown_addresses(who: list[str]) -> list[str]:
-    """The addresses among ``who`` that the people directory does not know.
+async def _address_check(who: list[str]) -> tuple[list[str], dict[str, str]]:
+    """The addresses among ``who`` that the people directory does not know
+    (strangers), and the known ones whose person cannot open a task given to
+    them, by reason (task 3636): ``inactive`` or ``no_login``.
 
     An assignee is a bare string the route accepts whatever it is (D-PM-4),
     so an address passes through ``_resolve_assignee`` unchecked. The card
     names the ones the picker cannot find, so a typo is seen before it is
-    signed (H-162). Agents are not addresses and are skipped.
+    signed (H-162). Agents are not addresses and are skipped. ``/people/names``
+    answers the strangers, and ``/people/reach`` (only when someone is known)
+    answers the rest. A failed read of either raises, so no card shows with a
+    warning missing.
     """
     addresses = [a for a in who if "@" in a]
     if not addresses:
-        return []
+        return [], {}
     # One exact lookup (`/people/names`), not the picker: the picker matches
     # by substring and only among active people (S6 review).
     payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
     known = {str(k).lower() for k in (payload.get("names") or {})}
-    return [a for a in addresses if a.lower() not in known]
+    strangers = [a for a in addresses if a.lower() not in known]
+    cannot: dict[str, str] = {}
+    present = [a for a in addresses if a.lower() in known]
+    if present:
+        # A second read, only for the people that the directory names.
+        reach = (await get("/projects/people/reach", {"emails": ",".join(present)})) or {}
+        listed = {str(k).lower(): str(v) for k, v in (reach.get("not_reachable") or {}).items()}
+        cannot = {a: listed[a.lower()] for a in present if a.lower() in listed}
+    return strangers, cannot
+
+
+async def _unknown_addresses(who: list[str]) -> list[str]:
+    """The addresses among ``who`` that the people directory does not know
+    (H-162). See :func:`_address_check`."""
+    return (await _address_check(who))[0]
+
+
+#: The card's key for each reason a known person cannot open the task, and the
+#: words. The client draws a key it does not know as a plain row.
+REACH_ROWS: dict[str, str] = {
+    "inactive": "suspended",
+    "no_login": "no login yet",
+}
+
+
+def _reach_rows(cannot: dict[str, str]) -> dict[str, str]:
+    """The card rows for the known people who cannot open the task: one row
+    for each reason, each address once, in one comma list."""
+    out: dict[str, list[str]] = {}
+    for address, reason in cannot.items():
+        key = REACH_ROWS.get(reason)
+        if key:
+            out.setdefault(key, []).append(address)
+    return {key: ", ".join(addresses) for key, addresses in out.items()}
+
+
+async def _assignee_rows(who: list[str]) -> dict[str, str]:
+    """All the warning rows of a card for the people in ``who``: the
+    strangers (``not in the directory``), the suspended and the ones with no
+    login. Empty when every address is a person who can open the task. One
+    read."""
+    strangers, cannot = await _address_check(who)
+    rows: dict[str, str] = {}
+    if strangers:
+        rows["not in the directory"] = ", ".join(dict.fromkeys(strangers))
+    rows.update(_reach_rows(cannot))
+    return rows
 
 
 def _split(csv: str) -> list[str]:
@@ -1796,9 +1847,7 @@ async def _assignee_card_lines(who: list[str]) -> dict[str, Any]:
     if not who:
         return {}
     lines = {"assignees": ", ".join(who)}
-    strangers = await _unknown_addresses(who)
-    if strangers:
-        lines["not in the directory"] = ", ".join(strangers)
+    lines.update(await _assignee_rows(who))
     return lines
 
 
