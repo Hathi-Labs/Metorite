@@ -81,7 +81,11 @@ describe("the touch row (task 3566)", () => {
     expect(/data-session-more=""\s+className="([^"]*)"/.exec(ROW)?.[1]).toMatch(/hidden.*pointer-coarse:flex/);
     expect(more).toContain('icon="MoreHorizontal"');
     expect(more).toContain("More actions for ${title}");
-    expect(more).toMatch(/e\.stopPropagation\(\)/);
+    // The stop sits in the click handler of the More button itself (the span
+    // up to its close), so a tap never selects the row. Mutation: remove it
+    // from that handler and this goes red, whatever else in the file stops.
+    const button = more.slice(0, more.indexOf("</span>"));
+    expect(button).toMatch(/onClick=\{\(e\) => \{\s*e\.stopPropagation\(\);/);
     expect(more).toContain("<ContextMenu");
     expect(SRC).not.toMatch(/@media|matchMedia/);
   });
