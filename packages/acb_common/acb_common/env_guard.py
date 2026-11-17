@@ -174,6 +174,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # so only the owner writes it. The `CHAT_` prefix covers it too, and the
     # exact name keeps the fence if that prefix ever narrows.
     "CHAT_SEARCH_ORGS",
+    # WS-FIND FIND-7 (find_engine.md section 5.5): the "not found" check of a
+    # chat answer. `on` gives the chat one more pass and spends model tokens,
+    # so only the owner writes it (D-FIND-8).
+    "FIND_CLAIM_CHECK",
     # chat_failure_modes.md section 6 HRD-17e-1: the orgs whose chat save
     # keeps the longer stored reply, and the orgs that only log it. It changes
     # what a save writes, so only the operator writes it. The `CHAT_` prefix
