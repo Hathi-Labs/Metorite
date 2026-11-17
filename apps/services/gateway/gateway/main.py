@@ -1983,6 +1983,17 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # chat_organization.md §6 CO-2a — the topics of the chat list. Shares
+    # /chat's prefix, in its own module, as the brief does. Dark behind
+    # CHAT_TOPICS_ORGS. Fence: test_chat_topic.py checks that this app
+    # serves the routes, because a failed import here answers 404 too.
+    from gateway.routes.chat_topics import router as _chat_topics_router
+
+    app.include_router(_chat_topics_router)
+except Exception:  # pragma: no cover
+    pass
+
 # Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
 # The workbench takes one slot here before it starts esbuild. The counter
 # lives in the tenant Redis wrapper. No `try`: the module needs only

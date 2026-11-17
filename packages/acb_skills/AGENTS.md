@@ -150,7 +150,10 @@ not write a second copy of that seam. A bare test file name is under
    - Each answer says what happened ("Not run …") and what is true now. It never tells the model to call the tool again. The rewrite stays in the stored history, so a later turn reads it. After a load, the answer keeps the rules of the pack and drops the loader's first line.
    - `CHAT_TOOL_AUTOLOAD` (default off, allowed by D217) also loads the offered pack. The load calls `LoadSkillTools.process` with a `FunctionInvocationContext` over the live list. Do not write a second load path.
    - It loads only for a call of this run, never for a raw text of the history. It loads only when the request holds the same tool list as the request before. A copy from an outer middleware (`WithholdTools`) gets the text only.
-   - Fence: `test_unknown_tool_answer.py`.
+   - Task 3599: a name gets ONE load try in a run (`_tried`). A later call of that name gets the refusal of the first try, and the loader is not asked again.
+   - `unknown_call_name` finds MAF's result in `result`, `items` or `exception`. MAF puts the `KeyError` text in `exception`, in single quotes, and `is_raw` reads that form too.
+   - `MEMBER_LINE` is the member's text for that step. Only `orchestrator.event_translator.tool_result_fields` shows it. The model never reads it.
+   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it fails closed.
    - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
    - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
@@ -228,6 +231,7 @@ not write a second copy of that seam. A bare test file name is under
    - It reads as the run's member through `core_tools` only, behind `COMPANY_SEARCH_ENABLED`. Fence: `test_company_search_tool.py`.
    - KR-ZERO (task 2974): both docstrings say that every word must be in one record. A dated answer prints `broadened` on the line after the header. A dated zero answer names what the route tried and says that zero is not proof. The KR-2 answer does not change. Fence: `test_company_search_zero.py`.
    - FIND-3 (task 3240): a dated answer prints the route's `related` after the hits, under `RELATED_HEADER`. The bracket of each record reads `edge` and `via` from the closed lists `EDGE_NOUNS` and `MAIL_WORDS`, and `from` only as `<kind>:<id>`. A value off the lists prints `[related]`. Fence: `test_find_related.py`.
+   - FIND-4 (task 3241): the new lines print only when the route marks the answer with `skipped_why`. With no mark, the text is the text of KR-ZERO. `NO_RECORD_HOLDS_ALL` and `MOST_WORDS` print only with the route's proof `none_has_all`, and the route sends none while `find.ABSENCE_CLAIMS` is off. With the mark, each line states only what the search did or found: `NOTHING_FOUND`, `MEANING_NOT_RUN` and the `NEAR_FOUND` line. `WHERE_ELSE_*`, `OUTCOME_WORDS`, `RUNG_WORDS`, `FLAG_NAMES` and `APP_KEYS` copy the closed lists of the route, and the fence holds each copy equal. `explain` is an argument of the dated tool only, and `format_trace` prints no record. Fence: `test_find_honest_zero.py`.
 5n-a. handoff.py + chat_constraints.py -- what crosses a handoff, and the member's limits of one chat (D116, spec `one_assistant_context.md` §4).
    - `handoff.head_task` is the ONE call of every delegation site. `chat_constraints_enabled` is the one reader of `CHAT_CONSTRAINTS`.
    - A keep stores only whole sentences that the member typed in this turn. Never use `member_message` for it. A drop needs the member's approval on a card.
