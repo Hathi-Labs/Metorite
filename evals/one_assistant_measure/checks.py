@@ -768,9 +768,16 @@ _UNKNOWN_FUNCTION = re.compile(r"""^['"]?Function "[^"]+" not found\.?['"]?$""")
 def refused(result: str) -> bool:
     """True when *result* is the answer to a call that the run refused: it starts
     as a refusal does, it is the unknown-function answer, or it says that nothing
-    was created or changed."""
+    was created or changed.
+
+    Task 3599: the stream no longer carries MAF's unknown-function text. The
+    step of such a call shows ``unknown_tool.MEMBER_LINE``, and that call did
+    not run either."""
+    from acb_skills.unknown_tool import MEMBER_LINE
+
     text = str(result).strip()
-    return (text.startswith(REFUSED_PREFIXES) or _UNKNOWN_FUNCTION.match(text) is not None
+    return (text.startswith(REFUSED_PREFIXES) or text == MEMBER_LINE
+            or _UNKNOWN_FUNCTION.match(text) is not None
             or _NOTHING_HAPPENED.search(text) is not None)
 
 

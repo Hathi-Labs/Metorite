@@ -316,7 +316,7 @@ async def send_email(
         # WS-PZ MM-1: one row in the act record, with the recipients and no text.
         # Dark behind MEMBER_ACTIONS_ORGS, and it never fails the send.
         await member_actions.record_act(
-            db, org=user.organization_id or "", member=user.email or "",
+            db, org=member_actions.org_of(user), member=user.email or "",
             app="email", act="reply" if req.reply_to_message_id else "send",
             via="app", item_kind="email", item_id=str(msg_id or "sent"),
             mailbox_id=req.account_id,
