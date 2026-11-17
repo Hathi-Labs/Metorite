@@ -7571,12 +7571,14 @@ The code is the fact. The build differs from §31.5 in these places.
 
 ## 32. Editable approval cards (task 2493)
 
-**Status (2026-11-16): EAC-1 built dark (task 3468). EAC-1b built dark (task 3645, the receipt line of an edited card). EAC-2 built dark (task
+**Status (2026-11-16): EAC-1 built dark (task 3468).  EAC-2 built dark (task
 3469, the client half: due date and people). EAC-3a built dark (task 3470, the
 client half: start date, status, priority flags and description). EAC-3b and
 EAC-4 to EAC-8 stay in the plan.** The audit of 2026-11-16 checked this contract on `origin/main`. Epic:
 Metorite task 2493. The first demo is on Rung 2 of the ladder (D211, task 2927,
 `orchestration_playbook.md` §6d).
+
+**EAC-1b (2026-11-17).** Built dark (task 3645). The receipt line of an edited card ships with it.
 
 ### 32.1 Scope
 
@@ -7739,7 +7741,7 @@ Every task is a Metorite task under task 2493. All slices ship dark behind
 | Slice | Task | Tier | Rung | Files | Fence and tests | Gate | Done when |
 |---|---|---|---|---|---|---|---|
 | **EAC-1** | 3468 | HIGH, dark | 2 | `acb_skills/task_card.py`, `ask_tools.py`, `writes.py`, `gateway/chat_recovery.py`, `env_guard.py`, `docs/flag_reload.md` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_late.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-16.** The server accepts an `edit` answer on a `create_task` card and writes the edited values (§32.6). The answer keys are `due`, `start`, `status`, `important`, `leveraged`, `description` and `assignees`. |
-| **EAC-1b** | 3645 | STANDARD, dark | 2 | `writes.py` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-17.** An approved edit card whose answer changes a value ends its receipt with the sentence and the changed keys with the written values. It names only changed keys, never an original value, and fences member text. A plain approve, a no-change edit, a late approve and the flag-off card give the receipt of before, byte for byte. Nothing the approve writes changes. The HRD-7 leads and `test_card_outcome_vocabulary.py` are untouched. |
+| **EAC-1b** | 3645 | STANDARD, dark | 2 | `writes.py` | `tests/unit/test_task_edit_card_answer.py`, `tests/unit/test_task_edit_card_r8.py` | AGENT-SAFE | **Built dark, 2026-11-17.** An approved edit card whose answer changes a value ends its receipt with the sentence and the changed keys with the written values. It names only changed keys, never an original value, and fences member text. A plain approve, a no-change edit, a late approve and the flag-off card give the receipt of before, byte for byte. Nothing the approve writes changes. The HRD-7 leads and `test_card_outcome_vocabulary.py` stay as they are. |
 | **EAC-2** | 3469 | STANDARD, dark | 2, the first demo (task 2927) | `components/TaskCardForm.tsx`, `ConfirmationCard.tsx`, `ConfirmationQueue.tsx`, `confirmationQueue.ts`, `lib/taskEditCard.ts` | `cardEditsKept.test.ts`, `redraftCard.test.ts`, `cardAnswer.test.ts`, `taskEditCard.test.ts`, `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** A member edits the due date and one assignee on a `create_task` card, then presses Approve. The form shows "not in the directory" for an edited address BEFORE the Approve (H-162). A person or a lane that the member types by name must match a name exactly. |
 | **EAC-3a** | 3470 | STANDARD, dark, client only | 2 | `TaskCardForm.tsx`, `lib/taskEditCard.ts` | `taskEditCard.test.ts` (the parity of the status and description rules with `task_card.py`), `taskCardForm.test.ts`, `e2e/task-edit-card.spec.ts` | AGENT-SAFE build, OWNER-GATE preview | **Built dark, 2026-11-16.** The form edits the start date, the status (a lane of the project, by exact name), the `important` and `leveraged` flags and the description. The answer keeps the seven keys. A start date after the due date warns and does not hold Approve. |
 | **EAC-3b** | none yet | HIGH | 2 | `task_card.py`, `writes.py`, `TaskCardForm.tsx` | Route-grant tests, as `test_task_edit_card_r8.py` | AGENT-SAFE | **Not built.** A member picks a project or a subproject on the card. A project that the member cannot open is not on the list. The answer needs a new key, so the server half comes first. |
@@ -7824,12 +7826,15 @@ belong to task 3559.
   and carries no value. An R8 test shows that route grants refuse a field that
   the member may not write.
 - **EAC-1b.** An edit answer that changes a value ends the receipt with the
-  sentence of §32.4 and the changed keys, each with the value that the write
-  sent. The keys are `due`, `start`, `status`, `important`, `leveraged`,
-  `description` and `assignees`. A cleared value reads `none`, and a cleared
-  judgement reads `not judged`. A description is named, never quoted. No
-  original value appears. Member text goes through `data()`. The stranger line
-  follows the sentence. Tests prove the text only, not the behaviour of a model.
+  sentence of §32.4. After it come the changed keys, each with the value that
+  the write sent. The keys are `due`, `start`, `status`, `important`,
+  `leveraged`, `description` and `assignees`. A cleared value reads `none`, and
+  a cleared judgement reads `not judged`. The note names a changed description
+  and never quotes it. No original value appears. Member text goes through
+  `data()`, and each item stops at 120 characters. The note shows 10 people and
+  then "and N more". A default-lane edit names the lane that the row landed in.
+  The stranger line follows the sentence. The tests prove the text only. They
+  do not prove how a model behaves.
 - **EAC-2.** The card shows a form for `create_task` when the flag is on for the
   org. The edits survive a tab change and a replay. The receipt is the receipt of
   the write. A decline shows the standard decline line. The form warns of an

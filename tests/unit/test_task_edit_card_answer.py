@@ -881,6 +881,23 @@ def test_member_text_in_the_note_is_fenced_on_one_line() -> None:
     assert "status «Do ing now»" in line
 
 
+def test_a_huge_lane_and_many_people_give_a_bounded_note() -> None:
+    who = [f"p{i}@acme.test" for i in range(50)]
+    new = W._NewTask(PID, {"status_id": DOING}, "L" * 10_000, who, W._NewFields())
+    line = W._edit_note({"status": "x", "assignees": []}, new, "L" * 10_000)
+    assert len(line) < 1500 and "\n" not in line
+    assert "status «LLL" in line and "…»" in line
+    assert "and 40 more" in line and "p9@acme.test" in line and "p10@acme.test" not in line
+
+
+def test_a_default_lane_edit_names_the_lane_that_the_row_landed_in() -> None:
+    new = W._NewTask(PID, {}, "the default", [], W._NewFields())
+    known = W._edit_note({"status": ""}, new, "To do")
+    assert "status «To do»" in known
+    unknown = W._edit_note({"status": ""}, new, "the default")
+    assert "status the default lane" in unknown
+
+
 def test_a_changed_description_is_named_and_never_quoted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

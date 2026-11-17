@@ -1534,6 +1534,19 @@ _EDIT_NOTE_LEAD = (
 )
 
 
+#: The longest text of the member that the note shows, and the most people.
+_NOTE_ITEM_MAX = 120
+_NOTE_PEOPLE_MAX = 10
+
+
+def _note_item(text: str) -> str:
+    """One text of the member for the note: cut, then fenced by ``data()``."""
+    flat = " ".join(str(text).split())
+    if len(flat) > _NOTE_ITEM_MAX:
+        flat = flat[: _NOTE_ITEM_MAX - 1] + "…"
+    return data(flat)
+
+
 def _edit_note(changes: dict[str, Any], new: _NewTask, status_label: str) -> str:
     """The receipt line of a changed edit card: the changed keys, each with
     the value that the write sent (EAC-1b). No original value appears.
@@ -1552,10 +1565,15 @@ def _edit_note(changes: dict[str, Any], new: _NewTask, status_label: str) -> str
             day = payload.get("due_at" if key == "due" else "start_date")
             parts.append(f"{key} {day or 'none'}")
         elif key == "status":
-            lane = status_label if "status_id" in payload or new.parent else ""
-            parts.append(f"status {data(lane) if lane else 'the default lane'}")
+            known = "status_id" in payload or new.parent or status_label not in ("", "the default")
+            lane = status_label if known else ""
+            parts.append(f"status {_note_item(lane) if lane else 'the default lane'}")
         elif key == "assignees":
-            parts.append("people " + (", ".join(data(w) for w in new.who) or "none"))
+            shown = ", ".join(_note_item(w) for w in new.who[:_NOTE_PEOPLE_MAX])
+            more = len(new.who) - _NOTE_PEOPLE_MAX
+            if more > 0:
+                shown += f" and {more} more"
+            parts.append("people " + (shown or "none"))
         elif key == "important":
             value = changes[key]
             parts.append("important " + ("not judged" if value is None else "yes" if value else "no"))
