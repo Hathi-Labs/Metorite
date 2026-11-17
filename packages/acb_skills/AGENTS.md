@@ -149,7 +149,10 @@ not write a second copy of that seam. A bare test file name is under
    - Each answer says what happened ("Not run …") and what is true now. It never tells the model to call the tool again. The rewrite stays in the stored history, so a later turn reads it. After a load, the answer keeps the rules of the pack and drops the loader's first line.
    - `CHAT_TOOL_AUTOLOAD` (default off, allowed by D217) also loads the offered pack. The load calls `LoadSkillTools.process` with a `FunctionInvocationContext` over the live list. Do not write a second load path.
    - It loads only for a call of this run, never for a raw text of the history. It loads only when the request holds the same tool list as the request before. A copy from an outer middleware (`WithholdTools`) gets the text only.
-   - Fence: `test_unknown_tool_answer.py`.
+   - Task 3599: a name gets ONE load try in a run (`_tried`). A later call of that name gets the refusal of the first try, and the loader is not asked again.
+   - `unknown_call_name` finds MAF's result in `result`, `items` or `exception`. MAF puts the `KeyError` text in `exception`, in single quotes, and `is_raw` reads that form too.
+   - `MEMBER_LINE` is the member's text for that step. Only `orchestrator.event_translator.tool_result_fields` shows it. The model never reads it.
+   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it fails closed.
    - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
    - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
@@ -232,6 +235,7 @@ not write a second copy of that seam. A bare test file name is under
 5n-a. handoff.py + chat_constraints.py -- what crosses a handoff, and the member's limits of one chat (D116, spec `one_assistant_context.md` §4).
    - `handoff.head_task` is the ONE call of every delegation site. `chat_constraints_enabled` is the one reader of `CHAT_CONSTRAINTS`.
    - A keep stores only whole sentences that the member typed in this turn. Never use `member_message` for it. A drop needs the member's approval on a card.
+   - HRD-12a: each item is `{kind, text}` in memory, of kind `limit` or `decision`. The store is expand only. `_stored` writes a limit as a plain string and a decision as `{kind, text}`. So an old reader loses only the decisions. `clean` is the ONE reader of both store shapes. `handoff.DECISIONS_LINE` is the ONE line before the decisions, in the block and in the task head. It says that a decision is not a request.
    - Fences: `test_chat_constraints.py`, `test_handoff_words.py`.
 5n-b. subagent_contract.py -- the contract parser of a dynamic sub-agent (WS-67 OA-9a, spec `one_assistant_context.md` §6). `spawn_subagents` (`agent_tools`, dark behind `SPAWN_SUBAGENTS_ORGS`) is its caller, and it also holds the job binding, `worker_refusal` and the `child_pin` pair. The parsers do no I/O. `parse_items` turns other output into one `inferred` item. `parse_jobs` checks the jobs against the parent's `run_tools`. `MAX_JOBS` equals `agent_tools._PARALLEL_MAX`. Fence: `test_subagent_contract.py`.
    - OA-9c: a job names only a pack that `PackRun.holds()` of the parent names, and no record means no pack. `agent_tools._child_pack_tools` builds it through `_tool_injection._pack_tools` on the parent frame, with a fresh run key for each child. `child_may_hold` is the ONE test of a pack tool for a child: the read-only mark, less the SUB-1 names and `DISPLAY_TOOLS`. Do not add a second read-only list. A new tool that draws a card or moves the page joins `DISPLAY_TOOLS`, or the display scan in `test_pack_guards.py` fails. Fences: `test_pack_guards.py`, `test_spawn_subagents.py`.
