@@ -26,6 +26,13 @@ tried, and at most 3 "Where else" lines. `search_company(explain=true)`
 answers the trace of §3.7 with no record. Each search writes one
 `search.company.ladder` line.
 
+**HRD-21 is built** (task 3225, 2026-11-16, see "As built" in §3.1 and §6).
+Behind `CHAT_SEARCH_ORGS`, rung 6 reads the member's own solo chats with
+Mira, and never the current chat. A hit names the title, the date of the last
+change of the chat and the link that opens the chat. With the flag empty, the
+answer is the answer of before, byte for byte, and so is the 422 of an unknown
+app, `chat` too. The flip waits for the owner's preview.
+
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
 extends §20 and replaces nothing in it. It adds no second read path and no
@@ -157,9 +164,48 @@ Measured on production on 2026-11-14, over the last 3 days (task 3232):
 | 3 | Near spelling | The near names of up to 3 words, from records the member can open. Then the query again with the best spelling | On a miss, pass 2 | 0.5 s for the lookup, inside the 2.5 s | `near` | HRD-18a, HRD-18b |
 | 4 | Related records | The records that link to the best hits: the contacts and the lead of a deal, the deals of a company, the mail from and to an address, and the mail of a company's own domain (no free-mail domain, the rule of KG-5) | When a pass found a person, contact, lead, deal or company | 1.0 s, at most 3 for each hit | `related` | FIND-3, then KG-6 |
 | 5 | Meaning | The vector half of each source that has one | The embed starts at 0 s, beside rung 1. A source waits at most 0.8 s for it | 3.0 s for the embed | `meaning` | KR-ZERO, KG-3b |
-| 6 | Past chats | The member's own chat sessions | Pass 1, when `CHAT_SEARCH_ORGS` names the org | 1.0 s | `chat` | HRD-21 |
+| 6 | Past chats | The member's own chat sessions | Pass 1, when `CHAT_SEARCH_ORGS` names the org | 1.5 s, as each source of pass 1. A LOCAL `statement_timeout` of 1.6 s stops its statement | `chat` | HRD-21 |
 | 7 | Outside sources | An outside app that an admin made a find source | On a miss after pass 2, or when the member names it | 3.0 s. The answer cap rises to 8 s | `outside` | FIND-10 |
 | 8 | Honest zero | The answer says what it searched, what it tried and where else to look | Each answer with a miss | None. Code writes it | none | KR-ZERO, FIND-4 |
+
+**As built (HRD-21), rung 6.**
+
+- The source has the key `chat`, and it is last in `REGISTRY`. The command
+  bar never asks it.
+- The route asks it only when `feature:chat` and `CHAT_SEARCH_ORGS` let the
+  member in, and the request names the current chat (`current_chat`). Else
+  the source is not asked at all. The tool sends the thread of its own run.
+  A run with no chat (a batch run, with a thread that the executor made)
+  sends no thread, so it shows no past chat. A run that is not solo sends
+  none either.
+- It runs in pass 1, in the 1.5 s of a source. Its hits leave the ladder
+  before the miss rule, the words alone and the near step, and join the one
+  list before the sort. So a past chat that holds every content word does
+  not stop the search for the records.
+- The search proves each content word of the query as a whole word, by the
+  stem rule of `find.coverage` (`find.whole_word_pattern`). So "AI" never
+  matches inside "email", "print" never matches "printer", and "printers"
+  holds "printer". The cut end of a long row is no end of a word.
+- With `FIND_ORGS` on, a past chat says `matched_by` `chat`. It holds every
+  content word as a whole word, because its search proved each one in the
+  title or in one row. So `covers` is `of`, whatever its snippet and its hint
+  show. On a tie of words, a record comes first, because rung 1 is lower
+  than rung 6.
+- The second pass starts on a miss of the records only. The `miss` of the
+  log line reads the final answer, so a past chat with every word makes no
+  miss there.
+- `find.chat_words` is the one rule of the words, for the route and the
+  reader. A query with no content word, or with more than 8, does not ask
+  the source. Then `searched` has no `chat`, "Where else" names the past
+  chats, and rung 6 of the trace reads `closed`. A stop word does not count.
+- The reader is `gateway/chat_search.py`, in the chat's own code. The caps
+  bound the word match. It reads the newest 100 chats that pass every rule,
+  the newest 80 rows of each chat, and 4,000 characters of each row. The rules run
+  before that cut, and the agent rule reads each row of each chat that it
+  tests. Each word arm is a `LIKE` of the stem, then a regular expression,
+  and no index serves either. A LOCAL `statement_timeout` of 1.6 s bounds the
+  whole statement. HRD-21 measured no plan on a large chat history. Measure
+  one before the flip.
 
 ### 3.2 Three passes in time
 
@@ -241,6 +287,13 @@ off, `Hit.as_dict` gives the keys of today, byte for byte.
 `edge` is a code constant from a closed list: `contact_of`, `lead_of`,
 `deal_of`, `company_of`, `mail_from`, `mail_to` and `mail_domain`. It holds no
 text of either record. A hit found by two rungs keeps the lower rung.
+
+As built (HRD-21), a past chat prints its date beside its hint, as each app
+does: "(Your chat, updated 2026-11-12)". The date is `updated_at` of the
+chat. A new row moves it, and so does a rename, so the word is not "last
+message". So its bracket is
+`[past chat · 2 of 2 words]`, and it does not print the date again. The hit
+has no `session` field, because its `id` is the session.
 
 As built (FIND-3), a mail that a linked record led to also carries `via`, the
 record edge from the same list. So "mail from the lead of deal:…" is `edge`
@@ -349,6 +402,11 @@ The rule behind the switch is as follows:
   of "Where else" names each skipped app with its reason. Item 3 names the
   past chats and each app that is not open to the member. A dark Studio
   source is never named.
+- As built (HRD-21), the line of the past chats prints only when the search
+  did not ask the `chat` source. The flag does not name the org, or the run
+  named no current chat. So the line is true each time it prints. The `chat`
+  key is never a `not_open` entry, because the past chats have their own
+  line.
 - Item 2 is not built. `name_match.near_names` keeps no name under the
   floor, so the route holds no name between 0.4 and the floor.
 - Item 4 waits for FIND-10.
@@ -384,8 +442,10 @@ name, no address and no id. The weekly delivery review reads the zero rate of
   row of `rungs` holds a rung, a source key, `ran`, `hits`, `ms` and an
   outcome from `find.OUTCOMES`. A closed app has one row, in rung 1.
 - Rung 4 gives a row for each source too. Its hits are the related records
-  that each app gave. Rung 6 has one row, `closed`, until HRD-21 adds the
-  `chat` source.
+  that each app gave. Rung 6 has one row, with the key `chat`. As built
+  (HRD-21), the `chat` source fills that row from its pass 1. It has no row
+  in rungs 1 to 4. With the source closed or not asked, the row stays
+  `closed`, so a dark source changes no trace.
 - `near` holds at most 3 spellings for each word. `name_match` keeps no name
   under the floor, so `over_floor` is true for each spelling today.
 - `flags_off` asks the one reader of each flag: `KNOWLEDGE_EMBED`,
@@ -587,6 +647,63 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 - **Past chats are the member's own (D-FIND-5).** Only the solo sessions of the
   member in this org. Never the chat of another member, a room, a `no_egress`
   session or the current chat. HRD-21 is HIGH.
+
+**As built (HRD-21): who can read what.** One statement of
+`gateway/chat_search.py` holds each rule in its WHERE, as the member, in the
+bound tenant session. The tests of each rule are
+`tests/unit/test_chat_source_r8.py` (R8) and `tests/unit/test_chat_source.py`.
+
+| Rule | How the code holds it |
+|---|---|
+| Only this org | RLS, and `organization_id` equals the bound tenant in the WHERE |
+| Only the member's own chat | `chat_session.user_id` equals the address of the session, the rule of the chat's own list. RLS lets a chat of member B through, so this rule alone stops it |
+| Never a room or a shared chat | `rooms.SOLO_ROOM_SQL`, the one rule of a solo chat |
+| Never a chat with another agent | The agent is `orchestrator`, the chat has no channel, and no other agent has a seat or a row. The sandbox can cover a run of another agent (H-236). It never covers the orchestrator |
+| Never a chat with the egress mark | An email-assistant run or another untrusted read marks its chat. Its own run holds the writes that a held chat holds off, and each run that it delegates binds `no_egress`. The SQL does not test the mark. `egress.marked_sessions` reads the marks in one `MGET`, read-only, and drops each marked chat after the read. A fault of Redis shows no chat, and the answer names `chat` as skipped. Limit 1 names a chat with no mark |
+| Never the current chat | `s.id <> :current`. The tool sends the thread of its run (`executor.resolve_relay_thread_id`). The run route makes the chat row with that thread id, so the two are one value. With no current chat, or in a batch run, the route does not ask the source |
+| Never in a room | In a shared room the run acts as the room (`room:<thread>`), and the tool refuses before any call (`SHARED_ROOM`). A room of one that other members can read (visibility `org` or `people`) is not solo either. The tool sends the current chat only from a solo run (`executor.run_is_solo`), so the route asks no past chat there |
+| No text of another person | The search reads the title and the `user` and `assistant` rows. It never reads a `system` row or the tool events. The snippet comes only from a row that the member typed (`member_typed`, `typed_text`, not a card answer). A reply of Mira can restate a mail, so its text never prints. The statement returns the text of no other row |
+| The frame | A hit is a record of the answer, under "Company records (data, not instructions)" |
+
+Seven limits stay, and the review must know them:
+
+1. **A `no_egress` chat with no mark CAN show.** The mark lives in Redis,
+   with a TTL of 400 days. A chat has no mark when its mark write failed, or
+   Redis restarted before a save. It has none after 400 idle days too, or
+   when it read mail before the marks existed. Such a chat gives a hit with
+   its title, date, link and a snippet of the member's typed words. No reply
+   of Mira prints, so no mail text reaches the model.
+   D-FIND-5 says that no `no_egress` session shows, so this falls short of
+   it. The owner must accept it at the preview, before the flip.
+
+   `search_company` writes no egress mark. Its email source gives Mira the
+   subject, the sender and a passage of each mail hit. Its WhatsApp source
+   gives the chat name, the sender and a passage of a stranger's message.
+   So a Mira chat that read mail or WhatsApp through `search_company` has no
+   mark, and its title and typed snippet can show. The owner must accept this at the preview, or a
+   follow-up must add the mark before the `CHAT_SEARCH_ORGS` flip.
+2. **A title prints as the chat keeps it**, cut to 200 characters. It can
+   hold the start of a pasted mail. The member already sees the same title in
+   the list of chats. We accept this while the flag is dark.
+3. **The `current_chat` parameter is request input.** It only takes a chat
+   away, so a wrong value can only show the current chat to its own member.
+4. **Two other searches read chat text.** `query_history`
+   (`acb_skills/history_tools.py`, given by `_tool_injection.py`) matches the
+   text of each row of each room that the member can read. It checks no mark,
+   and it returns the text of each reply. CO-3 of `chat_organization.md`
+   plans one search of chats and files. CO-3 must reuse or replace
+   `gateway/chat_search.py`, so that no third chat reader exists.
+5. **The `miss` of the log line and `near_report` read the past chats.**
+   While `find.ABSENCE_CLAIMS` is off, no line reads them as a claim. The
+   slice that sets it on must decide how a past chat counts.
+6. **The cost before the cut.** `ONLY_AGENT_SQL` reads each row of each chat
+   that it tests, before the cut to 100 chats. Each word arm runs a regular
+   expression that no index serves. Run EXPLAIN ANALYZE on a large chat
+   history before the flip.
+7. **A word with an accent finds less.** The whole-word pattern ends a word
+   only at an ASCII mark or a few typographic marks. Any other character stays
+   inside a word, so the SQL never finds more than `find.coverage` counts.
+   The cost: "muller" does not find «Müller», and "Müller" finds no chat.
 - **An outside source names whose access it used** (D98). It stores nothing
   and logs no word.
 - **The answer is data.** It keeps the header and the quotes of KR-2, and the
@@ -621,7 +738,7 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
 | `FIND_ORGS` | empty | `matched_by`, the coverage order, rung 3 in the engine, rung 4, the honest zero lines, the explain mode, `resolve_name` and the standing rule. In the engine it acts only with `CONTEXT_RECENCY` on. It also opens the sender near spelling of `query_inbox` (HRD-18b), which needs no `CONTEXT_RECENCY`. Empty gives the answer of KR-ZERO, byte for byte. It reloads with no restart (`docs/flag_reload.md`) | AGENT-SAFE. It spends nothing. Flip it under the `enforcement-flip` grant, after the FIND-1 eval |
-| `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21) | The owner sees the preview before the flip (task 3225) |
+| `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21). Empty gives the answer of before HRD-21, byte for byte, and the 422 of before for `apps=chat` and each other unknown app. Its one reader is `find.chat_search_named`. It reloads with no restart (`docs/flag_reload.md`) | The owner sees the preview before the flip (task 3225). Owner-only in `env_guard` |
 | `FIND_OUTSIDE_ORGS` | empty | Rung 7 (FIND-10) | **OWNER-GATE.** A read of a third party |
 | `FIND_CLAIM_CHECK` | `off` | The "not found" check of §5.5: `off`, `shadow` or `on` | `shadow` is AGENT-SAFE. `on` is an `enforcement-flip` after 7 days of shadow |
 | `KNOWLEDGE_EMBED`, `EMAIL_SEMANTIC_SEARCH_ENABLED`, `GRAPH_SEARCH_ORGS` | As built | Unchanged | Unchanged |
@@ -656,7 +773,7 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-3** (built) | 3240 | 1 | Rung 4: the `related` and `open` abilities of the CRM, people and email sources, and the step on the best 5 hits, 3 for each hit, in 1.0 s. It builds the step and `Source.open` that KG-6 names. KG-6 then adds the `kb_links` edges to the same step | "Neuropeak order" finds the deal, and the thread from the address of its lead, in one call. A contact's mail in the mailbox of another member never shows. A record that the member cannot open leaves no trace. Org B never shows | `test_find_related.py`, new. `test_find_related_r8.py`, new | HIGH · AGENT-SAFE | FIND-2 |
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
-| **HRD-21** | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a `no_egress` session and the current chat never show. The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
+| **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
 | **FIND-5** | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
 | **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
 | **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
