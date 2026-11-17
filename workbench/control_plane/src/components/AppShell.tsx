@@ -785,6 +785,18 @@ function MobileBottomNavInner({
     return () => window.removeEventListener(GUIDE_MENU_EVENT, h);
   }, [open, close]);
 
+  // The drawer holds a SNAPSHOT: `open` keeps the node of the tap. So the open
+  // Menu takes the new content when the list it draws changes (task 3587). A
+  // tap while the first layout read was out caught the skeleton, and the
+  // drawer kept it until it closed. The key holds only strings and booleans,
+  // so a re-inject cannot loop through the drawer's context.
+  // Fences: `e2e/shell-presets.spec.ts`, "a tap before the layout read
+  // answers", and `appShellMenuLive.test.ts`.
+  const menuShape = `${navWaiting}|${drawerKey}|${assistant}|${agents}`;
+  useEffect(() => {
+    if (menuOpen) open(menuRef.current, "menu");
+  }, [menuShape, menuOpen, open]);
+
   // MOB-9 (task 2002): a tap on a bar tab first closes what is open, then
   // does its job. The assistant's sheet always closes. The drawer closes too,
   // and the event goes one tick later, so the page sees the closed drawer
