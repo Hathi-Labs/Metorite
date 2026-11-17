@@ -220,6 +220,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-OTW | **One-time workflows**: ask someone, wait for the one answer, run once to propose the record updates, then retire (D214) | 🟢 active · M2 | `specs/workflows_app.md` §14 | Metorite: epic 3010 (AI Studio), OTW-0 to OTW-10 = tasks 3011 to 3021, demos 3022 to 3024 · flag `ONE_TIME_WORKFLOWS_ORGS`, default empty |
 | WS-FIND | **Find anything**: one search engine with near names, related records, past chats and an honest zero, as the chat's find tools (owner ask, 2026-11-14) | 🟢 active · M1 | `specs/find_engine.md` · `specs/knowledge_base.md` §20 | Metorite: epic 3232 (AI Chat Interface), FIND-0 = task 3233, rung 1 demo = task 3234 · in flight: KR-ZERO (2974), HRD-18a (2997) · next FIND-1, HRD-4 (2983), FIND-2, then HRD-18b (3226) and FIND-3 · D-FIND-1 to D-FIND-8 wait for the owner |
 | WS-CSY | **Connected systems in chat**: the chat knows what each connected MCP server holds, keeps it in reach beside mail, and reads it with no card (owner ask, 2026-11-15) | 🟢 active · M1 | `specs/chat_connected_systems.md` · `specs/agent_architecture.md` §12.2 WS-8c | Metorite: epic 3390 (AI Chat Interface), CSY-0 = task 3391, rung 0 = task 3399 (owner act), rung 1 demo = task 3396 · next CSY-1 (3400) and CSY-2 (3401) after PR 2369 merges · D-CSY-1 to D-CSY-6 wait for the owner |
+| WS-CT | **Contacts from mail**: the chat finds the people a member writes to by name, a People view in Email, then a Contacts app (owner ask, 2026-11-17) | 🟢 active · M1 | `specs/contacts.md` | Metorite: epic 3591 (My Email) · in build: CT-1 (3602) · next CT-2 (3607), then CT-3 (3608) and CT-4 (3609, rung 2 demo) · Q1 to Q3 wait for the owner |
 | WS-TKT | **Tickets and queues**: a support queue on the one task store, fed by chat, a shared mailbox, a workflow and a Studio app, with a round-robin rule over a team (owner ask, 2026-11-16) | 🟢 active · M2 | `specs/ticket_queues.md` · `specs/project_management_app.md` §9.1 | Metorite: epic 2202 (Projects/Tasks App), TKT-0 = task 3492, TKT-1 to TKT-14 = tasks 3518 to 3531, demos 3532 to 3535 · next TKT-4 (3521), then TKT-1 to TKT-3 after D-TKT-1 · D-TKT-1 to D-TKT-6 wait for the owner (task 3536) · flag `TICKET_QUEUES_ORGS`, default empty |
 | WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
 
@@ -4019,12 +4020,24 @@ WS-8c, item 32. It narrows H-299 by the admin's statement about the key, not by
 trust in the server. Item 31 wins when both are set. H-236 and step 3a of
 `decide()` do not change. Metorite task 1584.
 
+**Recorded 2026-11-16, not a decision of its own (MCP-NC1).** The owner removed
+the card for the tools of an external app in a member's run: "remove the aproval
+cards as well, its not needed anymore for accessing external MCPs". Metorite
+task 3603. It is built as `specs/agent_architecture.md` §12.2 WS-8c, item 33. It
+widens point 3: a member can now read AND change, through an agent, what the
+admin can reach at that provider, with no card. It limits D131.7 and D164.4 for
+the tools of an external app in a member's own run. The remaining control is
+the admin's "always confirm" switch (item 31) on each server. WhatsApp still
+refuses a tool that does not say read-only, until the owner decides otherwise.
+A run with no member, and step 3a of `decide()`, do not change.
+
 **What it extends.** D96.4: an MCP server is a connection. D98 adds the
 connections that need an OAuth consent.
 
 **What it does not change.** D56 keeps operator keys in the operator plane, and
 a pre-registered OAuth client is one of them. H-236 stays: every MCP tool is
 egress. H-299 stays: a tool that can change data waits for the member's card.
+MCP-NC1 (2026-11-16, above) amends this for a member's run in Metorite.
 
 **Fences:** the rows of `specs/integrations_console.md` §3.6.11. All are new and
 none exists yet.
@@ -4768,6 +4781,8 @@ Owner decision, 2026-10-27 (see D129). Metorite #809. It answers the seven owner
 
 ### D131 — Automations climb a trust ladder of three levels (2026-10-27)
 
+*Limited by MCP-NC1 (D98 record, 2026-11-16) for the tools of an external app in a member's run.*
+
 Owner decision, 2026-10-27 (see D129). Metorite #815.
 
 1. **Suggest.** Mira puts a card in My Day, and nothing changes.
@@ -5209,6 +5224,8 @@ The side chat actually walks somebody through the entire user flow."
 4. **D-GD-4. Metorite pays for guide questions for the first 14 days,** inside the cap of D-OB-6. After that, a guide question is a normal chat turn.
 
 ### D164 — The CRM changes by a trust ladder, and every change lands in Change history (2026-11-02)
+
+*Limited by MCP-NC1 (D98 record, 2026-11-16) for the tools of an external app in a member's run.*
 
 Owner decision, 2026-11-02, in chat. Board: **WS-CRM**. Owning spec: `specs/crm_conversational.md` §4. Metorite: sub-epic #1429, slice CRM-M1 (#1431). It amends D133, which says an admin approves each change that the AI proposes. It changes no other rule of D133.
 

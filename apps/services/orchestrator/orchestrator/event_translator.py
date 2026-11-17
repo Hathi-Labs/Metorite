@@ -252,6 +252,34 @@ def function_call_events(
     return out
 
 
+def tool_result_fields(content: Any) -> tuple[str, bool]:
+    """``(text, success)`` of one ``function_result``: the ONE mapping of a
+    tool result for the member. The text is whole, and the caller caps it.
+
+    :func:`translate_update` uses it for the stream, and
+    ``executor._tool_calls_of`` for the calls of a batch run, so the two
+    cannot differ. The exception wins over the result payload. A refused call
+    returns "Refused: ..." so the model reads it, and it is still no success:
+    a card must never draw it as a done act ("Email sent"). ``is_refusal`` is
+    the one test.
+
+    Task 3599 (``chat_failure_modes.md`` B1, HRD-1): a call of a tool that the
+    run did not hold gets MAF's own "not found" text. The trail showed it to
+    the member. That one result shows ``unknown_tool.MEMBER_LINE`` in its
+    place, and stays a failed step. Every other result maps as before.
+    """
+    exc = getattr(content, "exception", None)
+    result = getattr(content, "result", "") or ""
+    try:
+        from acb_skills.unknown_tool import MEMBER_LINE, unknown_call_name
+
+        if unknown_call_name(content):
+            return MEMBER_LINE, False
+    except Exception:  # the mapping of before, never a lost result
+        _log.warning("event_translator.unknown_call_check_failed", exc_info=True)
+    return (str(exc) if exc else str(result)), exc is None and not is_refusal(result)
+
+
 def _partial_tool_call_id(update: Any) -> str:
     """tool_call_id carried by a PARTIAL_RESULT / PROGRESS raw event, if any."""
     raw = getattr(update, "raw_representation", None)
@@ -407,16 +435,13 @@ def translate_update(
 
         elif ctype == "function_result":
             tc_id = getattr(content, "call_id", None) or ""
-            exc = getattr(content, "exception", None)
-            result = getattr(content, "result", "") or ""
+            # The one mapping of a result, also for a batch run (task 3599).
+            text, success = tool_result_fields(content)
             events.append({
                 "type": "TOOL_CALL_RESULT",
                 "toolCallId": tc_id,
-                "content": (str(exc) if exc else str(result))[:RESULT_CAP],
-                # A refused call returns "Refused: ..." so the model reads
-                # it, and it is still no success: a card must never draw it
-                # as a done act ("Email sent"). `is_refusal` is the one test.
-                "success": exc is None and not is_refusal(result),
+                "content": text[:RESULT_CAP],
+                "success": success,
             })
             if hooks and hooks.on_function_result:
                 try:

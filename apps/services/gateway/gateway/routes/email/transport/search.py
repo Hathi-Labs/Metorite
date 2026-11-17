@@ -43,6 +43,7 @@ from fastapi import Depends, Query
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
+    NOT_OUTBOUND_SQL,
     UNCATEGORIZED_SQL,
     _account_scope,
     _row_to_message,
@@ -623,6 +624,61 @@ async def open_mail(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
         d["highlight"] = ""
         out.append(d)
     return out
+
+
+# ── The mail senders of one name (WS-FIND FIND-5) ───────────────────────────
+
+#: The limit of each read of :func:`named_mail`, in milliseconds: a little more
+#: than the deadline of ``GET /search/names`` (``retrieval.names.
+#: NAMES_BUDGET_S``, 1.0 s). The route stops waiting there. This limit stops
+#: the statement, so a scan of a large mailbox never runs on with no one to
+#: read it.
+NAMED_STATEMENT_MS = 1500
+
+#: The newest mails from a sender whose address or name holds ``:held``, in
+#: the mailboxes that ``:uid`` may read (``{scope}``), with no junk or trash
+#: (``{folder}``) and no outbound mail (``{outbound}``): the member wrote it.
+#: The pattern is plain text: ``ESCAPE`` reads the backslash of ``like_escape``.
+_NAMED_MAIL_SQL = """
+SELECT em.id, em.from_address->>'name' AS name, em.from_address->>'email' AS email
+  FROM email_messages em
+ WHERE {scope} AND {folder} AND {outbound}
+   AND (LOWER(em.from_address->>'email') LIKE :held ESCAPE '\\'
+        OR LOWER(em.from_address->>'name') LIKE :held ESCAPE '\\')
+ ORDER BY em.received_at DESC NULLS LAST, em.id
+ LIMIT :lim
+"""
+
+
+async def named_mail(user: UserContext, word: str, limit: int) -> list[dict[str, str]]:
+    """The newest mails from a sender whose address or name holds *word*, for
+    ``resolve_name`` (FIND-5, ``find_engine.md`` §5.2).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:email``. The mailboxes are the ones of :func:`search_messages`:
+    those that the member may read, with no separate mailbox
+    (``pooled_only``), and no junk or trash. Outbound mail
+    (``core.NOT_OUTBOUND_SQL``: sent, drafts, outbox) gives no row, because
+    the member wrote it. ``%`` and ``_`` in *word* match as plain text. The
+    read sets a LOCAL ``statement_timeout`` of :data:`NAMED_STATEMENT_MS`
+    first. Each row holds the id, the sender name and the sender address.
+    :func:`search_messages` does not change for its other callers.
+    """
+    held = " ".join(str(word or "").split()).lower()
+    if not held:
+        return []
+    from gateway.routes.projects.filters import like_escape
+
+    params: dict[str, Any] = {"uid": user.email or "anonymous",
+                              "held": f"%{like_escape(held)}%", "lim": max(1, int(limit))}
+    scope = _account_scope(None, params, pooled_only=True, level="read")
+    folder = folder_scope("all", params, include_sent=True) or "true"
+    sql = _NAMED_MAIL_SQL.format(scope=scope, folder=folder, outbound=NOT_OUTBOUND_SQL)
+    async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(NAMED_STATEMENT_MS)})
+        rows = (await db.execute(text(sql), params)).fetchall()
+    return [{"id": str(r.id), "name": str(r.name or ""), "email": str(r.email or "")}
+            for r in rows]
 
 
 # ── The backfill of the stored vector (WS-KG KG-3a, migration 314) ──────────
