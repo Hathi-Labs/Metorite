@@ -8732,7 +8732,9 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     `/v1/chat/completions`, `/v1/audio/transcriptions`,
     `/v1/images/generations`, `/v1/audio/speech` and `/v1/decide` — so a
     second endpoint cannot grow a second opinion about what a vendor 500
-    means. A native handler raises an error that carries `status_code`, so
+    means. ⚠️ One arm is apart since AO-3: a chat STREAM that no step opens
+    answers 503 `unavailable` (:func:`_stream_unavailable`), whatever the
+    vendor status was. A native handler raises an error that carries `status_code`, so
     a TypeSafe 429 stays a 429 and its 529 becomes a 502 (§6A.14 clause 12).
     """
     status = failed.status
