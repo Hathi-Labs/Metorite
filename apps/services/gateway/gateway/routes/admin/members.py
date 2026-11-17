@@ -789,6 +789,11 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # on her private chats. So the count is each row of the member.
     _PersonRows("chat_member_rows", "chat_session_member",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-17: the cards that the member approved, one row each, with no
+    # card text. The rows are the member's only, so they go with the member.
+    # Same clause as the line above, and the same place: before the chats.
+    _PersonRows("chat_card_rows", "chat_card_record",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
