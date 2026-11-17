@@ -748,8 +748,9 @@ class Settings(BaseSettings):
     # `search_company` says how it matched (`matched_by`, `covers`, `of`), and
     # the hit with the most words comes first. `*` opens every org. Empty
     # opens none, and the answer is the one of KR-ZERO, byte for byte. It acts
-    # only with CONTEXT_RECENCY on. Reader: `gateway.retrieval.find.
-    # find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # only with CONTEXT_RECENCY on. It also opens the chat tool `resolve_name`
+    # and its route `GET /search/names` (FIND-5). Reader: `gateway.retrieval.
+    # find.find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
     # Spec: find_engine.md section 8.
     find_orgs: str = ""
     # WS-FIND HRD-21: CHAT_SEARCH_ORGS lists the org ids where company search
@@ -1079,6 +1080,20 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). It calls no model.
     # Fence: tests/unit/test_progress_notice.py.
     chat_progress_notice_orgs: str = ""
+
+    # ── The item in focus of a chat (HRD-11a, chat_failure_modes.md §6) ─────
+    #
+    # CHAT_FOCUS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default, and each turn keeps the bytes of its prompt. On, the chat
+    # keeps the email or the Projects task that a tool call read or acted on
+    # last, for each chat and member, in tenant Redis. The per-turn context of
+    # the orchestrator then shows its kind, its id and its link, after the
+    # OA-4 block, with the rule for "it", "this" and "mark it done". A shared
+    # room, a WhatsApp run and a delegated run read and write nothing. The one
+    # reader is `acb_skills.chat_focus.focus_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_focus_item.py.
+    chat_focus_orgs: str = ""
 
     # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
     #

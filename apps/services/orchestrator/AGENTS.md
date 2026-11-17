@@ -135,6 +135,10 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 25. **The orchestrator's per-turn context carries the member's corrections and limits of the chat** (spec `one_assistant_context.md` §4).
    - `_prime_chat_constraints` runs only for the agent `orchestrator`, with `CHAT_CONSTRAINTS` on, a solo room and a verified member. A delegated run inherits the list and never opens the tools.
    - Fences: `test_chat_constraints.py`, `evals/trajectories/test_chat_constraints_trajectory.py`.
+25a. **The orchestrator's per-turn context carries the item in focus of the chat** (HRD-11a, spec `chat_failure_modes.md` §4.5 E1). It ships dark behind `CHAT_FOCUS_ORGS`.
+   - `_chat_focus_slot` has the gates of the briefing: the orchestrator, a solo room, a verified member, a run that shows cards, not batch and not delegated. Its one Redis read starts in `_EarlyReads`, and `_prime_chat_focus` binds it after the OA-4 prime (lap `focus`).
+   - `_chat_focus_block` goes right after the OA-4 block. `_record_pack_call` and the sub-run hook beside `_record_email_working_set` write the item, through `_record_chat_focus`. A derived run context drops the binding (`_without_focus_key`).
+   - Fences: `test_focus_item.py`, `test_setup_laps.py`, `evals/trajectories/test_focus_item_trajectory.py`.
 26. **A pack tool acts as its owner acts in a sub-run of this chat** (spec `one_assistant_context.md` §4.2.3). `_tool_injection._pack_tools(slug, run_ctx)` is the one builder. Since OA-7c its live caller is `_apply_tool_packs` (contract 27).
    - STRICT within a turn (the owner confirmed it on 2026-10-27): the first email call marks the chat. Each later call of the turn runs held. An egress tool then does not run, and it answers `egress.EGRESS_HELD_PACK_ANSWER`.
    - The run check of each call keys on `tool_packs.PACK_RUN_KEY`, which the server mints for each run. It never keys on `run_id`, which a client can set.
