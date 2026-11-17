@@ -165,17 +165,18 @@ describe("the Connect dialog (§3.6.9)", () => {
     expect(c.confirmLabel).toBe("Open the sign-in");
   });
 
-  it("says that a read-only tool runs with no card, unless the server always confirms", () => {
+  it("says that each tool runs with no card, unless the server always confirms (MCP-NC1)", () => {
     const loose = connectDialogCopy(
       mcp({ acts_as: null, detail: { name: "notion", host: "mcp.notion.com", always_confirm: "false" } }),
       ADMIN,
       "connect",
     );
-    expect(loose.note).toContain("A tool that the server marks as read-only runs with no approval.");
-    expect(loose.note).toContain(`what ${ADMIN} can read at mcp.notion.com`);
+    expect(loose.note).toContain("Each tool runs with no approval.");
+    expect(loose.note).toContain(`what ${ADMIN} can read and change at mcp.notion.com`);
+    expect(loose.note).not.toContain("read-only");
     const strict = connectDialogCopy(mcp({ acts_as: null }), ADMIN, "connect");
     expect(strict.note).toContain("set to always confirm");
-    expect(strict.note).toContain("runs with no approval");
+    expect(strict.note).toContain("If you turn that switch off, each tool runs with no approval.");
   });
 
   it("names the admin it acts as now, when another admin reconnects", () => {
