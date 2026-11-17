@@ -122,7 +122,8 @@ _PARTICIPANTS_SQL = (
 #: (``SessionHistoryProvider``, task 2494), so the digests must not count it as a turn of
 #: its own: the save digest, taken when the run began, never held it.
 _ROWS_SQL = (
-    "SELECT role, content, COALESCE(custom_events @> CAST(:steer AS jsonb), false) "
+    "SELECT role, content, "
+    "(role = 'user' AND COALESCE(custom_events @> CAST(:steer AS jsonb), false)) "
     "FROM chat_message WHERE session_id = :tid "
     "AND role IN ('user', 'assistant') ORDER BY timestamp_ms ASC, id ASC"
 )
