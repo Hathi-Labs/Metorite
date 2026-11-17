@@ -567,8 +567,8 @@ async def field_hint(db: Any, module: str, exc: HTTPException) -> HTTPException:
     the other mirrored modules that hold a field with the asked key or
     label (task 3690). Each other 422 comes back as it was. One bounded read
     in the caller's tenant session, for the bound org, after the read of the
-    mirrored set. A module name is an
-    API name, never record data. With no such module, the 422 names none."""
+    mirrored set. A module name is an API name, never record data. With no
+    such module, the 422 names none."""
     detail = exc.detail
     asked = detail.get("key") if isinstance(detail, dict) else None
     if (exc.status_code != 422 or not isinstance(detail, dict)
