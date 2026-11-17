@@ -23,8 +23,17 @@ describe("orgTabFromSearch", () => {
     for (const tab of ORG_TABS) expect(source).toContain(`id: "${tab}"`);
   });
 
-  it("the page reads the tab once, after it mounts", () => {
+  it("the page reads the tab again each time the query changes", () => {
+    // A page that the chat moves with router.push stays mounted. Mutation: an
+    // effect with no `search` dependency, or `window.location.search` -> red.
     const source = readFileSync(`${__dirname}/../OrganizationAdmin.tsx`, "utf8");
-    expect(source).toContain("orgTabFromSearch(window.location.search)");
+    expect(source).toContain('const search = useSearchParams()?.toString() ?? "";');
+    expect(source).toMatch(/orgTabFromSearch\(search\);[\s\S]{0,80}\}, \[search\]\);/);
+    expect(source).not.toContain("window.location.search");
+  });
+
+  it("the route keeps a Suspense boundary for the query read", () => {
+    const page = readFileSync(`${__dirname}/../page.tsx`, "utf8");
+    expect(page).toContain("<Suspense");
   });
 });

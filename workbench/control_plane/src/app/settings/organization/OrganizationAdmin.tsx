@@ -40,6 +40,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
@@ -247,12 +248,15 @@ export default function OrganizationAdmin() {
    */
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState("members");
-  // PAR-1: a link may name the tab (`?tab=seats`). It is read once, after the first
-  // paint, so the server and the client draw the same first tab.
+  // PAR-1: a link may name the tab (`?tab=seats`). The tab is read after the first
+  // paint, so the server and the client draw the same first tab, and it is read again
+  // each time the query changes: the chat moves a page that is already open with
+  // `router.push`, which keeps this component mounted.
+  const search = useSearchParams()?.toString() ?? "";
   useEffect(() => {
-    const named = orgTabFromSearch(window.location.search);
+    const named = orgTabFromSearch(search);
     if (named) setTab(named);
-  }, []);
+  }, [search]);
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
   // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps
