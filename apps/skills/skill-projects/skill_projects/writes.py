@@ -526,67 +526,74 @@ async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     )
 
 
-async def _address_check(who: list[str]) -> tuple[list[str], dict[str, str]]:
+async def _names_known(addresses: list[str]) -> set[str]:
+    """The lower-case addresses of *addresses* that the people directory names.
+    One exact lookup (`/people/names`), not the picker: the picker matches by
+    substring and only among active people (S6 review)."""
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    return {str(k).lower() for k in (payload.get("names") or {})}
+
+
+async def _cannot_open(addresses: list[str]) -> list[str]:
+    """The addresses of *addresses* (known to the directory) whose person cannot
+    open a task given to them: not active, or no login (task 3636). One read of
+    ``/people/reach``, none for an empty list. A failed read raises, so no card
+    shows with a warning missing."""
+    if not addresses:
+        return []
+    reach = (await get("/projects/people/reach", {"emails": ",".join(addresses)})) or {}
+    listed = {str(a).lower() for a in reach.get("not_reachable") or []}
+    return [a for a in addresses if a.lower() in listed]
+
+
+async def _address_check(who: list[str]) -> tuple[list[str], list[str]]:
     """The addresses among ``who`` that the people directory does not know
     (strangers), and the known ones whose person cannot open a task given to
-    them, by reason (task 3636): ``inactive`` or ``no_login``.
+    them (task 3636).
 
     An assignee is a bare string the route accepts whatever it is (D-PM-4),
     so an address passes through ``_resolve_assignee`` unchecked. The card
     names the ones the picker cannot find, so a typo is seen before it is
-    signed (H-162). Agents are not addresses and are skipped. ``/people/names``
-    answers the strangers, and ``/people/reach`` (only when someone is known)
-    answers the rest. A failed read of either raises, so no card shows with a
-    warning missing.
+    signed (H-162). Agents are not addresses and are skipped.
+    ``/people/names`` answers the strangers, and ``/people/reach`` (only when
+    someone is known) answers the rest.
     """
     addresses = [a for a in who if "@" in a]
     if not addresses:
-        return [], {}
-    # One exact lookup (`/people/names`), not the picker: the picker matches
-    # by substring and only among active people (S6 review).
-    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
-    known = {str(k).lower() for k in (payload.get("names") or {})}
+        return [], []
+    known = await _names_known(addresses)
     strangers = [a for a in addresses if a.lower() not in known]
-    cannot: dict[str, str] = {}
-    present = [a for a in addresses if a.lower() in known]
-    if present:
-        # A second read, only for the people that the directory names.
-        reach = (await get("/projects/people/reach", {"emails": ",".join(present)})) or {}
-        listed = {str(k).lower(): str(v) for k, v in (reach.get("not_reachable") or {}).items()}
-        cannot = {a: listed[a.lower()] for a in present if a.lower() in listed}
-    return strangers, cannot
+    return strangers, await _cannot_open([a for a in addresses if a.lower() in known])
 
 
 async def _unknown_addresses(who: list[str]) -> list[str]:
     """The addresses among ``who`` that the people directory does not know
-    (H-162). See :func:`_address_check`."""
-    return (await _address_check(who))[0]
+    (H-162). The names read only: a card that asks for the strangers alone
+    does not pay for the reach read."""
+    addresses = [a for a in who if "@" in a]
+    if not addresses:
+        return []
+    known = await _names_known(addresses)
+    return [a for a in addresses if a.lower() not in known]
 
 
-#: The card's key for each reason a known person cannot open the task, and the
-#: words. The client draws a key it does not know as a plain row.
-REACH_ROWS: dict[str, str] = {
-    "inactive": "suspended",
-    "no_login": "no login yet",
-}
+#: The card's key for a known person who cannot open the task, and the client
+#: label of it (``cardFields.ts``). One key and no reason: see
+#: ``people.core.not_reachable``.
+CANNOT_OPEN_KEY = "cannot open the task"
 
 
-def _reach_rows(cannot: dict[str, str]) -> dict[str, str]:
-    """The card rows for the known people who cannot open the task: one row
-    for each reason, each address once, in one comma list."""
-    out: dict[str, list[str]] = {}
-    for address, reason in cannot.items():
-        key = REACH_ROWS.get(reason)
-        if key:
-            out.setdefault(key, []).append(address)
-    return {key: ", ".join(addresses) for key, addresses in out.items()}
+def _reach_rows(cannot: list[str]) -> dict[str, str]:
+    """The card row for the known people who cannot open the task: one comma
+    list, each address once. Empty when nobody is listed."""
+    return {CANNOT_OPEN_KEY: ", ".join(dict.fromkeys(cannot))} if cannot else {}
 
 
 async def _assignee_rows(who: list[str]) -> dict[str, str]:
     """All the warning rows of a card for the people in ``who``: the
-    strangers (``not in the directory``), the suspended and the ones with no
-    login. Empty when every address is a person who can open the task. One
-    read."""
+    strangers (``not in the directory``) and the known people who cannot open
+    the task (``cannot open the task``). Empty when every address is a person
+    who can. One names read, and one reach read when someone is known."""
     strangers, cannot = await _address_check(who)
     rows: dict[str, str] = {}
     if strangers:

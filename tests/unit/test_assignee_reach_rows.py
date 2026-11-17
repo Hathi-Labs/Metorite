@@ -25,7 +25,7 @@ def _directory(call: dict) -> Any:
     if call["path"] == "/projects/people/names":
         return {"names": {KNOWN: "Kim", OFF: "Olga", NOLOGIN: "Nat"}}
     if call["path"] == "/projects/people/reach":
-        return {"not_reachable": {OFF: "inactive", NOLOGIN: "no_login"}}
+        return {"not_reachable": [OFF, NOLOGIN]}
     return responder(call)
 
 
@@ -33,14 +33,14 @@ async def test_the_check_splits_strangers_from_the_unreachable(monkeypatch) -> N
     fake_gateway(monkeypatch, _directory)
     strangers, cannot = await writes._address_check([KNOWN, OFF.upper(), NOLOGIN, STRANGER, "agent:x"])
     assert strangers == [STRANGER]
-    assert cannot == {OFF.upper(): "inactive", NOLOGIN: "no_login"}
+    assert cannot == [OFF.upper(), NOLOGIN]
     assert await writes._unknown_addresses([KNOWN, STRANGER]) == [STRANGER]
 
 
 async def test_the_rows_name_each_reason_once(monkeypatch) -> None:
     fake_gateway(monkeypatch, _directory)
     rows = await writes._assignee_rows([KNOWN, OFF, NOLOGIN, STRANGER, STRANGER])
-    assert rows == {"not in the directory": STRANGER, "suspended": OFF, "no login yet": NOLOGIN}
+    assert rows == {"not in the directory": STRANGER, "cannot open the task": f"{OFF}, {NOLOGIN}"}
     assert await writes._assignee_rows([KNOWN]) == {}
     assert await writes._assignee_rows(["agent:x"]) == {}
 
@@ -54,12 +54,63 @@ async def test_the_reach_read_runs_only_for_known_people(monkeypatch) -> None:
     assert len(reach) == 1 and reach[0]["params"] == {"emails": KNOWN}
 
 
+async def test_a_unknown_only_check_pays_no_reach_read(monkeypatch) -> None:
+    """``_unknown_addresses`` is the names read only (the edit card uses it)."""
+    calls = fake_gateway(monkeypatch, _directory)
+    assert await writes._unknown_addresses([KNOWN, STRANGER]) == [STRANGER]
+    assert "/projects/people/reach" not in [c["path"] for c in calls]
+
+
+async def test_a_failed_reach_read_shows_no_card(monkeypatch) -> None:
+    """A warning that cannot be read is not skipped: the card does not show."""
+    from acb_common.tool_refusals import GatewayRefusal
+
+    from tests.unit._projects_agent_fakes import FakeResponse
+
+    def broken(call: dict) -> Any:
+        if call["path"] == "/projects/people/reach":
+            return FakeResponse({"detail": "no"}, 500)
+        return _directory(call)
+
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, broken)
+    with pytest.raises(GatewayRefusal):
+        await skill_projects.create_task(UUID, "Survey", assignees=KNOWN)
+    assert asked == []
+
+
+async def test_the_batch_card_names_who_cannot_open(monkeypatch) -> None:
+    """``create_tasks``: the batch card carries the same row (task 3636)."""
+    import json
+
+    import acb_skills.egress as eg
+
+    async def open_chat(_ctx: Any = None) -> bool:
+        return False
+
+    monkeypatch.setattr(eg, "chat_is_held", open_chat)
+    cards: list[dict] = []
+
+    async def ticks_all(*_a: Any, **kw: Any) -> frozenset[str]:
+        cards.append(kw)
+        return frozenset(r["id"] for r in kw["rows"])
+
+    from skill_projects import forms
+    monkeypatch.setattr(forms, "_confirm", ticks_all)
+    fake_gateway(monkeypatch, _directory)
+    await skill_projects.create_tasks(UUID, json.dumps([
+        {"title": "One", "assignees": f"{OFF},{STRANGER}"}, {"title": "Two", "assignees": KNOWN}]))
+    context = cards[-1]["context"]
+    assert f"cannot open the task: «{OFF}»" in context
+    assert f"not in the directory: «{STRANGER}»" in context
+
+
 async def test_the_create_card_names_a_suspended_person(monkeypatch) -> None:
     asked = approve(monkeypatch)
     fake_gateway(monkeypatch, _directory)
     await skill_projects.create_task(UUID, "Survey the site", assignees=f"{OFF},{NOLOGIN}")
     context = asked[0]["context"]
-    assert f"suspended: «{OFF}»" in context and f"no login yet: «{NOLOGIN}»" in context
+    assert f"cannot open the task: «{OFF}, {NOLOGIN}»" in context
     assert "not in the directory" not in context
 
 
@@ -68,14 +119,14 @@ async def test_the_bulk_card_names_each_reason(monkeypatch) -> None:
     fake_gateway(monkeypatch, _directory)
     await skill_projects.bulk_update(UUID, assignees_add=f"{KNOWN},{OFF},{STRANGER}")
     context = asked[0]["context"]
-    assert f"suspended: «{OFF}»" in context
+    assert f"cannot open the task: «{OFF}»" in context
     assert f"not in the directory: «{STRANGER}»" in context
-    assert "no login yet" not in context and f"suspended: «{KNOWN}»" not in context
+    assert NOLOGIN not in context and KNOWN not in context.split("cannot open the task")[1]
 
 
 async def test_a_member_who_can_open_the_task_has_no_row(monkeypatch) -> None:
     asked = approve(monkeypatch)
     fake_gateway(monkeypatch, _directory)
     await skill_projects.create_task(UUID, "Survey the site", assignees=KNOWN)
-    for key in ("suspended", "no login yet", "not in the directory"):
+    for key in ("cannot open the task", "not in the directory"):
         assert key not in asked[0]["context"]
