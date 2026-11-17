@@ -9,7 +9,7 @@ once, task 3231) is BUILT dark, 2026-11-14. Its flag is
 `CHAT_LATE_APPROVE_ORGS`. CS-1 (the first line, client only) and CS-2 (the
 prompt cache marks of the Router, dark) are BUILT, 2026-11-15. CS-3a (the
 server half of the run phase, task 3438) is BUILT dark, 2026-11-16. Its flag
-is `CHAT_RUN_PHASE_ORGS`.**
+is `CHAT_RUN_PHASE_ORGS`. HRD-17b library built, unwired, 2026-11-17.**
 
 **HRD-7 (one vocabulary of card outcomes, task 2986) is BUILT, 2026-11-15,
 with no flag. Projects, CRM and email take each card outcome text from
@@ -234,7 +234,7 @@ A client slice that changes the look needs the owner's Visual review: light mode
 | **HRD-16** | 2995 | A card answer acts once | `tests/unit/test_card_answer_once.py` | HIGH |
 | **HRD-17** | 2996 | Offline, loading and two devices. The design is in §4.7a. The slices are HRD-17a to HRD-17f below. Not built | none (this is the parent row) | STANDARD |
 | **HRD-17a** | 3483 | The server runs one send once. A repeat of the same `user_message_id` in a thread joins the first run. Dark, behind a new flag | `tests/unit/test_send_once.py` | HIGH |
-| **HRD-17b** | 3484 | The chat outbox: in memory, with `sessionStorage` for a reload. It releases once and in order. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
+| **HRD-17b** | 3484 | **The chat outbox library** (client only, no flag). BUILT 2026-11-17, unwired: nothing calls it until HRD-17d. `src/lib/chatOutbox.ts` is pure TypeScript. `createOutbox` takes one injected backend. There are two: `memory`, and `session` (memory plus one `sessionStorage` copy). The constant `OUTBOX_STORAGE` picks one, and its default is `"session"` (D-HRD-17-1, PROPOSED), so either answer is a one-line change. The code never writes message text to `localStorage`. The copy is ONE JSON value for all threads, under `OUTBOX_KEY`. It names the member by an opaque `memberKey`. This is the id that binds `dataCache.bindIdentity`. `restore` drops a copy of another member. An entry holds an id (the existing `user_message_id`), the thread, TEXT, `createdAt` and an optional `supersedes`. `enqueue` refuses a send with files, an empty or too long text, a duplicate id and a full box. `release(threadId, send)` sends the entries in order and once. `retry` keeps the entry and stops the queue. `failed` removes the entry and reports it. An entry older than `OUTBOX_TTL_MS` (10 minutes) is not sent: `release` reports it as `expired`, so the caller can put the text back in the composer as not sent. A second `release` of the same thread while one runs does nothing. An entry that was in flight at a reload comes back as `maybeSent`, and `release` stops on it until the caller calls `markAcknowledged` (the history has the id) or `markNotSent`. `clear` runs at each sign-out, and `clearForMemberSwitch` returns the count it dropped. `clearOutbox()` runs next to each `forgetThisDevice` call in `Sidebar.tsx`, `SignUpForm.tsx` and `accountSwitch.ts`. The library never holds a steer. A send during a live run stays on the steer path. **Gate:** AGENT-SAFE for the library. OWNER-GATE for the words of the waiting line (HRD-17d) and for D-HRD-17-1. **No flag:** nothing calls the outbox until HRD-17d, and HRD-17d waits for HRD-17a. **Rung:** §5 has no row for HRD-17 alone. It sits in rung 5, and it shows no demo until HRD-17d. **Done when:** the library passes the same behaviour table on both backends, the clear calls sit beside each `forgetThisDevice`, and no chat file imports the outbox. **Verify:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/chatOutbox.test.ts`. **Not built:** the waiting line, the `online` event and the history wait (HRD-17c, HRD-17d), and the server dedupe (HRD-17a). | `src/lib/chatOutbox.test.ts` | STANDARD |
 | **HRD-17c** | 3485 | A send while the history loads waits for the load. Builder: lane-ui | `src/lib/chatOutbox.test.ts` | STANDARD |
 | **HRD-17d** | 3486 | A send that lost its connection before the server answered is not marked sent. Builder: lane-ui | `src/hooks/useAgentChatDisconnect.test.ts` | STANDARD |
 | **HRD-17e** | 3487 | The server's copy wins the fold of a second device, and a shorter write before the seal is refused if the check says so. Builder: lane-ui, with a HIGH server part | `src/lib/chatFold.test.ts`, `tests/unit/test_chat_upsert_no_shrink_r8.py` | STANDARD |
@@ -299,6 +299,8 @@ decided them. They take no D number in `work_plan.md` §3.
 
 **D-HRD-17-1 is PROPOSED** (HRD-17, 2026-11-16). The owner has not decided it.
 It takes no D number in `work_plan.md` §3.
+
+The owner was asked on task 3484 (2026-11-17). The default stays PROPOSED until the owner answers. HRD-17b builds both backends behind `OUTBOX_STORAGE`, so the answer is a one-line change.
 
 | # | Question | Proposed default |
 |---|---|---|
