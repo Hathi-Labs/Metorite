@@ -472,11 +472,19 @@ _PERSON_WORDS = frozenset({
 })
 #: The words that name the tool, a store of records or the assistant. A claim
 #: after them is the claim of a lookup: "The CRM says there is no such order",
-#: "Company search reports no matches for Sharath".
+#: "Company search reports no matches for Sharath". An app, a product or the
+#: assistant is no person either: "Odoo says there is no such order" and
+#: "Mira says" stay claims (FIND-7 round 4).
 _SYSTEM_WORDS = frozenset({
     "crm", "search", "system", "inbox", "mailbox", "records", "record", "results",
     "result", "database", "tool", "app", "query", "index", "data", "engine", "api",
     "i", "it", "this", "that", "the", "our", "your", "which", "there",
+    # The apps of the company and the outside products that hold its records.
+    "email", "people", "projects", "tasks", "calendar", "whatsapp", "knowledge",
+    "drive", "zoho", "gmail", "salesforce", "odoo", "hubspot", "outlook", "slack",
+    "notion", "sheets", "docs",
+    # The assistant and the product.
+    "mira", "metorite", "assistant",
 })
 #: The words right before a claim that say what one record holds: "The
 #: invoice SHOWS no record of payment" is the state of the invoice, not a

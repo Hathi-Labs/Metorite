@@ -150,10 +150,11 @@ the default is `off`. It is not a `*_ORGS` or `*_MODES` key, so a reload does
 NOT apply it. Set the value, then restart `acb-gateway`. Its one reader is
 `acb_common.settings.find_claim_check_mode`.
 
-In `shadow`, an answer that says a record does not exist writes one
-`answer_check.claim` line. It does so when no `search_company` answer of the
-turn shows pass 2. The line holds `mode`, `outcome`, `rule`, `searches`,
-`finds` and `armed`, and no text. `armed` is true when a `search_company` or
+In `shadow`, the first answer of a run that says a record does not exist
+writes one `answer_check.claim` line. The outcome is `shadow_miss` when no
+`search_company` answer of the turn shows pass 2, and `shadow_pass` when one
+does. The line holds `mode`, `outcome`, `rule`, `searches`, `finds` and
+`armed`, and no text. `armed` is true when a `search_company` or
 `resolve_name` answer came before the claim.
 
 In `on`, the check holds an answer only after a `search_company` or

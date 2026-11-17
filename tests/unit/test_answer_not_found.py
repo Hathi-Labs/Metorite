@@ -219,6 +219,14 @@ FOUND = "I found the deal «Neuropeak - Snowflake 3D printer» from Sharat."
     ("The CRM confirms there is no such deal.", "no_such"),
     ("Company search reports no matches for Sharath.", "no_record_of"),
     ("I found nothing for Sharath in the CRM.", "found_nothing"),
+    # Fix round 4: an app, a product or the assistant is no person.
+    ("Zoho says there is no such order.", "no_such"),
+    ("Gmail reports no matches for Sharath.", "no_record_of"),
+    ("Knowledge reports no record of Sharath.", "no_record_of"),
+    ("Salesforce says there is no such deal.", "no_such"),
+    ("Email says there is no such thread.", "no_such"),
+    ("Odoo says there is no such order.", "no_such"),
+    ("Mira says there is no such order.", "no_such"),
 ])
 def test_a_claim_is_read(text: str, rule: str) -> None:
     assert rule in CLAIM_RULES
@@ -242,6 +250,10 @@ def test_a_claim_is_read(text: str, rule: str) -> None:
     ("According to Ravi, there is no such order.", "no_such"),
     ("The customer could not find the invoice.", "could_not_find"),
     ("Mr. Rao could not find the invoice.", "could_not_find"),
+    # Fix round 4, the verifier's list: more forms, by example.
+    ("Ravi: I could not find the invoice.", "could_not_find"),
+    ("Ravi wrote back and could not find the invoice.", "could_not_find"),
+    ("Your note says you could not locate the shipment.", "could_not_find"),
     # The state of a record in other forms.
     ("No record of a payment yet, so the invoice is open.", "no_record_of"),
     ("There is no record of a payment on this invoice.", "no_record_of"),
@@ -326,6 +338,10 @@ def test_a_known_false_positive_is_still_read(text: str, rule: str) -> None:
     "Unfortunately, no order for Sharath turns up in the records.",
     "Your inbox has no mails from Sharath.",
     "Our records show no order for Sharath.",
+    # Fix round 4: misses that limit 3 of §5.5 names. The rule not_in_place
+    # needs the clause to end after the place.
+    "Sharath is not in the CRM yet.",
+    "Sharath is not in the CRM or the inbox.",
 ])
 def test_no_claim_is_read(text: str) -> None:
     assert not_found_claim(text) is None

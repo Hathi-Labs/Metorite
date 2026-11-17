@@ -859,6 +859,8 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
    - "Your inbox has no mails from Sharath" and "Our records show no order
      for Sharath".
    - A name in lower case, such as "nuropeak in the CRM".
+   - "Sharath is not in the CRM yet" and "Sharath is not in the CRM or the
+     inbox". The rule `not_in_place` needs the clause to end after the place.
    - A claim in a question, in a condition, and in reported speech with a
      person as the subject.
 4. The matcher does not read "no mention of" or "no trace of". A summary of
@@ -873,6 +875,10 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
    - More reported speech: "Ravi's mail says that the order does not exist",
      "According to Ravi, there is no such order", "The customer could not
      find the invoice", "Mr. Rao could not find the invoice".
+   - Reported speech that the rule does not see, because no person and verb
+     of speech come right before the claim: "Ravi: I could not find the
+     invoice", "Ravi wrote back and could not find the invoice", "Your note
+     says you could not locate the shipment".
    - The state of a record in other forms: "No record of a payment yet, so
      the invoice is open", "There is no record of a payment on this invoice".
    - A word that names no record: "I could not find Settings", "Python is not
@@ -917,7 +923,9 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
    `search_company` answer in the same turn. This slice does not hold a
    claim before the first `search_company` or `resolve_name` answer. It
    only logs `unheld_miss`, so the streamed answer of each other turn stays.
-   The owner must accept this gap, or ask for a hold of every answer.
+   So `on` never holds a claim after `search_crm`, `query_inbox`,
+   `find_tasks`, `crm_list_records` or `find_contact` alone (limit 11). The
+   owner must accept this gap, or ask for a hold of every answer.
 2. **`CONTEXT_RECENCY` on production.** Limit 9 applies when the flag is
    off. Check the value on the production box before the flip. This slice
    cannot read it.
