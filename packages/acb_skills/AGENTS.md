@@ -222,6 +222,11 @@ not write a second copy of that seam. A bare test file name is under
    - Make one `UntrustedFrame` for each model call. Do not add a tag regex or an exemption to `defang_trusted`.
    - Do not build a `<<<` marker anywhere else. Fences: `test_untrusted_frame.py`, `evals/email_injection/`.
    - `is_invisible` is the ONE rule of a character with no glyph. The gateway's approval store (`gateway/app_requests.py`, MCP-P1b-1) refuses each one in a request, less ZWJ and ZWNJ. Do not write a second set.
+   - `UntrustedFrame.paste_note` is the note of a block of pasted text (HRD-14a). `note` does not change.
+5m-0. paste_frame.py -- the split of a member turn into the member's lead and ONE `PASTED TEXT` block (HRD-14a, spec `chat_failure_modes.md` §4.7b).
+   - `split` and `frame_member_text` are pure. Nothing calls them until HRD-14b adds the seam behind its flag.
+   - The marker lines come only from `UntrustedFrame`. The `_PASTED` rule comes from `acb_common.assistant_profile`. Do not copy either.
+   - Fence: `test_paste_frame.py`.
 5m-1. hidden_text.py -- the ONE rule of a hidden character in owner text that a store keeps (WS-STU F1b, spec `ai_studio.md` §14 F1b).
    - `find_hidden`, `strip_hidden`, `hidden_problem` and `body_hidden_problem`. The base is `reply_card.is_invisible_char`, which is wider than `untrusted.is_invisible`. A new line, a tab and a carriage return are legal.
    - A ZWNJ or a ZWJ is legal between two visible characters. At a word end, ONE joiner is legal directly after a virama (combining class 9). A Malayalam chillu, a Bengali khanda ta and an explicit halant need it. So Persian, Hindi, Bengali, Malayalam and emoji keep theirs.
