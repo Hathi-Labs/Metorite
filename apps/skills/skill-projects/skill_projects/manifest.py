@@ -448,6 +448,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/nodes/{project_id}/vocabulary/reach", "vocabulary", "A"),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
+    # Task 3636: which known people cannot open a task given to them. A card
+    # reads it before the Approve, as it reads `names`.
+    Route("GET", "/projects/people/reach", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),
     # ── analytics.py · reports.py ────────────────────────────────────────
     Route("GET", "/projects/analytics/stuck", "analytics_stuck", "A"),
@@ -1271,6 +1274,7 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     },
     # ── people, fit and analytics ────────────────────────────────────────
     ("GET", "/projects/people/names"): {"emails": "people_for.emails"},
+    ("GET", "/projects/people/reach"): {"emails": "people_for.emails"},
     ("GET", "/projects/assignees"): {"q": "people_for.query", "due": "people_for.due"},
     ("GET", "/projects/candidates"): {
         "title": "fit_for_task.title",
