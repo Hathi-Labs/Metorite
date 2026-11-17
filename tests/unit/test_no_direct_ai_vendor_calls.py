@@ -97,6 +97,10 @@ _LITELLM_VERBS = frozenset({
 _SDK_CLIENTS = frozenset({
     "OpenAI", "AsyncOpenAI", "AzureOpenAI", "AsyncAzureOpenAI",
     "Anthropic", "AsyncAnthropic", "AnthropicBedrock", "AsyncAnthropicBedrock",
+    # 2449 S1: the GitHub Copilot agent and client. Left alone they reach
+    # GitHub's own address. With a BYOK provider they reach our gateway, and
+    # the baseline names each file that builds one (2449 S5).
+    "GitHubCopilotAgent", "CopilotClient",
 })
 
 #: The MAF chat clients. With no ``async_client`` and no ``base_url``, the
@@ -118,6 +122,8 @@ _VENDOR_SDKS = (
     "anthropic", "agent_framework_anthropic", "agent_framework.anthropic",
     "deepgram", "assemblyai", "mistralai", "cohere", "groq", "elevenlabs",
     "google.generativeai", "google.genai", "replicate", "together", "fireworks",
+    # 2449 S1: the GitHub Copilot SDK, and the MAF package that wraps it.
+    "copilot", "agent_framework_github_copilot",
 )
 
 #: The hosts of vendor AI APIs. A substring match, so a subdomain counts.
@@ -130,6 +136,9 @@ _VENDOR_HOSTS = (
     "api.fireworks.ai", "api.x.ai", "api.perplexity.ai",
     "dashscope.aliyuncs.com", "api.moonshot.ai", "api.moonshot.cn",
     "api.replicate.com", "api.stability.ai", "bedrock-runtime.",
+    # 2449 S1: GitHub Copilot's API, and Jina Reader. Jina is no model call.
+    # It sends the URL of a member to a third party (WEB-Q3), so it counts.
+    "githubcopilot.com", "r.jina.ai",
 )
 
 # ── The baseline (2026-10-06) ───────────────────────────────────────────────
@@ -147,46 +156,46 @@ class _Entry:
 #: delete the entry, in the PR that removes a call. NEVER add an entry or
 #: raise a count. Build the call on the Router instead (``acb_llm.routed``).
 _BASELINE: dict[str, _Entry] = {
-    # ── Embeddings (§2.10 row 1 and 2). S5 step 2 moves them. The Router
-    # serves no embeddings door yet, so each needs one first (D61.1).
+    # ── Embeddings (§2.10 row 2). S5 step 2 moves them. The gateway's
+    # /v1/embeddings door left this list in task 3553 (2449 S2, 2026-11-16):
+    # it calls the Router through kb_index.embed.relay, and the OpenAI client
+    # and the openai import of main.py are gone.
     "apps/services/gateway/gateway/main.py": _Entry(
-        {
-            "client OpenAI": 1, "litellm verb acompletion": 1,
-            "sdk openai": 1, "sdk litellm": 1,
-        },
-        "The /v1/embeddings door calls OpenAI with OPENAI_API_KEY (S5 step 2). "
-        "The prompt-cache warm-up calls litellm, behind PROMPT_CACHE_PREWARM",
+        {"litellm verb acompletion": 1, "sdk litellm": 1},
+        "The prompt-cache warm-up calls litellm, behind PROMPT_CACHE_PREWARM [2449 S2 and S3]",
     ),
     "apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py": _Entry(
         {"litellm verb aembedding": 1, "sdk litellm": 1},
-        "WhatsApp embeddings go to the gateway /v1/embeddings door, which "
-        "skips the Router (S5 step 2)",
+        "WhatsApp embeddings call litellm.aembedding with the LLM key against "
+        "the gateway /v1/embeddings door, and the gate refuses that key "
+        "(S5 step 2) [2449 S2]",
     ),
     "apps/services/gateway/gateway/routes/tasks/capability.py": _Entry(
         {"litellm verb aembedding": 1, "sdk litellm": 1},
-        "Capability embeddings go to the gateway /v1/embeddings door, which "
-        "skips the Router (S5 step 2)",
+        "Capability embeddings call litellm.aembedding with the LLM key "
+        "against the gateway /v1/embeddings door, and the gate refuses that "
+        "key (S5 step 2) [2449 S2]",
     ),
     # ── Transcription (§2.10 rows 3 and 4). S5 steps 1 and 4.
     "packages/acb_stt/acb_stt/litellm_provider.py": _Entry(
         {"litellm verb atranscription": 1, "sdk litellm": 1},
         "Transcription through litellm. S5 step 1 moves it to the Router's "
-        "/v1/audio/transcriptions on tier-stt",
+        "/v1/audio/transcriptions on tier-stt [2449 S4]",
     ),
     "packages/acb_stt/acb_stt/assemblyai_provider.py": _Entry(
         {"host assemblyai.com": 1},
-        "Transcription through AssemblyAI. S5 step 1",
+        "Transcription through AssemblyAI. S5 step 1 [2449 S4]",
     ),
     "apps/services/gateway/gateway/routes/notes/live.py": _Entry(
         {"host api.deepgram.com": 1, "host assemblyai.com": 1},
         "Live notes mint Deepgram and AssemblyAI stream keys. S5 step 4 needs "
         "its own design. §2.10 names Deepgram only. The AssemblyAI key was "
-        "found 2026-10-06",
+        "found 2026-10-06 [2449 S6]",
     ),
     "apps/services/meeting_bot/app/live.py": _Entry(
         {"host assemblyai.com": 1},
         "The meeting bot streams call audio to AssemblyAI. S5 step 4. Not in "
-        "§2.10, found 2026-10-06",
+        "§2.10, found 2026-10-06 [2449 S6]",
     ),
     # ── Chat that skips the Router (§2.10 rows 5 to 7). Row 5,
     # ``integrations.py`` (POST /integrations/discover), moved to
@@ -194,22 +203,28 @@ _BASELINE: dict[str, _Entry] = {
     "packages/acb_llm/acb_llm/context.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 5},
         "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "
-        "is off (H-171). acompletion_stream_text has no routed branch, so it "
-        "calls litellm whatever the flag says. Each of the two calls imports "
-        "litellm and the verb, and token_counter is the fifth import",
+        "is off (H-171), on a dev box only: elsewhere refuse_direct_arm raises "
+        "first (task 3554). acompletion_stream_text does the same since task "
+        "3541: with routing on it streams from the Router (task 3542). Each of "
+        "the two calls imports litellm and the verb, and token_counter is the "
+        "fifth import [2449 S3]",
     ),
     "packages/acb_llm/acb_llm/client.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 8},
         "complete and complete_with_tools call litellm when "
-        "ROUTER_SERVING_ENABLED is off (H-171). Not in §2.10, found 2026-10-06. "
+        "ROUTER_SERVING_ENABLED is off (H-171), on a dev box only: elsewhere "
+        "refuse_direct_arm raises first (task 3554). Found 2026-10-06, and "
+        "§2.10 names them since task 3554. "
         "The eight litellm imports serve those calls, the prompt cache and the "
-        "cost lookups (model_cost, completion_cost, cost_per_token)",
+        "cost lookups (model_cost, completion_cost, cost_per_token) [2449 S3]",
     ),
     "apps/services/gateway/gateway/routes/v1_compat.py": _Entry(
         {"litellm verb acompletion": 2, "sdk litellm": 3},
         "The gateway /v1 door calls litellm when its Router hop is off "
-        "(ROUTER_SERVING_ENABLED). Not in §2.10, found 2026-10-06. The third "
-        "litellm import is stream_chunk_builder, for that same stream",
+        "(ROUTER_SERVING_ENABLED), on a dev box only: elsewhere it answers the "
+        "Router's 502 (task 3554). Found 2026-10-06, and §2.10 names it since "
+        "task 3554. The third litellm import is stream_chunk_builder, for that "
+        "same stream [2449 S3]",
     ),
     # ── Not AI work (§2.10, the last paragraph). They stay.
     "apps/services/gateway/gateway/routes/settings.py": _Entry(
@@ -219,9 +234,10 @@ _BASELINE: dict[str, _Entry] = {
             "host api.together.xyz": 1, "host openrouter.ai": 1,
             "host generativelanguage.googleapis.com": 1,
             "host api.anthropic.com": 1, "host assemblyai.com": 1,
+            "host githubcopilot.com": 1,
         },
         "The provider key tests and model lists. They move no tenant content, "
-        "so they are not AI work (§2.10)",
+        "so they are not AI work (§2.10) [2449 S7]",
     ),
     # ── Imports of a litellm helper that makes no request. The import rule
     # took in ``litellm`` on 2026-10-07 and found them. They were in the
@@ -231,18 +247,73 @@ _BASELINE: dict[str, _Entry] = {
         {"sdk litellm": 1},
         "routed_acompletion rebuilds the Router's reply as litellm's "
         "ModelResponse, the type the call sites already hold. It sends no "
-        "request",
+        "request [2449: no slice, no request]",
     ),
     "packages/acb_llm/acb_llm/model_limits.py": _Entry(
         {"sdk litellm": 1},
         "_litellm_info reads litellm's model_cost registry for token limits. "
-        "It sends no request",
+        "It sends no request [2449: no slice, no request]",
     ),
     "packages/acb_llm/acb_llm/key_store.py": _Entry(
         {"sdk litellm": 1},
         "configure_litellm loads the stored provider keys into litellm's "
         "module config, for the litellm calls that ROUTER_SERVING_ENABLED "
-        "turns off (H-171). It sends no request",
+        "turns off (H-171). It sends no request [2449 S3 and S7]",
+    ),
+    # ── 2449 S1 (2026-11-16): the GitHub Copilot SDK. D84 removes it, and
+    # ``test_no_copilot_sdk.py`` holds the same files. Each file that builds a
+    # Copilot agent or client hands it a BYOK provider that points at OUR
+    # gateway. A new file, or a client with no provider, goes to GitHub.
+    # Each row goes in 2449 S5, which removes every native Copilot session.
+    "agents.py": _Entry(
+        {
+            "sdk agent_framework_github_copilot": 1, "sdk copilot": 1,
+            "client GitHubCopilotAgent": 1,
+        },
+        "The root agents.py builds one GitHubCopilotAgent [2449 S5]",
+    ),
+    "apps/agents/agent-app-builder/agents.py": _Entry(
+        {"sdk agent_framework_github_copilot": 1, "client GitHubCopilotAgent": 1},
+        "build_agent builds a GitHubCopilotAgent with the gateway as its "
+        "BYOK provider [2449 S5]",
+    ),
+    "apps/agents/agent-task-manager/agents.py": _Entry(
+        {"sdk agent_framework_github_copilot": 1, "client GitHubCopilotAgent": 1},
+        "build_agent builds a GitHubCopilotAgent with the gateway as its "
+        "BYOK provider [2449 S5]",
+    ),
+    "apps/services/orchestrator/mutation_runner.py": _Entry(
+        {"sdk copilot": 2, "client CopilotClient": 1},
+        "The mutation runner opens a native Copilot session [2449 S5]",
+    ),
+    "apps/services/orchestrator/orchestrator/_copilot_session.py": _Entry(
+        {"sdk copilot": 3},
+        "Session helpers import the Copilot SDK types and set the per-run "
+        "headers [2449 S5]",
+    ),
+    "apps/services/orchestrator/orchestrator/copilot_agent.py": _Entry(
+        {
+            "sdk agent_framework_github_copilot": 2, "sdk copilot": 2,
+            "client CopilotClient": 2,
+        },
+        "The native Copilot agent of the orchestrator [2449 S5]",
+    ),
+    "apps/services/orchestrator/orchestrator/executor.py": _Entry(
+        {"sdk copilot": 2, "client CopilotClient": 1},
+        "The executor builds one CopilotClient for the native path [2449 S5]",
+    ),
+    "packages/acb_skills/acb_skills/permission_policy.py": _Entry(
+        {"sdk copilot": 6},
+        "Imports the Copilot permission types for the risk-aware handler. It "
+        "sends no request [2449 S5]",
+    ),
+    # ── Jina Reader is no model call. It sends the URL of a member to a third
+    # party, and only for an org of WEB_READER_REMOTE=jina, an owner-only flag
+    # (WEB-Q3). It stays on the list so a second host cannot join it unseen.
+    "packages/acb_skills/acb_skills/web_tools.py": _Entry(
+        {"host r.jina.ai": 1},
+        "The Jina Reader fallback of the page reader. Not a model call, and "
+        "owner-only (WEB-Q3) [2449: no slice]",
     ),
 }
 
@@ -609,6 +680,18 @@ def test_the_seam_cannot_reach_a_vendor_by_default() -> None:
         ("WS = 'wss://streaming.assemblyai.com/v3'\n", "host assemblyai.com"),
         ("c = OpenAIChatCompletionClient(model='tier-balanced')\n",
          "maf client OpenAIChatCompletionClient with no address"),
+        # 2449 S1: GitHub Copilot, and Jina Reader. Mutation: take the name out
+        # of its list, and the row goes red.
+        ("from agent_framework_github_copilot import GitHubCopilotAgent\n",
+         "sdk agent_framework_github_copilot"),
+        ("a = GitHubCopilotAgent(instructions=i)\n", "client GitHubCopilotAgent"),
+        ("from copilot import CopilotClient\n", "sdk copilot"),
+        ("import copilot.types\n", "sdk copilot"),
+        ("c = CopilotClient(options)\n", "client CopilotClient"),
+        ("from copilot import CopilotClient as K\nc = K()\n", "client CopilotClient"),
+        ("BASE = 'https://api.githubcopilot.com/chat'\n", "host githubcopilot.com"),
+        ("u = 'https://api.individual.githubcopilot.com/x'\n", "host githubcopilot.com"),
+        ("JINA = 'https://r.jina.ai/'\n", "host r.jina.ai"),
     ],
 )
 def test_the_finder_catches_a_direct_call(source: str, label: str) -> None:
@@ -631,6 +714,10 @@ def test_the_finder_catches_a_direct_call(source: str, label: str) -> None:
         "from google import auth\nfrom google.cloud import storage\n",
         "from agent_framework import ChatAgent\n",
         "import openai_compat_shim\nimport litellm_helpers\n",
+        # 2449 S1: the Notes copilot is a product name, not the Copilot SDK.
+        "from gateway.routes.notes import copilot\nfrom .copilot import router\n",
+        "import copilot_agenda\nlabel = 'github_copilot'\n",
+        "# GitHubCopilotAgent at api.githubcopilot.com\n",
     ],
 )
 def test_the_finder_ignores_text_and_routed_calls(source: str) -> None:

@@ -5,6 +5,9 @@
  * owner 2026-10-12): a search, one list newest first with each chat's age,
  * and the archived chats folded under their count. A row opens its chat. On
  * hover a row renames and archives, and an archived row restores or deletes.
+ * With the pin switch on (CO-11), a row also pins, and the pinned chats come
+ * first under "Pinned". With the topic switch on (CO-2b), the chats of each
+ * topic come next, under the name of the topic.
  *
  * One component, in four places: a column of the assistant's full view, a
  * dropdown of its side panel, its whole sheet on a phone, and the chat list
@@ -15,7 +18,7 @@
  * holds the owner's acts.
  */
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
 import SessionRunDot from "@/components/SessionRunDot";
@@ -24,7 +27,7 @@ import { Input } from "@/components/ui/Input";
 import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
 import type { ChatSession } from "@/lib/sessions";
 
-import { dateGroups, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
+import { BRIEFS_GROUP, type BriefsOpenState, foldBriefs, isPinned, nextBriefsOpen, relativeAge, sessionTitle, splitSessions, topicGroups } from "./chatHistory";
 
 // ── The session picker ───────────────────────────────────────────────────────
 
@@ -37,6 +40,7 @@ function SessionRow({
   unread,
   onSelect,
   onRename,
+  onPin,
   onArchive,
   onRestore,
   onRemove,
@@ -48,6 +52,8 @@ function SessionRow({
   unread: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
+  /** CO-11: pin or unpin the chat for this member. Absent: no pin act. */
+  onPin?: (pinned: boolean) => void;
   onArchive?: () => void;
   onRestore?: () => void;
   onRemove?: () => void;
@@ -55,6 +61,8 @@ function SessionRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const title = sessionTitle(session);
+  // Rename is the owner's. Archive, restore and delete come as props.
+  const hasActions = session.isOwner !== false || Boolean(onArchive || onRestore || onRemove || onPin);
   if (editing) {
     return (
       <li className="px-1 py-0.5">
@@ -89,26 +97,43 @@ function SessionRow({
     );
   }
   return (
-    <li className="group relative" data-session-row={session.id}>
+    <li
+      className={`group relative flex items-center rounded-md glass:rounded-[10px] ${
+        on ? "bg-primary/10 glass:bg-sidebar-accent" : "hover:bg-secondary has-[:focus-visible]:bg-secondary"
+      }`}
+      data-session-row={session.id}
+      data-has-actions={hasActions ? "" : undefined}
+    >
       <Button
         variant="ghost"
         size="none"
         layout="flex items-center"
         onClick={onSelect}
         aria-current={on ? "true" : undefined}
-        className={`w-full gap-2 rounded-md px-2 py-1.5 text-left text-sm glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-label ${
-          on ? "bg-primary/10 text-primary glass:bg-sidebar-accent glass:text-foreground" : ""
+        className={`min-w-0 flex-1 gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-transparent! glass:rounded-[10px] glass:px-3 glass:py-2 glass:text-label ${
+          on ? "text-primary glass:text-foreground" : ""
         }`}
       >
         {/* A dot only when it says something: a live run or an unread
             reply (CO-0). A grey dot on every row said nothing. */}
         <span className={`min-w-0 flex-1 truncate ${on ? "font-medium" : ""}`}>{title}</span>
-        <SessionRunDot running={running} unread={unread} />
-        <span className="shrink-0 text-[11px] text-muted-foreground group-hover:invisible group-focus-within:invisible glass:text-caption">
-          {relativeAge(session.updatedAt, now)}
+        {/* The dot and the age give their place to the row's acts on hover
+            and on keyboard focus (`rail-row-meta`), so nothing is covered. */}
+        <span className="rail-row-meta flex shrink-0 items-center gap-2">
+          <SessionRunDot running={running} unread={unread} />
+          <span className="text-[11px] text-muted-foreground glass:text-caption">
+            {relativeAge(session.updatedAt, now)}
+          </span>
         </span>
       </Button>
-      <span className="reveal-on-hover absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+      {/* The acts are IN the row, after the title, and take no width at rest
+          (`rail-row-actions`). On hover the title gives up exactly their
+          width, for two icons or for more. Add an act as one more Button
+          here, never an offset. Fence: `sessionPickerStrip.test.ts`. */}
+      <span
+        data-session-acts=""
+        className={`reveal-on-hover rail-row-actions flex shrink-0 items-center gap-0.5 ${hasActions ? "" : "hidden"}`}
+      >
         {/* A room's name is its owner's to change: every member sees it. */}
         {session.isOwner !== false ? (
           <Button
@@ -122,6 +147,15 @@ function SessionRow({
               setEditing(true);
             }}
           />
+        ) : null}
+        {/* A pin is the member's own (CO-11), so each member who can read
+            the chat sees the act, a room's guest too. */}
+        {onPin ? (
+          isPinned(session) ? (
+            <Button variant="ghost" size="icon-xs" icon="PinOff" aria-label={`Unpin ${title}`} title="Unpin" onClick={() => onPin(false)} />
+          ) : (
+            <Button variant="ghost" size="icon-xs" icon="Pin" aria-label={`Pin ${title}`} title="Pin to the top" onClick={() => onPin(true)} />
+          )
         ) : null}
         {onArchive ? (
           <Button variant="ghost" size="icon-xs" icon="Archive" aria-label={`Archive ${title}`} title="Archive" onClick={onArchive} />
@@ -150,7 +184,8 @@ function SessionRow({
  * The member's chats, as Claude Code lists sessions in an editor (owner,
  * 2026-10-12): a search, one list newest first with each chat's age, and the
  * archived chats folded under their count. A row opens its chat. On hover a
- * row renames and archives, and an archived row restores or deletes.
+ * row renames and archives, and an archived row restores or deletes. With
+ * `pinsOn` and `onPin` (CO-11), a row pins too, and "Pinned" comes first.
  *
  * Four places: a column of the full view, a dropdown of the side panel, the
  * whole sheet on a phone, and the chat list of the Artifacts app (`list`).
@@ -162,6 +197,9 @@ export function SessionPicker({
   onRename,
   onArchive,
   onRemove,
+  onPin,
+  pinsOn = false,
+  topicsOn = false,
   variant,
   autoFocus = false,
 }: {
@@ -171,6 +209,12 @@ export function SessionPicker({
   onRename: (id: string, title: string) => void;
   onArchive: (id: string, archived: boolean) => void;
   onRemove: (id: string) => void;
+  /** CO-11: pin or unpin a chat. A list with no `onPin` shows no pin act. */
+  onPin?: (id: string, pinned: boolean) => void;
+  /** CO-11: the shell read says `chat_pin: true` (`useChatPinOn`). */
+  pinsOn?: boolean;
+  /** CO-2b: the shell read says `chat_topics: true` (`useChatTopicsOn`). */
+  topicsOn?: boolean;
   variant: "column" | "dropdown" | "sheet" | "list";
   autoFocus?: boolean;
 }) {
@@ -180,6 +224,19 @@ export function SessionPicker({
   const unread = useUnreadIds();
   const [now] = useState(() => Date.now());
   const lists = useMemo(() => splitSessions(sessions, query, activeId), [sessions, query, activeId]);
+  // Daily briefs fold into one closed group at the end (task 3564). A search
+  // shows one flat list, so there the briefs stay in it.
+  const folded = useMemo(
+    () => (query ? { main: lists.open, briefs: [] as ChatSession[] } : foldBriefs(lists.open)),
+    [lists.open, query],
+  );
+  // The group opens when the chat on screen is a folded brief, whether the
+  // list loads late or the member moves into one. The member may close it.
+  const [briefsState, setBriefsState] = useState<BriefsOpenState>({ open: false, handled: null });
+  const nextBriefs = nextBriefsOpen(briefsState, activeId, folded.briefs.map((s) => s.id));
+  if (nextBriefs !== briefsState) setBriefsState(nextBriefs);
+  const showBriefs = nextBriefs.open;
+  const briefsListId = useId();
   const row = (s: ChatSession, archived: boolean) => (
     <SessionRow
       key={s.id}
@@ -190,6 +247,8 @@ export function SessionPicker({
       unread={unread.has(s.id)}
       onSelect={() => onSelect(s.id)}
       onRename={(t) => onRename(s.id, t)}
+      // CO-11: an archived chat is not pinned, so it offers no pin.
+      onPin={pinsOn && onPin && !archived ? (pinned) => onPin(s.id, pinned) : undefined}
       // Archive, restore and delete are the owner's: the server refuses
       // anybody else (`_MAY_DELETE_SQL`), so nobody else sees the buttons.
       onArchive={archived || s.isOwner === false ? undefined : () => onArchive(s.id, true)}
@@ -223,23 +282,53 @@ export function SessionPicker({
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
-        {lists.open.length === 0 ? (
+        {folded.main.length === 0 && folded.briefs.length === 0 ? (
           <p className="px-3 py-3 text-xs text-muted-foreground glass:text-footnote">
             {query ? "No chat matches." : "Your chats will show here."}
           </p>
         ) : (
           query ? (
-            <ul className="flex flex-col gap-0.5">{lists.open.map((s) => row(s, false))}</ul>
+            <ul className="flex flex-col gap-0.5">{folded.main.map((s) => row(s, false))}</ul>
           ) : (
-            // By day, newest first (CO-0). A search shows one list.
-            dateGroups(lists.open, now).map((g) => (
-              <section key={g.label} aria-label={g.label} data-chat-group={g.label} className="mb-1">
+            // By day, newest first (CO-0), with the pinned chats first
+            // (CO-11), then a group for each topic (CO-2b). A search shows
+            // one list. A topic group keys on its id, never its name.
+            topicGroups(folded.main, now, topicsOn, pinsOn && Boolean(onPin)).map((g) => (
+              <section
+                key={g.topicId ? `topic:${g.topicId}` : g.label}
+                aria-label={g.label}
+                data-chat-group={g.label}
+                data-chat-topic={g.topicId}
+                className="mb-1"
+              >
                 <h3 className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground glass:px-3 glass:text-caption">{g.label}</h3>
                 <ul className="flex flex-col gap-0.5">{g.items.map((s) => row(s, false))}</ul>
               </section>
             ))
           )
         )}
+        {folded.briefs.length > 0 ? (
+          <div className="mt-1 border-t border-border pt-1" data-chat-group={BRIEFS_GROUP}>
+            <Button
+              variant="ghost"
+              size="none"
+              layout="flex items-center"
+              onClick={() => setBriefsState((st) => ({ ...st, open: !st.open }))}
+              aria-expanded={showBriefs}
+              aria-controls={briefsListId}
+              className="w-full gap-2 rounded-md px-2 py-1.5 text-left text-xs"
+            >
+              <Icon name={showBriefs ? "ChevronDown" : "ChevronRight"} size={14} />
+              <span className="flex-1">{BRIEFS_GROUP}</span>
+              <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+                {folded.briefs.length}
+              </span>
+            </Button>
+            {showBriefs ? (
+              <ul id={briefsListId} className="flex flex-col gap-0.5">{folded.briefs.map((s) => row(s, false))}</ul>
+            ) : null}
+          </div>
+        ) : null}
         {lists.archived.length > 0 ? (
           <div className="mt-1 border-t border-border pt-1">
             <Button

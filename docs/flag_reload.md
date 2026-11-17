@@ -33,6 +33,17 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_FOCUS_ORGS` turns on the item in focus of a chat
+(`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
+the email or the Projects task that a tool call read or acted on last. The
+per-turn context then shows its kind, its id and its link, with the rule for
+"it", "this" and "mark it done". `*` lists every org, and the default is
+empty. Empty gives each prompt of before, byte for byte.
+
+Its one reader is `acb_skills.chat_focus.focus_on`. The executor asks it at
+the start of each turn, and each write and each block ask it again. So a
+reload applies to the next turn. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.
@@ -40,6 +51,18 @@ Approve of a parked plain card approves the same card once in the next run.
 `acb_skills.late_approve.late_approve_on`, and the park, the late answer and
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
+
+`CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
+CO-11). For each listed org, a member may pin a chat, and the chat list shows a
+Pinned group. `*` lists every org, and the default is empty. Empty means the
+list sends no pin key, and PUT and DELETE `/chat/sessions/{id}/pin` answer
+404.
+
+Its one reader is `gateway.chat_session_member.pin_allowed`. The chat list,
+the pin routes and `GET /auth/me/shell` ask it on each call. The shell read
+gives the answer to the client as `chat_pin`. So a tab shows a change at its
+next shell read. A reload applies a change. The flip stays OWNER-GATE
+(`enforcement-flip`), after the owner preview.
 
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
@@ -59,10 +82,18 @@ once, in a new reply, with no member turn. `*` lists every org, and the
 default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
-a late Approve takes the path of before. The late-approve scope holds the
-SPENT mark that stops the stored call of a twin card from writing twice. No
-client reads the answer `resumed` before RESUME-3, so do not add an org to
-`CHAT_RESUME_ORGS` before RESUME-3 merges.
+a late Approve takes the path of before. The SPENT mark stops the stored call
+of a twin card from writing twice. Since task 3467, either flag writes that
+mark. No client reads the answer `resumed` before RESUME-3, so do not add an
+org to `CHAT_RESUME_ORGS` before RESUME-3 merges.
+
+⚠️ Keep this order for each org (`chat_run_continuity.md` §4.12.4 item 2).
+Put the org in `CHAT_LATE_APPROVE_ORGS` BEFORE you put it in
+`CHAT_RESUME_ORGS`. Remove the org from `CHAT_LATE_APPROVE_ORGS` only
+`chat_ask_ttl_hours` (168 h by default) after you remove it from
+`CHAT_RESUME_ORGS`. A box that runs code from before task 3467 writes the mark
+only under `CHAT_LATE_APPROVE_ORGS`. Without the order, an old card can then
+write its act a second time.
 
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
 it at each card, and the injection asks it at the start of each run. The late
@@ -78,6 +109,39 @@ default is empty. Its one reader is `acb_skills.run_phase.run_phase_on`. The
 executor asks it once, right after `RUN_STARTED`, so a reload applies to the
 next run. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_SEARCH_ORGS` opens the past chats of `search_company`
+(`find_engine.md` §3.1 rung 6, §6, HRD-21). For each listed org, the search
+reads the member's own solo chats with Mira, and never the current chat. `*`
+lists every org, and the default is empty. Empty gives the answer of before
+HRD-21, byte for byte. That includes the 422 of an unknown app: `apps=chat`
+gets it, and its list of keys has no `chat`.
+
+The search never shows a chat that holds the egress mark: the mark of an
+email-assistant run or another untrusted read. The SQL does not test the
+mark. `egress.marked_sessions` drops each marked chat after the read. So a
+chat that read mail with no mark can show (`find_engine.md` §6, limit 1).
+
+Its one reader is
+`gateway.retrieval.find.chat_search_named`, and each search asks it. A reload
+applies a change. The flip waits for the owner's preview (task 3225).
+
+`CHAT_TOPICS_ORGS` turns on the topics of the chat list
+(`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`
+lists the company topics and the member's own topics. A member makes a
+private topic, and an admin renames, hides or merges a company topic. `*`
+lists every org, and the default is empty. Empty means each topic route
+answers 404.
+
+Its one reader is `gateway.chat_topic.topics_allowed`, and each topic route
+asks it first. So a reload applies at the next request. The flip stays
+OWNER-GATE (`enforcement-flip`), after the owner preview.
+
+CO-2b adds three readers of the same flag. `PUT /chat/sessions/{id}/topic`
+moves a chat, and answers 404 with the org off. The chat list sends
+`topicId` and `topicName` only with the org on. `GET /auth/me/shell` gives
+the answer to the client as `chat_topics`, so a tab shows a change at its
+next shell read.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
@@ -86,12 +150,73 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
+(`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
+the default is `off`. The flag is global, but the check acts only for an org
+of `FIND_ORGS`, because pass 2 exists only there. It is not a `*_ORGS` or
+`*_MODES` key, so a reload does NOT apply it. Set the value, then restart
+`acb-gateway`. Its one reader is `acb_common.settings.find_claim_check_mode`.
+
+In `shadow`, the first answer of a run that says a record does not exist
+writes one `answer_check.claim` line. The outcome is `shadow_miss` when no
+`search_company` answer of the turn shows pass 2, and `shadow_pass` when one
+does. The line holds `mode`, `outcome`, `rule`, `searches`, `finds` and
+`armed`, and no text. `armed` is true when a `search_company` or
+`resolve_name` answer came before the claim, and false when only an app's
+search tool ran, or none.
+
+In `on`, the check holds an answer after the first result of any find tool
+in the turn, an app's search tool too. Then a claim with no pass 2 gets one
+more pass. That pass is the one retry of the run, which the number check of
+`CRM_ANSWER_CHECK` spends too. A claim before any find result is not held,
+and the line says `unheld_miss`. `shadow` is AGENT-SAFE, and `on` is an
+`enforcement-flip` after 7 days of shadow (D-FIND-8).
+
 `FIND_ORGS` turns on the new shape of a `search_company` hit
 (`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says
 how it matched (`matched_by`, `covers`, `of`), and the hit with the most of the
 query's words comes first. `*` lists every org, and the default is empty. Empty
 gives the answer of KR-ZERO, byte for byte. It acts only with `CONTEXT_RECENCY`
 on.
+
+The flag also opens the near spelling step of HRD-18b (`find_engine.md` §3.1
+rung 3). On a miss, the best hit holds fewer than all the words (§3.3). Then
+the search tries each word alone, and the near spelling of up to 3 words. The
+near names come from rows that the member can open.
+
+The flag also opens the related records of FIND-3 (`find_engine.md` §3.1
+rung 4). The search follows the links of its first 5 hits that are a deal,
+lead, contact, person or company. It shows at most 3 records for each hit,
+in the answer key `related`. Each record is one that the member can open.
+
+The flag also opens the honest zero, the explain mode and the log line of
+FIND-4 (`find_engine.md` §3.6, §3.7). The answer names why the search skipped
+each app. A zero answer adds at most 3 "Where else" lines from a closed list,
+and no line names a record. No line says that a record does not exist.
+
+`search_company(explain=true)` answers a trace of each step, with no record.
+Each search writes one `search.company.ladder` log line. It holds counts,
+times, `miss` and `explain`, and no word.
+
+The flag also opens the sender near spelling of `GET /email/messages`, for a
+caller that sends `near_sender`. Only `query_inbox` sends it. When
+`from_email` finds no mail, the tool tries the near spelling of the sender and
+names it. That part needs no `CONTEXT_RECENCY`.
+
+The flag also opens the chat tool `resolve_name` and its route
+`GET /search/names` (FIND-5, `find_engine.md` §5.2). The route gives each
+person, contact, lead, company and mail sender that holds one name. An org
+off the list gets 404. The orchestrator gives the tool only to an org on the
+list, so the tool list of each other org does not change. That part needs no
+`CONTEXT_RECENCY`. The next chat turn after a reload reads the change.
+
+The flag also opens the family of FIND-6 (`find_engine.md` §5.3, §5.4). Each
+find tool of the core list answers a failure as text, and that part needs no
+`CONTEXT_RECENCY`. Two parts act only with `CONTEXT_RECENCY` on, because the
+search runs its ladder only then. The persona ends its grounding paragraph
+with the standing rule. A zero of `search_crm`, `query_inbox` and
+`find_tasks` ends with a pointer to `search_company`. The next chat turn
+after a reload reads the change.
 
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
@@ -121,12 +246,36 @@ start. So set the same value in the env file of both units, reload
 `acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
+member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of
+the member, and it adds the affinity of each kind to the score. A needs card
+goes to Later at worst, and the bell does not change. `*` lists every org, and
+the default is empty. Empty gives the answer of before, byte for byte.
+
+The reach loop, the briefs and the chat brief read the same learned feed. So
+a kind that the member mutes leaves them too. A muted needs card in Later is
+no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect on
+reach.
+
+Its one reader is `gateway.routes.shell.state.learn_allowed`, and each feed
+read asks it. The read cache keys on the flag, so a flip misses at once. A
+reload applies a change. The flip is `enforcement-flip`, and it waits for the
+owner preview (D218).
+
 `PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
 also selects the orgs where the daily expiry tick may delete installs
 (PKG-10b). A reload that widens it to `*` widens the delete to every org at
 the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
+
+`PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
+edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
+`create_task` carries a form of its values, and the write takes the values
+that the member approved. `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
+gate ask it at each card, so a reload applies to the next card. A flip stays
+OWNER-GATE (`enforcement-flip`, EAC-7).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
@@ -136,8 +285,15 @@ org, and the default is empty. Its one reader is
 `gateway.routes.studio.flags.chat_tools_allowed`, and each catalog read asks
 it. The catalog also needs `STUDIO_ORGS`.
 
-A row runs nothing: a skill still loads only in a run that holds the tool. A
-reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+The flag also gates the skill load (TOF-1b). The run reads it once a turn,
+through `_tool_injection._chat_tools_open`. For an org that the flag leaves
+out, each skill with a `tool:` action fails to load with `chat_tools_off`. So
+an operator who removes an org stops every such skill of that org at the next
+turn. For a listed org, the skill brings the code pack of each such tool that
+the run base does not hold.
+
+A row runs nothing itself. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CONNECTION_GATE_ORGS` makes the `connections` of a Studio app bind
 (`ai_studio.md` §14 I1a). For each listed org, a missing connection makes the
@@ -195,6 +351,18 @@ member owns or has installed. `*` lists every org, and the default is empty.
 Its one reader is `gateway.routes.studio.flags.search_allowed`, and each search
 asks it. The source also needs `STUDIO_ORGS`. A reload applies a change, and
 the flip stays OWNER-GATE (`enforcement-flip`).
+
+`STUDIO_SKILL_OFFER_ORGS` opens the card "Save this as a skill?" in the chat
+(`ai_studio.md` §14 TOF-1d). For each listed org, a finished turn that passes
+the rule of the offer draws the card, and Save makes a private draft skill. `*`
+lists every org, and the default is empty. Empty means the chat draws no card
+and reads no catalog for it. Its one reader is
+`gateway.routes.studio.flags.skill_offer_allowed`, and each shell read asks it.
+`GET /auth/me/shell` serves the answer to the chat as `skill_offer`. The offer
+also needs `STUDIO_ORGS`, and it maps a chat tool to a catalog row only for an
+org on `STUDIO_CHAT_TOOLS_ORGS`. A reload applies a change, and a tab shows it
+at its next shell read. The flip stays OWNER-GATE (`enforcement-flip`), after
+the owner preview.
 
 `TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
 (`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`

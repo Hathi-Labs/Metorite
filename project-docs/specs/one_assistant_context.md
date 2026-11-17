@@ -864,6 +864,12 @@ ships dark behind `CHAT_CONSTRAINTS`, default off.
 - Fences: `tests/unit/test_chat_constraints.py` and
   `evals/trajectories/test_chat_constraints_trajectory.py`.
 - Open: the visible chip in the chat is a later slice.
+- HRD-12a (`chat_failure_modes.md` §6, 2026-11-16) adds the kind
+  `decision`, under the same flag. The store keeps a limit as a plain
+  string, the old shape, and only a decision as `{kind, text}`. So a reader
+  from before HRD-12a loses only the decisions. Decisions show on their own
+  line, after the limits, and they hold for the rest of the chat. A decision
+  is not a request, so the model does not act on it.
 
 **OA-3 is built and dark (2026-10-25).** The flag `ATTACHMENT_OCR` turns it
 on, and it is off by default. §4.1 records what was built, and the three
@@ -1300,7 +1306,7 @@ OA-5 did not measure this state, because tier routing was off in the eval (repor
 
 - **OA-1 (`acb_skills/handoff.py`).** A pack turn delegates nothing, so `head_task` heads nothing. The orchestrator reads the words of the member in its own history. `head_task` still heads each delegation that stays (`acb_skills/handoff.py:224-243`): unpacked apps, background calls and the children of OA-9.
 - **The reply rules of OA-2 (`acb_skills/handoff.py:61-72`).** In a pack turn, the orchestrator reads each source itself. So the pack rules carry the first-hand form (`evals/one_assistant_measure/pack.py:83-85`). "A file name is a label, not content. Say a fact that you did not read as a guess." OA-5 showed that the shape does not fix cause C2 (report `:188-209`). OA-3 fixes it.
-- **OA-4 (`acb_skills/chat_constraints.py`).** The kept corrections already show in the per-turn context of the orchestrator (`orchestrator/executor.py:9213-9219`). The two correction tools already belong to the orchestrator (`orchestrator/agents.py:1002-1007`). Nothing changes.
+- **OA-4 (`acb_skills/chat_constraints.py`).** The kept corrections already show in the per-turn context of the orchestrator (`orchestrator/executor.py:11581-11587`). The two correction tools already belong to the orchestrator (`orchestrator/agents.py:1199-1207`). Nothing changes.
 - **The tier question.** It still reads only the task (`orchestrator/executor.py:8862-8865`).
 
 #### 4.2.6 The rule against an unasked draft (OA-7g)
@@ -1584,6 +1590,7 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 5. **The room.** It makes room by the room rule below. With no room, it refuses and names the limit.
 6. **The add.** It calls `context.add_tools(subset)` (`agent_framework/_middleware.py:469-504`). The next request of the same run carries the full schemas.
 7. **The answer.** It gives one line for each found tool: its name and the first line of its description. Then it gives the rules block of each owning pack, once in a run (below). With no match, it says so and names `load_skill_tools`.
+   - (D225, 2026-11-15) SBX-1 extends the no-match answer. `find_tools` then also checks the library and the catalog actions, and writes a `tool_gaps` row (`agent_sandbox.md` §6.1). D187 planned that as a second tool, `find_tool`, and SBX-1 does not build it.
 
 **The rules block and the hold note go with the tools.** D117 item 2 makes a pack of its tools and a rules block, so a found tool needs both.
 - Today the rules block reaches the model on three paths. `persona_for` adds it for each pack in `loaded` (`tool_packs.py:2543`, `:2609`). The `LOADED` answer of `load_skill_tools` carries it (`:2936`, `:3670`). Layer (c) puts it in the instructions of the turn (`load_early`, `:3596-3598`, the text at `:3630`).
@@ -2100,6 +2107,8 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
     - Stop result 12 counts the full app set, not only the Studio chats. This is the rule, and it is no fifth condition.
     A switch needs this result AND the owner. The owner may change any number.
 13. **The place of `find_tools`. "Always, in the base set" (2026-11-14, task 3190).** The run offers it on every turn where the flag is on for the org, and it counts against the base tools. At the cap of 110 tools, the base count can push out the last pack. The owner accepted that trade.
+
+**The skill description match (TOF-1c, `ai_studio_rows/TOF-1c.md`).** `tool_search.match_skill_descriptions` reads a separate corpus: the head descriptions of the Studio skills that the member may load. It uses that text for scores only, so decision 6 still holds for the index. The owner accepted this corpus on 2026-11-16 (task 3412). `rank`, `build_index` and `default_index` never read the text, and only a skill id and a hit count leave the function. Its one caller is `_tool_injection._turn_with_skills`, when no skill name matches and `STUDIO_CHAT_TOOLS_ORGS` names the org. `TOOL_SEARCH_ORGS` does not gate it, and `find_tools` never sees the text.
 
 ### 4.3 OA-8: every other app
 
@@ -3148,7 +3157,7 @@ separate HIGH design, and it is out of scope here.
 | Slice | What | Tier | Gate |
 |---|---|---|---|
 | WT-1 | 🔨 **BUILT, dark (2026-11-05, task 1684).** Migration 345 (`345_chat_session_continued_from.sql`) adds `continued_from`, with its foreign key NOT VALID. A later release validates it. Route `continue_session`, flag reader `continue_allowed`. Fences: `test_continue_carry.py` (R8), `test_continued_from_readers.py`. Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
-| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
+| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. Since 2026-11-17, slice HRD-14d of `chat_failure_modes.md` §4.7b owns the stored-mail match. | HIGH | AGENT-SAFE, dark |
 | WT-2 | 🔨 **BUILT, dark (2026-11-05, task 1686).** The tap: a `Continue in a fresh chat` pill. The server marks a held turn with the event `chat_continue_offer`. Only an org on `CHAT_CONTINUE_ORGS` gets it. The dock opens the new chat and fills the composer, and never sends. WT-1 fix: a failed room lookup answers 503. Fences: `test_continue_offer.py`, `chatContinue.test.ts`. | STANDARD | AGENT-SAFE, dark |
 | WT-3 | 🔨 **BUILT (2026-11-07, task 1687): no hold text says "new chat".** The `_CONTINUE` form of each `NO_WRITES` text names the pill "Continue in a fresh chat". `egress.py` takes that form only after `offer_continue()` sent the event of the pill. Else the plain form names the app and offers no tap. The persona hold note is built before the run queue exists, so it always takes the plain form. The `_CONTINUE` form reaches the model through a refused held write. Fences: `test_no_new_chat_copy.py`, `test_continue_offer.py`, `test_held_card_writes.py`. ⚠️ Before the WT-5 flip: only the dock draws the pill, so a member on `/chat` or an app rail reads a tap with no pill. | HIGH | AGENT-SAFE |
 | WT-4 | Topic change (not held): a suggestion chip, and a swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD | AGENT-SAFE |

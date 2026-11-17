@@ -137,6 +137,8 @@ const PURGE_LABELS: Record<string, string> = {
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
+  // WS-CO CO-11: the member's own row on a chat, the pin today.
+  chat_member_rows: "personal chat setting",
   private_chat_sessions: "private chat session",
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.

@@ -781,6 +781,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     _PersonRows("email_accounts", "email_accounts", MEMBER_MAILBOXES_WHERE),
     _PersonRows("whatsapp_accounts", "wa_accounts", "lower(user_id) = :email"),
     _PersonRows("task_accounts", "task_accounts", "lower(user_id) = :email"),
+    # WS-CO CO-11: the member's own rows of THIS organization on each chat,
+    # the pins today and the topic of CO-2 later. A row is the member's only,
+    # so it goes with the member, on a shared room too, where the room stays.
+    # The clause names the bound org beside RLS, as `reminders` does. It runs
+    # before `private_chat_sessions`, whose cascade would take only the rows
+    # on her private chats. So the count is each row of the member.
+    _PersonRows("chat_member_rows", "chat_session_member",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
@@ -914,6 +922,24 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     _PersonRows("connection_asks", "integration_attention",
                 "kind = 'ask' AND lower(member_email) = :email"
                 f" AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-2a (D163.2): the member's private topics of THIS organization.
+    # Only the owner reads a member topic, so a purged member leaves none
+    # behind. A company topic names no owner, so it stays. The clause names
+    # the bound org beside RLS, as `connection_asks` does. No table hangs off
+    # `chat_topic` in CO-2a.
+    _PersonRows("chat_topics", "chat_topic",
+                "scope = 'member' AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
+    # Task 3435 (chat_run_continuity.md §4.12.4 item 1): the chat cards that
+    # asked the member, in THIS organization. A row holds the card, the
+    # member's answer and, with RESUME, the arguments of a call. Only the
+    # member who was asked may answer a card, so a row waits on nothing after
+    # the member goes. The table has no key to `chat_session`, so the delete
+    # of the private chats above takes none of these rows. The clause names
+    # the bound org beside RLS, as `connection_asks` does. No table hangs off
+    # `chat_pending_ask`.
+    _PersonRows("chat_pending_asks", "chat_pending_ask",
+                f"lower(actor_email) = :email AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
