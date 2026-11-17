@@ -546,3 +546,28 @@ def test_every_chain_walk_in_main_passes_the_watch():
             kw = {k.arg: k.value for k in node.keywords}
             assert "watch" in kw and _is_watch(kw["watch"]), ast.unparse(node)
     assert walks >= 6 and streams >= 1, (walks, streams)
+
+
+def test_one_billing_400_shows_the_vendor_out_with_cause_payment():
+    """🔴 2026-11-17: Anthropic answered an empty account with a 400. The walk
+    now hands `on_refusal` the effective status, 402, and the panel says out."""
+    steps = [ResolvedTier(tier="t", model="anthropic/sonnet")]
+    msg = "Your credit balance is too low to access the Anthropic API."
+
+    class _Billing(Exception):
+        status_code = 400
+
+    async def attempt(step: ResolvedTier) -> Any:
+        raise _Billing(msg)
+
+    with pytest.raises(UpstreamFailed):
+        asyncio.run(
+            walk_chain(steps, attempt, None, lambda s, st: pb.note_refusal("anthropic", st, now=NOW))
+        )
+    rows = pb.drain_refusals()
+    assert [(r["provider"], r["status"]) for r in rows] == [("anthropic", 402)]
+    h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW},
+            recent_count_by_status={402: 1})
+    v = pb.assess(h, now=NOW)
+    assert (v.status, v.cause) == ("out", "payment")
+    assert msg not in repr(rows)

@@ -28,6 +28,8 @@ from customer_console.router import (
     ResolvedTier,
     UpstreamFailed,
     call_chain,
+    describe_failure,
+    effective_status,
     is_retryable,
     open_stream_chain,
     set_provider_call,
@@ -37,8 +39,8 @@ from customer_console.router import (
 class Upstream(Exception):
     """A provider error, shaped like the ones litellm raises."""
 
-    def __init__(self, status: int | None) -> None:
-        super().__init__(f"upstream {status}")
+    def __init__(self, status: int | None, message: str | None = None) -> None:
+        super().__init__(message or f"upstream {status}")
         if status is not None:
             self.status_code = status
 
@@ -58,7 +60,7 @@ def provider():
         seen.append(model)
         outcome = plan.get(model, {"ok": True})
         if not outcome.get("ok"):
-            raise Upstream(outcome.get("status"))
+            raise Upstream(outcome.get("status"), outcome.get("message"))
         return {"model": model, "answered": True}
 
     set_provider_call(_call)
@@ -212,6 +214,82 @@ class TestTheWalk:
         with pytest.raises(UpstreamFailed) as exc:
             walk([step("a/one")])
         assert "upstream 500" not in str(exc.value)
+
+
+CREDIT_MSG = (
+    "Your credit balance is too low to access the Anthropic API. "
+    "Please go to Plans & Billing to upgrade or purchase credits."
+)
+
+
+class TestABillingRefusalReadsAs402:
+    """🔴 2026-11-17: Anthropic answered an empty account with a 400."""
+
+    def test_a_billing_400_falls_over_and_the_backup_answers(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
+        response, served = walk([step("anthropic/a"), step("anthropic/b"), step("deepseek/c")])
+        assert seen == ["anthropic/a", "deepseek/c"]
+        assert served.model == "deepseek/c"
+        assert response["model"] == "deepseek/c"
+
+    def test_a_plain_400_still_stops_the_walk(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": "messages: field required"}
+        with pytest.raises(UpstreamFailed) as exc:
+            walk([step("anthropic/a"), step("deepseek/c")])
+        assert exc.value.status == 400
+        assert seen == ["anthropic/a"]
+
+    def test_a_bare_billing_word_in_a_400_does_not_count(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": "billing address is invalid"}
+        with pytest.raises(UpstreamFailed) as exc:
+            walk([step("anthropic/a"), step("deepseek/c")])
+        assert exc.value.status == 400
+        assert seen == ["anthropic/a"]
+
+    def test_the_failed_walk_carries_402_and_the_billing_hint_only(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
+        with pytest.raises(UpstreamFailed) as exc:
+            walk([step("anthropic/a")])
+        assert exc.value.status == 402
+        fields = describe_failure(exc.value)
+        assert fields["hints"] == "billing"
+        assert fields["upstream_status"] == 402
+        assert "credit balance" not in repr(fields).lower()
+        assert "credit balance" not in str(exc.value).lower()
+
+    def test_on_refusal_gets_402(self, provider):
+        plan, seen = provider
+        plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
+        got: list[Any] = []
+        asyncio.run(
+            call_chain(
+                [step("anthropic/a"), step("deepseek/c")],
+                lambda s: {"model": s.model},
+                None,
+                lambda s, st: got.append((s.model, st)),
+            )
+        )
+        assert got == [("anthropic/a", 402)]
+
+    @pytest.mark.parametrize(
+        ("status", "message", "want"),
+        [
+            (400, "Your credit balance is too low", 402),
+            (429, "You exceeded your current quota, please check your plan", 402),
+            (429, "insufficient_quota", 402),
+            (403, "Insufficient Balance", 402),
+            (429, "slow down", 429),
+            (500, "credit balance is too low", 500),
+            (402, "anything", 402),
+            (None, "credit balance is too low", None),
+        ],
+    )
+    def test_effective_status(self, status, message, want):
+        assert effective_status(Upstream(status, message)) == want
 
 
 class TestTheRecord:
