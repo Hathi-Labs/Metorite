@@ -385,6 +385,93 @@ async def test_the_aggregate_with_no_group_says_an_empty_field_has_no_values(
     assert out == "Invoices, sum of Total: no values recorded for Total."
 
 
+def _answering(monkeypatch, body: dict) -> None:
+    def answer(_call: dict) -> Any:
+        return body if _call["path"] == "/crm/aggregate" else []
+
+    monkeypatch.setattr(_T, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_kw: FakeClient([], answer)))
+    monkeypatch.setattr(_T, "_current_user_email", lambda: MEMBER)
+
+
+async def test_a_total_whose_filters_match_no_record_says_so(monkeypatch) -> None:
+    """CRM-Q34-3 item 1: records 0 with a filter is no match, never "no
+    values recorded". A field filter adds the exact-match line."""
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 0,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", measure="sum", field="Total",
+                                 field_filters={"Client": "Acme"})
+    assert out == ("Invoices, sum of Total: No record matches these filters.\n"
+                   f"{_T.EXACT_FILTER_LINE}\n"
+                   "Filters: Client is Acme.")
+    assert "no values recorded" not in out and "0 of 0" not in out
+
+
+async def test_a_range_with_no_match_has_no_exact_match_line(monkeypatch) -> None:
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "count", "groups": [],
+                             "total": 0, "records": 0})
+    out = await _T.crm_aggregate("module:Invoices", field_filters={
+        "Invoice_Date.from": "2026-10-01", "Invoice_Date.to": "2026-10-31"})
+    assert out == ("Invoices, count: No record matches these filters.\n"
+                   "Filters: Invoice_Date from 2026-10-01 to 2026-10-31.")
+
+
+async def test_a_grouped_total_whose_filters_match_no_record_says_so(monkeypatch) -> None:
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 0, "omitted": 0,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", group_by="owner", measure="sum",
+                                 field="Total", field_filters={"Client": "Acme"})
+    assert out == ("Invoices, sum of Total by owner: No record matches these filters.\n"
+                   f"{_T.EXACT_FILTER_LINE}\n"
+                   "Filters: Client is Acme.")
+    assert "no values recorded" not in out
+
+
+async def test_records_with_an_empty_field_still_say_no_values(monkeypatch) -> None:
+    """The filters matched records, and the field is empty in each."""
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 4,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", measure="sum", field="Total",
+                                 field_filters={"Client": "Acme"})
+    assert out.startswith("Invoices, sum of Total: no values recorded for Total.")
+    assert _T.NO_MATCH_LINE not in out
+
+
+async def test_a_total_with_no_filter_keeps_its_old_text(monkeypatch) -> None:
+    """With no filter, records 0 means the module is empty: no filter is the
+    cause, so the text is the text of before."""
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 0,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", measure="sum", field="Total")
+    assert out == "Invoices, sum of Total: no values recorded for Total."
+
+
+async def test_status_on_a_module_names_the_status_field_filter(monkeypatch) -> None:
+    """CRM-Q34-3 item 3: the client refusal names the step that works, in
+    the words of the overlay sentence, and reads no gateway."""
+    calls: list[dict] = []
+    monkeypatch.setattr(_T, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_kw: FakeClient(calls, lambda _c: {})))
+    monkeypatch.setattr(_T, "_current_user_email", lambda: MEMBER)
+    out = await _T.crm_aggregate("module:Invoices", status="Paid")
+    assert out.startswith("Refused:")
+    assert ("To filter by status, call crm_aggregate with entity 'module:Invoices' "
+            "and field_filters {'@status': 'Paid'}.") in out
+    assert "Drop the status filter" not in out
+    assert calls == []
+
+
+def test_the_docstring_names_a_number_range() -> None:
+    """CRM-Q34-3 item 5: a number field takes a range, as a date does."""
+    doc = " ".join((_T.crm_aggregate.__doc__ or "").split())
+    assert "{'key.from': N, 'key.to': M} for a number field" in doc
+    assert "text such as 'NA' counts as no value" in doc
+
+
 def test_the_docstring_says_the_group_is_optional() -> None:
     """The model reads the docstring. It must not say "Give group_by or
     group_field" as a rule any more."""
@@ -433,7 +520,7 @@ def test_a_422_of_the_field_scope_names_the_choices() -> None:
         exc.value.detail["message"])
     with pytest.raises(HTTPException) as exc:
         fs.module_where(scope, "Invoices", [("Circle.from", "2026-10-01")], zone="UTC")
-    assert "date fields of module:Invoices are: Invoice_Date" in exc.value.detail["message"]
+    assert "date and number fields of module:Invoices are: Invoice_Date" in exc.value.detail["message"]
 
 
 def test_the_choices_are_capped() -> None:
