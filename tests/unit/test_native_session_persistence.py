@@ -2160,13 +2160,6 @@ def test_r8_the_probe_through_the_real_executor_and_the_real_fold(
     assert len(rows) == 1 and _MEMORY not in json.dumps(rows[0][2])
 
 
-@_DB_GATE
-def test_r8_an_unread_steer_drops_the_session(graph_as_app, store_log) -> None:
-    """Task 3640, R8: the run saved its session, the steer row (marked ``steered``) came back
-    unread, and ``mark_stale`` ran as ``steer.return_unconsumed`` calls it. The next turn drops
-    with the reason ``resume_stale`` instead of hitting a session that lacks the steer."""
-
-
 # ── 13. Task 2948: a mid-run steer never drops the session ──────────────────
 
 _STEER = "also check the archive folder"
@@ -2228,19 +2221,6 @@ def test_r8_a_steered_run_then_hits_and_holds_the_steer_once(graph_as_app, store
     _chat(org, tid)
     _user_row(org, tid, _PROPOSE)
     turn = _begin(tid, _PROPOSE, org=org)
-    steer_row = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
-                              timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
-    assert _upsert_messages(tid, [steer_row], actor_email=_ALICE, organization_id=org) == []
-    _answer(turn, _PROPOSE, _ASK)  # the run never read the steer
-    assert _finish(turn) == "saved"
-    _agent_row(org, tid, _ASK)
-    assert asyncio.run(store.mark_stale(organization_id=org, thread_id=tid)) == "marked"
-    _user_row(org, tid, "yes")
-    nxt = _begin(tid, "yes", org=org)
-    assert not nxt.loaded and nxt.outcome == "digest_drop"
-    assert store_log.named("native_session.load")[-1]["reason"] == "resume_stale"
-
-
     # The member steers while the run works: the gateway saves the steer as a user row.
     steer = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
                           timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
@@ -2258,3 +2238,29 @@ def test_r8_a_steered_run_then_hits_and_holds_the_steer_once(graph_as_app, store
     assert nxt.loaded and store_log.outcomes()[-1] == "hit", store_log.outcomes()
     texts = [m.text for m in nxt.session.state[store.HISTORY_SOURCE_ID]["messages"]]
     assert texts.count(_STEER) == 1 and texts == [_PROPOSE, _STEER, _ASK]
+
+
+@_DB_GATE
+def test_r8_an_unread_steer_drops_the_session(graph_as_app, store_log) -> None:
+    """Task 3640, R8: the run saved its session, the steer row (marked ``steered``) came back
+    unread, and ``mark_stale`` ran as ``steer.return_unconsumed`` calls it. The next turn drops
+    with the reason ``resume_stale`` instead of hitting a session that lacks the steer."""
+    import uuid
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    steer_row = MessageRecord(id=f"s-{uuid.uuid4().hex[:10]}", role="user", content=_STEER,
+                              timestamp=_tick(), custom_events=[{"name": "steered", "value": {}}])
+    assert _upsert_messages(tid, [steer_row], actor_email=_ALICE, organization_id=org) == []
+    _answer(turn, _PROPOSE, _ASK)  # the run never read the steer
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, _ASK)
+    assert asyncio.run(store.mark_stale(organization_id=org, thread_id=tid)) == "marked"
+    _user_row(org, tid, "yes")
+    nxt = _begin(tid, "yes", org=org)
+    assert not nxt.loaded and nxt.outcome == "digest_drop"
+    assert store_log.named("native_session.load")[-1]["reason"] == "resume_stale"
