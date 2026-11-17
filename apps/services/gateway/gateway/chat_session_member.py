@@ -56,6 +56,10 @@ The topic of a chat (CO-2b, D163):
 * **The read sends a topic that shows.** :func:`topics_of_chats` gives the
   caller's own topic of each chat, and only a topic of
   ``chat_topic.list_topics``: a hidden company topic reads as no topic.
+* **An archived chat takes no topic, as it takes no pin.** The move and the
+  pass select no archived chat, and the route answers 409. The read sends no
+  topic for an archived chat. The archive writes no row, so a restore shows
+  the topic again.
 * **The switch.** ``CHAT_TOPICS_ORGS``, read by ``chat_topic.topics_allowed``.
 """
 
@@ -212,22 +216,24 @@ class TopicMove:
     ``kept``: the pass found a move of the member, and changed nothing.
     ``no_topic``: the member may not use the topic, or a merge took it away.
     ``missing``: the member cannot read the chat, or it does not exist.
-    Nothing changed for ``kept``, ``no_topic`` and ``missing``.
+    ``archived``: the chat is archived. A topic waits for a restore, as a pin
+    does (CO-11). Nothing changed for each state but ``set``.
     """
 
-    state: Literal["set", "kept", "no_topic", "missing"]
+    state: Literal["set", "kept", "no_topic", "missing", "archived"]
     topic: Topic | None = None
 
 
 #: The move of a member. One statement: it selects the chat under the bound
-#: tenant and the visibility rule, as the pin does. A chat that the member
-#: cannot read gives no row. The member's choice wins over each earlier value,
-#: "No topic" too.
+#: tenant and the visibility rule, as the pin does, and never an archived chat
+#: (the pin rule of CO-11). A chat that the member cannot read gives no row.
+#: The member's choice wins over each earlier value, "No topic" too.
 _SET_TOPIC_SQL = f"""
 INSERT INTO {TABLE} (session_id, member_email, topic_id, set_by)
 SELECT s.id, :member, CAST(:topic AS uuid), 'member'
   FROM chat_session s
  WHERE s.id = :id
+   AND s.archived_at IS NULL
    AND {SESSION_VISIBLE_SQL}
 ON CONFLICT (session_id, member_email)
 DO UPDATE SET topic_id = EXCLUDED.topic_id, set_by = 'member'
@@ -237,12 +243,14 @@ RETURNING set_by
 #: The topic of the automatic pass (CO-1). It fills a row that is missing, a
 #: pin row with no topic (``set_by`` NULL) and a row of the pass. It never
 #: writes over a move of the member (D163): the WHERE of the DO UPDATE leaves
-#: that row as it is, and the statement returns no row.
+#: that row as it is, and the statement returns no row. It files no archived
+#: chat, as the move does.
 _SET_AUTO_SQL = f"""
 INSERT INTO {TABLE} (session_id, member_email, topic_id, set_by)
 SELECT s.id, :member, CAST(:topic AS uuid), 'auto'
   FROM chat_session s
  WHERE s.id = :id
+   AND s.archived_at IS NULL
    AND {SESSION_VISIBLE_SQL}
 ON CONFLICT (session_id, member_email)
 DO UPDATE SET topic_id = EXCLUDED.topic_id, set_by = 'auto'
@@ -284,7 +292,7 @@ def set_topic(s: Any, session_id: str, *, viewer: str, topic_id: str | None) -> 
     The topic comes first, and it is locked until the commit
     (``chat_topic.topic_for_chat``). A colleague's topic, a hidden company
     topic and an unknown id give ``no_topic``. Then the row: a chat that the
-    member cannot read gives ``missing``.
+    member cannot read gives ``missing``, and an archived chat ``archived``.
     """
     from sqlalchemy import text
 
@@ -296,8 +304,17 @@ def set_topic(s: Any, session_id: str, *, viewer: str, topic_id: str | None) -> 
     params = {"id": session_id, "uid": viewer, "member": member_key(viewer),
               "topic": topic.id if topic is not None else None}
     if s.execute(text(_SET_TOPIC_SQL), params).first() is None:
-        return TopicMove("missing")
+        return TopicMove(_why_not(s, params))
     return TopicMove("set", topic)
+
+
+def _why_not(s: Any, params: dict[str, Any]) -> Literal["missing", "archived"]:
+    """Why a write selected no chat: the member cannot read it, or it is
+    archived. The same read as the pin (:data:`_VISIBLE_SQL`)."""
+    from sqlalchemy import text
+
+    seen = s.execute(text(_VISIBLE_SQL), params).first()
+    return "missing" if seen is None else "archived"
 
 
 def clear_topic(s: Any, session_id: str, *, viewer: str) -> TopicMove:
@@ -328,8 +345,11 @@ def set_auto_topic(s: Any, session_id: str, *, member: str, topic_id: str) -> To
     params = {"id": session_id, "uid": member, "member": member_key(member), "topic": topic.id}
     if s.execute(text(_SET_AUTO_SQL), params).first() is not None:
         return TopicMove("set", topic)
-    if s.execute(text(_VISIBLE_SQL), params).first() is None:
+    seen = s.execute(text(_VISIBLE_SQL), params).first()
+    if seen is None:
         return TopicMove("missing")
+    if seen.archived_at is not None:
+        return TopicMove("archived")
     return TopicMove("kept")
 
 
@@ -370,7 +390,13 @@ def topics_of_chats(s: Any, session_ids: Iterable[str], member: str) -> dict[str
     return {sid: shown[tid] for sid, tid in ids.items() if tid in shown}
 
 
-def topic_fields(topic: Topic | None) -> dict[str, Any]:
-    """The topic keys of one row of the chat list. No owner and no scope."""
-    return {"topicId": topic.id if topic is not None else None,
-            "topicName": topic.name if topic is not None else None}
+def topic_fields(topic: Topic | None, *, archived: bool = False) -> dict[str, Any]:
+    """The topic keys of one row of the chat list. No owner and no scope.
+
+    An archived chat reads as no topic, as it reads as not pinned
+    (:func:`pin_fields`). The archive writes no row, so a restore shows the
+    topic again.
+    """
+    on = topic is not None and not archived
+    return {"topicId": topic.id if on and topic else None,
+            "topicName": topic.name if on and topic else None}

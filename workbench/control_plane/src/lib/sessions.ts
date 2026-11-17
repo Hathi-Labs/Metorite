@@ -908,27 +908,40 @@ export interface SessionTopic {
   name: string;
 }
 
+/** The newest move of each chat, so an undo never takes back a later move. */
+const topicMoveTurn = new Map<string, number>();
+
 /**
  * The member moves a chat into a topic, or to "No topic" with null (CO-2b,
  * `chat_organization.md` §6). The topic is the member's own, on the server,
  * so it shows on each device, and the automatic pass never moves it back.
  * The list draws the move at once. The server answers with its own name of
  * the topic, and the list takes it. A refusal (404 for a topic or a chat the
- * member may not use) puts the old topic back, and `onUndo` runs so the list
- * draws again. Returns whether the mark changed here.
+ * member may not use, 409 for an archived chat, 503) or a lost connection
+ * puts the old topic back, and `onUndo` runs so the caller draws again and
+ * says why. Returns whether the mark changed here.
+ *
+ * ⚠️ The undo of a move restores only its own mark (verifier P3-8). A later
+ * move of the same chat wins: an earlier move that fails after it changes
+ * nothing, and `onUndo` does not run.
  */
 export function setSessionTopic(id: string, topic: SessionTopic | null, onUndo?: () => void): boolean {
   const sessions = getSessions();
   const s = sessions.find((x) => x.id === id);
   if (!s || (s.topicId ?? null) === (topic?.id ?? null)) return false;
   const before = { topicId: s.topicId ?? null, topicName: s.topicName ?? null };
-  s.topicId = topic?.id ?? null;
+  const mark = topic?.id ?? null;
+  const turn = (topicMoveTurn.get(id) ?? 0) + 1;
+  topicMoveTurn.set(id, turn);
+  s.topicId = mark;
   s.topicName = topic?.name ?? null;
   writeList(sessions);
   const undo = () => {
+    // A later move of this chat owns the row now.
+    if (topicMoveTurn.get(id) !== turn) return;
     const now = getSessions();
     const row = now.find((x) => x.id === id);
-    if (!row) return;
+    if (!row || (row.topicId ?? null) !== mark) return;
     row.topicId = before.topicId;
     row.topicName = before.topicName;
     writeList(now);

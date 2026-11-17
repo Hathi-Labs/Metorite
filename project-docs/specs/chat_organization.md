@@ -173,15 +173,25 @@ D163 does not cover §15 to §20. They stay PROPOSED until the owner answers §1
   The store refuses a move into a topic that a merge takes away.
 - **The merge.** It moves each row of the source to the target before its
   delete, and keeps `set_by`.
+- **An archived chat, as for the pin.** The move and the pass select no
+  archived chat, and the route answers 409. The read sends no topic for an
+  archived chat, and the chip does not show on it. The archive writes no
+  row, so a restore shows the topic again.
 - **The read.** `GET /chat/sessions` sends `topicId` and `topicName` for the
   caller only, and only a topic that shows. A chat in a hidden topic sits
   under its day. The shell read serves the flag as `chat_topics`.
 - **The UI.** The list shows Pinned, then one group for each topic by name,
-  then the days. The chip in the chat header opens a menu: the company
-  topics, the member's own topics, "No topic" and "New topic…". The full
+  then the days. The chip in the chat header opens a menu. "New topic…" and
+  "No topic" come first, at a fixed place, and the topics come under them.
+  The company topics come before the member's own topics. The first focus
+  is the current topic, else "New topic…", and never "No topic". The full
   view shows the topic name on the chip. The side panel and a phone show the
   tag icon, and its label names the topic. A phone with the chat-first flag
-  offers the menu in the chat's "…" control.
+  offers the menu in the chat's "…" control, and the menu hangs from it.
+- **A move that fails.** The list puts the old topic back, and a toast says
+  "The chat did not move. Try again, or pick another topic." The menu then
+  reads the topics again. A later move is never undone by an earlier
+  failure.
 - **The purge.** The member purge deletes the rows and the private topics of
   a leaver. A row of a colleague on such a topic keeps its org and loses
   only the topic.

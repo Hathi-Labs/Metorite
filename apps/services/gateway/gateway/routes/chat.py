@@ -273,9 +273,11 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
                                              archived=r.archived_at is not None))
     if topics_on:
         # Only the caller's topic, and only a topic that shows to the caller.
-        # A colleague in the same room reads none of it (CO-2b).
-        for item in listed:
-            item.update(chat_pins.topic_fields(topics.get(item["id"])))
+        # A colleague in the same room reads none of it (CO-2b). An archived
+        # chat reads as no topic, as it reads as not pinned.
+        for item, r in zip(listed, rows, strict=True):
+            item.update(chat_pins.topic_fields(topics.get(r.id),
+                                               archived=r.archived_at is not None))
     return listed
 
 
@@ -1344,7 +1346,8 @@ async def move_session_topic(
     before the handler. 404 "Topic not found" for a topic that the caller may
     not use: a colleague's topic, a hidden company topic, an unknown id and an
     id that is not a UUID. 404 "Session not found" for a chat that the caller
-    cannot read. The body is :class:`TopicMoveIn`."""
+    cannot read. 409 for an archived chat, as for the pin. The body is
+    :class:`TopicMoveIn`."""
     from gateway.routes.chat_topics import NOT_FOUND, _body
 
     org = user.organization_id
@@ -1362,6 +1365,10 @@ async def move_session_topic(
     moved = await asyncio.to_thread(_move_session, session_id, member, tid, organization_id=org)
     if moved.state == "no_topic":
         raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if moved.state == "archived":
+        raise HTTPException(
+            status_code=409, detail="This chat is archived. Restore it, then move it.",
+        )
     if moved.state != "set":
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True, **chat_pins.topic_fields(moved.topic)}

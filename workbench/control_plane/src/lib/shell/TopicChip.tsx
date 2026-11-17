@@ -3,11 +3,11 @@
 /**
  * The topic chip of a chat (WS-CO CO-2b, `chat_organization.md` §6, D163).
  *
- * The member presses the chip in the chat header. A menu opens with the
- * company topics, the member's own topics, "No topic" and "New topic…". A
- * pick moves the chat at once, and the chip and the chat list show the new
- * topic. The move is the member's own, and the automatic pass never moves
- * it back.
+ * The member presses the chip in the chat header. A menu opens with "New
+ * topic…" and "No topic" first, at a fixed place, then the company topics
+ * and the member's own topics. A pick moves the chat at once, and the chip
+ * and the chat list show the new topic. The move is the member's own, and
+ * the automatic pass never moves it back.
  *
  * It is `AnchoredPanel` from `src/components/ui/`, with `Button` rows and
  * `Input`, as `ChatMoreMenu` is. A press outside and Escape close it
@@ -19,7 +19,8 @@
  * - `chip`: the topic name with the tag icon, in the header on a desktop.
  * - `icon`: the tag icon alone, in the narrow header of a phone.
  * - `none`: no trigger. The phone with the chat-first flag opens the menu
- *   from its "…" control (CF-8), and the menu hangs from `anchor`.
+ *   from its "…" control (CF-8). `anchor` is that control: the menu hangs
+ *   from it, a press on it counts as inside, and Escape gives it the focus.
  *
  * `chatTopics.ts` holds the rules and the requests. Fence (R7):
  * `chatTopics.test.ts`.
@@ -38,6 +39,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { shownTopic } from "./chatHistory";
 import {
+  FIXED_ROWS,
   NEW_TOPIC,
   NO_TOPIC,
   NO_TOPICS_YET,
@@ -46,7 +48,9 @@ import {
   chipLabel,
   createChatTopic,
   fetchChatTopics,
+  menuFocusIndex,
   topicMenuRows,
+  type TopicMenuRow,
 } from "./chatTopics";
 
 export interface TopicChipProps {
@@ -108,8 +112,10 @@ export default function TopicChip({
   }, [open]);
 
   // A press outside closes it. The trigger counts as inside, so the press
-  // that toggles it is not undone by the same press. Escape closes it from
-  // wherever focus is (`ChatMoreMenu` does the same).
+  // that toggles it is not undone by the same press. With the `none`
+  // trigger, the trigger is the "…" control that `anchor` names, never a
+  // whole header (review P2-1). Escape closes it from wherever focus is, and
+  // gives the focus back to that trigger (`ChatMoreMenu` does the same).
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent) => {
@@ -120,7 +126,8 @@ export default function TopicChip({
       event.stopPropagation();
       event.preventDefault();
       setOpen(false);
-      anchor?.querySelector<HTMLElement>("button")?.focus();
+      const back = anchor?.tagName === "BUTTON" ? anchor : anchor?.querySelector<HTMLElement>("button");
+      back?.focus();
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey, true);
@@ -130,11 +137,14 @@ export default function TopicChip({
     };
   }, [open, anchor, setOpen]);
 
-  // Focus goes to the first row once the panel has drawn.
+  // Focus goes to the row of `menuFocusIndex` once the panel has drawn: the
+  // current topic, else "New topic…", and never "No topic" (review P2-3).
+  // Only while the menu is open: a menu that closes because the chat changed
+  // takes no focus, so the composer keeps it.
   useEffect(() => {
     if (!open || naming) return;
     const id = requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>("[data-chat-topic-menu] [role='menuitem']")?.focus();
+      document.querySelector<HTMLElement>("[data-chat-topic-menu] [data-chat-topic-focus]")?.focus();
     });
     return () => cancelAnimationFrame(id);
   }, [open, naming]);
@@ -161,6 +171,48 @@ export default function TopicChip({
 
   const row = phone ? "min-h-11" : "min-h-8";
   const rowClass = `${row} w-full gap-2 px-3 text-left text-sm`;
+  const focusAt = menuFocusIndex(rows);
+
+  const renderRow = (r: TopicMenuRow, i: number) => {
+    if (r.kind === "heading") return <Heading key={`h:${r.label}`}>{r.label}</Heading>;
+    if (r.kind === "loading" || r.kind === "empty") {
+      // One line that says what the list holds, in a status region, so a
+      // screen reader hears the answer when it lands (M9). It keeps the
+      // height of a row, so the panel does not jump (M1).
+      const words = r.kind === "empty" ? NO_TOPICS_YET : topics.error ? TOPICS_DID_NOT_LOAD : "Loading the topics…";
+      return (
+        <p key={r.kind} role="status" className={`${row} flex items-center px-3 text-xs text-muted-foreground`}>
+          {words}
+        </p>
+      );
+    }
+    const selected = r.kind === "topic" || r.kind === "none" ? r.current : false;
+    const text = r.kind === "topic" ? r.topic.name : r.kind === "none" ? NO_TOPIC : NEW_TOPIC;
+    const icon = r.kind === "topic" ? "Tag" : r.kind === "none" ? "CircleSlash" : "Plus";
+    return (
+      <Button
+        key={r.kind === "topic" ? `t:${r.topic.id}` : r.kind}
+        type="button"
+        role="menuitem"
+        variant="ghost"
+        size="none"
+        layout="flex items-center"
+        selected={selected}
+        data-chat-topic-row={r.kind}
+        data-chat-topic-focus={i === focusAt ? "" : undefined}
+        onClick={() => {
+          if (r.kind === "topic") move(r.topic);
+          else if (r.kind === "none") move(null);
+          else setNaming(true);
+        }}
+        className={rowClass}
+      >
+        <Icon name={icon} size={14} className="shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-foreground">{text}</span>
+        {selected ? <Icon name="Check" size={14} className="shrink-0 text-primary" /> : null}
+      </Button>
+    );
+  };
 
   return (
     <>
@@ -228,45 +280,14 @@ export default function TopicChip({
             </div>
           </form>
         ) : (
-          rows.map((r, i) => {
-            if (r.kind === "heading") return <Heading key={`h:${r.label}`}>{r.label}</Heading>;
-            if (r.kind === "loading" || r.kind === "empty") {
-              // One line that says what the list holds, in a status region,
-              // so a screen reader hears the answer when it lands (M9).
-              const words =
-                r.kind === "empty" ? NO_TOPICS_YET : topics.error ? TOPICS_DID_NOT_LOAD : "Loading the topics…";
-              return (
-                <p key={r.kind} role="status" className="px-3 py-2 text-xs text-muted-foreground">
-                  {words}
-                </p>
-              );
-            }
-            const selected = r.kind === "topic" || r.kind === "none" ? r.current : false;
-            const text = r.kind === "topic" ? r.topic.name : r.kind === "none" ? NO_TOPIC : NEW_TOPIC;
-            const icon = r.kind === "topic" ? "Tag" : r.kind === "none" ? "CircleSlash" : "Plus";
-            return (
-              <Button
-                key={r.kind === "topic" ? `t:${r.topic.id}` : `${r.kind}:${i}`}
-                type="button"
-                role="menuitem"
-                variant="ghost"
-                size="none"
-                layout="flex items-center"
-                selected={selected}
-                data-chat-topic-row={r.kind}
-                onClick={() => {
-                  if (r.kind === "topic") move(r.topic);
-                  else if (r.kind === "none") move(null);
-                  else setNaming(true);
-                }}
-                className={rowClass}
-              >
-                <Icon name={icon} size={14} className="shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate text-foreground">{text}</span>
-                {selected ? <Icon name="Check" size={14} className="shrink-0 text-primary" /> : null}
-              </Button>
-            );
-          })
+          <>
+            {/* "New topic…" and "No topic" first, at a fixed place, so no
+                row moves while the list loads (review P2-3). */}
+            {rows.slice(0, FIXED_ROWS).map((r, i) => renderRow(r, i))}
+            <div className="mt-1 border-t border-border pt-1" data-chat-topic-list="">
+              {rows.slice(FIXED_ROWS).map((r, i) => renderRow(r, i + FIXED_ROWS))}
+            </div>
+          </>
         )}
       </AnchoredPanel>
     </>

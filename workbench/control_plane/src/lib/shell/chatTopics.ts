@@ -13,6 +13,7 @@
  * Fence (R7): `chatTopics.test.ts`.
  */
 
+import { invalidate } from "@/lib/dataCache";
 import type { ChatSession, SessionTopic } from "@/lib/sessions";
 
 import { shownTopic } from "./chatHistory";
@@ -77,15 +78,19 @@ export function parseTopics(body: unknown): ChatTopic[] {
   return out;
 }
 
+/** The two rows that never move: they come first in each state of the list. */
+export const FIXED_ROWS = 2;
+
 /**
- * The rows of the menu. The company topics come first, then the member's own
- * topics, each under its heading, in the order of the server. Then "No topic"
- * and "New topic…". A heading with no topic under it is left out. While the
- * list is not read yet (`topics` undefined), one row says so. A list with no
- * topic says so too, and "New topic…" is the next act.
+ * The rows of the menu (review P2-3). "New topic…" and "No topic" come FIRST,
+ * so they keep their place while the list loads. Then the list: the company
+ * topics, then the member's own topics, each under its heading, in the order
+ * of the server. A heading with no topic under it is left out. While the list
+ * is not read yet (`topics` undefined), one row says so. A list with no topic
+ * says so too, and "New topic…" is the next act.
  */
 export function topicMenuRows(topics: readonly ChatTopic[] | undefined, currentId: string | null): TopicMenuRow[] {
-  const rows: TopicMenuRow[] = [];
+  const rows: TopicMenuRow[] = [{ kind: "new" }, { kind: "none", current: currentId === null }];
   if (topics === undefined) {
     rows.push({ kind: "loading" });
   } else if (!topics.some((t) => !t.hidden)) {
@@ -100,9 +105,45 @@ export function topicMenuRows(topics: readonly ChatTopic[] | undefined, currentI
       }
     }
   }
-  rows.push({ kind: "none", current: currentId === null });
-  rows.push({ kind: "new" });
   return rows;
+}
+
+/**
+ * The row that takes the focus when the menu opens: the current topic, else
+ * "New topic…". Neither moves the chat on Enter. "No topic" never takes it,
+ * so a key pressed while the list loads cannot clear the topic.
+ */
+export function menuFocusIndex(rows: readonly TopicMenuRow[]): number {
+  const current = rows.findIndex((r) => r.kind === "topic" && r.current);
+  return current >= 0 ? current : rows.findIndex((r) => r.kind === "new");
+}
+
+/**
+ * Whether the topic menu of the chat-first phone is open (review P2-1). The
+ * menu opens FOR one chat, so a change of chat closes it, and a stale open
+ * can never open it on another chat.
+ */
+export function topicMenuIsOpen(openFor: string | null, activeId: string | null | undefined): boolean {
+  return openFor !== null && openFor === (activeId ?? null);
+}
+
+/** The words of a move that the server refused, or that never arrived (§10). */
+export const MOVE_FAILED = "The chat did not move.";
+export const MOVE_FAILED_NEXT = "Try again, or pick another topic.";
+
+/** What a failed move needs from the toast of the app. */
+export interface MoveFailureToast {
+  show(spec: { key?: string; variant?: "error"; title: string; description?: string }): string;
+}
+
+/**
+ * After a move failed (review P2-2): say so with the next step, and read the
+ * topics again, because the menu drew a cached list that can hold a topic
+ * that is gone. The list has already put the old topic back.
+ */
+export function topicMoveFailed(toast: MoveFailureToast, sessionId: string): void {
+  invalidate(TOPICS_PATH);
+  toast.show({ key: `chat-topic:${sessionId}`, variant: "error", title: MOVE_FAILED, description: MOVE_FAILED_NEXT });
 }
 
 /** The read of the topics. A refusal throws, so the read cache keeps its last answer. */

@@ -309,6 +309,7 @@ def test_a_bidi_control_a_line_mark_and_a_control_are_refused(point: int) -> Non
     (0xE0067, 0xE0062, 0xE007F),  # tag characters alone (Cf)
     (0xFE0F,), (0xFE00, 0xFE0F), (0xE0100,),  # variation selectors alone (Mn)
     (0x2800,), (0x034F,), (0x17B4, 0x17B5),  # a blank Braille cell and invisible marks
+    (0x180B,), (0x180C,), (0x180D,), (0x180E,), (0x180F,),  # Mongolian selectors (verifier P3-7)
     (0x200B, 0x200D, 0xFEFF, 0x3164),  # several of them
     (0xAD,), (0x1D173,),  # a soft hyphen and a music format mark (Cf)
     (0xFDD0,), (0x10FFFF,),  # noncharacters: unassigned (Cn) in each Unicode table
@@ -356,6 +357,7 @@ def test_lrm_rlm_and_alm_are_refused_as_bidi_controls(point: int) -> None:
 @pytest.mark.parametrize("raw", [
     ENGLAND, FAMILY, "Tired " + NEW_EMOJI, _cp(0x2764, 0xFE0F), "x" + _cp(0x200B),
     _cp(0x200B) + "7", "עברית",
+    _cp(0x1820, 0x180B, 0x1821),  # a Mongolian word keeps its selector
 ])
 def test_a_name_that_shows_passes(raw: str) -> None:
     """A flag, a joined family, a heart with its selector, a word beside a

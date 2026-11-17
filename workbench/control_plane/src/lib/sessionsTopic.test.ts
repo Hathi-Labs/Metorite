@@ -114,6 +114,67 @@ describe("setSessionTopic (CO-2b)", () => {
     expect(topicOf("a")).toEqual([null, null]);
   });
 
+  it("a 409 of an archived chat and a 503 of the BFF put the old topic back too", async () => {
+    for (const status of [409, 503]) {
+      seed(row("a", { topicId: "t-1", topicName: "Sales" }));
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status })));
+      const undo = vi.fn();
+      expect(setSessionTopic("a", { id: "t-2", name: "Board prep" }, undo)).toBe(true);
+      await vi.waitFor(() => expect(undo).toHaveBeenCalledTimes(1));
+      expect(topicOf("a")).toEqual(["t-1", "Sales"]);
+    }
+  });
+
+  // Verifier P3-8. The later moves go to another topic and come back to the
+  // topic of the first, so the row holds the mark of the first move again.
+  // Only the turn tells them apart. Mutation: drop the turn check of the
+  // undo -> the late failure of the first move takes back the third move.
+  it("a failure of an earlier move never takes back a later move", async () => {
+    seed(row("a", { topicId: "t-1", topicName: "Sales" }));
+    let failFirst: (r: Response) => void = () => undefined;
+    const first = new Promise<Response>((resolve) => {
+      failFirst = resolve;
+    });
+    const ok = (topicId: string, topicName: string) => async () =>
+      new Response(JSON.stringify({ ok: true, topicId, topicName }), { status: 200 });
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(ok("t-3", "Finance"))
+      .mockImplementationOnce(ok("t-2", "Board prep"));
+    vi.stubGlobal("fetch", fetchMock);
+    const undoFirst = vi.fn();
+    expect(setSessionTopic("a", { id: "t-2", name: "Board prep" }, undoFirst)).toBe(true);
+    expect(setSessionTopic("a", { id: "t-3", name: "Finance" })).toBe(true);
+    expect(setSessionTopic("a", { id: "t-2", name: "Board prep" })).toBe(true);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    failFirst(new Response("{}", { status: 404 }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(topicOf("a")).toEqual(["t-2", "Board prep"]);
+    expect(undoFirst).not.toHaveBeenCalled();
+  });
+
+  // Mutation: drop the mark check of the undo -> a topic that the merge of
+  // the server list wrote after the move is taken back.
+  it("an undo leaves a row that the server list changed after the move", async () => {
+    seed(row("a", { topicId: "t-1", topicName: "Sales" }));
+    let failMove: (r: Response) => void = () => undefined;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      failMove = resolve;
+    })));
+    const undo = vi.fn();
+    expect(setSessionTopic("a", { id: "t-2", name: "Board prep" }, undo)).toBe(true);
+    // Another device moved the chat, and the merge wrote it here.
+    const now = getSessions();
+    now[0].topicId = "t-9";
+    now[0].topicName = "Legal";
+    store.set(chatKey("sessions") as string, JSON.stringify(now));
+    failMove(new Response("{}", { status: 404 }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(topicOf("a")).toEqual(["t-9", "Legal"]);
+    expect(undo).not.toHaveBeenCalled();
+  });
+
   it("the same topic, or a chat that is not in the list, sends nothing", () => {
     seed(row("a", { topicId: "t-1", topicName: "Sales" }), row("b"));
     const fetchMock = vi.fn();

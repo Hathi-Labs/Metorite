@@ -131,6 +131,8 @@ def test_each_write_selects_a_chat_that_the_member_can_read() -> None:
     for sql in (store._SET_TOPIC_SQL, store._SET_AUTO_SQL):
         assert "FROM chat_session s" in sql
         assert SESSION_VISIBLE_SQL in sql
+        # The pin rule of CO-11: an archived chat takes no topic.
+        assert "s.archived_at IS NULL" in sql
         assert "VALUES" not in sql
         # The DEFAULT stamps the bound org: the column list never names it.
         assert "INSERT INTO chat_session_member (session_id, member_email, topic_id, set_by)" \
@@ -203,6 +205,8 @@ def test_the_list_keys_name_no_owner_and_no_scope() -> None:
     t = Topic(id="t-1", name="Sales", scope="member", hidden_at=None)
     assert topic_fields(t) == {"topicId": "t-1", "topicName": "Sales"}
     assert topic_fields(None) == {"topicId": None, "topicName": None}
+    # An archived chat reads as no topic, as it reads as not pinned.
+    assert topic_fields(t, archived=True) == {"topicId": None, "topicName": None}
 
 
 def test_the_list_reads_only_a_topic_that_shows(monkeypatch) -> None:
@@ -330,11 +334,12 @@ def test_the_real_gateway_app_serves_the_route() -> None:
     assert ("PUT", "/chat/sessions/{session_id}/topic") in served
 
 
-@pytest.mark.parametrize(("state", "detail"), [
-    ("no_topic", "Topic not found"), ("missing", "Session not found"),
-    ("kept", "Session not found"),
+@pytest.mark.parametrize(("state", "code", "detail"), [
+    ("no_topic", 404, "Topic not found"), ("missing", 404, "Session not found"),
+    ("kept", 404, "Session not found"),
+    ("archived", 409, "This chat is archived. Restore it, then move it."),
 ])
-def test_each_outcome_has_its_answer(monkeypatch, state: str, detail: str) -> None:
+def test_each_outcome_has_its_answer(monkeypatch, state: str, code: int, detail: str) -> None:
     from gateway import chat_session_member as store
     from gateway.routes import chat
 
@@ -342,7 +347,7 @@ def test_each_outcome_has_its_answer(monkeypatch, state: str, detail: str) -> No
     monkeypatch.setattr(chat, "_move_session", lambda *a, **k: store.TopicMove(state))  # type: ignore[arg-type]
     res = _client(_user("ana@co2b.test", "org-a")).put(
         "/chat/sessions/s-1/topic", json={"topic_id": _TID})
-    assert (res.status_code, res.json()) == (404, {"detail": detail}), res.text
+    assert (res.status_code, res.json()) == (code, {"detail": detail}), res.text
 
 
 @pytest.mark.parametrize("bad", ["abc", "1; DROP TABLE x", "00000000", ""])
@@ -418,6 +423,76 @@ def test_the_member_never_comes_from_the_request(monkeypatch) -> None:
 # ── The list ────────────────────────────────────────────────────────────────
 
 
+def _select_columns(sql: str) -> list[str]:
+    """The output names of the outer SELECT of *sql*: the alias after ``AS``,
+    else the last part of the column name. A comma inside brackets or quotes
+    belongs to a subquery or a literal, and splits nothing."""
+    head = sql[sql.index("SELECT") + len("SELECT"):sql.index("FROM chat_session s ")]
+    parts: list[str] = []
+    depth, quoted, cur = 0, False, ""
+    for ch in head:
+        if ch == "'":
+            quoted = not quoted
+        elif not quoted and ch == "(":
+            depth += 1
+        elif not quoted and ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0 and not quoted:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    names = []
+    for part in parts:
+        alias = re.search(r"\bAS\s+(\w+)\s*$", part.strip())
+        names.append(alias.group(1) if alias else part.strip().split(".")[-1])
+    return names
+
+
+def _list_defaults() -> dict[str, Any]:
+    from datetime import UTC, datetime
+
+    at = datetime(2026, 11, 17, tzinfo=UTC)
+    return {
+        "id": "s-1", "agent_name": "orchestrator", "title": "Q4", "last_preview": "",
+        "message_count": 2, "created_at": at, "updated_at": at, "user_id": "ana@co2b.test",
+        "visibility": "private", "participant_count": 0, "has_user_message": True,
+        "is_brief": False, "my_role": "owner", "archived_at": None,
+    }
+
+
+def _list_row(**over: Any) -> Any:
+    """One row of the chat list, with a value for EACH column of the real
+    ``_SESSIONS_SQL``. A new column of the list fails here, in one place,
+    with its name, and never as an AttributeError deep in a test."""
+    from types import SimpleNamespace
+
+    from gateway.routes.chat import _SESSIONS_SQL
+
+    defaults = _list_defaults()
+    missing = [c for c in _select_columns(_SESSIONS_SQL) if c not in defaults]
+    assert not missing, f"_SESSIONS_SQL has new columns, give each a default here: {missing}"
+    return SimpleNamespace(**{**defaults, **over})
+
+
+def test_the_fake_list_row_mirrors_the_real_select() -> None:
+    """The fake of ``_ListDb`` holds the columns of ``_SESSIONS_SQL``, no
+    more and no less. Mutation: add a column to ``_SESSIONS_SQL`` -> red here
+    with its name."""
+    from gateway.routes.chat import _SESSIONS_SQL
+
+    columns = _select_columns(_SESSIONS_SQL)
+    assert "is_brief" in columns and "archived_at" in columns
+    assert sorted(columns) == sorted(_list_defaults())
+
+
+def test_the_column_reader_can_fail() -> None:
+    sql = ("SELECT s.id, (SELECT count(*) FROM x WHERE a IN (1, 2)) AS n, "
+           "COALESCE(s.v, 'a,b') AS v, s.new_column FROM chat_session s WHERE true")
+    assert _select_columns(sql) == ["id", "n", "v", "new_column"]
+
+
 class _ListDb:
     """A sync ``tenant_session`` that answers the list with one chat and
     records each statement."""
@@ -427,24 +502,6 @@ class _ListDb:
 
     def __call__(self, org: str | None):
         db = self
-
-        class _Row:
-            id = "s-1"
-            agent_name = "orchestrator"
-            title = "Q4"
-            last_preview = ""
-            message_count = 2
-            user_id = "ana@co2b.test"
-            visibility = "private"
-            participant_count = 0
-            has_user_message = True
-            my_role = "owner"
-            archived_at = None
-
-            def __init__(self) -> None:
-                from datetime import UTC, datetime
-
-                self.created_at = self.updated_at = datetime(2026, 11, 17, tzinfo=UTC)
 
         class _S:
             def __enter__(self):
@@ -458,7 +515,7 @@ class _ListDb:
 
                 class _R:
                     def fetchall(self) -> list:
-                        return [_Row()] if len(db.sql) == 1 else []
+                        return [_list_row()] if len(db.sql) == 1 else []
 
                 return _R()
 

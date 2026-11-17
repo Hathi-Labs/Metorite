@@ -9,10 +9,18 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { peek, put } from "@/lib/dataCache";
+
 import {
   COMPANY_HEADING,
   CREATE_FAILED,
+  FIXED_ROWS,
   MINE_HEADING,
+  MOVE_FAILED,
+  MOVE_FAILED_NEXT,
   NO_TOPIC,
   NO_TOPICS_YET,
   TOPICS_DID_NOT_LOAD,
@@ -21,10 +29,15 @@ import {
   createChatTopic,
   createProblem,
   fetchChatTopics,
+  menuFocusIndex,
   parseTopics,
+  topicMenuIsOpen,
   topicMenuRows,
+  topicMoveFailed,
   type ChatTopic,
 } from "./chatTopics";
+
+const source = (name: string) => readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf-8");
 
 const SALES: ChatTopic = { id: "t-sales", name: "Sales", scope: "company", hidden: false };
 const FINANCE: ChatTopic = { id: "t-fin", name: "Finance", scope: "company", hidden: false };
@@ -65,16 +78,16 @@ describe("the topics of the answer", () => {
 });
 
 describe("the rows of the menu", () => {
-  it("lists company topics, then mine, then No topic and New topic", () => {
+  it("puts New topic and No topic first, then company topics, then mine", () => {
     const rows = topicMenuRows([SALES, BOARD, FINANCE], "t-board");
     expect(rows).toEqual([
+      { kind: "new" },
+      { kind: "none", current: false },
       { kind: "heading", label: COMPANY_HEADING },
       { kind: "topic", topic: { id: "t-sales", name: "Sales" }, current: false },
       { kind: "topic", topic: { id: "t-fin", name: "Finance" }, current: false },
       { kind: "heading", label: MINE_HEADING },
       { kind: "topic", topic: { id: "t-board", name: "Board prep" }, current: true },
-      { kind: "none", current: false },
-      { kind: "new" },
     ]);
   });
 
@@ -90,7 +103,7 @@ describe("the rows of the menu", () => {
   });
 
   it("says that the list is empty, and offers New topic as the next act (DESIGN_SYSTEM §10)", () => {
-    const empty = [{ kind: "empty" }, { kind: "none", current: true }, { kind: "new" }];
+    const empty = [{ kind: "new" }, { kind: "none", current: true }, { kind: "empty" }];
     expect(topicMenuRows([], null)).toEqual(empty);
     // A list of hidden topics only is empty for the member.
     expect(topicMenuRows([{ ...SALES, hidden: true }], null)).toEqual(empty);
@@ -99,10 +112,38 @@ describe("the rows of the menu", () => {
 
   it("says that the list loads before the read answers, and still offers No topic", () => {
     expect(topicMenuRows(undefined, "t-sales")).toEqual([
-      { kind: "loading" },
-      { kind: "none", current: false },
       { kind: "new" },
+      { kind: "none", current: false },
+      { kind: "loading" },
     ]);
+  });
+
+  // Review P2-3. Mutation: put the list before the fixed rows again -> red.
+  it("keeps the fixed rows at one place while the list loads, is empty, or holds topics", () => {
+    const states = [
+      topicMenuRows(undefined, "t-sales"),
+      topicMenuRows([], "t-sales"),
+      topicMenuRows([SALES, BOARD, FINANCE], "t-sales"),
+    ];
+    for (const rows of states) {
+      expect(rows.slice(0, FIXED_ROWS).map((r) => r.kind)).toEqual(["new", "none"]);
+    }
+  });
+
+  // Review P2-3. Mutation: focus the first row with `current`, "No topic" too -> red.
+  it("gives the first focus to the current topic, else New topic, and never No topic", () => {
+    const loading = topicMenuRows(undefined, "t-sales");
+    expect(loading[menuFocusIndex(loading)].kind).toBe("new");
+    const loaded = topicMenuRows([SALES, BOARD], "t-board");
+    expect(loaded[menuFocusIndex(loaded)]).toEqual({
+      kind: "topic", topic: { id: "t-board", name: "Board prep" }, current: true,
+    });
+    // A chat with no topic: "No topic" is the current row, and it takes no focus.
+    const none = topicMenuRows([SALES], null);
+    expect(none[menuFocusIndex(none)].kind).toBe("new");
+    for (const rows of [loading, loaded, none, topicMenuRows([], null)]) {
+      expect(rows[menuFocusIndex(rows)].kind).not.toBe("none");
+    }
   });
 
   it("never offers a hidden topic, even when the chat sits in it", () => {
@@ -146,5 +187,53 @@ describe("the requests", () => {
     expect(createProblem(500, { detail: "boom" })).toBe(CREATE_FAILED);
     // Each failure says what happened and what to do next (DESIGN_SYSTEM §10).
     for (const words of [CREATE_FAILED, TOPICS_DID_NOT_LOAD]) expect(words).toMatch(/try again\.$/);
+  });
+});
+
+// Review P2-2. Mutation: drop the `invalidate` of `topicMoveFailed` -> the
+// cached list stays; drop the toast -> nothing says why.
+describe("a move that failed", () => {
+  it("says what happened and the next step, and reads the topics again", () => {
+    put(TOPICS_PATH, [SALES]);
+    expect(peek(TOPICS_PATH)).toBeDefined();
+    const shown: unknown[] = [];
+    topicMoveFailed({ show: (spec) => (shown.push(spec), "id") }, "s-1");
+    expect(shown).toEqual([
+      { key: "chat-topic:s-1", variant: "error", title: MOVE_FAILED, description: MOVE_FAILED_NEXT },
+    ]);
+    expect(`${MOVE_FAILED} ${MOVE_FAILED_NEXT}`).toBe("The chat did not move. Try again, or pick another topic.");
+    expect(peek(TOPICS_PATH)).toBeUndefined();
+  });
+});
+
+// Review P2-1. The topic menu of the chat-first phone opens FOR one chat.
+// Mutation: keep a plain boolean open state -> the menu shows on a new chat.
+describe("the topic menu and a change of chat", () => {
+  it("is open only for the chat it opened for, and a change of chat closes it", () => {
+    expect(topicMenuIsOpen("chat-a", "chat-a")).toBe(true);
+    expect(topicMenuIsOpen("chat-a", "chat-b")).toBe(false);
+    expect(topicMenuIsOpen(null, "chat-a")).toBe(false);
+    expect(topicMenuIsOpen("chat-a", null)).toBe(false);
+    expect(topicMenuIsOpen("chat-a", undefined)).toBe(false);
+  });
+
+  it("the dock forgets the open chat on each change, and the menu takes focus only while open", () => {
+    const dock = source("AssistantDock.tsx");
+    expect(dock).toMatch(/useEffect\(\(\) => \{\s+setTopicMenuFor\(null\);\s+\}, \[activeChatId\]\);/);
+    expect(dock).toContain("const topicMenuOpen = topicMenuIsOpen(topicMenuFor, active?.id);");
+    // The menu hangs from the "…" control of this panel, never from a header.
+    expect(dock).toContain('setTopicAnchor(rootRef.current?.querySelector<HTMLElement>("[data-chat-more]") ?? null);');
+    expect(dock).not.toContain("setHeaderEl");
+    const chip = source("TopicChip.tsx");
+    // The focus effect returns at once while the menu is closed.
+    expect(chip).toMatch(/useEffect\(\(\) => \{\s+if \(!open \|\| naming\) return;/);
+    // Escape gives the focus back to the trigger: the "…" button itself.
+    expect(chip).toContain('anchor?.tagName === "BUTTON" ? anchor : anchor?.querySelector<HTMLElement>("button")');
+  });
+
+  it("the chip does not show on an archived chat, as the pin does not", () => {
+    expect(source("AssistantDock.tsx")).toContain(
+      "const topicable = topicsOn && active != null && active.messageCount > 0 && !active.archivedAt;",
+    );
   });
 });

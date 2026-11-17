@@ -109,10 +109,11 @@ _UNSEEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp", "Zs"})
 
 #: Characters of a category that shows, which draw nothing all the same: the
 #: Hangul fillers, the blank Braille cell, the combining grapheme joiner, the
-#: two Khmer inherent vowels, and the variation selectors.
+#: two Khmer inherent vowels, the variation selectors, and the Mongolian free
+#: variation selectors with the vowel separator (U+180B to U+180F).
 _UNSEEN_POINTS = frozenset(chr(c) for c in (
     0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x034F, 0x17B4, 0x17B5,
-    *range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0)))
+    *range(0x180B, 0x1810), *range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0)))
 
 
 def _shows(ch: str) -> bool:

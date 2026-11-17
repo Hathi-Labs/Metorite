@@ -32,7 +32,10 @@ the phase-4 rehearsal (no superuser, no BYPASSRLS), with two organizations:
 13. with ``CHAT_TOPICS_ORGS`` off, the route answers 404 and the list sends
     no topic key;
 14. an address in mixed case moves a chat, the row keys on the lower case,
-    and the pass passes the address as the chat stores it.
+    and the pass passes the address as the chat stores it;
+15. an archived chat takes no topic, as it takes no pin: the move is 409,
+    the pass files nothing, the read sends no topic, and a restore shows the
+    topic again.
 
 Mutations, each red here (R7):
 
@@ -151,6 +154,7 @@ def _client(user):
     from gateway.routes.chat import (
         list_sessions,
         move_session_topic,
+        patch_session,
         pin_session,
         unpin_session,
     )
@@ -158,6 +162,7 @@ def _client(user):
     app = FastAPI()
     app.include_router(chat_topics.router)
     app.get("/chat/sessions")(list_sessions)
+    app.patch("/chat/sessions/{session_id}")(patch_session)
     app.put("/chat/sessions/{session_id}/topic")(move_session_topic)
     app.put("/chat/sessions/{session_id}/pin")(pin_session)
     app.delete("/chat/sessions/{session_id}/pin")(unpin_session)
@@ -746,6 +751,30 @@ def test_14_an_address_in_mixed_case_moves_and_the_pass_needs_the_stored_case(db
     assert _topic_of(client, sid) == (sales, "Sales")
     assert _auto(db.org_a, sid, dana, general) == "kept"
     assert _auto(db.org_a, sid, dana.lower(), general) == "missing"
+
+
+# ── 15. An archived chat, as for the pin ────────────────────────────────────
+
+
+def test_15_an_archived_chat_takes_no_topic_and_a_restore_shows_it_again(db) -> None:
+    """The pin rule of CO-11, matched. Mutation: drop ``s.archived_at IS
+    NULL`` from ``_SET_TOPIC_SQL`` -> the move of an archived chat answers 200."""
+    sid = _chat(db, org=db.org_a, owner=_ALICE)
+    sales = _company(db, db.org_a, "Sales")
+    general = _company(db, db.org_a, "General")
+    alice = _client(_user(_ALICE, db.org_a))
+    assert _move(alice, sid, sales).status_code == 200
+    assert alice.patch(f"/chat/sessions/{sid}", json={"archived": True}).status_code == 200
+    # The read sends no topic, the move is 409, and the pass files nothing.
+    assert _topic_of(alice, sid) == (None, None)
+    res = _move(alice, sid, general)
+    assert (res.status_code, res.json()) == (
+        409, {"detail": "This chat is archived. Restore it, then move it."}), res.text
+    assert _auto(db.org_a, sid, _ALICE, general) == "archived"
+    # The archive wrote no row: a restore shows the topic again.
+    assert _rows(db, sid) == [(db.org_a, _ALICE, sales, "member")]
+    assert alice.patch(f"/chat/sessions/{sid}", json={"archived": False}).status_code == 200
+    assert _topic_of(alice, sid) == (sales, "Sales")
 
 
 def test_the_suite_finds_the_migration_by_its_content() -> None:

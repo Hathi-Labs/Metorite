@@ -60,6 +60,7 @@ import { useSteadyRunView } from "@/components/RunStatusRow";
 import Button from "@/components/ui/Button";
 import { PillNavigateContext } from "@/components/ui/EntityPill";
 import { Input } from "@/components/ui/Input";
+import { useToast } from "@/components/ui/Toast";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import { useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
@@ -126,7 +127,7 @@ import {
 } from "./reminderOpen";
 import { markBuddyHello, markChatFirstMessage, setHelloPending, useChatPinOn, useChatTopicsOn } from "./shellPrefs";
 import TopicChip from "./TopicChip";
-import { chipLabel } from "./chatTopics";
+import { chipLabel, topicMenuIsOpen, topicMoveFailed } from "./chatTopics";
 import {
   dockFloats,
   dockFoldsNav,
@@ -205,6 +206,8 @@ const COMPOSER_FOCUS_TRIES = 40;
 function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: boolean }) {
   const st = useAssistant();
   const scope = useChatScope();
+  // CO-2b: a failed move of a chat says so in a toast (review P2-2).
+  const toast = useToast();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [restoredId, setRestoredId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -641,10 +644,16 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     },
     /**
      * CO-2b: move a chat into a topic for this member, or to "No topic". The
-     * list draws the move at once. A refusal of the server puts it back.
+     * list draws the move at once. A refusal of the server, or a lost
+     * connection, puts it back, says so with the next step, and reads the
+     * topics again (`topicMoveFailed`).
      */
     move: (id: string, topic: SessionTopic | null) => {
-      if (setSessionTopic(id, topic, refresh)) refresh();
+      const failed = () => {
+        refresh();
+        topicMoveFailed(toast, id);
+      };
+      if (setSessionTopic(id, topic, failed)) refresh();
     },
     activity: (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
       if (!activeId) return;
@@ -901,9 +910,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const pinsOn = useChatPinOn();
   // CO-2b: the shell read says whether the chats sort into topics.
   const topicsOn = useChatTopicsOn();
-  // CO-2b: the phone's "…" control opens the topic menu, hung from the header.
-  const [topicMenuOpen, setTopicMenuOpen] = useState(false);
-  const [headerEl, setHeaderEl] = useState<HTMLElement | null>(null);
+  // CO-2b: the phone's "…" control opens the topic menu, and the menu hangs
+  // from that control. It opens FOR one chat (`topicMenuIsOpen`), so a
+  // change of chat closes it, and it never opens again on its own.
+  const [topicMenuFor, setTopicMenuFor] = useState<string | null>(null);
+  const [topicAnchor, setTopicAnchor] = useState<HTMLElement | null>(null);
   const strip = phone && form === "peek";
   // Every desktop has the side panel. Below the floor it floats over the
   // page instead of sitting beside it (owner, 2026-10-14).
@@ -947,6 +958,12 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const moving = isMoving(phase);
 
   const active = chat.active;
+  // CO-2b (review P2-1): a change of chat closes the topic menu. It takes no
+  // focus as it closes, so the composer keeps the focus.
+  const activeChatId = active?.id ?? null;
+  useEffect(() => {
+    setTopicMenuFor(null);
+  }, [activeChatId]);
   const agent = active?.agentName ?? ASSISTANT_AGENT;
   const context = surfaceContext(here, facts);
   // WS-67 OA-7d: the app slug of the pane, sent as `surface` (a hint for the tool packs).
@@ -1167,9 +1184,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const pinnable = pinsOn && active != null && active.messageCount > 0 && !active.archivedAt;
   const activePinned = active != null && isPinned(active);
   // CO-2b: the chat on screen may take a topic when the server holds it (it
-  // has a message). The move is the member's own.
-  const topicable = topicsOn && active != null && active.messageCount > 0;
+  // has a message) and it is not archived, the rule of the pin. The move is
+  // the member's own.
+  const topicable = topicsOn && active != null && active.messageCount > 0 && !active.archivedAt;
   const moveActive = (topic: SessionTopic | null) => chat.move(chat.activeId, topic);
+  const topicMenuOpen = topicMenuIsOpen(topicMenuFor, active?.id);
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
@@ -1192,12 +1211,16 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 }]
               : []),
             // CO-2b: the topic menu, for the same reason as the pin. It hangs
-            // from the header, under the chat's name.
+            // from the "…" control of this panel (`data-chat-more`), which
+            // is also the place Escape gives the focus back to.
             ...(topicable
               ? [{
                   icon: "Tag",
                   label: `Topic: ${chipLabel(active)}`,
-                  onClick: () => setTopicMenuOpen(true),
+                  onClick: () => {
+                    setTopicAnchor(rootRef.current?.querySelector<HTMLElement>("[data-chat-more]") ?? null);
+                    setTopicMenuFor(chat.activeId);
+                  },
                 }]
               : []),
           ]
@@ -1273,7 +1296,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       {/* The header says what each control does (owner, 2026-11-01): the
           title switches chats, "New" starts one, Files shows this chat's
           files, and the window controls sit apart, after a rule. */}
-      <header ref={setHeaderEl} className="flex h-11 shrink-0 items-center gap-1 border-b border-border glass:border-transparent px-2">
+      <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border glass:border-transparent px-2">
         {columnForm ? (
           // The full view lists the chats in a column: this shows or hides it.
           <Button
@@ -1359,8 +1382,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
             trigger="none"
             phone
             open={topicMenuOpen}
-            onOpenChange={setTopicMenuOpen}
-            anchor={headerEl}
+            onOpenChange={(open) => setTopicMenuFor(open ? chat.activeId : null)}
+            anchor={topicAnchor}
           />
         ) : null}
         {pinnable && !phone ? (

@@ -18,21 +18,25 @@
 -- pass does not put a topic back. The pass sets `topic_id` with
 -- `set_by = 'auto'` ONLY where no row exists, or where `set_by` is NULL or
 -- 'auto'. It never writes over a row with `set_by = 'member'`. An unpin keeps
--- the row and its topic. A merge of company topics moves each row of the
--- source to the target, in its own transaction, and keeps `set_by`. A Delete
--- of the chat deletes the row (the cascade of 450). The member purge deletes
--- each row of the member in the bound org.
+-- the row and its topic. An archive changes no row, as for the pin: the move
+-- and the pass skip an archived chat, and the read sends no topic for it, so
+-- a restore shows the topic again. A merge of company topics moves each row
+-- of the source to the target, in its own transaction, and keeps `set_by`. A
+-- Delete of the chat deletes the row (the cascade of 450). The member purge
+-- deletes each row of the member in the bound org.
 --
 -- THE KEY. `(organization_id, topic_id)` references `chat_topic
 -- (organization_id, id)`, so a row never names a topic of another org. A
 -- foreign key check skips RLS, and the composite key is the guard of that.
 -- ON DELETE SET NULL (topic_id) clears the topic and keeps the org: a plain
 -- SET NULL on a composite key also clears `organization_id`, which is NOT
--- NULL, so a delete of a topic would fail. Postgres 15 and later take the
--- column list. CI, dev_db.sh and dev_up.sh run pgvector pg16, and the notes
--- name production as Postgres 17. A topic goes only by a merge (which moves
--- its rows first), by the member purge (a member topic, whose only rows are
--- the leaver's own) or with its org.
+-- NULL, so a delete of a topic would fail.
+-- ⚠️ Needs Postgres 15 or newer (SET NULL with a column list). CI,
+-- dev_db.sh and dev_up.sh run 16. Confirm production with SELECT version()
+-- before the release that carries this file.
+-- A topic goes only by a merge (which moves its rows first), by the member
+-- purge (a member topic, whose only rows are the leaver's own) or with its
+-- org.
 --
 -- THE CHECKS. `set_by` is NULL, 'auto' or 'member'. A row with a topic names
 -- who set it. A pin row with no topic has `set_by` NULL.
