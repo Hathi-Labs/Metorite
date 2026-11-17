@@ -789,11 +789,11 @@ parity with `resolve_person`: the member, the saved alias and the address.
   a person with the status `alumni`, and accepts each other status. So the
   mail of an alumnus keeps its sender row, and the answer is `several`, as
   before FIND-6b (`names.in_org`). The alumnus row prints no address.
-- **One place of the page for each colleague (fix round).** A member that an
-  active person of the People page holds, by its address and its name, gives
-  no record. So a colleague takes one place of the page of 20, not two. A
-  member with another name, or beside a person who is not active, keeps its
-  record. Then the rule "one address is one colleague" joins the two rows.
+- **Each member record reaches the name test (fix round 3).** The People
+  read keeps each member record, also beside a People row of the same name
+  and address. Only the member record holds the part of its address before
+  the `@`, and `resolve_person` matches that part. So "Chris" finds the
+  member «Christopher Lee» <chris@…>, also with `kinds=member`.
 - **One address is one colleague.** A member with a login has a People row
   too (migration 206). A person or member row whose address an earlier row
   holds gives no row. The exact rows come first, and a person comes before a
@@ -828,10 +828,15 @@ parity with `resolve_person`: the member, the saved alias and the address.
   member with no People row, or with another People name, gets no near row.
 - The member read reads at most 2000 members (`DIRECTORY_CAP`). In a larger
   org, People reads `full`.
-- The page of People holds 20 records, people and members together. A
-  colleague with a People row of the same name and address takes one place.
-  A colleague whose two names differ takes two. A cut makes the answer
-  `full`.
+- **A colleague takes two places of the People page.** Each member also has
+  a People row (migration 206), and the page holds 20 records, people and
+  members together. So about 11 matches fill the page. Then People reads
+  `full`, and a `one` becomes `partial`. It fails safe: the answer asks the
+  member to confirm. A later slice can count a colleague once for the test of
+  a full page, and keep the member record. `rows_of` already joins one
+  address into one row. The fences are
+  `test_the_limit_each_member_record_takes_a_place_of_the_page` and its R8
+  twin.
 - The drop of a sender row is local to the answer. A sender row of a
   colleague stays when the answer holds no alias, person or member row of
   that address. That happens without `feature:people`, when the People read

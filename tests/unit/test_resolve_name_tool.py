@@ -1314,47 +1314,66 @@ class TestTheMemberReader:
                   email="tr@acme.test")]
         assert more is False and reads["asked"] == [("Tara", 20)]
 
-    def test_a_member_and_its_people_row_take_one_place(self, reads):
-        """Fix round, P2-b: migration 206 gives each member a People row with
-        its name and address. Eleven such colleagues take eleven places of a
-        page of 20, not 22, so the page is not full (as on main). Mutation:
-        keep each member \u2192 `more` is True."""
-        reads["people"] = [{"id": f"p-{i}", "name": f"Kiran N{i}", "status": "active",
-                            "email": f"kiran{i}@acme.test"} for i in range(11)]
-        reads["members"] = [{"name": f"kiran  n{i}", "email": f"Kiran{i}@acme.test"}
-                            for i in range(11)]
-        got, more = asyncio.run(sources._people_named(member("people"), "Kiran", 20))
-        assert [n.kind for n in got] == ["person"] * 11 and more is False
-
-    def test_one_colleague_among_eleven_stays_one(self, apps, reads, monkeypatch):
-        """The route with the real People read: twelve colleagues hold
-        "Kiran", and one holds "Kiran Zed". Each is a person and a member.
-        The page holds 12 places of 20, so People is not full and the answer
-        is one, not partial."""
+    @pytest.fixture()
+    def real_people(self, apps, reads, monkeypatch):
+        """The route with the real People read (`sources._people_named`) over
+        the fake directory and member reads of `reads`."""
         monkeypatch.setitem(sources.REGISTRY, "people", dataclasses.replace(
             sources.REGISTRY["people"], named=sources._people_named))
+        return reads
+
+    #: An active colleague, with the People row of migration 206: the same
+    #: name and address. Only the address part holds "Chris".
+    CHRIS: ClassVar[dict[str, Any]] = {"id": PERSON_2, "name": "Christopher Lee",
+                                       "status": "active", "email": "chris@acme.test"}
+
+    def test_a_member_holds_the_name_by_its_address_part(self, real_people):
+        """Fix round 3 (P1 of the review): resolve_person matches the part of
+        the address (`_directory_matches`). Each member record reaches the
+        name test, beside its People row. Mutation: drop a member that a
+        People row holds \u2192 no exact row, and the verdict is none."""
+        real_people["people"] = [self.CHRIS]
+        real_people["members"] = [{"name": "Christopher Lee", "email": "chris@acme.test"}]
+        answer = ask("Chris")
+        assert _rows(answer) == [("people", "member", "chris@acme.test", "exact")]
+        assert answer["rows"][0]["email"] == "chris@acme.test"
+        assert answer["verdict"] == "one"
+
+    def test_the_kind_member_gives_the_member_beside_its_people_row(self, real_people):
+        """The `kinds` filter keeps the member. Mutation: drop it \u2192 none."""
+        real_people["people"] = [self.CHRIS]
+        real_people["members"] = [{"name": "Christopher Lee", "email": "chris@acme.test"}]
+        answer = ask("Christopher Lee", kinds="member")
+        assert _rows(answer) == [("people", "member", "chris@acme.test", "exact")]
+        assert answer["verdict"] == "one"
+        assert _rows(ask("Chris", kinds="member")) == [
+            ("people", "member", "chris@acme.test", "exact")]
+
+    def test_the_limit_each_member_record_takes_a_place_of_the_page(self, reads):
+        """The limit of find_engine.md \u00a75.2 (fix round 3): each member has a
+        People row (migration 206), and both records reach the page. Eleven
+        colleagues give 22 records, so the page of 20 is full. It fails safe:
+        the answer asks the member to confirm."""
+        reads["people"] = [{"id": f"p-{i}", "name": f"Kiran N{i}", "status": "active",
+                            "email": f"kiran{i}@acme.test"} for i in range(11)]
+        reads["members"] = [{"name": f"Kiran N{i}", "email": f"kiran{i}@acme.test"}
+                            for i in range(11)]
+        got, more = asyncio.run(sources._people_named(member("people"), "Kiran", 20))
+        assert len(got) == 20 and more is True
+        assert [n.kind for n in got] == ["person"] * 11 + ["member"] * 9
+
+    def test_the_limit_one_colleague_among_eleven_reads_partial(self, real_people):
+        """The same limit through the route: one colleague holds "Kiran Zed",
+        and eleven more hold "Kiran". People reads full, so the one exact
+        record reads partial, not one."""
         names_ = [f"Kiran N{i}" for i in range(11)] + ["Kiran Zed"]
-        reads["people"] = [{"id": f"p-{i}", "name": n, "status": "active",
-                            "email": f"kiran{i}@acme.test"} for i, n in enumerate(names_)]
-        reads["members"] = [{"name": n, "email": f"kiran{i}@acme.test"}
-                            for i, n in enumerate(names_)]
+        real_people["people"] = [{"id": f"p-{i}", "name": n, "status": "active",
+                                  "email": f"kiran{i}@acme.test"} for i, n in enumerate(names_)]
+        real_people["members"] = [{"name": n, "email": f"kiran{i}@acme.test"}
+                                  for i, n in enumerate(names_)]
         answer = ask("Kiran Zed")
         assert _rows(answer) == [("people", "person", "p-11", "exact")]
-        assert answer["full"] == [] and answer["verdict"] == "one"
-
-    @pytest.mark.parametrize(("person", "kept"), [
-        # Another name in the People row: the member holds a name of its own.
-        ({"name": "K. Nair", "status": "active"}, True),
-        # A person who is not active prints no address, and the member does.
-        ({"name": "Kiran Nair", "status": "contractor"}, True),
-        ({"name": "Kiran Nair", "status": "active"}, False),
-    ])
-    def test_a_member_stays_when_its_people_row_does_not_stand_for_it(
-            self, reads, person, kept):
-        reads["people"] = [{"id": "p-1", "email": "kiran@acme.test", **person}]
-        reads["members"] = [{"name": "Kiran Nair", "email": "kiran@acme.test"}]
-        got, _more = asyncio.run(sources._people_named(member("people"), "Kiran", 20))
-        assert ("member" in [n.kind for n in got]) is kept
+        assert answer["full"] == ["people"] and answer["verdict"] == "partial"
 
     def test_people_and_members_share_the_page(self, reads):
         reads["people"] = [{"id": f"p-{i}", "name": f"Tara {i}", "status": "active"}

@@ -809,16 +809,22 @@ class _Colleagues:
         self.p = p
         self.made: list[str] = []
 
-    def _address(self, word: str) -> str:
-        email = f"{word.lower()}-{uuid.uuid4().hex[:6]}@fb-{TAG}.test"
+    def _address(self, word: str, local: str | None = None) -> str:
+        """A new address. With *local*, the part before the ``@`` is *local*
+        alone, and the domain is new."""
+        if local is not None:
+            email = f"{local.lower()}@fb{uuid.uuid4().hex[:6]}-{TAG}.test"
+        else:
+            email = f"{word.lower()}-{uuid.uuid4().hex[:6]}@fb-{TAG}.test"
         self.made.append(email)
         return email
 
     def login(self, org: str, display: str, *, status: str = "active",
-              directory_name: str | None = None) -> str:
+              directory_name: str | None = None, local: str | None = None) -> str:
         """A member. Migration 206 gives it a People row of the same name and
-        address. *directory_name* renames that row."""
-        email = self._address(display.split()[0])
+        address. *directory_name* renames that row. *local* sets the part of
+        the address before the ``@``."""
+        email = self._address(display.split()[0], local)
         with self.p.admin_engine.begin() as c:
             c.execute(text(
                 "INSERT INTO app_user (email, display_name, role, status, organization_id) "
@@ -987,11 +993,12 @@ async def test_the_mail_of_an_alumnus_keeps_its_sender_row(
     assert got["verdict"] == "several"
 
 
-async def test_a_colleague_takes_one_place_of_the_people_page(
+async def test_the_limit_a_colleague_takes_two_places_of_the_people_page(
         world, fb, flags, roomy_names) -> None:
-    """Fix round, P2-b: each member has a People row (migration 206). Twelve
+    """The limit of find_engine.md §5.2 (fix round 3): each member has a
+    People row (migration 206), and each record reaches the page. Twelve
     such colleagues hold the word, and one holds the whole name. The page of
-    20 holds 12 places, not 24, so People is not full and the answer is one."""
+    20 is full, so the one exact record reads partial. It fails safe."""
     p = world["p"]
     flags("*")
     word = _word("Kirpage")
@@ -1001,7 +1008,28 @@ async def test_a_colleague_takes_one_place_of_the_people_page(
     got = await _resolve(p, _member(A, p.org_a, *ALL), f"{word} Zed")
     (row,) = got["rows"]
     assert (row["kind"], row["email"]) == ("person", zed)
-    assert got["full"] == [] and got["verdict"] == "one"
+    assert got["full"] == ["people"] and got["verdict"] == "partial"
+
+
+async def test_a_member_holds_the_name_by_its_address_part(
+        world, fb, flags, roomy_names) -> None:
+    """Fix round 3 (P1 of the review): resolve_person matches the part of the
+    address. An active colleague with the People row of migration 206 (one
+    name, one address): only the member record holds the asked word, by the
+    part of its address. Both kinds of ask give the member, with its address."""
+    p = world["p"]
+    flags("*")
+    me = _member(A, p.org_a, *ALL)
+    word = _word("Chr")
+    email = fb.login(p.org_a, f"{word}opher Lee", local=word)
+    got = await _resolve(p, me, word)
+    assert _rows(got) == {("people", "member", email, "exact")}
+    assert got["rows"][0]["email"] == email and got["verdict"] == "one"
+    only = await _resolve(p, me, word, kinds="member")
+    assert _rows(only) == {("people", "member", email, "exact")}
+    assert only["verdict"] == "one"
+    person = await _person_route(p, me, word)
+    assert [m["email"] for m in person["matches"]] == [email]
 
 
 async def test_the_member_read_keeps_org_b_out_with_no_rls(world, fb) -> None:

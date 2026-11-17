@@ -1029,9 +1029,15 @@ async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Name
     The members come from ``resolve_person``'s own read of ``app_user``
     (:func:`_members_named`), with the same gate, ``feature:people``. The
     two reads run one after the other, so the read keeps one session at a
-    time. At most *k* records together. A member that an active person of the
-    page holds, by its address and its name, gives no record: one colleague
-    takes one place of the page (migration 206)."""
+    time. At most *k* records together.
+
+    ⚠️ Each member record reaches the name test and the ``kinds`` filter of
+    the route, also beside a People row of its address (migration 206). Only
+    the member record holds the part of its address before the ``@``, as
+    ``resolve_person`` matches it. So a colleague takes two places of the
+    page, and about 11 colleagues fill it: People reads ``full``, and a
+    ``one`` becomes ``partial``. That fails safe, and ``find_engine.md`` §5.2
+    lists it as a limit (fix round 3)."""
     from gateway.routes.people.directory import list_directory
 
     answer = await list_directory(
@@ -1040,37 +1046,22 @@ async def _people_named(user: UserContext, name: str, k: int) -> tuple[list[Name
     )
     rows = list(answer.rows or [])
     out = []
-    #: (address, folded name) of each active person of the page.
-    held: set[tuple[str, str]] = set()
     for p in rows[:k]:
         full = " ".join(str(p.get("name") or "").split())
         preferred = " ".join(str(p.get("preferred_name") or "").split())
-        person = Named("person", str(p["id"]), _title(preferred or full),
-                       f"/people/{quote(str(p['id']))}",
-                       forms=person_forms(full, preferred),
-                       state=str(p.get("status") or ""),
-                       email=sender_address(p.get("email")))
-        out.append(person)
-        if person.email and person.state == ADDRESS_STATUS:
-            held |= {(person.email, _folded(n)) for n in (full, preferred) if n}
+        out.append(Named("person", str(p["id"]), _title(preferred or full),
+                         f"/people/{quote(str(p['id']))}",
+                         forms=person_forms(full, preferred),
+                         state=str(p.get("status") or ""),
+                         email=sender_address(p.get("email"))))
     members, more = await _members_named(user, name, k)
-    # One colleague takes one place of the page (FIND-6b fix round, P2-b).
-    # Migration 206 gives each member a People row with its display name and
-    # address. A member that an active person of the page holds, by address
-    # and name, adds nothing, so it takes no place. Any other member stays,
-    # and ``names.rows_of`` keeps one row for each address.
-    out += [m for m in members if (m.email, _folded(m.name)) not in held]
+    out += members
     return out[:k], len(rows) > k or more or len(out) > k
 
 
 #: The status of a person whose row prints the address: ``resolve_person``
 #: reads the active people only (``PEOPLE_SQL``). ``names.ADDRESS_STATUS``.
 ADDRESS_STATUS = "active"
-
-
-def _folded(name: str) -> str:
-    """*name* in one case, with one space between words. Pure."""
-    return " ".join(str(name or "").casefold().split())
 
 
 async def _members_named(user: UserContext, word: str, k: int) -> tuple[list[Named], bool]:
