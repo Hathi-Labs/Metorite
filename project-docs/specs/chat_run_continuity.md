@@ -17,6 +17,7 @@ release keeps the work.
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
+| S5 — the amber dot on a waiting chat (task 3600, rung 0, STANDARD, AGENT-SAFE) | **BUILT** 2026-11-17, branch `stu-needs-dot`, no flag. The dot on a chat row in `/chat` and the chat picker says "Needs your answer" in amber when the server marks the thread `needs_input`. It wins over the green and the blue dot. Done when a card opens in chat A, the member opens chat B, and the row of chat A shows the amber dot. The dot goes when the row closes. The side rails keep the old dot. The text of §8 that says `CHAT_DURABLE_ASKS` is off is stale: production has it on |
 | S6 — the activity of the other signed-in accounts | Spec only |
 | S7 — browser push for "needs your answer" and "finished" | The transport is BUILT and dark (WS-66 PN-1, 2026-10-25). The two chat events are not built (H-289). D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
