@@ -748,8 +748,9 @@ class Settings(BaseSettings):
     # `search_company` says how it matched (`matched_by`, `covers`, `of`), and
     # the hit with the most words comes first. `*` opens every org. Empty
     # opens none, and the answer is the one of KR-ZERO, byte for byte. It acts
-    # only with CONTEXT_RECENCY on. Reader: `gateway.retrieval.find.
-    # find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # only with CONTEXT_RECENCY on. It also opens the chat tool `resolve_name`
+    # and its route `GET /search/names` (FIND-5). Reader: `gateway.retrieval.
+    # find.find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
     # Spec: find_engine.md section 8.
     find_orgs: str = ""
     # WS-FIND HRD-21: CHAT_SEARCH_ORGS lists the org ids where company search
