@@ -1386,6 +1386,25 @@ async def test_a_bad_module_name_never_reaches_the_gateway(bad, monkeypatch) -> 
     assert calls == []
 
 
+@pytest.mark.parametrize("given", ["module:Products", "Module:Products", " module: Products "])
+async def test_a_module_tool_takes_the_module_prefix(given, monkeypatch) -> None:
+    """CRM-Q34-3 item 4: the module tools take ``module:<api_name>``, the
+    form of crm_aggregate, and the path holds the bare api_name."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _T.crm_list_module_records(given)
+    await _T.crm_get_module_record(given, _ID)
+    paths = [c["path"] for c in calls if c["path"].startswith("/crm/modules/")]
+    assert paths == ["/crm/modules/Products/records", f"/crm/modules/Products/records/{_ID}"]
+
+
+@pytest.mark.parametrize("bad", ["module:module:Products", "module:../admin", "module:"])
+async def test_the_prefix_is_stripped_once_and_the_rule_still_holds(bad, monkeypatch) -> None:
+    calls = _fake_gateway(monkeypatch, _responder)
+    out = await _T.crm_list_module_records(bad)
+    assert out.startswith("Refused:") and "Invalid module name" in out
+    assert calls == []
+
+
 async def test_the_shared_mode_reader_reads_the_member_route(monkeypatch) -> None:
     calls = _fake_gateway(monkeypatch, lambda _c: {"mode": "mirror"})
     assert await _T.crm_mode() == "mirror"
