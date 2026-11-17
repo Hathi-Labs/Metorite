@@ -493,9 +493,12 @@ async def test_detached_run_persists_final_message(monkeypatch):
     ]
     assert [e["type"] for e in events][-1] == "RUN_FINISHED"
 
-    # Give the drain task's finally a tick to run on_complete.
-    for _ in range(50):
-        if persisted:
+    # Give the drain task's finally a tick to run on_complete. Wait for the
+    # return value too (task 3586): the upsert runs in a thread, so `persisted`
+    # fills before on_complete returns, and a slow loop (Windows) read `returned`
+    # while it was still empty.
+    for _ in range(200):
+        if persisted and returned:
             break
         await asyncio.sleep(0.01)
 

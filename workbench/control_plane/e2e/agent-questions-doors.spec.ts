@@ -89,7 +89,7 @@ interface Opts {
 async function stub(page: Page, opts: Opts = {}) {
   let rows = [row(1), row(2)];
   const posts: { path: string; body: Record<string, unknown> }[] = [];
-  const oldRouteReads: string[] = [];
+  const oldRouteReads: { page: string; search: string }[] = [];
 
   await page.addInitScript(() => {
     localStorage.setItem("cc-shell-bar", "1");
@@ -119,8 +119,9 @@ async function stub(page: Page, opts: Opts = {}) {
       });
     }
     if (path === "projects/agent-runs") {
-      // The CIV-14k route of the old "Waiting for you" section.
-      oldRouteReads.push(url.search);
+      // The CIV-14k route of the old "Waiting for you" section, and the page
+      // that read it. Projects reads this route too (see the first test).
+      oldRouteReads.push({ page: new URL(request.frame().url()).pathname, search: url.search });
       return json([]);
     }
     if (request.method() === "POST" && /projects\/agent-runs\/r\d\/activities$/.test(path)) {
@@ -200,8 +201,12 @@ test.describe("Questions for me: the three doors", () => {
     await page.locator('[data-approval-tab="questions"]').click();
     await expect(page.locator("[data-question-row]")).toHaveCount(2);
     await expect(page.locator("[data-approval-full-list]")).toHaveAttribute("href", "/projects?app=questions");
-    // The CIV-14k route is not read while the questions route is on.
-    expect(oldRouteReads).toEqual([]);
+    // The CIV-14k route is not read while the questions route is on. Projects
+    // reads `agent-runs?status=awaiting` on each load, as its own probe of the
+    // agent-run routes ("Waiting on me", `projects/page.tsx`). That read is
+    // not the CIV-14k list, so the check counts the reads of Approvals only.
+    // It counted the probe before (task 3587), and it failed on every run.
+    expect(oldRouteReads.filter((r) => r.page === "/approvals")).toEqual([]);
   });
 
   test("an answer on the Approvals tab runs the write of the Projects list", async ({ page }) => {

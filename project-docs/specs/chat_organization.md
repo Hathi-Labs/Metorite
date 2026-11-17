@@ -7,9 +7,11 @@ its routes, is BUILT and dark behind `CHAT_TOPICS_ORGS` (task 3501,
 2026-11-16). CO-2b adds `topic_id` and `set_by`, the move, the pass that
 never overrides a member, the rail and the chip. The rest of D163 is not
 built.
+CO-13, the continue mark, is BUILT too (task 3512, 2026-11-16).
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
-decided them, so they add no decision number. §19 holds the questions.
+decided them, so they add no decision number. §19 holds the questions. Some
+slices of them are built since then, and §11 marks each one.
 
 **Verified** against the code on 2026-11-16 at `origin/main` `471704477`.
 
@@ -280,7 +282,7 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 | CO-10 | 3509 | 1 | Turn on the job worker and chat summaries for HathiLabs (§19 question 1) | **OWNER-GATE**. `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (D-PZ-35) | An idle chat on production has a stored summary, and the next new chat shows it |
 | CO-11 | 3510 | 2 | Pin (§18). **BUILT, dark** (2026-11-16), flag `CHAT_PIN_ORGS`. Chat parity: a follow-up slice, CO-11b (task 3563), needs cal-tasks. The flip waits for §18, §19 question 8 and the parity ceiling (§18) | AGENT-SAFE, dark | A pin shows on a second device, a colleague sees none, and an archive unpins |
 | CO-12 | 3511 | 2 | First-run hints and the empty state (§17.2, §17.3) | AGENT-SAFE | Each hint shows once per member, and the empty state shows no private topic of a colleague |
-| CO-13 | 3512 | 3 | The continue mark (§17.5) | AGENT-SAFE | A continued chat shows its source, and `test_continued_from_readers.py` stays green |
+| CO-13 | 3512 | 3 | The continue mark (§17.5). **BUILT** (task 3512, 2026-11-16) | AGENT-SAFE | A continued chat shows its source, and `test_continued_from_readers.py` stays green. That fence pins three things. No Python file outside the allow list names the column. No Python file outside `routes/chat.py` names `continuedFrom`. The dock names `continuedFrom` once |
 | CO-14 | 3513 | Later | The length cue (§17.4). It waits for HRD-19 (task 2998) | AGENT-SAFE | The cue shows at 60 % and not below, and a tap runs Start clean |
 | CO-15 | 3514 | 3 | The carry door: a carry mode of the WT-1 route (§17.1) | HIGH. AGENT-SAFE, dark. The §9 owner agrees first | The R8 cases of `test_continue_carry.py` pass for both modes, and a held source carries no summary |
 | CO-16 | 3515 | 4 | The condense note: pick, build, preview, edit, versions, Delete (§16.1, §16.2, §16.5) | HIGH: a new table, chat words to a model. AGENT-SAFE, dark | A pasted mail and an assistant reply never reach a note. A room and an `off` chat are never a source. A deleted source leaves no text in any version |
@@ -638,6 +640,22 @@ returns the link. That function is on the allow list of
 `test_continued_from_readers.py` already, and no TypeScript file names the
 column. A source that the member cannot read shows "Continued from an earlier
 chat", with no title and no link. A deleted source leaves no link.
+
+**As built** (task 3512, 2026-11-16). `_get_sessions` adds `s.continued_from` to
+its one statement. It returns `continuedFrom`, which is `null` for a chat that
+continues nothing and for a deleted source. Otherwise it is
+`{id, title}`.
+
+A source is readable when it is a row of the same list, so the
+rule is `SESSION_VISIBLE_SQL` and no second rule exists. A source that is not
+in the list gives `{id: null, title: null}`. This covers a chat that the member
+cannot read and a chat of another org. An archived source stays in the list, so
+it keeps its title and its link.
+
+The mark is a row under the header
+(`src/lib/shell/ContinuedMark.tsx`). The link opens the source in the same
+chat view. Tests: `test_continue_mark.py`, `test_continue_mark_r8.py` and
+`ContinuedMark.test.tsx`.
 
 ### 17.6 Past chats in search (HRD-21)
 
