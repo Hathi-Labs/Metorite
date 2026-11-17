@@ -589,6 +589,15 @@ def _live_refusals(
             and healthy_probe_at > at
         ):
             continue
+        # A vendor with no probe (Anthropic, OpenAI) cannot clear a 402 by a
+        # probe. A call that it SERVED after the 402 proves the top-up worked.
+        if (
+            status in _SUPERSEDED_BY_PROBE
+            and h.probe_status in (None, "not_exposed")
+            and h.last_success_at is not None
+            and h.last_success_at > at
+        ):
+            continue
         if status in _NEEDS_REPEAT:
             if h.recent_count_by_status.get(status, 0) < repeat:
                 continue

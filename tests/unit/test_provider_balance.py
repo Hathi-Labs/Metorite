@@ -280,10 +280,23 @@ class TestStatusRule:
         v = pb.assess(h, now=NOW)
         assert (v.status, v.cause) == ("out", "payment")
 
-    def test_a_402_is_not_cleared_by_a_later_success(self):
-        """The reviewer's rule: 401 and 402 stay as they were."""
+    def test_a_402_is_cleared_by_a_later_SERVED_call_when_there_is_no_probe(self):
+        """Recovery after a top-up (AO-1). Anthropic has no balance probe, and
+        every call tries it first, so a served call after the 402 proves it."""
         h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW - timedelta(minutes=5)},
                 recent_count_by_status={402: 1}, last_success_at=NOW)
+        assert pb.assess(h, now=NOW).status != "out"
+
+    def test_a_served_call_BEFORE_the_402_does_not_clear_it(self):
+        h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW},
+                recent_count_by_status={402: 1}, last_success_at=NOW - timedelta(minutes=5))
+        assert pb.assess(h, now=NOW).status == "out"
+
+    def test_a_vendor_WITH_a_probe_keeps_the_probe_rule(self):
+        """A served call does not clear a 402 when the vendor has a probe. Only
+        a healthy probe newer than the 402 does."""
+        h = _ok_usd("50", last_refusal_by_status={402: NOW - timedelta(minutes=1)},
+                    recent_count_by_status={402: 1}, last_success_at=NOW)
         assert pb.assess(h, now=NOW).status == "out"
 
     @pytest.mark.parametrize("status", [403, 429])

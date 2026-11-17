@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import litellm
 import pytest
 
 from customer_console.router import (
@@ -250,7 +251,7 @@ class TestABillingRefusalReadsAs402:
         assert seen == ["anthropic/a"]
 
     def test_the_failed_walk_carries_402_and_the_billing_hint_only(self, provider):
-        plan, seen = provider
+        plan, _ = provider
         plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
         with pytest.raises(UpstreamFailed) as exc:
             walk([step("anthropic/a")])
@@ -262,7 +263,7 @@ class TestABillingRefusalReadsAs402:
         assert "credit balance" not in str(exc.value).lower()
 
     def test_on_refusal_gets_402(self, provider):
-        plan, seen = provider
+        plan, _ = provider
         plan["anthropic/a"] = {"ok": False, "status": 400, "message": CREDIT_MSG}
         got: list[Any] = []
         asyncio.run(
@@ -276,20 +277,81 @@ class TestABillingRefusalReadsAs402:
         assert got == [("anthropic/a", 402)]
 
     @pytest.mark.parametrize(
-        ("status", "message", "want"),
+        ("vendor", "status", "message", "want"),
         [
-            (400, "Your credit balance is too low", 402),
-            (429, "You exceeded your current quota, please check your plan", 402),
-            (429, "insufficient_quota", 402),
-            (403, "Insufficient Balance", 402),
-            (429, "slow down", 429),
-            (500, "credit balance is too low", 500),
-            (402, "anything", 402),
-            (None, "credit balance is too low", None),
+            ("anthropic", 400, "Your credit balance is too low", 402),
+            ("anthropic", 400, "You have reached your specified API usage limits.", 402),
+            ("openai", 429, "You exceeded your current quota, please check your plan", 402),
+            ("deepseek", 403, "Insufficient Balance", 402),
+            ("openrouter", 402, "anything", 402),
+            ("openrouter", 403, "This request requires more credits", 402),
+            ("openai", 429, "slow down", 429),
+            ("anthropic", 500, "credit balance is too low", 500),
+            ("anthropic", None, "credit balance is too low", None),
+            # Vendor scope: the phrase of one vendor never lifts another's error.
+            ("gemini", 429, "You exceeded your current quota", 429),
+            ("anthropic", 429, "You exceeded your current quota", 429),
+            (None, 400, "credit balance is too low", 400),
+            # A bare word, and a quoted prompt, never lift.
+            ("openrouter", 403, "flagged: I want to purchase credits", 403),
+            ("anthropic", 400, "billing address is invalid", 400),
         ],
     )
-    def test_effective_status(self, status, message, want):
-        assert effective_status(Upstream(status, message)) == want
+    def test_effective_status(self, vendor, status, message, want):
+        assert effective_status(Upstream(status, message), vendor) == want
+
+    def test_a_REAL_litellm_openai_quota_error_lifts(self):
+        """The str(exc) shape litellm builds for ``openai/``. It drops the code."""
+        exc = litellm.RateLimitError(
+            message="OpenAIException - You exceeded your current quota, please "
+            "check your plan and billing details.",
+            model="gpt-4o",
+            llm_provider="openai",
+        )
+        assert "insufficient_quota" not in str(exc)
+        assert effective_status(exc, "openai") == 402
+
+    def test_a_REAL_litellm_anthropic_400_lifts(self):
+        exc = litellm.BadRequestError(
+            message='AnthropicException - {"type":"error","error":{"type":'
+            '"invalid_request_error","message":"Your credit balance is too low"}}',
+            model="claude",
+            llm_provider="anthropic",
+        )
+        assert effective_status(exc, "anthropic") == 402
+
+    def test_a_gemini_per_minute_429_with_the_quota_sentence_stays_429(self, provider):
+        """The Gemini rate limit holds the OpenAI sentence. It must fail over
+        to the next Gemini model and never strike Gemini off."""
+        plan, seen = provider
+        body = (
+            "GeminiException - You exceeded your current quota, please check your "
+            "plan and billing details. RetryInfo retryDelay 21s"
+        )
+        plan["gemini/pro"] = {"ok": False, "status": 429, "message": body}
+        _, served = walk([step("gemini/pro"), step("gemini/flash")])
+        assert seen == ["gemini/pro", "gemini/flash"]
+        assert served.model == "gemini/flash"
+
+    def test_a_billing_400_on_a_STREAM_opens_the_next_vendors_stream(self, stream_provider):
+        plan, seen = stream_provider
+        plan["anthropic/a"] = {"open": 400, "message": CREDIT_MSG}
+        refusals: list[Any] = []
+
+        async def _go():
+            head, _, served = await open_stream_chain(
+                [step("anthropic/a"), step("anthropic/b"), step("deepseek/c")],
+                lambda s: {"model": s.model},
+                None,
+                lambda s, st: refusals.append((s.model, st)),
+            )
+            return head, served
+
+        head, served = asyncio.run(_go())
+        assert refusals == [("anthropic/a", 402)]
+        assert seen == ["anthropic/a", "deepseek/c"]
+        assert served.model == "deepseek/c"
+        assert head == [b"deepseek/c-1"]
 
 
 class TestTheRecord:
@@ -343,7 +405,7 @@ def stream_provider():
         seen.append(model)
         outcome = plan.get(model, {})
         if "open" in outcome:
-            raise Upstream(outcome["open"])
+            raise Upstream(outcome["open"], outcome.get("message"))
         frames = outcome.get("frames", [f"{model}-1".encode()])
         after = outcome.get("after_open")
 
