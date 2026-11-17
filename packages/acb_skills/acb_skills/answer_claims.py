@@ -19,24 +19,39 @@ order. So "I'll check the thread" followed by ``read_thread`` in the same run
 reads as kept, never as a broken promise.
 
 **The outcome of a call.** Each call of a tool of :data:`ACT_TOOLS` is
-``acted``, ``not_acted`` or ``unknown``:
+``acted``, ``not_acted`` or ``unknown``. The rating FAILS CLOSED: ``acted``
+needs positive evidence.
 
 * ``not_acted``: the tool raised, or its result starts with a lead of
   :data:`NOT_ACTED_LEADS` (``email_chat_context.NO_ACT_LEADS`` and the leads
-  of ``ask_tools.CARD_NOT_DONE_LEADS``), or it is a refusal of
-  ``acb_common.tool_refusals``, or its head says that nothing was done.
-* ``unknown``: the run holds no result for the call, or the result is empty.
-  An unknown outcome abstains.
-* ``acted``: each other result.
+  of ``ask_tools.CARD_NOT_DONE_LEADS``), or with the head of a template of
+  :data:`NOT_ACTED_TEMPLATES` (the held and withheld answers of ``egress``,
+  the hand-off refusals of ``tool_packs``, and ``PACK_CALL_REFUSED`` that the
+  seam passes in). A refusal of ``acb_common.tool_refusals``, a "Not
+  forwarded." lead and a head that says that nothing was done count too.
+* ``unknown``: the run holds no result, the result is empty, or the HRD-3
+  guard says that the call "may have changed part of it". A result of an act
+  tool that starts with no head of :data:`ACTED_HEADS` is ``unknown`` too. An
+  unknown outcome abstains.
+* ``acted``: the result starts with a success head of its own tool, as its
+  source writes it (:data:`ACTED_HEADS`). A tool with no head never rates
+  ``acted``, so its claims abstain.
 
 **The rules.** Each sentence of the answer gives at most one verdict for each
 rule and kind:
 
-* ``act_without_outcome`` (A): "I sent", "I have created", "we added". A
-  first-person act of kind K in the past or the perfect, and no ``acted``
-  call of K in the run.
+* ``act_without_outcome`` (A): "I sent", "I have created", "we added two
+  tasks". A first-person act of kind K in the past or the perfect, and no
+  ``acted`` call of K in the run. A make word gives ``task.create`` only when
+  its object IS a new task. "added a comment to the task" or "added the task
+  to the Q3 cycle" abstains (``unknown_kind``), so a claim never takes a wrong
+  kind. A time word of an earlier turn ("yesterday", "already", "on Monday")
+  abstains (``earlier_turn``) when the run holds no acted call of K.
 * ``doubt_without_outcome`` (B): "it was not sent", "neither email went out".
-  A negated act of kind K, and no ``not_acted`` call of K in the run.
+  A negated act of kind K. Fix round 1 (PROPOSED to the owner): it fires ONLY
+  against an ``acted`` call of K in the run, the act that it contradicts. A
+  ``not_acted`` call of K passes it. With no call of K it abstains
+  (``no_call``).
 * ``promise_without_followup`` (C): "I'll ... later", "I'll follow up", "get
   back to you", "let you know", "I'll check the thread". It passes when the
   run made a reminder or a task, when a call of its act kind ran, or when any
@@ -61,6 +76,10 @@ the stored call of a late Approve ran before the model with no middleware
 (orchestrator contract 22b), and the executor marks the run with
 :data:`RESUMED_KEY`. ``unknown_outcome``: the only call of the kind has no
 outcome. ``earlier_turn``: a claim of A that points at an earlier turn.
+``no_call``: a doubt with no call of its kind. ``unknown_kind``: an act word
+whose object is not a new task or reminder. ``long_sentence``: a sentence over
+:data:`MAX_SENTENCE_CHARS` characters, which the check does not read, so the
+cost of a run stays bounded on the event loop.
 
 **The log.** ONE line for each run: the mode, the agent, the count of each
 verdict and of each call outcome, the act kinds, the rule ids, the act tool
@@ -86,9 +105,27 @@ from acb_common.tool_refusals import is_refusal
 from agent_framework import ContextProvider
 
 from acb_skills.ask_tools import CARD_NOT_DONE_LEADS
-from acb_skills.egress import CARD_BOUND_SEND_TOOLS, DELEGATION_TOOLS, HELD_CARD_SEND_TOOLS
+from acb_skills.egress import (
+    CARD_BOUND_SEND_TOOLS,
+    DELEGATION_TOOLS,
+    EGRESS_HELD_MAIL_ANSWER,
+    EGRESS_HELD_MAIL_ANSWER_CARDS,
+    EGRESS_HELD_PACK_ANSWER,
+    EGRESS_HELD_PACK_ANSWER_CARDS,
+    EGRESS_HELD_PACK_ANSWER_NO_WRITES,
+    EGRESS_HELD_PACK_ANSWER_NO_WRITES_CONTINUE,
+    EGRESS_HELD_PACK_ANSWER_OTHER,
+    EGRESS_WITHHELD_ANSWER,
+    HELD_CARD_SEND_TOOLS,
+)
 from acb_skills.email_chat_context import NO_ACT_LEADS
-from acb_skills.tool_packs import WRITE_KINDS
+from acb_skills.pack_tool_guard import failure_text
+from acb_skills.tool_packs import (
+    HANDED_FAILED_WRITE_REFUSED,
+    HANDED_WRITE_REFUSED,
+    PACK_ONLY_REFUSED,
+    WRITE_KINDS,
+)
 
 _log = get_logger("acb_skills.answer_claims")
 
@@ -134,9 +171,21 @@ EARLIER_TURN = "earlier_turn"
 TOO_LONG = "too_long"
 LANG_SKIPPED = "lang_skipped"
 NO_TEXT = "no_text"
+#: Fix round 1. A doubt with no call of its kind in the run (rule B).
+NO_CALL = "no_call"
+#: Fix round 1. A sentence over :data:`MAX_SENTENCE_CHARS` is not read.
+LONG_SENTENCE = "long_sentence"
+#: Fix round 1. An act word about a task or a reminder whose object is not a
+#: new one ("added a comment to the task"). Never a wrong kind.
+UNKNOWN_KIND = "unknown_kind"
 ABSTAIN_REASONS: tuple[str, ...] = (
     DELEGATED, RESUME, UNKNOWN_OUTCOME, EARLIER_TURN, TOO_LONG, LANG_SKIPPED, NO_TEXT,
+    NO_CALL, LONG_SENTENCE, UNKNOWN_KIND,
 )
+#: A longer sentence is skipped, so the cost of a sentence stays bounded.
+MAX_SENTENCE_CHARS = 600
+#: The most characters after a first-person subject that the act rule reads.
+CLAUSE_CHARS = 120
 
 # ── The act table (REUSED: tool_packs.WRITE_KINDS and the egress send maps) ─
 
@@ -174,6 +223,50 @@ FOLLOWUP_KINDS: frozenset[str] = frozenset({REMINDER_SET, TASK_CREATE})
 NOT_ACTED_LEADS: tuple[str, ...] = tuple(dict.fromkeys((
     *NO_ACT_LEADS, *(f"{lead}:" for lead in CARD_NOT_DONE_LEADS),
 )))
+
+#: Fix round 1 (P1-a). The answer of a call that the platform held or
+#: refused. Each is the REAL constant, and its first sentence is the head
+#: (:func:`template_heads`). ``_tool_injection.PACK_CALL_REFUSED`` lives in the
+#: orchestrator, which this package never imports, so the seam passes it to
+#: :class:`ClaimCheckProvider`.
+NOT_ACTED_TEMPLATES: tuple[str, ...] = (
+    EGRESS_WITHHELD_ANSWER,
+    EGRESS_HELD_MAIL_ANSWER,
+    EGRESS_HELD_MAIL_ANSWER_CARDS,
+    EGRESS_HELD_PACK_ANSWER,
+    EGRESS_HELD_PACK_ANSWER_CARDS,
+    EGRESS_HELD_PACK_ANSWER_NO_WRITES,
+    EGRESS_HELD_PACK_ANSWER_NO_WRITES_CONTINUE,
+    EGRESS_HELD_PACK_ANSWER_OTHER,
+    HANDED_WRITE_REFUSED,
+    HANDED_FAILED_WRITE_REFUSED,
+    PACK_ONLY_REFUSED,
+)
+
+#: Fix round 1. "Not forwarded.", "Not scheduled.": the email tools lead a
+#: refusal with "Not" and the participle of their act (``agent-email-assistant``).
+_NOT_PARTICIPLE = re.compile(r"^Not (?:[a-z]+ed|shown|sent|run|done)\b")
+
+#: Fix round 1. The HRD-3 guard text of a write that raised: "It may have
+#: changed part of it." It starts with ``FAILED``, but the act may have run,
+#: so it rates ``unknown``. The phrase comes from the guard itself.
+_GUARD_TEXT = failure_text(RuntimeError(), read_only=False)
+PARTIAL_WRITE = _GUARD_TEXT.split("). ", 1)[1].split(". ", 1)[0] + "."
+
+#: Fix round 1 (P1-a). The success head of each act tool, as its source
+#: writes it. ``acted`` needs one of them. A fence pins each head to the home
+#: module of its tool. An act tool with no entry never rates ``acted``.
+ACTED_HEADS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "send_email": ("Sent", "Replied to"),
+    "compose_reply": ("Sent to",),
+    "forward_email": ("Forwarded",),
+    "send_draft": ("Draft sent",),
+    "schedule_send": ("Scheduled",),
+    "create_task": ("Created:",),
+    "update_task": ("Updated:",),
+    "complete": ("Done:",),
+    "set_reminder": ("Reminder set",),
+})
 
 #: A sentence that says that nothing was done ("Nothing was sent or saved.",
 #: "Nothing is written until the member taps Confirm.").
@@ -232,12 +325,42 @@ def _text_of(result: Any) -> str:
     return str(result)
 
 
-def call_outcome(result: Any, exception: Any = None, *, found: bool = True) -> str:
-    """``acted``, ``not_acted`` or ``unknown`` for one call of an act tool.
+_PLACEHOLDER = re.compile(r"\\\{[a-z_]+\\\}")
 
-    *found* is False when the run holds no result for the call. A raise is
-    ``not_acted``. An empty result is ``unknown``, and an unknown outcome
-    abstains.
+
+def template_heads(templates: Iterable[str]) -> tuple[re.Pattern[str], ...]:
+    """The head of each template as a pattern: its first sentence, with each
+    ``{name}`` or ``{tool}`` read as one word. "{name} is off now." matches
+    "send_email is off now."."""
+    heads: list[re.Pattern[str]] = []
+    for template in templates:
+        first = str(template).split(". ", 1)[0].rstrip(".") + "."
+        heads.append(re.compile("^" + _PLACEHOLDER.sub(r"\\S+", re.escape(first))))
+    return tuple(heads)
+
+
+#: The heads of :data:`NOT_ACTED_TEMPLATES`.
+NOT_ACTED_HEADS: tuple[re.Pattern[str], ...] = template_heads(NOT_ACTED_TEMPLATES)
+
+
+def _not_acted(text: str, extra: Sequence[re.Pattern[str]] = ()) -> bool:
+    """True when *text* is a known answer of a call that did not act."""
+    if text.startswith(NOT_ACTED_LEADS) or is_refusal(text) or _NOT_PARTICIPLE.match(text):
+        return True
+    if any(head.match(text) for head in (*NOT_ACTED_HEADS, *extra)):
+        return True
+    return bool(_NOTHING_DONE.search(text[:RESULT_HEAD_CHARS]))
+
+
+def call_outcome(result: Any, exception: Any = None, *, found: bool = True,
+                 tool: str = "", extra: Sequence[re.Pattern[str]] = ()) -> str:
+    """``acted``, ``not_acted`` or ``unknown`` for one call.
+
+    *found* is False when the run holds no result for the call. *tool* names
+    the tool. *extra* holds more not-acted heads, from the seam. For a tool of
+    :data:`ACT_TOOLS` it FAILS CLOSED: ``acted`` needs a head of
+    :data:`ACTED_HEADS`, and each other result is ``unknown``. A tool outside
+    the table rates ``acted`` for each result that is no known refusal.
     """
     if not found:
         return UNKNOWN
@@ -246,10 +369,13 @@ def call_outcome(result: Any, exception: Any = None, *, found: bool = True) -> s
     text = _text_of(result).lstrip()
     if not text:
         return UNKNOWN
-    if text.startswith(NOT_ACTED_LEADS) or is_refusal(text):
+    if is_refusal(text) and PARTIAL_WRITE in text[:RESULT_HEAD_CHARS]:
+        # HRD-3: the write raised, and it may have changed part of it.
+        return UNKNOWN
+    if _not_acted(text, extra):
         return NOT_ACTED
-    if _NOTHING_DONE.search(text[:RESULT_HEAD_CHARS]):
-        return NOT_ACTED
+    if tool in ACT_TOOLS:
+        return ACTED if text.startswith(ACTED_HEADS.get(tool, ())) else UNKNOWN
     return ACTED
 
 
@@ -276,12 +402,14 @@ def _result_of(content: Any) -> tuple[Any, Any]:
     return result, getattr(content, "exception", None)
 
 
-def read_run(response: Any) -> tuple[list[tuple[int, str]], list[RunCall]]:
+def read_run(response: Any, extra: Sequence[re.Pattern[str]] = (),
+             ) -> tuple[list[tuple[int, str]], list[RunCall]]:
     """The text blocks and the calls of a whole run, in order.
 
     A block is the assistant text between two tool steps. Its place is the
     count of tool steps before it, and a call's place is its own step. So a
-    call with a larger place than a block comes after that block.
+    call with a larger place than a block comes after that block. *extra*
+    holds more not-acted heads for :func:`call_outcome`.
     """
     blocks: list[tuple[int, str]] = []
     raw_calls: list[tuple[str, str, int]] = []
@@ -314,8 +442,8 @@ def read_run(response: Any) -> tuple[list[tuple[int, str]], list[RunCall]]:
     if buf:
         blocks.append((buf_at, "".join(buf)))
     calls = [
-        RunCall(name, place, call_outcome(*results[call_id]) if call_id in results
-                else UNKNOWN)
+        RunCall(name, place, call_outcome(*results[call_id], tool=name, extra=extra)
+                if call_id in results else UNKNOWN)
         for call_id, name, place in raw_calls
     ]
     return blocks, calls
@@ -419,27 +547,67 @@ def _window(sentence: str, end: int) -> str:
     return rest[:cut.start()] if cut else rest
 
 
+#: Fix round 1 (P1-b). The kind of an act word about a task or a reminder
+#: whose object is not a new one ("added a comment to the task"). A claim of
+#: this kind abstains (``unknown_kind``), so it never takes a wrong kind.
+UNCLEAR = "?"
+#: The object right after a verb: a determiner, at most two words, then the
+#: noun. "a new task", "two tasks", "the task", but not "a comment to the
+#: task" or "the urgent tag to the task".
+_OBJECT = re.compile(
+    r"^\s*(?P<det>(?:a|an|the|one|two|three|four|five|six|seven|eight|nine|ten|\d+|"
+    r"new|your|my|our|this|that|these|those|both|some|several|another)\s+)?"
+    r"(?:[a-z0-9'#-]+\s+){0,2}?"
+    r"(?P<noun>(?:sub)?tasks?|to-?dos?|action items?|reminders?)\b(?P<after>.*)$"
+)
+_DEFINITE = frozenset({"the", "your", "my", "our", "this", "that", "these", "those"})
+#: "added the task to the Q3 cycle" moves a task that exists.
+_MOVED = re.compile(r"^\s*(?:to|into|onto|under)\b")
+
+
 def _kind_of(verb: str, scope: str, window: str) -> str | None:
-    """The act kind of *verb*. *scope* is where its object noun may sit, and
-    *window* is the object of an active verb."""
+    """The act kind of *verb*, :data:`UNCLEAR`, or None.
+
+    *window* holds the words after the verb, so its object. *scope* is where
+    the subject of a passive may sit ("the task was not created"). A make
+    word gives ``task.create`` only when its object IS a new task.
+    """
     if verb in _SEND_FORMS:
         return None if _CARD_OBJECT.search(window) else EMAIL_SEND
     if verb == "remind":
         return REMINDER_SET
     if verb in _REMIND_FORMS or verb in _CREATE_FORMS:
-        # The nearest noun names the object: "created the task and set a
-        # reminder" makes a task, "added a reminder to the task" a reminder.
-        task, reminder = _TASK_NOUN.search(scope), _REMINDER_NOUN.search(scope)
-        if reminder and verb in _REMIND_FORMS and (not task or reminder.start() < task.start()):
-            return REMINDER_SET
-        if task and verb in _CREATE_FORMS:
-            return TASK_CREATE
+        obj = _OBJECT.match(window)
+        if obj:
+            det = (obj.group("det") or "").strip()
+            if obj.group("noun").startswith("reminder"):
+                if verb in _REMIND_FORMS:
+                    return REMINDER_SET
+            elif verb in _CREATE_FORMS:
+                if det in _DEFINITE and _MOVED.match(obj.group("after")):
+                    return UNCLEAR
+                return TASK_CREATE
+        elif not window.strip():
+            # A passive: its subject is the object ("the task was not created").
+            task, reminder = _TASK_NOUN.search(scope), _REMINDER_NOUN.search(scope)
+            if reminder and verb in _REMIND_FORMS and (not task or reminder.start() < task.start()):
+                return REMINDER_SET
+            if task and verb in _CREATE_FORMS:
+                return TASK_CREATE
     if verb in _UPDATE_FORMS and (
         _TASK_NOUN.search(scope)
         or (verb in ("mark", "marked") and _DONE_WORD.search(scope))
     ):
         return TASK_UPDATE
+    if (verb in _CREATE_FORMS or verb in _REMIND_FORMS) and (
+        _TASK_NOUN.search(window) or _REMINDER_NOUN.search(window)
+    ):
+        return UNCLEAR
     return None
+
+
+def _known(kind: str | None) -> str | None:
+    return None if kind == UNCLEAR else kind
 
 
 def _any_kind(sentence: str) -> str | None:
@@ -447,7 +615,7 @@ def _any_kind(sentence: str) -> str | None:
     if _OUT.search(sentence):
         return EMAIL_SEND
     for match in re.finditer(rf"\b({_VERB_ALL})\b", sentence):
-        kind = _kind_of(match.group(1), sentence, _window(sentence, match.end()))
+        kind = _known(_kind_of(match.group(1), sentence, _window(sentence, match.end())))
         if kind:
             return kind
     return None
@@ -512,6 +680,13 @@ _BACK_REF = re.compile(
     r"|\bearlier,? i\b|\bbefore,? i (?:said|told)\b"
 )
 _RETRACT = re.compile(r"\b(?:wrong|incorrect|not true|untrue|a mistake|mistaken|in error)\b")
+_WEEKDAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+#: Fix round 1. A time word that places an act of rule A in an earlier turn
+#: ("I sent it yesterday", "I've already created the task"). Rule A only.
+_EARLIER_A = re.compile(
+    r"\b(?:earlier|this morning|yesterday|already|before|previously|ago|the other day|"
+    rf"last (?:week|month|night|time|{_WEEKDAY})|on {_WEEKDAY})\b"
+)
 _FUTURE = re.compile(
     r"\b(?:(?:i|we)(?:'ll|\s+will|\s+shall|'m going to|\s+am going to|'re going to|"
     r"\s+are going to)|let me|let us|let's)\b"
@@ -549,21 +724,24 @@ def _doubt_kind(sentence: str) -> str | None:
         return EMAIL_SEND
     for pattern in (_NEGATED, _NONE_DONE):
         for match in pattern.finditer(sentence):
-            kind = _kind_of(match.group(1), sentence, _window(sentence, match.end()))
+            kind = _known(_kind_of(match.group(1), sentence, _window(sentence, match.end())))
             if kind:
                 return kind
     return None
 
 
 def _act_kinds(sentence: str) -> list[str]:
-    """The kind of each first-person act in the past or the perfect.
+    """The kind of each first-person act in the past or the perfect, or
+    :data:`UNCLEAR`.
 
-    The verb comes from the clause of the subject. Its object comes from the
-    sentence after the verb, so "I've sent you a card" is no send of mail."""
+    The verb comes from the clause of the subject, at most
+    :data:`CLAUSE_CHARS` characters (fix round 1, P2: the cost stays linear).
+    Its object comes from the sentence after the verb, so "I've sent you a
+    card" is no send of mail."""
     kinds: list[str] = []
     for subject in _SUBJECT.finditer(sentence):
         start = subject.end()
-        clause = sentence[start:]
+        clause = sentence[start:start + CLAUSE_CHARS]
         stop = _OTHER_CLAUSE.search(clause)
         if stop:
             clause = clause[:stop.start()]
@@ -598,7 +776,7 @@ def _promise_kind(sentence: str) -> str | None:
         if len(rest[:verb.start()].split()) >= PROMISE_WORDS:
             break
         word = verb.group(1)
-        kind = _kind_of(word, rest, _window(rest, verb.end()))
+        kind = _known(_kind_of(word, rest, _window(rest, verb.end())))
         if kind:
             return kind
         if word in _READ_FORMS:
@@ -608,10 +786,17 @@ def _promise_kind(sentence: str) -> str | None:
     return None
 
 
-def claims_of(text: str, at: int = 0) -> list[Claim]:
-    """The claims of one block of answer text at the place *at*."""
+def scan(text: str, at: int = 0) -> tuple[list[Claim], set[str]]:
+    """The claims of one block of answer text at the place *at*, and the
+    reasons of each sentence that it skipped."""
     out: list[Claim] = []
+    skipped: set[str] = set()
     for sentence in sentences(text):
+        if len(sentence) > MAX_SENTENCE_CHARS:
+            # Fix round 1 (P2): a sentence this long is no answer sentence,
+            # and its read must not block the event loop.
+            skipped.add(LONG_SENTENCE)
+            continue
         if _excluded(sentence):
             continue
         back_ref = bool(_BACK_REF.search(sentence))
@@ -624,12 +809,20 @@ def claims_of(text: str, at: int = 0) -> list[Claim]:
                 continue
         if doubt:
             out.append(Claim(DOUBT_WITHOUT_OUTCOME, doubt, at, back_ref))
+        # Rule A only: a time word places the act in an earlier turn. It
+        # never feeds earlier_turn_doubt.
+        earlier = back_ref or bool(_EARLIER_A.search(sentence))
         for kind in _act_kinds(sentence):
-            out.append(Claim(ACT_WITHOUT_OUTCOME, kind, at, back_ref))
+            out.append(Claim(ACT_WITHOUT_OUTCOME, kind, at, earlier))
         promise = _promise_kind(sentence)
         if promise:
             out.append(Claim(PROMISE_WITHOUT_FOLLOWUP, promise, at, back_ref))
-    return out
+    return out, skipped
+
+
+def claims_of(text: str, at: int = 0) -> list[Claim]:
+    """The claims of one block of answer text at the place *at*."""
+    return scan(text, at)[0]
 
 
 # ── The verdicts of a run ───────────────────────────────────────────────────
@@ -700,17 +893,26 @@ def judge(claim: Claim, calls: Sequence[RunCall], *, delegated: bool = False,
     of an abstain."""
     if claim.rule == EARLIER_TURN_DOUBT:
         return EARLIER_TURN_DOUBT, None
+    if claim.kind == UNCLEAR:
+        return ABSTAIN, UNKNOWN_KIND
     of_kind = [c for c in calls if ACT_TOOLS.get(c.name) == claim.kind]
     if claim.rule == ACT_WITHOUT_OUTCOME:
-        if claim.back_ref:
-            return ABSTAIN, EARLIER_TURN
+        # An acted call first: "I've already sent it" with a send passes.
         if any(c.outcome == ACTED for c in of_kind):
             return PASS, None
+        if claim.back_ref:
+            return ABSTAIN, EARLIER_TURN
         return _abstain_or(claim.rule, of_kind, delegated=delegated, resumed=resumed)
     if claim.rule == DOUBT_WITHOUT_OUTCOME:
+        # Fix round 1 (PROPOSED to the owner): a doubt fires only against an
+        # acted call of its kind, the act that it contradicts (D1).
         if any(c.outcome == NOT_ACTED for c in of_kind):
             return PASS, None
-        return _abstain_or(claim.rule, of_kind, delegated=delegated, resumed=resumed)
+        if any(c.outcome == ACTED for c in of_kind):
+            return claim.rule, None
+        verdict, reason = _abstain_or(claim.rule, of_kind, delegated=delegated,
+                                      resumed=resumed)
+        return (verdict, reason) if verdict == ABSTAIN else (ABSTAIN, NO_CALL)
     if any(ACT_TOOLS.get(c.name) in FOLLOWUP_KINDS and c.outcome == ACTED for c in calls):
         return PASS, None
     if of_kind or any(c.at > claim.at for c in calls):
@@ -742,9 +944,12 @@ def check_run(blocks: Sequence[tuple[int, str]], calls: Sequence[RunCall], *,
         return report
     delegated = report.delegations > 0
     for at, block in blocks:
-        for claim in claims_of(block, at):
+        claims, skipped = scan(block, at)
+        report.abstain |= skipped
+        for claim in claims:
             report.claims += 1
-            report.kinds.add(claim.kind)
+            if claim.kind != UNCLEAR:
+                report.kinds.add(claim.kind)
             verdict, reason = judge(claim, calls, delegated=delegated, resumed=resumed)
             report.verdicts[verdict] += 1
             if verdict in RULES:
@@ -771,12 +976,17 @@ class ClaimCheckProvider(ContextProvider):
     the orchestrator (``agent_with_providers``), never to a shared agent
     object. It adds no middleware and changes no message. *delegations* holds
     the names of the run's delegation tools, from the agent's own tools.
+    *not_acted* holds more not-acted templates from the seam, such as
+    ``_tool_injection.PACK_CALL_REFUSED``.
     """
 
-    def __init__(self, agent: str = CHECKED_AGENT, delegations: Iterable[str] = ()) -> None:
+    def __init__(self, agent: str = CHECKED_AGENT, delegations: Iterable[str] = (),
+                 not_acted: Iterable[str] = ()) -> None:
         super().__init__(SOURCE_ID)
         self.agent = str(agent or "")
         self.delegations = frozenset(delegations) | DELEGATION_TOOLS
+        self.not_acted = tuple(not_acted)
+        self.extra_heads = template_heads(self.not_acted)
 
     async def after_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
@@ -784,7 +994,7 @@ class ClaimCheckProvider(ContextProvider):
         """Check the run and log ONE line. It never raises: a fault logs
         ``answer_claims.failed``, and the providers after it still run."""
         try:
-            blocks, calls = read_run(getattr(context, "response", None))
+            blocks, calls = read_run(getattr(context, "response", None), self.extra_heads)
             report = check_run(blocks, calls, delegations=self.delegations,
                                resumed=_resumed())
             _log.info(CHECKED_EVENT, **report.fields(self.agent))
@@ -797,11 +1007,13 @@ __all__ = [
     "ABSTAIN",
     "ABSTAIN_REASONS",
     "ACTED",
+    "ACTED_HEADS",
     "ACT_KINDS",
     "ACT_TOOLS",
     "ACT_WITHOUT_OUTCOME",
     "CHECKED_AGENT",
     "CHECKED_EVENT",
+    "CLAUSE_CHARS",
     "DOUBT_WITHOUT_OUTCOME",
     "EARLIER_TURN_DOUBT",
     "EMAIL_SEND",
@@ -810,11 +1022,17 @@ __all__ = [
     "FOLLOWUP",
     "FOLLOWUP_KINDS",
     "KINDS",
+    "LONG_SENTENCE",
     "MAX_CHARS",
+    "MAX_SENTENCE_CHARS",
     "MODE",
     "NOT_ACTED",
+    "NOT_ACTED_HEADS",
     "NOT_ACTED_LEADS",
+    "NOT_ACTED_TEMPLATES",
+    "NO_CALL",
     "OUTCOMES",
+    "PARTIAL_WRITE",
     "PASS",
     "PROMISE_WITHOUT_FOLLOWUP",
     "READ",
@@ -824,7 +1042,9 @@ __all__ = [
     "SOURCE_ID",
     "TASK_CREATE",
     "TASK_UPDATE",
+    "UNCLEAR",
     "UNKNOWN",
+    "UNKNOWN_KIND",
     "Claim",
     "ClaimCheckProvider",
     "Report",
@@ -837,5 +1057,7 @@ __all__ = [
     "length_bucket",
     "mostly_latin",
     "read_run",
+    "scan",
     "sentences",
+    "template_heads",
 ]

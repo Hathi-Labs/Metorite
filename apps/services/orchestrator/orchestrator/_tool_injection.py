@@ -3074,7 +3074,10 @@ def _apply_claim_check(agents: list[Any], agent_name: str | None) -> None:
         _tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool
         if _delegates_to(t) or is_delegation_tool(t)
     )
-    agents[0] = agent_with_providers(agent, [ClaimCheckProvider(CHECKED_AGENT, delegations)])
+    # P1-a: the answer of a pack tool outside its run is a not-acted head.
+    # It lives in this module, and acb_skills never imports the orchestrator.
+    agents[0] = agent_with_providers(agent, [ClaimCheckProvider(
+        CHECKED_AGENT, delegations, not_acted=(PACK_CALL_REFUSED,))])
 
 
 def _apply_progress_notice(agents: list[Any]) -> None:

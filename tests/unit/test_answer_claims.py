@@ -102,10 +102,21 @@ class ScriptedClient(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClien
         super().__init__()
         self.script = list(script)
         self.requests = 0
+        #: What each request sent: the instructions, the tools and each message.
+        self.seen: list[Any] = []
 
     def _inner_get_response(self, *, messages, stream, options, **kwargs):  # type: ignore[override]
         self.requests += 1
         n = self.requests
+        self.seen.append((
+            str(options.get("instructions") or ""),
+            sorted(str(getattr(t, "name", t)) for t in options.get("tools") or ()),
+            [(str(getattr(m.role, "value", m.role)),
+              [(c.type, getattr(c, "text", None), getattr(c, "name", None),
+                str(getattr(c, "result", None)) if c.type == "function_result" else None)
+               for c in m.contents])
+             for m in messages],
+        ))
         contents: list[Content] = []
         for part in self.script.pop(0):
             if part[0] == "text":
@@ -292,10 +303,13 @@ async def test_the_answer_and_the_requests_do_not_change(stream, flag_on, logged
     checked = _orchestrator(_script(), [read_thread])
     assert await _run(plain, stream=stream) == await _run(_seam(checked), stream=stream)
     assert plain.client.requests == checked.client.requests == 2
+    # Fix round 1 (P3): each request holds the same instructions, the same
+    # tools and the same messages, not only the same count.
+    assert plain.client.seen == checked.client.seen
     assert len(_checked(logged)) == 1
 
 
-def test_the_delegation_names_come_from_the_agent(flag_on):
+def test_the_delegation_names_and_the_seam_templates_reach_the_provider(flag_on):
     async def ask_email_assistant(task: str) -> str:
         """Hand a task to the email assistant."""
         return "Done."
@@ -306,6 +320,7 @@ def test_the_delegation_names_come_from_the_agent(flag_on):
     assert "ask_email_assistant" in provider.delegations
     assert "read_thread" not in provider.delegations
     assert "call_agent" in provider.delegations
+    assert provider.not_acted == (_tool_injection.PACK_CALL_REFUSED,)
 
 
 # ── 3. MAF gives the whole run to after_run, once ───────────────────────────
@@ -368,30 +383,73 @@ async def test_a_promise_with_no_later_call_flags(stream, flag_on, logged):
 ACTED, NOT_ACTED, UNKNOWN = ac.ACTED, ac.NOT_ACTED, ac.UNKNOWN
 
 #: (id, answer, calls as (name, place, outcome), the expected counts, the
-#: place of the answer). A missing count is 0.
-CASES: list[tuple[str, str, list[tuple[str, int, str]], dict[str, int], int]] = [
+#: place of the answer). A missing count is 0. An ``abstain`` entry names the
+#: exact reasons.
+CASES: list[tuple[str, str, list[tuple[str, int, str]], dict[str, Any], int]] = [
     # A: an act with no outcome.
     ("a_sent_backed", "I sent the email to Ravi.", [("send_email", 1, ACTED)], {"passed": 1}, 0),
     ("a_sent_alone", "I sent the email to Ravi.", [], {A: 1}, 0),
     ("a_created_declined", "I have created the task for Friday.",
      [("create_task", 1, NOT_ACTED)], {A: 1}, 0),
     ("a_we_added", "We added two tasks to the project.", [], {A: 1}, 0),
+    ("a_new_task", "I created a new task for the invoice.", [], {A: 1}, 0),
     ("a_marked_done", "I've marked it as done.", [("complete", 1, ACTED)], {"passed": 1}, 0),
     ("a_two_acts", "I created the task and set a reminder for Friday.",
      [("create_task", 1, ACTED)], {"passed": 1, A: 1}, 0),
     ("a_forwarded", "I forwarded the invoice to Sharad.", [("forward_email", 1, ACTED)],
      {"passed": 1}, 0),
-    ("a_unknown_abstains", "I sent the email.", [("send_email", 1, UNKNOWN)], {"abstained": 1}, 0),
-    ("a_earlier_abstains", "As I said earlier, I sent the email.", [], {"abstained": 1}, 0),
-    # B: a doubt with no failed outcome.
+    ("a_unknown_abstains", "I sent the email.", [("send_email", 1, UNKNOWN)],
+     {"abstained": 1, "abstain": [ac.UNKNOWN_OUTCOME]}, 0),
+    ("a_earlier_abstains", "As I said earlier, I sent the email.", [],
+     {"abstained": 1, "abstain": [ac.EARLIER_TURN]}, 0),
+    # Fix round 1 (P2): a time word of an earlier turn abstains, and an acted
+    # call of the kind still passes first.
+    ("a_yesterday", "I sent the email yesterday.", [],
+     {"abstained": 1, "abstain": [ac.EARLIER_TURN]}, 0),
+    ("a_this_morning", "This morning I created the task for the audit.", [],
+     {"abstained": 1, "abstain": [ac.EARLIER_TURN]}, 0),
+    ("a_on_monday", "I set a reminder on Monday.", [],
+     {"abstained": 1, "abstain": [ac.EARLIER_TURN]}, 0),
+    ("a_already_backed", "I've already sent the email.", [("send_email", 1, ACTED)],
+     {"passed": 1}, 0),
+    # Fix round 1 (P1-b): a make word gives task.create only when its object
+    # IS a new task. Each case follows an acted call of its real tool.
+    ("k_comment", "I added a comment to the task.", [("comment", 1, ACTED)],
+     {"abstained": 1, "abstain": [ac.UNKNOWN_KIND]}, 1),
+    ("k_cycle", "I added the task to the Q3 cycle.", [("plan_cycle", 1, ACTED)],
+     {"abstained": 1, "abstain": [ac.UNKNOWN_KIND]}, 1),
+    ("k_changes", "I made the changes to the task.", [("update_task", 1, ACTED)],
+     {"abstained": 1, "abstain": [ac.UNKNOWN_KIND]}, 1),
+    ("k_tag", "I added the urgent tag to the task.", [("update_task", 1, ACTED)],
+     {"abstained": 1, "abstain": [ac.UNKNOWN_KIND]}, 1),
+    ("k_watcher", "I added Priya as a watcher on the task.", [("watch", 1, ACTED)],
+     {"abstained": 1, "abstain": [ac.UNKNOWN_KIND]}, 1),
+    # More probes of my own: a note, a file, a label, a link and a move.
+    ("k_note", "I added a note to the reminder.", [], {"abstained": 1}, 1),
+    ("k_file", "I added the PDF to the task.", [("attach_to_task", 1, ACTED)],
+     {"abstained": 1}, 1),
+    ("k_link", "I made a link between the two tasks.", [("link_tasks", 1, ACTED)],
+     {"abstained": 1}, 1),
+    ("k_move", "I added the task to your personal list.", [("move_task", 1, ACTED)],
+     {"abstained": 1}, 1),
+    ("k_no_object", "I made the call to the vendor.", [], {}, 0),
+    # B: a doubt fires only against an acted call of its kind (fix round 1,
+    # PROPOSED to the owner). With no call of its kind it abstains.
     ("b_not_sent_backed", "The email was not sent.", [("send_email", 1, NOT_ACTED)],
      {"passed": 1}, 0),
     ("b_not_sent_but_sent", "It was not sent.", [("send_email", 1, ACTED)], {B: 1}, 0),
-    ("b_neither_alone", "Neither email went out.", [], {B: 1}, 0),
+    ("b_neither_alone", "Neither email went out.", [],
+     {"abstained": 1, "abstain": [ac.NO_CALL]}, 0),
     ("b_could_not_create", "I could not create the task.", [("create_task", 1, NOT_ACTED)],
      {"passed": 1}, 0),
     ("b_nothing_sent", "Nothing was sent.", [("send_draft", 1, NOT_ACTED)], {"passed": 1}, 0),
     ("b_reminder_not_set", "The reminder was not set.", [("set_reminder", 1, ACTED)], {B: 1}, 0),
+    ("b_draft_saved", "I've drafted the reply and saved it in Drafts. Nothing was sent.",
+     [("draft_reply", 1, ACTED)], {"abstained": 1, "abstain": [ac.NO_CALL]}, 1),
+    ("b_after_a_read", "Your email to Ravi was not sent.", [("read_email", 1, ACTED)],
+     {"abstained": 1, "abstain": [ac.NO_CALL]}, 1),
+    ("b_not_yet", "I have not sent it yet.", [],
+     {"abstained": 1, "abstain": [ac.NO_CALL]}, 0),
     # C: a promise with no follow-up.
     ("c_follow_up", "I'll follow up with Ravi tomorrow.", [], {C: 1}, 0),
     ("c_reminder_made", "I'll get back to you on Friday.", [("set_reminder", 1, ACTED)],
@@ -435,12 +493,14 @@ def test_the_verdict_of_each_sentence(answer, calls, expected, at):
     line = check_run([(at, answer)], [RunCall(*c) for c in calls]).fields("orchestrator")
     got = {key: line[key] for key in (*ac.RULES, "passed", "abstained")}
     assert got == {key: expected.get(key, 0) for key in got}, answer
+    if "abstain" in expected:
+        assert line["abstain"] == expected["abstain"], answer
 
 
 def test_the_table_covers_each_class_and_each_exclusion():
     ids = [c[0] for c in CASES]
     assert len(ids) >= 20 and len(set(ids)) == len(ids)
-    for head in ("a_", "b_", "c_", "e_", "x_"):
+    for head in ("a_", "b_", "c_", "e_", "k_", "x_"):
         assert sum(i.startswith(head) for i in ids) >= 2, head
 
 
@@ -669,6 +729,38 @@ def test_the_executor_marks_a_resume_run_right_after_the_prologue():
     assert run.count(f"{ac.RESUMED_KEY}=True") == 1
 
 
+def _is_resume_gate(node: ast.AST) -> bool:
+    test = getattr(node, "test", None)
+    return (isinstance(node, ast.If) and isinstance(test, ast.Compare)
+            and getattr(test.left, "id", None) == "resume_call"
+            and isinstance(test.ops[0], ast.IsNot)
+            and getattr(test.comparators[0], "value", 0) is None)
+
+
+def test_the_resume_mark_sits_inside_the_resume_gate():
+    """Fix round 1 (P3): the mark is a statement of the body of
+    ``if resume_call is not None:``, right after the prologue loop, so a run
+    that is no continuation never binds it. Mutation: move the mark out of
+    the ``if`` -> red."""
+    tree = ast.parse(inspect.getsource(executor).replace("\r\n", "\n"))
+    run = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_agent_stream")
+
+    def _marks(nodes: Any) -> list[ast.Call]:
+        return [n for n in nodes if isinstance(n, ast.Call)
+                and getattr(n.func, "id", None) == "_derive_ctx"
+                and any(k.arg == ac.RESUMED_KEY for k in n.keywords)]
+
+    [gate] = [n for n in ast.walk(run) if _is_resume_gate(n)]
+    body = gate.body
+    assert isinstance(body[0], ast.AsyncFor), "the prologue loop comes first"
+    assert getattr(body[0].iter.func, "id", None) == "_resume_prologue"
+    [mark] = _marks(ast.walk(body[1]))
+    assert isinstance(body[1], ast.Expr) and body[1].value is mark
+    assert getattr(mark.keywords[0].value, "value", None) is True
+    assert len(_marks(ast.walk(run))) == 1, "no second mark outside the gate"
+
+
 # ── 9. The fence of the act table ───────────────────────────────────────────
 
 #: Where each kind's tools live, and the mark of its not-acted answer.
@@ -749,9 +841,146 @@ def test_each_not_acted_text_of_the_families_reads_as_not_acted():
                  "Nothing was sent or saved.", "Error: Function failed."):
         assert call_outcome(text) == NOT_ACTED, text
     assert call_outcome("Sent.", "KeyError") == NOT_ACTED, "a raise"
-    assert call_outcome("Created task #12 «Pay the invoice».") == ACTED
     assert call_outcome("") == UNKNOWN
     assert call_outcome("Sent.", found=False) == UNKNOWN
+    # Fix round 1: "Not forwarded." and "Not scheduled." are the real leads
+    # of two act tools. Each is a literal of the email agent.
+    source = EMAIL_AGENT.read_text(encoding="utf-8")
+    for lead, tool in (("Not forwarded.", "forward_email"), ("Not scheduled.", "schedule_send")):
+        assert f'"{lead}' in source or f'f"{lead}' in source, lead
+        assert call_outcome(f"{lead} No recipient.", tool=tool) == NOT_ACTED, lead
+
+
+# ── 9a. Fix round 1 (P1-a): the held and refused templates, and acted ───────
+
+
+def _seam_templates() -> tuple[str, ...]:
+    return (_tool_injection.PACK_CALL_REFUSED,)
+
+
+@pytest.mark.parametrize("template", [*ac.NOT_ACTED_TEMPLATES, *_seam_templates()],
+                         ids=lambda t: t[:32])
+@pytest.mark.parametrize("tool", ["send_email", "create_task"])
+def test_each_held_or_refused_template_is_not_acted(template, tool):
+    """Each REAL constant, filled as the platform fills it. Several templates
+    share one head ("{name} is off now."). Mutation: drop each template of a
+    head -> its result rates ``unknown`` -> red. Drop one constant only ->
+    ``test_the_templates_are_the_real_constants`` is red."""
+    text = template.format(name=tool, tool=tool)
+    heads = ac.template_heads(_seam_templates())
+    assert call_outcome(text, tool=tool, extra=heads) == NOT_ACTED, text[:60]
+
+
+def test_the_templates_are_the_real_constants():
+    from acb_skills import egress, tool_packs
+
+    held = {name for name in dir(egress)
+            if name.startswith(("EGRESS_HELD_", "EGRESS_WITHHELD_")) and name.endswith(
+                ("_ANSWER", "_ANSWER_CARDS", "_NO_WRITES", "_NO_WRITES_CONTINUE", "_OTHER"))}
+    assert held, "non-vacuity"
+    for name in held:
+        assert getattr(egress, name) in ac.NOT_ACTED_TEMPLATES, name
+    for name in ("HANDED_WRITE_REFUSED", "HANDED_FAILED_WRITE_REFUSED", "PACK_ONLY_REFUSED"):
+        assert getattr(tool_packs, name) in ac.NOT_ACTED_TEMPLATES, name
+
+
+def test_a_held_send_does_not_back_a_claim_of_a_send():
+    """The case of the review: the platform held ``send_email``, and the
+    answer says that it sent. Rule A fires."""
+    from acb_skills.egress import EGRESS_HELD_PACK_ANSWER
+
+    outcome = call_outcome(EGRESS_HELD_PACK_ANSWER.format(name="send_email"), tool="send_email")
+    assert outcome == NOT_ACTED
+    line = check_run([(0, "I sent the email to Ravi.")],
+                     [RunCall("send_email", 1, outcome)]).fields("orchestrator")
+    assert line[A] == 1 and line["rules"] == [A]
+
+
+@STREAMS
+async def test_a_pack_call_outside_its_run_is_not_acted_end_to_end(stream, flag_on, logged):
+    """The seam passes ``PACK_CALL_REFUSED`` to the provider."""
+    refused = _tool_injection.PACK_CALL_REFUSED.format(tool="send_email")
+    agent = _orchestrator([[("call", "send_email", {"to": "ravi@example.com"})],
+                           [("text", "I sent the email to Ravi.")]], [_send_tool([refused])])
+    await _run(_seam(agent), stream=stream)
+    [line] = _checked(logged)
+    assert line["not_acted"] == 1 and line[A] == 1
+
+
+def test_the_guard_text_of_a_failed_write_is_unknown():
+    """HRD-3: a write that raised "may have changed part of it", so the act
+    may have run. A read that raised changed nothing."""
+    from acb_skills.pack_tool_guard import failure_text
+
+    assert ac.PARTIAL_WRITE == "It may have changed part of it."
+    write = failure_text(RuntimeError(), read_only=False)
+    assert call_outcome(write, tool="send_email") == UNKNOWN
+    assert call_outcome(failure_text(RuntimeError(), read_only=True), tool="send_email") == NOT_ACTED
+
+
+#: The home module of each act tool that has an acted head.
+HEAD_HOMES = {"send_email": EMAIL_AGENT, "compose_reply": EMAIL_AGENT,
+              "forward_email": EMAIL_AGENT, "send_draft": EMAIL_AGENT,
+              "schedule_send": EMAIL_AGENT}
+
+
+@pytest.mark.parametrize("tool", sorted(ac.ACTED_HEADS))
+def test_each_acted_head_is_a_literal_of_its_tool(tool):
+    """``acted`` needs a head that the tool's own source writes. Mutation:
+    change "Created:" in ``writes.py`` -> red."""
+    home = HEAD_HOMES.get(tool, ROOT / "apps/skills/skill-projects/skill_projects/writes.py")
+    source = home.read_text(encoding="utf-8")
+    assert f"async def {tool}(" in source
+    for head in ac.ACTED_HEADS[tool]:
+        assert f'"{head}' in source or f'f"{head}' in source, (tool, head)
+        assert call_outcome(f"{head} the work.", tool=tool) == ACTED, (tool, head)
+
+
+def test_an_act_tool_with_no_known_head_rates_unknown():
+    """It FAILS CLOSED: a result that matches nothing known is ``unknown``,
+    never ``acted``. These are real answers of Projects tools."""
+    assert call_outcome("A task needs a title.", tool="create_task") == UNKNOWN
+    assert call_outcome("kind is action or notice.", tool="set_reminder") == UNKNOWN
+    assert call_outcome("#12 is already done.", tool="complete") == UNKNOWN
+    assert call_outcome("Reminder already set: Pay rent.", tool="set_reminder") == UNKNOWN
+    assert call_outcome("Created task #12.", tool="create_task") == UNKNOWN
+    assert call_outcome("Created:\n- #12 Pay the invoice", tool="create_task") == ACTED
+    assert call_outcome("Moved #12 to Done.", tool="move_task") == UNKNOWN, "no head"
+    # A tool outside the act table keeps the plain rule.
+    assert call_outcome("The thread says hi.", tool="read_thread") == ACTED
+    covered = set(ac.ACTED_HEADS)
+    assert covered <= set(ac.ACT_TOOLS)
+    assert {"send_email", "create_task", "update_task", "complete", "set_reminder"} <= covered
+
+
+# ── 10. Fix round 1 (P2): the cost on the event loop ────────────────────────
+
+ADVERSARIAL = {
+    "i_then_sent": "i " * 3996 + "sent it",
+    "dots": "." * 7999,
+    "dot_space": ". " * 3999,
+    "no_punctuation": "word " * 1599,
+    "i_dot": "i. " * 2666,
+    "i_sent_sentences": "I sent it. " * 727,
+    "we_and": ("we created the task and " * 340)[:7999],
+}
+
+
+@pytest.mark.parametrize("name", sorted(ADVERSARIAL))
+def test_an_adversarial_answer_reads_in_under_100_ms(name):
+    import time
+
+    text = ADVERSARIAL[name][:7999]
+    assert len(text) <= ac.MAX_CHARS
+    check_run([(0, "I sent it.")], [])  # warm the patterns
+    start = time.perf_counter()
+    check_run([(0, text)], [])
+    assert time.perf_counter() - start < 0.1, name
+
+
+def test_a_long_sentence_is_skipped_with_its_reason():
+    line = check_run([(0, "i " * 400 + "sent it.")], []).fields("orchestrator")
+    assert line["claims"] == 0 and line["abstain"] == [ac.LONG_SENTENCE]
 
 
 def test_the_not_acted_leads_reuse_the_two_tables():
