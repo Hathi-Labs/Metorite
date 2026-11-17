@@ -35,6 +35,15 @@ keep that load honest:
   the middleware loads only when the request holds the same list object as
   the request before it. Otherwise the text names ``load_skill_tools``.
 * A refused load gives the loader's own refusal, which names a next step.
+* One load try for each name in a run (task 3599). A later call of the same
+  name gets the text of the first try, and the loader is not asked again. So
+  a model that calls the name again and again cannot spin the loader.
+
+The member never reads MAF's text either (task 3599). MAF puts the
+``KeyError`` text, ``'Function "x" not found.'``, in the ``exception`` of the
+result, and the trail of the chat showed it. :func:`unknown_call_name` finds
+MAF's result in each of its three fields. ``orchestrator.event_translator``
+asks it, and shows :data:`MEMBER_LINE` on the step in its place.
 """
 from __future__ import annotations
 
@@ -47,13 +56,17 @@ from acb_common import get_logger
 from agent_framework import ChatMiddleware, Content, ContextProvider, FunctionInvocationContext
 
 __all__ = [
-    "UnknownToolAnswer", "UnknownToolProvider", "answer_for", "autoload_enabled", "is_raw",
+    "MEMBER_LINE", "UnknownToolAnswer", "UnknownToolProvider", "answer_for", "autoload_enabled",
+    "is_raw", "unknown_call_name",
 ]
 
 _log = get_logger("acb_skills.unknown_tool")
 
-#: The two texts of MAF for a name that the tool map lacks.
-_RAW = re.compile(r'^\s*(?:Error:\s*)?(?:Requested function|Function) "([^"]{1,200})" not found\.?\s*$')
+#: The two texts of MAF for a name that the tool map lacks. The text of the
+#: ``KeyError`` that MAF keeps in ``exception`` has one pair of single quotes
+#: around it (task 3599), so a quote may open and close the text.
+_RAW = re.compile(
+    r'^\s*\'?(?:Error:\s*)?(?:Requested function|Function) "([^"]{1,200})" not found\.?\'?\s*$')
 #: A name goes into the answer only in this alphabet and at this length.
 _SAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 _CUTOFF = 0.75
@@ -95,6 +108,13 @@ TEXTS = (
     SUGGEST_LOAD, SUGGEST_LOAD_NEAR, LOADED_NOW, LOADED_NOW_NEAR, LOAD_FAILED,
     LIVE_NOW, SUGGEST_LIVE, NEEDS_PACK, NOT_HERE,
 )
+#: What the member reads on the step of the trail in place of MAF's text
+#: (task 3599). It names no tool, no pack and no framework. The model never
+#: reads it: the stream event and the saved step carry it, and no request does.
+MEMBER_LINE = (
+    "This step did not run, because its tool was not ready in this chat. "
+    "The assistant continues with the tools that it has."
+)
 
 
 def autoload_enabled() -> bool:
@@ -108,11 +128,35 @@ def autoload_enabled() -> bool:
 
 
 def is_raw(text: Any) -> str:
-    """The tool name in MAF's own "not found" text *text*, or ""."""
+    """The tool name in MAF's own "not found" text *text*, or "".
+
+    The text of the ``KeyError`` that MAF keeps in ``exception`` comes in one
+    pair of single quotes, ``'Function "x" not found.'``. It counts too."""
     if not isinstance(text, str):
         return ""
     match = _RAW.match(text)
     return match.group(1) if match else ""
+
+
+def unknown_call_name(content: Any) -> str:
+    """The tool name when *content* is MAF's own result for a call of a name
+    that the run did not hold, or "". Pure: no I/O.
+
+    It reads ``result``, the text of ``items`` and ``exception``. After the
+    rewrite of :class:`UnknownToolAnswer`, ``result`` and ``items`` hold the
+    answer for the model, and ``exception`` still holds MAF's text. So a
+    reader after the run, as a batch run is, still finds the call."""
+    if getattr(content, "type", "function_result") != "function_result":
+        return ""
+    items = getattr(content, "items", None)
+    texts = [getattr(i, "text", None) for i in items] if isinstance(items, (list, tuple)) else []
+    exc = getattr(content, "exception", None)
+    for text in (getattr(content, "result", None), *texts,
+                 str(exc) if exc is not None else None):
+        name = is_raw(text)
+        if name:
+            return name
+    return ""
 
 
 def _clean(name: str) -> str:
@@ -245,6 +289,10 @@ class UnknownToolAnswer(ChatMiddleware):
         self._history: list[Any] | None = None
         self._history_keys: frozenset[str] = frozenset()
         self._last_tools: Any = None
+        #: Task 3599: the names that this run tried to load, each with the
+        #: slug and the text of a refused load ("" and "" after a load). A
+        #: name gets ONE load try in a run, so the loop cannot spin the loader.
+        self._tried: dict[str, tuple[str, str]] = {}
 
     async def process(self, context: Any, call_next: Callable[[], Awaitable[None]]) -> None:
         try:
@@ -282,18 +330,27 @@ class UnknownToolAnswer(ChatMiddleware):
             offered = tuple(s for s in (getattr(loader, "offered", ()) or ()) if s not in held)
             gone = tuple(getattr(run, "gone", ()) or ())
             loaded = tried = load_answer = ""
-            if (_result_key(content) not in self._history_keys and live_list is not None
+            repeat = name in self._tried
+            if repeat:
+                # Task 3599: the second call of a name in this run. The loader
+                # is not asked again. A refusal of the first try stays the
+                # answer, unless the name is in the tools now.
+                if name not in _live_names(tools):
+                    tried, load_answer = self._tried[name]
+            elif (_result_key(content) not in self._history_keys and live_list is not None
                     and loader is not None and autoload_enabled()):
+                self._tried[name] = ("", "")
                 try:
                     loaded, tried, load_answer = await self._autoload(name, offered, live_list)
                 except Exception as exc:  # a failed load still gets the text
                     _log.warning("unknown_tool.autoload_failed", error_type=type(exc).__name__)
+                self._tried[name] = (tried, load_answer)
             text = answer_for(
                 name, live=_live_names(tools), offered=offered, held=held, gone=gone,
                 loaded=loaded, tried=tried, load_answer=load_answer)
             _set_text(content, text)
             _log.info("unknown_tool.answered", tool=_clean(name),
-                      loaded=loaded or None, refused=tried or None)
+                      loaded=loaded or None, refused=tried or None, repeat=repeat or None)
 
     async def _autoload(
         self, name: str, offered: tuple[str, ...], live_list: list[Any],

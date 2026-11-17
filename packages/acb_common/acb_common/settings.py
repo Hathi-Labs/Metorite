@@ -752,6 +752,15 @@ class Settings(BaseSettings):
     # find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
     # Spec: find_engine.md section 8.
     find_orgs: str = ""
+    # WS-FIND HRD-21: CHAT_SEARCH_ORGS lists the org ids where company search
+    # reads the member's own past chats (the `chat` source, rung 6). `*`
+    # opens every org. Empty opens none, and the answer is the one of before
+    # HRD-21, byte for byte: `apps=chat` and each other unknown app get the
+    # 422 of before, whose list of keys has no `chat`. Reader: `gateway.retrieval.find.
+    # chat_search_named`. A SIGHUP reload applies a change
+    # (docs/flag_reload.md). The flip waits for the owner's preview. Spec:
+    # find_engine.md sections 6 and 8.
+    chat_search_orgs: str = ""
     # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
     # door runs a first-party logic module (`logic:<name>`). `*` opens every
     # org. Empty opens none. Reader: `gateway.routes.studio.flags.
@@ -1478,6 +1487,17 @@ class Settings(BaseSettings):
     # its usage row must be proven first (§31.5 VOX-1, Done when 4).
     # Fence: tests/unit/test_chat_transcribe.py.
     chat_voice_orgs: str = ""
+
+    # ── The topics of the chat list (chat_organization.md §6, WS-CO CO-2a) ─
+    #
+    # `chat_topics_orgs` lists the organization ids where the routes of
+    # `/chat/topics` answer, or `*` for each one. Empty means off, and each
+    # route answers 404. The one reader is `gateway.chat_topic.topics_allowed`,
+    # and it fails closed. The name ends in `_orgs`, so a SIGHUP applies a
+    # change with no restart (`docs/flag_reload.md`). A value other than empty
+    # on a box is the gate `enforcement-flip`, after the owner preview.
+    # Fences: tests/unit/test_chat_topic.py, tests/unit/test_chat_topic_r8.py.
+    chat_topics_orgs: str = ""
 
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #
