@@ -15210,6 +15210,8 @@ audit of 2026-10-14 returned GO-NARROWED. Its narrowing replaces scope items 1, 
   two Insights frames use it now.
   `agent_edge/tools.py` keeps its own `{"untrusted_text"}` shape, because it is not a marker
   framer.
+  HRD-14a (`chat_failure_modes.md` §4.7b, PROPOSED, not built) adds a second note form,
+  `UntrustedFrame.paste_note`, for text that the member pasted. `note` does not change.
 - **The six paths.** `read_email` and `read_thread` frame their text. A sender writes the
   subject, so the first line of `read_thread` now holds only the count. The drafter frames the
   head of the mail, the thread, the body, the past mail and the gathered context. The consult
