@@ -459,6 +459,7 @@ def _list_defaults() -> dict[str, Any]:
         "message_count": 2, "created_at": at, "updated_at": at, "user_id": "ana@co2b.test",
         "visibility": "private", "participant_count": 0, "has_user_message": True,
         "is_brief": False, "my_role": "owner", "archived_at": None,
+        "continued_from": None,
     }
 
 
