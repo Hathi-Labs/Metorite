@@ -2731,6 +2731,19 @@ def _release_solo_room(token: contextvars.Token[bool] | None) -> None:
         _RUN_SOLO_ROOM.set(False)
 
 
+def run_is_solo() -> bool:
+    """True when the run on this frame is the member's own solo run.
+
+    The one reader of :data:`_RUN_SOLO_ROOM` outside this module (WS-FIND
+    HRD-21). ``search_company`` asks it before it names the current chat, so
+    a member's past chats never print into a chat that another person can
+    read: a room, or a room of one with visibility ``org`` or ``people``. The
+    run boundary binds the value from the server's room
+    (``rooms.room_is_solo``), never from the body, and a delegated run cannot
+    widen it. A frame with no run reads False."""
+    return _RUN_SOLO_ROOM.get() is True
+
+
 def _bind_profile_writes(open_: bool) -> Any:
     """WS-63 PZ-6a: open or close the profile writes of this run
     (``acb_common.assistant_profile.WRITES_OPEN``). Only a run whose
