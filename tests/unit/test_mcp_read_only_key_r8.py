@@ -185,10 +185,9 @@ async def test_a_new_server_reads_as_false(ns, app_engine) -> None:  # noqa: F81
 async def test_a_register_with_both_switches_on_is_422(ns, audit) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("both")
-    # ``always_confirm`` is true by default, so the key alone is both on.
-    for extra in ({"read_only_key": True}, {"read_only_key": True, "always_confirm": True}):
-        res = await _post(user, name, status=422, **extra)
-        assert "always confirm" in res.json()["detail"], res.text
+    # MCP-NC1: ``always_confirm`` is false by default, so both are named.
+    res = await _post(user, name, status=422, read_only_key=True, always_confirm=True)
+    assert "always confirm" in res.json()["detail"], res.text
     assert name not in _registry(ns, ns.org_a), "a refused register wrote a row"
     assert audit == []
 
@@ -265,7 +264,7 @@ async def test_the_console_body_sends_both_keys_in_one_patch(ns, audit) -> None:
     console sends both keys, and each key writes its own event."""
     user = _user(ADMIN_A, ns.org_a)
     name = _name("console")
-    await _post(user, name)  # always confirm, the default of a new server
+    await _post(user, name, always_confirm=True)
     audit.clear()
 
     res = await _patch(user, name, {"always_confirm": False, "read_only_key": True})
@@ -304,7 +303,7 @@ async def test_the_key_on_an_always_confirm_row_is_422(ns, audit) -> None:  # no
     """The gateway checks the row AFTER the change, not the body alone."""
     user = _user(ADMIN_A, ns.org_a)
     name = _name("merged")
-    await _post(user, name)  # always confirm
+    await _post(user, name, always_confirm=True)
     audit.clear()
     res = await _patch(user, name, {"read_only_key": True})
     assert res.status_code == 422, res.text
@@ -367,8 +366,9 @@ async def test_a_damaged_row_keeps_the_key_off_when_always_confirm_turns_off(
         "the stored row does not match what the gate reads")
     assert [e.action for e in audit] == ["integration.mcp.always_confirm"]
 
-    # The run: the tool carries no read-only key, so a destructive tool needs
-    # the card. This run has no card channel, so the gate refuses the call.
+    # The run: the tool carries no read-only key. MCP-NC1: a member's run asks
+    # no card anyway, so the probe is a run with NO member. There a destructive
+    # tool is refused unless the key is on, so a key that came back would run it.
     set_flag(monkeypatch, "*")
     install_offline(monkeypatch)
     token = bind_tenant(ns.org_a)
@@ -390,14 +390,14 @@ async def test_a_damaged_row_keeps_the_key_off_when_always_confirm_turns_off(
     tool._functions = [fn]
     tool.__dict__["_ws8c_tool_meta"] = {"delete_record": _maf_mcp.ToolMeta(
         hints={"readOnlyHint": False, "destructiveHint": True}, description="Delete.")}
-    gate = _maf_mcp.McpPermissionGate(tools=[tool], member_present=True)
+    gate = _maf_mcp.McpPermissionGate(tools=[tool], member_present=False)
     ctx = SimpleNamespace(function=fn, arguments={"record_id": "r-1"}, result=None)
 
     async def _call_next() -> None:
         ran.append("call")
 
     await gate.process(ctx, _call_next)
-    assert ran == [], "a destructive tool ran with no card"
+    assert ran == [], "a destructive tool ran in a run with no member"
     assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool=fn.name)
 
 
@@ -450,7 +450,7 @@ async def test_an_oauth_row_refuses_the_key(ns, audit) -> None:  # noqa: F811
 async def test_a_body_with_only_always_confirm_behaves_as_a33(ns, audit) -> None:  # noqa: F811
     user = _user(ADMIN_A, ns.org_a)
     name = _name("a33")
-    await _post(user, name)
+    await _post(user, name, always_confirm=True)
     audit.clear()
     res = await _patch(user, name, {"always_confirm": False})
     assert res.status_code == 200, res.text
@@ -504,7 +504,7 @@ async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> N
 
     shared = _name("shared")
     await _post(_user(ADMIN_A, ns.org_a), shared, always_confirm=False)
-    await _post(_user(ADMIN_B, ns.org_b), shared)  # always confirm in org B
+    await _post(_user(ADMIN_B, ns.org_b), shared, always_confirm=True)
     admin_dsn = ns.admin_engine.url.render_as_string(hide_password=False)
     async with tenant_engine_scope(admin_dsn):
         changed = await mcp.set_switches(ns.org_a, shared, read_only_key=True)

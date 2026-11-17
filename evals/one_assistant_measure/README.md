@@ -158,7 +158,7 @@ The checks that read a turn by name:
 
 | Check | Passes when |
 |---|---|
-| `ran_tool` | A tool of the list ran, in the orchestrator or in a sub-run. A call that answers "Requested function not found" did not run. |
+| `ran_tool` | A tool of the list ran, in the orchestrator or in a sub-run. A call that answers "Requested function not found" did not run. Since task 3599 the stream shows `unknown_tool.MEMBER_LINE` for that call, and `checks.refused` reads it as not run. |
 | `work_write` | A write of the method and path reached the gateway, and its body holds the text. |
 | `no_unasked_write` | At most N write tools ran. With N = 0, no write reached the gateway. |
 | `right_pack` | Pack arm. A tool of the pack ran in the orchestrator's own run, or the route went to the owner. None on the delegation arm. |
