@@ -243,6 +243,7 @@ export async function switchTo(
     /* no body: the backstop still runs */
   }
   clearOrgScopedStorage();
+  clearOutbox(); // HRD-17b
   leaveAccount();
   go(safeLocalPath(target) ?? "/");
   return true;
@@ -262,6 +263,7 @@ export async function addAccount(
   const res = await act("stash", await pushEndpointBody());
   if (!res.ok) return false;
   clearOrgScopedStorage();
+  clearOutbox(); // HRD-17b
   go(callbackUrl === undefined ? "/signin?add=1" : signInUrl(callbackUrl, true));
   return true;
 }

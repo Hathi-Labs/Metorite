@@ -251,6 +251,81 @@ describe.each(backends)("outbox behaviour on the $name backend", ({ make }) => {
     expect(o.list("t1")).toHaveLength(0);
   });
 
+  it("CANCEL IN FLIGHT: a cancelled entry is reported as neither sent nor retry", async () => {
+    for (const outcome of ["sent", "retry", "failed"] as const) {
+      const o = make();
+      o.enqueue(entry("m1"));
+      o.enqueue(entry("m2"));
+      const log: string[] = [];
+      const r = await o.release(
+        "t1",
+        async (e) => {
+          log.push(e.id);
+          if (e.id === "m1") o.cancel("m1");
+          return e.id === "m1" ? outcome : "sent";
+        },
+        NOW,
+      );
+      expect(r.sent.map((e) => e.id)).toEqual(["m2"]);
+      expect(r.failed).toEqual([]);
+      expect(r.retry).toBeNull();
+      expect(log).toEqual(["m1", "m2"]);
+    }
+  });
+
+  it("ENQUEUE DURING RELEASE: a new entry goes out in the same pass, after the earlier ones", async () => {
+    const o = make();
+    o.enqueue(entry("m1"));
+    o.enqueue(entry("m2"));
+    const log: string[] = [];
+    const r = await o.release(
+      "t1",
+      async (e) => {
+        log.push(e.id);
+        if (e.id === "m1") o.enqueue(entry("m3"));
+        return "sent";
+      },
+      NOW,
+    );
+    expect(log).toEqual(["m1", "m2", "m3"]);
+    expect(r.sent.map((e) => e.id)).toEqual(["m1", "m2", "m3"]);
+  });
+
+  it("SYNC THROW: a send that throws at once frees the lock and holds the entry", async () => {
+    const o = make();
+    o.enqueue(entry("m1"));
+    const r = await o.release(
+      "t1",
+      (() => {
+        throw new Error("sync");
+      }) as unknown as (e: OutboxEntry) => Promise<SendOutcome>,
+      NOW,
+    );
+    expect(r.retry?.id).toBe("m1");
+    expect(o.list("t1")[0].maybeSent).toBe(true);
+    const again = await o.release("t1", sendAll("sent"), NOW);
+    expect(again.skipped).toBe(false);
+    expect(again.held?.id).toBe("m1");
+  });
+
+  it("CLEAR IN FLIGHT: a clear during a send reports nothing and sends no later entry", async () => {
+    const o = make();
+    o.enqueue(entry("m1"));
+    o.enqueue(entry("m2"));
+    const log: string[] = [];
+    const r = await o.release(
+      "t1",
+      async (e) => {
+        log.push(e.id);
+        o.clear();
+        return "sent";
+      },
+      NOW,
+    );
+    expect(log).toEqual(["m1"]);
+    expect(r.sent).toEqual([]);
+  });
+
   it("A release of one thread leaves another thread's entries", async () => {
     const o = make();
     o.enqueue(entry("m1"));
@@ -428,6 +503,16 @@ describe("source fences", () => {
   it("nothing in the chat calls the outbox yet (HRD-17d wires it)", () => {
     for (const f of ["hooks/useAgentChat.ts", "components/AgentChat.tsx"]) {
       expect(read(f)).not.toMatch(/chatOutbox/);
+    }
+  });
+
+  it("CLEARED AT A SWITCH: switchTo, addAccount and signOutAll each call clearOutbox", () => {
+    const src = read("lib/accountSwitch.ts");
+    for (const name of ["switchTo", "addAccount", "signOutThis", "signOutAll"]) {
+      const start = src.indexOf(`export async function ${name}(`);
+      expect(start, name).toBeGreaterThan(-1);
+      const end = src.indexOf("\nexport ", start + 10);
+      expect(src.slice(start, end < 0 ? undefined : end), name).toMatch(/clearOutbox\(\)/);
     }
   });
 

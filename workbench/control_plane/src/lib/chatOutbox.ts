@@ -238,6 +238,8 @@ export function createOutbox(options: OutboxOptions = {}) {
           try {
             outcome = await send({ ...next });
           } catch {
+            // A cancel, a clear or a member switch removed it while it flew.
+            if (!entries.includes(next)) continue;
             // The result is unknown, so the server may hold it.
             next.state = "waiting";
             next.maybeSent = true;
@@ -245,6 +247,9 @@ export function createOutbox(options: OutboxOptions = {}) {
             report.retry = { ...next };
             break;
           }
+          // A cancel, a clear or a member switch removed it while it flew:
+          // report nothing, and go on with the entries that remain.
+          if (!entries.includes(next)) continue;
           if (outcome === "sent") {
             remove(next.id);
             persist();
