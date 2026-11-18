@@ -697,7 +697,7 @@ services. The server logs the ref.
 member's message with no reply and no card. The `custom_events` column could
 hold a marker with no migration, as `run_interrupted` does. That needs the
 history, the poll merge and the retry to skip the marker row, so it waits for
-a later slice.
+a later slice. Task 3692 (AO-3b) holds that marker-row slice.
 
 **Fences.** `tests/unit/test_chat_ai_unavailable.py`,
 `tests/unit/test_customer_console_router.py`

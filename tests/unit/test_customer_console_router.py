@@ -994,11 +994,36 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
             "messages": [{"role": "user", "content": "x"}]})
 
         assert seen == [self.PRIMARY]
-        # Clause 5, as AO-3 replaced it: a walk that ends with nothing answers
-        # 503 `unavailable`, and writes no row. `_REFUSAL_REASONS` stays
-        # closed — this wall was the vendor's, not the customer's.
-        assert r.status_code == 503, r.text
-        assert r.json() == {"detail": {"reason": "unavailable"}}
+        # AO-3 fix round: a terminal status means the request itself is
+        # wrong, so it stays a 400 (`model_refused` in the chat), never the
+        # 503 of an outage. No row is written: `_REFUSAL_REASONS` stays closed.
+        assert r.status_code == 400, r.text
+        assert "malformed" not in r.text
+        assert TestMetering._count(db, slug) == before
+
+    def test_a_stream_whose_only_step_answers_413_is_a_refusal_not_a_503(
+            self, client, org_key, db, bound_tier):
+        """Mutation: return `_stream_unavailable()` for every failure, and
+        this gets a 503 and fails."""
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        tier = bound_tier([self.PRIMARY], reads_images=None)
+        seen: list[str] = []
+
+        class _TooLarge(Exception):
+            status_code = 413
+
+        router_mod.set_provider_call(
+            self._provider(seen, primary_fails=_TooLarge("too big")))
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert seen == [self.PRIMARY]
+        assert r.status_code == 413, r.text
+        assert r.status_code != 503
+        assert "too big" not in r.text
         assert TestMetering._count(db, slug) == before
 
     # ── the other side of the boundary ──

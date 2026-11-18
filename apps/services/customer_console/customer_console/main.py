@@ -9039,13 +9039,13 @@ def _open_stream_or_release(
     org_id: str,
     request_id: str,
     watch: tuple[Any, Any] = (None, None),
-) -> tuple[list[Any], Any, ResolvedTier] | None:
-    """Open the stream, or give the call's hold back. ``None`` = every step failed.
+) -> tuple[list[Any], Any, ResolvedTier] | router_mod.UpstreamFailed:
+    """Open the stream, or give the call's hold back. A failure is RETURNED.
 
     🔴 **Every way the stream fails to open returns the hold (2026-09-28).**
     No body generator runs after a failed open, so nothing else would settle
-    it. A vendor refusal answers ``None`` and the route answers
-    :func:`_stream_unavailable` (AO-3). Any other error (an anyio error, a bug
+    it. A vendor refusal returns the ``UpstreamFailed`` and the route answers
+    :func:`_stream_failure` (AO-3). Any other error (an anyio error, a bug
     building the call) also returns the hold, then propagates unchanged.
 
     📌 Split out of `chat_completions` for C901, like `_preflight_gates`.
@@ -9055,7 +9055,7 @@ def _open_stream_or_release(
     except router_mod.UpstreamFailed as failed:
         _log_refusal("router.stream_open_failed", failed)
         _release_call_hold(org_id, request_id)
-        return None
+        return failed
     except BaseException:
         _release_call_hold(org_id, request_id)
         raise
@@ -9092,6 +9092,23 @@ def _open_stream_chain(
 #: The reason of a stream that no step could open (AO-3). OUR word, never the
 #: vendor's. A spend refusal keeps its own reasons and statuses.
 STREAM_UNAVAILABLE = "unavailable"
+
+
+def _stream_failure(failed: router_mod.UpstreamFailed) -> HTTPException:
+    """The answer for a stream that no step opened.
+
+    🔴 **A terminal vendor status is NOT an outage (AO-3 fix round).** A 400,
+    404, 413 or 422 means the request itself is wrong, such as a context
+    overflow or an image that is too large. ``walk_chain`` stops on it at
+    once. The chat must not say "try again in a few minutes", because each
+    retry fails the same way. So it takes :func:`_upstream_refusal`, as the
+    buffered path does, and the chat shows ``model_refused``. A billing 400
+    is lifted to 402 by ``router.effective_status`` and stays an outage. Fence:
+    ``test_a_stream_whose_only_step_answers_413_is_a_refusal_not_a_503``.
+    """
+    if failed.status in router_mod.TERMINAL_STATUSES:
+        return _upstream_refusal(failed)
+    return _stream_unavailable()
 
 
 def _stream_unavailable() -> HTTPException:
@@ -9516,12 +9533,13 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
             org_id=org_id, request_id=request_id,
             watch=_chain_watch(credentials),
         )
-        if opened is None:
+        if isinstance(opened, router_mod.UpstreamFailed):
             # 🔴 AO-3: a 503 with the reason `unavailable`, before any frame.
             # `_stream_unavailable` holds why it is no longer a 200 with a
             # lone sentinel. The meter writes nothing, and `_REFUSAL_REASONS`
             # stays closed: an upstream outage is not a customer wall (§8.1).
-            raise _stream_unavailable()
+            # A terminal status keeps its 400 class (`_stream_failure`).
+            raise _stream_failure(opened)
         head, source, resolved = opened
 
         return StreamingResponse(

@@ -20,10 +20,11 @@
  * The picture is decoration: the card's title and text say everything, so
  * it is hidden from a screen reader.
  *
- * Motion: the elephant breathes, as an idle agent's card does (EA-13h,
- * `DESIGN_SYSTEM.md` §4b, "Working"). `.ai-rest-breathe` in `globals.css`
- * runs only under `prefers-reduced-motion: no-preference`, so a member who
- * asked for less motion sees it still.
+ * Motion: the elephant takes one slow breath when the card appears, then
+ * stands still. It never loops, because a failed act is Attention
+ * (`DESIGN_SYSTEM.md` §4b). `.ai-rest-breathe` in `globals.css` runs only
+ * under `prefers-reduced-motion: no-preference`, so a member who asked for
+ * less motion sees it still.
  *
  * Fence: `components/aiRestingCard.test.ts`.
  */

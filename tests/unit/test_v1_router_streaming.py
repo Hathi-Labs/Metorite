@@ -296,6 +296,28 @@ async def test_the_old_consoles_lone_done_is_an_outage(router, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 413])
+async def test_a_console_terminal_refusal_ends_as_model_refused_not_ai_unavailable(
+        router, monkeypatch, status):
+    """AO-3 fix round. A stream whose request is wrong (a context overflow)
+    is a 400-class verdict. The hop relays it, and the run code is
+    `model_refused`, so the chat says to start a new chat. Mutation: let the
+    Console answer 503 for it, and the code turns `ai_unavailable`."""
+    from acb_llm.run_errors import classify_status
+
+    _configure(monkeypatch)
+    router.status = status
+    router.error_body = {"detail": "upstream provider error"}
+
+    resp = await v1_compat._serve_via_router_stream(
+        _Req(), {**PAYLOAD, "stream": True})
+
+    assert resp.status_code == status
+    assert classify_status(resp.status_code) == "model_refused"
+    assert classify_status(resp.status_code) != "ai_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_the_new_consoles_503_is_an_outage(router, monkeypatch):
     """AO-3. The Console answers a stream that no step opened with 503
     ``unavailable``. The hop reads the 5xx class, and the agent gets 502."""

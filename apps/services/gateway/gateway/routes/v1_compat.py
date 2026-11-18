@@ -672,9 +672,10 @@ async def _serve_via_router_stream(
     try:
         first = await frames.__anext__()
         if _is_lone_done(first):
-            # AO-3: a Console from before AO-3 answers a stream that no step
-            # opened with 200 and a lone `[DONE]`. Read it as the 503 that
-            # a newer Console sends, so the agent never reads an empty
+            # AO-3: an old Console answers a stream that no step opened with
+            # 200 and a lone `[DONE]`. A new Console sends the same when a
+            # provider stream opens and yields no chunk. Read both as the
+            # outage that a 503 means, so the agent never reads an empty
             # stream as a finished turn. The two units restart apart.
             with contextlib.suppress(Exception):
                 await frames.aclose()

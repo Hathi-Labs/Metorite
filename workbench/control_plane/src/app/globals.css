@@ -1649,10 +1649,10 @@ main[data-askbar-clear]::after {
 }
 
 /* AO-3: the resting elephant of the "AI is taking a breather" card
-   (`components/AiRestingArt.tsx`). It breathes as an idle agent's card does
-   (EA-13h above, DESIGN_SYSTEM.md §4b "Working"): the AI rests, which is a
-   status. It moves `transform` only, on the same 3.5 s, from its feet. Under
-   reduced motion it stands still. */
+   (`components/AiRestingArt.tsx`). It takes ONE slow breath when the card
+   appears, then stands still. It never loops: a failed act is Attention in
+   DESIGN_SYSTEM.md §4b, and Attention never loops. It moves `transform`
+   only, from its feet. Under reduced motion it does not move. */
 @keyframes ai-rest-breathe {
   0%, 100% { transform: scale(1, 1); }
   50%      { transform: scale(1.015, 1.035); }
@@ -1661,7 +1661,7 @@ main[data-askbar-clear]::after {
   .ai-rest-breathe {
     transform-box: fill-box;
     transform-origin: 50% 100%;
-    animation: ai-rest-breathe 3.5s ease-in-out infinite;
+    animation: ai-rest-breathe 1.2s ease-in-out 1;
   }
 }
 

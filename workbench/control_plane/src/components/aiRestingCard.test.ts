@@ -176,4 +176,13 @@ describe("the picture follows the one look", () => {
     expect(css.match(/animation: ai-rest-breathe/g)?.length).toBe(1);
     expect(art).toContain('className="ai-rest-breathe"');
   });
+
+  // Mutation: make the animation `infinite`. A failed act never loops.
+  it("plays its breath once and does not loop", () => {
+    const css = read("app/globals.css");
+    const at = css.indexOf(".ai-rest-breathe {");
+    const rule = css.slice(at, css.indexOf("}", at));
+    expect(rule).toMatch(/animation: ai-rest-breathe 1\.2s ease-in-out 1;/);
+    expect(rule).not.toContain("infinite");
+  });
 });
