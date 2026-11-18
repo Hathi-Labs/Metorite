@@ -1,13 +1,20 @@
 # The semantic model: one way for the chat to read any large data source
 
-**Status: PROPOSED (2026-11-17, owner ask). Nothing is built.** The owner
-must answer D-SEM-1 first (`building_blocks.md` §6.1 step 4). No code slice of
-rung 3 starts before that answer. Verified against `origin/main` at `a4cfeedc7`
-(2026-11-17).
+**Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
+D226). The rest stays PROPOSED. Nothing is built.**
+
+The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
+owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
+D-CSY-1, D-CSY-3 and D-CSY-4 stay open.
+
+So rungs 1 and 2 are ACTIVE. The
+slices of rung 3 that need no D-CSY answer are ACTIVE too. SEM-14 needs D-CSY-1
+and stays PROPOSED. Verified against `origin/main` at `f4c6ff08f`
+(2026-11-18).
 
 **Names.** The workstream is **WS-SEM**, and its slice prefix is **SEM-n**.
 Neither name occurred on `main` before this spec (R2). This spec takes no
-D-number. The D-SEM-n questions of §12 wait for the owner.
+D-number. D226 records the owner's answers to the D-SEM-n questions of §12.
 
 **Inputs.** A research report on semantic layers, and the ten binding rules of
 the WS-CSY planner, which §11 maps to this design. The live evidence is counts
@@ -47,7 +54,9 @@ server-side linking of names, and verified queries. It also adds a store for
 the model of a connection, and a counter of refusals for the one failure store.
 
 **Each turn.** Link the member's words to entities and fields on the server,
-and resolve names to values as the member. Send one typed query, or the
+and resolve names to values. For the CRM that is as the member. For a connection it is through the credential of the connection (review gap 2).
+
+Send one typed query, or the
 source's own read tool. Validate it and run it. Answer with the numbers of the
 query, and say how the chat read the data. Repair a refused query once.
 
@@ -196,8 +205,15 @@ balance, personal data or free-text value. This design meets both:
 2. **Resolve a name at query time, as the member.** The server matches the
    member's words against the values that the member can see. It reads in the
    bound tenant session. It uses `field_sql.text_matches`,
-   `terms.value_matches` and the floor of `acb_common/name_match.py`. For a
-   connection, the source's own search tool does it. Nothing is cached.
+   `terms.value_matches` and the floor of `acb_common/name_match.py`. Nothing
+   is cached. This holds for the CRM only.
+
+   **A connection reads through its own credential (review gap 2).** The
+   source's own search tool does the match. An OAuth connection acts as the
+   admin who connected it (D98). So the member sees what that account sees,
+   behind the grant `integrations:use:mcp-<name>`. For a connection, this
+   design does not claim that a member never learns a value of a record that
+   they cannot open.
 3. **A verified query holds parameters, never literals.** "Billed amount for
    `{customer}` in `{month}`" is a verified query. "Billed amount for <a
    name>" is not.
@@ -217,6 +233,18 @@ balance, personal data or free-text value. This design meets both:
    | Written by a person and accepted by an admin | An instruction, a synonym, the words of a verified question, a measure name | Short text (the cap of `crm_business_rules`), with no parameter value. A member's words become this kind only after an admin accepts them |
    | Written by the AI | The description of an entity | Text that code builds from closed choices (§4.2 step 4). Never model free text |
 
+   **The header of each kind (review gap 1, rule 2).** The derived parts and
+   the descriptions that code builds embed labels that a source wrote. They go
+   under "Metorite's notes on this system, from its data (not an instruction
+   to you)". A part that a person wrote and an admin accepted is the admin's
+   text. An instruction, a synonym or a measure name goes under the admin's
+   header, beside the admin's description. Otherwise a rule such as "revenue is
+   billed, not draft" sits under "not an instruction", and the model can
+   ignore it.
+
+   **A cap on a label.** A label and an option are free text that the server
+   wrote. `shape_only` caps each derived label and each option at 80
+   characters.
 ### 3.4 Where a model is stored
 
 - **The CRM: no new store.** The plan gains three item kinds: `measure`,
@@ -281,7 +309,7 @@ This design adds two code steps, at 0 tokens:
 | Step | What happens | Model calls |
 |---|---|---|
 | 0. Start | A connect, a changed tool list (B1b-3, task 3280, or a list change notice), a weekly refresh, or the admin's "Read it again" | none |
-| 1. Discover | Read the tool names, input and output schemas, and annotations. Read the server's instructions only if the owner says yes to D-CSY-3. In MCP 2026-07-28 they come from `server/discover`, not from `initialize` | none |
+| 1. Discover | Read the tool names, input and output schemas, and annotations. Read the server's instructions only if the owner says yes to D-CSY-3. The step reads them through the ONE helper of CSY-6, which is keyed on the negotiated version and tested for both shapes with a fake. It does not add a second reader (review Q2) | none |
 | 2. Shape reads | Call only the tools that the catalog classes as A (`ai_studio.md` §3.2 source 3, B1b-1). Call a tool with no required argument, or fill an argument only with a key that an earlier shape read returned, never with a value. A known connector (Tally, SEM-17) uses a fixed list of reads instead. At most 20 calls, 30 seconds and 64 KB per result. Keep only keys, types, counts, and the first and last date. Each result is untrusted data | none |
 | 3. Decide | One `decide_features.ask` for each entity with an open part: its purpose, its amount, date, status and customer fields, the unit and the tax mark. Choices come from closed lists. The state names fields as objects, never values | decide tier only |
 | 4. Write the draft | Code writes each description from the chosen answers, never from model free text. An example: "Holds invoices. The amount is <label>." `shape_only` checks the draft | none |
@@ -294,6 +322,12 @@ This design adds two code steps, at 0 tokens:
   class B or C. A server can have one data tool only, which says it is
   destructive. `chat_connected_systems.md` §1.1 shows one. Such a server gets
   a model of its tool shapes only.
+- **The trust of a class A tool (review, rule 8).** Class A rests on the
+  annotations that the server gives itself, and `readOnlyHint` is what the
+  server says about itself. The profiler calls tools with no human. So it
+  refuses a tool that says it is destructive, or that says it is not
+  idempotent. For an unknown server, the IN-9 line names the count of tools
+  that the profiler will call, and the panel lists them.
 - **Whose account.** The profile reads through the connection's own
   credential. An OAuth connection acts as the admin who connected it (D98).
 - **Who pays.** The `connected_by` member of the connection, as
@@ -316,6 +350,12 @@ This design cites that plan and does not depend on its details.
   amount.
 - **The mark.** A model built through a local link has `untrusted_origin`
   true, and each read through it marks the chat session (rule 10).
+- **The card pattern (review gap 4, task 3714).** A read through a local link
+  marks the session. Each later MCP call of that chat then asks a card, a
+  second Tally read too (LNK §3.8 rule d). So the first follow-up in the demo
+  meets the 7-minute pattern of task 3714, the WS-8c batch-card task. This
+  design does not weaken the mark. The owner decides the card in a marked
+  chat.
 
 ---
 
@@ -323,7 +363,7 @@ This design cites that plan and does not depend on its details.
 
 | Step | What happens | Where it lives (the seam it extends) | Cost |
 |---|---|---|---|
-| 1. A short brief | A fixed, capped text per stored version: the approved measures by name, the key parts, the rules. Same bytes for the same version (rule 3) | CRM: the CRM facts block (`crm_platform.md` §18.14.4 point 2). A connection: one input of `server_brief`, with its own header and cap (rule 1) | CRM: at most 3 more lines in a block of 13 lines today. A connection: at most 300 characters. The admin's 400 and the server's 600 already fill the 1,000 of `chat_connected_systems.md` §5. The WS-CSY planner decides whether the cap rises or the parts share it |
+| 1. A short brief | A fixed, capped text per stored version: the approved measures by name, the key parts, the rules. Same bytes for the same version (rule 3) | CRM: the CRM facts block (`crm_platform.md` §18.14.4 point 2). A connection: one input of `server_brief`, with its own header and cap (rule 1) | CRM: at most 3 more lines in a block of 13 lines today. A connection: at most 300 characters for the model summary. The cap of one server rises to 1,300 characters, in fixed parts (review Q1): the admin 400, the model summary 300, the server 600, in that order. A fixed cap per part keeps `server_brief` pure, and no writer crowds out another. Only an APPROVED version gives the summary (D-SEM-11) |
 | 2. The full model on demand | The model asks `org_facts` for an entity, a measure or a verified query | The `org_facts` tool. It loads with the CRM family today. It also loads when a server with an approved model attaches. It is not a core tool, so the core ceiling (`test_tool_schema_diet.py`, 7,040) does not move | One tool call |
 | 3. Link on the server | A field, a measure or an entity named by a word, not a key, resolves on the server by label, synonym and term, before any 422. Two close candidates follow the confidence rule of §18.16.4: ask first when the totals differ by more than 5% | `field_sql.FieldScope.ref`, `crm_sync/terms.py` | 0 tokens |
 | 4. Resolve values | A filter by name finds the value that the member means, as the member. In rung 1 it is the old `field.@parent=<words>`. After SEM-1b it is the clause `{"field": "@parent", "op": "matches", "value": "<words>"}`. One match binds. Several follow the confidence rule. None gives an honest zero with the near spellings | `field_sql.text_matches`, `terms.value_matches`, `name_match` | 0 tokens |
@@ -354,9 +394,9 @@ the CRM UI research draft (§4.1, not on `main`). Two options:
 | Cost | Larger, HIGH. One shape for the chat, the sidebar, saved views and Studio | Smaller, HIGH. A third spelling until a later merge |
 
 **Recommendation: Option A for the shape, with a value hook for each store.**
-The chat then learns one query form for every app. This is D-SEM-3. Until the
-owner decides it, SEM-1b and the CRM UI research draft S1 must not both start, because
-together they would write two grammars.
+The chat then learns one query form for every app. The owner chose Option A
+(D-SEM-3, 2026-11-18). So SEM-1b builds it, and the CRM UI research draft S1
+does not build a second grammar.
 
 **Never model-written SQL on our Postgres.** A typed query fails loudly, and
 free SQL fails with a plausible wrong answer (dbt, 2026-04-07).
@@ -503,8 +543,12 @@ D-SEM-7.
   2026-10-19 (§18.16) and `test_no_tenant_name_in_prompts.py` hold.
 - **No learning across orgs.** Only counts cross tenants (D187 point 4). A
   model is never copied from one org to another.
-- **Visibility.** A value is resolved as the member, at query time, so a
-  member never learns a value of a record that they cannot open.
+- **Visibility, the CRM.** A value is resolved as the member, at query time,
+  so a member never learns a value of a record that they cannot open.
+- **Visibility, a connection (review gap 2).** The connection reads through
+  its own credential, and an OAuth connection acts as the admin who connected
+  it (D98). The member sees what that account sees, behind
+  `integrations:use:mcp-<name>`.
 - **Logs.** Names of ours and counts only. No field label, value or question
   text.
 - **Member questions.** The model stores no question text of a member, except
@@ -532,7 +576,7 @@ D-SEM-7.
 | 0 | None. Read, for the live Zoho-mirror org, the values of `CRM_CATALOGUE_ORGS`, `CRM_QUESTIONS_ORGS`, `CRM_ANSWER_FIRST_ORGS` and `CRM_DECIDE_ORGS`, and whether an approved plan exists. If the built term path is off there, the owner decides the flip after a preview | SEM-R0 |
 | 1 | A member asks for the billed total of one customer for one month, and the amount still due. The chat sends one total per module, with the customer's name in a clause. The server finds the customer, and the answer gives the totals with "How I read this". No refusal reaches the member. The scripted replay of the four refusal classes passes | SEM-0, SEM-1a, SEM-2 to SEM-6 |
 | 2 | An admin opens "Needs you" and sees three proposals from chats: a synonym, a rule and a verified question. The admin accepts two. A member asks the same question in other words in a new chat, and gets "a verified question" with the same total. The admin presses Undo on one, and the next chat drops it | SEM-1b, SEM-7 to SEM-11 |
-| 3 | An admin connects a test company through the local link to Tally, or a test MCP server. Within 5 minutes the panel shows what Metorite learned: the groups, the ledger count of each group, the voucher types, and the first and last voucher date. The admin accepts. A member asks for last quarter's sales. The chat calls the system's read tool, names the system, and says how it read the data | SEM-12 to SEM-17 |
+| 3 | An admin connects a test company through the local link to Tally, or a test MCP server. Within 5 minutes the panel shows what Metorite learned: the groups, the ledger count of each group, the voucher types, and the first and last voucher date. The admin accepts. A member asks for last quarter's sales. The chat calls the system's read tool, names the system, and says how it read the data. **Review gap 4:** after a read through the local link, the first follow-up meets the card of task 3714 (§4.3). The demo shows it, and the owner decides the card | SEM-12 to SEM-17 |
 | 4 | One line: books of account. Zoho Books after IN-3 (task 3176), and totals that respect the tax ledgers. Needs D-SEM-8 | later |
 | 5 | One line: AI Studio builds starters and skills from a model (I2, TOF-5a) | later |
 | 6 | One line: suggestions from use (after NUM-7), and the guarded tune of the profiler prompt (task 3649) | later |
@@ -560,10 +604,10 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS` and `SEMANTIC_MODEL_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` | SEM-7 |
 | **SEM-10** | 2 | Measures and Verified questions in "Your answers", with Undo | CRM settings UI | STANDARD UI · captures before merge | `SEMANTIC_MODEL_ORGS` | Vitest of the section (new) | SEM-8, SEM-9 |
 | **SEM-11** | 2 | The weekly counts of refusal codes go to the failure store | a job on the queue | STANDARD · AGENT-SAFE | none | `test_semantic_refusal_feed.py` (new) | SEM-4, TOF-2a (task 3416) |
-| **SEM-12** | 3 | The connection model table, its one writer and `shape_only` | a migration (number at build time), `connections/semantic_model.py` | HIGH (migration, tenancy) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_semantic_model_r8.py` (new: org B cannot read org A, cascade on delete), `test_semantic_shape_only.py` (new), `test_tenancy_boundary.py` | D-SEM-2 |
-| **SEM-13** | 3 | The profiler of §4.2: discover, shape reads with no member, decide, draft | `connections/`, `decide_features.py` | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (new, with a fake MCP server): no class B or C tool is called, the caps hold, no value is stored | SEM-12 |
-| **SEM-14** | 3 | The model's summary is one input of `server_brief`, with its own header and cap, stable for a version | `acb_skills/server_brief.py` | HIGH (untrusted text) · AGENT-SAFE dark | `CONNECTED_SYSTEMS_ORGS` | `test_server_brief.py` (extended) | CSY-1 (task 3400), D-CSY-1 |
-| **SEM-15** | 3 | An `org_facts` provider for connections. The `org_facts` tool loads with an approved model | `gateway/org_facts.py`, a provider module, `_tool_injection.py` | STANDARD · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_org_facts.py`, `test_org_facts_r8.py` (extended) | SEM-12 |
+| **SEM-12** | 3 | The connection model table, its one writer and `shape_only`, and a partial unique index, so one connection has at most one approved version (review) | a migration (number at build time), `connections/semantic_model.py` | HIGH (migration, tenancy) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_semantic_model_r8.py` (new: org B cannot read org A, cascade on delete), `test_semantic_shape_only.py` (new), `test_tenancy_boundary.py` | D-SEM-2 |
+| **SEM-13** | 3 | The profiler of §4.2: discover, shape reads with no member, decide, draft | `connections/`, `decide_features.py` | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (new, with a fake MCP server): no class B or C tool is called, a tool that says destructive or not idempotent is refused, the caps hold, no value is stored. **Review gap 5:** a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline (`evals/semantic/profiler/`, new). It reuses `splits.py` and `compare.py` of task 3649 after they merge. Those files are on an unpushed branch today, so no text cites them as on `main` | SEM-12 |
+| **SEM-14** | 3 | The model's summary is one input of `server_brief`, with its own header and cap, stable for a version | `acb_skills/server_brief.py` | HIGH (untrusted text) · AGENT-SAFE dark | `CONNECTED_SYSTEMS_ORGS` | `test_server_brief.py` (extended). **Review Q1:** this PR moves the pin test of CSY §3.1 and the figure in CSY §5 to 1,300 characters (the WS-CSY planner agrees to that edit) | CSY-1 (task 3400), D-CSY-1 |
+| **SEM-15** | 3 | An `org_facts` provider for connections. The `org_facts` tool loads with an approved model. **Review gap 3:** the provider runs the same grant check as the attach (`is_authorized`), and returns nothing in a run that holds an untrusted pack (CSY §3.6: a member never learns of a server they cannot use) | `gateway/org_facts.py`, a provider module, `_tool_injection.py` | HIGH (grant) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_org_facts.py`, `test_org_facts_r8.py` (extended). Two fence cases: a member without the grant reads nothing, and a run with the email pack reads nothing | SEM-12 |
 | **SEM-16** | 3 | The panel: the draft as a diff, accept per part, "Read it again" | `ConnectionSheet.tsx` | STANDARD UI · captures before merge | `CONNECTION_MODEL_ORGS` | Vitest of `ConnectionSheet.tsx` (extended) | SEM-13, CSY-9 (task 3409) |
 | **SEM-17** | 3 | The Tally reads of §4.3 through the local link, with the untrusted mark | the LNK adapter | HIGH · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler_tally.py` (new, synthetic) | SEM-13, the LNK build slices (PR 2550) |
 
@@ -576,8 +620,8 @@ with no restart (`docs/flag_reload.md`). A flip on a live org needs the
 SEM-3 and SEM-4 can start at once and run in parallel. SEM-2 starts after
 SEM-R0. SEM-5 and SEM-6 close rung 1.
 
-**Later rungs.** SEM-1b opens rung 2, after the owner answers D-SEM-3. Rung 3
-waits for CSY-1 and for the owner's answers to D-SEM-2 and D-CSY-1.
+**Later rungs.** SEM-1b opens rung 2. D-SEM-3 is answered (Option A). Rung 3
+needs CSY-1 for SEM-14. SEM-14 also needs D-CSY-1, which is still open.
 
 ### 10.3 The map to the CRM-Q34 slices (epic task 3689)
 
@@ -590,11 +634,10 @@ spec adds no second slice for the same work. The map:
 | SEM-4 | CRM-Q34-2 (the refusals name a working field, module or filter) and CRM-Q34-3 (the tool text) | 3694, 3695 | SEM-4 includes both. Build them once |
 | SEM-3 | CRM-Q34-7: `q` finds across a module | 3700 | The two overlap. The one that starts first owns the code, and the other cites it |
 | SEM-1b | CRM-Q34-4 and CRM-Q34-4b: one filter builder | 3697, 3711 | Q34-4 is the builder that SEM-1b lowers into |
-| none | CRM-Q34-5: the filter words a member needs | 3698 | **Waits for D-SEM-3.** The words are part of the one grammar |
+| none | CRM-Q34-5: the filter words a member needs | 3698 | Unblocked by D-SEM-3 (Option A, 2026-11-18). The words are part of the one grammar |
 
-The tasks of the rows SEM-1a to SEM-6 are made when the owner approves the
-spec, under the epic of WS-SEM. No row of SEM-12 to SEM-17 gets a task before
-the owner answers D-SEM-1.
+The tasks of the slices are made under the WS-SEM epic. D-SEM-1 and D-SEM-2 are answered, so SEM-12, SEM-13, SEM-15, SEM-16 and
+SEM-17 may get tasks. SEM-14 waits for D-CSY-1.
 
 ---
 
@@ -617,46 +660,62 @@ the owner answers D-SEM-1.
 
 ## 12. Decisions for the owner
 
+**Answered 2026-11-18, owner in chat (D226).** D-SEM-1, 2, 4, 5, 6, 7, 9, 10
+and 11: accepted as recommended. D-SEM-3: Option A. D-SEM-8: a new connector
+spec. The list below keeps each question and its recommendation. Each line
+ends with its answer.
+
 1. **D-SEM-1. A new block "Data meaning" in `building_blocks.md` §2**, whose
    seam is `org_facts` with one provider per source. Recommendation: yes. It
    makes the CRM's model general and adds no parallel read path.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 2. **D-SEM-2. One new table for the model of a connection**, keyed by the
    connection id, with versions. Recommendation: yes. The CRM keeps its plan
    and needs no table.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 3. **D-SEM-3. Which one query grammar** (§5.1). Option A: the shape of
    `studio_query` for every store. It gets one `any` group, `matches`, and a
    value hook for each store. Option B: a CRM `filter_grammar.py`, as
    the CRM UI research draft S1 proposes. Recommendation: A. It costs more, because of
    the zone, money, spelling and hot-field conflicts that §5.1 lists. B leaves
    a third spelling. Rung 1 does not wait for this answer.
+   **Answer (2026-11-18, owner in chat): Option A. The shape of `studio_query` for every store.**
 4. **D-SEM-4. Who approves.** The CRM admin for the CRM (as CRM-Q32). A holder
    of `integrations:manage` for a connection. AI Studio reads a model and does
    not edit it. Recommendation: yes. Three permissions approve different
    things today, and this keeps each one where it is.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 5. **D-SEM-5. No stored value index.** Values resolve at query time as the
    member. Only picklist options are kept. Recommendation: yes. A stored list
    needs its own owner decision. It can show a value to a member who cannot
    open its record.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 6. **D-SEM-6. Verified queries live in the model of the source**, with
    parameters only, and a skill may name one. Recommendation: yes. The
    alternative stores them as saved skills, which a member owns.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 7. **D-SEM-7. Suggestions from use show counts and query shapes only.** A
    member's question text reaches an admin only if the member consents.
    Recommendation: counts and shapes only.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (counts and shapes only).**
 8. **D-SEM-8. Books of account.** Keep `ai_studio.md` non-goal 8 (no general
    ledger). Books arrive as connections: Tally through the local link, then
    Zoho Books after IN-3. Name the spec that owns the books connectors.
    Recommendation: a books section in `crm_connectors.md` (WS-MIR) or a new
    connector spec. The owner picks.
+   **Answer (2026-11-18, owner in chat): a new connector spec owns the books connectors (Tally, then Zoho Books). The spec is a new slice, and no section of `crm_connectors.md` takes it.**
 9. **D-SEM-9. No learning across orgs.** Only counts cross tenants. The
    profiler's global prompt changes only through task 3649. Recommendation:
    yes, as D187 point 4.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 10. **D-SEM-10. Keep the body close to Apache Ossie**, and take no dependency.
     Recommendation: yes. It is pre-1.0.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 11. **D-SEM-11. Before an admin approves a connection's draft, the chat gets
     nothing new from it.** Recommendation: yes (rule 5). The CRM's "answer
     first" (CRM-Q33) stays for the CRM.
-12. **The held WS-CSY decisions.** This design does not assume an answer.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
+12. **The held WS-CSY decisions. Still open (2026-11-18).** This design does not assume an answer.
     - **D-CSY-1** (the per-turn block reads the description). SEM-14 needs a
       yes. With a no, a connection's model reaches the chat only through
       `org_facts` on demand (SEM-15).
