@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 
 import structlog
-
 from acb_skills import integrations as ig
 from acb_skills import narrowing
 
