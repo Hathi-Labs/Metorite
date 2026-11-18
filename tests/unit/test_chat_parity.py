@@ -33,6 +33,7 @@ from __future__ import annotations
 import functools
 import re
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -495,3 +496,149 @@ def test_projects_tools_named_by_f3_are_real() -> None:
     assert projects_debt() == len(pm.UI_PLANNED) + sum(
         1 for t in pm.UI_ACTIONS.values() if t in pm.PLANNED and t not in skill_projects.__all__
     )
+
+
+# ── PAR-1: each app has a page, and the chat can open it ────────────────────
+
+def test_every_app_names_its_page_or_none() -> None:
+    from acb_skills.chat_parity import APP_PAGE, APPS
+
+    assert set(APP_PAGE) == set(APPS)
+
+
+def test_a_page_of_an_app_opens_for_an_admin() -> None:
+    """The fence of PAR-1: each app with a page names a page that the chat may open
+    (``in_app_path.refusal`` accepts it for an admin who holds every feature).
+    Mutation: point an app at a path that is not a live pane -> red."""
+    from acb_skills.chat_parity import APP_PAGE
+    from orchestrator import in_app_path as iap
+
+    every = frozenset(p.feature for p in iap.PANES if p.feature)
+    for app, page in APP_PAGE.items():
+        if page is not None:
+            assert iap.refusal(page, every, True) is None, (app, page)
+
+
+def test_an_app_with_no_page_has_no_live_pane() -> None:
+    """``None`` means that the app is not live. An app that goes live must get a page."""
+    from acb_skills.chat_parity import APP_PAGE
+    from orchestrator import in_app_path as iap
+
+    live = {p.href for p in iap.PANES}
+    none = {app for app, page in APP_PAGE.items() if page is None}
+    assert none == {"notes", "memory", "agents"}
+    for app in none:
+        assert f"/{app}" not in live, app
+    for app in set(APP_PAGE) - none:
+        assert APP_PAGE[app] in live, app
+
+
+def test_each_app_with_debt_has_a_page_or_a_reason() -> None:
+    from acb_skills.chat_parity import APP_PAGE, DEBT_CEILING
+
+    for app, count in DEBT_CEILING.items():
+        assert app in APP_PAGE, app
+        if count and APP_PAGE[app] is None:
+            assert app in {"notes", "memory", "agents"}, app
+
+
+# ── PAR-1b: the ratchet names its tasks (task 3100) ─────────────────────────
+#
+# Since P-0 (2026-11-01) eight ceilings of ``DEBT_CEILING`` went UP, and no wave
+# after P-0 had a task on the board, so the debt only grew. Now each wave names
+# its board tasks (``WAVES``), the baseline of P-0 stays in ``P0_CEILING``, and a
+# ceiling above its baseline names the task that pays it in its comment
+# ("Paid by task N", N a task of the wave of that app). Each check below has a
+# test that gives it bad data, so each one can fail (R7).
+
+def waves_without_a_task(waves: dict[str, tuple]) -> list[str]:
+    """The waves that name no board task, or a task that is not a positive number."""
+    bad: list[str] = []
+    for wave, (_name, _apps, tasks) in sorted(waves.items()):
+        if not tasks or not all(isinstance(t, int) and not isinstance(t, bool) and t > 0
+                                for t in tasks):
+            bad.append(f"{wave}: no board task")
+    return bad
+
+
+def raises_without_a_task(
+    ceiling: dict[str, int], baseline: dict[str, int], comments: dict[str, str],
+    waves: dict[str, tuple],
+) -> list[str]:
+    """The apps whose ceiling is above the P-0 baseline and whose comment does not
+    name a task of their wave ("Paid by task N")."""
+    bad: list[str] = []
+    for app, value in sorted(ceiling.items()):
+        if value <= baseline.get(app, 0):
+            continue
+        wave_tasks = {t for _n, apps, tasks in waves.values() if app in apps for t in tasks}
+        named = {int(n) for n in re.findall(r"[Pp]aid by task (\d+)", comments.get(app, ""))}
+        if not named & wave_tasks:
+            bad.append(f"{app}: the ceiling {value} is above its baseline "
+                       f"{baseline.get(app, 0)} and names no task of its wave")
+    return bad
+
+
+def _ceiling_comments() -> dict[str, str]:
+    """The trailing comment of each ``DEBT_CEILING`` line, read from the source."""
+    text = Path(cp.__file__).read_text(encoding="utf-8")
+    block = text[text.index("DEBT_CEILING: dict[str, int] = {"):]
+    block = block[:block.index("\n}\n")]
+    out: dict[str, str] = {}
+    for line in block.splitlines():
+        m = re.match(r'^    "(\w+)": \d+,(?:\s*#\s*(.*))?$', line)
+        if m:
+            out[m.group(1)] = m.group(2) or ""
+    return out
+
+
+def test_each_wave_names_a_board_task() -> None:
+    assert waves_without_a_task(cp.WAVES) == []
+
+
+def test_a_wave_with_no_task_is_found() -> None:
+    bad = {**cp.WAVES, "P-X": ("A wave nobody builds", ("crm",), ()),
+           "P-Y": ("A wave with a bad task", ("crm",), (0,))}
+    assert waves_without_a_task(bad) == ["P-X: no board task", "P-Y: no board task"]
+
+
+def test_the_waves_cover_each_app_with_debt_once() -> None:
+    covered = [app for _n, apps, _t in cp.WAVES.values() for app in apps]
+    assert sorted(covered) == sorted(set(covered))
+    assert set(cp.DEBT_CEILING) - {"projects"} <= set(covered)
+
+
+def test_the_baseline_names_the_same_apps_as_the_ceiling() -> None:
+    assert set(cp.P0_CEILING) == set(cp.DEBT_CEILING)
+
+
+def test_a_ceiling_above_its_baseline_names_the_task_that_pays_it() -> None:
+    assert raises_without_a_task(
+        cp.DEBT_CEILING, cp.P0_CEILING, _ceiling_comments(), cp.WAVES) == []
+
+
+def test_eight_ceilings_went_up_since_p0() -> None:
+    """The count that the owner met on 2026-11-13. A ceiling may go down, and one that
+    goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
+    up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
+    assert up == ["calendar", "chat", "email", "integrations", "knowledge", "settings",
+                  "shell", "studio"]
+
+
+def test_a_raise_with_no_task_in_its_comment_is_found() -> None:
+    ceiling = {**cp.DEBT_CEILING, "crm": cp.P0_CEILING["crm"] + 1}
+    comments = {**_ceiling_comments(), "crm": "added a row, nobody pays it"}
+    assert [m.split(":")[0] for m in
+            raises_without_a_task(ceiling, cp.P0_CEILING, comments, cp.WAVES)] == ["crm"]
+
+
+def test_a_raise_that_names_a_task_of_another_wave_is_found() -> None:
+    comments = {**_ceiling_comments(), "email": "added a row. Paid by task 3112."}  # P-1, not P-2
+    assert [m.split(":")[0] for m in raises_without_a_task(
+        cp.DEBT_CEILING, cp.P0_CEILING, comments, cp.WAVES)] == ["email"]
+
+
+def test_a_ceiling_at_or_below_its_baseline_needs_no_task() -> None:
+    ceiling = {**cp.DEBT_CEILING, "crm": cp.P0_CEILING["crm"], "tasks": 1}
+    comments = {**_ceiling_comments(), "crm": "", "tasks": ""}
+    assert raises_without_a_task(ceiling, cp.P0_CEILING, comments, cp.WAVES) == []
