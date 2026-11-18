@@ -1790,7 +1790,9 @@ async def _my_waiting_asks(org: str, me: str) -> dict[str, dict] | None:
     ``my_day_feed.md`` §5.9 item 4) adds a summary of every waiting row of
     the thread: ``request_ids`` (sorted), ``newest_asked_at``,
     ``newest_agent_name`` and ``latest_expires_at``. So a new question in a
-    thread that already waits moves the My Day card.
+    thread that already waits moves the My Day card. RESUME-3b adds
+    ``newest_run_id``: the ``run_id`` of the newest waiting row, which
+    ``list_active_sessions`` sends as ``parkedRunId`` of a parked thread.
     """
     from orchestrator import pending_ask  # noqa: PLC0415
 
@@ -1808,11 +1810,13 @@ async def _my_waiting_asks(org: str, me: str) -> dict[str, dict] | None:
         entry = out.setdefault(str(row["thread_id"]), {
             **row, "request_ids": [], "newest_asked_at": None,
             "newest_agent_name": None, "latest_expires_at": None,
+            "newest_run_id": None,
         })
         entry["request_ids"] = sorted({*entry["request_ids"], str(row.get("request_id") or "")})
         if _later(row.get("asked_at"), entry["newest_asked_at"]):
             entry["newest_asked_at"] = row.get("asked_at")
             entry["newest_agent_name"] = row.get("agent_name")
+            entry["newest_run_id"] = row.get("run_id")
         if _later(row.get("expires_at"), entry["latest_expires_at"]):
             entry["latest_expires_at"] = row.get("expires_at")
     return out
@@ -1924,6 +1928,30 @@ def _mark_partial(response: Response | None) -> None:
         response.headers[RUNS_PARTIAL_HEADER] = "1"
 
 
+def _parked_runs_on(org: str, asks: dict[str, dict]) -> bool:
+    """RESUME-3b: True when a parked row of *org* may name its run. Both
+    ``CHAT_RESUME_ORGS`` and ``CHAT_LATE_APPROVE_ORGS`` must name the
+    session's org. Each flag reader fails closed. With no question waiting,
+    it reads no flag."""
+    if not asks:
+        return False
+    from acb_skills.late_approve import late_approve_on
+    from acb_skills.stored_call import chat_resume_on
+
+    return chat_resume_on(org) and late_approve_on(org)
+
+
+def _parked_run_field(ask: dict, *, live: bool, on: bool) -> dict[str, str]:
+    """RESUME-3b: ``{"parkedRunId": <run id>}`` for a parked row, else ``{}``.
+
+    The run id is the ``run_id`` of the thread's newest waiting question of
+    the caller (``newest_run_id`` of :func:`_my_waiting_asks`). A row with a
+    live run, a flag that is off (*on* False) and a question with no run id
+    add no key, so the row stays the row of before, byte for byte."""
+    run_id = ask.get("newest_run_id") if on and not live else None
+    return {"parkedRunId": run_id} if isinstance(run_id, str) and run_id else {}
+
+
 @router.get(
     "/active-sessions",
     summary="List session IDs that currently have an active (running) agent",
@@ -1976,6 +2004,15 @@ async def list_active_sessions(
     card, and an answer starts a new run. The open chat draws "waiting for
     you" and "parked" differently from it.
 
+    **RESUME-3b: ``parkedRunId``.** A parked row (``needs_input`` and ``live:
+    false``) carries the ``run_id`` of the thread's newest waiting question,
+    only when ``CHAT_RESUME_ORGS`` and ``CHAT_LATE_APPROVE_ORGS`` both name
+    the caller's org. A late Approve of case A goes on under that run id
+    (RESUME-2b), so the open chat reads the run that the list names next as
+    the SAME run, in the same reply. The key is absent in every other case.
+    It comes from the caller's own questions only, read under the caller's
+    tenant, so it widens nothing.
+
     **WS-51 S3: ``lastStep``.** With ``?steps=1`` a running row carries the
     run's latest step, for example "Search tasks" or "Writing a reply", read
     from the tail of its own stream (``stream_relay.latest_step``). The step is
@@ -2022,6 +2059,7 @@ async def list_active_sessions(
         return []
     by_tid = {run["threadId"]: run for run in live}
     ids = list(dict.fromkeys([*by_tid, *asks]))
+    parked_runs = _parked_runs_on(org, asks)
 
     def _state(tid: str) -> dict:
         # ``live``: a run runs for the thread. A ``needs_input`` row with no
@@ -2035,7 +2073,8 @@ async def list_active_sessions(
         ask = asks.get(tid)
         if ask is None:
             return {"state": "running", "askKind": None, "live": live, "runId": run_id}
-        return {"state": "needs_input", "askKind": ask.get("kind"), "live": live, "runId": run_id}
+        return {"state": "needs_input", "askKind": ask.get("kind"), "live": live, "runId": run_id,
+                **_parked_run_field(ask, live=live, on=parked_runs)}
 
     def _own_unknown(tid: str) -> dict:
         return {
