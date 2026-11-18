@@ -98,12 +98,14 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from redis.exceptions import RedisError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from acb_common.settings import get_settings
 
 __all__ = [
     "KEY_ROOT",
     "OUTAGE_ERRORS",
+    "TIMEOUT_ERRORS",
     "ConsumerGroup",
     "ScanPattern",
     "TenantKey",
@@ -131,6 +133,12 @@ KEY_ROOT = "cc"
 #: itself (the ratchet in ``tests/unit/test_tenant_redis.py``). WS-55 EA-4a
 #: answers 503 for it.
 OUTAGE_ERRORS: tuple[type[BaseException], ...] = (RedisError, OSError, TimeoutError)
+
+#: The errors that mean "Redis did not answer IN TIME": the builtin
+#: ``TimeoutError`` (``asyncio.wait_for``) and the ``TimeoutError`` of
+#: redis-py, which is NOT the builtin one. A caller that must tell a stall
+#: from a refusal catches this tuple (``orchestrator.send_once``, HRD-17a).
+TIMEOUT_ERRORS: tuple[type[BaseException], ...] = (TimeoutError, RedisTimeoutError)
 
 #: The one script of :meth:`TenantRedis.delete_unless`: delete ``KEYS[1]``
 #: unless it holds ``ARGV[1]``. Redis runs a script as one step. It names no

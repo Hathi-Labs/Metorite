@@ -82,6 +82,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.tenant_redis import TIMEOUT_ERRORS
 
 _log = get_logger("orchestrator.send_once")
 
@@ -476,7 +477,7 @@ async def begin(
     try:
         return await asyncio.wait_for(
             _begin(org, thread_id, member, sid, text), BEGIN_TIMEOUT_SECONDS)
-    except TimeoutError:
+    except TIMEOUT_ERRORS:
         _log.warning("send_once.timeout", thread_id=thread_id[:12])
         return Outcome(BUSY)
 
@@ -506,7 +507,7 @@ async def _claim_step(r: Any, k: Any, claim_value: str) -> bool | None:
     """
     try:
         return bool(await _step(r.set(k, claim_value, nx=True, ex=CLAIM_TTL_SECONDS)))
-    except TimeoutError:
+    except TIMEOUT_ERRORS:
         return None
 
 
@@ -579,7 +580,9 @@ async def _begin(
                 _log.info("send_once.stale_taken", thread_id=thread_id[:12],
                           pending=bool(run_id))
             return Outcome(BUSY)
-    except TimeoutError:
+    except TIMEOUT_ERRORS:
+        # A stall after the first claim: :func:`begin` gives BUSY. The
+        # TimeoutError of redis-py is not the builtin one, so both count.
         raise
     except Exception as exc:
         _log.warning("send_once.open", error=type(exc).__name__)

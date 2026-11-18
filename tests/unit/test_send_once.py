@@ -686,6 +686,89 @@ async def test_a_stall_after_a_key_was_found_is_busy_never_open(world, monkeypat
     assert _held(world)["claim"] == first.claim.token
 
 
+def _stall_set_after(world: World, ready: Any) -> list[int]:
+    """Make each SET NX stall once ``ready()`` is True. Counts each SET."""
+    real_set = world.raw.set
+    sets: list[int] = []
+
+    async def _maybe_stall(*a, **k):
+        sets.append(1)
+        if ready():
+            await asyncio.Event().wait()
+        return await real_set(*a, **k)
+
+    world.raw.set = _maybe_stall
+    return sets
+
+
+async def test_a_key_that_vanished_then_a_stall_is_busy(world, monkeypatch) -> None:
+    """Round 1: the SET NX finds a key, and the GET then finds none (it ran
+    out). No value was read, but a key was found. So a stall of the SET NX
+    of round 2 gives BUSY, never OPEN. Fences ``round_no`` against ``seen``."""
+    first = await _begin()
+    assert first.kind == send_once.NEW
+    monkeypatch.setattr(send_once, "STEP_TIMEOUT_SECONDS", 0.05)
+    real_get = world.raw.get
+    gets: list[int] = []
+
+    async def _vanish_once(k):
+        gets.append(1)
+        if len(gets) == 1:
+            world.raw.kv.pop(k, None)
+            return None
+        return await real_get(k)
+
+    world.raw.get = _vanish_once
+    sets = _stall_set_after(world, lambda: len(gets) >= 1)
+    out = await asyncio.wait_for(_begin(), 2)
+    assert (len(sets), len(gets)) == (2, 1), "round 1 found a key, round 2 stalled"
+    assert out.kind == send_once.BUSY
+
+
+async def test_a_stale_take_then_a_stall_is_busy(world, monkeypatch) -> None:
+    """The repeat took a stale claim with ``delete_if``. The SET NX that
+    follows stalls: BUSY, never OPEN."""
+    await _begin()  # its request died: a stale claim, and no live run
+    monkeypatch.setattr(send_once, "STEP_TIMEOUT_SECONDS", 0.05)
+    taken = lambda: any(  # noqa: E731
+        c[0] == "eval" and c[1] == tr._DELETE_IF_LUA for c in world.raw.calls)
+    _stall_set_after(world, taken)
+    out = await asyncio.wait_for(_begin(), 5)
+    assert taken(), "the repeat took the stale claim"
+    assert out.kind == send_once.BUSY
+
+
+async def test_a_redis_py_timeout_counts_as_a_stall(world) -> None:
+    """The TimeoutError of redis-py is not the builtin one. A socket timeout
+    below the step limit must act as a stall: OPEN on the first claim, and
+    BUSY after a key was found."""
+    from redis.exceptions import TimeoutError as RedisTimeout
+
+    assert RedisTimeout in send_once.TIMEOUT_ERRORS and TimeoutError in send_once.TIMEOUT_ERRORS
+    assert not issubclass(RedisTimeout, TimeoutError)
+    real_set = world.raw.set
+
+    async def _first_times_out(*a, **k):
+        raise RedisTimeout("socket timeout")
+
+    world.raw.set = _first_times_out
+    assert (await _begin()).kind == send_once.OPEN
+    world.raw.set = real_set
+    first = await _begin()
+    assert first.kind == send_once.NEW
+    sets: list[int] = []
+
+    async def _second_times_out(*a, **k):
+        sets.append(1)
+        if len(sets) >= 2:
+            raise RedisTimeout("socket timeout")
+        return await real_set(*a, **k)
+
+    world.raw.set = _second_times_out
+    out = await asyncio.wait_for(_begin(), 2)
+    assert len(sets) == 2 and out.kind == send_once.BUSY
+
+
 async def test_a_start_into_an_empty_key_starts_nothing(world) -> None:
     """F-E: the key is gone at the start. It ran out, or a taker ran and a
     Stop released it. The move never writes into an empty key."""
