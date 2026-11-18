@@ -1591,3 +1591,25 @@ async def test_a_draft_that_left_drafts_reads_gone(
     row = tool._row("d0001")
     target = cr.ChatDraft("d0001", tuple(RAVI), "rates", cr.draft_digest(row))
     assert cr._state(row, target) == cr.GONE
+
+
+async def test_with_the_flag_off_the_rule_reads_no_record(
+    monkeypatch: pytest.MonkeyPatch, redis: _Redis,
+) -> None:
+    """M8: each entry of the rule asks the flag before any Redis call."""
+    _flag(monkeypatch, "")
+    assert await cr.plan_save(act="new_draft", thread=THREAD, account_id=BOX,
+                              member=MEMBER, to=RAVI, subject="Rates") == ""
+    box = _Mailbox()
+
+    async def put(body: dict[str, Any]) -> Any:
+        return await box.put("/email/drafts", body)
+
+    saved = await cr.save_one_draft(
+        put, {"account_id": BOX, "to": RAVI, "subject": "Rates", "body": "Hi."},
+        replaces="d9", thread=THREAD, member=MEMBER, act="new_draft",
+        read=box.get, delete=box.delete)
+    await cr.mark_revised(act="new_draft", draft_id="d9", thread=THREAD, account_id=BOX,
+                          member=MEMBER, to=RAVI)
+    assert saved.outcome == cr.CREATED
+    assert redis.reads == 0 and redis.writes == 0 and box.gets == []
