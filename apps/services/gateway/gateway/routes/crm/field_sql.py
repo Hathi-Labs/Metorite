@@ -990,12 +990,16 @@ def text_numbers_sql(keys: Sequence[str]) -> tuple[str, dict[str, Any]]:
     columns = []
     params: dict[str, Any] = {}
     for i, key in enumerate(keys):
-        p = f"{_TEXT_KEY}{i}"
-        params[p] = key
+        # The number goes through the one builder (:func:`_amount`), which
+        # binds the key as ``{prefix}_0``.
+        ref = FieldRef(key=key, type="number", label=key, text_number=True)
+        number, bound, _source = _amount(MODULE_COLUMN, ref, f"{_TEXT_KEY}{i}")
+        params.update(bound)
+        (p,) = bound
         value = f"{DETOAST_COLUMN} ->> :{p}"
         columns.append(
             f"count(*) FILTER (WHERE btrim(coalesce({value}, ''), {_BLANKS}) <> '') AS f{i}, "
-            f"count(*) FILTER (WHERE {_number(DETOAST_COLUMN, p, True)} IS NOT NULL) AS p{i}"
+            f"count(*) FILTER (WHERE {number} IS NOT NULL) AS p{i}"
         )
     sql = (
         f"SELECT {', '.join(columns)} FROM crm_module_records{DETOAST_JOIN} "

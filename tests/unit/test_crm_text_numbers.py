@@ -125,7 +125,7 @@ async def test_a_text_field_at_90_percent_reads_as_a_number() -> None:
     # ONE statement, with each key, the org and the module bound.
     (sql, params), = db.seen
     assert "Fiber" not in sql and "Invoices" not in sql
-    assert params["agf_n0"] == "Fiber" and params["agf_module"] == "Invoices"
+    assert params["agf_n0_0"] == "Fiber" and params["agf_module"] == "Invoices"
     assert "agf_org" in params and fs.DETOAST_JOIN in sql
 
 
@@ -168,7 +168,7 @@ async def test_two_text_fields_take_one_statement() -> None:
 
     scope = _scope(Fiber="text", Fee="text")
     db = _Db(row=(10, 10, 4, 4))
-    out, counts = await fs.admit_text_numbers(db, scope, ["Fiber", "Fee"])
+    _out, counts = await fs.admit_text_numbers(db, scope, ["Fiber", "Fee"])
     assert len(db.seen) == 1 and set(counts) == {"Fiber", "Fee"}
     assert counts["Fee"] == fs.TextNumbers(filled=4, plain=4)
 

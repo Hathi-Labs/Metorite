@@ -151,7 +151,7 @@ async def test_a_text_field_sums_by_month_and_each_dirty_value_is_no_value(
         inv, app_engine) -> None:
     body = await _agg(inv, inv.org_a, entity="module:Invoices", measure="sum",
                       field="Fiber", group_field="Invoice_Date", bucket="month")
-    # October: 120 + 1,200. November: 75.5 + 40. December: 51 × 10.
+    # October: 120 + 1,200. November: 75.5 + 40. December: 51 times 10.
     assert _months(body) == {"2026-10": 1320.0, "2026-11": 115.5, "2026-12": 510.0}
     assert body["total"] == 1945.5
     assert (body["values"], body["records"]) == (_PLAIN, _RECORDS)
