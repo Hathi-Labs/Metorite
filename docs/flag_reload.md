@@ -33,6 +33,17 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_CARD_RECORD_ORGS` turns on the card record (`chat_organization.md`
+§16.3, CO-17). For each listed org, a write card that a member approves leaves
+one row in `chat_card_record`: the chat, the member, the card id, the outcome
+key, the act kind and the link of the record made. The row holds no text of
+the card. A declined card writes none. `*` lists every org, and the default is
+empty. Empty means nothing is written.
+
+Its one reader is `orchestrator.card_record.record_allowed`. The card gate asks
+it on each approved card, so a reload applies at once. The flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The
@@ -371,6 +382,17 @@ gives a pack. `*` lists every org, and the default is empty. Its one reader is
 the start of each run, so a reload applies to the next run. Any value other
 than empty is OWNER-ONLY (`work_plan.md` §6 D4), and the §3a window does not
 open it.
+
+`TOOL_TURN_BUDGET_ORGS` turns on the per-turn budget of a read tool
+(`chat_failure_modes.md` §4 row B5, HRD-5). It covers `search_company`
+and `find_tasks`. For each listed org, one of these tools may give
+3 empty or refused answers in a turn. Its next call in that turn does not run.
+The answer tells the chat to ask the member one question.
+
+`*` lists every org for this flag,
+and the default is empty. Its one reader is
+`orchestrator.tool_turn_budget.tool_turn_budget_on`. A flip stays OWNER-GATE
+(`enforcement-flip`).
 
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is

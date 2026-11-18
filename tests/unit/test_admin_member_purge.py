@@ -514,6 +514,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "task_accounts": 1,
         # WS-CO CO-11: the fake holds no chat pin of the member.
         "chat_member_rows": 0,
+        # WS-CO CO-17: the fake holds no approved-card row of the member.
+        "chat_card_rows": 0,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
