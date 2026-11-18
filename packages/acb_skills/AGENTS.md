@@ -155,7 +155,8 @@ not write a second copy of that seam. A bare test file name is under
    - Task 3599: a name gets ONE load try in a run (`_tried`). A later call of that name gets the refusal of the first try, and the loader is not asked again.
    - `unknown_call_name` finds MAF's result in `result`, `items` or `exception`. MAF puts the `KeyError` text in `exception`, in single quotes, and `is_raw` reads that form too.
    - `MEMBER_LINE` is the member's text for that step. Only `orchestrator.event_translator.tool_result_fields` shows it. The model never reads it.
-   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`.
+   - HRD-1b: a step (`step=True`) is a delegated run or a run with no chat. It keeps no loader and reads no record of the packs. Its answer names a tool of the request, or it is `NOT_IN_STEP`. The executor's one hook, `_unknown_tool_view`, makes each provider. Only a batch run can be a step, and the stream view of the orchestrator never is.
+   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`, `test_unknown_tool_batch_paths.py`.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it fails closed.
    - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
    - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
@@ -218,6 +219,14 @@ not write a second copy of that seam. A bare test file name is under
    - `PHASES` is the closed set (`gathering`, `asking`). `phase_event` is the ONE builder of the CUSTOM `run_phase` event, and its value holds `phase` only. It refuses a name outside the set. Do not reuse the free-text `progress` event for a phase.
    - `run_phase_on` is the ONE reader of the flag, and it fails closed. `orchestrator.executor._RunPhases` is the one caller, and the executor yields each line itself (orchestrator contract 22c).
    - Fence: `test_run_phase_event.py`.
+5l-1d. answer_claims.py -- the claim check of a chat answer (HRD-13, task 2992, spec `chat_failure_modes.md` §6 row HRD-13). Dark behind `CHAT_CLAIM_CHECK_ORGS`, and shadow only (D-HRD-6). It never edits `answer_check.py`, which `crm_platform.md` §18.11.2 owns.
+   - `claim_check_on` is the ONE reader of the flag, and it fails closed. `orchestrator._tool_injection._apply_claim_check` is the one seam.
+   - `ClaimCheckProvider.after_run` reads the whole run from `context.response`, once a run. It gives each act call `acted`, `not_acted` or `unknown`, and an unknown outcome abstains. It never raises.
+   - The rating FAILS CLOSED. `NOT_ACTED_TEMPLATES` holds the REAL held and refused answers of `egress` and `tool_packs`, and their first sentence is the head. An act tool rates `acted` only on a head of `ACTED_HEADS`, which a fence pins to the tool's own source. Each other result rates `unknown`. A new held or refused answer of a write joins `NOT_ACTED_TEMPLATES`.
+   - A make word gives `task.create` only when its object IS a new task, else `unknown_kind`. A sentence over 600 characters gives `long_sentence`, so the cost stays bounded on the event loop.
+   - The module REUSES each table and copies none. `ACT_TOOLS` takes the kinds `task.create`, `task.update` and `reminder.set` of `tool_packs.WRITE_KINDS`, and the five sends of `egress.CARD_BOUND_SEND_TOOLS` and `HELD_CARD_SEND_TOOLS`. `NOT_ACTED_LEADS` takes `email_chat_context.NO_ACT_LEADS` and `ask_tools.CARD_NOT_DONE_LEADS`. `NO_ACT_LEADS` is the public name of `_NO_ACT`, and the old name stays.
+   - The four rules are `act_without_outcome`, `doubt_without_outcome`, `promise_without_followup` and `earlier_turn_doubt`. The last always fires, so its count is a count of retractions, not of false claims. Rule B fires only against an acted call of its kind, else it passes or abstains with `no_call` (PROPOSED to the owner).
+   - The log is ONE line, `answer_claims.checked`, of counts and closed names only. It never holds the answer, a sentence, a hash, a recipient, an id or a result. Do not reuse `answer_check.checked`, because `scripts/crm_answer_check_replay.py` reads it. Fence: `test_answer_claims.py`.
 5l-2. org_facts_tools.py -- `org_facts(app, query)` and the CRM facts block (spec `crm_platform.md` §18.14.4). It loads with the `crm` skill family only.
    - `crm_answer_question` sends a pick only when this run showed that card and the member clicked it. Fences: `test_org_facts.py`, `test_org_facts_r8.py`, `test_crm_answer_first.py`.
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).

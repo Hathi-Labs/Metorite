@@ -240,6 +240,22 @@ def test_chat_card_record_orgs_reloads_and_its_reader_follows(env, monkeypatch) 
     assert not record_allowed(None)
 
 
+def test_chat_join_shadow_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-4, chat_organization.md §7. The reload list holds the key, and
+    the one reader of the shadow switch sees a change with no restart."""
+    from gateway.chat_join_shadow import shadow_allowed
+
+    assert fr.reloadable("CHAT_JOIN_SHADOW_ORGS")
+    monkeypatch.setenv("CHAT_JOIN_SHADOW_ORGS", "")
+    get_settings.cache_clear()
+    assert not shadow_allowed("acme")
+    env(**{**_START, "CHAT_JOIN_SHADOW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_JOIN_SHADOW_ORGS",)
+    assert shadow_allowed("ACME ")
+    assert not shadow_allowed("globex")
+    assert not shadow_allowed(None)
+
+
 def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU E12a, ai_studio.md §14 E12a. The reload list holds the key, and
     the one reader of the core events switch sees a change with no restart."""
