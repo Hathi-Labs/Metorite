@@ -1243,6 +1243,61 @@ async def _provider_did_not_answer(request: Request, exc: ProviderDidNotAnswer):
 # inherit another's binding" true on any server task model, not just uvicorn's
 # task-per-request. Jobs and consumers get no scope from this; they bind
 # explicitly or fail closed with TenantUnbound (H4).
+#
+# TOF-2d: the door sites of the failure log (tool_failure_log.md §4.2, D225).
+# * D1: a route that raises writes one `unhandled_500`. The tenant of the
+#   request is still bound here. `_db_unavailable` runs after the release.
+#   An exception that `db_busy` names writes none (a 503 is an answer).
+# * D2: a route that ANSWERS 500 writes `route_500`, and 502 or 504 writes
+#   `route_upstream`. A request that a capture site already recorded writes
+#   none (the request mark), so one failure has one writer.
+# The record is a queue put that never raises. The door reads the status of
+# the answer and the matched route template only: never the concrete path,
+# the query or the body. The org comes from the tenant seam only (R5).
+# Fence: tests/unit/test_failure_capture_sites.py.
+import weakref  # noqa: E402
+
+from acb_common import failure_log  # noqa: E402
+
+#: D2: the status that a route answers on purpose, and its failure code.
+_DOOR_CODES = {500: "route_500", 502: "route_upstream", 504: "route_upstream"}
+_ROUTE_PATHS: weakref.WeakKeyDictionary[Any, frozenset[str]] = weakref.WeakKeyDictionary()
+
+
+def _route_paths(app_obj: Any) -> frozenset[str]:
+    """The `.path` of each route of the app, read once and kept (§3.2 rule
+    1). Only a template in this set names a route. Any other gives
+    `route:other`."""
+    try:
+        found = _ROUTE_PATHS.get(app_obj)
+        if found is None:
+            found = frozenset(p for r in getattr(app_obj, "routes", None) or ()
+                              if isinstance(p := getattr(r, "path", None), str))
+            _ROUTE_PATHS[app_obj] = found
+        return found
+    except TypeError:  # an app that takes no weak reference names no route
+        return frozenset()
+
+
+def _door_record(scope: Any, app_obj: Any, exc: BaseException | None, code: str) -> None:
+    """Record one door failure (D1 or D2). Never raises. An exception that
+    `db_busy` names writes none: its 503 is an answer (§4.1)."""
+    try:
+        if exc is not None and db_busy.is_db_unavailable(exc):
+            return
+        route = scope.get("route")
+        template = getattr(route, "path", None)
+        method = scope.get("method")
+        tool = f"{method} {template}" if isinstance(template, str) and isinstance(method, str) else ""
+        actor = next((v for k, v in scope.get("headers") or () if k == b"x-actor-via"), b"")
+        failure_log.record_tool_failure(
+            exc, source="door_5xx", error_code=code, tool=tool, kind="route",
+            route_paths=_route_paths(app_obj),
+            surface=failure_log.door_surface(actor[:64].decode("latin-1")))
+    except Exception as err:  # the class only: the answer never changes
+        _log.debug("failure_log.door_failed", extra={"door_error": type(err).__name__})
+
+
 class TenantScopeMiddleware:
     def __init__(self, asgi_app):  # noqa: ANN001 — ASGI protocol shape
         self.asgi_app = asgi_app
@@ -1252,9 +1307,30 @@ class TenantScopeMiddleware:
             await self.asgi_app(scope, receive, send)
             return
         token = clear_tenant()
+        # FastAPI sets `scope["app"]` before its middleware. A mounted app
+        # can write over it lower down, so the door reads it here.
+        app_obj = scope.get("app")
+        mark, mark_token = failure_log.open_request_mark()
+        status = 0
+
+        async def send_status(message: Any) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message.get("status", 0)
+            await send(message)
+
         try:
-            await self.asgi_app(scope, receive, send)
+            await self.asgi_app(scope, receive, send_status)
+        except Exception as exc:
+            # D1. It records, then raises again, so every handler runs as before.
+            _door_record(scope, app_obj, exc, "unhandled_500")
+            raise
+        else:
+            code = _DOOR_CODES.get(status)
+            if code is not None and not mark.recorded:
+                _door_record(scope, app_obj, None, code)  # D2
         finally:
+            failure_log.close_request_mark(mark_token)
             release_tenant(token)
 
 

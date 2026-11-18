@@ -37,6 +37,28 @@ Mutations, each red:
 * a module that names a ``failure_*`` SQL name            -> test_p6_no_module_but_the_writer_names_a_failure_table
 * ``_GatewayError`` or ``_MirrorBlocked`` as a plain class -> test_each_pack_transport_raises_a_gateway_refusal
 
+TOF-2d (task 3545) adds the door sites D1 and D2, the route set of §3.2 rule
+1, the MCP sites C5 to C7 and the map of §4.3. Each mutation was made by hand
+on 2026-11-18, and the named test failed:
+
+* drop the D1 record                                -> test_d1_a_route_that_raises_writes_one_unhandled_500_with_the_tenant
+* drop the ``db_busy`` skip of D1                   -> test_d1_a_db_busy_503_writes_none
+* drop the mark check of D2                         -> test_a_studio_live_read_that_times_out_writes_one_mcp_timeout
+* the concrete path in place of the template        -> test_d1_a_route_that_raises_writes_one_unhandled_500_with_the_tenant
+* every template counts, with no route set          -> test_a_route_off_the_route_set_writes_route_other
+* D2 counts 501 and 503                             -> test_d2_an_answer_or_another_5xx_writes_none
+* drop the C5 wrap of the gate                      -> test_c5_an_is_error_answer_writes_mcp_tool_error
+* record a control signal of MAF at C5              -> test_c5_a_control_signal_of_maf_writes_none
+* drop C6 in ``RunScopedMCPTool.__aenter__``        -> test_c6_a_refused_connect_writes_mcp_unreachable
+* drop C6 at the connect of ``attach_mcp_tools``    -> test_c6_a_server_that_lists_too_many_tools_writes_mcp_too_large
+* drop C7 in ``_list_stored``                       -> test_c7_a_list_writes_the_code_of_the_map
+* drop C7 around ``shape_result``                   -> test_c7_an_is_error_answer_of_shape_result_writes_mcp_tool_error
+* the refused row before the too-large row          -> test_the_mcp_map_of_4_3
+* no context walk in the map, or in its deepest     -> test_the_mcp_map_of_4_3
+* drop the timeout row of the map                   -> test_the_mcp_map_of_4_3
+* ``record_tool_failure`` sets no request mark      -> test_a_studio_live_read_that_times_out_writes_one_mcp_timeout
+* the surface reads the whole header                -> test_the_door_surface_reads_the_prefix_only
+
 Run: ``uv run pytest tests/unit/test_failure_capture_sites.py -q``.
 """
 
@@ -504,12 +526,15 @@ def test_no_pack_transport_holds_a_status_in_a_plain_class() -> None:
 
 # ── P6: one writer, one capture list ─────────────────────────────────────────
 
-#: The capture sites that call the one writer. TOF-2d adds the gateway door
-#: and the MCP sites here, in the same change that adds the call.
+#: The capture sites that call the one writer. TOF-2d added the gateway door
+#: (D1, D2) and the MCP sites (C5 to C7) in the change that added the call.
 CAPTURE_SITES = {
     "packages/acb_skills/acb_skills/pack_tool_guard.py",
     "packages/acb_skills/acb_skills/unknown_tool.py",
     "packages/acb_common/acb_common/tool_refusals.py",
+    "apps/services/gateway/gateway/main.py",
+    "apps/services/orchestrator/orchestrator/_maf_mcp.py",
+    "apps/services/gateway/gateway/connections/mcp_tools.py",
 }
 #: The SQL names of the store (§9 P6). Whole words only.
 SQL_NAMES = re.compile(
@@ -578,3 +603,611 @@ def test_p6_no_module_but_the_writer_names_a_failure_table() -> None:
             named.add(rel)
     assert named <= SQL_OWNERS, sorted(named - SQL_OWNERS)
     assert named == SQL_OWNERS, "the writer names its tables: the fence reads nothing"
+
+
+# ══ TOF-2d (task 3545): the door sites D1 and D2, and the MCP sites C5 to C7 ══
+#
+# Spec: §3.2 rule 1 (the route set), §4.2 (D1, D2, C5, C6, C7, the mark), §4.3
+# (the MCP map). The door tests run a small FastAPI app with the REAL
+# ``TenantScopeMiddleware`` and ``_db_unavailable`` of ``gateway.main``. Its
+# app-wide dependency binds the tenant as ``_resolve_and_bind`` does.
+
+REFUSAL = ("(EMAXCONNSESSION) max clients reached in session mode - max clients are"
+           " limited to pool_size: 15")
+SERVER = "acme-erp"
+
+
+def _db_refusal() -> BaseException:
+    import asyncpg
+    import sqlalchemy.exc as sa_exc
+
+    orig = asyncpg.exceptions.InternalServerError(REFUSAL)
+    return sa_exc.DBAPIError.instance("SELECT 1", {}, orig, Exception,
+                                      connection_invalidated=False)
+
+
+async def _slow_lister(_server: Any) -> list[Any]:
+    import asyncio
+
+    await asyncio.sleep(5)
+    return []
+
+
+def _door_client(monkeypatch) -> Any:
+    from fastapi import Depends, FastAPI, HTTPException
+    from fastapi.responses import StreamingResponse
+    from fastapi.testclient import TestClient
+    from gateway import main as gw
+    from gateway.connections import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "READ_TIMEOUT_S", 0.05)
+
+    async def bind_org() -> None:
+        # The auth dependency binds the tenant of the session (``_resolve_and_bind``).
+        bind_tenant(ORG)
+
+    app = FastAPI(dependencies=[Depends(bind_org)])
+    app.add_exception_handler(Exception, gw._db_unavailable)
+    app.add_middleware(gw.TenantScopeMiddleware)
+
+    @app.get("/boom/{item_id}")
+    async def boom(item_id: str) -> None:
+        raise KeyError("Amount for Ravi Kumar")
+
+    @app.get("/sync-boom")
+    def sync_boom() -> None:
+        raise KeyError("x")
+
+    @app.get("/answers/{status}")
+    async def answers(status: int) -> None:
+        raise HTTPException(status_code=status, detail="no")
+
+    @app.get("/db-busy")
+    async def db_busy_route() -> None:
+        raise _db_refusal()
+
+    @app.get("/stream")
+    async def stream() -> Any:
+        async def body() -> Any:
+            for i in range(3):
+                yield f"chunk-{i};"
+
+        return StreamingResponse(body())
+
+    @app.post("/studio-live/{server}")
+    async def studio_live(server: str) -> None:
+        # As ``routes/studio/invoke.py`` answers a failed live read.
+        try:
+            await mcp_tools._list_stored(SimpleNamespace(name=server), _slow_lister)
+        except mcp_tools.ListFailed as failed:
+            raise HTTPException(status_code=502,
+                                detail={"code": f"mcp_{failed.reason}"}) from None
+
+    sub = FastAPI(dependencies=[Depends(bind_org)])
+
+    @sub.get("/deep/{x}")
+    async def deep(x: str) -> None:
+        raise HTTPException(status_code=500, detail="no")
+
+    app.mount("/sub", sub)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_d1_a_route_that_raises_writes_one_unhandled_500_with_the_tenant(monkeypatch) -> None:
+    """Fact 1 of §2: the tenant of the request is still bound at D1."""
+    client = _door_client(monkeypatch)
+    response = client.get("/boom/4242?who=Ravi", headers={"X-Actor-Via": "chat:run-9"})
+    assert (response.status_code, response.text) == (500, "Internal Server Error")
+    [rec] = records()
+    assert (rec.org, rec.source, rec.error_code, rec.surface) == (
+        ORG, "door_5xx", "unhandled_500", "chat")
+    assert rec.tool == "route:GET /boom/{item_id}"
+    assert rec.exc_type == "builtins.KeyError"
+    assert rec.tool_name is None
+    # No concrete path, no query and no message reaches a record.
+    assert "4242" not in repr(rec) and "Ravi" not in repr(rec)
+
+
+def test_d1_a_sync_route_keeps_the_tenant_too(monkeypatch) -> None:
+    client = _door_client(monkeypatch)
+    assert client.get("/sync-boom").status_code == 500
+    assert [(r.org, r.error_code, r.tool) for r in records()] == [
+        (ORG, "unhandled_500", "route:GET /sync-boom")]
+
+
+def test_d1_a_db_busy_503_writes_none(monkeypatch) -> None:
+    client = _door_client(monkeypatch)
+    response = client.get("/db-busy")
+    assert response.status_code == 503
+    assert response.json()["code"] == "db_busy"
+    assert records() == []
+
+
+def test_d2_a_route_that_answers_500_writes_one_route_500(monkeypatch) -> None:
+    client = _door_client(monkeypatch)
+    assert client.get("/answers/500").status_code == 500
+    [rec] = records()
+    assert (rec.error_code, rec.tool, rec.exc_type, rec.code_site, rec.surface) == (
+        "route_500", "route:GET /answers/{status}", "-", "-", "app")
+
+
+@pytest.mark.parametrize("status", [502, 504])
+def test_d2_a_502_or_504_writes_route_upstream(monkeypatch, status: int) -> None:
+    client = _door_client(monkeypatch)
+    assert client.get(f"/answers/{status}").status_code == status
+    assert codes() == ["route_upstream"]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422, 429, 501, 503, 505])
+def test_d2_an_answer_or_another_5xx_writes_none(monkeypatch, status: int) -> None:
+    client = _door_client(monkeypatch)
+    assert client.get(f"/answers/{status}").status_code == status
+    assert records() == []
+
+
+def test_a_route_off_the_route_set_writes_route_other(monkeypatch) -> None:
+    """A template that no route of ``app.routes`` holds never names a route."""
+    client = _door_client(monkeypatch)
+    assert client.get("/sub/deep/acme-secret").status_code == 500
+    [rec] = records()
+    assert rec.tool == "route:other"
+    assert "acme" not in repr(rec)
+
+
+@pytest.mark.parametrize(("actor", "surface"), [
+    ("chat:r-1", "chat"), ("mcp:m-1", "mcp_edge"), ("workflow:w-1", "automation"),
+    ("system:github", "automation"), ("browser", "app"), ("", "app"),
+    ("CHAT:Ravi Kumar", "chat"), ("evil:chat:", "app"),
+])
+def test_the_door_surface_reads_the_prefix_only(actor: str, surface: str) -> None:
+    assert fl.door_surface(actor) == surface
+
+
+def test_a_streaming_answer_is_unchanged_and_writes_none(monkeypatch) -> None:
+    client = _door_client(monkeypatch)
+    response = client.get("/stream")
+    assert (response.status_code, response.text) == (200, "chunk-0;chunk-1;chunk-2;")
+    assert records() == []
+
+
+def test_the_door_never_changes_the_answer(monkeypatch) -> None:
+    client = _door_client(monkeypatch)
+    on = [client.get(p) for p in ("/boom/1", "/answers/500", "/answers/502")]
+    monkeypatch.setattr(get_settings(), "tool_failure_log_orgs", "")
+    off = [client.get(p) for p in ("/boom/1", "/answers/500", "/answers/502")]
+    assert [(r.status_code, r.text) for r in on] == [(r.status_code, r.text) for r in off]
+
+
+def test_a_failed_writer_never_reaches_the_door(monkeypatch) -> None:
+    def broken(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("the writer broke")
+
+    monkeypatch.setattr(fl, "record_tool_failure", broken)
+    client = _door_client(monkeypatch)
+    assert client.get("/boom/1").status_code == 500
+    assert client.get("/answers/502").status_code == 502
+
+
+def test_a_studio_live_read_that_times_out_writes_one_mcp_timeout(monkeypatch) -> None:
+    """C7 records, and its mark stops D2: no ``route_upstream`` for the 502."""
+    client = _door_client(monkeypatch)
+    response = client.post(f"/studio-live/{SERVER}")
+    assert (response.status_code, response.json()["detail"]["code"]) == (502, "mcp_timeout")
+    [rec] = records()
+    assert (rec.source, rec.error_code, rec.surface, rec.tool, rec.tool_name) == (
+        "mcp_call", "mcp_timeout", "studio", "mcp", SERVER)
+
+
+def test_the_gateway_runs_the_door() -> None:
+    from gateway.main import TenantScopeMiddleware, app
+
+    assert TenantScopeMiddleware in {m.cls for m in app.user_middleware}
+
+
+# ── The MCP map of §4.3 ──────────────────────────────────────────────────────
+
+
+def _raised(exc: BaseException, *, cause: BaseException | None = None,
+            context: BaseException | None = None) -> BaseException:
+    """*exc* with a traceback, raised in this file (no tree of §3.2 rule 4)."""
+    try:
+        try:
+            if context is not None:
+                raise context
+        except BaseException:
+            raise exc from cause
+        raise exc from cause
+    except BaseException as caught:
+        return caught
+
+
+def _raised_in(rel: str, module: str, exc: BaseException,
+               context: BaseException | None = None) -> BaseException:
+    """*exc*, raised by a frame whose file is *rel* of the repository, as a
+    fault of our own code there would be. With *context*, it raises inside a
+    handler of *context*."""
+    source = ("def our_code(exc, context):\n"
+              "    try:\n"
+              "        if context is not None:\n"
+              "            raise context\n"
+              "    except BaseException:\n"
+              "        raise exc\n"
+              "    raise exc\n")
+    space = {"__name__": module}
+    exec(compile(source, str(REPO / rel), "exec"), space)
+    try:
+        space["our_code"](exc, context)
+    except BaseException as caught:
+        return caught
+    raise AssertionError("not raised")
+
+
+def _mcp_error(code: int) -> BaseException:
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+
+    return McpError(ErrorData(code=code, message="Ravi Kumar"))
+
+
+def _tool_exc(*args: Any) -> BaseException:
+    from agent_framework.exceptions import ToolExecutionException
+
+    return ToolExecutionException(*args)
+
+
+def _timeout_from_cancel() -> BaseException:
+    import asyncio
+
+    return _raised(TimeoutError(), cause=asyncio.CancelledError())
+
+
+def _map_cases() -> list[tuple[str, Any, str]]:
+    import anyio
+    from gateway import outbound_guard
+    from gateway.connections import mcp_tools
+    from orchestrator import _maf_mcp
+
+    our_key = _raised_in("apps/services/orchestrator/orchestrator/_maf_mcp.py",
+                         "orchestrator._maf_mcp", KeyError("tools"))
+    return [
+        ("timeout", _timeout_from_cancel, "mcp_timeout"),
+        ("mcp-408", lambda: _mcp_error(408), "mcp_timeout"),
+        ("timeout-beats-refused",
+         lambda: _raised(outbound_guard.OutboundRefused("h", "private"), cause=TimeoutError()),
+         "mcp_timeout"),
+        ("answer-too-large", lambda: outbound_guard.AnswerTooLarge("h", "too large"),
+         "mcp_too_large"),
+        ("list-too-long", lambda: _raised_in(
+            "apps/services/orchestrator/orchestrator/_maf_mcp.py", "orchestrator._maf_mcp",
+            _maf_mcp.McpListTooLong("tools")), "mcp_too_large"),
+        ("refused", lambda: outbound_guard.OutboundRefused("h", "private"), "mcp_refused"),
+        ("connect", lambda: _connect_error("https://acme.example"), "mcp_unreachable"),
+        ("os-error", lambda: _raised(ConnectionRefusedError()), "mcp_unreachable"),
+        ("closed", lambda: _raised(anyio.ClosedResourceError()), "mcp_unreachable"),
+        ("mcp-closed", lambda: _mcp_error(-32000), "mcp_unreachable"),
+        ("status", lambda: _status_error("https://acme.example", 500), "mcp_unreachable"),
+        ("group", lambda: ExceptionGroup("g", [_connect_error("https://a.example")]),
+         "mcp_unreachable"),
+        ("is-error", lambda: _raised(_tool_exc("Ravi Kumar is not found")), "mcp_tool_error"),
+        # The SDK wraps an outage with no ``from``: the context walk finds it.
+        ("connect-in-a-context", lambda: _raised(
+            _tool_exc("x"), context=_connect_error("https://acme.example")), "mcp_unreachable"),
+        ("mcp-other-code", lambda: _raised(_tool_exc("x"), cause=_mcp_error(-32602)),
+         "mcp_tool_error"),
+        ("shape-result", lambda: mcp_tools.ListFailed(mcp_tools.REASON_TOOL_ERROR),
+         "mcp_tool_error"),
+        ("our-key-error", lambda: our_key, "mcp_exception"),
+        ("our-key-error-in-maf", lambda: _raised(_tool_exc("failed"), cause=our_key),
+         "mcp_exception"),
+        ("our-class", lambda: _raised(mcp_tools.ServerNotFound("x")), "mcp_exception"),
+        ("their-key-error", lambda: _raised(KeyError("x")), "mcp_unreachable"),
+        # The edge that §4.3 accepts: our fault inside a handler of an error
+        # that no row names sorts by the last row.
+        ("our-fault-in-a-handler-of-theirs", lambda: _raised_in(
+            "apps/services/orchestrator/orchestrator/_maf_mcp.py", "orchestrator._maf_mcp",
+            KeyError("x"), context=_raised(ValueError())), "mcp_unreachable"),
+    ]
+
+
+def test_the_mcp_map_of_4_3() -> None:
+    got = {name: fl.mcp_error_code(make()) for name, make, _want in _map_cases()}
+    assert got == {name: want for name, _make, want in _map_cases()}
+
+
+def test_the_mcp_map_never_raises(monkeypatch) -> None:
+    def broken(_exc: BaseException) -> list[BaseException]:
+        raise RuntimeError("the walk broke")
+
+    monkeypatch.setattr(fl, "_mcp_chain", broken)
+    assert fl.mcp_error_code(KeyError("x")) == "mcp_unreachable"
+
+
+# ── C5: the gate of a chat run ───────────────────────────────────────────────
+
+
+def _mcp_gate(monkeypatch) -> tuple[Any, Any]:
+    from acb_skills import egress
+    from agent_framework import FunctionTool
+    from orchestrator import _maf_mcp
+
+    async def clear(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(egress, "session_is_marked", clear)
+    fn = FunctionTool(name="acme_erp_get_invoice", func=lambda **_k: "ran",
+                      description="Reads one invoice.",
+                      additional_properties={"_mcp_is_tool": True,
+                                             "_mcp_remote_name": "get_invoice"})
+    server = SimpleNamespace(name=SERVER, _functions=[fn], _ws8c_tool_meta={
+        "get_invoice": _maf_mcp.ToolMeta(hints={"readOnlyHint": True}, description="")})
+    return _maf_mcp.McpPermissionGate(tools=[server], member_present=True), fn
+
+
+def _failing(exc: BaseException) -> Any:
+    async def call_next() -> None:
+        raise exc
+
+    return call_next
+
+
+async def _through_gate(gate: Any, fn: Any, exc: BaseException) -> BaseException:
+    ctx = SimpleNamespace(function=fn, arguments={"invoice": "INV-7"}, result=None)
+    with pytest.raises(BaseException) as raised:
+        await gate.process(ctx, _failing(exc))
+    return raised.value
+
+
+async def test_c5_an_is_error_answer_writes_mcp_tool_error(monkeypatch) -> None:
+    gate, fn = _mcp_gate(monkeypatch)
+    exc = _tool_exc("Invoice INV-7 of Ravi Kumar is not found")
+    with run("whatsapp"):
+        assert await _through_gate(gate, fn, exc) is exc
+    [rec] = records()
+    assert (rec.source, rec.error_code, rec.tool, rec.surface, rec.run_id) == (
+        "mcp_call", "mcp_tool_error", "mcp", "whatsapp", "run-1")
+    assert rec.tool_name == f"{SERVER}/get_invoice"
+    assert "Ravi" not in repr(rec) and "INV-7" not in repr(rec)
+
+
+async def test_c5_a_timeout_writes_mcp_timeout_with_the_server_in_tool_name_only(
+        monkeypatch) -> None:
+    gate, fn = _mcp_gate(monkeypatch)
+    exc = _raised(_tool_exc("Failed to call tool"), cause=_mcp_error(408))
+    with run():
+        await _through_gate(gate, fn, exc)
+    [rec] = records()
+    assert (rec.error_code, rec.tool, rec.exc_type, rec.code_site) == (
+        "mcp_timeout", "mcp", "-", "-")
+    platform = (rec.fingerprint, rec.tool, rec.error_code, rec.exc_type, rec.code_site)
+    assert all(SERVER not in value for value in platform)
+    assert SERVER in rec.tool_name
+
+
+async def test_c5_a_control_signal_of_maf_writes_none(monkeypatch) -> None:
+    from agent_framework._middleware import MiddlewareTermination
+
+    gate, fn = _mcp_gate(monkeypatch)
+    with run():
+        await _through_gate(gate, fn, MiddlewareTermination("stop"))
+    assert records() == []
+
+
+async def test_c5_a_function_that_is_not_an_mcp_tool_writes_none(monkeypatch) -> None:
+    from agent_framework import FunctionTool
+
+    gate, _fn = _mcp_gate(monkeypatch)
+    plain = FunctionTool(name="crm_get_record", func=lambda **_k: "ran", description="x")
+    with run():
+        await _through_gate(gate, plain, KeyError("x"))
+    assert records() == []
+
+
+async def test_c5_the_capture_never_changes_what_the_gate_raises(monkeypatch) -> None:
+    gate, fn = _mcp_gate(monkeypatch)
+    exc = _tool_exc("x")
+    with run():
+        on = await _through_gate(gate, fn, exc)
+    monkeypatch.setattr(get_settings(), "tool_failure_log_orgs", "")
+    with run():
+        off = await _through_gate(gate, fn, exc)
+    assert on is off is exc
+
+
+# ── C6: the connect of a chat run ────────────────────────────────────────────
+
+
+async def test_c6_a_refused_connect_writes_mcp_unreachable(monkeypatch) -> None:
+    from orchestrator import _maf_mcp
+
+    async def no_close(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(_maf_mcp, "_close_one", no_close)
+    tool = _maf_mcp._run_scoped_tool_class()(name=SERVER, url="https://acme.example/mcp")
+
+    async def refused() -> None:
+        raise _connect_error("https://acme.example")
+
+    tool.connect = refused
+    with run():
+        assert await tool.__aenter__() is tool
+    [rec] = records()
+    assert (rec.error_code, rec.tool, rec.tool_name) == ("mcp_unreachable", "mcp", SERVER)
+
+
+class _FakeTool:
+    """A tool class whose connect raises the error of the test."""
+
+    error: BaseException = RuntimeError()
+
+    def __init__(self, **kw: Any) -> None:
+        self.name = kw["name"]
+
+    async def connect(self) -> None:
+        raise type(self).error
+
+
+async def _attach(monkeypatch, error: BaseException | None = None,
+                  refuse: BaseException | None = None) -> list[str]:
+    from gateway import outbound_guard
+    from orchestrator import _maf_mcp
+
+    async def client(_url: str, **_k: Any) -> Any:
+        if refuse is not None:
+            raise refuse
+        return SimpleNamespace(event_hooks={})
+
+    async def no_close(*_a: Any, **_k: Any) -> None:
+        return None
+
+    _FakeTool.error = error or RuntimeError()
+    monkeypatch.setattr(outbound_guard, "mcp_client", client)
+    monkeypatch.setattr(_maf_mcp, "_run_scoped_tool_class", lambda: _FakeTool)
+    monkeypatch.setattr(_maf_mcp, "_close_one", no_close)
+    agent = SimpleNamespace(default_options={}, mcp_tools=[], middleware=[])
+    server = _maf_mcp.McpServer(name=SERVER, url="https://acme.example/mcp")
+    with run():
+        return await _maf_mcp.attach_mcp_tools(agent, [server], [])
+
+
+async def test_c6_a_server_that_lists_too_many_tools_writes_mcp_too_large(monkeypatch) -> None:
+    from orchestrator import _maf_mcp
+
+    assert await _attach(monkeypatch, _maf_mcp.McpListTooLong("tools")) == []
+    assert [(r.error_code, r.tool_name) for r in records()] == [("mcp_too_large", SERVER)]
+
+
+async def test_c6_a_connect_that_the_guard_refuses_writes_mcp_refused(monkeypatch) -> None:
+    from gateway import outbound_guard
+
+    assert await _attach(monkeypatch, refuse=outbound_guard.OutboundRefused("h", "private")) == []
+    assert codes() == ["mcp_refused"]
+
+
+async def test_c6_a_connect_timeout_writes_mcp_timeout(monkeypatch) -> None:
+    assert await _attach(monkeypatch, _timeout_from_cancel()) == []
+    assert codes() == ["mcp_timeout"]
+
+
+# ── C7: the Studio read ──────────────────────────────────────────────────────
+
+
+async def _studio_list(lister: Any) -> str:
+    from gateway.connections import mcp_tools
+
+    with run(None), pytest.raises(mcp_tools.ListFailed) as failed:
+        await mcp_tools._list_stored(SimpleNamespace(name=SERVER), lister)
+    return failed.value.reason
+
+
+async def test_c7_a_list_writes_the_code_of_the_map(monkeypatch) -> None:
+    from gateway import outbound_guard
+
+    async def too_large(_s: Any) -> list[Any]:
+        raise outbound_guard.AnswerTooLarge("h", "too large")
+
+    async def refused(_s: Any) -> list[Any]:
+        raise _connect_error("https://acme.example")
+
+    assert await _studio_list(too_large) == "too_large"
+    assert await _studio_list(refused) == "unreachable"
+    assert [(r.error_code, r.surface, r.tool, r.tool_name) for r in records()] == [
+        ("mcp_too_large", "studio", "mcp", SERVER), ("mcp_unreachable", "studio", "mcp", SERVER)]
+
+
+async def test_c7_a_key_error_in_our_mcp_client_writes_mcp_exception_with_its_site(
+        monkeypatch) -> None:
+    """The real read path: ``_pages`` reads ``streams[0]`` of a transport that
+    gave a mapping, and raises ``KeyError`` in our code."""
+    import mcp.client.streamable_http as transport
+    from gateway import outbound_guard
+
+    async def client(_url: str, **_k: Any) -> Any:
+        async def aclose() -> None:
+            return None
+
+        return SimpleNamespace(headers={}, aclose=aclose)
+
+    @contextlib.asynccontextmanager
+    async def streams(*_a: Any, **_k: Any) -> Any:
+        yield {}
+
+    monkeypatch.setattr(outbound_guard, "mcp_client", client)
+    monkeypatch.setattr(transport, "streamable_http_client", streams)
+    stored = SimpleNamespace(name=SERVER, url="https://acme.example/mcp", headers={})
+    assert await _studio_list_stored(stored) == "unreachable"
+    [rec] = records()
+    assert (rec.error_code, rec.exc_type, rec.code_site) == (
+        "mcp_exception", "builtins.KeyError", "gateway.connections.mcp_tools:_pages")
+
+
+async def _studio_list_stored(stored: Any) -> str:
+    from gateway.connections import mcp_tools
+
+    with run(None), pytest.raises(mcp_tools.ListFailed) as failed:
+        await mcp_tools._list_stored(stored, None)
+    return failed.value.reason
+
+
+class _NoCache:
+    async def get(self, _key: Any) -> None:
+        return None
+
+    async def setex(self, *_a: Any) -> None:
+        return None
+
+
+async def _studio_call(monkeypatch, caller: Any) -> str:
+    from gateway.connections import mcp_tools
+
+    meta = SimpleNamespace(name=SERVER, url="https://acme.example/mcp")
+
+    async def listed(*_a: Any, **_k: Any) -> Any:
+        return mcp_tools.ToolList(tools=[], truncated=False)
+
+    async def load() -> Any:
+        return meta
+
+    monkeypatch.setattr(mcp_tools, "fresh_tool_list", listed)
+    monkeypatch.setattr(mcp_tools, "_class_a_item", lambda *_a: None)
+    monkeypatch.setattr(mcp_tools, "_redis", _NoCache)
+    monkeypatch.setattr(mcp_tools, "_scope", lambda _org: contextlib.nullcontext())
+    monkeypatch.setattr(mcp_tools, "_live_key", lambda *parts: "answer")
+    monkeypatch.setattr(mcp_tools, "READ_TIMEOUT_S", 0.05)
+    with run(None), pytest.raises(mcp_tools.ListFailed) as failed:
+        await mcp_tools._live(ORG, "kiran@acme.test", SERVER, "get_invoice", {"id": "INV-7"},
+                              meta, load, None, caller, None)
+    return failed.value.reason
+
+
+async def test_c7_an_is_error_answer_of_shape_result_writes_mcp_tool_error(monkeypatch) -> None:
+    async def is_error(*_a: Any) -> Any:
+        return {"isError": True, "content": [{"type": "text", "text": "Ravi Kumar"}]}
+
+    assert await _studio_call(monkeypatch, is_error) == "tool_error"
+    [rec] = records()
+    assert (rec.error_code, rec.surface, rec.tool, rec.tool_name) == (
+        "mcp_tool_error", "studio", "mcp", f"{SERVER}/get_invoice")
+    assert "Ravi" not in repr(rec)
+
+
+async def test_c7_a_call_that_times_out_writes_mcp_timeout(monkeypatch) -> None:
+    import asyncio
+
+    async def slow(*_a: Any) -> Any:
+        await asyncio.sleep(5)
+
+    assert await _studio_call(monkeypatch, slow) == "timeout"
+    assert codes() == ["mcp_timeout"]
+
+
+async def test_c7_the_capture_never_changes_the_reason(monkeypatch) -> None:
+    def broken(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("the writer broke")
+
+    monkeypatch.setattr(fl, "record_tool_failure", broken)
+
+    async def refused(_s: Any) -> list[Any]:
+        raise _connect_error("https://acme.example")
+
+    assert await _studio_list(refused) == "unreachable"

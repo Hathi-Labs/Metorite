@@ -92,6 +92,12 @@ refuses a changed tool with :data:`LIVE_TOOL_CHANGED`. So a new tool, and a
 tool whose text a server changed, never reads live until an admin approves
 it. A failed read of the approvals makes each tool changed (fail closed).
 
+**The failure log (TOF-2d, C7).** A failed list, a failed call and an
+``isError`` answer each write one record through
+``failure_log.record_tool_failure`` (:func:`_record_failure`), with the code
+of the map of ``tool_failure_log.md`` §4.3. The reason codes and the answers
+stay as they are. Fence: ``tests/unit/test_failure_capture_sites.py``.
+
 Fences: ``tests/unit/test_studio_mcp_tools.py``,
 ``tests/unit/test_studio_mcp_tools_r8.py`` (R8),
 ``tests/unit/test_studio_live_preview.py``,
@@ -423,6 +429,27 @@ def _reason(exc: BaseException) -> str:
     return REASON_UNREACHABLE
 
 
+def _record_failure(exc: BaseException, name: str) -> None:
+    """The capture site C7 of the failure log (TOF-2d,
+    ``tool_failure_log.md`` §4.2 and §4.3). Never raises.
+
+    The code comes from the map of §4.3 (``failure_log.mcp_error_code``).
+    *name* is the server, or the server and the tool: tenant text, so the
+    writer keeps it in the tenant column only. The writer reads the tenant
+    of the request, never the *org* argument (R5). Its mark of the request
+    stops the door site D2, so the 502 that the route then answers writes
+    no second record. ``cache_unavailable`` is our Redis, so no site here
+    records it."""
+    try:
+        from acb_common import failure_log
+
+        failure_log.record_tool_failure(
+            exc, source="mcp_call", error_code=failure_log.mcp_error_code(exc),
+            tool=name, kind="mcp", surface="studio")
+    except Exception as err:  # the class only: the answer stays
+        _log.debug("studio.mcp_tools.capture_failed", kind=type(err).__name__)
+
+
 async def list_tools(org: str, server: str, *, lister: Lister | None = None) -> ToolList:
     """One ``tools/list`` read of the server *server* of *org*, cleaned.
 
@@ -458,6 +485,7 @@ async def _list_stored(stored: Any, lister: Lister | None) -> ToolList:
         reason = _reason(exc)
         _log.warning("studio.mcp_tools.failed", name=server, reason=reason,
                      kind=type(exc).__name__)
+        _record_failure(exc, server)  # TOF-2d, C7
         raise ListFailed(reason) from None
     return replace(clean_tools(raw), identity=_identity(stored))
 
@@ -1239,8 +1267,13 @@ async def _live(org: str, member: str, server: str, tool: str, args: dict[str, A
         reason = _reason(exc)
         _log.warning("studio.mcp_tools.call_failed", name=server, reason=reason,
                      kind=type(exc).__name__)
+        _record_failure(exc, f"{server}/{tool}")  # TOF-2d, C7
         raise ListFailed(reason) from None
-    result, truncated = shape_result(raw)
+    try:
+        result, truncated = shape_result(raw)
+    except ListFailed as failed:  # TOF-2d, C7: the isError answer of the tool
+        _record_failure(failed, f"{server}/{tool}")
+        raise
     fetched = _now()
     value = json.dumps({"v": ANSWER_VERSION, "result": result, "truncated": truncated,
                         "fetched_at": fetched})

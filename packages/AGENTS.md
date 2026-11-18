@@ -109,6 +109,7 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
   - `failure_fingerprint` is pure. It makes the four platform fields (tool, failure code, exception type, code site) and the v1 hash. The message, the arguments, the tenant and the release never enter it. Do not add an input to the hash: a new rule is a new version.
   - `failure_log.record_tool_failure` is the ONE writer of every `failure_*` table. It reads the tenant from `current_tenant()` only, never raises and never waits. A bounded queue, one drain for each loop and a sample cap in tenant Redis hold its cost. `failure_log_on` is the one reader of `TOOL_FAILURE_LOG_ORGS`. Do not add a second writer: `gateway.jobs.unattended.record_failure` stays the job ledger.
   - Fences: `tests/unit/test_failure_fingerprint.py` (P2, the 12 golden rows), `tests/unit/test_failure_log_queue.py` (P7), `tests/unit/test_failure_store_r8.py` (R8: P3, P4, P5).
+  - TOF-2d: `mcp_error_code` is the ONE map of §4.3 for the MCP sites C5 to C7. It finds the classes of a service in `sys.modules`, so it imports no service. Each call of `record_tool_failure` marks the request of the gateway (`RequestMark`), so the door site D2 writes no second record. `door_surface` maps the prefix of `X-Actor-Via`. Fence: `tests/unit/test_failure_capture_sites.py`.
 
 ### acb_audit/
 Audit event recording.
