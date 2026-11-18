@@ -41,10 +41,15 @@ _DOUBT = re.compile(
     r"\bnot (?:certain|sure) (?:it|that)\b[^.]*\b(?:sent|delivered|went)\b",
     re.IGNORECASE)
 #: The member pressed Discard, so the card is gone. These words say that it still waits.
+#: The verifier of 2026-11-18 found four answers that re-offer the card in other words,
+#: and one that says the mail went: the last line holds them. "Nothing was sent" is not
+#: a claim of a send, so the lookbehind keeps it out.
 _STILL_OPEN = re.compile(
     r"\b(?:up for your decision|until you press|still (?:open|waiting|pending)|waiting for you|"
     r"awaiting your|treat it as declined|has not been sent yet|not yet sent|ready for you|"
-    r"to approve|awaiting your approval)\b", re.IGNORECASE)
+    r"to approve|awaiting your approval|"
+    r"pending your (?:approval|decision)|is back|open again|approve it|press send|"
+    r"(?:made|wrote|created) a new draft|(?<!nothing )(?:was|has been) sent)\b", re.IGNORECASE)
 #: The pilot of 2026-11-18 added three forms. Each one states the end state of the card,
 #: and a real answer used each: "closed without sending", "no longer in Drafts" and
 #: "Nothing is waiting". "Nothing was sent" alone still fails: it is silent on the Discard.

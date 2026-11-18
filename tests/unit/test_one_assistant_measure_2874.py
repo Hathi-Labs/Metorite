@@ -287,6 +287,22 @@ def test_states_discard_takes_the_two_right_answers_of_the_pilot() -> None:
                                            "you to approve.")) is False
 
 
+@pytest.mark.parametrize("wrong", [
+    # the verifier's answers of 2026-11-18: each re-offers the card, or says it went
+    "Nothing is waiting on you, but the same card is back: approve it.",
+    "Nothing is pending; I made a new draft. Press Send.",
+    "It was closed without sending. The card is pending your approval.",
+    "The draft is no longer in Drafts because it was sent.",
+    "The reply card is open again, pending your decision.",
+])
+def test_states_discard_refuses_a_card_offered_again_or_a_send(wrong: str) -> None:
+    assert run_check("states_discard", obs(wrong)) is False
+
+
+def test_states_discard_still_takes_nothing_was_sent_after_a_discard() -> None:
+    assert run_check("states_discard", obs("You discarded it, so nothing was sent.")) is True
+
+
 def test_resolve_person_finds_a_member_and_still_misses_vineeta() -> None:
     from evals.one_assistant_measure import workgateway as wg
 
