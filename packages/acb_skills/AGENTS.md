@@ -154,7 +154,8 @@ not write a second copy of that seam. A bare test file name is under
    - Task 3599: a name gets ONE load try in a run (`_tried`). A later call of that name gets the refusal of the first try, and the loader is not asked again.
    - `unknown_call_name` finds MAF's result in `result`, `items` or `exception`. MAF puts the `KeyError` text in `exception`, in single quotes, and `is_raw` reads that form too.
    - `MEMBER_LINE` is the member's text for that step. Only `orchestrator.event_translator.tool_result_fields` shows it. The model never reads it.
-   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`.
+   - HRD-1b: a step (`step=True`) is a delegated run or a run with no chat. It keeps no loader and reads no record of the packs. Its answer names a tool of the request, or it is `NOT_IN_STEP`. The executor's one hook, `_unknown_tool_view`, makes each provider. Only a batch run can be a step, and the stream view of the orchestrator never is.
+   - Fences: `test_unknown_tool_answer.py`, `test_unloaded_pack_tool.py`, `test_unknown_tool_batch_paths.py`.
 5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it fails closed.
    - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
    - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
