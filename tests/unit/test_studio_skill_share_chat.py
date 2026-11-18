@@ -580,3 +580,33 @@ def test_the_owners_read_route_is_404_for_another_member(world: World) -> None:
     theirs = asyncio.run(read(ADA))
     assert (theirs.status_code, theirs.json()) == (404, {"detail": "Not found"})
     assert world.wrote() == []
+
+
+# ── 8. STUDIO_ORGS empty: the pack builds no tool ──────────────────────────
+
+
+@pytest.mark.parametrize(("open_", "features", "want"), [
+    (False, None, ()), (True, "guest", ()), (True, "holder", ("studio_skill_share",))])
+async def test_the_pack_builds_no_tool_outside_studio_orgs(
+    monkeypatch: pytest.MonkeyPatch, open_: bool, features: str | None,
+    want: tuple[str, ...],
+) -> None:
+    """The owner filter keys on the owner, so ``studio-share`` keeps
+    ``STUDIO_ORGS`` and ``feature:studio`` with no code of its own. With the
+    org outside the list, the chat holds no share tool. Mutation: key the
+    filter on the slug ``studio`` -> the tool builds for a closed org -> red."""
+    import orchestrator._tool_injection as ti
+
+    from tests.unit.test_tool_packs_registry import GUEST, HOLDER, _member_holds
+
+    monkeypatch.setattr(ti, "_studio_open", lambda: open_)
+    _member_holds(monkeypatch, {"guest": GUEST, "holder": HOLDER}.get(features or ""))
+
+    async def _clear(_owner: str, _ctx: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(ti, "_pack_held", _clear)
+    build = await ti._pack_tools("studio-share", {tp.PACK_RUN_KEY: "run-key-share"},
+                                 module=load_agent_module(STUDIO_DIR))
+    assert build is not None and build.owner == "studio-builder"
+    assert tuple(tool_name(t) for t in build.tools) == want
