@@ -200,7 +200,8 @@ async def test_the_tool_names_the_page_and_each_pair(monkeypatch) -> None:
     sent: list[dict] = []
 
     async def _get(path: str, params: dict | None = None) -> dict:
-        sent.append(dict(params or {}))
+        if path == "/crm/aggregate":
+            sent.append(dict(params or {}))
         return _paged_body(int((params or {}).get("group_page") or 1))
 
     monkeypatch.setattr(tools, "_get", _get)
@@ -225,7 +226,8 @@ async def test_the_tool_sends_no_page_for_page_one_of_one_field(monkeypatch) -> 
     sent: list[dict] = []
 
     async def _get(path: str, params: dict | None = None) -> dict:
-        sent.append(dict(params or {}))
+        if path == "/crm/aggregate":
+            sent.append(dict(params or {}))
         return {"entity": "module:Invoices", "measure": "count", "zone": "UTC",
                 "groups": [{"key": "s1", "label": "Site 1", "value": 1}],
                 "total": 1, "other": 0, "omitted": 0}
