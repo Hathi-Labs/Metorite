@@ -156,6 +156,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
     # B1b-2, the refresh of the tools of one MCP server.
     ("POST", "/studio/mcp/{server}/refresh"),
+    # B1b-3, the approval of the text of one MCP tool.
+    ("POST", "/studio/mcp/{server}/tools/{tool}/approve"),
 )
 
 _PARAMS = {
@@ -167,6 +169,7 @@ _PARAMS = {
     "email": "ben@example.test",
     "view_id": str(uuid.uuid4()),
     "server": "github",
+    "tool": "get_issue",
     "object_name": "ledger",
 }
 
@@ -228,6 +231,8 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     # B1b-2: the refresh and the cache read of the MCP tools.
     monkeypatch.setattr(actions.mcp_tools, "refresh", _trip("mcp_tools.refresh"))
     monkeypatch.setattr(actions.mcp_tools, "catalog_tools", _trip("mcp_tools.catalog_tools"))
+    # B1b-3: the approval of the text of one tool.
+    monkeypatch.setattr(actions.mcp_tools, "approve_tool", _trip("mcp_tools.approve_tool"))
     monkeypatch.setattr(actions, "package_rows", _trip("package_rows"))
     return reached
 

@@ -33,6 +33,23 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_CARD_RECORD_ORGS` turns on the card record (`chat_organization.md`
+§16.3, CO-17). For each listed org, a write card that a member approves leaves
+one row in `chat_card_record`: the chat, the member, the card id, the outcome
+key, the act kind and the link of the record made. The row holds no text of
+the card. A declined card writes none. `*` lists every org, and the default is
+empty. Empty means nothing is written.
+
+Its one reader is `orchestrator.card_record.record_allowed`. The card gate asks
+it on each approved card, so a reload applies at once. The flip stays
+OWNER-GATE (`enforcement-flip`).
+
+The same flag turns on the sent-mail record (task 3594). A send tool sets the
+provider id, the approved addresses and the time on the row of its card. Each
+later turn of the chat then gets one line for each of the last 5 sent mails,
+in its run context. The run asks the flag at the start of each turn, so a
+reload applies at the next turn.
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The
@@ -139,6 +156,12 @@ Its one reader is `gateway.chat_topic.topics_allowed`, and each topic route
 asks it first. So a reload applies at the next request. The flip stays
 OWNER-GATE (`enforcement-flip`), after the owner preview.
 
+CO-2b adds three readers of the same flag. `PUT /chat/sessions/{id}/topic`
+moves a chat, and answers 404 with the org off. The chat list sends
+`topicId` and `topicName` only with the org on. `GET /auth/me/shell` gives
+the answer to the client as `chat_topics`, so a tab shows a change at its
+next shell read.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
@@ -146,6 +169,28 @@ default is empty. Its one reader is `gateway.core_events.core_events_allowed`,
 and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
+`FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
+(`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
+the default is `off`. The flag is global, but the check acts only for an org
+of `FIND_ORGS`, because pass 2 exists only there. It is not a `*_ORGS` or
+`*_MODES` key, so a reload does NOT apply it. Set the value, then restart
+`acb-gateway`. Its one reader is `acb_common.settings.find_claim_check_mode`.
+
+In `shadow`, the first answer of a run that says a record does not exist
+writes one `answer_check.claim` line. The outcome is `shadow_miss` when no
+`search_company` answer of the turn shows pass 2, and `shadow_pass` when one
+does. The line holds `mode`, `outcome`, `rule`, `searches`, `finds` and
+`armed`, and no text. `armed` is true when a `search_company` or
+`resolve_name` answer came before the claim, and false when only an app's
+search tool ran, or none.
+
+In `on`, the check holds an answer after the first result of any find tool
+in the turn, an app's search tool too. Then a claim with no pass 2 gets one
+more pass. That pass is the one retry of the run, which the number check of
+`CRM_ANSWER_CHECK` spends too. A claim before any find result is not held,
+and the line says `unheld_miss`. `shadow` is AGENT-SAFE, and `on` is an
+`enforcement-flip` after 7 days of shadow (D-FIND-8).
 
 `FIND_ORGS` turns on the new shape of a `search_company` hit
 (`find_engine.md` §3.4, §3.5, §8, FIND-2). For each listed org, each hit says
@@ -184,6 +229,14 @@ person, contact, lead, company and mail sender that holds one name. An org
 off the list gets 404. The orchestrator gives the tool only to an org on the
 list, so the tool list of each other org does not change. That part needs no
 `CONTEXT_RECENCY`. The next chat turn after a reload reads the change.
+
+The flag also opens the family of FIND-6 (`find_engine.md` §5.3, §5.4). Each
+find tool of the core list answers a failure as text, and that part needs no
+`CONTEXT_RECENCY`. Two parts act only with `CONTEXT_RECENCY` on, because the
+search runs its ladder only then. The persona ends its grounding paragraph
+with the standing rule. A zero of `search_crm`, `query_inbox` and
+`find_tasks` ends with a pointer to `search_company`. The next chat turn
+after a reload reads the change.
 
 Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
@@ -338,6 +391,17 @@ gives a pack. `*` lists every org, and the default is empty. Its one reader is
 the start of each run, so a reload applies to the next run. Any value other
 than empty is OWNER-ONLY (`work_plan.md` §6 D4), and the §3a window does not
 open it.
+
+`TOOL_TURN_BUDGET_ORGS` turns on the per-turn budget of a read tool
+(`chat_failure_modes.md` §4 row B5, HRD-5). It covers `search_company`
+and `find_tasks`. For each listed org, one of these tools may give
+3 empty or refused answers in a turn. Its next call in that turn does not run.
+The answer tells the chat to ask the member one question.
+
+`*` lists every org for this flag,
+and the default is empty. Its one reader is
+`orchestrator.tool_turn_budget.tool_turn_budget_on`. A flip stays OWNER-GATE
+(`enforcement-flip`).
 
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is
