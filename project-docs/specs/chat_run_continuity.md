@@ -2134,11 +2134,11 @@ rule below is a fence in `chatResume.test.ts`:
 - **The same run.** After a park, a listed run with that key, or with the
   run key that this chat already holds, is the SAME run. It is not new, it
   has no stale tail, and the parked reply stays the target of the replay.
-- **The 200.** `resumedOf` reads `sameReply` (only JSON `true`). A `resumed`
-  event goes on in the parked reply when `sameReply` is true, or its key is
-  `parkedRunKey`, or its key is the run key while the chat rests after the
-  park. A late decline never takes case A. Its 200 has a new run id and no
-  `messageId`, so it stays a new run.
+- **The 200.** `resumedOf` reads `sameReply` (only JSON `true`). Three
+  things send a `resumed` event into the parked reply. They are `sameReply`,
+  the key `parkedRunKey`, and the run key while the chat rests after the
+  park. A decline that comes late never takes case A. Its 200 has a new run
+  id and no `messageId`, so it stays a new run.
 - **The second start.** `api/agent/chat/route.ts` sends one frame
   `run_resumed` for a `RUN_STARTED` marked `resumed`, after the run binding
   accepts it. A plain start sends no frame, as before.
