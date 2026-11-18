@@ -438,22 +438,15 @@ def _member_waits() -> None:
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
-    The questions are rendered as interactive cards in the chat UI.  The user
-    can select options, type freeform answers, or both.  Their answers will
-    be sent as the next chat message for you to process.
+    The chat shows each question as a card. The user picks options, types an
+    answer, or both, and the answers arrive as the next chat message.
 
-    **Use this tool when:**
-    - You need to disambiguate between multiple possible interpretations
-    - The user's request is missing a required parameter
-    - You want the user to choose from a known set of options
-    - A decision has security, cost, or irreversibility implications
+    Use it when a request has more than one meaning, lacks a required value,
+    needs a choice from known options, or has a security, cost or
+    irreversible effect. Do NOT use it for a simple yes/no (use your best
+    judgment), or for what a web search or a tool call can answer.
 
-    **Do NOT use for:**
-    - Simple yes/no confirmations (use your best judgment)
-    - Questions you can answer yourself with a web search or tool call
-
-    **After calling this tool, STOP and wait.**  The user's response will
-    arrive as the next message in the conversation.
+    **After calling this tool, STOP and wait** for the next message.
 
     Args:
         questions: JSON string. ``header`` and ``question`` are required;
@@ -479,8 +472,7 @@ async def ask_questions(questions: str) -> str:
             }
 
     Returns:
-        ``"Questions displayed to the user. Waiting for response."``
-        The agent MUST stop after receiving this and let the user answer.
+        ``"Questions displayed to the user. Waiting for response."`` Then stop.
     """
     if cards_refused():
         # WS-47 WAC-3: no card channel. Answer at once, push and park nothing.
