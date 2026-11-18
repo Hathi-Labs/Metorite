@@ -41,7 +41,7 @@ from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
-from acb_llm.run_errors import run_error_event
+from acb_llm.run_errors import classify_run_error, run_error_event
 from acb_skills import run_phase as _run_phase
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
@@ -2003,6 +2003,102 @@ def _celebration_line(agent_name: str, zone: str | None) -> str:
         return celebrations.celebration_line(
             _as_dict(raw),
             now=_briefing_now(), zone=zone, join_date=join_date, last_reply_at=last_reply_at)
+    except Exception:
+        return ""
+
+
+# ── The sent acts of this chat (task 3594, chat_organization.md §16.3) ──────
+# Run a8ad07f3 (2026-11-16): turn 2 did not see that turn 1 sent a mail, sent
+# it again, and then said that neither mail went. The async prime step reads
+# the last sent acts of this chat from the card record (``card_record.
+# sent_acts``), as the member, and binds them into the run. The sync context
+# builder states them, one fact line each, then one rule line. The block rides
+# the run context (instructions), never a stored message, and the persona
+# does not change. A fault, a timeout and the flag off all give no line, and
+# the turn runs as before. Fence: ``tests/unit/test_sent_record.py``.
+
+_SENT_ACTS_KEY = "sent_acts"
+#: The longest wait of a turn for the read. A slower read gives no line.
+_SENT_ACTS_TIMEOUT_S = 1.0
+
+
+async def _prime_sent_acts(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the sent acts of this chat into the run, or bind nothing.
+
+    Gates: a run that is not delegated and not batch, the run's own org, a
+    verified member, and ``CHAT_CARD_RECORD_ORGS`` for the org
+    (``card_record.record_allowed``). The run binding must name the member and
+    this chat. All of it comes from the run boundary, never from input (R5). A
+    chat that holds untrusted input still gets the line. Never raises, apart
+    from a cancel of the turn."""
+    _ = agent_name  # each agent of the member's own chat gets the line
+    if delegated or batch_thread:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member:
+        return
+    try:
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        from orchestrator import card_record
+
+        if not card_record.record_allowed(org):
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        if str(ctx.get("member") or "").strip().lower() != member:
+            return
+        acts = await card_record.sent_acts(org, session, member,
+                                           timeout_s=_SENT_ACTS_TIMEOUT_S)
+        if acts:
+            derive_artifact_context(**{_SENT_ACTS_KEY: (run_id, org, member, tuple(acts))})
+    except ImportError:
+        return
+    except Exception as exc:  # fail open: no line, the turn runs as before
+        _log.warning("executor.sent_acts_read_failed", error=type(exc).__name__)
+
+
+def _sent_acts_block(agent_name: str) -> str:
+    """The sent acts of this run, or ``""``. It reads the binding that
+    :func:`_prime_sent_acts` set, and no database. It checks the flag, the
+    org, the member and the run id again, so a delegated run never gets the
+    block of its parent, and a flag turned off drops it at once. No exception
+    escapes."""
+    _ = agent_name
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        from orchestrator import card_record
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or not card_record.record_allowed(org):
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_SENT_ACTS_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, acts = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        return card_record.sent_acts_text(list(acts))
     except Exception:
         return ""
 
@@ -7951,6 +8047,13 @@ async def run_agent_stream(
                 delegated=_delegated_run, shows_cards=shows_cards,
                 batch_thread=_batch_thread,
             )
+            # Task 3594: the sent acts of this chat, from the card record, for
+            # the sync context. Dark behind CHAT_CARD_RECORD_ORGS. One second
+            # at most, and a fault costs the line, never the turn.
+            await _prime_sent_acts(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, batch_thread=_batch_thread,
+            )
             try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
@@ -8773,6 +8876,27 @@ async def run_agent_stream(
                             yield _sse(_ev)
                         yield _sse(run_error_event(
                             _nexc, run_id=run_id, where="native_maf_stream",
+                        ))
+                        return
+                    if classify_run_error(_nexc) == "ai_unavailable":
+                        # AO-3 (incident 2026-11-17): the Router could not
+                        # answer (a 502 or a 503), so every step of its chain
+                        # refused or it was down. Tier 2 asks the same Router
+                        # for the same chain, so it would only add a second
+                        # wait, and a buffered vendor 400 there reads as
+                        # `model_refused`. The turn ends here, and the chat
+                        # shows the resting card. The held routes go with it.
+                        _held_routes.clear()
+                        _log.warning(
+                            "executor.native_maf_ai_unavailable",
+                            agent=agent_name, run_id=run_id,
+                            error_type=type(_nexc).__name__,
+                        )
+                        for _ev in _close_text_message(_t_state):
+                            yield _sse(_ev)
+                        yield _sse(run_error_event(
+                            _nexc, run_id=run_id, code="ai_unavailable",
+                            where="native_maf_stream",
                         ))
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
@@ -11830,7 +11954,8 @@ def _context_preamble_parts(
     (``acb_common.today.today_line``), and last the member's part of the day
     beside a profile block that greets (``part_of_day_line``, PZ-4), then the
     line of the tool packs that left at the start of the turn
-    (:func:`_pack_left_block`, task 1747). :func:`_build_event_message`
+    (:func:`_pack_left_block`, task 1747), and last the sent acts of this
+    chat (:func:`_sent_acts_block`, task 3594). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -11971,6 +12096,11 @@ def _context_preamble_parts(
     # payload (R5). Last, so each block above keeps its place. An empty line
     # adds nothing.
     parts.extend(filter(None, [_pack_left_block(agent_name)]))
+    # Task 3594 (chat_organization.md §16.3): the mails that the member
+    # approved and the system sent in this chat, then one rule line. From the
+    # run binding that `_prime_sent_acts` set, never the payload (R5). Last,
+    # so each block above keeps its place and its bytes.
+    parts.extend(filter(None, [_sent_acts_block(agent_name)]))
     return parts
 
 

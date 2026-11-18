@@ -204,7 +204,10 @@ class _Console:
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if request.headers.get("accept") == "text/event-stream" or b'"stream"' in request.content:
-            return httpx.Response(200, stream=httpx.ByteStream(b"data: [DONE]\n\n"),
+            # One frame of an answer, then the end. AO-3: a lone `[DONE]` is
+            # a stream that never opened, and the stream hop answers it 502.
+            frames = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(200, stream=httpx.ByteStream(frames),
                                   headers={"content-type": "text/event-stream"})
         return httpx.Response(200, json=OK)
 
