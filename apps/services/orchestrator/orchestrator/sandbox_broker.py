@@ -1601,26 +1601,41 @@ def _pulled_name(name: str) -> str | None:
     return text
 
 
-def _put_dir(workspace: Path, rel: str) -> None:
+def _put_dir(workspace: Path, rel: str, pushed: frozenset[str]) -> None:
+    """Make the dir *rel*. A host file in its way goes only when the copy in sent it.
+
+    Any other file in the way raises ``FileExistsError``, so the caller skips
+    the entry and deletes nothing that the copy in did not send.
+    """
     from acb_skills import safe_open
 
-    path = workspace / rel
-    if path.exists() and not path.is_dir() and not _is_link(path):
-        safe_open.unlink(workspace, rel)
+    parts = rel.split("/")
+    for depth in range(1, len(parts) + 1):
+        here = "/".join(parts[:depth])
+        path = workspace / here
+        if path.exists() and not path.is_dir() and not _is_link(path):
+            if here not in pushed:
+                raise FileExistsError(here)
+            safe_open.unlink(workspace, here)
     safe_open.ensure_dir(workspace, rel)
 
 
-def _put_file(workspace: Path, rel: str, data: bytes, executable: bool) -> bool:
-    """Write *data* at *rel* through the safe opener. ``False`` when it was the same."""
+def _put_file(
+    workspace: Path, rel: str, data: bytes, executable: bool, pushed: frozenset[str],
+) -> bool:
+    """Write *data* at *rel* through the safe opener. ``False`` when it was the same.
+
+    A host dir at *rel* raises ``FileExistsError``: the copy out never
+    removes a dir, so it deletes nothing that the copy in did not send.
+    """
     from acb_skills import safe_open
 
     parent = rel.rpartition("/")[0]
     if parent:
-        _put_dir(workspace, parent)
+        _put_dir(workspace, parent, pushed)
     path = workspace / rel
     if path.is_dir() and not _is_link(path):
-        safe_open.remove_tree(workspace, rel)
-        old = None
+        raise FileExistsError(rel)
     else:
         try:
             old = safe_open.read_bytes(workspace, rel, limit=len(data))
@@ -1701,7 +1716,7 @@ def apply_pull_archive(
         written = 0
         for rel in dirs:
             try:
-                _put_dir(workspace, rel)
+                _put_dir(workspace, rel, pushed)
             except (safe_open.UnsafePath, OSError):
                 skipped += 1
         for rel, member in files:
@@ -1710,12 +1725,13 @@ def apply_pull_archive(
             if len(data) != member.size:
                 raise SandboxRefused("A file of the sandbox came back short.")
             try:
-                if _put_file(workspace, rel, data, bool(member.mode & 0o100)):
+                if _put_file(workspace, rel, data, bool(member.mode & 0o100), pushed):
                     written += 1
             except (safe_open.UnsafePath, OSError):
                 skipped += 1
     deleted = 0
-    present = {rel for rel, _member in files}
+    # A sent file that is a dir in the container now went in `_put_dir`.
+    present = {rel for rel, _member in files} | set(dirs)
     for rel in sorted(pushed - present):
         try:
             if safe_open.unlink(workspace, rel):
@@ -2413,9 +2429,11 @@ class SandboxBroker:
                 self._drop(held)
                 victims.append(held)
             victims += self._make_room(binding.org)
+            # `remote` is set here, under the lock, so a second acquire of the
+            # thread joins this start, and the one-org check sees it in flight.
             handle = SandboxHandle(
                 binding=binding, lock=self._lock_for(binding.workspace),
-                leases=1, last_used=self._clock(),
+                leases=1, last_used=self._clock(), remote=remote,
             )
             self._live[binding.name] = handle
             return handle, victims, True

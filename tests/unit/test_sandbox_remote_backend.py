@@ -580,6 +580,47 @@ async def test_the_copy_out_deletes_only_what_the_copy_in_sent(tmp_path: Path) -
     assert (ws / "a" / "new-on-host.txt").exists(), "a file the copy in never sent stays"
 
 
+def test_a_type_swap_never_deletes_what_the_copy_in_did_not_send(tmp_path: Path) -> None:
+    """The container turns a file into a dir, or a dir into a file. The host
+    gives up only an entry that the copy in sent."""
+    ws = tmp_path / "ws"
+    (ws / "dir-on-host").mkdir(parents=True)
+    (ws / "dir-on-host" / "kept.txt").write_bytes(b"kept")
+    (ws / "file-on-host").write_bytes(b"not sent")
+    (ws / "sent-file").write_bytes(b"sent")
+    archive = io.BytesIO(_tar([
+        ("file", "./dir-on-host", "now a file"),
+        ("dir", "./file-on-host", b""),
+        ("file", "./file-on-host/x", "x"),
+        ("dir", "./sent-file", b""),
+        ("file", "./sent-file/y", "y"),
+    ]))
+    done = sb.apply_pull_archive(
+        ws, archive, pushed=frozenset({"sent-file"}), max_bytes=1 << 20, max_entries=100,
+    )
+    assert (ws / "dir-on-host" / "kept.txt").read_bytes() == b"kept"
+    assert (ws / "file-on-host").read_bytes() == b"not sent"
+    assert (ws / "sent-file" / "y").read_bytes() == b"y", "a sent file may become a dir"
+    assert done.skipped >= 3
+
+
+async def test_two_acquires_at_once_on_one_remote_thread_share_one_start(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    """The handle is remote from its claim, so a second acquire joins it."""
+    gate = asyncio.Event()
+    docker.block_run = gate
+    with bound_run(ORG, thread="t-twice"):
+        first = asyncio.create_task(broker.acquire())
+        await until(lambda: docker.runs(), "docker run must be in flight")
+        second = asyncio.create_task(broker.acquire())
+        await asyncio.sleep(0.05)
+        gate.set()
+        a, b = await asyncio.gather(first, second)
+    assert a is b
+    assert len(docker.runs()) == 1
+
+
 async def test_an_aborted_command_keeps_no_change_of_the_container(
     broker: sb.SandboxBroker, docker: RemoteFakeDocker,
 ) -> None:
