@@ -26,6 +26,35 @@ tried, and at most 3 "Where else" lines. `search_company(explain=true)`
 answers the trace of §3.7 with no record. Each search writes one
 `search.company.ladder` line.
 
+**FIND-7 is built** (task 3244, 2026-11-17, see "As built" in §5.5). Behind
+`FIND_CLAIM_CHECK`, the harness reads the final answer of each chat run, for
+an org of `FIND_ORGS` only. An answer that says a record does not exist
+needs a `search_company` answer of the same run that shows pass 2. An app's
+search tool alone does not count.
+
+In `shadow`, a miss writes one `answer_check.claim` line with no text. In
+`on`, it gets one more pass. The flag is `off` on every box.
+
+**HRD-21 is built** (task 3225, 2026-11-16, see "As built" in §3.1 and §6).
+Behind `CHAT_SEARCH_ORGS`, rung 6 reads the member's own solo chats with
+Mira, and never the current chat. A hit names the title, the date of the last
+change of the chat and the link that opens the chat. With the flag empty, the
+answer is the answer of before, byte for byte, and so is the 422 of an unknown
+app, `chat` too. The flip waits for the owner's preview.
+
+**FIND-5 is built** (task 3242, 2026-11-16). Behind `FIND_ORGS`, the core tool
+`resolve_name` reads the new route `GET /search/names`. It gives each person,
+contact, lead, company and mail sender that holds one name, exact or near.
+§5.2 holds the shape as built.
+
+**FIND-6 is built** (task 3243, 2026-11-17, see "As built" in §5.3 and
+§5.4). Behind `FIND_ORGS`, with company search on, the core list holds
+`search_company` and `resolve_name`. Each find tool of the core list answers
+a failure as text. With `CONTEXT_RECENCY` on too, a zero of `search_crm`,
+`query_inbox` and `find_tasks` ends with the pointer, and the persona holds
+the standing rule. `resolve_person` stays in the core list, because the
+parity of D-FIND-3 does not hold yet (§5.3).
+
 **The seam owner.** `knowledge_base.md` §20 (D105) owns the retrieval seam:
 `gateway/retrieval/`, the source, the hit and `GET /search/company`. This spec
 extends §20 and replaces nothing in it. It adds no second read path and no
@@ -157,9 +186,48 @@ Measured on production on 2026-11-14, over the last 3 days (task 3232):
 | 3 | Near spelling | The near names of up to 3 words, from records the member can open. Then the query again with the best spelling | On a miss, pass 2 | 0.5 s for the lookup, inside the 2.5 s | `near` | HRD-18a, HRD-18b |
 | 4 | Related records | The records that link to the best hits: the contacts and the lead of a deal, the deals of a company, the mail from and to an address, and the mail of a company's own domain (no free-mail domain, the rule of KG-5) | When a pass found a person, contact, lead, deal or company | 1.0 s, at most 3 for each hit | `related` | FIND-3, then KG-6 |
 | 5 | Meaning | The vector half of each source that has one | The embed starts at 0 s, beside rung 1. A source waits at most 0.8 s for it | 3.0 s for the embed | `meaning` | KR-ZERO, KG-3b |
-| 6 | Past chats | The member's own chat sessions | Pass 1, when `CHAT_SEARCH_ORGS` names the org | 1.0 s | `chat` | HRD-21 |
+| 6 | Past chats | The member's own chat sessions | Pass 1, when `CHAT_SEARCH_ORGS` names the org | 1.5 s, as each source of pass 1. A LOCAL `statement_timeout` of 1.6 s stops its statement | `chat` | HRD-21 |
 | 7 | Outside sources | An outside app that an admin made a find source | On a miss after pass 2, or when the member names it | 3.0 s. The answer cap rises to 8 s | `outside` | FIND-10 |
 | 8 | Honest zero | The answer says what it searched, what it tried and where else to look | Each answer with a miss | None. Code writes it | none | KR-ZERO, FIND-4 |
+
+**As built (HRD-21), rung 6.**
+
+- The source has the key `chat`, and it is last in `REGISTRY`. The command
+  bar never asks it.
+- The route asks it only when `feature:chat` and `CHAT_SEARCH_ORGS` let the
+  member in, and the request names the current chat (`current_chat`). Else
+  the source is not asked at all. The tool sends the thread of its own run.
+  A run with no chat (a batch run, with a thread that the executor made)
+  sends no thread, so it shows no past chat. A run that is not solo sends
+  none either.
+- It runs in pass 1, in the 1.5 s of a source. Its hits leave the ladder
+  before the miss rule, the words alone and the near step, and join the one
+  list before the sort. So a past chat that holds every content word does
+  not stop the search for the records.
+- The search proves each content word of the query as a whole word, by the
+  stem rule of `find.coverage` (`find.whole_word_pattern`). So "AI" never
+  matches inside "email", "print" never matches "printer", and "printers"
+  holds "printer". The cut end of a long row is no end of a word.
+- With `FIND_ORGS` on, a past chat says `matched_by` `chat`. It holds every
+  content word as a whole word, because its search proved each one in the
+  title or in one row. So `covers` is `of`, whatever its snippet and its hint
+  show. On a tie of words, a record comes first, because rung 1 is lower
+  than rung 6.
+- The second pass starts on a miss of the records only. The `miss` of the
+  log line reads the final answer, so a past chat with every word makes no
+  miss there.
+- `find.chat_words` is the one rule of the words, for the route and the
+  reader. A query with no content word, or with more than 8, does not ask
+  the source. Then `searched` has no `chat`, "Where else" names the past
+  chats, and rung 6 of the trace reads `closed`. A stop word does not count.
+- The reader is `gateway/chat_search.py`, in the chat's own code. The caps
+  bound the word match. It reads the newest 100 chats that pass every rule,
+  the newest 80 rows of each chat, and 4,000 characters of each row. The rules run
+  before that cut, and the agent rule reads each row of each chat that it
+  tests. Each word arm is a `LIKE` of the stem, then a regular expression,
+  and no index serves either. A LOCAL `statement_timeout` of 1.6 s bounds the
+  whole statement. HRD-21 measured no plan on a large chat history. Measure
+  one before the flip.
 
 ### 3.2 Three passes in time
 
@@ -241,6 +309,13 @@ off, `Hit.as_dict` gives the keys of today, byte for byte.
 `edge` is a code constant from a closed list: `contact_of`, `lead_of`,
 `deal_of`, `company_of`, `mail_from`, `mail_to` and `mail_domain`. It holds no
 text of either record. A hit found by two rungs keeps the lower rung.
+
+As built (HRD-21), a past chat prints its date beside its hint, as each app
+does: "(Your chat, updated 2026-11-12)". The date is `updated_at` of the
+chat. A new row moves it, and so does a rename, so the word is not "last
+message". So its bracket is
+`[past chat · 2 of 2 words]`, and it does not print the date again. The hit
+has no `session` field, because its `id` is the session.
 
 As built (FIND-3), a mail that a linked record led to also carries `via`, the
 record edge from the same list. So "mail from the lead of deal:…" is `edge`
@@ -349,6 +424,11 @@ The rule behind the switch is as follows:
   of "Where else" names each skipped app with its reason. Item 3 names the
   past chats and each app that is not open to the member. A dark Studio
   source is never named.
+- As built (HRD-21), the line of the past chats prints only when the search
+  did not ask the `chat` source. The flag does not name the org, or the run
+  named no current chat. So the line is true each time it prints. The `chat`
+  key is never a `not_open` entry, because the past chats have their own
+  line.
 - Item 2 is not built. `name_match.near_names` keeps no name under the
   floor, so the route holds no name between 0.4 and the floor.
 - Item 4 waits for FIND-10.
@@ -384,8 +464,10 @@ name, no address and no id. The weekly delivery review reads the zero rate of
   row of `rungs` holds a rung, a source key, `ran`, `hits`, `ms` and an
   outcome from `find.OUTCOMES`. A closed app has one row, in rung 1.
 - Rung 4 gives a row for each source too. Its hits are the related records
-  that each app gave. Rung 6 has one row, `closed`, until HRD-21 adds the
-  `chat` source.
+  that each app gave. Rung 6 has one row, with the key `chat`. As built
+  (HRD-21), the `chat` source fills that row from its pass 1. It has no row
+  in rungs 1 to 4. With the source closed or not asked, the row stays
+  `closed`, so a dark source changes no trace.
 - `near` holds at most 3 spellings for each word. `name_match` keeps no name
   under the floor, so `over_floor` is true for each spelling today.
 - `flags_off` asks the one reader of each flag: `KNOWLEDGE_EMBED`,
@@ -530,6 +612,139 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
 `GET /search/names` asks each source that can `near`, with the lookups of rung
 3. So a near name is the same in the ladder and in the tool.
 
+**As built (FIND-5, task 3242, 2026-11-16, with its two fix rounds).**
+
+- **The route.** `gateway/retrieval/names.py` holds it. An org off
+  `FIND_ORGS` gets 404 before any check of the input. The route takes `name`
+  and `kinds` only, and the org and the member come from the session.
+- **The name.** One name of 2 to 60 characters and at most 3 words. `kinds` is
+  a comma list from the closed list person, contact, lead, company and sender.
+  An unknown kind gets a 422 with fixed text.
+- **A word that the matcher reads.** The name must hold one word of 2 letters
+  or more in the letters a to z or the digits 0 to 9. Else the route answers
+  a 422 with its own fixed sentence, before any read. Initials alone ("A B")
+  and a name in another script get it. The tool tells the model to ask the
+  member for the name in those letters.
+- **The sources.** The CRM gives contact, lead and company. People gives
+  person. Email gives sender. No source gives a member yet, so `resolve_person`
+  keeps the members until FIND-6.
+- **The reads.** Each source has the ability `named` (`Source.named_records`).
+  It calls the app's own search. Each source runs `named` with the name and
+  `Source.near_names` at once. Then it runs `named` once more, with each word
+  replaced by its best near spelling.
+- **One word for People and Email.** Their own search matches its text as one
+  phrase, and the directory never reads the preferred name. So the route asks
+  them with one word: the longest word of the name. The near read asks the
+  longest word of the respelled name. When that word is the word of the name
+  read, the app gets no second read, and the near test reads the same page.
+  The CRM matches word by word, so it gets the whole name. "Kumar Sharath"
+  finds «Sharath Kumar» in each app.
+- **The name test is code.** A record is `exact` when one form of its name
+  holds each word of the name. It is `near` when one form holds each word of
+  the near spelling. Each form counts on its own, never the union of two
+  forms. Each asked word takes its own stored word of that form, once. A word
+  of one letter takes a stored word that starts with it, after the full words
+  take theirs. A record that matched by another field gives no row.
+- **The forms of a name.** A CRM record has its name. A person with a preferred
+  name has two forms: the full name, and the full name with its first word
+  replaced by the preferred name. So «Gitanjali Rao», preferred «Gita», holds
+  "Gitanjali Rao", "Gita Rao" and "Gita". It does not hold "Gitanjali G". A
+  sender has two forms: the display name, and the part of the address before
+  the `@`. `sources.person_forms` builds the forms of a person.
+- **An initial reads the first form only (round 4).** The invariant: no
+  initial is met by the second spelling of one given name. The second form of
+  a person guesses that the first word of the full name is the given name.
+  A full name can start with an initial, a title or a surname. Then that form
+  holds two spellings of one given name: «K Sharath Kumar», preferred
+  «Sharath», gives "Sharath Sharath Kumar". So an ask that holds a word of one
+  letter reads the full name only, and a sender's display name only. "Sharath
+  S" is then no exact match for «K Sharath Kumar». An ask with no initial
+  reads each form. The fence is `test_resolve_name_tool.py`.
+- **An apostrophe joins.** An apostrophe between two letters joins them into
+  one word, in the name and in each form. So "O'Brien" is one word, and
+  «Oscar Brien» does not hold it.
+- **A sender row.** The Email app's own read `search.named_mail` gives it. The
+  read uses the mailbox scope of the search, drops the outbound mail (sent,
+  drafts, outbox) and sets a LOCAL `statement_timeout` of 1.5 s first. A `%`
+  or a `_` in the word is plain text. The id of the row is the address, and
+  its link opens the newest mail of the sender. An address that holds a
+  hidden character gives no row, and a joiner counts as one.
+- **A person row** says the status of the person (active, contractor, alumni
+  or invited), because the directory shows each status.
+- **The time.** One deadline of 1 s for every read, and each read takes a
+  slot of `FIND_SESSIONS`.
+- **A failed read.** A failed name read gives no row, and `skipped` names the
+  app with `timed_out`, `failed` or `refused`. `refused` is a 401 or a 403 of
+  the app only. A statement that Postgres cancelled (SQLSTATE 57014) reads
+  `timed_out`. A failed near read keeps the exact rows, and `near_skipped`
+  names the app. `full` names each app whose name read or near read gave a
+  full page of 20. A none answer does not count such an app as one where no
+  name matched.
+- **The caps.** At most 5 rows of each kind and 15 in all, the exact rows
+  first. `cut` says when a cap left a row out.
+- **The tool.** `resolve_name(name, kinds)` in `company_search_tools.py`
+  answers with the header of `search_company`. Two values come from data: a
+  stored name in guillemets, and a sender address that passed the address
+  check. Every other word comes from a closed list. The last line is the
+  fixed instruction of the verdict (`NAME_NEXT`).
+- **The flag.** The orchestrator holds the tool only for an org of
+  `FIND_ORGS`, with `COMPANY_SEARCH_ENABLED` on. So the tool list of each
+  other org does not change.
+
+**The verdict (fix round, P2-c).** The rule "One exact match: use it" holds
+only for a sure match. One exact row beside a near row repeats the failure of
+§1.1. There «Sharath BMS» is exact, and the near «Sharat» is the man that the
+member means. A mail sender writes its own display name, so it is no known
+person.
+
+| Verdict | When | The last line of the tool |
+|---|---|---|
+| `one` | One exact record that is no mail sender, no near row, and each app answered in full | "One exact match: use it." |
+| `partial` | The same, but an app gave no answer or a full page, did not try its near spellings, or a cap cut a row | "Ask the member to confirm it before you act." |
+| `several` | Two exact records or more, or one exact record beside a near row | "Ask the member which one they mean." |
+| `near` | Near rows only, or one exact mail sender alone | "Ask the member to confirm one, and never act on it without a yes." |
+| `none` | No row | "Ask the member for the full name or the address." |
+
+**Limits of FIND-5.** Each limit below is known, and no test hides it.
+
+- **A preferred name that the full name does not hold.** The People read asks
+  the longest word of the name, and the directory matches it in the full
+  name only. When that word is a preferred name that the full name does not
+  hold, the read misses the person. "Sharu Kumar" asks "Sharu" (the first of
+  two words of 5 letters), and «Sharath Kumar», preferred «Sharu», gives no
+  row. The search does not know that it missed. So a `one` from another app
+  can then be wrong. When the full name holds the longest word, the read
+  finds the person, and the forms test the name.
+- **The page of Email holds the newest 20 mails, not 20 senders.** Twenty
+  newer mails from other senders that hold the word can hide a sender. Then
+  `full` names Email, and the answer is no `one`.
+- **The page of People holds the first 20 rows of the directory read**, in
+  the order of the department, before the name test. A full page reads in
+  `full` too.
+- A sender with 20 mails or more fills the page of Email, so the answer reads
+  `partial` and not `one`.
+- A sender that is only in the sender rollup, with no mail, gives no row.
+- An address with an apostrophe gives no row, because the address check
+  refuses quote marks. An address with a joiner of an Indian script gives no
+  row either, because the check refuses each character of category C.
+- An apostrophe joins, so "D'Souza" does not hold «D Souza», written with no
+  apostrophe.
+- **An initial loses some recall, by choice (round 4).** "Gita R" does not
+  hold «Gitanjali Rao», preferred «Gita», because an ask with an initial
+  reads the full name only. "Gitanjali R" holds it. A sender loses the same
+  way: "Sharath K" does not hold «S Kumar» <sharath.kumar@…>. No answer
+  claims a wrong match for it. The answer can only miss a record.
+- **A display name that is the address itself.** Some mail gives the address
+  as the display name. Then the first form of the sender holds the words of
+  the domain too, so a word of the domain can match the sender exactly. A
+  sender alone never gives `one`.
+- **The cap of a request.** The pack cap counts the orchestrator's own tools.
+  For an org of `FIND_ORGS`, a Studio turn with the email words drops the pack
+  `studio-more`, and keeps email and studio. Nothing fails. FIND-6 kept
+  `resolve_person` in the core list (§5.3), so this trade holds. Its exit
+  gives a place back only to an org with the profile on. The fence is
+  `test_resolve_name_tool.py`.
+
 ### 5.3 How the app search tools wrap the engine
 
 | Tool (where) | What stays | What changes | Slice |
@@ -539,10 +754,68 @@ the model can use. Each risk is in `TOOL_ANNOTATIONS`.
 | `query_inbox` (pack `email`) | Each filter | A sender name tries its near spelling, in the email app's own function. The same zero line | HRD-18b, FIND-6 |
 | `find_contact` (pack `email`) | The address lookup | The one matcher | HRD-18a |
 | `find_tasks` (pack `projects`) | The task filters | Most of the words on a miss. The same zero line | HRD-4, FIND-6 |
-| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3) | HRD-18a, FIND-6 |
+| `resolve_person` (core) | The colleague address for an act | The one matcher. It leaves the core list one release after `resolve_name` passes its cases (D-FIND-3). FIND-6b closes the parity gaps | HRD-18a, FIND-6, FIND-6b |
 
 No app tool gets a second matcher, and no tool reads a second store. So no
 second read path exists.
+
+**As built (FIND-6, task 3243, 2026-11-17).**
+
+- **The zero line.** `company_search_tools.with_zero_pointer` ends a zero
+  answer with `FIND_POINTER`, the sentence of the table, on its own line.
+  `search_crm` gives it after "Nothing in … matches". `find_tasks` gives it
+  after "No task matches". `query_inbox` gives it only when the route sends
+  the integer 0 as the total. A page past the end of a total gets none. The
+  tool also gives no pointer for a missing total, `None`, a text or a bool.
+- **The gates.** Each gate fails closed. The call is a pack call of the one
+  assistant (`egress._in_pack_call`). `COMPANY_SEARCH_ENABLED` is on.
+  `CONTEXT_RECENCY` is on (`company_search_tools.context_recency_enabled`).
+  `FIND_ORGS` names the org of the run (`company_search_tools.find_on`, which
+  asks `find.find_allowed`). A sub-run of a specialist holds no
+  `search_company`, so it gets no line. A spawn child is the one exception
+  (see the limits).
+- **Why `CONTEXT_RECENCY`.** The route runs the ladder only with it on
+  (`company.py`, `find_on`). With it off, `search_company` tries no near
+  spelling and no linked record, so the pointer would not be true.
+- **A failure is no zero.** A read that fails raises before the zero branch.
+  The HRD-3 guard of the pack call then answers it, with no pointer.
+- **A near answer is no zero.** A `search_crm` answer with near spellings
+  only shows rows that the member can open, so it gets no pointer.
+- **The failure text.** For an org of `FIND_ORGS`, `build_orchestrator_agent`
+  wraps `search_company`, `resolve_name` and `resolve_person` in
+  `pack_tool_guard.guard`, the one guard of HRD-3. A failure then reads "The
+  tool failed (<class>). Nothing changed.", with a next step. The text names
+  the class of the error, never its message. The guard needs no
+  `CONTEXT_RECENCY`, and neither does `resolve_name`: `GET /search/names`
+  does not read it. Each other org keeps the tool objects of before, so MAF
+  answers its failure as before.
+- **`resolve_person` stays (D-FIND-3).** The parity does not hold.
+  `resolve_name` has no source that gives a member (`app_user`). It does not
+  read the member's saved aliases. A person row prints no address.
+  `resolve_person` gives all three, and the table gives it the colleague
+  address for an act. So FIND-6 keeps it in the core list, with the guard.
+- **How `resolve_person` leaves (decided by the planner, 2026-11-17).** Option
+  (a). FIND-6b (task 3665) gives `GET /search/names` the kind `member`, the
+  saved aliases (tier 1, `matched_by` alias) and the address of a person row.
+  One release after FIND-6b merges, a second PR takes `resolve_person` out of
+  `core_tools` and gives the pack cap its place back. The owner can override.
+  `test_find_tools.py` names the gaps, so the slice that closes them must
+  update the fence.
+
+**Limits of FIND-6.**
+
+- A spawn child (OA-9c) holds the read tools of its packs and no
+  `search_company`. Its pack call still opens the gate, so its zero line
+  names a tool that it does not hold. The parent reads the answer, and the
+  parent holds the tool.
+- The row FIND-6 says that no find tool answers "Error: Function failed.".
+  As built, the text covers the core find tools of the one assistant, and its
+  pack calls through the HRD-3 guard. A delegated sub-run of a specialist
+  keeps the text of MAF for an exception that is no refusal, because its
+  tools have `refusals_as_text` only. An org off `FIND_ORGS` also keeps the
+  text of MAF for the find tools of its core list.
+- `failure_text` names the class of the error, such as `RuntimeError`. That
+  is the choice of HRD-3.
 
 ### 5.4 The standing rule
 
@@ -556,8 +829,28 @@ is a lead: say the spelling or the link you used. Before you say that a record
 does not exist, read the "Where else" line.
 ```
 
-A change to the persona moves the preamble goldens (`evals/trajectories`,
-`test_native_session_persistence.py`).
+A change to the persona moves its fences in the same PR.
+
+**As built (FIND-6).** `orchestrator/agents.py` holds the rule as
+`FIND_STANDING_RULE`, in the words above. One exact swap (`_FIND_SWAP`) puts
+it at the end of rule 1, right before rule 2. So it closes the grounding
+paragraph, after the sentences of CX-1. It needs `FIND_ORGS`,
+`COMPANY_SEARCH_ENABLED` and `CONTEXT_RECENCY`. With one of them off, the
+persona is the persona of before, byte for byte, and `test_find_tools.py`
+pins its hash.
+
+- **The goldens.** The preamble goldens did not move. `test_native_session_persistence.py`
+  and `evals/trajectories/test_native_structured_history_trajectory.py` pin
+  the per-turn context with a stand-in persona, not this persona. The new
+  `evals/trajectories/test_find_family_trajectory.py` pins the rule and the
+  tool list of the real run.
+- **Why `CONTEXT_RECENCY`.** The route runs the ladder only with it on, and
+  only the dated tool prints how a hit matched and the "Where else" line.
+  With it off, the rule would name lines that the answer does not print. So
+  an org of `FIND_ORGS` with it off gets `resolve_name` and no rule.
+- **Two texts differ.** The docstring of `search_company` says "put one name
+  in each call". The rule says to call it once, with all the words. The
+  slice kept the docstring, because every org reads it.
 
 ### 5.5 The harness checks a "not found" claim
 
@@ -570,6 +863,183 @@ it. Such an answer needs a `search_company` answer in the same turn, with pass
 search with all the words.
 The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 (D-FIND-8).
+
+**As built (FIND-7, task 3244).**
+
+- **The home.** `CheckClaims` in `acb_skills/answer_check.py` is a second
+  chat middleware on the one provider, `AnswerCheckProvider`. The one seam,
+  `_tool_injection._apply_answer_check`, attaches it to an agent whose own
+  tools hold `search_company`. A spawn child gets no check. It sits inside the
+  number check, so it reads the model's own text before a note joins it.
+- **Only an org of `FIND_ORGS`.** Pass 2 exists only for such an org, so the
+  seam attaches the check only there. It asks
+  `gateway.retrieval.find.find_allowed`, the one reader of `FIND_ORGS`, for
+  the org of the run binding. No org, or a fault of the reader, reads as off.
+  For any other org the seam adds no middleware and writes no log line, as
+  with the flag `off`.
+- **The final answer only.** The check reads a model response that calls no
+  tool. A step that calls a tool is no answer, because the run goes on.
+- **The mark of pass 2.** `company_search_tools.ran_second_pass` is the one
+  reader, beside the code that writes each line. A line of rung 2 starts with
+  "Each word alone:". A line of rung 3 starts with "Near spellings:" or
+  "No record holds «". A trace counts too, because the explain mode runs
+  each rung.
+- **No record can fake the mark.** The tool folds each line break of a
+  title, a hint, a snippet and the query, for each boundary of
+  `str.splitlines`. The "Tried:" line quotes the query, so the reader looks
+  for "Near spellings tried:" only after the quote of the query closes.
+- **Why not the log line.** `search.company.ladder` is a log line of the
+  gateway. The harness reads only the text of the tool answer.
+- **The matcher.** `not_found_claim` has 7 rules with closed codes:
+  `no_such`, `could_not_find`, `no_record_of`, `there_is_no_named`,
+  `does_not_exist`, `found_nothing` and `not_in_place`. Each rule needs a
+  record noun from a closed list, or a name. A name has a capital letter or
+  a digit on each word, or it starts with a quote mark.
+- **What the matcher reads as no claim.** The tests hold each form below,
+  and the matcher reads no other form as no claim.
+  - A question, a condition ("if", "unless", "whether"), a quote, a quoted
+    block and code.
+  - A preposition or a list word between "find" and the noun: "any errors
+    in the invoice", "any overdue tasks", "any duplicate contacts".
+  - Reported speech, when a person is the subject right before the verb:
+    "Priya replied that there is", "Ravi says he could". A tool or a store as
+    the subject keeps the claim: "The CRM says there is no such order".
+  - The state of one record right before the claim: "The invoice shows no
+    record of". A store keeps the claim: "Our records show no record of".
+  - A record that the answer makes, for the rule `does_not_exist` only:
+    "does not exist yet", "did not exist, so I created it".
+  - A list filter right after the claim: "no matches for your filter".
+- **The bounded work.** The matcher runs on the event loop of the gateway.
+  It reads the first 20,000 characters of an answer (`MAX_CLAIM_CHARS`), and
+  each quote is 400 characters at most (`MAX_QUOTE_CHARS`). Each regex runs
+  once over a sentence. So the cap of 20,000 characters bounds the work. On
+  2,000,000 characters of each shape of the reviews, the best of 3 calls
+  took at most 0.25 s of CPU here.
+- **The flag.** `FIND_CLAIM_CHECK` takes `off`, `shadow` or `on`. The flag
+  is global, but the check acts only for an org of `FIND_ORGS`.
+  `acb_common.settings.find_claim_check_mode` is its one reader. It is not a
+  `*_ORGS` or `*_MODES` key, so a change needs a restart.
+- **`shadow`.** The check writes at most one `answer_check.claim` line for a
+  run, and changes nothing. The outcome is `shadow_miss` or `shadow_pass`.
+- **`on`.** The check holds each answer once any find tool of §5.2 or §5.3
+  answered in the run (`FIND_TOOLS`). A claim with no pass 2 gets one more
+  model request, with the fixed text `CLAIM_RETRY_NOTE`. After it, the answer
+  goes as it is. An app's search tool alone (`search_crm`, `query_inbox`,
+  `find_tasks`, `crm_list_records`, `find_contact`) has no pass 2, so a claim
+  after it alone gets the retry too. The planner decided this on task 3244:
+  §5.5 binds.
+- **A failed retry.** When the one more request raises, the member reads the
+  held draft, as with the check `off`. The line says `retry_failed`. A
+  cancel is not caught, so it stops the run as before. The failed request
+  still spends the one retry of the run. So the number check then adds its
+  note, and it makes no request of its own.
+- **The one retry.** NUM-3 and HRD-13 are not built. So the check shares
+  `RunLedger.retried` with the number check of CRM-Q29. The check that
+  finds a fault first spends it. A later claim logs `retry_spent`.
+- **The log line.** `answer_check.claim` holds `mode`, `outcome`, `rule`,
+  `searches`, `finds` and `armed`. `finds` counts the results of every find
+  tool of §5.2 and §5.3. `armed` is true when `search_company` or
+  `resolve_name` answered before the claim, so the retry is a fair request to
+  run pass 2. It is false when only an app's search tool ran, or none
+  (`finds` 0). The line holds no word of the answer, of a record or of the
+  member. The run context adds the run id.
+- **Off.** With the flag `off`, and for an org off `FIND_ORGS`, the seam
+  attaches what it attached before. The log line `executor.answer_check_on`
+  keeps its fields. Fence: `tests/unit/test_answer_not_found.py`.
+
+**The limits of FIND-7.**
+
+1. The matcher reads English only.
+2. The matcher reads the first 20,000 characters of an answer. It does not
+   read a claim after them. It reads a quote of more than 400 characters as
+   prose, and not as a quote.
+3. The matcher misses these claims, and the tests keep each miss:
+   - "Sharath has no orders" and "I could not find anything like that
+     order".
+   - "Unfortunately, no order for Sharath turns up in the records".
+   - "Your inbox has no mails from Sharath" and "Our records show no order
+     for Sharath".
+   - A name in lower case, such as "nuropeak in the CRM".
+   - "Sharath is not in the CRM yet" and "Sharath is not in the CRM or the
+     inbox". The rule `not_in_place` needs the clause to end after the place.
+   - A claim in a question, in a condition, and in reported speech with a
+     person as the subject.
+4. The matcher does not read "no mention of" or "no trace of". A summary of
+   a mail uses them for what the mail holds.
+5. The matcher reads these sentences as a claim, a false positive. The
+   tests keep each one.
+   - An empty list: "I could not find any tasks for this week", "I could
+     not find any tasks due today", "No results for this week".
+   - Reported speech in other forms: "Priya replied: we could not find the
+     payment", "In his mail, Ravi asks why he could not find the order",
+     "The client mentioned that the deal does not exist".
+   - More reported speech: "Ravi's mail says that the order does not exist",
+     "According to Ravi, there is no such order", "The customer could not
+     find the invoice", "Mr. Rao could not find the invoice".
+   - Reported speech that the rule does not see, because no person and verb
+     of speech come right before the claim: "Ravi: I could not find the
+     invoice", "Ravi wrote back and could not find the invoice", "Your note
+     says you could not locate the shipment".
+   - The state of a record in other forms: "No record of a payment yet, so
+     the invoice is open", "There is no record of a payment on this invoice".
+   - A word that names no record: "I could not find Settings", "Python is not
+     in the system", "PDF is not in the inbox", "I found nothing for Q4".
+   - A match that is no record: "I could not find a match between the two
+     invoices".
+   - An old fault that the answer reports: "Earlier I could not find the
+     order, but here it is".
+6. The matcher reads "I could not find the order, so I created it" as a
+   claim. The same is true for a lead. The new record may be a second copy.
+7. The check reads the text of the answer, not the text of a card.
+8. Pass 2 shows no line for a query of one word whose near lookup found no
+   name. So the check fires after such a search.
+9. With `CONTEXT_RECENCY` off, the route returns after pass 1. The plain
+   tool then shows no mark. See `retrieval/company.py`, the return before the
+   words alone. So in `on`, each claim after a search takes the retry, and no
+   claim can pass. On production `CONTEXT_RECENCY` is true: the planner read
+   it on the box at 08:40 UTC on 2026-11-17.
+10. Pass 2 does not run when the first pass has a hit with every content
+    word, or for a query with an operator. With `FIND_ORGS` off, it runs only
+    when the first pass finds no hit. In each case the check fires on a
+    claim.
+11. In `on`, the check holds no answer before the first find result of the
+    turn. A claim with no find tool at all streams as it is, and the check
+    logs `unheld_miss` with `finds` 0. `shadow` logs it as `shadow_miss` with
+    `finds` 0. The planner accepted this gap: such an answer comes with no
+    search at all.
+12. In `on`, after the first find result of a turn, the member sees each
+    later answer only when the model has drafted all of it. The text does not
+    stream. This is true for each answer, not only for a claim.
+13. A search of a sub-agent does not count for the run of its parent.
+14. The check does not compare the words of the search with the words of the
+    member. Any `search_company` answer of the run that shows pass 2 passes.
+15. `shadow` logs no text. So the line cannot tell a false positive from a
+    true miss. `armed` and `finds` show which claims came after a lookup.
+16. In `on`, a claim after `resolve_name` alone always takes the retry. A
+    `resolve_name` answer never shows pass 2, so it cannot pass the check.
+    The cost is one more model request in each such turn, and one more
+    search when the model obeys the retry text.
+17. In `on`, a true empty list after an app's search tool costs the retry,
+    for example "I couldn't find any tasks due today" after `find_tasks`. The
+    line then says `armed` false. The planner accepted this cost, and the
+    owner reads 20 shadow lines before the flip (decision 1).
+18. The check acts only for an org of `FIND_ORGS`. In any other org it adds
+    nothing, in each mode.
+
+**Decisions for the owner before `on`.** The planner decided these on task
+3244, and the owner can change them.
+
+1. **Read 20 shadow lines before the flip.** Read 20 `answer_check.claim`
+   lines with their turns, from the HathiLabs org only, with no chat of a
+   customer. Count the false holds, and write the count on task 3244. With
+   more than 2 false holds in 20, do not flip to `on`.
+2. **`CONTEXT_RECENCY` on production is true.** The planner read it on the
+   box at 08:40 UTC on 2026-11-17. On that box, `FIND_ORGS` and
+   `FIND_CLAIM_CHECK` are not set, so both are off. Limit 9 does not apply
+   there.
+3. **The precision of the matcher.** Shadow cannot measure it, because the
+   line holds no text (limit 15). The planner accepted this. Decision 1
+   answers it.
 
 ## 6. Privacy and tenancy
 
@@ -587,6 +1057,63 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 - **Past chats are the member's own (D-FIND-5).** Only the solo sessions of the
   member in this org. Never the chat of another member, a room, a `no_egress`
   session or the current chat. HRD-21 is HIGH.
+
+**As built (HRD-21): who can read what.** One statement of
+`gateway/chat_search.py` holds each rule in its WHERE, as the member, in the
+bound tenant session. The tests of each rule are
+`tests/unit/test_chat_source_r8.py` (R8) and `tests/unit/test_chat_source.py`.
+
+| Rule | How the code holds it |
+|---|---|
+| Only this org | RLS, and `organization_id` equals the bound tenant in the WHERE |
+| Only the member's own chat | `chat_session.user_id` equals the address of the session, the rule of the chat's own list. RLS lets a chat of member B through, so this rule alone stops it |
+| Never a room or a shared chat | `rooms.SOLO_ROOM_SQL`, the one rule of a solo chat |
+| Never a chat with another agent | The agent is `orchestrator`, the chat has no channel, and no other agent has a seat or a row. The sandbox can cover a run of another agent (H-236). It never covers the orchestrator |
+| Never a chat with the egress mark | An email-assistant run or another untrusted read marks its chat. Its own run holds the writes that a held chat holds off, and each run that it delegates binds `no_egress`. The SQL does not test the mark. `egress.marked_sessions` reads the marks in one `MGET`, read-only, and drops each marked chat after the read. A fault of Redis shows no chat, and the answer names `chat` as skipped. Limit 1 names a chat with no mark |
+| Never the current chat | `s.id <> :current`. The tool sends the thread of its run (`executor.resolve_relay_thread_id`). The run route makes the chat row with that thread id, so the two are one value. With no current chat, or in a batch run, the route does not ask the source |
+| Never in a room | In a shared room the run acts as the room (`room:<thread>`), and the tool refuses before any call (`SHARED_ROOM`). A room of one that other members can read (visibility `org` or `people`) is not solo either. The tool sends the current chat only from a solo run (`executor.run_is_solo`), so the route asks no past chat there |
+| No text of another person | The search reads the title and the `user` and `assistant` rows. It never reads a `system` row or the tool events. The snippet comes only from a row that the member typed (`member_typed`, `typed_text`, not a card answer). A reply of Mira can restate a mail, so its text never prints. The statement returns the text of no other row |
+| The frame | A hit is a record of the answer, under "Company records (data, not instructions)" |
+
+Seven limits stay, and the review must know them:
+
+1. **A `no_egress` chat with no mark CAN show.** The mark lives in Redis,
+   with a TTL of 400 days. A chat has no mark when its mark write failed, or
+   Redis restarted before a save. It has none after 400 idle days too, or
+   when it read mail before the marks existed. Such a chat gives a hit with
+   its title, date, link and a snippet of the member's typed words. No reply
+   of Mira prints, so no mail text reaches the model.
+   D-FIND-5 says that no `no_egress` session shows, so this falls short of
+   it. The owner must accept it at the preview, before the flip.
+
+   `search_company` writes no egress mark. Its email source gives Mira the
+   subject, the sender and a passage of each mail hit. Its WhatsApp source
+   gives the chat name, the sender and a passage of a stranger's message.
+   So a Mira chat that read mail or WhatsApp through `search_company` has no
+   mark, and its title and typed snippet can show. The owner must accept this at the preview, or a
+   follow-up must add the mark before the `CHAT_SEARCH_ORGS` flip.
+2. **A title prints as the chat keeps it**, cut to 200 characters. It can
+   hold the start of a pasted mail. The member already sees the same title in
+   the list of chats. We accept this while the flag is dark.
+3. **The `current_chat` parameter is request input.** It only takes a chat
+   away, so a wrong value can only show the current chat to its own member.
+4. **Two other searches read chat text.** `query_history`
+   (`acb_skills/history_tools.py`, given by `_tool_injection.py`) matches the
+   text of each row of each room that the member can read. It checks no mark,
+   and it returns the text of each reply. CO-3 of `chat_organization.md`
+   plans one search of chats and files. CO-3 must reuse or replace
+   `gateway/chat_search.py`, so that no third chat reader exists.
+5. **The `miss` of the log line and `near_report` read the past chats.**
+   While `find.ABSENCE_CLAIMS` is off, no line reads them as a claim. The
+   slice that sets it on must decide how a past chat counts.
+6. **The cost before the cut.** `ONLY_AGENT_SQL` reads each row of each chat
+   that it tests, before the cut to 100 chats. Each word arm runs a regular
+   expression that no index serves. Run EXPLAIN ANALYZE on a large chat
+   history before the flip.
+7. **A word with an accent finds less.** The whole-word pattern ends a word
+   only at an ASCII mark or a few typographic marks. Any other character stays
+   inside a word, so the SQL never finds more than `find.coverage` counts.
+   The cost: "muller" does not find «Müller», and "Müller" finds no chat.
 - **An outside source names whose access it used** (D98). It stores nothing
   and logs no word.
 - **The answer is data.** It keeps the header and the quotes of KR-2, and the
@@ -621,7 +1148,7 @@ The check shares the one retry of NUM-3 and HRD-13. It logs in `shadow` first
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
 | `FIND_ORGS` | empty | `matched_by`, the coverage order, rung 3 in the engine, rung 4, the honest zero lines, the explain mode, `resolve_name` and the standing rule. In the engine it acts only with `CONTEXT_RECENCY` on. It also opens the sender near spelling of `query_inbox` (HRD-18b), which needs no `CONTEXT_RECENCY`. Empty gives the answer of KR-ZERO, byte for byte. It reloads with no restart (`docs/flag_reload.md`) | AGENT-SAFE. It spends nothing. Flip it under the `enforcement-flip` grant, after the FIND-1 eval |
-| `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21) | The owner sees the preview before the flip (task 3225) |
+| `CHAT_SEARCH_ORGS` | empty | Rung 6, the `chat` source (HRD-21). Empty gives the answer of before HRD-21, byte for byte, and the 422 of before for `apps=chat` and each other unknown app. Its one reader is `find.chat_search_named`. It reloads with no restart (`docs/flag_reload.md`) | The owner sees the preview before the flip (task 3225). Owner-only in `env_guard` |
 | `FIND_OUTSIDE_ORGS` | empty | Rung 7 (FIND-10) | **OWNER-GATE.** A read of a third party |
 | `FIND_CLAIM_CHECK` | `off` | The "not found" check of §5.5: `off`, `shadow` or `on` | `shadow` is AGENT-SAFE. `on` is an `enforcement-flip` after 7 days of shadow |
 | `KNOWLEDGE_EMBED`, `EMAIL_SEMANTIC_SEARCH_ENABLED`, `GRAPH_SEARCH_ORGS` | As built | Unchanged | Unchanged |
@@ -656,10 +1183,11 @@ past chat, and HRD-21 is HIGH with an owner preview.
 | **FIND-3** (built) | 3240 | 1 | Rung 4: the `related` and `open` abilities of the CRM, people and email sources, and the step on the best 5 hits, 3 for each hit, in 1.0 s. It builds the step and `Source.open` that KG-6 names. KG-6 then adds the `kb_links` edges to the same step | "Neuropeak order" finds the deal, and the thread from the address of its lead, in one call. A contact's mail in the mailbox of another member never shows. A record that the member cannot open leaves no trace. Org B never shows | `test_find_related.py`, new. `test_find_related_r8.py`, new | HIGH · AGENT-SAFE | FIND-2 |
 | **FIND-D2** | 3245 | 2 | The demo of rung 2 (§9.1) | The owner uses it on production | none | demo | FIND-4 to FIND-7, HRD-21 |
 | **FIND-4** (built) | 3241 | 2 | The honest zero and "Where else" of §3.6, the explain mode of §3.7, and the log line | Each line comes from code, from a closed list. No line names a record that the member cannot open. `explain=true` gives the trace with no snippet. The log line holds no word | `test_find_honest_zero.py`, new | STANDARD · AGENT-SAFE | FIND-2, HRD-4, HRD-18b |
-| **HRD-21** | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a `no_egress` session and the current chat never show. The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
-| **FIND-5** | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
-| **FIND-6** | 3243 | 2 | The family: the zero line of `search_crm`, `query_inbox` and `find_tasks`, the standing rule of §5.4, failure text on the core find tools, and `resolve_person` out of the core list after parity | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." The preamble goldens move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
-| **FIND-7** | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
+| **HRD-21** (built) | 3225 | 2 | Rung 6: the `chat` source of `company_context.md` §8.2, the first part of CX-4, with no digest. It reads the titles and messages of the member's own solo sessions in this org. A hit gives the title, the date and a link. Item 3 of its task, the next places to try, moves to FIND-4 | Member B never sees a chat of member A. A room, a chat with the egress mark and the current chat never show. A `no_egress` chat with no mark can show (§6, limit 1). The key is `chat` | `test_chat_source_r8.py`, new. `test_company_search_sources.py` | HIGH · The flip of `CHAT_SEARCH_ORGS` waits for the owner's preview | KR-ZERO, FIND-2 |
+| **FIND-5** (built) | 3242 | 2 | `resolve_name` and `GET /search/names`, over the `near` ability of each source | "Sharat" gives the lead, the contact and the mail sender, each with its link and its match. A near name says so. The tool refuses with no member, and answers each failure as text | `test_resolve_name_tool.py`, new. `test_find_near_visibility_r8.py` | STANDARD · AGENT-SAFE | HRD-18b |
+| **FIND-6** (built, `resolve_person` stays until parity, §5.3) | 3243 | 2 | The family of find tools. It adds the zero line of `search_crm`, `query_inbox` and `find_tasks`, and the standing rule of §5.4. It adds failure text to the core find tools. After parity, `resolve_person` leaves the core list | With `FIND_ORGS` on, the core list holds `search_company` and `resolve_name`. Each zero of an app search tool ends with the pointer. No find tool answers "Error: Function failed." Its fences move in the same PR | `test_find_tools.py`, new. `evals/trajectories`, `test_native_session_persistence.py` | STANDARD · AGENT-SAFE | FIND-4, FIND-5 |
+| **FIND-6b** | 3665 | 2 | `GET /search/names` gives the kind `member`, the saved aliases (tier 1, `matched_by` alias) and the address of a person row. One release later, `resolve_person` leaves `core_tools` and the pack cap gets its place back (D-FIND-3) | A name of a colleague gives the member, the alias match and the address, as `resolve_person` does. The pins of the gaps in `test_find_tools.py` change | `test_find_tools.py`, `test_resolve_name_tool.py` | STANDARD | FIND-6 |
+| **FIND-7** (built) | 3244 | 2 | The "not found" check of §5.5 in `answer_check.py`, behind `FIND_CLAIM_CHECK` | In `shadow`, a "no such order" answer with no pass 2 in the turn logs one miss, with no text. In `on`, it gets one more pass, which shares the retry of NUM-3 and HRD-13 | `test_answer_not_found.py`, new | HIGH, the run loop · `on` is an `enforcement-flip` | FIND-4 |
 | **FIND-D3** | 3249 | 3 | The demo of rung 3 (§9.1) | The owner uses it on production | none | demo | FIND-8 to FIND-10 |
 | **FIND-8** | 3246 | 3 | `contributes.search` made real: one entry in each shell manifest of an app with a source, `load_search()` in `shell_manifest.py`, the lockstep of §4.4, `BAR_APPS` and `TAU_DAYS` read from the manifest, and the `building_blocks.md` §3.1 row set right | No behaviour changes: the search suites pass unchanged. A source with no entry, or an entry with no source, fails the fence | `test_search_contributions.py`, new. `test_shell_manifests.py`, `test_shell_search.py` | STANDARD · AGENT-SAFE | FIND-3, HRD-18b |
 | **FIND-9** | 3247 | 3 | The Studio source of §4.5: one source for each install that declares `contributes.search`, over the object query of C2a, as the member | A near name finds a Studio record. A member outside the scope of the install gets nothing. Org B gets nothing | `test_find_studio_source_r8.py`, new | HIGH · AGENT-SAFE. It follows `STUDIO_ORGS` | FIND-8 |
@@ -720,6 +1248,9 @@ uv run python -m evals.search_company.run --fixture
 
 # Each slice adds its own fence from §9.2, for example FIND-2
 uv run pytest tests/unit/test_find_matched_by.py -q
+
+# FIND-7, the "not found" check, with the number check that shares its retry
+uv run pytest tests/unit/test_answer_not_found.py tests/unit/test_crm_answer_check.py -q
 ```
 
 ## 13. What this spec does not own

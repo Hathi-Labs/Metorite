@@ -345,3 +345,158 @@ def test_the_chat_draws_each_text_as_a_draft_being_changed(act: str) -> None:
     assert 'revised: { icon: "PencilLine", label: "Draft being changed" },' in cards
     lines = CARD_OUTCOMES_TS.read_text(encoding="utf-8")
     assert "const at = t.indexOf(row.next, head.length);" in lines
+
+
+# ═══ HRD-8b: the link keeps the act kind and the Cc, and the next card says what changed ═══
+#
+# ``redraft.link_fields`` links a new card to the card that a chat message
+# revised. HRD-8b adds ``act`` and ``cc`` to the link and ``changed`` to the
+# answer: the act kind, the To and the Cc that differ from the revised card.
+# The default (task 3459, until the owner answers): a card with a changed act
+# or Cc STILL takes the link (``revises``, ``draft``) and carries ``changed``.
+# Each mutation names the tests that turn red (R7):
+#
+# 17. a link written with no act or Cc: ``test_the_link_keeps_the_act_and_the_cc``.
+# 18. a ``changed`` that includes a part that is equal, or that claims a part of
+#     an old link that has none: ``test_changed_since_*``.
+# 19. a changed Cc that drops the link: ``test_a_changed_cc_still_takes_the_link``.
+# 20. a ``changed`` that never reaches the form: ``test_the_form_carries_changed``.
+#
+# Not here: a forward and a reply card (HRD-8b-2), and the words of the line
+# (``redraftCard.test.ts``). The Redis case of the real order skips in pr-check
+# until task 1856.
+import json  # noqa: E402
+
+from gateway.routes.email.automation import redraft as _rd  # noqa: E402
+
+from tests.unit import _held_card_fakes as F  # noqa: E402
+from tests.unit.test_email_redraft_snapshot import env  # noqa: E402, F401  (a fixture, by name)
+
+
+def test_act_of_reads_the_kinds_that_the_revise_knows():
+    assert _rd.act_of({"kind": "new-mail"}) == "new"
+    assert _rd.act_of({"kind": "new"}) == "new"
+    assert _rd.act_of({"kind": "forward"}) == ""  # joins in HRD-8b-2
+    assert _rd.act_of({}) == ""
+
+
+def test_changed_since_names_only_what_differs():
+    link = {"act": "new", "to": ["a@x.test"], "cc": ["c@x.test"]}
+    assert _rd.changed_since(link, act="new", to=["A@x.test"], cc=["c@x.test"]) == {}
+    out = _rd.changed_since(link, act="forward", to=["a@x.test", "b@x.test"], cc=[])
+    assert out == {"act": {"was": "new", "now": "forward"},
+                   "to": {"added": ["b@x.test"], "removed": []},
+                   "cc": {"added": [], "removed": ["c@x.test"]}}
+
+
+def test_changed_since_claims_nothing_for_a_part_that_an_old_link_lacks():
+    old = {"to": ["a@x.test"]}  # a link written before HRD-8b
+    assert _rd.changed_since(old, act="new", to=["a@x.test"], cc=["c@x.test"]) == {}
+    assert _rd.changed_since(old, act="new", to=["a@x.test", "b@x.test"], cc=[]) == {
+        "to": {"added": ["b@x.test"], "removed": []}}
+
+
+async def test_the_link_keeps_the_act_and_the_cc(env):  # noqa: F811 — a fixture, by name
+    from tests.unit.test_email_redraft_snapshot import THREAD, _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    links = [json.loads(v) for k, v in env["redis"].keys.items() if ":card_revised:" in k]
+    assert len(links) == 1
+    assert links[0]["act"] == "new" and links[0]["cc"] == [F.COLLEAGUE]
+    assert links[0]["card_id"] == old["card_id"] and THREAD
+
+
+async def test_a_card_with_the_same_people_says_nothing_changed(env):  # noqa: F811 — a fixture, by name
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    new = await _card()
+    assert new["revises"] == old["card_id"] and "changed" not in new
+
+
+async def test_a_changed_cc_still_takes_the_link(env):  # noqa: F811 — a fixture, by name
+    """The default of task 3459: the card takes the link and says what changed."""
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    new = await _card(cc=[F.STRANGER])
+    assert new["revises"] == old["card_id"] and new["draft"] == 2
+    assert new["changed"] == {"cc": {"added": [F.STRANGER.lower()], "removed": [F.COLLEAGUE]}}
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:new-mail-card:{new['card_id']}"])
+    assert rec["changed"] == new["changed"]
+
+
+async def test_a_card_to_other_people_still_takes_no_link(env):  # noqa: F811 — a fixture, by name
+    """The To-overlap rule stays: a changed To with no shared address is its own card."""
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    new = await _card(to=[F.OTHER])
+    assert "revises" not in new and "changed" not in new
+
+
+async def test_the_form_carries_changed(env):  # noqa: F811 — a fixture, by name
+    from tests.unit.test_email_redraft_snapshot import _held, _revise
+
+    old = await _held()
+    await _revise(old["card_id"])
+    new = await _held(cc=[F.COLLEAGUE])
+    assert new["form"]["revises"] == old["card_id"]
+    assert new["form"]["changed"] == {"cc": {"added": [F.COLLEAGUE], "removed": [F.STRANGER.lower()]}}
+
+
+def test_the_form_check_keeps_the_shape_of_changed_and_refuses_the_rest():
+    from acb_skills.ask_tools import _new_mail_changed
+
+    ok = {"act": {"was": "new", "now": "forward"},
+          "to": {"added": ["a@x.test"], "removed": []},
+          "cc": {"added": [], "removed": ["c@x.test"]}}
+    assert _new_mail_changed(ok) == ok
+    assert _new_mail_changed({"cc": {"added": [], "removed": []}}) == {}  # nothing differs
+    for bad in (
+        {}, "x", {"subject": "different"},
+        {"act": {"was": "new", "now": "weird"}},
+        {"act": {"was": "new"}},
+        {"to": {"added": "a@x.test", "removed": []}},
+        {"to": {"added": [3], "removed": []}},
+        {"cc": {"added": ["a" * 400], "removed": []}},
+        {"cc": {"added": ["a@x.test"]}},
+    ):
+        with pytest.raises(ValueError):
+            _new_mail_changed(bad)
+
+
+def test_the_agent_copies_changed_into_the_plain_new_mail_form():
+    """The plain card is the common path: ``_new_mail_form`` copies ``changed`` with the link.
+    Mutation: delete the copy in ``agents._new_mail_form`` -> red."""
+    from acb_skills.ask_tools import clean_reply_form
+
+    changed = {"cc": {"added": ["x@y.test"], "removed": []}}
+    prep = {"to": [F.KNOWN], "cc": [F.COLLEAGUE, "x@y.test"], "bcc": [], "subject": "Rates",
+            "body": "Hi", "revises": "a" * 32, "draft": 2, "changed": changed}
+    form = agents._new_mail_form(prep, [])
+    assert form["revises"] == "a" * 32 and form["changed"] == changed
+    assert clean_reply_form(form)["changed"] == changed
+    # No link, no `changed`: the tool copies it only with the link it belongs to.
+    assert "changed" not in agents._new_mail_form({**prep, "revises": ""}, [])
+
+
+def test_the_form_check_refuses_changed_with_no_link():
+    from acb_skills.ask_tools import clean_reply_form
+
+    form = {**_plain_form_for_changed(), "changed": {"cc": {"added": ["x@y.test"], "removed": []}}}
+    with pytest.raises(ValueError):
+        clean_reply_form(form)
+    ok = clean_reply_form({**form, "revises": "a" * 32, "draft": 2})
+    assert ok["changed"] == {"cc": {"added": ["x@y.test"], "removed": []}}
+
+
+def _plain_form_for_changed() -> dict:
+    people = {"to": [F.KNOWN], "cc": []}
+    return {"kind": "new", "mailbox": "Work", "subject": "Rates", "body": "Hi",
+            "recipients": {"reply": people, "reply_all": people}, "files": [],
+            "notices": [], "note": ""}

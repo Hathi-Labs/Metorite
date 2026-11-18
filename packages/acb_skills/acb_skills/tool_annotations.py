@@ -172,6 +172,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-FIND FIND-5: one name in every app (`company_search_tools.py`). It
+    # reads `GET /search/names` as the member, and nothing leaves the platform.
+    "resolve_name":          {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-63 PZ-5: a name to one colleague (`profile_tools.py`). It reads
     # `GET /auth/me/assistant-profile/resolve-person` as the member, and
     # nothing leaves the platform.
@@ -269,6 +272,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
     # byte-identical.
     "search_company",
+    # WS-FIND FIND-5: the name lookup only reads, and only the orchestrator
+    # holds it, for an org of FIND_ORGS. So every risk block stays the same.
+    "resolve_name",
     # WS-61 KB-4a: the two Knowledge reads, on the same terms.
     "read_page",
     "list_spaces",

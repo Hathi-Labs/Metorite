@@ -833,6 +833,10 @@ class TestLayerBRefusesPlatformKeys:
         "TOOL_SEARCH_ORGS",
         # WS-FIND FIND-2: the orgs of the hit shape. Owner-only (work_plan.md §6 D4).
         "FIND_ORGS",
+        # WS-FIND HRD-21: the orgs of the past chats. Owner-only (find_engine.md §8).
+        "CHAT_SEARCH_ORGS",
+        # WS-FIND FIND-7: the "not found" check. Owner-only (D-FIND-8).
+        "FIND_CLAIM_CHECK",
         # WS-67 OA-9b: the sub-agent orgs. Owner-only (work_plan.md §6 D4).
         "SPAWN_SUBAGENTS_ORGS",
         # WS-63 PZ-32: the card writes of the profile, by its prefix.

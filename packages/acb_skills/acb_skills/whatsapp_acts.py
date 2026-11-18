@@ -238,6 +238,13 @@ def card_facts(**facts: Any) -> None:
         call.facts = dict(facts)
 
 
+def drop_card_facts() -> None:
+    """Forget the facts that :func:`card_facts` bound for the next card. A tool
+    calls it when the card it bound them for is refused before it goes out
+    (HRD-22b item 5), so they never reach the digest of a later card."""
+    _NEXT_FACTS.set(None)
+
+
 def take_card_facts() -> dict[str, Any] | None:
     """The facts that :func:`card_facts` bound for the next card of this
     frame, or None. It clears them, so they never reach a later card.

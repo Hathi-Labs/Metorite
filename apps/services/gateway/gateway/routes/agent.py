@@ -3914,6 +3914,16 @@ async def _resume_from_row(
         await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
     except HTTPException:
         return None
+    # HRD-22b (review, P1): the claim of the stored call reads Redis only
+    # (`claim_act`), and a stall of Redis leaves no SPENT mark. So Postgres is
+    # asked first: when a twin of this card was approved after it was asked,
+    # in any thread, or when nobody can say, the old path takes the answer and
+    # a card shows again (the safe side). No row has moved yet.
+    from acb_skills.late_approve import twin_ran
+
+    if await twin_ran(org, me, row):
+        _log.info("agent.resume_twin_ran", request_id=req.request_id[:12])
+        return None
     from orchestrator.run_cap import admit_member_run, release_member_slot
 
     admission = await admit_member_run(
@@ -4637,13 +4647,20 @@ async def run_agent_async(
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:
+        from acb_common.no_person import no_person_scope  # noqa: PLC0415
+
         try:
             # H-201 part 3: the caller's tenant, never the thread's (see
             # run_agent_sync).
-            await run_agent(agent, req.payload, run_id=run_id,
-                            thread_id=req.thread_id, model=req.model,
-                            organization_id=getattr(user, "organization_id", None),
-                            session_user=_session_member(user))
+            # MCP-NC1 review: the caller has the 202 and left, so no person
+            # watches this run (AUTO-7a). The mark makes the MCP gate count
+            # no member, so a write of an outside app is refused, never run
+            # with no card, and no card waits for an answer.
+            with no_person_scope():
+                await run_agent(agent, req.payload, run_id=run_id,
+                                thread_id=req.thread_id, model=req.model,
+                                organization_id=getattr(user, "organization_id", None),
+                                session_user=_session_member(user))
         except Exception as exc:  # noqa: BLE001
             _log.error(
                 "agent.async_run_error",

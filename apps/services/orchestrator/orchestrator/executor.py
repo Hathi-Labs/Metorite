@@ -1283,6 +1283,142 @@ def _inherited_chat_constraints(parent: Any) -> dict[str, Any]:
     return {cc.CONSTRAINTS: tuple(items)} if items else {}
 
 
+# ── The item in focus of a chat (HRD-11a, chat_failure_modes.md §4.5 E1) ───
+# ``acb_skills.chat_focus`` keeps the email or the Projects task that the chat
+# read or acted on last. The read of the stored item starts beside the load
+# (:class:`_EarlyReads`), the prime binds it into THIS run, and the sync
+# builder shows it after the OA-4 block. Dark behind ``CHAT_FOCUS_ORGS``.
+# Fences: ``tests/unit/test_focus_item.py`` and
+# ``evals/trajectories/test_focus_item_trajectory.py``.
+
+
+def _chat_focus_slot(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> tuple[str, str, str] | None:
+    """``(org, session, member)`` of a run that may read and write the item
+    in focus, or None.
+
+    The gates of the briefing (:func:`_briefing_slot`): only the
+    orchestrator, in the member's own web chat. Not a delegated run, not a
+    batch run (WhatsApp, Q5), and a run that shows cards. The org is the run's
+    tenant and must be the bound one, and ``CHAT_FOCUS_ORGS`` must name it.
+    The member is the verified member of a solo room (:func:`_email_ctx_member`).
+    Each input comes from the run boundary, never from the payload (R5).
+    """
+    if agent_name != _EMAIL_CTX_AGENT or delegated or batch_thread or not shows_cards:
+        return None
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return None
+    try:
+        from acb_skills import chat_focus
+    except ImportError:
+        return None
+    if not chat_focus.focus_on(org):
+        return None
+    member = _email_ctx_member()
+    if not member:
+        return None
+    return org, session, member
+
+
+async def _prime_chat_focus(
+    slot: tuple[str, str, str] | None, read: asyncio.Future[Any] | None,
+) -> None:
+    """Bind the item in focus of this chat into the run, or bind nothing.
+
+    *slot* is :func:`_chat_focus_slot` of this run, and *read* is the read
+    that :class:`_EarlyReads` started with it. The run binding must name the
+    verified member and this chat. The binding holds this run's id
+    (``chat_focus.binding``), so :func:`_chat_focus_block` and each write
+    of this turn read it, and a delegated run never does. A run with no
+    stored item still binds, so its tool calls can write one. Awaited once
+    per turn, after the artifact context binds. Never raises, apart from a
+    cancel of the turn.
+    """
+    if slot is None:
+        return
+    try:
+        from acb_skills import chat_focus
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+    except ImportError:
+        return
+    org, session, member = slot
+    ctx = artifact_context()
+    run_id = str(ctx.get("run_id") or "")
+    if not run_id or ctx.get("batch_thread") is True:
+        return
+    if str(ctx.get("member") or "").strip().lower() != member:
+        return
+    if str(ctx.get("session_id") or "") != session:
+        return
+    item = None
+    if read is not None:
+        with contextlib.suppress(Exception):
+            item = await read
+    derive_artifact_context(**chat_focus.binding(run_id, org, session, member, item))
+
+
+def _chat_focus_block(agent_name: str) -> str:
+    """The orchestrator's block of the item in focus, or ``""``.
+
+    It reads the run binding that :func:`_prime_chat_focus` set, and no
+    Redis. It checks the gates again: the agent, the flag of the run's org,
+    the verified member of a solo room, and the run id of the binding. So a
+    flag turned off drops the block at once. No exception escapes."""
+    if agent_name != _EMAIL_CTX_AGENT:
+        return ""
+    try:
+        from acb_skills import chat_focus
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        member = _email_ctx_member()
+        if not org or not member or not chat_focus.focus_on(org):
+            return ""
+        return chat_focus.orchestrator_block(
+            chat_focus.bound_focus(artifact_context(), member))
+    except Exception:
+        return ""
+
+
+async def _record_chat_focus(owner: str, ctx: Any, calls: list[dict[str, Any]]) -> None:
+    """Write the item in focus after the tool *calls* of *owner* (HRD-11a).
+
+    Only the calls write it, never the model's text. *ctx* is the context of
+    the run of the chat: the pack call's own, or the parent of a hand-off.
+    Only a run that holds its own binding writes (``chat_focus.open_binding``).
+    Never raises."""
+    if not calls:
+        return
+    try:
+        from acb_skills import chat_focus
+
+        await chat_focus.record_calls(owner, calls, ctx)
+    except Exception as exc:  # the item never costs the call
+        _log.warning("executor.chat_focus_unwritten", error=type(exc).__name__)
+
+
+def _without_focus_key() -> dict[str, Any]:
+    """The change that takes the binding of the item in focus out of a
+    derived run context, so a delegated run reads and writes none (HRD-11a,
+    done-when 7). A context with no binding needs no change, so a run with
+    the flag off keeps its context as it was."""
+    try:
+        from acb_skills.chat_focus import FOCUS_KEY
+        from acb_skills.write_artifact import artifact_context
+    except ImportError:
+        return {}
+    return {FOCUS_KEY: None} if artifact_context().get(FOCUS_KEY) is not None else {}
+
+
 # ── The briefing at the start of a chat (WS-63 PZ-34) ───────────────────────
 # ``personalization.md`` §15.4. The async prime builds the block, or reads the
 # stored copy, and binds it for THIS run only. The sync builder reads the run
@@ -1871,6 +2007,102 @@ def _celebration_line(agent_name: str, zone: str | None) -> str:
         return ""
 
 
+# ── The sent acts of this chat (task 3594, chat_organization.md §16.3) ──────
+# Run a8ad07f3 (2026-11-16): turn 2 did not see that turn 1 sent a mail, sent
+# it again, and then said that neither mail went. The async prime step reads
+# the last sent acts of this chat from the card record (``card_record.
+# sent_acts``), as the member, and binds them into the run. The sync context
+# builder states them, one fact line each, then one rule line. The block rides
+# the run context (instructions), never a stored message, and the persona
+# does not change. A fault, a timeout and the flag off all give no line, and
+# the turn runs as before. Fence: ``tests/unit/test_sent_record.py``.
+
+_SENT_ACTS_KEY = "sent_acts"
+#: The longest wait of a turn for the read. A slower read gives no line.
+_SENT_ACTS_TIMEOUT_S = 1.0
+
+
+async def _prime_sent_acts(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the sent acts of this chat into the run, or bind nothing.
+
+    Gates: a run that is not delegated and not batch, the run's own org, a
+    verified member, and ``CHAT_CARD_RECORD_ORGS`` for the org
+    (``card_record.record_allowed``). The run binding must name the member and
+    this chat. All of it comes from the run boundary, never from input (R5). A
+    chat that holds untrusted input still gets the line. Never raises, apart
+    from a cancel of the turn."""
+    _ = agent_name  # each agent of the member's own chat gets the line
+    if delegated or batch_thread:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member:
+        return
+    try:
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        from orchestrator import card_record
+
+        if not card_record.record_allowed(org):
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        if str(ctx.get("member") or "").strip().lower() != member:
+            return
+        acts = await card_record.sent_acts(org, session, member,
+                                           timeout_s=_SENT_ACTS_TIMEOUT_S)
+        if acts:
+            derive_artifact_context(**{_SENT_ACTS_KEY: (run_id, org, member, tuple(acts))})
+    except ImportError:
+        return
+    except Exception as exc:  # fail open: no line, the turn runs as before
+        _log.warning("executor.sent_acts_read_failed", error=type(exc).__name__)
+
+
+def _sent_acts_block(agent_name: str) -> str:
+    """The sent acts of this run, or ``""``. It reads the binding that
+    :func:`_prime_sent_acts` set, and no database. It checks the flag, the
+    org, the member and the run id again, so a delegated run never gets the
+    block of its parent, and a flag turned off drops it at once. No exception
+    escapes."""
+    _ = agent_name
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        from orchestrator import card_record
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or not card_record.record_allowed(org):
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_SENT_ACTS_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, acts = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        return card_record.sent_acts_text(list(acts))
+    except Exception:
+        return ""
+
+
 # ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
 # ``one_assistant_context.md`` §4.2.2 and §4.2.8. Layer (a) in a live run.
 # The read starts beside the load (:func:`_start_pack_turn`), the apply runs
@@ -2054,11 +2286,12 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
     provider and of an MCP server. Only the orchestrator, and never raises.
     The view comes from ``agent_with_providers``, as the loader's does.
 
-    HRD-1: the same view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
-    the one answer to a call of a tool that the run did not load. It goes
-    after each seam of ``_inject_agent_tools``, so its chat middleware runs
-    inside the hold, steer and number-check middleware, and rewrites the
-    messages that they pass on. Only the tier policy view comes later."""
+    HRD-1: the next view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
+    the one answer to a call of a tool that the run did not load, through the
+    one hook :func:`_unknown_tool_view`. It goes after each seam of
+    ``_inject_agent_tools``, so its chat middleware runs inside the hold,
+    steer and number-check middleware, and rewrites the messages that they
+    pass on. Only the tier policy view comes later."""
     if agent_name != _PACK_AGENT or not agents:
         return agents
     try:
@@ -2067,15 +2300,43 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
         if not isinstance(agents[0], Agent):
             return agents
         from acb_skills.tool_guard import LogRequestToolsProvider
+
+        from orchestrator._native_run_context import agent_with_providers
+
+        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+        # HRD-1: the answer to an unknown tool name, last, as before HRD-1b.
+        agents = _unknown_tool_view(agents, step=False)
+    except Exception as exc:  # a log never costs the turn
+        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    return agents
+
+
+def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
+    """*agents*, with the first one on a per-run view that carries
+    ``acb_skills.unknown_tool.UnknownToolProvider`` (HRD-1, HRD-1b).
+
+    The ONE hook of the answer to a call of an unknown tool name. The stream
+    run of the orchestrator (:func:`_log_request_tools_view`) and each batch
+    run (:func:`_assemble_batch_agents`) call it. A delegated agent, a worker
+    and a self-anneal retry run through the batch run, so they get it there.
+    The model then reads the HRD-1 text, and never MAF's own text. *step* is
+    True for a delegated run or a run with no chat: its text names no pack,
+    and it never asks a loader. A Copilot SDK agent is not a MAF ``Agent``,
+    so it gets no view. Never raises: a fault leaves MAF's text, as before."""
+    if not agents:
+        return agents
+    try:
+        from agent_framework import Agent
+
+        if not isinstance(agents[0], Agent):
+            return agents
         from acb_skills.unknown_tool import UnknownToolProvider
 
         from orchestrator._native_run_context import agent_with_providers
 
-        # HRD-1: the answer to an unknown tool name rides in the same view.
-        agents[0] = agent_with_providers(
-            agents[0], [LogRequestToolsProvider(agent_name), UnknownToolProvider()])
-    except Exception as exc:  # a log never costs the turn
-        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+        agents[0] = agent_with_providers(agents[0], [UnknownToolProvider(step=step)])
+    except Exception as exc:  # the better text never costs the turn
+        _log.warning("executor.unknown_tool_view_off", error_type=type(exc).__name__)
     return agents
 
 
@@ -2220,6 +2481,10 @@ class _EarlyReads:
       block drops its value, so the model sees nothing of it. Reading the
       toggle first would cost a sync DB read on the loop, which costs more
       than the read it saves (review of SPD-1 part 2, P2).
+    * ``focus`` is the stored item in focus of the chat (HRD-11a), one Redis
+      read. It starts only for a *focus_slot* (:func:`_chat_focus_slot`),
+      and :func:`_prime_chat_focus` awaits it. With ``CHAT_FOCUS_ORGS`` off
+      there is no slot, so no read starts.
 
     Each task copies the run's context when it starts, so it reads as the
     run's member and org, never a request field (R5). Nothing here writes
@@ -2228,19 +2493,24 @@ class _EarlyReads:
     await. Fence: ``tests/unit/test_early_reads.py``.
     """
 
-    __slots__ = ("crm_facts", "knowledge", "mailboxes")
+    __slots__ = ("crm_facts", "focus", "knowledge", "mailboxes")
 
     def __init__(
         self, knowledge: asyncio.Future[Any] | None = None,
         mailboxes: asyncio.Future[Any] | None = None,
         crm_facts: asyncio.Future[Any] | None = None,
+        focus: asyncio.Future[Any] | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.mailboxes = mailboxes
         self.crm_facts = crm_facts
+        self.focus = focus
 
     @classmethod
-    def start(cls, agent_name: str, *, no_egress: bool) -> _EarlyReads:
+    def start(
+        cls, agent_name: str, *, no_egress: bool,
+        focus_slot: tuple[str, str, str] | None = None,
+    ) -> _EarlyReads:
         knowledge = asyncio.ensure_future(_prime_knowledge_index(agent_name))
         mailboxes = crm_facts = None
         if agent_name == _EMAIL_CTX_AGENT:
@@ -2255,7 +2525,7 @@ class _EarlyReads:
                     mailboxes = asyncio.ensure_future(ecc.prime_mailboxes(str(org), member))
             if not no_egress and _crm_questions_on(org):
                 crm_facts = asyncio.ensure_future(_early_crm_facts())
-        return cls(knowledge, mailboxes, crm_facts)
+        return cls(knowledge, mailboxes, crm_facts, _start_focus_read(focus_slot))
 
     async def settle(self) -> None:
         """Await the two cache fills. Each one never raises, and a fault
@@ -2268,13 +2538,27 @@ class _EarlyReads:
     def close(self) -> None:
         """Cancel each read that is still running, and read the outcome of
         each one that ended, so asyncio logs no unread exception."""
-        for task in (self.knowledge, self.mailboxes, self.crm_facts):
+        for task in (self.knowledge, self.mailboxes, self.crm_facts, self.focus):
             if task is None:
                 continue
             if not task.done():
                 task.cancel()
             elif not task.cancelled():
                 task.exception()
+
+
+def _start_focus_read(slot: tuple[str, str, str] | None) -> asyncio.Future[Any] | None:
+    """The read of the stored item in focus of *slot* (HRD-11a), or None.
+
+    ``chat_focus.read_focus`` never raises, and it reads nothing when its org
+    is not the bound tenant of the run."""
+    if slot is None:
+        return None
+    try:
+        from acb_skills import chat_focus
+    except ImportError:  # no item, never the turn
+        return None
+    return asyncio.ensure_future(chat_focus.read_focus(*slot))
 
 
 def _crm_questions_on(org: Any) -> bool:
@@ -2570,6 +2854,19 @@ def _release_solo_room(token: contextvars.Token[bool] | None) -> None:
         _RUN_SOLO_ROOM.reset(token)
     except (ValueError, RuntimeError):
         _RUN_SOLO_ROOM.set(False)
+
+
+def run_is_solo() -> bool:
+    """True when the run on this frame is the member's own solo run.
+
+    The one reader of :data:`_RUN_SOLO_ROOM` outside this module (WS-FIND
+    HRD-21). ``search_company`` asks it before it names the current chat, so
+    a member's past chats never print into a chat that another person can
+    read: a room, or a room of one with visibility ``org`` or ``people``. The
+    run boundary binds the value from the server's room
+    (``rooms.room_is_solo``), never from the body, and a delegated run cannot
+    widen it. A frame with no run reads False."""
+    return _RUN_SOLO_ROOM.get() is True
 
 
 def _bind_profile_writes(open_: bool) -> Any:
@@ -3349,9 +3646,11 @@ async def _run_sub_agent_streaming(
     # WS-67 OA-7c: a delegated run never inherits the run key or the record of
     # its parent's packs, so its own hand-offs are never refused for them.
     # OA-9c: a spawn child takes the key of its own pack tools instead.
+    # HRD-11a: nor the binding of the item in focus, so it reads and writes none.
     derive_artifact_context(
         no_egress=_sub_no_egress, covered_chain=_sub_cover, chat_marked=_sub_marked,
         **_without_pack_keys(agent_name), **_without_job_key(agent_name),
+        **_without_focus_key(),
     )
     _sub_calls: list[dict[str, Any]] = []
 
@@ -3765,6 +4064,9 @@ async def _run_sub_agent_streaming(
             await _record_email_working_set(
                 agent_name, _parent_ctx_sub, _ws_before, _sub_calls, _emit_sub_event,
             )
+            # HRD-11a: the email or the task that this sub-run read or acted on
+            # last, for the next turn of the calling chat. Its calls only.
+            await _record_chat_focus(agent_name, _parent_ctx_sub, _sub_calls)
 
             # ── Technique #5: sub-agent result compression ───────────────
             # Anthropic multi-agent research: sub-agents explore with 10k+
@@ -5654,7 +5956,9 @@ class _BatchRunInputs:
     credential names the first attempt resolved, after the acting member's
     filter. A retry resolves no authority again: it gets those names only.
     ``None`` on any of the three means the first attempt failed before that
-    step, and the retry then fails closed (nothing).
+    step, and the retry then fails closed (nothing). *step* (HRD-1b) is the
+    mode of the answer to an unknown tool name. The run decides it before
+    the first attempt, so the retry answers the same way.
     """
 
     repo_name: str | None = None
@@ -5662,6 +5966,7 @@ class _BatchRunInputs:
     held: frozenset[str] | None = None
     run_tools: frozenset[str] | None = None
     integrations: frozenset[str] | None = None
+    step: bool = False
 
 
 @dataclasses.dataclass
@@ -5685,6 +5990,7 @@ async def _assemble_batch_agents(
     loaded: Any, *, agent_name: str, no_egress: bool,
     held: frozenset[str] | None = None,
     mcp: _BatchMcp | None = None,
+    step: bool = False,
 ) -> tuple[list[Any], Any, frozenset[str]]:
     """Build and arm the agents of a batch run.
 
@@ -5703,6 +6009,11 @@ async def _assemble_batch_agents(
     stream path does, with the same org, access lookup and card rule. A
     ``no_egress`` run gets none (H-236). A retry passes no *mcp*, so it
     holds no server: a retry only narrows.
+
+    HRD-1b: the first agent goes on a view that answers a call of an unknown
+    tool name (:func:`_unknown_tool_view`). *step* is the mode of that
+    answer. The view comes after each seam of the injection and before the
+    MCP servers, in the order of the stream path.
     """
     agents = loaded.build_agents()
     # Honour .github/agents/<name>.agent.md (instructions override).
@@ -5728,10 +6039,12 @@ async def _assemble_batch_agents(
     # CRM-Q32-5: the CRM facts block, read as the member.
     run_tools = await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
     _log_agent_tools_resolved(agent_name, agents, own_tools)
+    # HRD-1b: the model never reads MAF's "not found" text in a batch run.
+    agents = _unknown_tool_view(agents, step=step)
     # WS-47 WAC-P3: the org's MCP servers, exactly as the stream path adds
     # them. H-236: an MCP server reaches outside, so a no_egress run gets
-    # none. H-299: a tool that can change data waits for a member's card,
-    # and a run that cannot show one refuses it (`_maf_mcp`).
+    # none. MCP-NC1: a member's run calls a tool that can change data with
+    # no card, and a run with no member refuses it (`_maf_mcp`).
     for _a in agents if mcp is not None and not no_egress else []:
         await _inject_mcp_servers(
             _a, agent_name,
@@ -5885,6 +6198,10 @@ async def _run_agent_inner(
     # belong to the organization (write_artifact). A delegated run is not:
     # its parent's chat may hold a member's data.
     _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
+    # HRD-1b: the mode of the answer to an unknown tool name. A delegated run
+    # (the same test as `sub_run` below) answers another model, and a run
+    # with no chat answers no member. So each is a step (`unknown_tool`).
+    _answer_step = bool(_parent_ctx.get("run_id")) or _batch_thread
     # CRM-Q29: the member's own words, a source of the number check.
     _member_words = _member_words_for_run(_parent_ctx, event_payload)
     # WS-67 OA-1: the member's messages of the chat, for each delegated task.
@@ -6021,7 +6338,7 @@ async def _run_agent_inner(
     _is_copilot_agent = False
     # What the first attempt used. The self-anneal retry rebuilds from it, so
     # a retry can only narrow the tools of this run.
-    _anneal_inputs = _BatchRunInputs()
+    _anneal_inputs = _BatchRunInputs(step=_answer_step)
     # WS-47 WAC-P3: the MCP servers that this run opens. The finally closes them.
     _batch_mcp: _BatchMcp | None = None
     try:
@@ -6053,6 +6370,7 @@ async def _run_agent_inner(
             pass
         _anneal_inputs = _BatchRunInputs(
             repo_name=_registry_repo_name, local_path=_registry_local_path,
+            step=_answer_step,
         )
 
         # §15.4: refused as absent unless a first-party admin runs it. An
@@ -6175,13 +6493,17 @@ async def _run_agent_inner(
                 _batch_mcp = _BatchMcp(
                     organization_id=organization_id,
                     is_authorized=_authorizer,
-                    member_present=_authorizer is not None,
+                    # MCP-NC1: only a VERIFIED member counts. A body's
+                    # claim never runs an MCP write with no card.
+                    member_present=(_authorizer is not None
+                                    and bool(_verified_run_member())),
                 )
             # The one batch assembly. The self-anneal retry calls it too.
             agents, _batch_md_spec, _run_tools = await _assemble_batch_agents(
                 loaded, agent_name=agent_name,
                 no_egress=_no_egress,  # H-236: from the parent's binding
                 mcp=_batch_mcp,
+                step=_answer_step,  # HRD-1b
             )
             # The retry narrows to what this attempt holds (never a union).
             _anneal_inputs = dataclasses.replace(
@@ -7423,7 +7745,15 @@ async def run_agent_stream(
         # before the per-turn context, because sync code builds that context.
         # SPD-1 part 2: it starts here with two other reads, beside the load,
         # and `_early.settle()` awaits it before the first reader.
-        _early = _EarlyReads.start(agent_name, no_egress=_stream_no_egress)
+        # HRD-11a: the item in focus of this chat. Its one Redis read starts
+        # here too, only for a run of _chat_focus_slot (CHAT_FOCUS_ORGS).
+        _focus_slot = _chat_focus_slot(
+            agent_name, organization_id=organization_id, thread_id=thread_id,
+            delegated=_delegated_run, shows_cards=shows_cards,
+            batch_thread=_batch_thread,
+        )
+        _early = _EarlyReads.start(
+            agent_name, no_egress=_stream_no_egress, focus_slot=_focus_slot)
         _laps.lap("early_start")
         with await _load_agent_off_loop(
             agent_name,
@@ -7515,16 +7845,18 @@ async def run_agent_stream(
             # no_egress run gets none. WS-8c: the org is the gateway's
             # server-side stamp (never the payload), a native agent's servers
             # pass the run's grant check, and the finally closes them.
-            # H-299: an MCP tool that can change data waits for a member's
-            # card. A run with no member (no authority) or a batch run has
-            # nobody to answer it, so such a tool is refused there.
+            # MCP-NC1 (amends H-299): in a VERIFIED member's run, an MCP tool
+            # that can change data runs with no card. A run with no member
+            # (no authority), a body's claim of a member, or a batch run has
+            # nobody behind it, so such a tool is refused there.
             for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(
                     _a, agent_name,
                     organization_id=organization_id,
                     is_authorized=_authorizer,
                     opened=_mcp_opened,
-                    member_present=_authorizer is not None and not _batch_thread,
+                    member_present=_authorizer is not None and not _batch_thread
+                    and bool(_verified_run_member()),
                 )
             _laps.lap("mcp")
 
@@ -7675,6 +8007,11 @@ async def run_agent_stream(
             # working set, for the sync context and each delegated task.
             await _prime_chat_constraints(agent_name)
             _laps.lap("constraints")
+            # HRD-11a: bind the item in focus that the early read found, for
+            # the sync context and the writes of this turn. With the flag off
+            # there is no slot, and this binds nothing.
+            await _prime_chat_focus(_focus_slot, _early.focus)
+            _laps.lap("focus")
             # WS-63 PZ-34 (§15.4): the briefing of the member's other chats,
             # bound for this run only, for the sync context. A delegated, a
             # batch or a card-less run (WhatsApp) gets none. One second at
@@ -7698,6 +8035,13 @@ async def run_agent_stream(
                 agent_name, organization_id=organization_id, thread_id=thread_id,
                 delegated=_delegated_run, shows_cards=shows_cards,
                 batch_thread=_batch_thread,
+            )
+            # Task 3594: the sent acts of this chat, from the card record, for
+            # the sync context. Dark behind CHAT_CARD_RECORD_ORGS. One second
+            # at most, and a fault costs the line, never the turn.
+            await _prime_sent_acts(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, batch_thread=_batch_thread,
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -9961,6 +10305,7 @@ async def _self_anneal(
                 loaded, agent_name=agent_name,
                 no_egress=no_egress,  # H-236
                 held=inputs.held,
+                step=inputs.step,  # HRD-1b: the first attempt's mode
             )
             # ``run_tools`` (§14.10): the retry ALWAYS binds its own, the part
             # of the first attempt's set that it holds. A first attempt that
@@ -11577,7 +11922,8 @@ def _context_preamble_parts(
     (``acb_common.today.today_line``), and last the member's part of the day
     beside a profile block that greets (``part_of_day_line``, PZ-4), then the
     line of the tool packs that left at the start of the turn
-    (:func:`_pack_left_block`, task 1747). :func:`_build_event_message`
+    (:func:`_pack_left_block`, task 1747), and last the sent acts of this
+    chat (:func:`_sent_acts_block`, task 3594). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -11623,6 +11969,14 @@ def _context_preamble_parts(
     constraints_ctx = _chat_constraints_block(agent_name)
     if constraints_ctx:
         parts.append(constraints_ctx)
+
+    # HRD-11a (chat_failure_modes.md §4.5 E1): the email or the task that this
+    # chat read or acted on last, with the rule for "it" and "this", right
+    # after the OA-4 block. From the run binding that `_prime_chat_focus` set,
+    # never from the payload (R5). Off (CHAT_FOCUS_ORGS), nothing is added.
+    focus_ctx = _chat_focus_block(agent_name)
+    if focus_ctx:
+        parts.append(focus_ctx)
 
     # Memory context (pre-enriched by the route handler from Mem0) —
     # inject as a system-level preamble so Tier 2 agents also benefit.
@@ -11710,6 +12064,11 @@ def _context_preamble_parts(
     # payload (R5). Last, so each block above keeps its place. An empty line
     # adds nothing.
     parts.extend(filter(None, [_pack_left_block(agent_name)]))
+    # Task 3594 (chat_organization.md §16.3): the mails that the member
+    # approved and the system sent in this chat, then one rule line. From the
+    # run binding that `_prime_sent_acts` set, never the payload (R5). Last,
+    # so each block above keeps its place and its bytes.
+    parts.extend(filter(None, [_sent_acts_block(agent_name)]))
     return parts
 
 

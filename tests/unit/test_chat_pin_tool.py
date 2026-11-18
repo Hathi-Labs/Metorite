@@ -21,7 +21,7 @@ Fences (R7):
 * ``chat-pin-tool-dark``: the orchestrator holds the tool only for an org on
   ``CHAT_PIN_ORGS``, and a fault reads as off.
 * ``chat-pin-tool-parity``: the two pin actions are ``COVERED`` by the tool,
-  and the debt ceiling of the chat went from 27 to 25.
+  and the debt ceiling of the chat went down by two (30 to 28 after CO-2b).
 
 Mutations run on 2026-11-17, each red here:
 
@@ -453,4 +453,4 @@ def test_both_pin_actions_are_covered_by_the_tool() -> None:
     assert not r.reaches("pin_chat", "PATCH", "/chat/sessions/{}/pin")
     assert "packages/acb_skills/acb_skills/chat_pin_tools.py" in cp.TOOL_SOURCES
     assert "pin_chat" in r.registered_tools()
-    assert cp.DEBT_CEILING["chat"] == 25
+    assert cp.DEBT_CEILING["chat"] == 28
