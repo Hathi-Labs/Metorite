@@ -230,3 +230,27 @@ def test_no_second_label_matcher_in_the_crm_routes() -> None:
             continue
         source = path.read_text(encoding="utf-8")
         assert "def fold_module" not in source, path.name
+
+
+async def test_a_tool_takes_a_label_and_names_the_api_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_skills import crm_tools as tools
+
+    paths: list[str] = []
+
+    async def get(path, params=None, timeout=30.0):
+        paths.append(path)
+        return {"rows": [], "total": 0, "field_defs": [], "module": "Sales_Orders"}
+
+    async def note(_keys):
+        return ""
+
+    monkeypatch.setattr(tools, "_get", get)
+    monkeypatch.setattr(tools, "_short_note", note)
+    out = await tools.crm_list_module_records.__wrapped__("module:Sales Orders") \
+        if hasattr(tools.crm_list_module_records, "__wrapped__") \
+        else await tools.crm_list_module_records("module:Sales Orders")
+    assert paths == ["/crm/modules/Sales Orders/records"]
+    assert "Sales_Orders" in out
+    assert tools._entity_slug("module:Sales Orders", allow_module=True) == "module:Sales Orders"
+    with pytest.raises(Exception, match="Invalid module name"):
+        tools._module_name("Sales/../Orders")
