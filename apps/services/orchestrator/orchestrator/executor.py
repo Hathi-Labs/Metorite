@@ -10825,7 +10825,8 @@ def _note_paste_shape(
             delegated=delegated, flag=paste_frame.paste_frame_on(_current_run_org()),
         )
     except Exception as exc:  # a log line never fails a run
-        _log.warning("paste_frame.shape_failed", error=type(exc).__name__)
+        with contextlib.suppress(Exception):
+            _log.warning("paste_frame.shape_failed", error=type(exc).__name__)
 
 
 def _compose_maf_run(
