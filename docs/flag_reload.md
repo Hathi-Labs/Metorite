@@ -50,6 +50,17 @@ later turn of the chat then gets one line for each of the last 5 sent mails,
 in its run context. The run asks the flag at the start of each turn, so a
 reload applies at the next turn.
 
+`CHAT_CLAIM_CHECK_ORGS` turns on the claim check of an answer
+(`chat_failure_modes.md` §6 row HRD-13). For each listed org, the run of the
+orchestrator logs one line, `answer_claims.checked`, at its end. The line
+counts the claims of acts and promises that no tool outcome of the run backs.
+The check is shadow only, and it never changes the answer (D-HRD-6).
+
+`*` lists every org, and the default is empty. Its one reader is
+`acb_skills.answer_claims.claim_check_on`. The injection asks it at the start
+of each run, so a reload applies to the next run. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The
@@ -106,8 +117,11 @@ that run the short stale time. A flip stays OWNER-GATE (`enforcement-flip`).
 (`chat_run_continuity.md` §4.12.4 item 1, RESUME-1a). For each listed org, the
 row of a plain confirmation card of a listed write keeps the call that the
 card guards. RESUME-2a: a late Approve of such a card then runs that call
-once, in a new reply, with no member turn. `*` lists every org, and the
-default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
+once, in a new reply, with no member turn. RESUME-4a-2: a late decline
+(`declined: true`) of such a card starts a short reply that runs no tool. The
+model then says that nothing was done. This part is server only: no client
+sends that request until RESUME-7. `*` lists every org, and the default is
+empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
 a late Approve takes the path of before. The SPENT mark stops the stored call

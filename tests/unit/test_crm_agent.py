@@ -1253,7 +1253,10 @@ async def test_the_field_list_reads_a_module_and_names_each_use(monkeypatch) -> 
     assert "(key Unit_Price, currency) [measure: sum, avg, min, max]" in out
     assert "(key Category, select) [group by value]: Hardware" in out
     assert "(key Sales_Start, date) [group by month, quarter or year]" in out
-    assert "(key Description, text)" in out and "Description, text) [" not in out
+    # CRM-Q34-11: a text field of a module takes sums and ranges when it holds
+    # numbers, so its use is named now. Before, it had no bracket.
+    assert ("(key Description, text) [sums and ranges if it holds numbers, the answer "
+            "counts the rest]") in out
 
 
 async def test_the_module_records_name_the_fields_the_aggregate_takes(monkeypatch) -> None:
