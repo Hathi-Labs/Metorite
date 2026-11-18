@@ -1,13 +1,18 @@
 # The semantic model: one way for the chat to read any large data source
 
-**Status: PROPOSED (2026-11-17, owner ask). Nothing is built.** The owner
-must answer D-SEM-1 first (`building_blocks.md` §6.1 step 4). No code slice of
-rung 3 starts before that answer. Verified against `origin/main` at `a4cfeedc7`
-(2026-11-17).
+**Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
+D226). The rest stays PROPOSED. Nothing is built.**
+
+The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
+owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
+D-CSY-1, D-CSY-3 and D-CSY-4 stay open. So rungs 1 and 2 are ACTIVE. The
+slices of rung 3 that need no D-CSY answer are ACTIVE too. SEM-14 needs D-CSY-1
+and stays PROPOSED. Verified against `origin/main` at `f4c6ff08f`
+(2026-11-18).
 
 **Names.** The workstream is **WS-SEM**, and its slice prefix is **SEM-n**.
 Neither name occurred on `main` before this spec (R2). This spec takes no
-D-number. The D-SEM-n questions of §12 wait for the owner.
+D-number. D226 records the owner's answers to the D-SEM-n questions of §12.
 
 **Inputs.** A research report on semantic layers, and the ten binding rules of
 the WS-CSY planner, which §11 maps to this design. The live evidence is counts
@@ -354,9 +359,9 @@ the CRM UI research draft (§4.1, not on `main`). Two options:
 | Cost | Larger, HIGH. One shape for the chat, the sidebar, saved views and Studio | Smaller, HIGH. A third spelling until a later merge |
 
 **Recommendation: Option A for the shape, with a value hook for each store.**
-The chat then learns one query form for every app. This is D-SEM-3. Until the
-owner decides it, SEM-1b and the CRM UI research draft S1 must not both start, because
-together they would write two grammars.
+The chat then learns one query form for every app. The owner chose Option A
+(D-SEM-3, 2026-11-18). So SEM-1b builds it, and the CRM UI research draft S1
+does not build a second grammar.
 
 **Never model-written SQL on our Postgres.** A typed query fails loudly, and
 free SQL fails with a plausible wrong answer (dbt, 2026-04-07).
@@ -576,8 +581,8 @@ with no restart (`docs/flag_reload.md`). A flip on a live org needs the
 SEM-3 and SEM-4 can start at once and run in parallel. SEM-2 starts after
 SEM-R0. SEM-5 and SEM-6 close rung 1.
 
-**Later rungs.** SEM-1b opens rung 2, after the owner answers D-SEM-3. Rung 3
-waits for CSY-1 and for the owner's answers to D-SEM-2 and D-CSY-1.
+**Later rungs.** SEM-1b opens rung 2. D-SEM-3 is answered (Option A). Rung 3
+needs CSY-1 for SEM-14. SEM-14 also needs D-CSY-1, which is still open.
 
 ### 10.3 The map to the CRM-Q34 slices (epic task 3689)
 
@@ -590,11 +595,10 @@ spec adds no second slice for the same work. The map:
 | SEM-4 | CRM-Q34-2 (the refusals name a working field, module or filter) and CRM-Q34-3 (the tool text) | 3694, 3695 | SEM-4 includes both. Build them once |
 | SEM-3 | CRM-Q34-7: `q` finds across a module | 3700 | The two overlap. The one that starts first owns the code, and the other cites it |
 | SEM-1b | CRM-Q34-4 and CRM-Q34-4b: one filter builder | 3697, 3711 | Q34-4 is the builder that SEM-1b lowers into |
-| none | CRM-Q34-5: the filter words a member needs | 3698 | **Waits for D-SEM-3.** The words are part of the one grammar |
+| none | CRM-Q34-5: the filter words a member needs | 3698 | Unblocked by D-SEM-3 (Option A, 2026-11-18). The words are part of the one grammar |
 
-The tasks of the rows SEM-1a to SEM-6 are made when the owner approves the
-spec, under the epic of WS-SEM. No row of SEM-12 to SEM-17 gets a task before
-the owner answers D-SEM-1.
+The tasks of the slices are made under the WS-SEM epic. D-SEM-1 and D-SEM-2 are answered, so SEM-12, SEM-13, SEM-15, SEM-16 and
+SEM-17 may get tasks. SEM-14 waits for D-CSY-1.
 
 ---
 
@@ -617,46 +621,62 @@ the owner answers D-SEM-1.
 
 ## 12. Decisions for the owner
 
+**Answered 2026-11-18, owner in chat (D226).** D-SEM-1, 2, 4, 5, 6, 7, 9, 10
+and 11: accepted as recommended. D-SEM-3: Option A. D-SEM-8: a new connector
+spec. The list below keeps each question and its recommendation. Each line
+ends with its answer.
+
 1. **D-SEM-1. A new block "Data meaning" in `building_blocks.md` §2**, whose
    seam is `org_facts` with one provider per source. Recommendation: yes. It
    makes the CRM's model general and adds no parallel read path.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 2. **D-SEM-2. One new table for the model of a connection**, keyed by the
    connection id, with versions. Recommendation: yes. The CRM keeps its plan
    and needs no table.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 3. **D-SEM-3. Which one query grammar** (§5.1). Option A: the shape of
    `studio_query` for every store. It gets one `any` group, `matches`, and a
    value hook for each store. Option B: a CRM `filter_grammar.py`, as
    the CRM UI research draft S1 proposes. Recommendation: A. It costs more, because of
    the zone, money, spelling and hot-field conflicts that §5.1 lists. B leaves
    a third spelling. Rung 1 does not wait for this answer.
+   **Answer (2026-11-18, owner in chat): Option A. The shape of `studio_query` for every store.**
 4. **D-SEM-4. Who approves.** The CRM admin for the CRM (as CRM-Q32). A holder
    of `integrations:manage` for a connection. AI Studio reads a model and does
    not edit it. Recommendation: yes. Three permissions approve different
    things today, and this keeps each one where it is.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 5. **D-SEM-5. No stored value index.** Values resolve at query time as the
    member. Only picklist options are kept. Recommendation: yes. A stored list
    needs its own owner decision. It can show a value to a member who cannot
    open its record.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 6. **D-SEM-6. Verified queries live in the model of the source**, with
    parameters only, and a skill may name one. Recommendation: yes. The
    alternative stores them as saved skills, which a member owns.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 7. **D-SEM-7. Suggestions from use show counts and query shapes only.** A
    member's question text reaches an admin only if the member consents.
    Recommendation: counts and shapes only.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (counts and shapes only).**
 8. **D-SEM-8. Books of account.** Keep `ai_studio.md` non-goal 8 (no general
    ledger). Books arrive as connections: Tally through the local link, then
    Zoho Books after IN-3. Name the spec that owns the books connectors.
    Recommendation: a books section in `crm_connectors.md` (WS-MIR) or a new
    connector spec. The owner picks.
+   **Answer (2026-11-18, owner in chat): a new connector spec owns the books connectors (Tally, then Zoho Books). The spec is a new slice, and no section of `crm_connectors.md` takes it.**
 9. **D-SEM-9. No learning across orgs.** Only counts cross tenants. The
    profiler's global prompt changes only through task 3649. Recommendation:
    yes, as D187 point 4.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 10. **D-SEM-10. Keep the body close to Apache Ossie**, and take no dependency.
     Recommendation: yes. It is pre-1.0.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
 11. **D-SEM-11. Before an admin approves a connection's draft, the chat gets
     nothing new from it.** Recommendation: yes (rule 5). The CRM's "answer
     first" (CRM-Q33) stays for the CRM.
-12. **The held WS-CSY decisions.** This design does not assume an answer.
+   **Answer (2026-11-18, owner in chat): accepted as recommended (yes).**
+12. **The held WS-CSY decisions. Still open (2026-11-18).** This design does not assume an answer.
     - **D-CSY-1** (the per-turn block reads the description). SEM-14 needs a
       yes. With a no, a connection's model reaches the chat only through
       `org_facts` on demand (SEM-15).
