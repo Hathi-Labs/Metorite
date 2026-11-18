@@ -143,6 +143,7 @@ from gateway.routes.crm.field_sql import (
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
+    STATUS_WORD,
     ZONE_PARAM,
     FieldRef,
     FieldScope,
@@ -153,6 +154,7 @@ from gateway.routes.crm.field_sql import (
     crm_zone,
     day_field,
     day_sql,
+    field_hint,
     field_pairs,
     from_source,
     group_sql,
@@ -169,7 +171,9 @@ from gateway.routes.crm.field_sql import (
     overlay_stage,
     overlay_weighted,
     overlay_where,
+    q_refusal,
     split_sql,
+    status_field,
     text_matches,
     used_keys,
     zoned,
@@ -568,7 +572,9 @@ def _check(
     if bucket is not None and group_field is None:
         raise _refuse("'bucket' goes with group_field.")
     allowed = MODULE_GROUPS if module is not None else GROUPS
-    if group_by is not None and group_by not in allowed:
+    # CRM-Q34-2: `status` on a module groups by its status field (`@status`).
+    status_group = module is not None and group_by == "status"
+    if group_by is not None and group_by not in allowed and not status_group:
         raise _refuse(
             f"Unknown group_by '{group_by}'. One of: {list(allowed)}. To group "
             "by a field, give group_field=<key> instead, or give no group for "
@@ -608,9 +614,11 @@ def _check_filters(module: str | None, request: Request) -> list[tuple[str, str]
         if pairs:
             raise _core_pairs_refusal()
         return pairs
+    # CRM-Q34-2: `q` passes here, and `_read` refuses it after it reads the
+    # fields of the module, so its 422 names the fields that work instead.
     other = sorted({
         k for k in request.query_params
-        if k not in MODULE_PARAMS and not k.startswith(FIELD_PREFIX)
+        if k not in MODULE_PARAMS and k != "q" and not k.startswith(FIELD_PREFIX)
     })
     if other:
         raise _refuse(
@@ -876,6 +884,7 @@ async def _read(
     group_field: str | None, bucket: str | None,
     pairs: list[tuple[str, str]], params: ListParams, user: UserContext | None,
     fields: str | None = None, timeout_ms: int | None = None,
+    status_group: bool = False,
 ) -> _Read:
     """Every statement of one aggregate, in the caller's tenant session.
     *fields* is the comma list of a split (CRM-Q25e part 2), and
@@ -890,6 +899,12 @@ async def _read(
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
+        # CRM-Q34-2: `q` on a module is a 422 that names the fields to use.
+        if params.q is not None:
+            raise q_refusal(scope)
+        # CRM-Q34-2: `group_by=status` reads `@status`, or names the selects.
+        if status_group:
+            status_field(scope)
         field_measure, field = module_measure(measure, field)
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
@@ -1246,6 +1261,10 @@ async def _compute(
     fields = fields or None
     found, module = _check(entity, measure, group_by, group_field, field, bucket, fields)
     pairs = list(pairs or [])
+    # CRM-Q34-2: `group_by=status` on a module is `group_field=@status`.
+    status_group = module is not None and group_by == "status"
+    if status_group:
+        group_by, group_field = None, STATUS_WORD
     try:
         async with _tenant_session() as db:
             # CRM-Q20-3a: a core entity whose slot has an approved overlay
@@ -1267,12 +1286,19 @@ async def _compute(
             else:
                 if module is None and pairs:
                     raise _core_pairs_refusal()
-                read = await _read(
-                    db, found, module, measure=measure, group_by=group_by,
-                    field=field, group_field=group_field, bucket=bucket,
-                    pairs=pairs, params=params, user=user, fields=fields,
-                    timeout_ms=timeout_ms,
-                )
+                try:
+                    read = await _read(
+                        db, found, module, measure=measure, group_by=group_by,
+                        field=field, group_field=group_field, bucket=bucket,
+                        pairs=pairs, params=params, user=user, fields=fields,
+                        timeout_ms=timeout_ms, status_group=status_group,
+                    )
+                except HTTPException as exc:
+                    # Task 3690: a field that is not on this module names
+                    # the other modules that hold it.
+                    if module is None:
+                        raise
+                    raise await field_hint(db, module, exc) from None
     except DBAPIError as exc:
         if _is_timeout(exc):
             raise HTTPException(status_code=503, detail=timed_out) from None

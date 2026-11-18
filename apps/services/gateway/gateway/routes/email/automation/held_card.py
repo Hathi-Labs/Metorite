@@ -1441,7 +1441,8 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     # the rows above come from the server alone, as for any held card: a
     # snapshot of the revised card never ticks a new address (rule 4). Only a
     # card to the same people takes the link (fix round 3).
-    linked = await link_fields(user, req.card_thread_id, lists["to"]) if edit else {}
+    linked = (await link_fields(user, req.card_thread_id, lists["to"], cc=lists["cc"], act="new")
+              if edit else {})
     unticked = unticked_rows(rows, off)
     out = await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,

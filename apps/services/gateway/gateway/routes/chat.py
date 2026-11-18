@@ -13,6 +13,7 @@ POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
 POST   /chat/sessions/{session_id}/continue    Continue a held chat in a fresh chat (WT-1)
 PUT    /chat/sessions/{session_id}/pin         Pin a chat for the caller (CO-11)
 DELETE /chat/sessions/{session_id}/pin         Unpin a chat for the caller (CO-11)
+PUT    /chat/sessions/{session_id}/topic       Move a chat into a topic, for the caller (CO-2b)
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -47,8 +48,9 @@ from acb_common import get_logger
 from acb_common.assistant_profile import PROFILE_USED_EVENT
 from acb_common.chat_continue_flag import continue_allowed
 from acb_common.pg_text import storable
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from gateway import chat_session_member as chat_pins
+from gateway import chat_topic
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -56,7 +58,7 @@ from gateway.rooms import (
     resolve_room_access,
     session_exists_elsewhere,
 )
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _log = get_logger("gateway.chat")
 
@@ -220,10 +222,15 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     # switch on. Off, the list sends today's one statement and today's keys.
     pins_on = chat_pins.pin_allowed(organization_id)
     pins: dict[str, Any] = {}
+    # CO-2b (§6): the caller's own topic of each chat, only with the switch on.
+    topics_on = chat_topic.topics_allowed(organization_id)
+    topics: dict[str, Any] = {}
     with tenant_session(organization_id) as s:
         rows = s.execute(text(_SESSIONS_SQL), {"uid": user_id}).fetchall()
         if pins_on:
             pins = chat_pins.pinned_at_of(s, user_id)
+        if topics_on:
+            topics = chat_pins.topics_of_chats(s, [r.id for r in rows], user_id)
     # CO-13 (§17.5): the source of a continued chat is readable by this member
     # exactly when it is a row of this list. The list holds every row that
     # SESSION_VISIBLE_SQL passes, with no limit, under the bound tenant, so a
@@ -284,6 +291,13 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
         for item, r in zip(listed, rows, strict=True):
             item.update(chat_pins.pin_fields(pins.get(r.id),
                                              archived=r.archived_at is not None))
+    if topics_on:
+        # Only the caller's topic, and only a topic that shows to the caller.
+        # A colleague in the same room reads none of it (CO-2b). An archived
+        # chat reads as no topic, as it reads as not pinned.
+        for item, r in zip(listed, rows, strict=True):
+            item.update(chat_pins.topic_fields(topics.get(r.id),
+                                               archived=r.archived_at is not None))
     return listed
 
 
@@ -647,6 +661,16 @@ def _unpin_session(
 
     with tenant_session(organization_id) as s:
         return chat_pins.unpin(s, session_id, viewer=user_id)
+
+
+def _move_session(
+    session_id: str, user_id: str, topic_id: str | None, *, organization_id: str | None,
+) -> chat_pins.TopicMove:
+    """Move the chat of *user_id* into a topic, or to "No topic" (CO-2b)."""
+    from acb_graph import tenant_session
+
+    with tenant_session(organization_id) as s:
+        return chat_pins.set_topic(s, session_id, viewer=user_id, topic_id=topic_id)
 
 
 def _get_messages(
@@ -1318,6 +1342,58 @@ async def unpin_session(
     return {"ok": True, "pinned": False, "pinnedAt": None}
 
 
+class TopicMoveIn(BaseModel):
+    """The move of a chat (CO-2b): a topic id, or null for "No topic". The
+    member and the org come from the session, so any other key gets 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic_id: str | None = Field(max_length=64)
+
+
+@router.put("/sessions/{session_id}/topic", summary="Move a chat into a topic, for the caller")
+async def move_session_topic(
+    session_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """CO-2b (`chat_organization.md` §6, D163). The topic is the caller's own:
+    a colleague in the same room keeps their topic. The pass never writes over
+    this move. The member is the session's, never a request field (R11).
+
+    404 while `CHAT_TOPICS_ORGS` leaves the org out, before the body is read.
+    No body parameter is declared, because FastAPI parses a declared body
+    before the handler. 404 "Topic not found" for a topic that the caller may
+    not use: a colleague's topic, a hidden company topic, an unknown id and an
+    id that is not a UUID. 404 "Session not found" for a chat that the caller
+    cannot read. 409 for an archived chat, as for the pin. The body is
+    :class:`TopicMoveIn`."""
+    from gateway.routes.chat_topics import NOT_FOUND, _body
+
+    org = user.organization_id
+    if not chat_topic.topics_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    member = (user.email or "").strip()
+    if not member:
+        raise HTTPException(status_code=403, detail="Sign in to move a chat.")
+    payload = await _body(request, TopicMoveIn)
+    tid: str | None = None
+    if payload.topic_id is not None:
+        tid = chat_topic.topic_id(payload.topic_id)
+        if tid is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    moved = await asyncio.to_thread(_move_session, session_id, member, tid, organization_id=org)
+    if moved.state == "no_topic":
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if moved.state == "archived":
+        raise HTTPException(
+            status_code=409, detail="This chat is archived. Restore it, then move it.",
+        )
+    if moved.state != "set":
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True, **chat_pins.topic_fields(moved.topic)}
+
+
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(
     session_id: str,
@@ -1610,6 +1686,9 @@ async def continue_session(
     while ``CHAT_CONTINUE_ORGS`` does not hold the caller's org, and when the
     caller cannot read the source. It is 409 when the source holds no row
     that the caller typed. The request names no id, no org and no member.
+    Beside it, HRD-19a copies the member's decisions and item in focus to the new
+    chat, key to key. They are in no field of the answer, and the log holds their
+    counts. The answer keeps the shape that ``test_continue_carry.py`` pins.
     """
     org = user.organization_id
     me = (user.email or "").strip()
@@ -1650,7 +1729,21 @@ async def continue_session(
     if not linked:
         # The source left between the read and the write.
         raise HTTPException(status_code=404, detail="Session not found")
-    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12])
+    # HRD-19a (chat_failure_modes.md E3): the member's own decisions and the item in
+    # focus cross KEY TO KEY, each under the flag of its own store. Nothing is written
+    # into `text` or into a `chat_message` row, so a decision never becomes a message that
+    # the member "typed". The org and the member come from the session. A shared room
+    # carries nothing: its records are the records of one member in one chat.
+    carried_records = {"decisions": 0, "focus": False}
+    if not room.is_shared:
+        from acb_skills import chat_constraints, chat_focus
+
+        carried_records["decisions"] = await chat_constraints.carry_decisions(
+            org or "", session_id, new_id, me)
+        carried_records["focus"] = await chat_focus.carry_focus(
+            org or "", session_id, new_id, me)
+    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12],
+              decisions=carried_records["decisions"], focus=carried_records["focus"])
     return {"session_id": new_id, "text": carried}
 
 

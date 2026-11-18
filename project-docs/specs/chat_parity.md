@@ -126,5 +126,14 @@ a stale row, a false claim, a bad exemption and a new debt.
 epic sets the order of the waves after it. Each wave moves its rows from
 `DEBT` to `COVERED`, and lowers the ceiling of its app.
 
+**The ratchet names its tasks (PAR-1b, task 3100, 2026-11-17).** Each wave of
+`WAVES` lists the board tasks that build it, and a wave with no task fails.
+`P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
+names the task that pays it in its comment, as "Paid by task N", and N is a
+task of the wave of that app. Eight ceilings had gone up since P-0 (calendar,
+chat, email, integrations, knowledge, settings, shell, studio), and each one
+names its task now. The CRM wave P-3 had no task, so task 3678 is its task.
+Fence: `tests/unit/test_chat_parity.py`.
+
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.

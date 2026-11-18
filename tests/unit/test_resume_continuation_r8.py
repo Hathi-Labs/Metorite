@@ -72,6 +72,8 @@ executor = pytest.importorskip("orchestrator.executor")
 pytest.importorskip("sqlalchemy")
 
 from acb_skills import late_approve  # noqa: E402
+
+_REAL_TWIN_RAN = late_approve.twin_ran
 from acb_skills.ask_tools import card_call, request_confirmation  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
@@ -170,6 +172,16 @@ def scene(as_app, liveness, no_persist, monkeypatch):
     # Review, P1-A (a): RESUME needs the late-approve flag too.
     monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", orgs)
     monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 0.05)
+
+    # HRD-22b (review, P1): the resume path also asks the Postgres witness
+    # (``late_approve.twin_ran``). These scenes test the REDIS layer (the mark,
+    # the ONE ``SET … GET``, the drop), so the witness answers "no twin ran"
+    # here. ``test_a_twin_that_ran_takes_the_old_path_with_no_redis_mark`` puts
+    # the real one back.
+    async def _no_twin(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(late_approve, "twin_ran", _no_twin)
 
     def _no_shared_redis() -> Any:
         raise RuntimeError("this test runs with no Redis: never a shared server")
@@ -767,6 +779,42 @@ def test_a_refusal_after_the_claim_gives_the_row_back(scene, monkeypatch):
                 w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is True
             assert pending_ask.restore_stored_call(
                 w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is False, "once"
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_twin_that_ran_takes_the_old_path_with_no_redis_mark(scene, monkeypatch):
+    """HRD-22b (review, P1). Both flags on. Twin rows A and B park. A is
+    approved and writes (one PATCH), and a stall of Redis leaves NO SPENT mark.
+    B's late Approve then reads Postgres: A was answered APPROVE after B was
+    asked, so ``_resume_from_row`` takes no claim. B gets the old path (the 409
+    ``run_restarted``, a card shows), and no second PATCH goes out. Mutation:
+    drop the ``twin_ran`` call of ``_resume_from_row`` -> B resumes and the
+    stored call writes again."""
+    monkeypatch.setattr(late_approve, "twin_ran", _REAL_TWIN_RAN)
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            first = await _park(r, tid, w.org_a)
+            twin = await _park(r, tid, w.org_a)
+            res = await _answer(tid, first, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["resumed"] is True
+            await _settle()
+            assert PATCHES == [("d-neuro", "Payment Complete")]
+            await client.flushdb()  # the stall: no mark of the act survives
+            res2 = await _answer(tid, twin, _ALICE, w.org_a)
+            assert getattr(res2, "status_code", None) == 409
+            assert res2.detail["error"] == "run_restarted"
+            await _settle()
+            assert PATCHES == [("d-neuro", "Payment Complete")], "no second write"
+            assert _row(w, w.org_a, twin)[:2] == ("answered", "APPROVE")
         finally:
             await client.flushdb()
             await client.aclose()
