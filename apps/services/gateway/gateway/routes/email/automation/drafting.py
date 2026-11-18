@@ -3931,27 +3931,49 @@ async def upsert_draft(
 
 async def save_chat_draft(
     fields: dict[str, Any], user: UserContext, *, thread: str, member: str, org: str,
+    replaces: str = "", act: str = "new_mail",
     upsert: Callable[[DraftUpsertRequest, UserContext], Awaitable[Any]] | None = None,
-) -> dict[str, Any]:
+) -> Any:
     """Save a NEW draft of a chat card through :func:`upsert_draft`, under the
     one-draft rule of ``acb_skills.card_revise.save_one_draft`` (task 3814).
 
     *fields* are the fields of a :class:`DraftUpsertRequest` with no
     ``draft_id``. *thread* is the chat thread that the card's record holds,
     and *member* and *org* come from the session, never from a request field
-    (R5). With ``CHAT_CARD_REVISE_ORGS`` off, it is the one save of before.
-    On, an earlier draft of the same email of this chat takes the save, and a
-    404 for it saves a new draft. *upsert* lets a caller pass the
-    ``upsert_draft`` that it imported."""
+    (R5). *replaces* is the id that the card's record holds, the draft that
+    the card said it replaces. With ``CHAT_CARD_REVISE_ORGS`` off, or with no
+    such id, it is the one save of before. The read of the earlier draft is
+    the read of :func:`_fetch_message_dict`, and the delete is the delete of
+    a message (``DELETE /email/messages/{id}``). *upsert* lets a caller pass
+    the ``upsert_draft`` that it imported. It answers the ``SavedDraft``."""
     from acb_skills.card_revise import save_one_draft
+    from gateway.routes.email.transport.messages import delete_message
 
     save = upsert or upsert_draft
+    account_id = str(fields.get("account_id") or "")
 
     async def put(body: dict[str, Any]) -> Any:
         return await save(DraftUpsertRequest(**body), user)
 
-    saved = await save_one_draft(put, fields, thread=thread, member=member, org=org)
-    return saved.result
+    async def read(draft_id: str) -> dict[str, Any] | None:
+        async with _tenant_session() as db:
+            row = await _fetch_message_dict(db, draft_id)
+        return row if row and str(row.get("account_id") or "") == account_id else None
+
+    async def delete(draft_id: str) -> Any:
+        return await delete_message(draft_id, user)
+
+    return await save_one_draft(put, fields, replaces=replaces, thread=thread, member=member,
+                                act=act, read=read, delete=delete, org=org)
+
+
+def replace_fields(saved: Any, rec: dict[str, Any]) -> dict[str, Any]:
+    """The keys of a card act's answer for the one-draft rule (task 3814):
+    the outcome and the earlier draft, only when the record named one. A card
+    with no ``replaces`` answers no new key."""
+    if not rec.get("replaces"):
+        return {}
+    return {"replace_outcome": saved.outcome, "replaced": saved.earlier}
 
 
 class DraftExpect(BaseModel):

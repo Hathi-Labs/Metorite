@@ -343,8 +343,11 @@ def test_the_chat_draws_each_text_as_a_draft_being_changed(act: str) -> None:
       the member line alone, and no step for the model reaches the member."""
     row = at.CARD_OUTCOMES[at.CLOSED_BY_YOUR_MESSAGE]
     text = agents._closed_by_message(act)
-    assert text.startswith(f"{row.lead}: {row.happened} Nothing was sent. ")
-    assert text.startswith(at.card_outcome_head(at.CLOSED_BY_YOUR_MESSAGE, "Nothing was sent."))
+    # Task 3814: an act that is not a send says so, and never "Nothing was sent."
+    head = ("Nothing was changed by this card." if act in ("new_draft", "edit_draft", "card")
+            else "Nothing was sent.")
+    assert text.startswith(f"{row.lead}: {row.happened} {head} ")
+    assert text.startswith(at.card_outcome_head(at.CLOSED_BY_YOUR_MESSAGE, head))
     assert row.next not in text
     cards = EMAIL_CARDS.read_text(encoding="utf-8")
     assert 'if (outcome === "closed by your message") return "revised";' in cards

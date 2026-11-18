@@ -11,17 +11,30 @@ This module holds two things, and both are dark behind ONE flag,
 ``CHAT_CARD_REVISE_ORGS``. Off, each card and each save is as before.
 
 1. :func:`card_revise_on` is THE reader of the flag. The email agent asks it
-   before a card of ``_card_refusal``, and turns ``close_on_steer`` on.
-2. :func:`save_one_draft` is THE save of a new draft from a chat. The chat
-   keeps a record of the drafts that it saved, for each chat thread, mailbox
-   and member, in tenant Redis (``acb_common.tenant_redis``, R5). A new save
-   of the same email updates the earlier draft in place. A draft that is gone
-   (404) gives a new draft, and the record takes its id. The email agent's
-   ``edit_draft`` and the two gateway saves of a new-mail card call it.
+   before a card of ``_confirm_destructive``, and turns ``close_on_steer`` on.
+2. The one-draft rule. The chat keeps a record of the drafts that it saved,
+   for each chat thread, mailbox and member, in tenant Redis
+   (``acb_common.tenant_redis``, R5). Each entry holds the draft id, the To
+   people, the subject and a digest of the stored text.
 
-What "the same email" means (:func:`same_mail`): the same To people, or the
-same subject with one To person in common. An email to other people is never
-the same email, so it never writes over a draft of theirs.
+The rule runs in two steps, so the member sees it BEFORE the approve:
+
+* :func:`plan_save` runs before the card. It names the draft that the save
+  replaces, or none. The card then shows :data:`REPLACES_LINE`.
+* :func:`save_one_draft` runs after the approve, with that id. It checks the
+  id again against the record, and then reads the draft. A draft that is gone
+  gives a new draft. A draft whose text differs from the digest was edited by
+  the member, so it stays as it is, and the save makes a new draft
+  (``kept``). A save with files makes the new draft first and then deletes
+  the old one, because no provider can drop a file of a draft. Any other save
+  updates the draft in place.
+
+What "the same email" means (:func:`same_mail`): the same To SET and the same
+subject (case, spaces and a "Re:" or "Fwd:" head do not count). A partial
+overlap of the To people is another email. The one other way is the redraft
+marker (:func:`mark_revised`): a card that a chat message closed names the
+draft that it was about, for :data:`MARKER_TTL_S`, and the next save of the
+same act may take that draft by its id.
 
 Every value of the key comes from the run or the session, never from the
 model or a request field (R5). A Redis fault never stops a save. It gives the
@@ -34,6 +47,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -43,14 +58,25 @@ from acb_common import get_logger
 _log = get_logger(__name__)
 
 #: The namespace of the record in tenant Redis:
-#: ``cc:<org>:chat-drafts:<thread hash>:<mailbox>:<member hash>``.
+#: ``cc:<org>:chat-drafts:<thread hash>:<mailbox hash>:<member hash>``.
 NAMESPACE = "chat-drafts"
-#: How long a record lives after its last save: seven days.
+#: How long a record lives after its last write: seven days.
 TTL_S = 7 * 24 * 3600
+#: How long a redraft marker lives: ten minutes.
+MARKER_TTL_S = 600
 #: The most drafts that one record keeps. The oldest goes first.
 MAX_DRAFTS = 20
 #: The longest wait for one Redis call.
 REDIS_TIMEOUT_S = 2.0
+#: The line of a card whose save replaces a draft of this chat.
+REPLACES_LINE = "This replaces the draft saved earlier in this chat."
+#: The acts that save a NEW draft. A marker names one of them.
+NEW_DRAFT = "new_draft"
+NEW_MAIL = "new_mail"
+
+#: The outcome of a save.
+CREATED, UPDATED, REPLACED, KEPT_EDITED, DELETE_FAILED = (
+    "created", "updated", "replaced", "kept_edited", "delete_failed")
 
 
 # ── The flag ─────────────────────────────────────────────────────────────────
@@ -89,15 +115,17 @@ def _org(org: object = None) -> str:
         return ""
 
 
-# ── The record ───────────────────────────────────────────────────────────────
+# ── The match ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class ChatDraft:
-    """One draft that a chat saved: its id, its To people and its subject."""
+    """One draft that a chat saved: its id, its To people, its subject key and
+    the digest of its stored subject and text."""
 
     draft_id: str
     to: tuple[str, ...]
     subject: str
+    digest: str = ""
 
 
 def _addresses(values: Iterable[Any] | None) -> tuple[str, ...]:
@@ -105,31 +133,45 @@ def _addresses(values: Iterable[Any] | None) -> tuple[str, ...]:
     return tuple(sorted({str(v).strip().lower() for v in values or () if str(v).strip()}))
 
 
-def _subject_key(subject: Any) -> str:
-    """The subject as the match reads it: the words, case folded."""
-    return " ".join(str(subject or "").split()).casefold()
+_HEAD = re.compile(r"^\s*(?:re|fwd?|aw|sv)\s*:\s*", re.IGNORECASE)
+
+
+def subject_key(subject: Any) -> str:
+    """The subject as the match reads it: no "Re:" or "Fwd:" head, the words,
+    case folded."""
+    text = " ".join(str(subject or "").split())
+    while True:
+        cut = _HEAD.sub("", text, count=1)
+        if cut == text:
+            break
+        text = cut
+    return text.casefold()
 
 
 def same_mail(draft: ChatDraft, to: Iterable[Any] | None, subject: Any) -> bool:
-    """True when a save to *to* with *subject* is the email of *draft*.
+    """True when a save to *to* with *subject* is the email of *draft*: the
+    same To SET and the same subject key. A partial overlap is another email."""
+    want = _addresses(to)
+    return bool(want) and want == draft.to and subject_key(subject) == draft.subject
 
-    The same To people, or the same subject with one To person in common.
-    An email to other people is never the same email."""
-    want = set(_addresses(to))
-    have = set(draft.to)
-    if not want or not have:
-        return False
-    if want == have:
-        return True
-    subj = _subject_key(subject)
-    return bool(subj) and subj == draft.subject and bool(want & have)
 
+def draft_digest(row: Any) -> str:
+    """The digest of a stored draft: its subject and its text, with the
+    spaces folded. *row* is the draft as a read or a save answers it."""
+    row = row if isinstance(row, dict) else {}
+    subject = " ".join(str(row.get("subject") or "").split())
+    body = " ".join(str(row.get("body_text") or "").split())
+    return hashlib.sha256(f"{subject}\x00{body}".encode()).hexdigest()[:32]
+
+
+# ── The record ───────────────────────────────────────────────────────────────
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest()[:24]
 
 
-def _key(org: str, thread: str, account_id: str, member: str) -> Any:
+def record_key(thread: str, account_id: str, member: str) -> Any:
+    """The key of one record. The org is the bound one (tenant Redis)."""
     from acb_common.tenant_redis import key
 
     return key(NAMESPACE, _hash(thread), _hash(account_id), _hash(member))
@@ -142,86 +184,146 @@ def get_tenant_redis() -> Any:
     return _client()
 
 
-def _drafts_of(raw: Any) -> list[ChatDraft]:
-    """The drafts of a stored record. A value that does not parse is none."""
+@dataclass
+class _Record:
+    drafts: list[ChatDraft]
+    marker: dict[str, Any]
+
+
+def _record_of(raw: Any) -> _Record:
+    """The record of a stored value. Version 1 was a list of drafts. A value
+    that does not parse is an empty record."""
     if isinstance(raw, (bytes, bytearray)):
         raw = bytes(raw).decode("utf-8", "replace")
     try:
-        rows = json.loads(raw) if raw else []
+        data = json.loads(raw) if raw else {}
     except (TypeError, ValueError):
-        return []
+        data = {}
+    rows = data if isinstance(data, list) else data.get("drafts") if isinstance(data, dict) else []
+    marker = data.get("marker") if isinstance(data, dict) else None
     out: list[ChatDraft] = []
     for row in rows if isinstance(rows, list) else []:
         if isinstance(row, dict) and str(row.get("id") or "").strip():
             out.append(ChatDraft(str(row["id"]).strip(), _addresses(row.get("to")),
-                                 _subject_key(row.get("subject"))))
-    return out
+                                 str(row.get("subject") or ""), str(row.get("digest") or "")))
+    return _Record(out, marker if isinstance(marker, dict) else {})
 
 
 def _parts(org: str, thread: str, account_id: str, member: str) -> bool:
     return all(str(v or "").strip() for v in (org, thread, account_id, member))
 
 
-async def _read(org: str, thread: str, account_id: str, member: str) -> list[ChatDraft]:
+async def _read(org: str, thread: str, account_id: str, member: str) -> _Record:
     from acb_common.tenant_redis import organization_scope
 
     with organization_scope(org):
         raw = await asyncio.wait_for(
-            get_tenant_redis().get(_key(org, thread, account_id, member)),
+            get_tenant_redis().get(record_key(thread, account_id, member)),
             timeout=REDIS_TIMEOUT_S)
-    return _drafts_of(raw)
+    return _record_of(raw)
 
 
-async def earlier_draft(
-    *, thread: str, account_id: str, member: str, to: Iterable[Any] | None,
-    subject: Any, org: object = None,
+async def _write(org: str, thread: str, account_id: str, member: str, rec: _Record) -> None:
+    from acb_common.tenant_redis import organization_scope
+
+    value = json.dumps({
+        "v": 2,
+        "drafts": [{"id": d.draft_id, "to": list(d.to), "subject": d.subject,
+                    "digest": d.digest} for d in rec.drafts[-MAX_DRAFTS:]],
+        **({"marker": rec.marker} if rec.marker else {}),
+    })
+    with organization_scope(org):
+        await asyncio.wait_for(
+            get_tenant_redis().set(record_key(thread, account_id, member), value, ex=TTL_S),
+            timeout=REDIS_TIMEOUT_S)
+
+
+def _live_marker(rec: _Record, act: str) -> str:
+    """The draft id of a live marker of *act* that the record still holds."""
+    m = rec.marker
+    if str(m.get("act") or "") != act or float(m.get("until") or 0) < time.time():
+        return ""
+    did = str(m.get("draft_id") or "")
+    return did if any(d.draft_id == did for d in rec.drafts) else ""
+
+
+# ── Before the card ──────────────────────────────────────────────────────────
+
+async def plan_save(
+    *, act: str, thread: str, account_id: str, member: str,
+    to: Iterable[Any] | None, subject: Any, org: object = None,
 ) -> str:
-    """The id of the newest draft that this chat saved for the same email,
-    or "". A Redis fault gives "", so the save makes a new draft."""
+    """The id of the draft that a save of *act* replaces, or "". It runs
+    BEFORE the card, so the card can show :data:`REPLACES_LINE`.
+
+    A live redraft marker of *act* wins. Else the newest draft of the same
+    email (:func:`same_mail`). The flag off, a missing part and a Redis fault
+    each give "", so the save makes a new draft."""
     org_id = _org(org)
-    if not _parts(org_id, thread, account_id, member):
+    if not (card_revise_on(org_id) and _parts(org_id, thread, account_id, member)):
         return ""
     try:
-        drafts = await _read(org_id, thread, account_id, member)
+        rec = await _read(org_id, thread, account_id, member)
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("card_revise.record_read_failed", error=type(exc).__name__)
         return ""
-    for draft in reversed(drafts):
+    marked = _live_marker(rec, act)
+    if marked:
+        return marked
+    for draft in reversed(rec.drafts):
         if same_mail(draft, to, subject):
             return draft.draft_id
     return ""
 
 
+async def mark_revised(
+    *, act: str, draft_id: str, thread: str, account_id: str, member: str,
+    org: object = None,
+) -> None:
+    """A card of *act* that a chat message closed was about *draft_id*. The
+    next save of *act* may take that draft for :data:`MARKER_TTL_S`, even
+    with other people or another subject. No id writes no marker."""
+    org_id = _org(org)
+    did = str(draft_id or "").strip()
+    if not (did and card_revise_on(org_id) and _parts(org_id, thread, account_id, member)):
+        return
+    try:
+        rec = await _read(org_id, thread, account_id, member)
+        if all(d.draft_id != did for d in rec.drafts):
+            return
+        rec.marker = {"act": act, "draft_id": did, "until": time.time() + MARKER_TTL_S}
+        await _write(org_id, thread, account_id, member, rec)
+    except Exception as exc:  # the class only
+        _log.warning("card_revise.marker_write_failed", error=type(exc).__name__)
+
+
+# ── After the approve ────────────────────────────────────────────────────────
+
 async def note_draft(
     *, thread: str, account_id: str, member: str, draft_id: str,
-    to: Iterable[Any] | None, subject: Any, replaces: str = "",
-    only_if_known: bool = False, org: object = None,
+    to: Iterable[Any] | None, subject: Any, digest: str = "", replaces: str = "",
+    only_if_known: bool = False, act: str = "", org: object = None,
 ) -> None:
     """Write *draft_id* into the record, as the newest draft of this chat.
 
-    *replaces* names a draft id that leaves the record, such as a draft that
-    was gone. With *only_if_known*, the record changes only when it already
-    holds *draft_id* or *replaces*: ``edit_draft`` of any other draft never
-    joins it. A Redis fault writes nothing and never raises."""
+    *replaces* names a draft id that leaves the record. With *only_if_known*,
+    the record changes only when it already holds *draft_id* or *replaces*:
+    ``edit_draft`` of any other draft never joins it. A save of *act* spends
+    the marker of *act*. A Redis fault writes nothing and never raises."""
     org_id = _org(org)
     did = str(draft_id or "").strip()
     if not (did and _parts(org_id, thread, account_id, member)):
         return
     try:
-        from acb_common.tenant_redis import organization_scope
-
-        drafts = await _read(org_id, thread, account_id, member)
+        rec = await _read(org_id, thread, account_id, member)
         gone = {did, str(replaces or "").strip()} - {""}
-        if only_if_known and all(d.draft_id not in gone for d in drafts):
+        if only_if_known and all(d.draft_id not in gone for d in rec.drafts):
             return
-        rows = [{"id": d.draft_id, "to": list(d.to), "subject": d.subject}
-                for d in drafts if d.draft_id not in gone]
-        rows.append({"id": did, "to": list(_addresses(to)), "subject": _subject_key(subject)})
-        with organization_scope(org_id):
-            await asyncio.wait_for(
-                get_tenant_redis().set(_key(org_id, thread, account_id, member),
-                                       json.dumps(rows[-MAX_DRAFTS:]), ex=TTL_S),
-                timeout=REDIS_TIMEOUT_S)
+        rec.drafts = [d for d in rec.drafts if d.draft_id not in gone]
+        rec.drafts.append(ChatDraft(did, _addresses(to), subject_key(subject), digest))
+        if act and rec.marker.get("act") == act:
+            rec.marker = {}
+        await _write(org_id, thread, account_id, member, rec)
     except Exception as exc:  # the class only
         _log.warning("card_revise.record_write_failed", error=type(exc).__name__)
 
@@ -235,44 +337,100 @@ def _gone(exc: BaseException) -> bool:
 
 @dataclass(frozen=True)
 class SavedDraft:
-    """The answer of the save, and the id of the draft that it updated, or ""."""
+    """The answer of the save, its outcome, and the earlier draft that it
+    updated, replaced or kept, or ""."""
 
     result: dict[str, Any]
-    updated: str = ""
+    outcome: str = CREATED
+    earlier: str = ""
+
+    @property
+    def updated(self) -> str:
+        """The id of the draft whose place the save took, or ""."""
+        return self.earlier if self.outcome in (UPDATED, REPLACED, DELETE_FAILED) else ""
+
+
+_DRAFT_FOLDERS = ("drafts", "draft")
 
 
 async def save_one_draft(
     put: Callable[[dict[str, Any]], Awaitable[Any]], payload: dict[str, Any], *,
-    thread: str, member: str, org: object = None,
+    replaces: str, thread: str, member: str, act: str,
+    read: Callable[[str], Awaitable[Any]],
+    delete: Callable[[str], Awaitable[Any]],
+    org: object = None,
 ) -> SavedDraft:
-    """Save a NEW draft of a chat, or update the draft of the same email that
-    this chat saved before. THE one-draft rule (task 3814).
+    """Save a NEW draft of a chat, under the one-draft rule (task 3814).
 
-    *put* saves *payload* (``PUT /email/drafts``, or the gateway's
-    ``upsert_draft``) and answers the saved draft, with its ``id``. With the
-    flag off, no thread or no member, it saves *payload* as before. Else an
-    earlier draft of the same email takes the save, by its ``draft_id``. A
-    404 for it saves a new draft, and the record takes the new id in its
-    place. Each other failure of *put* raises, as before."""
+    *replaces* is the id that :func:`plan_save` gave before the card, and the
+    card showed :data:`REPLACES_LINE`. With "" the save is a new draft, as
+    before. *put* saves a payload (``PUT /email/drafts`` or ``upsert_draft``)
+    and answers the stored draft. *read* answers a stored draft, or None.
+    *delete* moves a draft to the trash (the delete path of a message).
+
+    With the id, the save checks it again against the record. A draft that
+    is gone gives a new draft. A draft that the member edited stays, and the
+    save makes a new draft (``kept_edited``). A save with files makes a new
+    draft and then deletes the old one. Else it updates the draft in place."""
     account_id = str(payload.get("account_id") or "")
     org_id = _org(org)
-    if not (card_revise_on(org_id) and _parts(org_id, thread, account_id, member)):
+    on = card_revise_on(org_id) and _parts(org_id, thread, account_id, member)
+    if not on:
         return SavedDraft(dict(await put(payload) or {}))
-    to, subject = payload.get("to"), payload.get("subject")
-    earlier = await earlier_draft(thread=thread, account_id=account_id, member=member,
-                                  to=to, subject=subject, org=org_id)
-    res: dict[str, Any] | None = None
-    if earlier:
-        try:
-            res = dict(await put({**payload, "draft_id": earlier}) or {})
-        except Exception as exc:
-            if not _gone(exc):
-                raise
+    target = await _known(str(replaces or "").strip(), org_id, thread, account_id, member)
+    outcome, res = CREATED, None
+    if target:
+        row = await read(target.draft_id)
+        if not isinstance(row, dict) or str(row.get("folder") or "").lower() not in _DRAFT_FOLDERS:
             _log.info("card_revise.earlier_draft_gone")
-    updated = earlier if res is not None else ""
+        elif not target.digest or draft_digest(row) != target.digest:
+            outcome = KEPT_EDITED
+        elif payload.get("attachments") or payload.get("artifacts"):
+            outcome = REPLACED
+        else:
+            try:
+                res = dict(await put({**payload, "draft_id": target.draft_id}) or {})
+                outcome = UPDATED
+            except Exception as exc:
+                if not _gone(exc):
+                    raise
+                _log.info("card_revise.earlier_draft_gone")
     if res is None:
         res = dict(await put(payload) or {})
+    if outcome == REPLACED:
+        try:
+            await delete(target.draft_id)
+        except Exception as exc:  # the new draft stays, and the answer says so
+            _log.warning("card_revise.earlier_draft_delete_failed", error=type(exc).__name__)
+            outcome = DELETE_FAILED
+    earlier = target.draft_id if target else ""
     await note_draft(thread=thread, account_id=account_id, member=member,
-                     draft_id=str(res.get("id") or updated), to=to, subject=subject,
-                     replaces=earlier, org=org_id)
-    return SavedDraft(res, updated)
+                     draft_id=str(res.get("id") or earlier), to=payload.get("to"),
+                     subject=payload.get("subject"), digest=draft_digest(res),
+                     replaces="" if outcome in (KEPT_EDITED, DELETE_FAILED) else earlier,
+                     act=act, org=org_id)
+    if outcome == KEPT_EDITED:
+        # The member's own version stays in Drafts, and never a target again.
+        await _forget(earlier, org_id, thread, account_id, member)
+    return SavedDraft(res, outcome, earlier)
+
+
+async def _known(did: str, org: str, thread: str, account_id: str, member: str) -> ChatDraft | None:
+    """The record entry of *did*, or None. A Redis fault gives None."""
+    if not did:
+        return None
+    try:
+        rec = await _read(org, thread, account_id, member)
+    except Exception as exc:
+        _log.warning("card_revise.record_read_failed", error=type(exc).__name__)
+        return None
+    return next((d for d in rec.drafts if d.draft_id == did), None)
+
+
+async def _forget(did: str, org: str, thread: str, account_id: str, member: str) -> None:
+    try:
+        rec = await _read(org, thread, account_id, member)
+        rec.drafts = [d for d in rec.drafts if d.draft_id != did]
+        await _write(org, thread, account_id, member, rec)
+    except Exception as exc:
+        _log.warning("card_revise.record_write_failed", error=type(exc).__name__)
