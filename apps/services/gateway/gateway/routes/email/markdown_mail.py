@@ -27,12 +27,15 @@ converter. It gives the plain text part and the HTML part of the mail.
   ``https:``, ``mailto:`` or ``tel:`` link and drops a ``style`` that loads a
   resource. Each link asks it first. A link that it refuses shows its words
   and its address as text, with no link.
-* A link whose words LOOK LIKE an address never points to another address
-  (:func:`_label_misleads`). It shows its words and its address as text. A
-  link whose words are plain words (``[Pay the invoice](…)``) stays a link,
-  and its address shows only where the mail client shows a link address.
+* **The clickable text of a link is always its real address.** The words of
+  the link show beside it, as text: ``words (<a>address</a>)``. When the
+  words are the address, one link shows the address (:func:`_link_html`).
+  So no words, and no text beside a link, can make a link read as another
+  address.
 * A body nested to one level below the parser's limit gets no HTML
   (:func:`_too_deep`), because the parser drops content past that limit. A
+  table with a body row of more cells than its header gets no HTML
+  (:func:`_table_drops_cells`), because the parser drops those cells. A
   fault of the converter gives no HTML too, and the mail goes as text.
 
 The signature is not added here. ``signature.build_signed_bodies`` adds it
@@ -45,7 +48,6 @@ from __future__ import annotations
 
 import html as _html
 import re
-import unicodedata
 from functools import lru_cache
 from typing import Any, NamedTuple
 from urllib.parse import unquote
@@ -86,19 +88,12 @@ _STRUCTURE_BLOCKS = frozenset({
 #: The bidi controls U+202A to U+202E and U+2066 to U+2069. They go from both
 #: parts, because they can turn around the text that a reader sees.
 _BIDI = re.compile(r"[\u202a-\u202e\u2066-\u2069]")
-#: Words that look like an address: a scheme, ``www.``, an ``@``, a dotted
-#: host such as ``bank.test/pay``, or an IPv4 address. A host can hold any
-#: letter, so a label with a Cyrillic look-alike letter is an address too.
-#: The words are folded first (:func:`_fold`).
-_ADDRESS_FORM = re.compile(
-    r"://|www\.|@|[\w-]+\.[^\W\d_]{2,}|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.IGNORECASE)
 _SCHEME = re.compile(r"^(?:https?://|mailto:|tel:)", re.IGNORECASE)
-#: The text that touches a link and continues an address: a run with no
-#: space that ends in ``.``, ``/`` or ``@`` before it, and a run that starts
-#: with ``.`` and a letter or digit, ``/`` or ``@`` after it. A full stop at
-#: the end of a sentence does not continue an address.
-_TAIL = re.compile(r"\S*[./@]$")
-_HEAD = re.compile(r"^(?:\.[^\W_]|[/@])\S*")
+#: A cell separator of a table row: a ``|`` with no backslash before it.
+_CELL_PIPE = re.compile(r"(?<!\\)\|")
+#: The quote marks and the indent before a table row in a quote or a list,
+#: and a list marker right before the ``|`` of a row that starts a list item.
+_ROW_PREFIX = re.compile(r"^[ \t]*(?:>[ \t]?)*[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+(?=\|))?")
 
 
 class MailBodies(NamedTuple):
@@ -180,6 +175,37 @@ def _too_deep(tokens: list[Any]) -> bool:
     return any(token.level >= limit - 1 for token in tokens)
 
 
+def _row_cells(line: str) -> int:
+    """The cells of one table row as typed: its separators, after one outer
+    ``|`` at each end. A ``\\|`` is no separator. A ``|`` in backticks is one,
+    as in GFM."""
+    row = _ROW_PREFIX.sub("", line).strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|") and not row.endswith("\\|"):
+        row = row[:-1]
+    return len(_CELL_PIPE.findall(row)) + 1
+
+
+def _table_drops_cells(tokens: list[Any], text: str) -> bool:
+    """True when a body row of a table has more cells than its header row.
+
+    The parser keeps as many cells in each row as the header has, and drops
+    the rest (markdown-it-py 4.2.0). Each row token names its source line."""
+    lines = text.split("\n")
+    header = 0
+    for token in tokens:
+        if token.type == "thead_open":
+            header = -1
+        elif token.type == "tr_open" and token.map:
+            cells = _row_cells(lines[token.map[0]])
+            if header == -1:
+                header = cells
+            elif cells > header:
+                return True
+    return False
+
+
 # ── The HTML part ───────────────────────────────────────────────────────────
 
 #: THE sanitizer of the HTML part: the server allowlist of mail HTML. Each
@@ -195,49 +221,12 @@ def _link_kept(href: str) -> bool:
     return ' href="' in _sanitize(f'<a href="{href}">.</a>')
 
 
-def _fold(words: str) -> str:
-    """The words as a reader sees them: NFKC folds a look-alike dot (U+2024,
-    U+FE52, U+FF0E, U+FF61) and a wide letter, U+3002 becomes ``.``, and
-    each format character (zero-width space, word joiner, soft hyphen, bidi
-    control) goes."""
-    folded = unicodedata.normalize("NFKC", words).replace("\u3002", ".")
-    return "".join(c for c in folded if unicodedata.category(c) != "Cf")
-
-
 def _address_key(value: str) -> str:
     """An address for a compare: no scheme, no ``www.``, no end slash, lower
     case, with each percent escape read."""
     key = _SCHEME.sub("", unquote(value).strip().lower())
     key = key[len("www."):] if key.startswith("www.") else key
     return key.rstrip("/")
-
-
-def _label_misleads(words: str, href: str) -> bool:
-    """True when the words of a link look like an address and are not the
-    address of the link. ``[https://acme.test/pay](https://evil.test/pay)``
-    would show one address and go to another, so it shows both as text. A
-    link whose words are plain words is not this case."""
-    folded = _fold(words)
-    return bool(_ADDRESS_FORM.search(folded)) and _address_key(folded) != _address_key(href)
-
-
-def _text_at(node: Any, pattern: re.Pattern[str]) -> str:
-    """The run with no space that ``pattern`` takes from a text node, or ""."""
-    if node is None or node.type != "text":
-        return ""
-    found = pattern.search(node.content)
-    return found.group() if found else ""
-
-
-def _link_misleads(node: Any, words: str, href: str) -> bool:
-    """:func:`_label_misleads` for the words of a link, and for its words
-    with the text that touches them on each side. ``[acme](https://evil.test)
-    .com/pay`` reads as ``acme.com/pay``, with only ``acme`` as a link."""
-    if _label_misleads(words, href):
-        return True
-    before = _text_at(node.previous_sibling, _TAIL)
-    after = _text_at(node.next_sibling, _HEAD)
-    return bool(before or after) and _label_misleads(f"{before}{words}{after}", href)
 
 
 def _esc(value: str) -> str:
@@ -265,18 +254,31 @@ def _inline_html(node: Any) -> str:
         elif kind == "code_inline":
             out.append(f"{_open('span', 'code')}{_esc(child.content)}</span>")
         elif kind == "link":
-            raw = str(child.attrs.get("href") or "")
-            href = _html.escape(raw, quote=True)
-            if _link_kept(href) and not _link_misleads(child, _inline_text(child), raw):
-                out.append(f'<a href="{href}">{_inline_html(child)}</a>')
-            else:
-                out.append(_esc(_link_text(child)))
+            out.append(_link_html(child))
         elif kind == "image":
             # The alt text only: a mail from the chat loads no image.
             out.append(_esc(_inline_text(child)))
         else:
             out.append(_esc(child.content or ""))
     return "".join(out)
+
+
+def _link_html(node: Any) -> str:
+    """One link: its words as text, then ONE anchor whose clickable text is
+    the real address, as ``words (<a>address</a>)``. When the words are the
+    address (an autolink, or ``[acme.test](https://acme.test)``), the anchor
+    alone shows. The address is the parser's ``href``, so a host outside
+    ASCII shows as its punycode. A link that the allowlist refuses shows
+    its words and its address as text, with no anchor."""
+    raw = str(node.attrs.get("href") or "")
+    href = _html.escape(raw, quote=True)
+    if not _link_kept(href):
+        return _esc(_link_text(node))
+    anchor = f'<a href="{href}">{_esc(raw)}</a>'
+    words = _inline_text(node)
+    if not words.strip() or _address_key(words) == _address_key(raw):
+        return anchor
+    return f"{_inline_html(node)} ({anchor})"
 
 
 def _link_text(node: Any) -> str:
@@ -362,8 +364,8 @@ def _blocks_html(nodes: Any, depth: int = 0) -> str:
 def _convert(text: str) -> str | None:
     """The HTML part of ``text``, or None when it gets no HTML."""
     tokens = _parser().parse(text)
-    if _too_deep(tokens):
-        return None  # the parser can drop content at this depth
+    if _too_deep(tokens) or _table_drops_cells(tokens, text):
+        return None  # the parser can drop content of this body
     root = _tree(tokens)
     if not _has_structure(root):
         return None

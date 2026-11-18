@@ -21620,20 +21620,15 @@ text part and the HTML part of the mail.
   Each link asks it first. An `https:`, `mailto:` or `tel:` link stays a link. Any other link
   shows its words and its address as text. A Markdown image shows its alt text and loads
   nothing.
-- **The link rule.** A link whose words LOOK LIKE an address never points to another address.
-  When the two differ, the words and the address show as text, with no link. This rule binds
-  every chat. The rule does not bind plain words: `[Pay the invoice](…)` stays a link, and its
-  address shows only where the mail client shows a link address.
-  - The check folds the words first, as a reader sees them. NFKC folds a look-alike dot (U+2024,
-    U+FE52, U+FF0E, U+FF61) and U+3002 becomes a dot. Each format character goes, such as a
-    zero-width space, a word joiner, a soft hyphen or a bidi control.
-  - The folded words look like an address when they hold `://`, `www.`, `@`, a dotted host
-    such as `bank.test/pay` (any letters), or an IPv4 address.
-  - The check also reads the words with the text that touches them and continues an address.
-    So `[acme](https://evil.test).com/pay` shows as text.
-  - The compare drops the scheme, `www.`, an end slash and the case, and it reads each
-    percent escape. A file name such as `[Q3_report.pdf](https://drive…)` looks like an
-    address, so it shows as text with its long address. That is accepted.
+- **The link rule.** The clickable text of a link is always its real address. The words of
+  the link show beside it. So `[Pay the invoice](https://pay.test/x)` shows as "Pay the
+  invoice (https://pay.test/x)", and only the address is clickable. The address is the
+  parser's own, so a host with letters outside ASCII shows as its punycode.
+  - When the words are the address, one link shows the address alone. The compare drops the
+    scheme, `www.`, an end slash and the case, and it reads each percent escape. An autolink
+    (`<https://x.test>`) is this case.
+  - This binds every chat, by construction. The words of a link, and the text beside it, do
+    not change the clickable text. A long address, such as a file in a drive, shows whole.
 - **The text part rule.** The text part is the Markdown as written, and it never loses a
   character. Only the bidi controls U+202A to U+202E and U+2066 to U+2069 go, from both
   parts. A held run and a draft send or hold this same text.
@@ -21647,6 +21642,12 @@ text part and the HTML part of the mail.
 - **The depth rule.** The parser stops a block at 20 levels, and it drops the rest of that
   block. So a body with a block token at level 19 or deeper gets no HTML. A list nested 9
   deep, or a quote nested 18 deep, reaches that level.
+- **The table rule.** The parser keeps as many cells in a row as the header row has, and it
+  drops the rest. So a body gets no HTML when a body row of a table has more cells than its
+  header row. The count reads each row line as typed, after the quote marks, the indent and
+  a list marker. It drops one outer `|` at each end, and it counts each `|` with no
+  backslash before it. A `|` in backticks counts, as in GFM. A row with fewer cells keeps
+  its HTML.
 - A fault of the converter sends the text alone, and `POST /email/send` never answers 500
   for it.
 - `signature.build_signed_bodies` adds the signature once to each part. A Markdown send holds

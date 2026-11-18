@@ -12,13 +12,14 @@ What this file fences (R7). Each test names the mutation that turns it red.
 2. Nothing that loads or runs goes out: a script, a ``javascript:`` or a
    ``data:`` link, an event attribute, remote CSS, a frame, a form, an image,
    a style with ``url(``, a bidi control. The final pass alone drops them
-   too. A link whose words LOOK LIKE an address never points to another
-   address, in every chat. A link with plain words stays a link.
-   ``test_*_never_*``, ``test_the_final_pass_*``, ``test_a_link_*``.
+   too. The clickable text of a link is always its real address. The words
+   of the link show beside it. ``test_*_never_*``, ``test_the_final_pass_*``,
+   ``test_the_clickable_text_*``, ``test_the_words_of_a_link_*``.
 3. The text part is the body as written, and never loses a character. A
-   body with no real structure, or as deep as the parser limit, gets no
-   HTML. A fault of the converter sends the text. ``test_the_text_part_*``,
-   ``test_a_body_as_deep_*``, ``test_a_fault_*``.
+   body with no real structure, as deep as the parser limit, or with a table
+   row of more cells than its header, gets no HTML. A fault of the
+   converter sends the text. ``test_the_text_part_*``,
+   ``test_a_body_as_deep_*``, ``test_a_table_row_*``, ``test_a_fault_*``.
 4. A fixed sample gives a fixed HTML, and that HTML is a fixed point of the
    sanitizer. ``test_the_golden_*``. A plain body sends as before: its own
    text, no HTML. ``test_plain_*``.
@@ -37,6 +38,7 @@ The database, Redis and the provider are fakes. No test sends a mail.
 from __future__ import annotations
 
 import contextlib
+import html as _html
 import json
 import re
 import types
@@ -237,78 +239,75 @@ def test_the_final_pass_alone_drops_what_loads_or_runs() -> None:
     assert 'href="http:' not in (mm.mail_bodies("- [x](http://a.test)").html or "")
 
 
-@pytest.mark.parametrize("label_href", [
-    ("https://acme.test/pay", "https://evil.test/pay"),   # one address shown, another used
-    ("acme.test/pay", "https://evil.test/pay"),           # a dotted host, no scheme
-    ("https://acme.test", "https://evil.test"),           # another host
-    ("www.acme.test", "https://evil.test"),
-    ("jane@acme.test", "mailto:mallory@evil.test"),       # another mail address
-    ("b" + chr(0x430) + "nk.test/pay", "https://evil.test/pay"),  # a Cyrillic look-alike
-    ("".join(map(chr, (0x43F, 0x440, 0x438, 0x43C, 0x435, 0x440))) + ".xn/pay",
-     "https://evil.test/pay"),                            # a host with no Latin letter
-    # Review round 2: a look-alike dot, an IPv4 address, and a format
-    # character inside the address.
-    ("acme" + chr(0x2024) + "com", "https://evil.com"),  # one dot leader
-    ("acme" + chr(0xFF0E) + "com", "https://evil.com"),  # a full-width full stop
-    ("acme" + chr(0xFE52) + "com", "https://evil.com"),  # a small full stop
-    ("acme" + chr(0x3002) + "com", "https://evil.com"),  # an ideographic full stop
-    ("acme" + chr(0xFF61) + "com", "https://evil.com"),  # its half-width form
-    ("10.0.0.1", "https://evil.com"),
-    ("acme" + chr(0x200B) + ".com", "https://evil.com"),  # a zero-width space
-    ("acme." + chr(0x2060) + "com", "https://evil.com"),  # a word joiner
-    ("ac" + chr(0xAD) + "me.com/pay", "https://evil.com/pay"),  # a soft hyphen
-])
-def test_a_link_whose_words_name_another_address_is_text(label_href: tuple[str, str]) -> None:
-    """The review of task 3605, P1. A top-level chat that read a stranger's
-    mail is not a held run, so it sends HTML. A link whose words LOOK LIKE an
-    address never points to another address: both show as text. Mutation:
-    drop ``_link_misleads`` from ``_inline_html``, drop ``_fold``, or drop
-    the IPv4 form → red."""
-    label, href = label_href
-    out = mm.mail_bodies(f"- [{label}]({href})")
-    assert out.html is not None and "<a" not in out.html
-    shown = href[len("mailto:"):] if href.startswith("mailto:") else href
-    assert f"{label} ({shown})" in out.html
+#: Look-alike dots of the review (rounds 2 and 3). Each one stands in for
+#: ``.`` between ``acme`` and ``com``.
+LOOKALIKE_DOTS = (0x2024, 0xFF0E, 0xFE52, 0x3002, 0xFF61, 0x0701, 0x0702, 0x06D4, 0x2E3C,
+                  0xA4F8, 0xA60E, 0x0660, 0x06F0, 0x10A50, 0x00B7, 0x30FB)
+EVIL = "https://evil.example/pay"
+#: Bodies whose link words, or the text beside a link, could read as another
+#: address. The property below holds for each one by construction.
+LINK_BODIES = [
+    *(f"- [acme{chr(c)}com]({EVIL})" for c in LOOKALIKE_DOTS),
+    *(f"- [acme]({EVIL}){chr(c)}com" for c in LOOKALIKE_DOTS[:4]),
+    f"- [10.0.0.1]({EVIL})",
+    f"- [https://acme.test/pay]({EVIL})",
+    f"- [acme.test/pay]({EVIL})",
+    f"- [www.acme.test]({EVIL})",
+    f"- [b{chr(0x430)}nk.test]({EVIL})",
+    f"- [acme{chr(0x200B)}.com]({EVIL})",
+    f"- [ac{chr(0xAD)}me.com]({EVIL})",
+    f"- [acme]({EVIL}).com/pay",
+    f"- [acme]({EVIL})**.com**",
+    f"- acme[.com]({EVIL})",
+    f"- [ac]({EVIL})me.com",
+    f"- www.[acme]({EVIL})",
+    "- [jane@acme.test](mailto:mallory@evil.example)",
+    f"- [Pay the invoice]({EVIL})",
+    f"- []({EVIL})",
+    f"- [<b>acme.com</b>]({EVIL})",
+    f"- [**acme.com**]({EVIL})",
+    f"- [`acme.com`]({EVIL})",
+    "- [the plan](https://e.test/plan)",
+    "- [acme.test](https://acme.test)",
+    "- <https://acme.test/pay>",
+    "- <jane@acme.test>",
+    "- [call us](tel:+911234)",
+    f"- [caf{chr(0xE9)}.test](https://caf{chr(0xE9)}.test/men{chr(0xFC)})",
+]
+_ANCHOR = re.compile(r"<a href=\"([^\"]*)\">(.*?)</a>", re.DOTALL)
 
 
-@pytest.mark.parametrize("label_href", [
-    ("https://acme.test/pay", "https://acme.test/pay"),   # the same address
-    ("acme.test/pay/", "https://acme.test/pay"),          # no scheme, an end slash
-    ("www.x.test", "https://x.test"),                     # ``www.`` and the case
-    ("WWW.X.TEST", "https://x.test/"),
-    ("the plan", "https://evil.test/plan"),               # plain words: a normal link
-    ("jane@acme.test", "mailto:jane@acme.test"),
-    ("Jane", "mailto:jane@acme.test"),
-    ("acme.com", "https://acme.com"),
-    ("10.0.0.1", "https://10.0.0.1"),
-])
-def test_a_link_whose_words_match_or_name_no_address_stays_a_link(
-    label_href: tuple[str, str],
-) -> None:
-    """Plain words stay a link: the rule binds only words that look like an
-    address. Their address shows where the mail client shows one."""
-    label, href = label_href
-    out = mm.mail_bodies(f"- [{label}]({href})")
-    assert out.html is not None and f'<a href="{href}">{label}</a>' in out.html
-
-
-@pytest.mark.parametrize(("body", "linked"), [
-    ("- [acme](https://evil.example).com/pay", False),   # reads as acme.com/pay
-    ("- www.[acme](https://evil.example)", False),        # reads as www.acme
-    ("- [Acme](https://acme.com).com", True),             # reads as its own address
-    ("- See [the plan](https://e.test/p).", True),        # a full stop after it
-    ("- [Acme](https://acme.test)'s site", True),
-    ("- ([Acme](https://e.test))", True),
-])
-def test_a_link_and_the_text_that_touches_it_read_as_one_address(
-    body: str, linked: bool,
-) -> None:
-    """The review of task 3605, round 2: ``[acme](https://evil.example)
-    .com/pay`` shows ``acme.com/pay``, with only ``acme`` as a link. The
-    check reads the words with the text that touches them on each side.
-    Mutation: check the words alone → red."""
+@pytest.mark.parametrize("body", LINK_BODIES)
+def test_the_clickable_text_of_each_link_is_its_real_address(body: str) -> None:
+    """The review of task 3605, round 3: no words of a link, and no text
+    beside a link, can make it read as another address. So the clickable
+    text of each anchor is its ``href``, whole, and each link has one anchor.
+    Mutation: render the words as the anchor text → red."""
     out = mm.mail_bodies(body)
-    assert out.html is not None and ("<a href" in out.html) is linked
+    assert out.html is not None
+    anchors = _ANCHOR.findall(out.html)
+    assert len(anchors) == 1, out.html
+    for href, shown in anchors:
+        assert "<" not in shown and _html.unescape(shown) == _html.unescape(href)
+
+
+def test_the_words_of_a_link_show_beside_its_address() -> None:
+    out = mm.mail_bodies(f"- [Pay the invoice]({EVIL})")
+    assert out.html is not None
+    assert f'Pay the invoice (<a href="{EVIL}">{EVIL}</a>)' in out.html
+    assert out.text == f"- [Pay the invoice]({EVIL})"  # the text part as written
+
+
+@pytest.mark.parametrize("body", [
+    "- <https://acme.test/pay>", "- [acme.test/pay](https://acme.test/pay)",
+    "- [WWW.ACME.TEST](https://acme.test/)", "- [](https://acme.test/pay)",
+])
+def test_a_link_whose_words_are_its_address_shows_one_anchor_alone(body: str) -> None:
+    """The words name the same address (no scheme, ``www.``, end slash or
+    case), or there are no words: the anchor alone shows its address."""
+    out = mm.mail_bodies(body)
+    assert out.html is not None and " (<a" not in out.html
+    assert len(_ANCHOR.findall(out.html)) == 1
 
 
 @pytest.mark.parametrize("body", [
@@ -374,6 +373,35 @@ def test_a_body_below_the_parser_limit_keeps_its_html(body: str) -> None:
     assert out.html is not None and out.text == body
 
 
+@pytest.mark.parametrize("body", [
+    "| Name | Phone |\n|---|---|\n| Priya | +91 98450 | +91 99000 |",
+    "| Cmd | Note |\n|---|---|\n| `a | b` | x |",            # a pipe in code splits
+    "Name | Phone\n---|---\nPriya | +91 1 | +91 2",              # no outer pipes
+    "> | a | b |\n> |---|---|\n> | 1 | 2 | 3 |",                # in a quote
+    "- | a | b |\n  |---|---|\n  | 1 | 2 | 3 |",                # in a list item
+])
+def test_a_table_row_with_more_cells_than_its_header_gets_no_html(body: str) -> None:
+    """The review of task 3605, round 3: the parser keeps as many cells in a
+    row as its header has, and drops the rest (``+91 99000``). That body
+    sends as text, whole. Mutation: drop ``_table_drops_cells`` from
+    ``_convert`` → red."""
+    assert mm.mail_bodies(body) == (body, None)
+
+
+@pytest.mark.parametrize(("body", "kept"), [
+    ("| a | b | c |\n|---|---|---|\n| 1 | 2 |", ["1", "2"]),        # fewer cells
+    ("| a | b |\n|---|---|\n| 1 \\| 2 | 3 |", ["1 | 2", "3"]),  # an escaped pipe in a row
+])
+def test_a_table_row_with_no_more_cells_than_its_header_keeps_its_html(
+    body: str, kept: list[str],
+) -> None:
+    """Mutation: count an escaped pipe as a separator → red."""
+    out = mm.mail_bodies(body)
+    assert out.html is not None
+    for cell in kept:
+        assert f">{cell}</td>" in out.html
+
+
 def test_a_bidi_control_goes_from_both_parts() -> None:
     """U+202A to U+202E and U+2066 to U+2069 can turn the text that a reader
     sees around. This module removes only them: a zero-width space stays in
@@ -433,7 +461,8 @@ GOLDEN_HTML = (
     '<td style="border: 1px solid #cccccc; padding: 6px 10px; text-align: left">Laptops</td>'
     '<td style="border: 1px solid #cccccc; padding: 6px 10px; text-align: right">4</td>'
     "</tr></tbody></table>"
-    '<p style="margin: 0 0 12px 0">See <a href="https://e.test/plan">the plan</a>.'
+    '<p style="margin: 0 0 12px 0">See the plan '
+    '(<a href="https://e.test/plan">https://e.test/plan</a>).'
     "<br>Best,<br>Jane</p>"
 )
 #: The text part is the Markdown as written (the review of task 3605, P2).
