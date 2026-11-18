@@ -1597,7 +1597,7 @@ Each fence is advisory until its slice builds.
 
 ## 9d. Personal work: Done in the inbox, a task with no project, the two space names, and My tasks in the sidebar (2026-11-18)
 
-**Status:** 📋 SPEC. Nothing is built. The owner asked for this on 2026-11-18, in chat, with a capture of My tasks. Verified against `origin/main` at `f4c6ff08f`. Metorite: the tasks are filed when the board connects again (§9d.4).
+**Status:** 📋 SPEC. Nothing is built. The owner asked for this on 2026-11-18, in chat, with a capture of My tasks. Verified against `origin/main` at `f4c6ff08f`. Metorite: spec task 3759, slices MW-1 to MW-4 are tasks 3753 to 3756, and the demo is task 3757.
 
 ### 9d.1 The owner's asks
 
@@ -1672,15 +1672,15 @@ The owner also asked for a brainstorm about Calendar and the chat. The reply to 
 
 ### 9d.4 The slices
 
-One rung (D211). Its demo is on production. The owner closes a capture from the inbox and adds a task under Today with no project. Then the owner reads both tips and opens My tasks from the sidebar.
+One rung (D211). Its demo is task 3757, on production. The owner closes a capture from the inbox and adds a task under Today with no project. Then the owner reads both tips and opens My tasks from the sidebar.
 
 | Slice | Task | What | Done when | Tier |
 |---|---|---|---|---|
-| MW-1 | to file | Done on each inbox row, card and table, with Undo (§9d.3 item 1) | One tap closes a capture. The count drops at once. Undo puts it back in the inbox. A parent with open subtasks asks first | LOW. UI gate |
-| MW-2 | to file | A quick add in My tasks takes the chip on screen, in the Board and the List. A task in the personal root shows "No project" (§9d.3 item 2) | On each chip, the new task shows in that chip at once, and never in the inbox. Its row has no project chip. "Move to a project" moves it | STANDARD. UI gate |
-| MW-3 | to file | "Personal space" and "Org spaces", each with its tip (§9d.3 item 3) | Both names show in the rail, the pickers and the phone sheet. Each tip opens on hover, focus and tap. No native `title` stays | LOW. UI gate. Waits for Q-MW-1 |
-| MW-4 | to file | "My tasks" in Personal Center, linked into Projects, with the active rule (§9d.3 item 4) | One click opens My tasks in Projects. The entry shows active there, and "Projects" does not. The three files agree | STANDARD. UI gate |
-| T-8 | to file | The access panel of a space or a project. Owned by `project_management_app.md` §14.9 | Later. Not on this rung | — |
+| MW-1 | 3753 | Done on each inbox row, card and table, with Undo (§9d.3 item 1) | One tap closes a capture. The count drops at once. Undo puts it back in the inbox. A parent with open subtasks asks first | LOW. UI gate |
+| MW-2 | 3754 | A quick add in My tasks takes the chip on screen, in the Board and the List. A task in the personal root shows "No project" (§9d.3 item 2) | On each chip, the new task shows in that chip at once, and never in the inbox. Its row has no project chip. "Move to a project" moves it | STANDARD. UI gate |
+| MW-3 | 3755 | "Personal space" and "Org spaces", each with its tip (§9d.3 item 3) | Both names show in the rail, the pickers and the phone sheet. Each tip opens on hover, focus and tap. No native `title` stays | LOW. UI gate. Waits for Q-MW-1 |
+| MW-4 | 3756 | "My tasks" in Personal Center, linked into Projects, with the active rule (§9d.3 item 4) | One click opens My tasks in Projects. The entry shows active there, and "Projects" does not. The three files agree | STANDARD. UI gate |
+| T-8 | 3758 | The access panel of a space or a project. Owned by `project_management_app.md` §14.9 | Later. Not on this rung | — |
 
 MW-1, MW-2 and MW-3 touch different files, so they can run at once. MW-4 touches the shell, so it runs alone. Each UI slice states its interaction in one sentence and puts its captures on the "Visual review:" line (rule 14). This adds no new flag. Each change sits inside My work, behind the My work flag.
 
