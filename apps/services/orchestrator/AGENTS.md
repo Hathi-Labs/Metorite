@@ -213,6 +213,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - `_prime_sent_acts` runs in `run_agent_stream` after `_prime_celebrations`. It reads the last 5 sent acts of the chat from `card_record.sent_acts`, as the verified member, within one second. A delegated run gets none, and so does a batch run. A chat with untrusted input still gets the line.
    - `_sent_acts_block` reads the run binding only, and comes last in `_context_preamble_parts`. Each block above it keeps its bytes. A fault gives no line, and the turn runs as before.
    - `card_record.py` is the one module that runs SQL on `chat_card_record`. A send tool writes through `ask_tools.note_sent_message`, after the mail went. Fences: `tests/unit/test_sent_record.py`, `tests/unit/test_sent_record_r8.py` (R8).
+32. **A turn that the AI Router cannot answer ends at Tier 1** (AO-3, `chat_failure_modes.md` §4.8a). When the native stream fails before any output, and `acb_llm.run_errors.classify_run_error` names the fault `ai_unavailable` (a 502 or a 503 of our Router door), `run_agent_stream` sends one `RUN_ERROR` with that code and returns. It does not fall back to Tier 2, which asks the same Router again. Every other fault before output keeps the fallback. Fence: `tests/unit/test_chat_ai_unavailable.py`.
 
 ## Work Guidance
 

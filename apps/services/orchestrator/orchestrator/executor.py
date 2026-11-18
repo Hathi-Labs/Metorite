@@ -41,7 +41,7 @@ from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
-from acb_llm.run_errors import run_error_event
+from acb_llm.run_errors import classify_run_error, run_error_event
 from acb_skills import run_phase as _run_phase
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
@@ -8865,6 +8865,27 @@ async def run_agent_stream(
                             yield _sse(_ev)
                         yield _sse(run_error_event(
                             _nexc, run_id=run_id, where="native_maf_stream",
+                        ))
+                        return
+                    if classify_run_error(_nexc) == "ai_unavailable":
+                        # AO-3 (incident 2026-11-17): the Router could not
+                        # answer (a 502 or a 503), so every step of its chain
+                        # refused or it was down. Tier 2 asks the same Router
+                        # for the same chain, so it would only add a second
+                        # wait, and a buffered vendor 400 there reads as
+                        # `model_refused`. The turn ends here, and the chat
+                        # shows the resting card. The held routes go with it.
+                        _held_routes.clear()
+                        _log.warning(
+                            "executor.native_maf_ai_unavailable",
+                            agent=agent_name, run_id=run_id,
+                            error_type=type(_nexc).__name__,
+                        )
+                        for _ev in _close_text_message(_t_state):
+                            yield _sse(_ev)
+                        yield _sse(run_error_event(
+                            _nexc, run_id=run_id, code="ai_unavailable",
+                            where="native_maf_stream",
                         ))
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.

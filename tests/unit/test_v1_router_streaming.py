@@ -260,15 +260,85 @@ async def test_the_attribution_headers_cross_the_hop(router, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_empty_stream_still_returns_a_stream(router, monkeypatch):
+async def test_an_empty_stream_is_an_outage_not_an_empty_answer(
+        router, monkeypatch):
+    """AO-3 (2026-11-17). A 200 with no bytes is no answer. Before AO-3 the
+    hop relayed it, the agent read a finished turn, and the member saw an
+    empty reply. Mutation: put back the relay of the empty stream, and this
+    fails."""
     _configure(monkeypatch)
     router.frames = []
+    monkeypatch.setattr(v1_compat, "ROUTER_FAILED_AT", 0.0)
 
     resp = await v1_compat._serve_via_router_stream(
         _Req(), {**PAYLOAD, "stream": True})
 
-    assert resp.media_type == "text/event-stream"
-    assert b"".join([c async for c in resp.body_iterator]) == b""
+    assert resp.status_code == 502
+    assert resp.media_type != "text/event-stream"
+    assert b"ConsoleRouterUnavailable" in resp.body
+    assert v1_compat.ROUTER_FAILED_AT > 0
+
+
+@pytest.mark.asyncio
+async def test_the_old_consoles_lone_done_is_an_outage(router, monkeypatch):
+    """AO-3. A Console from before AO-3 answers a stream that no step opened
+    with 200 and a lone ``[DONE]``. The two units restart apart, so the hop
+    reads that as the 503 that a newer Console sends. Mutation: drop the
+    ``_is_lone_done`` check, and the bytes reach the agent as a 200."""
+    _configure(monkeypatch)
+    router.frames = [b"data: [DONE]\n\n"]
+
+    resp = await v1_compat._serve_via_router_stream(
+        _Req(), {**PAYLOAD, "stream": True})
+
+    assert resp.status_code == 502
+    assert b"ConsoleRouterUnavailable" in resp.body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 413])
+async def test_a_console_terminal_refusal_ends_as_model_refused_not_ai_unavailable(
+        router, monkeypatch, status):
+    """AO-3 fix round. A stream whose request is wrong (a context overflow)
+    is a 400-class verdict. The hop relays it, and the run code is
+    `model_refused`, so the chat says to start a new chat. Mutation: let the
+    Console answer 503 for it, and the code turns `ai_unavailable`."""
+    from acb_llm.run_errors import classify_status
+
+    _configure(monkeypatch)
+    router.status = status
+    router.error_body = {"detail": "upstream provider error"}
+
+    resp = await v1_compat._serve_via_router_stream(
+        _Req(), {**PAYLOAD, "stream": True})
+
+    assert resp.status_code == status
+    assert classify_status(resp.status_code) == "model_refused"
+    assert classify_status(resp.status_code) != "ai_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_the_new_consoles_503_is_an_outage(router, monkeypatch):
+    """AO-3. The Console answers a stream that no step opened with 503
+    ``unavailable``. The hop reads the 5xx class, and the agent gets 502."""
+    _configure(monkeypatch)
+    router.status = 503
+    router.error_body = {"detail": {"reason": "unavailable"}}
+
+    resp = await v1_compat._serve_via_router_stream(
+        _Req(), {**PAYLOAD, "stream": True})
+
+    assert resp.status_code == 502
+    assert b"ConsoleRouterUnavailable" in resp.body
+
+
+def test_a_real_first_chunk_is_not_a_lone_done():
+    assert v1_compat._is_lone_done(b"data: [DONE]\n\n")
+    assert v1_compat._is_lone_done(b"  data: [DONE]\r\n\r\n")
+    assert not v1_compat._is_lone_done(FRAMES[0])
+    assert not v1_compat._is_lone_done(b"".join(FRAMES))
+    assert not v1_compat._is_lone_done(b"")
+    assert not v1_compat._is_lone_done(None)
 
 
 # ── D57.7, structurally ─────────────────────────────────────────────────────
