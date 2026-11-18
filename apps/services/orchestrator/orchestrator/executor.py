@@ -7179,7 +7179,10 @@ def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
 def _resume_tool_name(resume_call: dict[str, Any] | None) -> str:
     """The tool name of the stored call in *resume_call*, the server's kwarg
     of :func:`run_agent_stream`, or "". Never a key of the event payload
-    (R11)."""
+    (R11). RESUME-4a-2: a declined call gives "", so the run holds no pack
+    for a tool that it must not call again."""
+    if isinstance(resume_call, dict) and resume_call.get("declined") is True:
+        return ""
     stored = resume_call.get("stored") if isinstance(resume_call, dict) else None
     name = stored.get("tool") if isinstance(stored, dict) else None
     return name if isinstance(name, str) else ""
@@ -7277,12 +7280,19 @@ async def _resume_prologue(
     (``resume_note``), and its reply has no user row before it, so the next
     turn would load a session that lacks the reply. A mark before the run
     fails closed: a crash later in the run still leaves a miss, never a
-    stale hit."""
+    stale hit.
+
+    RESUME-4a-2 (task 3478, D-RES-9): with ``declined`` True in
+    *resume_call*, the member declined the card late. After the mark, it
+    closes the old card as ``REJECT`` (the answer that a live decline of a
+    confirmation card closes with), runs NO tool, and makes the run's
+    message the note of a decline (``RESUMED_DECLINED``)."""
     await _mark_native_session_stale(agent_name, thread_id)
     from acb_skills.stored_call import resuming
     from gateway.chat_recovery import (
         RESUMED_APPROVED,
         RESUMED_CHANGED,
+        RESUMED_DECLINED,
         RESUMED_NOT_RUN,
         RESUMED_SPENT,
         RESUMED_UNKNOWN,
@@ -7292,13 +7302,21 @@ async def _resume_prologue(
     stored = resume_call.get("stored")
     request_id = str(resume_call.get("request_id") or "")
     title = str(resume_call.get("title") or "")
+    declined = resume_call.get("declined") is True
     if request_id:
         from acb_skills.ask_tools import CONFIRMATION_RESOLVED
 
         yield _sse({
             "type": "CUSTOM", "name": CONFIRMATION_RESOLVED,
-            "value": {"request_id": request_id, "answer": "APPROVE"},
+            "value": {"request_id": request_id,
+                      "answer": "REJECT" if declined else "APPROVE"},
         })
+    if declined:
+        # No tool lookup and no call: the decline only reaches the model.
+        _log.info("executor.resume_declined", agent=agent_name)
+        _set_run_note(event_payload, compose_resumed_call_note(
+            title, _declined_values(stored), RESUMED_DECLINED))
+        return
     name = str(stored.get("tool") or "") if isinstance(stored, dict) else ""
     tool = _resume_tool_of(agents, name)
     why = _resume_refusal(tool, agent_name, stored)
@@ -7353,8 +7371,26 @@ async def _resume_prologue(
         _log.info("executor.resume_ran", agent=agent_name, tool=name[:60],
                   outcome=state.outcome or "no_card", ok=ok)
         note = compose_resumed_call_note(title, text, outcome)
+    _set_run_note(event_payload, note)
+
+
+def _set_run_note(event_payload: dict[str, Any], note: str) -> None:
+    """Make the server's *note* the run's message, before any words."""
     existing = str(event_payload.get("message") or "").strip()
     event_payload["message"] = f"{note}\n\n{existing}" if existing else note
+
+
+def _declined_values(stored: Any) -> str:
+    """The tool and the values of a declined card, as text for the fence of
+    the note (RESUME-4a-2). The note quotes it as data, never as a call."""
+    if not isinstance(stored, dict):
+        return ""
+    try:
+        values = json.dumps(stored.get("arguments") or {}, ensure_ascii=False,
+                            sort_keys=True)
+    except (TypeError, ValueError):
+        values = ""
+    return f"tool: {stored.get('tool') or ''}\nvalues: {values}"
 
 
 async def run_agent_stream(
@@ -7382,6 +7418,7 @@ async def run_agent_stream(
     #: ``{"stored", "request_id", "title"}``. SERVER-ONLY: only the gateway's
     #: ``_resume_from_row`` sets it, from the claimed row. A key of
     #: *event_payload* never sets it (R11). See :func:`_resume_prologue`.
+    #: RESUME-4a-2: ``"declined": True`` marks a late decline (no tool runs).
     resume_call: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
