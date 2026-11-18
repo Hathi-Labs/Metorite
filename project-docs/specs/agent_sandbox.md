@@ -349,6 +349,39 @@ and §8.3.
   adds to the generic broker is this cap. SBX-15 adds no second name.
   Under control (b), the slots of the box belong to one org at a time.
 
+### Rung 6a′: the compute run (owner priority, 2026-11-19)
+
+The owner asked that the chat run code soon, and wrote "finished by morning"
+and "do whatever is needed to get it live and working". Rung 6a′ is the
+smallest path that does this. It sits between 6a and 6b, and the names 6a to
+6f stay as they are. SBX-18 builds the `compute` broker target. SBX-19 builds
+the `compute_run` chat tool.
+
+**What 6a′ does not do.** It has no door. The code reads and writes nothing in
+Metorite. It has no network and holds no secret. It saves no tool. Those
+stay in rungs 6b to 6f.
+
+**Robustness.** 6a′ is a strict subset of §5. Rule 4 (no secret) and rule 5
+(network closed) hold with no exception. Rules 1 to 3 do not arise, because
+the code has no door. The inputs are `tr_` refs of tool results that the turn
+already holds. The model never retypes rows. The output is framed as
+untrusted text (§5.7).
+
+**Residual risk.** Residual risk 1 of §0c still applies to the in-flight input
+data of another org. The remote gVisor box and the caps carry it. `compute_max_per_org`
+is 1 and `compute_max_total` is 2, so two orgs can run at the same time.
+Control (b) holds for 6a′ only when the owner sets `compute_max_total` to 1.
+The owner decides this with the price answer on task 3786.
+
+**Production gates.** The flip needs SBX-G9, SBX-G10, SBX-G11, WS43-G2 and
+WS43-G5, and a price answer (SBX-G6).
+
+**The pass test.** The HathiLabs smoke has seven checks. A pandas run with a
+CSV and a PNG shows a card. A socket probe fails. `os.environ` shows no
+secret. A foreign ref answers "not found". A `while True` loop stops at 30 s.
+A second org does not see the tool. Emptying the flag `COMPUTE_RUN_ORGS`
+stops the next call.
+
 ### The ladder: sub-rungs of rung 6 (D211)
 
 The sub-rungs 6a to 6f split rung 6 of D224. They are not the company
@@ -361,6 +394,7 @@ SBX-3 sits in 6c.
 | Rung | The demo | Slices | Gate |
 |---|---|---|---|
 | **6a. The gap log on production** | The owner opens the gap view on production and sees real counts. No code runs | SBX-1 | `enforcement-flip` of `user_tool_find_enabled`, under a dated grant |
+| **6a′. The compute run** | In the chat, a member asks for a calculation on rows that a tool returned. The chat runs pandas code in a sealed container and shows a CSV or PNG card. This is the first rung that runs code in production | SBX-18, SBX-19 | SBX-G9 to SBX-G11, WS43-G2, WS43-G5, and SBX-G6 (beta free with a daily cap is the recommendation, pending on task 3786) |
 | **6b. The door and a tool (dev-stack preview)** | The chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4, WS-43g (egress proxy, not built) | None |
 | **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first | SBX-3, SBX-5 | None |
 | **6d. Repair, review and metering (dev-stack preview)** | A failed tool gets one repair. A holder of `studio:publish` approves a version. The owner sees credits fall. A step with no `sandbox` price row is refused | SBX-12, SBX-6, SBX-7 | None |
@@ -1603,6 +1637,8 @@ tenancy and outward writes also get mutation testing
 | SBX-F22 | `tests/unit/test_sandbox_door_client.py` | (D187) The door client reads an env value other than `METORITE_API_TOKEN`, calls a host other than the door name, or the image lacks it |
 | SBX-F23 | `tests/unit/test_user_tool_registry.py`, R8 half | (D187) The library search reads across organizations, or runs a bare full-text query over `apps`. A private package of another member reaches `candidates`, the decide prompt or the gap row. A paused or archived install still comes back. It proves done-when 7 of §12.1 |
 | SBX-F24 | `tests/unit/test_sandbox_scope_all_orgs.py` | (D227) `tools:*` parses to an error, an org in `user_tool_disabled_orgs` still runs, or `tools` is absent from `MAF_CODING_TARGETS`. Advisory until SBX-6 and SBX-9 build it |
+| SBX-F25 | `tests/unit/test_compute_run.py` | (D227) `compute_run` takes an input that is not a `tr_` ref of its own org, member and thread, or a foreign ref does not answer "not found". The output text is not framed as untrusted. A run passes the daily cap of 50 for an org or 20 for a member. A log line holds code or output text. An org outside `COMPUTE_RUN_ORGS` runs |
+| SBX-F26 | `tests/unit/test_sandbox_broker_compute.py` | (D227) The `compute` argv holds a mount, a network, or limits other than 1 CPU, 1g and pids 64. The tar reader accepts a link, a nested name, a type outside csv, png, json and txt, more than 5 files, a file over 1 MB or more than 3 MB in total. `compute` appears in `MAF_CODING_TARGETS`. Production runs without `docker-remote` and `runsc` |
 
 **Where the Docker halves run.** On `.github/workflows/sandbox-docker.yml`,
 with the `sandbox_docker` marker, as WS43-F4 does. A skip fails that
@@ -1638,23 +1674,25 @@ the A2 model.
 | **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
 | **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover every org | SBX-0b | AGENT-SAFE. Docs |
-| **SBX-1** | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
-| **SBX-2** | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
-| **SBX-3** | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
-| **SBX-4** | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
-| **SBX-5** | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
-| **SBX-6** | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
-| **SBX-7** | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
-| **SBX-8** | `sandbox_runtime=runsc` in the broker, and a measured cost of gVisor on a local stack | SBX-4 | AGENT-SAFE. The install on a box is WS43-G5, **OWNER-GATE** |
-| **SBX-9** | (D187) (D227) Turn it on: `tools:*` on production, every org and not Fracktal only, on the dedicated box of §4.6. The checklist of §0c binds it: the deployed SHA holds SBX-4, and `tools:*` holds only while self-serve signup is off. D144 retired staging, so the local staging gate of D145 comes first | SBX-1 to SBX-8, SBX-12, SBX-13, SBX-15, WS43-G1, WS43-G2, WS43-G4, WS43-G5, BH-3, SBX-G6 (D227), SBX-G9, SBX-G10, SBX-G11 | **OWNER-GATE** |
-| **SBX-10** | The `e2b` backend (§4.4) and the public door name. (D187) The alternative to the box of §4.6 | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
-| **SBX-11** | The SPACE check through ECW (§4.5) | SBX-10, the three triggers of §4.5 | **OWNER-GATE**. A new host costs money |
+| **SBX-1** (task 3800) | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
+| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
+| **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
+| **SBX-4** (task 3803) | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
+| **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
+| **SBX-6** (task 3805) | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
+| **SBX-7** (task 3806) | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
+| **SBX-8** (task 3807) | `sandbox_runtime=runsc` in the broker, and a measured cost of gVisor on a local stack | SBX-4 | AGENT-SAFE. The install on a box is WS43-G5, **OWNER-GATE** |
+| **SBX-9** (task 3808) | (D187) (D227) Turn it on: `tools:*` on production, every org and not Fracktal only, on the dedicated box of §4.6. The checklist of §0c binds it: the deployed SHA holds SBX-4, and `tools:*` holds only while self-serve signup is off. D144 retired staging, so the local staging gate of D145 comes first | SBX-1 to SBX-8, SBX-12, SBX-13, SBX-15, WS43-G1, WS43-G2, WS43-G4, WS43-G5, BH-3, SBX-G6 (D227), SBX-G9, SBX-G10, SBX-G11 | **OWNER-GATE** |
+| **SBX-10** (task 3809) | The `e2b` backend (§4.4) and the public door name. (D187) The alternative to the box of §4.6 | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
+| **SBX-11** (task 3810) | The SPACE check through ECW (§4.5) | SBX-10, the three triggers of §4.5 | **OWNER-GATE**. A new host costs money |
 | **SBX-12** (task 3427) | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
 | **SBX-13** (task 3428) | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
 | **SBX-14** (task 3429) | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
 | **SBX-15** (task 3430) | (D187) (D227) **The `docker-remote` backend**, with one org at a time on the box and `user_tool_max_per_org` below `user_tool_max_total` (§0c) (§4.6): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. **Done when:** on the dev stack, a build, a smoke test and a run go to a second local daemon. The outputs come back through the safe opener. In production mode the broker refuses a `runc` run on that backend | SBX-4, SBX-8, WS-43g | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
 | **SBX-16** (task 3431) | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
 | **SBX-17** (task 3432) | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
+| **SBX-18** (task 3815) | (D227) **The `compute` broker target** (§0c, rung 6a′): no mount, a `--tmpfs /workspace` workdir and `--network none`. Files go in and out as tar over `docker exec`, parsed in memory. It takes regular files only, with flat names, no links, the types csv, png, json and txt, at most 5 files, 1 MB each and 3 MB in total. Limits: 1 CPU, 1g and pids 64. Its own caps are `compute_max_per_org=1` and `compute_max_total=2`. `COMPUTE_RUN_ORGS` reloads on SIGHUP and is the kill switch for one org or all orgs. A reaper stops the containers of a de-listed org. A production guard refuses unless the backend is `docker-remote` with `runsc`. `compute` is not in `MAF_CODING_TARGETS` or `MAF_CODING_SCOPE`. **Done when:** SBX-F26 passes | SBX-8 and SBX-15 (tasks 3807, 3430), for the production guard only | AGENT-SAFE. Dark. The flip is **OWNER-GATE** (SBX-G9 to SBX-G11, WS43-G2, WS43-G5, SBX-G6) |
+| **SBX-19** (task 3816) | (D227) **The `compute_run(code, inputs, timeout_s)` chat tool** for the main chat agent `orchestrator`. The inputs are `tr_` refs of tool results that the turn holds, from the one spill store `tool_result_spill`, keyed by org, member and thread. The output is framed as untrusted. Files reach the chat as artifacts through the `write_artifact` seam. A daily cap of 50 runs for each org and 20 for each member goes through `tenant_redis`. Log lines hold no code and no output text. **Done when:** SBX-F25 passes | SBX-18 | AGENT-SAFE. Dark |
 
 ### 12.1 SBX-1 — the first dispatchable slice
 
@@ -1837,3 +1875,6 @@ here, and each needs its own check before anyone acts on it.
   withdrawn. D85 stands, and no owner gate opens. §0c holds the sub-rungs 6a
   to 6f, the critical path, the cross-org escape control and two new gaps.
   Nothing built.
+- 2026-11-19 — D227, round 3 (SBX-0d). Rung 6a′ adds the compute run, SBX-18
+  and SBX-19, as the first production rung. Fences SBX-F25 and SBX-F26. Task
+  numbers are in the §12 rows.
