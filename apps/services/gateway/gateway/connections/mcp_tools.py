@@ -82,10 +82,22 @@ holds ``*``. Each read that calls the network passes a rate limit
 (:data:`MEMBER_CALLS_PER_WINDOW`, :data:`ORG_CALLS_PER_WINDOW`) and one of
 :data:`LIVE_PER_ORG` slots. A cache hit passes no limit.
 
+**A changed tool (STU-B1b-3).** An admin approves the text of a tool with
+:func:`approve_tool`. The approval holds the hash of the CURRENT cached item
+(``mcp_actions.tool_text_hash``) and needs a list that is fresh and of the
+identity of now. :func:`catalog_tools` reads the approvals of the org in ONE
+query, and a tool with no approval or another hash is ``changed: true`` and
+class B. :func:`call_read_tool` reads them before any network step, and it
+refuses a changed tool with :data:`LIVE_TOOL_CHANGED`. So a new tool, and a
+tool whose text a server changed, never reads live until an admin approves
+it. A failed read of the approvals makes each tool changed (fail closed).
+
 Fences: ``tests/unit/test_studio_mcp_tools.py``,
 ``tests/unit/test_studio_mcp_tools_r8.py`` (R8),
-``tests/unit/test_studio_live_preview.py`` and
-``tests/unit/test_studio_live_preview_r8.py`` (R8).
+``tests/unit/test_studio_live_preview.py``,
+``tests/unit/test_studio_live_preview_r8.py`` (R8),
+``tests/unit/test_studio_mcp_approvals.py`` and
+``tests/unit/test_studio_mcp_approvals_r8.py`` (R8).
 """
 
 from __future__ import annotations
@@ -107,7 +119,7 @@ from acb_skills.hidden_text import strip_hidden
 from acb_skills.permission_policy import MCP_HINT_NAMES, mcp_needs_confirmation
 
 from gateway.connections import mcp as mcp_registry
-from gateway.studio import mcp_actions
+from gateway.studio import mcp_actions, mcp_approvals
 
 _log = get_logger("connections.mcp_tools")
 
@@ -241,6 +253,10 @@ class Refreshed:
     tools: int = 0
     truncated: bool = False
     reason: str | None = None
+    #: B1b-3 review: ``{tool, text_hash, changed}`` of each tool of the new
+    #: list. It holds no description, so an admin compares the hash with the
+    #: catalog row that they read.
+    items: tuple[dict[str, Any], ...] = ()
 
 
 # ── The cleaning of one list ────────────────────────────────────────────────
@@ -270,13 +286,9 @@ def _annotations(raw: Any) -> dict[str, bool] | None:
 
 
 def _description(raw: Any) -> str:
-    """The description as clean, capped text.
-
-    The strip runs before and after the cut, because a cut can leave a
-    joiner at the end of the text, where it is hidden."""
-    if not isinstance(raw, str):
-        return ""
-    return strip_hidden(strip_hidden(raw)[:DESCRIPTION_CHARS])
+    """The description as clean, capped text: ``mcp_actions.clean_description``,
+    the one cleaning that the approved hash of B1b-3 reads too."""
+    return mcp_actions.clean_description(raw)
 
 
 def clean_tools(items: Iterable[Any]) -> ToolList:
@@ -576,8 +588,133 @@ async def refresh(org: str, server: str, *, may_use: Callable[[str], bool],
         await _forget(org, server, started)
         return Refreshed(server=server, ok=False, reason=failed.reason)
     await _store(org, server, listed)
+    approved = await _approvals_or_none(org)
+    items = tuple({"tool": t["name"], "text_hash": mcp_actions.tool_text_hash(t),
+                   "changed": mcp_actions.tool_changed(approved, server, t)}
+                  for t in listed.tools)
     return Refreshed(server=server, ok=True, tools=len(listed.tools),
-                     truncated=listed.truncated)
+                     truncated=listed.truncated, items=items)
+
+
+# ── The approval of the text of one tool (STU-B1b-3) ────────────────────────
+
+#: The fewest seconds between two approvals of one tool of one org.
+APPROVE_INTERVAL_S = 5
+
+
+class ToolNotListed(LookupError):
+    """The fresh list of the server holds no tool of that name."""
+
+
+class TextChanged(Exception):
+    """The text of the tool in the fresh list is not the text that the admin
+    read: its hash is not ``expected_hash``. Nothing is written."""
+
+
+class ListNotFresh(Exception):
+    """The server has no cached list that is fresh and of the identity of
+    now. The admin refreshes the server first."""
+
+
+@dataclass(frozen=True)
+class Approved:
+    """What an approval gives the route. It holds no text of the tool."""
+
+    server: str
+    tool: str
+    cls: str
+    text_hash: str
+
+
+async def _claim_approval(org: str, server: str, tool: str) -> None:
+    """Take the approval slot of one tool, or raise :class:`RefreshTooSoon`."""
+    client = _redis()
+    with _scope(org):
+        slot = _key("approve", server, tool)
+        if await client.set(slot, "1", nx=True, ex=APPROVE_INTERVAL_S):
+            return
+        left = int(await client.ttl(slot))
+    raise RefreshTooSoon(left if left > 0 else APPROVE_INTERVAL_S)
+
+
+async def _save_approval(org: str, server: str, tool: str, text_hash: str,
+                         member: str) -> None:
+    """Write ONE approval of *org* under ``tenant_session(org)``."""
+    from gateway.db import tenant_session
+
+    async with tenant_session(org) as db:
+        await mcp_approvals.upsert(db, server=server, tool=tool, text_hash=text_hash,
+                                   member=member)
+
+
+async def approve_tool(org: str, server: str, tool: str, *, member: str,
+                       expected_hash: str) -> Approved:
+    """Approve the CURRENT text of ONE tool of a server of *org* (B1b-3).
+
+    *org* and *member* come from the session, never from request input
+    (R5). The route checks the right of the member first. The order:
+
+    1. A bad server key or tool name is :class:`ServerNotFound`.
+    2. The server is a connected server of *org* (``enabled_meta``), else
+       :class:`ServerNotFound`. So a server of another org writes nothing.
+    3. The cached list of the server is younger than :data:`FRESH_S` and of
+       the ``_identity`` of the server of now, else :class:`ListNotFresh`.
+       The approval never reads a server itself.
+    4. The tool is in that list (``unique_tools``), else :class:`ToolNotListed`.
+    4a. Compare and approve (B1b-3 review): the hash of THAT item equals
+       *expected_hash*, the ``text_hash`` of the row that the admin read.
+       Else :class:`TextChanged`, and nothing is written. So a server that
+       changes a tool between the read and the click never gets the new
+       text approved.
+    5. One slot of :data:`APPROVE_INTERVAL_S` holds for each tool, else
+       :class:`RefreshTooSoon`.
+    6. The hash of THAT item (``mcp_actions.tool_text_hash``) is written for
+       the member. A Redis or database fault reaches the caller."""
+    if not _server_key(server) or not isinstance(tool, str) or not _TOOL_NAME.fullmatch(tool):
+        raise ServerNotFound(server)
+    meta = next((s for s in await mcp_registry.enabled_meta(org)
+                 if s.name == server and s.enabled is True), None)
+    if meta is None:
+        raise ServerNotFound(server)
+    client = _redis()
+    with _scope(org):
+        decoded = _decode(await client.get(_key("tools", server)))
+    if decoded is None:
+        raise ListNotFresh(server)
+    tools, fetched, identity = decoded
+    if identity != _identity(meta) or not 0 <= _now() - fetched <= FRESH_S:
+        raise ListNotFresh(server)
+    item = next((t for t in mcp_actions.unique_tools(tools) if t.get("name") == tool), None)
+    if item is None:
+        raise ToolNotListed(tool)
+    text_hash = mcp_actions.tool_text_hash(item)
+    if not isinstance(expected_hash, str) or text_hash != expected_hash:
+        raise TextChanged(tool)
+    await _claim_approval(org, server, tool)
+    await _save_approval(org, server, tool, text_hash, member)
+    cls = mcp_actions.mcp_tool_class(mcp_actions.tool_hints(item.get("annotations")),
+                                     always_confirm=meta.always_confirm)
+    return Approved(server=server, tool=tool, cls=cls, text_hash=text_hash)
+
+
+async def _approvals(org: str) -> dict[tuple[str, str], str]:
+    """The approved hashes of the tools of *org* (B1b-3), in ONE query under
+    ``tenant_session(org)``. *org* comes from the session, never from request
+    input. A fault reaches the caller, and each caller fails closed."""
+    from gateway.db import tenant_session
+
+    async with tenant_session(org) as db:
+        return await mcp_approvals.approved_hashes(db)
+
+
+async def _approvals_or_none(org: str) -> dict[tuple[str, str], str] | None:
+    """:func:`_approvals`, or None when the read fails. None makes each tool
+    changed."""
+    try:
+        return await _approvals(org)
+    except Exception as exc:
+        _log.warning("studio.mcp_tools.approvals_unavailable", kind=type(exc).__name__)
+        return None
 
 
 async def catalog_tools(org: str) -> tuple[list[dict[str, Any]], bool]:
@@ -589,7 +726,11 @@ async def catalog_tools(org: str) -> tuple[list[dict[str, Any]], bool]:
     server of now. ``stale`` is true when the index is empty, when a
     connected server has no list or a list of another identity, or when a
     list is older than :data:`FRESH_S`. A Redis or database fault gives no row and
-    ``stale: true``, because the catalog must still answer."""
+    ``stale: true``, because the catalog must still answer.
+
+    B1b-3: the approvals of the org come in ONE query, after the cache read.
+    A tool with no approval or another hash is ``changed: true`` and class
+    B. A failed read of the approvals makes each tool changed."""
     try:
         client = _redis()
         with _scope(org):
@@ -614,7 +755,8 @@ async def catalog_tools(org: str) -> tuple[list[dict[str, Any]], bool]:
         tools[server.name], fetched, _ = decoded
         if now - fetched > FRESH_S:
             stale = True
-    return mcp_actions.mcp_rows(servers, tools), stale
+    approved = await _approvals_or_none(org) if tools else {}
+    return mcp_actions.mcp_rows(servers, tools, approved=approved), stale
 
 
 # ── The live read of one class A tool (STU-I11a) ────────────────────────────
@@ -655,6 +797,8 @@ LIVE_CHANGED = "server_changed"
 LIVE_BAD_INPUT = "bad_input"
 LIVE_NO_GRANT = "grant_denied"
 LIVE_NO_SCOPE = "scope_denied"
+#: B1b-3: the tool has no approval, or its text differs from the approved one.
+LIVE_TOOL_CHANGED = "tool_changed"
 
 #: The most live reads that make a network call, for one member in one
 #: window of :data:`RATE_WINDOW_S`, and for one org. A cache hit is free.
@@ -890,17 +1034,27 @@ async def fresh_tool_list(org: str, meta: Any, load: Callable[[], Awaitable[Any]
     return listed
 
 
-def _class_a_item(listed: ToolList, meta: Any, tool: str) -> None:
+def _class_a_item(listed: ToolList, meta: Any, tool: str,
+                  approved: Mapping[tuple[str, str], str] | None) -> None:
     """Refuse unless *tool* is class A in the list *listed* of the server
-    *meta*, and the permission gate of the run asks no card for it.
+    *meta*, its text is the approved text, its hints show a read, and its
+    server is not set to always confirm.
 
     The class is the one class rule (``mcp_actions.mcp_tool_class``) on the
     list, never the label of the catalog. A duplicate name takes the
-    stricter item (``unique_tools``). Then the gate seam
-    ``mcp_needs_confirmation`` runs on the same hints, at run time."""
+    stricter item (``unique_tools``). B1b-3: the item of THAT list must hash
+    as the approval in *approved*, else :data:`LIVE_TOOL_CHANGED`. Then the
+    seam ``mcp_needs_confirmation`` runs on the same hints, at run time.
+
+    MCP-NC1 (task 3603): the gate of a member's run no longer asks a card
+    for a tool that can write. A preview sends nothing (I11), so this check
+    stays stricter than the gate and still refuses each tool whose hints do
+    not show a read. The code :data:`LIVE_NEEDS_CARD` keeps its name."""
     item = next((t for t in mcp_actions.unique_tools(listed.tools) if t.get("name") == tool), None)
     if item is None:
         raise LiveRefused(LIVE_NO_TOOL)
+    if mcp_actions.tool_changed(approved, meta.name, item):
+        raise LiveRefused(LIVE_TOOL_CHANGED)
     hints = mcp_actions.tool_hints(item.get("annotations"))
     if mcp_actions.mcp_tool_class(hints, always_confirm=meta.always_confirm) != "A":
         raise LiveRefused(LIVE_NOT_A)
@@ -999,9 +1153,13 @@ async def call_read_tool(org: str, member: str, server: str, tool: str, args: di
        ``agent_scope`` holds ``*``. A server that the admin gave to no agent,
        or to named agents only, is :data:`LIVE_NO_SCOPE`: a preview is no
        agent, so it fails closed.
+    1a. B1b-3: the approvals of *org* (one query). A tool with no approval
+       is :data:`LIVE_TOOL_CHANGED` before any network step, and so is a
+       failed read.
     2. :func:`fresh_tool_list` gives a list that is fresh and of the
        identity of now, or a live one.
-    3. The tool is class A in THAT list, and the gate asks no card.
+    3. The tool is class A in THAT list, its text hashes as the approval
+       (else :data:`LIVE_TOOL_CHANGED`), and the gate asks no card.
     4. A cached answer of this org, member, server, tool and input, younger
        than :data:`ANSWER_TTL_S`, is the answer. It makes no call.
     The first network step (a live list or the call) first passes the
@@ -1026,6 +1184,9 @@ async def call_read_tool(org: str, member: str, server: str, tool: str, args: di
         raise LiveRefused(LIVE_NO_SERVER)
     if not _scope_open(meta):
         raise LiveRefused(LIVE_NO_SCOPE)
+    approved = await _approvals_or_none(org)
+    if approved is None or (server, tool) not in approved:
+        raise LiveRefused(LIVE_TOOL_CHANGED)
     loaded: list[Any] = []
     held: list[str] = []
 
@@ -1041,7 +1202,8 @@ async def call_read_tool(org: str, member: str, server: str, tool: str, args: di
         return loaded[0]
 
     try:
-        return await _live(org, member, server, tool, args, meta, _load, lister, caller)
+        return await _live(org, member, server, tool, args, meta, _load, lister, caller,
+                           approved)
     finally:
         for slot in held:
             _free_live_slot(slot)
@@ -1049,10 +1211,11 @@ async def call_read_tool(org: str, member: str, server: str, tool: str, args: di
 
 async def _live(org: str, member: str, server: str, tool: str, args: dict[str, Any], meta: Any,
                 _load: Callable[[], Awaitable[Any]], lister: Lister | None,
-                caller: Caller | None) -> LiveRead:
+                caller: Caller | None,
+                approved: Mapping[tuple[str, str], str] | None) -> LiveRead:
     """Steps 2 to 5 of :func:`call_read_tool`."""
     listed = await fresh_tool_list(org, meta, _load, lister=lister)
-    _class_a_item(listed, meta, tool)
+    _class_a_item(listed, meta, tool, approved)
     identity = _identity(meta)
     parts = ("answer", _member_part(member), server, tool,
              _input_part(_answer_identity(meta), args))
@@ -1091,6 +1254,7 @@ async def _live(org: str, member: str, server: str, tool: str, args: dict[str, A
 
 __all__ = [
     "ANSWER_TTL_S",
+    "APPROVE_INTERVAL_S",
     "FRESH_S",
     "LIST_TTL_S",
     "LIVE_NAMESPACE",
@@ -1103,7 +1267,9 @@ __all__ = [
     "NAMESPACE",
     "READ_TIMEOUT_S",
     "REFRESH_INTERVAL_S",
+    "Approved",
     "ListFailed",
+    "ListNotFresh",
     "LiveLimited",
     "LiveRead",
     "LiveRefused",
@@ -1111,7 +1277,10 @@ __all__ = [
     "RefreshTooSoon",
     "Refreshed",
     "ServerNotFound",
+    "TextChanged",
     "ToolList",
+    "ToolNotListed",
+    "approve_tool",
     "call_read_tool",
     "catalog_tools",
     "clean_tools",

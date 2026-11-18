@@ -169,6 +169,15 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # how they matched. It changes the order and the text of each answer, so
     # only the owner writes it (work_plan.md section 6 D4).
     "FIND_ORGS",
+    # WS-FIND HRD-21 (find_engine.md section 8): the orgs whose search reads
+    # the member's own past chats. It puts the text of old chats into a run,
+    # so only the owner writes it. The `CHAT_` prefix covers it too, and the
+    # exact name keeps the fence if that prefix ever narrows.
+    "CHAT_SEARCH_ORGS",
+    # WS-FIND FIND-7 (find_engine.md section 5.5): the "not found" check of a
+    # chat answer. `on` gives the chat one more pass and spends model tokens,
+    # so only the owner writes it (D-FIND-8).
+    "FIND_CLAIM_CHECK",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
@@ -189,6 +198,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
+    # new task as a form that the member edits. It changes what a card writes,
+    # so only the operator writes it.
+    "PROJECT_EDIT_CARD_ORGS",
     # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
     # what Microsoft sends to the box, so only the operator writes it.
     "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
@@ -342,6 +355,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).
     "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # WS-58 LOOP-4a: the orgs whose feed learns from the member's acts. It
+    # changes what each member of the org sees, so only the operator writes
+    # it (proactive_loop.md §7.2).
+    "MY_DAY_LEARN_ORGS",
     # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
     # moves what an org pays, so only the operator writes it.
     "PROJECTS_DECIDE_ORGS",

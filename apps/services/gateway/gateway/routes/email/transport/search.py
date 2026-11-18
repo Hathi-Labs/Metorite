@@ -43,6 +43,7 @@ from fastapi import Depends, Query
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
+    NOT_OUTBOUND_SQL,
     UNCATEGORIZED_SQL,
     _account_scope,
     _row_to_message,
@@ -472,6 +473,209 @@ async def semantic_messages(
         d["highlight"] = ""
         out.append(d)
     return out
+
+
+# ── The related mail of company search (WS-FIND FIND-3) ─────────────────────
+
+#: The limit of each read of :func:`related_mail` and :func:`open_mail`, in
+#: milliseconds: a little more than ``RELATED_BUDGET_S`` of the step (1.0 s).
+#: The step stops waiting at its budget. This limit stops the statement, so a
+#: scan of a large mailbox never runs on with no one to read it (FIND-3 fix
+#: round, P2-3).
+RELATED_STATEMENT_MS = 1500
+
+#: ``SET LOCAL``: it ends with the read's transaction. ``set_config`` takes a
+#: bind, and ``SET`` does not (``crm/aggregate.py``, ``shell/feed_measure.py``).
+_RELATED_LIMIT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+
+#: The sender address of the mail ``em``, in its match form: trimmed and in
+#: lower case, as the KG-5 forms compare an address.
+_SENDER_KEY = "lower(btrim(em.from_address->>'email'))"
+#: The host of that sender, after its last ``@``.
+_SENDER_HOST = f"substring({_SENDER_KEY} from '@([^@]+)$')"
+
+#: The mail of each address and of each web domain, in the mailboxes that
+#: ``:uid`` may read: the scope and the folders of :func:`search_messages`
+#: (``{scope}``, ``{folder}``). ``mail_from`` is the mail from an address,
+#: ``mail_to`` the mail to it in To, Cc or Bcc, and ``mail_domain`` the mail
+#: from a host. Each match is exact, never a substring. One mail for each
+#: thread, the newest, and at most ``:per`` of one key and one edge.
+_RELATED_MAIL_SQL = """
+WITH m AS (
+    SELECT em.id, COALESCE(em.thread_id, em.id::text) AS thread, em.received_at,
+           {sender} AS sender, {host} AS host, {recipients} AS rcpt
+      FROM email_messages em
+     WHERE {scope} AND {folder}
+       AND ({sender} = ANY(CAST(:addrs AS text[])) OR {host} = ANY(CAST(:hosts AS text[]))
+            OR EXISTS (SELECT 1 FROM jsonb_array_elements({recipients}) AS r(v)
+                        WHERE jsonb_typeof(r.v) = 'object'
+                          AND lower(btrim(r.v->>'email')) = ANY(CAST(:addrs AS text[]))))
+),
+links AS (
+    SELECT 'address:' || m.sender AS key, 'mail_from' AS edge, m.id, m.thread, m.received_at
+      FROM m WHERE m.sender = ANY(CAST(:addrs AS text[]))
+    UNION ALL
+    SELECT DISTINCT 'address:' || lower(btrim(r.v->>'email')), 'mail_to', m.id, m.thread,
+           m.received_at
+      FROM m CROSS JOIN LATERAL jsonb_array_elements(m.rcpt) AS r(v)
+     WHERE jsonb_typeof(r.v) = 'object' AND lower(btrim(r.v->>'email')) = ANY(CAST(:addrs AS text[]))
+    UNION ALL
+    SELECT 'domain:' || m.host, 'mail_domain', m.id, m.thread, m.received_at
+      FROM m WHERE m.host = ANY(CAST(:hosts AS text[]))
+),
+threads AS (
+    SELECT DISTINCT ON (key, edge, thread) key, edge, id, received_at
+      FROM links ORDER BY key, edge, thread, received_at DESC NULLS LAST, id
+)
+SELECT key, edge, id FROM (
+    SELECT t.key, t.edge, t.id, row_number() OVER (
+        PARTITION BY t.key, t.edge ORDER BY t.received_at DESC NULLS LAST, t.id) AS n
+      FROM threads t
+) x WHERE x.n <= :per ORDER BY key, edge, n
+"""
+
+
+def _clean_keys(addresses: list[str], domains: list[str]) -> tuple[list[str], list[str]]:
+    """The addresses and hosts of a related read, in their match form.
+
+    A host of ``CONSUMER_DOMAINS`` (``mailbox_identity.py``, the one list of
+    KG-5) is left out: a free-mail domain names no company, so its mail is
+    never the mail of one. Pure."""
+    from gateway.routes.email.mailbox_identity import CONSUMER_DOMAINS
+
+    addrs = list(dict.fromkeys(a.strip().lower() for a in addresses if "@" in (a or "")))
+    hosts = list(dict.fromkeys(
+        h.strip().lower() for h in domains
+        if (h or "").strip() and h.strip().lower() not in CONSUMER_DOMAINS
+    ))
+    return addrs, hosts
+
+
+async def related_mail(
+    user: UserContext, addresses: list[str], domains: list[str], per: int,
+) -> list[tuple[str, str, str]]:
+    """The mail of each address and web domain, as triples of the related
+    step of company search (FIND-3, ``find_engine.md`` §3.1 rung 4).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:email``. The mailboxes are the ones of :func:`search_messages`:
+    those that the member may read, with no separate mailbox
+    (``pooled_only``), and no junk or trash. So the mail of a contact in the
+    mailbox of another member never answers. Triples of a key, an edge and
+    ``email:<id>``: ids only, no text.
+    """
+    addrs, hosts = _clean_keys(addresses, domains)
+    if not addrs and not hosts:
+        return []
+    from gateway.routes.email.automation.identity import recipient_lists_sql
+
+    uid = user.email or "anonymous"
+    params: dict[str, Any] = {"uid": uid, "addrs": addrs, "hosts": hosts, "per": max(1, per)}
+    scope = _account_scope(None, params, pooled_only=True, level="read")
+    folder = folder_scope("all", params, include_sent=True) or "true"
+    sql = _RELATED_MAIL_SQL.format(
+        sender=_SENDER_KEY, host=_SENDER_HOST, recipients=recipient_lists_sql("em"),
+        scope=scope, folder=folder,
+    )
+    async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(RELATED_STATEMENT_MS)})
+        rows = (await db.execute(text(sql), params)).fetchall()
+    return [(str(r.key), str(r.edge), f"email:{r.id}") for r in rows]
+
+
+async def open_mail(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
+    """The mails of *ids* that the member may read, in the shape of the
+    search, with no body (FIND-3, ``knowledge_graph.md`` §6).
+
+    The mailboxes are the ones of :func:`related_mail`, the scope of the
+    search: those that the member may read, with no separate mailbox. So
+    ``open`` never shows a mail that the related read could not give. Unlike
+    ``get_message``, it marks nothing read and calls no provider. A mail of
+    another member, or of another tenant, gives no row.
+    """
+    if not ids:
+        return []
+    params: dict[str, Any] = {"uid": user.email or "anonymous", "ids": ids}
+    scope = _account_scope(None, params, pooled_only=True, level="read")
+    async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(RELATED_STATEMENT_MS)})
+        rows = (await db.execute(text(
+            f"""SELECT em.id, em.provider_message_id, em.thread_id,
+                       em.account_id, em.folder, em.labels,
+                       em.from_address, em.to_addresses,
+                       em.cc_addresses, em.bcc_addresses,
+                       em.subject, '' AS body_text, NULL AS body_html,
+                       em.snippet, em.has_attachments,
+                       em.is_read, em.is_starred, em.is_flagged,
+                       em.importance, em.categories,
+                       em.received_at, em.synced_at
+                  FROM email_messages em
+                 WHERE em.id = ANY(CAST(:ids AS uuid[])) AND {scope}
+                 ORDER BY em.received_at DESC NULLS LAST, em.id"""
+        ), params)).fetchall()
+    out = []
+    for row in rows:
+        m = _row_to_message(row)
+        m.html_remote = False
+        d = m.model_dump()
+        d["highlight"] = ""
+        out.append(d)
+    return out
+
+
+# ── The mail senders of one name (WS-FIND FIND-5) ───────────────────────────
+
+#: The limit of each read of :func:`named_mail`, in milliseconds: a little more
+#: than the deadline of ``GET /search/names`` (``retrieval.names.
+#: NAMES_BUDGET_S``, 1.0 s). The route stops waiting there. This limit stops
+#: the statement, so a scan of a large mailbox never runs on with no one to
+#: read it.
+NAMED_STATEMENT_MS = 1500
+
+#: The newest mails from a sender whose address or name holds ``:held``, in
+#: the mailboxes that ``:uid`` may read (``{scope}``), with no junk or trash
+#: (``{folder}``) and no outbound mail (``{outbound}``): the member wrote it.
+#: The pattern is plain text: ``ESCAPE`` reads the backslash of ``like_escape``.
+_NAMED_MAIL_SQL = """
+SELECT em.id, em.from_address->>'name' AS name, em.from_address->>'email' AS email
+  FROM email_messages em
+ WHERE {scope} AND {folder} AND {outbound}
+   AND (LOWER(em.from_address->>'email') LIKE :held ESCAPE '\\'
+        OR LOWER(em.from_address->>'name') LIKE :held ESCAPE '\\')
+ ORDER BY em.received_at DESC NULLS LAST, em.id
+ LIMIT :lim
+"""
+
+
+async def named_mail(user: UserContext, word: str, limit: int) -> list[dict[str, str]]:
+    """The newest mails from a sender whose address or name holds *word*, for
+    ``resolve_name`` (FIND-5, ``find_engine.md`` §5.2).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:email``. The mailboxes are the ones of :func:`search_messages`:
+    those that the member may read, with no separate mailbox
+    (``pooled_only``), and no junk or trash. Outbound mail
+    (``core.NOT_OUTBOUND_SQL``: sent, drafts, outbox) gives no row, because
+    the member wrote it. ``%`` and ``_`` in *word* match as plain text. The
+    read sets a LOCAL ``statement_timeout`` of :data:`NAMED_STATEMENT_MS`
+    first. Each row holds the id, the sender name and the sender address.
+    :func:`search_messages` does not change for its other callers.
+    """
+    held = " ".join(str(word or "").split()).lower()
+    if not held:
+        return []
+    from gateway.routes.projects.filters import like_escape
+
+    params: dict[str, Any] = {"uid": user.email or "anonymous",
+                              "held": f"%{like_escape(held)}%", "lim": max(1, int(limit))}
+    scope = _account_scope(None, params, pooled_only=True, level="read")
+    folder = folder_scope("all", params, include_sent=True) or "true"
+    sql = _NAMED_MAIL_SQL.format(scope=scope, folder=folder, outbound=NOT_OUTBOUND_SQL)
+    async with _tenant_session() as db:
+        await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(NAMED_STATEMENT_MS)})
+        rows = (await db.execute(text(sql), params)).fetchall()
+    return [{"id": str(r.id), "name": str(r.name or ""), "email": str(r.email or "")}
+            for r in rows]
 
 
 # ── The backfill of the stored vector (WS-KG KG-3a, migration 314) ──────────

@@ -39,9 +39,16 @@ less the packs of :data:`CHAT_TOOL_LEFT_OUT`, a ``studio_`` name and a tool
 that a door op maps already. :func:`action_tool` maps ``tool:<name>`` to
 ``<name>`` for a name in that scope, and to None for each other name. So a
 dark tool, a Studio builder tool and an ``email-setup`` tool make a skill
-fail to load with ``action_unserved``. A skill pack still adds no tool: the
-run must hold the tool (``_skills_present``), and the tool keeps its own
-card and guard.
+fail to load with ``action_unserved``. The tool keeps its own card and guard.
+
+**A skill brings the pack of its chat tool (TOF-1b).** A skill pack adds no
+tool of its own. When the run base does not hold a tool of a ``tool:``
+action, :func:`pack_needs` names the code pack of that tool, and
+``tool_packs.choose`` adds that pack last, in the room that is left. Each
+other tool keeps the F3 rule: the run must hold it (``_skills_present``).
+:func:`build` serves a ``tool:`` action only with ``chat_tools`` True, the
+answer of ``STUDIO_CHAT_TOOLS_ORGS`` that the run reads. Else the skill
+fails to load with ``chat_tools_off``.
 """
 from __future__ import annotations
 
@@ -70,6 +77,7 @@ __all__ = [
     "estimate_tokens",
     "is_skill_slug",
     "matches",
+    "pack_needs",
     "rules_text",
     "skill_slug",
 ]
@@ -252,6 +260,32 @@ def action_tool(action_id: object) -> str | None:
     return str(tool) if tool else None
 
 
+def pack_needs(skills: Iterable[Any], held: Iterable[str]) -> dict[str, tuple[str, ...]]:
+    """TOF-1b. The code packs that each skill of *skills* brings, by the slug
+    of the skill. THE one map. Pure: no I/O, and no tool loads.
+
+    A tool of a skill brings pack P when :func:`chat_tools` maps the tool to P
+    and *held*, the tools of the run base, does not hold the tool. A door op
+    tool, ``run_workflow`` and a record tool are not in that scope, so they
+    keep the F3 rule: the run must hold them. A name that two packs hold has
+    no entry in the scope, so it brings no pack. The packs keep the order of
+    the tools, with no repeat. A skill that brings no pack has no entry."""
+    scope = _scope(*_scope_key())
+    have = frozenset(str(name) for name in held)
+    out: dict[str, tuple[str, ...]] = {}
+    for found in skills:
+        slug = str(getattr(found, "slug", "") or "")
+        packs: list[str] = []
+        for raw in tuple(getattr(found, "tools", ()) or ()):
+            name = str(raw)
+            owner_pack = scope.get(name)
+            if owner_pack and name not in have and owner_pack not in packs:
+                packs.append(owner_pack)
+        if slug and packs:
+            out[slug] = tuple(packs)
+    return out
+
+
 def button_tools(manifest: Mapping[str, Any]) -> tuple[
         tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str], ...]]:
     """F10a. Split the buttons of the views of *manifest* by chat tool.
@@ -338,11 +372,16 @@ def rules_text(name: str, description: str, instructions: str,
 
 def build(skill_id: str, name: str, description: str, version: int,
           content_hash: str, body: Mapping[str, Any],
-          *, max_tools: int) -> SkillPack | str:
+          *, max_tools: int, chat_tools: bool = False) -> SkillPack | str:
     """The pack of one stored skill version, or the reason it fails to load.
 
     The reasons are ``no_instructions``, ``unresolved_variable``,
-    ``action_unserved``, ``too_many_tools`` and ``too_long``."""
+    ``chat_tools_off``, ``action_unserved``, ``too_many_tools`` and
+    ``too_long``.
+
+    TOF-1b: *chat_tools* is the answer of ``STUDIO_CHAT_TOOLS_ORGS`` for the
+    org of the run. The caller reads it, so this module reads no flag. With
+    False, the default, a ``tool:`` action gives ``chat_tools_off``."""
     clean_name = strip_hidden(str(name or "")).strip()
     raw_desc = body.get("description") if isinstance(body, Mapping) else None
     desc = strip_hidden(str(raw_desc if isinstance(raw_desc, str) else description or "")).strip()
@@ -356,7 +395,10 @@ def build(skill_id: str, name: str, description: str, version: int,
     actions = raw_actions if isinstance(raw_actions, list) else []
     tools: list[str] = []
     for action in actions:
-        tool = action_tool(strip_hidden(str(action)))
+        raw = strip_hidden(str(action))
+        if not chat_tools and raw.strip().startswith(CHAT_TOOL_PREFIX):
+            return "chat_tools_off"
+        tool = action_tool(raw)
         if tool is None:
             return "action_unserved"
         if tool not in tools:

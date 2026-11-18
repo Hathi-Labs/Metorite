@@ -62,11 +62,25 @@ one reader, and :func:`claim_stored_call` the one claim (RESUME-2a).
 ``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
 each row is as before.
 
+**Retention** (task 3435, ``chat_run_continuity.md`` §4.12.4 item 1). No
+reader takes a row past ``expires_at``, and no move changes one. So
+:func:`prune` is the one end of an old row. It runs as a hook of the daily
+prune of the job worker (:func:`prune_hook`, ``gateway.jobs.worker
+.prune_hooks``), once for each org, in the org's own session. An expired row
+loses its stored call at the next prune: the arguments of a call never
+outlive the card. A row past ``expires_at`` plus :data:`PENDING_ASK_KEEP_DAYS`
+goes, with its payload and its answer. A row that still waits, and has not
+expired, never changes. The member purge deletes the rows that ask a leaver
+(``routes/admin/members.py``, ``chat_pending_asks``). These two are the only
+deletes of the table. It runs only with ``JOB_QUEUE`` on.
+
 Fences (R7): ``tests/unit/test_pending_ask_store.py`` (R8: the SQL and the
 row level security, as the NOBYPASSRLS app role) and
 ``tests/unit/test_pending_ask_flow.py`` (the flow). The stored call:
 ``tests/unit/test_resume_stored_call.py`` and
-``tests/unit/test_resume_stored_call_r8.py`` (R8).
+``tests/unit/test_resume_stored_call_r8.py`` (R8). The retention:
+``tests/unit/test_pending_ask_prune.py`` and
+``tests/unit/test_pending_ask_prune_r8.py`` (R8).
 """
 from __future__ import annotations
 
@@ -578,6 +592,116 @@ def restore_stored_call(
 
 
 # ---------------------------------------------------------------------------
+# Retention (task 3435). The SQL runs on the session of the daily prune job of
+# the gateway's job worker. R8 fence: tests/unit/test_pending_ask_prune_r8.py.
+# ---------------------------------------------------------------------------
+
+#: The days that a row stays after ``expires_at``. In that time the row keeps
+#: its question, its payload and its answer, but no stored call. Then
+#: :func:`prune` deletes it. No reader takes an expired row, so the days only
+#: let a person who looks into a fault read the card.
+PENDING_ASK_KEEP_DAYS = 7
+#: The most rows that one prune of one org deletes, and the most rows that it
+#: clears. One run never holds a long transaction. The daily run keeps up only while an
+#: org makes fewer than this many expired cards a day. Above that, the table
+#: grows until task 3560 raises the bound or runs the prune more often.
+PENDING_ASK_PRUNE_BATCH = 1000
+
+#: The tenant that the session binds. NULL when no tenant is bound, and then a
+#: statement matches no row. The text of ``gateway.routes.tasks.settings``.
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+#: The prune of the bound org, in ONE statement and one snapshot.
+#:
+#: * ``doomed``: the rows past ``expires_at`` plus :data:`PENDING_ASK_KEEP_DAYS`,
+#:   in each state. They go, with the payload and the answer.
+#: * ``stale``: each other row past ``expires_at`` that still holds a stored
+#:   call. The column goes to NULL. ``NOT EXISTS`` keeps the two sets apart,
+#:   so no row changes twice in the statement. ``doomed`` is MATERIALIZED, so
+#:   its LIMIT gives one set to both readers of it.
+#:
+#: A row that has not expired is in neither set, in each state. So a card that
+#: still waits, and a call that a claim can still take, never change. Each
+#: statement names the bound org beside RLS (R5). The DELETE and the UPDATE
+#: test the age again, so a row that a concurrent write changed is read again
+#: after its lock. The CTEs read the key only, never the stored call.
+_PRUNE_SQL = (
+    "WITH doomed AS MATERIALIZED ("
+    "  SELECT request_id "
+    "  FROM chat_pending_ask "
+    f"  WHERE organization_id = {_BOUND_ORG} "
+    "    AND expires_at <= now() - make_interval(days => :keep) "
+    "  ORDER BY expires_at LIMIT :batch"
+    "), stale AS ("
+    "  SELECT request_id "
+    "  FROM chat_pending_ask AS s "
+    f"  WHERE s.organization_id = {_BOUND_ORG} "
+    "    AND s.expires_at <= now() AND s.stored_call IS NOT NULL "
+    "    AND NOT EXISTS (SELECT 1 FROM doomed AS d WHERE d.request_id = s.request_id) "
+    "  ORDER BY s.expires_at LIMIT :batch"
+    "), deleted AS ("
+    "  DELETE FROM chat_pending_ask AS p USING doomed "
+    f"  WHERE p.organization_id = {_BOUND_ORG} "
+    "    AND p.request_id = doomed.request_id "
+    "    AND p.expires_at <= now() - make_interval(days => :keep) "
+    "  RETURNING 1"
+    "), cleared AS ("
+    "  UPDATE chat_pending_ask AS p SET stored_call = NULL FROM stale "
+    f"  WHERE p.organization_id = {_BOUND_ORG} "
+    "    AND p.request_id = stale.request_id "
+    "    AND p.expires_at <= now() AND p.stored_call IS NOT NULL "
+    "  RETURNING 1"
+    ") "
+    "SELECT (SELECT count(*) FROM deleted) AS deleted, "
+    "  (SELECT count(*) FROM cleared) AS cleared"
+)
+
+
+async def prune(db: Any) -> tuple[int, int]:
+    """Prune the rows of the bound org: ``(deleted, cleared)`` (task 3435).
+
+    *db* is an async session that the caller opened with ``tenant_session``.
+    The org is the tenant of that session, never an argument. No bound
+    tenant changes nothing. One statement (:data:`_PRUNE_SQL`)."""
+    from sqlalchemy import text
+
+    row = (await db.execute(text(_PRUNE_SQL), {
+        "keep": PENDING_ASK_KEEP_DAYS, "batch": PENDING_ASK_PRUNE_BATCH,
+    })).first()
+    if row is None:
+        return 0, 0
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+async def prune_hook(db: Any, today: Any) -> None:
+    """The ``gateway.jobs.worker.prune_hooks`` hook (task 3435). It never
+    raises: a hook that raises fails the whole prune of the org. A savepoint
+    keeps the transaction of the prune usable after a failure. The log names
+    the class only, because a DB message can echo a value of a row."""
+    try:
+        async with db.begin_nested():
+            deleted, cleared = await prune(db)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("pending_ask.prune_failed", error=type(exc).__name__)
+        return
+    if deleted or cleared:
+        _log.info("pending_ask.pruned", deleted=deleted, cleared=cleared)
+
+
+def register_prune() -> bool:
+    """Add :func:`prune_hook` to the prune of the job worker, once. True when
+    the hook is in the list. A process with no gateway has no job worker, so
+    nothing is added there."""
+    try:
+        from gateway.jobs import worker
+    except ImportError:
+        return False
+    if prune_hook not in worker.prune_hooks:
+        worker.prune_hooks.append(prune_hook)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # The run side: in this process, beside the Future.
 # ---------------------------------------------------------------------------
 
@@ -931,3 +1055,6 @@ def _reset_for_tests() -> None:
     _THREAD_OF.clear()
     _PARKED.clear()
     _STORED.clear()
+
+
+register_prune()

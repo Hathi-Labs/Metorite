@@ -276,3 +276,30 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+_NON_EMAIL_PACK_TEXTS = (
+    "EGRESS_HELD_PACK_ANSWER_NO_WRITES", "EGRESS_HOLD_NOTE_PACK_NO_WRITES",
+    "EGRESS_HELD_PACK_ANSWER_NO_WRITES_CONTINUE",
+    "EGRESS_HOLD_NOTE_PACK_NO_WRITES_CONTINUE",
+    "EGRESS_HELD_PACK_ANSWER_OTHER", "EGRESS_HOLD_NOTE_PACK_OTHER",
+)
+
+
+@pytest.mark.parametrize("name", _NON_EMAIL_PACK_TEXTS)
+def test_non_email_held_pack_text_names_the_calendar_invite(name: str) -> None:
+    """CE-15 S2. A calendar read marks a chat, so a CRM or Projects pack can be
+    held after a chat that read only an invite. The text must not say "read
+    email" alone. Mutation: write "read email from outside senders" back
+    into one of the six texts -> red."""
+    text = " ".join(getattr(eg, name).split())
+    assert "calendar invite" in text, name
+    assert "read email from outside senders" not in text, name
+
+
+@pytest.mark.parametrize("name", ["EGRESS_HELD_MAIL_ANSWER", "EGRESS_HOLD_NOTE_PACK_CARDS",
+                                  "EGRESS_HOLD_NOTE_PACK", "EGRESS_HELD_PACK_ANSWER"])
+def test_email_owner_held_text_still_says_email(name: str) -> None:
+    """CE-15 S2. The email-owner texts keep their wording. Mutation: make them
+    source-neutral -> red."""
+    assert "read email from outside senders" in " ".join(getattr(eg, name).split()), name
