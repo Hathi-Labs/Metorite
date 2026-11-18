@@ -69,6 +69,16 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_PASTE_FRAME_ORGS` turns on the paste frame (`chat_failure_modes.md`
+§4.7b, HRD-14b). For each listed org, a native chat run puts each pasted block
+of 8 or more lines in ONE `PASTED TEXT` block, in a copy of each model
+request. The saved row and the stored session stay raw. `*` lists every org,
+and the default is empty. Its one reader is
+`acb_skills.paste_frame.paste_frame_on`. The injection asks it at the start
+of each run, so a reload applies to the next run. Only `*` lets the `/v1` trim
+of a dev box restore a cut block, because that door binds no tenant. The flip
+is HRD-14e, and it is owner-only (`work_plan.md` §6.0 D4).
+
 `CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
 CO-11). For each listed org, a member may pin a chat, and the chat list shows a
 Pinned group. `*` lists every org, and the default is empty. Empty means the
