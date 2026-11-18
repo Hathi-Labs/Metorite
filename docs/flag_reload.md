@@ -44,6 +44,12 @@ Its one reader is `orchestrator.card_record.record_allowed`. The card gate asks
 it on each approved card, so a reload applies at once. The flip stays
 OWNER-GATE (`enforcement-flip`).
 
+The same flag turns on the sent-mail record (task 3594). A send tool sets the
+provider id, the approved addresses and the time on the row of its card. Each
+later turn of the chat then gets one line for each of the last 5 sent mails,
+in its run context. The run asks the flag at the start of each turn, so a
+reload applies at the next turn.
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The

@@ -4359,6 +4359,12 @@ import needs no mail account.
 `tests/unit/test_h201_email_artifact_sources.py` is the fence. It reads
 the disk only, so no database is involved.
 
+Task 3598 (2026-11-17) gives the attach one more source, and the import
+none. That source is a file of a chat folder in a shared agent's tenant
+dir, for a chat that the sender can write to. A chat file attaches only by
+an `artifact:<agent>:<path>` ref, because only that ref pins a digest. The
+bare path refuses it. `email_app_master_plan.md` §21.11 holds the rule.
+
 | Mutation | Tests that fail |
 |---|---|
 | both fixes reverted to main | 6 |

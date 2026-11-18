@@ -335,7 +335,7 @@ async def crm_facts(db: Any, user: Any) -> list[org_facts.Fact]:
     session. None outside ``CRM_QUESTIONS_ORGS``, and none for a member that
     the CRM access rule does not admit."""
     from gateway.crm_sync import catalogue as cat
-    from gateway.routes.crm.catalogue import _load
+    from gateway.routes.crm.catalogue import COUNT_FROM_FILL, _load
 
     org = getattr(user, "organization_id", None)
     if not org or not questions_allowed(str(org)):
@@ -345,7 +345,9 @@ async def crm_facts(db: Any, user: Any) -> list[org_facts.Fact]:
     except HTTPException:
         return []
     org = str(org)
-    _mode, sources, roles, others = await _load(db, org)
+    # Task 3593: the facts read `records > 0` and the order, never the exact
+    # count, so the count comes from the stored fill rows (no table scan).
+    _mode, sources, roles, others = await _load(db, org, count=COUNT_FROM_FILL)
     entries = cat.build(sources, roles, others)
     row = (await db.execute(text(_APPROVED_AT_SQL), {"org": org})).first()
     approved_at = row.approved_at if row is not None else None
