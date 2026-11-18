@@ -3658,15 +3658,15 @@ async def run_agent_stream_endpoint(
             # copies the context here, so the run reads them, and nothing
             # else does. D-PZ-37: `sent` is the sent words. They open only
             # the confirm card, and they feed the tool-pack chooser.
-            # HRD-14b: the raw parts ride the same scope (`_raw_parts`).
-            with member_typed(_typed, sent=_sent_text), surface_scope(_surface), \
-                    bind_raw_parts(_raw_parts):
+            with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
                 # PZ-31: the session's member is the run member. Their own
                 # typed steers that ENGAGE took count now, and a tool result
                 # that reads one later adds it (`steer.take_steer_turns`).
                 count_member_steers(_actor, _taken_steers)
-                async for chunk in _serve_run(timing):
-                    yield chunk
+                # HRD-14b: the raw parts of the turn ride the same scope.
+                with bind_raw_parts(_raw_parts):
+                    async for chunk in _serve_run(timing):
+                        yield chunk
         finally:
             _log.info("agent.run_timing", agent=agent_name, run_id=run_id,
                       **timing.fields())

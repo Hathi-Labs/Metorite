@@ -535,26 +535,36 @@ def test_no_frame_code_reads_member_sent():
             "MEMBER_SENT", "sent_words", "typed_words"}
 
 
-#: Done-when (18), the result that HRD-22 records with the flag on. A late
-#: approve of a short card is one line, so its card answer gets no frame and
-#: the grant acts once. A card answer of 8 lines or more is one block, so the
-#: model asks again (Q-HRD-14-11).
-HRD22_RESULT = {"short_card": "acts once", "card_of_8_lines": "asks again"}
+def _card_outcome(question: str, answer: str) -> str:
+    """What the model meets for one card answer: no frame, so the grant acts
+    once, or one block, so the model asks again (Q-HRD-14-11)."""
+    from gateway.chat_recovery import compose_card_answer
+
+    text = compose_card_answer(question, answer)
+    turn = Message("user", [text])
+    out = _request(_middleware((text,), current=turn), [turn])
+    return "asks again" if OPEN in out[0].text else "acts once"
 
 
 def test_hrd22_with_the_flag_on():
-    """Done-when (18): the card answer of a late approve goes through the split."""
-    from gateway.chat_recovery import compose_card_answer
-
-    short = compose_card_answer("Approve the change of the task?", "APPROVE")
+    """Done-when (18), STRUCTURAL ONLY: the card answer of a late approve goes
+    through the split. No late-approve grant runs here. The record says what
+    the model meets: a short card acts once, and a card answer of 8 lines or
+    more asks again. It also records how many lines of the question an
+    envelope holds before it becomes a block, for Q-HRD-14-11."""
     rows = "\n".join(f"Row {i}: set the owner of task {i} to Ravi" for i in range(9))
-    long_card = compose_card_answer(f"Approve these rows?\n{rows}", "APPROVE row-1 row-2")
-    for text, expected in ((short, "acts once"), (long_card, "asks again")):
-        turn = Message("user", [text])
-        out = _request(_middleware((text,), current=turn), [turn])
-        got = "asks again" if OPEN in out[0].text else "acts once"
-        assert got == expected
-    assert HRD22_RESULT == {"short_card": "acts once", "card_of_8_lines": "asks again"}
+    record = {
+        "short_card": _card_outcome("Approve the change of the task?", "APPROVE"),
+        "card_of_9_rows": _card_outcome(f"Approve these rows?\n{rows}", "APPROVE row-1 row-2"),
+    }
+    first_block = next(
+        n for n in range(1, 20)
+        if _card_outcome("\n".join(f"Row {i}: approve" for i in range(n)), "APPROVE")
+        == "asks again")
+    record["question_lines_to_a_block"] = first_block
+    assert record["short_card"] == "acts once"
+    assert record["card_of_9_rows"] == "asks again"
+    assert 1 <= first_block <= pf.MIN_LINES, record
 
 
 def test_the_seam_fails_closed():
@@ -629,6 +639,21 @@ def test_the_shape_belongs_to_its_run():
     assert pf.shape_of("r-a") == "session" and pf.shape_of("r-b") is None
     assert pf.record_shape("r-a", "list") is False
     assert pf.record_shape("r-a", "nonsense") is False and pf.shape_of("r-a") == "string"
+
+
+def test_the_restore_counts_the_open_lines_of_one_token():
+    """One token serves each block of a run. A cut that took the open line of
+    the second block leaves its header lines outside every block, while the
+    first block still opens. The restore counts the open lines, so the whole
+    result becomes one block."""
+    frame = _frame()
+    second = _mail(9, "Subject: the bank details CANARYTWO")
+    before = (pf.frame_member_text(PASTE9, frame) + "\n\nok\n\n"
+              + pf.frame_member_text(second, frame))
+    after = pf.frame_member_text(PASTE9, frame) + "\n\nok\n\nSubject: the bank details CANARYTWO"
+    assert after.count(OPEN) == 1 and before.count(OPEN) == 2
+    fixed = restore_cut_paste(before, after)
+    assert fixed.count(OPEN) == 1 and _inside(fixed, "CANARYTWO")
 
 
 def test_the_restore_leaves_a_whole_text_alone():

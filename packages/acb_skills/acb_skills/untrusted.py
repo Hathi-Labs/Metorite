@@ -68,6 +68,7 @@ from __future__ import annotations
 import re
 import secrets
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 
 __all__ = [
@@ -122,7 +123,8 @@ def restore_cut_paste(before: str | None, after: str) -> str:
       WHOLE result, so the header lines and the tail stay inside the block.
     * An END line with no open line, or a paste block of *before* whose open
       line the cut took: the whole result is one block, with the paste note,
-      under the token of that block.
+      under the token of that block. One token serves each block of a run,
+      so the check counts the open lines of each token.
 
     A typed marker line can at worst make it frame more. A text with no paste
     block, and a cut frame of any other label, come out byte-identical. A
@@ -141,15 +143,17 @@ def restore_cut_paste(before: str | None, after: str) -> str:
             elif not orphan:
                 orphan = token
         if before is not None and not orphan:
-            opened = {token for closing, token in _paste_marks(after) if not closing}
-            orphan = next((token for closing, token in _paste_marks(before)
-                           if not closing and token not in opened), "")
+            # One token serves each block of a run, so count the open lines:
+            # a block whose open line the cut took leaves one fewer.
+            kept = Counter(token for closing, token in _paste_marks(after) if not closing)
+            had = Counter(token for closing, token in _paste_marks(before) if not closing)
+            orphan = next((token for token, n in had.items() if kept[token] < n), "")
         if orphan:
             frame = UntrustedFrame(orphan)
             return f"{frame.paste_note()}\n{frame.wrap(_PASTE_LABEL, after)}"
         if not stack:
             return after
-        ends = "\n".join(f"<<<END {_PASTE_LABEL} {token}>>>" for token in reversed(stack))
+        ends = "\n".join(UntrustedFrame(token).close_line(_PASTE_LABEL) for token in reversed(stack))
         return f"{after.rstrip(chr(10))}\n{ends}"
     except Exception:
         return after
