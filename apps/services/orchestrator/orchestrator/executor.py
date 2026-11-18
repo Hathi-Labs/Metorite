@@ -2190,11 +2190,12 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
     provider and of an MCP server. Only the orchestrator, and never raises.
     The view comes from ``agent_with_providers``, as the loader's does.
 
-    HRD-1: the same view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
-    the one answer to a call of a tool that the run did not load. It goes
-    after each seam of ``_inject_agent_tools``, so its chat middleware runs
-    inside the hold, steer and number-check middleware, and rewrites the
-    messages that they pass on. Only the tier policy view comes later."""
+    HRD-1: the next view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
+    the one answer to a call of a tool that the run did not load, through the
+    one hook :func:`_unknown_tool_view`. It goes after each seam of
+    ``_inject_agent_tools``, so its chat middleware runs inside the hold,
+    steer and number-check middleware, and rewrites the messages that they
+    pass on. Only the tier policy view comes later."""
     if agent_name != _PACK_AGENT or not agents:
         return agents
     try:
@@ -2203,15 +2204,43 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
         if not isinstance(agents[0], Agent):
             return agents
         from acb_skills.tool_guard import LogRequestToolsProvider
+
+        from orchestrator._native_run_context import agent_with_providers
+
+        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+        # HRD-1: the answer to an unknown tool name, last, as before HRD-1b.
+        agents = _unknown_tool_view(agents, step=False)
+    except Exception as exc:  # a log never costs the turn
+        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    return agents
+
+
+def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
+    """*agents*, with the first one on a per-run view that carries
+    ``acb_skills.unknown_tool.UnknownToolProvider`` (HRD-1, HRD-1b).
+
+    The ONE hook of the answer to a call of an unknown tool name. The stream
+    run of the orchestrator (:func:`_log_request_tools_view`) and each batch
+    run (:func:`_assemble_batch_agents`) call it. A delegated agent, a worker
+    and a self-anneal retry run through the batch run, so they get it there.
+    The model then reads the HRD-1 text, and never MAF's own text. *step* is
+    True for a delegated run or a run with no chat: its text names no pack,
+    and it never asks a loader. A Copilot SDK agent is not a MAF ``Agent``,
+    so it gets no view. Never raises: a fault leaves MAF's text, as before."""
+    if not agents:
+        return agents
+    try:
+        from agent_framework import Agent
+
+        if not isinstance(agents[0], Agent):
+            return agents
         from acb_skills.unknown_tool import UnknownToolProvider
 
         from orchestrator._native_run_context import agent_with_providers
 
-        # HRD-1: the answer to an unknown tool name rides in the same view.
-        agents[0] = agent_with_providers(
-            agents[0], [LogRequestToolsProvider(agent_name), UnknownToolProvider()])
-    except Exception as exc:  # a log never costs the turn
-        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+        agents[0] = agent_with_providers(agents[0], [UnknownToolProvider(step=step)])
+    except Exception as exc:  # the better text never costs the turn
+        _log.warning("executor.unknown_tool_view_off", error_type=type(exc).__name__)
     return agents
 
 
@@ -5831,7 +5860,9 @@ class _BatchRunInputs:
     credential names the first attempt resolved, after the acting member's
     filter. A retry resolves no authority again: it gets those names only.
     ``None`` on any of the three means the first attempt failed before that
-    step, and the retry then fails closed (nothing).
+    step, and the retry then fails closed (nothing). *step* (HRD-1b) is the
+    mode of the answer to an unknown tool name. The run decides it before
+    the first attempt, so the retry answers the same way.
     """
 
     repo_name: str | None = None
@@ -5839,6 +5870,7 @@ class _BatchRunInputs:
     held: frozenset[str] | None = None
     run_tools: frozenset[str] | None = None
     integrations: frozenset[str] | None = None
+    step: bool = False
 
 
 @dataclasses.dataclass
@@ -5862,6 +5894,7 @@ async def _assemble_batch_agents(
     loaded: Any, *, agent_name: str, no_egress: bool,
     held: frozenset[str] | None = None,
     mcp: _BatchMcp | None = None,
+    step: bool = False,
 ) -> tuple[list[Any], Any, frozenset[str]]:
     """Build and arm the agents of a batch run.
 
@@ -5880,6 +5913,11 @@ async def _assemble_batch_agents(
     stream path does, with the same org, access lookup and card rule. A
     ``no_egress`` run gets none (H-236). A retry passes no *mcp*, so it
     holds no server: a retry only narrows.
+
+    HRD-1b: the first agent goes on a view that answers a call of an unknown
+    tool name (:func:`_unknown_tool_view`). *step* is the mode of that
+    answer. The view comes after each seam of the injection and before the
+    MCP servers, in the order of the stream path.
     """
     agents = loaded.build_agents()
     # Honour .github/agents/<name>.agent.md (instructions override).
@@ -5905,6 +5943,8 @@ async def _assemble_batch_agents(
     # CRM-Q32-5: the CRM facts block, read as the member.
     run_tools = await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
     _log_agent_tools_resolved(agent_name, agents, own_tools)
+    # HRD-1b: the model never reads MAF's "not found" text in a batch run.
+    agents = _unknown_tool_view(agents, step=step)
     # WS-47 WAC-P3: the org's MCP servers, exactly as the stream path adds
     # them. H-236: an MCP server reaches outside, so a no_egress run gets
     # none. MCP-NC1: a member's run calls a tool that can change data with
@@ -6062,6 +6102,10 @@ async def _run_agent_inner(
     # belong to the organization (write_artifact). A delegated run is not:
     # its parent's chat may hold a member's data.
     _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
+    # HRD-1b: the mode of the answer to an unknown tool name. A delegated run
+    # (the same test as `sub_run` below) answers another model, and a run
+    # with no chat answers no member. So each is a step (`unknown_tool`).
+    _answer_step = bool(_parent_ctx.get("run_id")) or _batch_thread
     # CRM-Q29: the member's own words, a source of the number check.
     _member_words = _member_words_for_run(_parent_ctx, event_payload)
     # WS-67 OA-1: the member's messages of the chat, for each delegated task.
@@ -6198,7 +6242,7 @@ async def _run_agent_inner(
     _is_copilot_agent = False
     # What the first attempt used. The self-anneal retry rebuilds from it, so
     # a retry can only narrow the tools of this run.
-    _anneal_inputs = _BatchRunInputs()
+    _anneal_inputs = _BatchRunInputs(step=_answer_step)
     # WS-47 WAC-P3: the MCP servers that this run opens. The finally closes them.
     _batch_mcp: _BatchMcp | None = None
     try:
@@ -6230,6 +6274,7 @@ async def _run_agent_inner(
             pass
         _anneal_inputs = _BatchRunInputs(
             repo_name=_registry_repo_name, local_path=_registry_local_path,
+            step=_answer_step,
         )
 
         # §15.4: refused as absent unless a first-party admin runs it. An
@@ -6362,6 +6407,7 @@ async def _run_agent_inner(
                 loaded, agent_name=agent_name,
                 no_egress=_no_egress,  # H-236: from the parent's binding
                 mcp=_batch_mcp,
+                step=_answer_step,  # HRD-1b
             )
             # The retry narrows to what this attempt holds (never a union).
             _anneal_inputs = dataclasses.replace(
@@ -10156,6 +10202,7 @@ async def _self_anneal(
                 loaded, agent_name=agent_name,
                 no_egress=no_egress,  # H-236
                 held=inputs.held,
+                step=inputs.step,  # HRD-1b: the first attempt's mode
             )
             # ``run_tools`` (§14.10): the retry ALWAYS binds its own, the part
             # of the first attempt's set that it holds. A first attempt that
