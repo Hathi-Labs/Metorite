@@ -226,7 +226,11 @@ not write a second copy of that seam. A bare test file name is under
    - `is_invisible` is the ONE rule of a character with no glyph. The gateway's approval store (`gateway/app_requests.py`, MCP-P1b-1) refuses each one in a request, less ZWJ and ZWNJ. Do not write a second set.
    - `UntrustedFrame.paste_note` is the note of a block of pasted text (HRD-14a). `note` does not change.
 5m-0. paste_frame.py -- the split of a member turn into the member's lead and ONE `PASTED TEXT` block (HRD-14a, spec `chat_failure_modes.md` §4.7b).
-   - `split` and `frame_member_text` are pure. Nothing calls them until HRD-14b adds the seam behind its flag.
+   - `split` and `frame_member_text` are pure. HRD-14b (task 3667) adds the seam, dark behind `CHAT_PASTE_FRAME_ORGS`. `paste_frame_on` is the ONE reader. `paste_frame_everywhere` is true only for `*`, and it reads no org: only the `/v1` restore asks it.
+   - `RAW_PARTS` is the raw binding, and only the chat route binds it (`bind_raw_parts`). A tuple is a bound run, also when it is empty. None is a door that binds nothing. Never read `MEMBER_SENT` or `sent_words()` in its place.
+   - `record_shape` keeps the shape of the run input by run id, and `shape_of` reads it for that run id only. `frame_current_turn`, `frame_earlier_turn` and `frame_part` are the rules for one text. Each fails closed to `frame_whole`. `orchestrator.paste_turns` is their one caller.
+   - `untrusted.restore_cut_paste` makes a cut `PASTED TEXT` block whole after a trim. Only `gateway.routes.v1_compat._restore_cut_pastes` calls it. `attachment_tools.upload_paths_exist` proves an upload note against the thread folder of the run, by the exact path.
+   - `handoff.member_turns` runs `typed_text` on the whole turn first, then the split, with the flag on. Fence: `test_paste_frame_seam.py`.
    - The marker lines come only from `UntrustedFrame`. The `_PASTED` rule comes from `acb_common.assistant_profile`. A hidden character is `reply_card.is_invisible_char`. Do not copy any of them.
    - Fence: `test_paste_frame.py`.
 5m-1. hidden_text.py -- the ONE rule of a hidden character in owner text that a store keeps (WS-STU F1b, spec `ai_studio.md` §14 F1b).
