@@ -1088,6 +1088,18 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_honorifics.py.
     address_forms_orgs: str = ""
 
+    # ── The claim check of an answer (HRD-13, chat_failure_modes.md §4.4) ───
+    #
+    # CHAT_CLAIM_CHECK_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and the orchestrator's run is as before. On, the run
+    # of the orchestrator gets ONE provider that reads the whole run at its
+    # end and logs ONE line, `answer_claims.checked`, with counts only. It is
+    # shadow only and never changes the answer (D-HRD-6). The one reader is
+    # `acb_skills.answer_claims.claim_check_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_answer_claims.py.
+    chat_claim_check_orgs: str = ""
+
     # ── The line of a slow tool (HRD-6, chat_failure_modes.md §4 row B6) ────
     #
     # CHAT_PROGRESS_NOTICE_ORGS: a comma list of organization ids, or `*`.
