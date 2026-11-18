@@ -662,6 +662,30 @@ async def test_a_redis_that_stalls_on_the_first_claim_fails_open(world, monkeypa
     assert out.kind == send_once.OPEN
 
 
+async def test_a_stall_after_a_key_was_found_is_busy_never_open(world, monkeypatch) -> None:
+    """A claim is held and a run is live. Round 1 answers and finds the key.
+    The SET NX of round 2 stalls. The repeat must get BUSY: OPEN would take
+    the old path, and steer the same words or start a second run."""
+    first = await _begin()
+    assert first.kind == send_once.NEW
+    world.active[THREAD] = True
+    monkeypatch.setattr(send_once, "STEP_TIMEOUT_SECONDS", 0.05)
+    real_set = world.raw.set
+    sets: list[int] = []
+
+    async def _second_stalls(*a, **k):
+        sets.append(1)
+        if len(sets) >= 2:
+            await asyncio.Event().wait()
+        return await real_set(*a, **k)
+
+    world.raw.set = _second_stalls
+    out = await asyncio.wait_for(_begin(), 2)
+    assert len(sets) == 2, "round 1 answered, and round 2 stalled"
+    assert out.kind == send_once.BUSY
+    assert _held(world)["claim"] == first.claim.token
+
+
 async def test_a_start_into_an_empty_key_starts_nothing(world) -> None:
     """F-E: the key is gone at the start. It ran out, or a taker ran and a
     Stop released it. The move never writes into an empty key."""

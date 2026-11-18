@@ -499,14 +499,14 @@ async def _claim_step(r: Any, k: Any, claim_value: str) -> bool | None:
     """The SET NX of a claim. True: claimed. False: the key holds a value.
     None: the step stalled.
 
-    F-C of the review: a Redis that stalls on the claim does not answer, as
-    a refusing one does not (R10). No key is known yet, so the send fails
-    open. A step that stalls after a key is known gives BUSY, never a run.
+    F-C of the review: a Redis that stalls on the FIRST claim of a send does
+    not answer, as a refusing one does not (R10). No key is known yet, so
+    :func:`_begin` fails open. A stall in a later round comes after the send
+    found a key, so :func:`_begin` gives BUSY, never a run.
     """
     try:
         return bool(await _step(r.set(k, claim_value, nx=True, ex=CLAIM_TTL_SECONDS)))
     except TimeoutError:
-        _log.warning("send_once.open", error="TimeoutError")
         return None
 
 
@@ -526,10 +526,15 @@ async def _begin(
             deadline = loop.time() + WAIT_SECONDS
             seen: Any = None
             stale_takes = 0
-            for _ in range(_max_rounds()):
+            for round_no in range(_max_rounds()):
                 claimed = await _claim_step(r, k, claim_value)
                 if claimed is None:
-                    return Outcome(OPEN)
+                    # Only the first round knows no key. A later round found
+                    # one, so a stall there is BUSY, never the old path.
+                    verdict = OPEN if round_no == 0 else BUSY
+                    _log.warning("send_once.claim_stalled", verdict=verdict,
+                                 thread_id=thread_id[:12])
+                    return Outcome(verdict)
                 if claimed:
                     return Outcome(NEW, claim=SendClaim(
                         org=org, thread_id=thread_id, member=_member(member),
