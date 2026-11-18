@@ -974,8 +974,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
     # small pack of the same owner. It has no surface, so a plain Studio turn
-    # holds no new tool. It is not in FOLLOWS: the owner turns it on with a
-    # TOOL_PACKS line.
+    # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
+    # on (tool_packs.packs_on).
     "studio-share": {
         "label": "AI Studio skill share",
         "summary": (

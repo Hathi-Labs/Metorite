@@ -6,7 +6,7 @@ Gate: AGENT-SAFE. Dark behind `STUDIO_ORGS`. The chat tool is in its own pack, `
 
 ## What
 
-📋 **Open (task 3765, WS-TOF TOF-4b).** **The chat tool, the Needs row and the purge rule of a skill share.** It builds on J2c (TOF-4a). It adds no table, no migration and no flag.
+🔨 **BUILT, dark (2026-11-19, task 3765, WS-TOF TOF-4b).** **The chat tool, the Needs row and the purge rule of a skill share.** It builds on J2c (TOF-4a). It adds no table, no migration and no flag.
 
 **The owner's read.** `GET /studio/skills/{id}/share` gives the owner the share columns of one skill (`skills_store.get_share`). Another member, another org and no such skill get 404. The route reads `STUDIO_ORGS` first. J2c has no read for the owner, so this route closes that gap.
 
