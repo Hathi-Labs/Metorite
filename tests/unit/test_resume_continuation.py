@@ -2113,7 +2113,8 @@ def test_the_resume_path_asks_postgres_before_the_claim(monkeypatch):
     monkeypatch.setattr(agent_routes, "assert_can_run_agent_in_session", can_run)
     monkeypatch.setattr(pending_ask, "claim_stored_call", claim)
     monkeypatch.setattr(late_approve, "twin_ran", ran)
-    req = type("R", (), {"thread_id": "t", "request_id": "r" * 32, "answer": "APPROVE"})()
+    req = type("R", (), {"thread_id": "t", "request_id": "r" * 32, "answer": "APPROVE",
+                           "declined": False})()
     assert asyncio.run(agent_routes._resume_from_row(req, object())) is None
     assert claimed == [], "no row moved"
     src = inspect.getsource(agent_routes._resume_from_row)
