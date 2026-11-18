@@ -955,6 +955,14 @@ def _plain(value: Any, cap: int) -> bool:
     return isinstance(value, str) and len(value) <= cap and clean_body(value) == value
 
 
+def _has_literal(value: str) -> bool:
+    """True when admin text holds a digit that does not follow a letter or
+    ``_``: a figure, a date or a count. It catches only digits. A customer
+    name or another value in plain words passes this check, and only the
+    admin's accept stands against it (``semantic_model.md`` §6.2)."""
+    return _LITERAL_DIGIT.search(value) is not None
+
+
 def _field_key(value: Any) -> bool:
     """True for a field API name, by the rule of a key of a sum (CRM-Q32-9)."""
     return (isinstance(value, str) and 0 < len(value) <= SUM_KEY_MAX
@@ -1004,6 +1012,8 @@ def _measure_problem(item: Mapping[str, Any]) -> str | None:
         return "key"
     if not _plain(item.get("label"), LABEL_MAX):
         return "label"
+    if _has_literal(item["label"]):
+        return "label_value"
     if not _module(item.get("module")):
         return "module"
     found = _aggregate_problem(item.get("aggregate"), item.get("fields"))
@@ -1025,6 +1035,8 @@ def _join_problem(item: Mapping[str, Any]) -> str | None:
         return "target"
     if "label" in item and not _plain(item["label"], LABEL_MAX):
         return "label"
+    if "label" in item and _has_literal(item["label"]):
+        return "label_value"
     return None
 
 
@@ -1036,10 +1048,9 @@ def _params_problem(params: Any) -> str | None:
         if not isinstance(one, Mapping) or set(one) != _PARAM_KEYS:
             return "params"
         name = one.get("name")
-        if number_like(name):
+        # A number, or text that is no name (such as "Acme Ltd"), is a value.
+        if number_like(name) or not isinstance(name, str) or not _PARAM_NAME.fullmatch(name):
             return "param_value"
-        if not isinstance(name, str) or not _PARAM_NAME.fullmatch(name):
-            return "params"
         if one.get("kind") not in PARAM_KINDS:
             return "params"
         names.append(name)
@@ -1055,9 +1066,13 @@ def _where_problem(where: Any, names: frozenset[str]) -> str | None:
     for one in where:
         if not isinstance(one, Mapping):
             return "query"
-        if not set(one) <= _WHERE_KEYS or number_like(one.get("param")):
-            return "query_value"
         param = one.get("param")
+        # A key such as ``value``, a number, or text that is no parameter
+        # name (such as "Acme Ltd") is a literal where a name must be.
+        if (not set(one) <= _WHERE_KEYS or number_like(param)
+                or ("param" in one and not (isinstance(param, str)
+                                            and _PARAM_NAME.fullmatch(param)))):
+            return "query_value"
         if (set(one) != _WHERE_KEYS or not _field_key(one.get("field"))
                 or one.get("op") not in OPS or not isinstance(param, str)
                 or param not in names):
@@ -1098,7 +1113,7 @@ def _query_problem(item: Mapping[str, Any]) -> str | None:
     if not _plain(question, BODY_MAX):
         return "question"
     bare = _PLACEHOLDER.sub("", question)
-    if _LITERAL_DIGIT.search(bare):
+    if _has_literal(bare):
         return "question_value"
     if "{" in bare or "}" in bare:
         return "question"
@@ -1122,13 +1137,18 @@ def semantic_problem(item: Mapping[str, Any]) -> str | None:
     nothing. Each word names one part:
 
     * ``keys``: a key outside the closed set of the kind, such as ``total``.
-    * ``key``, ``label``, ``module``, ``aggregate``, ``fields``, ``filters``
-      and ``unit``: that part of a ``measure``.
-    * ``module``, ``field``, ``target`` and ``label``: that part of a ``join``.
+    * ``key``, ``label``, ``label_value``, ``module``, ``aggregate``,
+      ``fields``, ``filters`` and ``unit``: that part of a ``measure``.
+    * ``module``, ``field``, ``target``, ``label`` and ``label_value``: that
+      part of a ``join``.
     * ``question``, ``question_value``, ``params``, ``param_value``,
       ``query``, ``query_value`` and ``model_version``: that part of a
-      ``query``. A word that ends in ``_value`` means a literal where a name
-      must be.
+      ``query``.
+
+    A word that ends in ``_value`` means a literal where a name or plain
+    words must be. In a label or in the question words, the code finds only
+    a digit (:func:`_has_literal`). It cannot find a name that a person
+    wrote in words, so the admin's accept is the guard there.
     """
     kind = item.get("kind")
     if kind == KIND_MEASURE:
@@ -1160,7 +1180,8 @@ def semantic_ref_problem(item: Mapping[str, Any], sources: Mapping[str, Source])
     aggregate but ``count``. Each fixed filter names option keys of a field.
     A ``join`` names a lookup field whose target is the target of the item.
     A ``query`` names fields of its module. The words are ``module``,
-    ``field``, ``type``, ``options``, ``target`` and ``kind``."""
+    ``field``, ``type``, ``no_options``, ``options``, ``target`` and
+    ``kind``."""
     kind = item.get("kind")
     holder = (item.get("query") or {}) if kind == KIND_QUERY else item
     src = sources.get(str(holder.get("module")))
@@ -1181,6 +1202,13 @@ def semantic_ref_problem(item: Mapping[str, Any], sources: Mapping[str, Source])
             found = src.field(str(one.get("field")))
             if found is None:
                 return "field"
+            # A field with no fixed option keys takes no fixed filter. A core
+            # select field (the stage or the status of a deal or a lead) is
+            # one: its choices are rows of the org with ids, not keys of a
+            # definition (``core.SYSTEM_FIELDS`` lists none). So the word
+            # ``no_options`` says that, and not that a key is wrong.
+            if not found.options:
+                return "no_options"
             if not set(one.get("options") or []) <= set(found.options):
                 return "options"
         return None

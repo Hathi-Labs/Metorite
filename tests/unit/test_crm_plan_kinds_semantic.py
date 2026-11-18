@@ -297,7 +297,7 @@ def test_a_snapshot_keeps_an_item_of_these_kinds_byte_for_byte() -> None:
     (_with(MEASURE, fields=["Gone"]), "field"),
     (_with(MEASURE, fields=["Name"]), "type"),
     (_with(MEASURE, filters=[{"field": "Status", "options": ["Lost"]}]), "options"),
-    (_with(MEASURE, filters=[{"field": "Net_Value", "options": ["Paid"]}]), "options"),
+    (_with(MEASURE, filters=[{"field": "Net_Value", "options": ["Paid"]}]), "no_options"),
     (_with(JOIN, field="Gone"), "field"),
     (_with(JOIN, target="Towers"), "target"),
     (_with(JOIN, field="Name"), "target"),
@@ -379,3 +379,133 @@ def test_the_provider_serves_them_only_with_the_flag(monkeypatch) -> None:
     assert not subjects() & {"measure", "join", "query"}
     _flag(monkeypatch, _ORG)
     assert {"measure", "join", "query"} <= subjects()
+
+
+# ── The review fixes (SEM-7 review round 1) ──────────────────────────────────
+
+
+@pytest.mark.parametrize(("item", "code"), [
+    (_with(MEASURE, label="1,23,45,678"), "bad_measure"),
+    (_with(MEASURE, label="Revenue was 4,200,000 in 2024"), "bad_measure"),
+    (_with(MEASURE, label="Billed 5 times"), "bad_measure"),
+    (_with(JOIN, label="1,23,45,678"), "bad_join"),
+    (_with(JOIN, label="Buyer since 2024"), "bad_join"),
+])
+def test_a_figure_in_a_label_is_refused_by_name(item: dict, code: str) -> None:
+    """P2-1: a label gets the digit rule of the question words."""
+    detail = _refused([item], code)
+    assert "(label_value)" in detail["message"], detail
+    rows = facts.semantic_facts([item], list(_sources().values()), None)
+    assert rows == []
+
+
+def test_a_label_with_no_figure_passes() -> None:
+    mpl.check_kinds([_with(MEASURE, label="Q1 billed amount"),
+                     _with(JOIN, label="The buyer of an invoice")], semantic=True)
+
+
+@pytest.mark.parametrize(("item", "part"), [
+    (_with(QUERY, params=[{"name": "Acme Ltd", "kind": "record"},
+                          {"name": "month", "kind": "month"}]), "param_value"),
+    (_with(QUERY, query={**QUERY["query"], "where": [
+        {"field": "Buyer", "op": "eq", "param": "Acme Ltd"},
+        {"field": "Invoice_Date", "op": "on", "param": "month"}]}), "query_value"),
+    (_with(QUERY, query={**QUERY["query"], "where": [
+        {"field": "Buyer", "op": "eq", "param": ["Acme"]},
+        {"field": "Invoice_Date", "op": "on", "param": "month"}]}), "query_value"),
+])
+def test_a_text_literal_where_a_name_must_be_is_a_value(item: dict, part: str) -> None:
+    """P3-4: the precise word, where it is cheap."""
+    detail = _refused([MEASURE, item], "bad_query")
+    assert f"({part})" in detail["message"], detail
+
+
+def test_a_stored_item_that_is_no_longer_legal_does_not_lock_the_plan() -> None:
+    """P3-3: with the items of the version in use, only a new or changed
+    item is checked. An edit of the old item is still refused."""
+    old = _with(MEASURE, key="old", label="Billed 5 times")
+    in_use = [ROLE, old]
+    mpl.check_kinds([ROLE, old, JOIN], semantic=True, in_use=in_use)
+    edited = {**old, "unit": "count"}
+    detail = _refused([ROLE, edited], "bad_measure")
+    assert "(label_value)" in detail["message"]
+    with pytest.raises(HTTPException):
+        mpl.check_kinds([ROLE, edited], semantic=True, in_use=in_use)
+
+
+def test_a_kept_query_needs_its_measure_only_when_this_change_drops_it() -> None:
+    kept = [MEASURE, QUERY]
+    with pytest.raises(HTTPException) as exc:
+        mpl.check_kinds([QUERY], semantic=True, in_use=kept)
+    assert exc.value.detail["code"] == "measure_missing"
+    # A query that the version in use already held with no measure stays.
+    mpl.check_kinds([QUERY], semantic=True, in_use=[QUERY])
+
+
+class _FakeDb:
+    """The two statements of ``carry_draft``: the next version, then the
+    insert of the draft. It keeps the rules that the draft writes."""
+
+    def __init__(self) -> None:
+        self.rules: list | None = None
+
+    async def execute(self, _sql: Any, params: dict | None = None) -> Any:
+        if params and "rules" in params:
+            self.rules = json.loads(params["rules"])
+            return SimpleNamespace(first=lambda: SimpleNamespace(rules=self.rules))
+        return SimpleNamespace(scalar=lambda: 7)
+
+
+def test_carry_draft_reads_the_flag_of_the_org_it_is_given(monkeypatch) -> None:
+    """P2-2: the scheduler path binds no tenant. With *org*, the flag of that
+    org applies, so the admin's pending measure stays in the new draft."""
+    from acb_common.db import clear_tenant, current_tenant, release_tenant
+
+    crm_switch_on(monkeypatch, "*")
+    _flag(monkeypatch, _ORG)
+    approved = SimpleNamespace(version=4, rules=[ROLE])
+    draft = SimpleNamespace(version=5, created_by="admin", rules=[ROLE, MEASURE])
+    scope = clear_tenant()
+    try:
+        assert current_tenant() is None
+        db = _FakeDb()
+        row = asyncio.run(mpl.carry_draft(db, draft, approved, org=_ORG))
+        assert row is not None and MEASURE in db.rules
+        # The old call with no org reads no flag here, and drops the item.
+        assert asyncio.run(mpl.carry_draft(_FakeDb(), draft, approved)) is None
+    finally:
+        release_tenant(scope)
+
+
+def test_each_caller_of_carry_draft_passes_the_org() -> None:
+    """P2-2: a fence. Each call names ``org=``, so no path leans on the
+    bound tenant."""
+    import re
+
+    root = Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway/routes/crm"
+    calls = [
+        (p.name, m.group(0)) for p in root.glob("*.py")
+        for m in re.finditer(r"carry_draft\((?!\s*\n?\s*db: Any)[^)]*\)",
+                             p.read_text(encoding="utf-8"))
+    ]
+    assert len(calls) >= 5, calls
+    for name, call in calls:
+        assert "org=org" in call, (name, call)
+
+
+def test_the_catalogue_check_reads_no_core_count(monkeypatch) -> None:
+    """P3-2: ``_check_semantic_refs`` asks ``_load`` for no record count."""
+    from gateway.routes.crm import catalogue as route
+
+    seen: dict = {}
+
+    async def _load(_db: Any, _org: str, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return "mirror", list(_sources().values()), {}, []
+
+    monkeypatch.setattr(route, "_load", _load)
+    asyncio.run(mpl._check_semantic_refs(object(), _ORG, [MEASURE], None))
+    assert seen == {"count": False, "core_counts": False}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(mpl._check_semantic_refs(object(), _ORG, [_with(MEASURE, module="X")], None))
+    assert exc.value.detail["code"] == "stale_measure"

@@ -423,26 +423,41 @@ def semantic_on(org: str | None) -> bool:
     return semantic_model_allowed(org or current_tenant())
 
 
-def _check_semantic(others: Sequence[Mapping[str, Any]]) -> None:
+def _measure_keys(items: Sequence[Mapping[str, Any]]) -> set[Any]:
+    return {_hashable(o.get("key")) for o in items if o.get("kind") == KIND_MEASURE}
+
+
+def _check_semantic(
+    others: Sequence[Mapping[str, Any]], in_use: Sequence[Mapping[str, Any]] | None,
+) -> None:
     """Rule 5 of :func:`check_kinds`: the shape of each semantic item, and
     each ``measure`` that a ``query`` names is a ``measure`` of the same
-    snapshot."""
-    measures: set[Any] = set()
-    for item in others:
-        if not is_semantic(item):
-            continue
+    snapshot.
+
+    With *in_use* (the items of the version in use), only an item that is
+    new or changed against it is checked. So one stored item that is no
+    longer legal cannot lock each plan write of the org, and an edit of that
+    item is still refused. A ``query`` that *in_use* holds as it is gets
+    ``measure_missing`` only when this snapshot drops a measure that
+    *in_use* held."""
+    kept = set(_canonical(in_use)) if in_use is not None else set()
+    old_measures = _measure_keys(in_use or [])
+    fresh = [o for o in others if is_semantic(o) and _canonical([o])[0] not in kept]
+    for item in fresh:
         problem = semantic_problem(item)
         if problem is not None:
             kind = str(item.get("kind"))
             raise _kind_error(
                 f"bad_{kind}", f"The {kind} item is not legal ({problem}).", item)
-        if item.get("kind") == KIND_MEASURE:
-            measures.add(item["key"])
+    measures = _measure_keys(others)
     for item in others:
         if item.get("kind") != KIND_QUERY:
             continue
-        measure = (item.get("query") or {}).get("measure")
-        if measure is not None and measure not in measures:
+        query = item.get("query")
+        measure = _hashable(query.get("measure")) if isinstance(query, Mapping) else None
+        if measure is None or measure in measures:
+            continue
+        if _canonical([item])[0] not in kept or measure in old_measures:
             raise _kind_error(
                 "measure_missing", "This query names a measure that the plan does not hold.",
                 item)
@@ -465,7 +480,10 @@ def _roles(others: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return roles
 
 
-def check_kinds(others: Sequence[Mapping[str, Any]], *, semantic: bool = False) -> None:
+def check_kinds(
+    others: Sequence[Mapping[str, Any]], *, semantic: bool = False,
+    in_use: Sequence[Mapping[str, Any]] | None = None,
+) -> None:
     """The three rules of the kinds of CRM-Q20-1, on the items of one
     snapshot. A 422 names the item.
 
@@ -485,7 +503,9 @@ def check_kinds(others: Sequence[Mapping[str, Any]], *, semantic: bool = False) 
        item has the shape of ``catalogue.semantic_problem`` (``bad_measure``,
        ``bad_join``, ``bad_query``). A ``query`` that names a measure needs
        that ``measure`` in the same snapshot (``measure_missing``). Without
-       *semantic*, no rule runs on these kinds.
+       *semantic*, no rule runs on these kinds. With *in_use* (the items of
+       the version in use), only a new or changed item is checked
+       (:func:`_check_semantic`).
 
     Two items with one identity (:func:`kind_key`) are a 422 ``duplicate``.
     An item of another kind is not checked here.
@@ -493,7 +513,7 @@ def check_kinds(others: Sequence[Mapping[str, Any]], *, semantic: bool = False) 
     from gateway.crm_sync import executor
 
     if semantic:
-        _check_semantic(others)
+        _check_semantic(others, in_use)
     roles = _roles(others)
     seen: set[tuple[Any, ...]] = set()
     for item in others:
@@ -562,7 +582,12 @@ async def _check_semantic_refs(
     (``catalogue.semantic_ref_problem``). A 422 ``stale_<kind>`` names the
     item. An item that the version in use holds is not checked again, so a
     field that left the source never blocks an unrelated change. The facts
-    leave such an item out (``facts.semantic_facts``)."""
+    leave such an item out (``facts.semantic_facts``).
+
+    ⚠️ A restore or an Undo of a version that holds an item that is stale
+    now is refused as a whole, with 422 ``stale_<kind>``. SEM-8 must decide
+    the stale mark of ``semantic_model.md`` §6.3 (mark the item, propose one
+    repair) and replace this refusal with it."""
     kept = set(_canonical(split_rules(_rules_of(in_use))[1])) if in_use is not None else set()
     fresh = [o for o in others if is_semantic(o) and _canonical([o])[0] not in kept]
     if not fresh:
@@ -570,7 +595,9 @@ async def _check_semantic_refs(
     # Imported here: the catalogue route imports this module.
     from gateway.routes.crm.catalogue import _load
 
-    sources = (await _load(db, org, count=False))[1]
+    # No record count: the check needs the fields only, and the plan lock is
+    # held (P3-2 of the SEM-7 review).
+    sources = (await _load(db, org, count=False, core_counts=False))[1]
     by_module = {src.module: src for src in sources}
     for item in fresh:
         problem = semantic_ref_problem(item, by_module)
@@ -760,9 +787,11 @@ async def commit(
         )
     others = [*without_catalogue(others), *(dict(c) for c in catalogue)]
     semantic = semantic_on(org)
-    check_kinds(others, semantic=semantic)
     if semantic:
         in_use = in_use if in_use is not None else await _approved(db)
+    in_use_items = split_rules(_rules_of(in_use))[1] if in_use is not None else None
+    check_kinds(others, semantic=semantic, in_use=in_use_items)
+    if semantic:
         await _check_semantic_refs(db, org, others, in_use)
     # The rule rows are locked first, so the profile and the checks read the
     # state that the writes below act on.
@@ -852,6 +881,7 @@ async def open_draft(db: Any, approved: Any) -> Any | None:
 
 async def carry_draft(
     db: Any, draft: Any, approved: Any, *, drop_slot: str | None = None,
+    org: str | None = None,
 ) -> Any | None:
     """CRM-Q20-2: move the open draft *draft* onto the new approved version
     *approved*, in the caller's transaction, under :func:`lock_plan`.
@@ -864,14 +894,18 @@ async def carry_draft(
     admin undid, so an Undo does not come back through the draft. Returns
     the new draft, or ``None`` when it would change nothing, or when its
     items no longer pass :func:`check_kinds`.
+
+    SEM-7: *org* is the org of the session, as :func:`commit` and
+    :func:`write_draft` take it. The scheduler path (``map_after_run``, then
+    :func:`apply_catalogue`) binds no tenant, so each caller passes it. With
+    no *org*, the bound tenant answers.
     """
     fields, others = split_rules(_rules_of(draft))
     live_fields, live_others = split_rules(_rules_of(approved))
     # CRM-Q31-3: a draft holds no catalogue item, on either side of the compare.
     others, live_others = without_catalogue(others), without_catalogue(live_others)
-    # SEM-7: the semantic kinds carry only for an org on the list. The org is
-    # the bound tenant of the session.
-    semantic = semantic_on(None)
+    # SEM-7: the semantic kinds carry only for an org on the list.
+    semantic = semantic_on(org)
     kinds = [o for o in others if kind_key(o, semantic=semantic) is not None
              and not (drop_slot is not None and o.get("slot") == drop_slot)]
     merged = merge_kinds(live_others, kinds, semantic=semantic)
@@ -879,7 +913,7 @@ async def carry_draft(
             and _canonical(merged) == _canonical(live_others)):
         return None
     try:
-        check_kinds(merged, semantic=semantic)
+        check_kinds(merged, semantic=semantic, in_use=live_others)
     except HTTPException:
         return None
     return (await db.execute(text(_INSERT_DRAFT_SQL), {
@@ -1011,7 +1045,8 @@ async def write_draft(
     others = without_catalogue(others)
     semantic = semantic_on(org)
     merged = merge_kinds(others, items, semantic=semantic)
-    check_kinds(merged, semantic=semantic)
+    check_kinds(merged, semantic=semantic,
+                in_use=without_catalogue(split_rules(_rules_of(approved))[1]))
     if _canonical(merged) == _canonical(others):
         return None
     author = by
@@ -1099,7 +1134,7 @@ async def apply_catalogue(
         based_on=int(approved.version), catalogue=catalogue,
     )
     if draft is not None:
-        await carry_draft(db, draft, plan)
+        await carry_draft(db, draft, plan, org=org)
     _log.info("crm.mapping_plan_catalogue version=%s modules=%s", plan.version, len(catalogue))
     return plan
 

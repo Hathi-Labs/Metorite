@@ -300,3 +300,146 @@ async def test_sem7_the_tool_reads_the_semantic_items_of_the_member_org(
                                lambda: org_facts("crm", "measure"))
     assert '"Billed amount"' in a and "Money spent" not in a and "Draft measure" not in a
     assert '"Money spent"' in b and "Billed amount" not in b
+
+
+# ── SEM-7 review round 1: the plan writes with the flag on (P2-3) ─────────────
+
+
+async def _in_plan(p: Any, org: str, fn: Any) -> Any:
+    """Run *fn(db)* in a tenant session of *org* with NO bound tenant, as the
+    scheduler path runs (``map_after_run``, then ``apply_catalogue``)."""
+    from acb_common.db import clear_tenant, current_tenant, release_tenant
+    from gateway.db import tenant_session
+
+    scope = clear_tenant()
+    try:
+        async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+            assert current_tenant() is None
+            async with tenant_session(org) as db:
+                return await fn(db)
+    finally:
+        release_tenant(scope)
+
+
+def _committer(org: str, items: list[dict]) -> Any:
+    """A commit of the approved version of *org* with *items* added."""
+    from gateway.routes.crm import mapping_plans as mpl
+
+    async def run(db: Any) -> Any:
+        approved = await mpl.lock_plan(db, "r8")
+        fields, others = mpl.split_rules(mpl._rules_of(approved))
+        return await mpl.commit(db, org=org, fields=fields, others=[*others, *items],
+                                by="r8", based_on=int(approved.version))
+
+    return run
+
+
+def _approved_rules(p: Any, org: str) -> list[dict]:
+    with p.admin_engine.begin() as c:
+        return c.execute(text(
+            "SELECT rules FROM crm_mapping_plans WHERE organization_id = CAST(:o AS uuid) "
+            "AND state = 'approved'"), {"o": org}).scalar()
+
+
+async def _refused_in_plan(p: Any, org: str, items: list[dict]) -> dict:
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await _in_plan(p, org, _committer(org, items))
+    assert exc.value.status_code == 422
+    return exc.value.detail
+
+
+async def test_sem7_commit_checks_each_new_item_against_the_catalogue(
+    q_env, app_engine, monkeypatch,
+) -> None:
+    from acb_common import get_settings
+
+    p = q_env
+    seed_a(p)
+    seed_b(p)
+    plan_b(p)
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", "*", raising=False)
+    billed = SEM_A[0]
+
+    # A good measure commits, and the approved version holds it.
+    await _in_plan(p, p.org_a, _committer(p.org_a, [billed]))
+    assert billed in _approved_rules(p, p.org_a)
+
+    # A measure on a field that the module does not hold.
+    gone = {**billed, "key": "gone", "fields": ["No_Such_Field"]}
+    detail = await _refused_in_plan(p, p.org_a, [gone])
+    assert detail["code"] == "stale_measure" and "(field)" in detail["message"], detail
+
+    # Org A cannot name org B's module. Org B can.
+    spent = SEM_B[0]
+    detail = await _refused_in_plan(p, p.org_a, [spent])
+    assert detail["code"] == "stale_measure" and "(module)" in detail["message"], detail
+    await _in_plan(p, p.org_b, _committer(p.org_b, [spent]))
+    assert spent in _approved_rules(p, p.org_b)
+    assert spent not in _approved_rules(p, p.org_a)
+
+    # The field of the stored measure leaves. An unrelated commit still passes,
+    # and the facts no longer serve the measure.
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_field_defs WHERE organization_id = CAST(:o AS uuid) "
+                       "AND entity = 'module:Invoices' AND key = 'Net_Value'"),
+                  {"o": p.org_a})
+    won = SEM_A[1]
+    await _in_plan(p, p.org_a, _committer(p.org_a, [won]))
+    rules = _approved_rules(p, p.org_a)
+    assert billed in rules and won in rules
+    served = _semantic(await facts_of(p, _user(p.org_a, admin=False)))
+    assert "measure:billed" not in served and "measure:won_deals" in served
+
+
+async def test_sem7_carry_draft_keeps_a_semantic_item_with_no_bound_tenant(
+    q_env, app_engine, monkeypatch,
+) -> None:
+    from acb_common import get_settings
+    from gateway.routes.crm import mapping_plans as mpl
+
+    p = q_env
+    seed_a(p)
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", p.org_a, raising=False)
+    billed, won = SEM_A[0], SEM_A[1]
+
+    async def run(db: Any) -> Any:
+        approved = await mpl.lock_plan(db, "r8")
+        fields, others = mpl.split_rules(mpl._rules_of(approved))
+        # The admin's open draft holds a measure that waits for approval.
+        draft = (await db.execute(text(mpl._INSERT_DRAFT_SQL), {
+            "v": await mpl._next_version(db), "by": "admin@crm-q32-r8.test",
+            "rules": mpl._dump(fields, [*others, won]), "based_on": int(approved.version),
+        })).first()
+        # Another write approves a new version, then carries the draft.
+        plan = await mpl.commit(db, org=p.org_a, fields=fields, others=[*others, billed],
+                                by="r8", based_on=int(approved.version))
+        return await mpl.carry_draft(db, draft, plan, org=p.org_a)
+
+    carried = await _in_plan(p, p.org_a, run)
+    assert carried is not None
+    rules = carried.rules if isinstance(carried.rules, list) else json.loads(carried.rules)
+    assert won in rules and billed in rules
+
+
+async def test_sem7_flag_off_keeps_a_semantic_item_byte_for_byte(
+    q_env, app_engine, monkeypatch,
+) -> None:
+    from acb_common import get_settings
+
+    p = q_env
+    seed_a(p)
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", "", raising=False)
+    # Off the list no check runs: a shape that the flag would refuse stays.
+    odd = {"kind": "measure", "key": "odd", "label": "Billed 5 times", "module": "Gone",
+           "aggregate": "sum", "fields": ["X"], "unit": "currency", "note": [1, {"a": 2}]}
+    await _in_plan(p, p.org_a, _committer(p.org_a, [odd]))
+    assert odd in _approved_rules(p, p.org_a)
+    with p.admin_engine.begin() as c:
+        raw = c.execute(text(
+            "SELECT e FROM crm_mapping_plans, jsonb_array_elements(rules) AS e "
+            "WHERE organization_id = CAST(:o AS uuid) AND state = 'approved' "
+            "AND e ->> 'key' = 'odd'"), {"o": p.org_a}).scalar()
+    assert raw == odd
+    assert _semantic(await facts_of(p, _user(p.org_a, admin=False))) == {}

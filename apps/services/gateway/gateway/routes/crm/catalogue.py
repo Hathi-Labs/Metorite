@@ -319,9 +319,16 @@ async def _module_sources(
 
 async def _load(
     db: Any, org: str, *, only: str | None = None, count: bool | str = True,
+    core_counts: bool = True,
 ) -> tuple[str, list[Any], dict[str, str], list[dict[str, Any]]]:
     """The mode, the sources, the approved roles (slot → module) and the
-    approved items of other kinds, in the caller's tenant session."""
+    approved items of other kinds, in the caller's tenant session.
+
+    SEM-7: with *core_counts* False, no record count of a core entity is
+    read, and each one counts 0. The check of a semantic item needs only
+    the fields, and it runs under the plan lock
+    (``mapping_plans._check_semantic_refs``). Each other caller keeps the
+    default."""
     from gateway.crm_sync import profiles
     from gateway.routes.crm.core import is_mirror_mode
     from gateway.routes.crm.fill_rank import labels_of
@@ -331,7 +338,7 @@ async def _load(
     mirror = await is_mirror_mode(db, org)
     latest = await profiles.latest(db, org) if mirror else None
     counts: dict[str, int] = {}
-    if only is None:
+    if only is None and core_counts:
         row = (await db.execute(text(_CORE_COUNTS_SQL), {"org": org})).first()
         counts = {slug: int(getattr(row, slug, 0) or 0) for slug in CORE_ORDER} if row else {}
     if not mirror:
