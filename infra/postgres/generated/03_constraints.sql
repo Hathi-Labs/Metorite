@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 200
+-- Tables in this phase: 201
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -266,6 +266,30 @@ ALTER TABLE calendar_task_links ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE calendar_task_links ADD CONSTRAINT calendar_task_links_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS calendar_task_links_org_idx ON calendar_task_links (organization_id);
+
+-- chat_card_record
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM chat_card_record WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: chat_card_record still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE chat_card_record ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE chat_card_record ADD CONSTRAINT chat_card_record_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS chat_card_record_org_idx ON chat_card_record (organization_id);
+
+-- chat_join_log
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM chat_join_log WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: chat_join_log still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE chat_join_log ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE chat_join_log ADD CONSTRAINT chat_join_log_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS chat_join_log_org_idx ON chat_join_log (organization_id);
 
 -- chat_message
 DO $$
@@ -2677,6 +2701,18 @@ ALTER TABLE studio_object_counters ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_object_counters ADD CONSTRAINT studio_object_counters_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_object_counters_org_idx ON studio_object_counters (organization_id);
+
+-- studio_mcp_tool_approvals
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM studio_mcp_tool_approvals WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: studio_mcp_tool_approvals still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE studio_mcp_tool_approvals ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE studio_mcp_tool_approvals ADD CONSTRAINT studio_mcp_tool_approvals_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS studio_mcp_tool_approvals_org_idx ON studio_mcp_tool_approvals (organization_id);
 
 -- studio_object_fields
 DO $$

@@ -383,6 +383,17 @@ class Settings(BaseSettings):
     # owner's production run (CRM-Z10-run). Fence:
     # tests/unit/test_crm_cutover_switch_r8.py.
     crm_cutover_orgs: str = ""
+    # `crm_module_find_orgs` (WS-53 CRM-Q34-6, task 3699, 2026-11-18) lists
+    # the organization ids whose chat may find a field by its words, in one
+    # module or in each mirrored module, in the grammar of `crm_orgs`.
+    # Default empty means NO organization: `GET /crm/fields-search` answers
+    # 404 `module_find_off` and sends no SQL, and `crm_list_fields` ignores
+    # its `query` and answers as before. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_fields_search.py.
+    crm_module_find_orgs: str = ""
     # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
     # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
     # `off` (the default), `shadow` (check at the end of the answer and log
@@ -1105,6 +1116,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_focus_item.py.
     chat_focus_orgs: str = ""
 
+    # ── The per-turn budget of a read tool (HRD-5, chat_failure_modes.md B5) ─
+    #
+    # TOOL_TURN_BUDGET_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and each run is as before. On, the next call to a read
+    # tool in a turn does not run after 3 empty or refused answers from that
+    # tool. Its answer is "Stop. You tried: ..." and tells the chat to ask the
+    # member one question. A write tool is never counted or stopped. The one
+    # reader is `orchestrator.tool_turn_budget.tool_turn_budget_on`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_tool_turn_budget.py.
+    tool_turn_budget_orgs: str = ""
+
     # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
     #
     # CHAT_RUN_PHASE_ORGS: a comma list of organization ids, or `*`. Empty:
@@ -1485,6 +1508,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
 
+    # ── The shadow join log (chat_organization.md §7, WS-CO CO-4) ──────────
+    #
+    # `chat_join_shadow_orgs` lists the organization ids where the first
+    # message of a new chat writes one row of the shadow join log: the outcome
+    # (join, carry, ask or clean) that §7.1 would take. Or `*` for each one.
+    # Empty means off, and the run route schedules nothing. The member sees
+    # nothing in either case. The one reader is
+    # `gateway.chat_join_shadow.shadow_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`). A value other than empty on a box is the gate
+    # `enforcement-flip`.
+    # Fences: tests/unit/test_chat_join_shadow.py,
+    # tests/unit/test_chat_join_shadow_r8.py.
+    chat_join_shadow_orgs: str = ""
+
     # ── Pin a chat (chat_organization.md §18, WS-CO CO-11) ─────────────────
     #
     # `chat_pin_orgs` lists the organization ids where a member may pin a
@@ -1497,6 +1535,19 @@ class Settings(BaseSettings):
     # `enforcement-flip`, after the owner preview.
     # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
     chat_pin_orgs: str = ""
+
+    # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
+    #
+    # `chat_card_record_orgs` lists the organization ids where a write card
+    # that a member approved leaves one row in `chat_card_record`: the chat,
+    # the member, the card id, the outcome key, the act kind and the link of
+    # the record made. No text of the card. Empty means off: nothing is
+    # written. The one reader is `orchestrator.card_record.record_allowed`,
+    # and it fails closed. The name ends in `_orgs`, so a SIGHUP applies a
+    # change with no restart (`docs/flag_reload.md`). A value other than
+    # empty on a box is the gate `enforcement-flip`.
+    # Fences: tests/unit/test_card_record.py, tests/unit/test_card_record_r8.py.
+    chat_card_record_orgs: str = ""
 
     # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
     #
