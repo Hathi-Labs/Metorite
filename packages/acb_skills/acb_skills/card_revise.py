@@ -126,6 +126,8 @@ class ChatDraft:
     to: tuple[str, ...]
     subject: str
     digest: str = ""
+    #: True when the save carried files. An update can never drop a file.
+    files: bool = False
 
 
 def _addresses(values: Iterable[Any] | None) -> tuple[str, ...]:
@@ -155,13 +157,24 @@ def same_mail(draft: ChatDraft, to: Iterable[Any] | None, subject: Any) -> bool:
     return bool(want) and want == draft.to and subject_key(subject) == draft.subject
 
 
+def _people(value: Any) -> str:
+    """One address list of a stored draft, folded: lower case, sorted. An
+    item is an address or a ``{"email": ...}`` dict."""
+    items = value if isinstance(value, list) else []
+    return ",".join(_addresses(
+        (v.get("email") if isinstance(v, dict) else v) for v in items))
+
+
 def draft_digest(row: Any) -> str:
-    """The digest of a stored draft: its subject and its text, with the
-    spaces folded. *row* is the draft as a read or a save answers it."""
+    """The digest of a stored draft: its subject, its text, and its To, Cc
+    and Bcc people, folded. *row* is the draft as a read or a save answers
+    it. So a Cc that the member added by hand counts as an edit."""
     row = row if isinstance(row, dict) else {}
     subject = " ".join(str(row.get("subject") or "").split())
     body = " ".join(str(row.get("body_text") or "").split())
-    return hashlib.sha256(f"{subject}\x00{body}".encode()).hexdigest()[:32]
+    people = "\x01".join(_people(row.get(k)) for k in
+                          ("to_addresses", "cc_addresses", "bcc_addresses"))
+    return hashlib.sha256(f"{subject}\x00{body}\x00{people}".encode()).hexdigest()[:32]
 
 
 # ── The record ───────────────────────────────────────────────────────────────
@@ -205,7 +218,8 @@ def _record_of(raw: Any) -> _Record:
     for row in rows if isinstance(rows, list) else []:
         if isinstance(row, dict) and str(row.get("id") or "").strip():
             out.append(ChatDraft(str(row["id"]).strip(), _addresses(row.get("to")),
-                                 str(row.get("subject") or ""), str(row.get("digest") or "")))
+                                 str(row.get("subject") or ""), str(row.get("digest") or ""),
+                                 bool(row.get("files"))))
     return _Record(out, marker if isinstance(marker, dict) else {})
 
 
@@ -229,7 +243,8 @@ async def _write(org: str, thread: str, account_id: str, member: str, rec: _Reco
     value = json.dumps({
         "v": 2,
         "drafts": [{"id": d.draft_id, "to": list(d.to), "subject": d.subject,
-                    "digest": d.digest} for d in rec.drafts[-MAX_DRAFTS:]],
+                    "digest": d.digest, **({"files": True} if d.files else {})}
+                   for d in rec.drafts[-MAX_DRAFTS:]],
         **({"marker": rec.marker} if rec.marker else {}),
     })
     with organization_scope(org):
@@ -238,13 +253,23 @@ async def _write(org: str, thread: str, account_id: str, member: str, rec: _Reco
             timeout=REDIS_TIMEOUT_S)
 
 
-def _live_marker(rec: _Record, act: str) -> str:
-    """The draft id of a live marker of *act* that the record still holds."""
+def _live_marker(rec: _Record, act: str, to: Iterable[Any] | None) -> str:
+    """The draft id of a live marker of *act* that the record still holds,
+    for a save to the SAME To set as the closed card. The subject may change."""
     m = rec.marker
     if str(m.get("act") or "") != act or float(m.get("until") or 0) < time.time():
         return ""
+    want = _addresses(to)
+    if not want or want != _addresses(m.get("to")):
+        return ""
     did = str(m.get("draft_id") or "")
     return did if any(d.draft_id == did for d in rec.drafts) else ""
+
+
+def _takes(rec: _Record, draft: ChatDraft, act: str, to: Any, subject: Any) -> bool:
+    """True when a save of *act* to *to* with *subject* may take *draft*: the
+    same email, or a live marker of the same act and To set that names it."""
+    return same_mail(draft, to, subject) or _live_marker(rec, act, to) == draft.draft_id
 
 
 # ── Before the card ──────────────────────────────────────────────────────────
@@ -267,7 +292,7 @@ async def plan_save(
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("card_revise.record_read_failed", error=type(exc).__name__)
         return ""
-    marked = _live_marker(rec, act)
+    marked = _live_marker(rec, act, to)
     if marked:
         return marked
     for draft in reversed(rec.drafts):
@@ -278,11 +303,11 @@ async def plan_save(
 
 async def mark_revised(
     *, act: str, draft_id: str, thread: str, account_id: str, member: str,
-    org: object = None,
+    to: Iterable[Any] | None, org: object = None,
 ) -> None:
-    """A card of *act* that a chat message closed was about *draft_id*. The
-    next save of *act* may take that draft for :data:`MARKER_TTL_S`, even
-    with other people or another subject. No id writes no marker."""
+    """A card of *act* to *to* that a chat message closed was about
+    *draft_id*. The next save of *act* to the same To set may take that draft
+    for :data:`MARKER_TTL_S`, with another subject. No id writes no marker."""
     org_id = _org(org)
     did = str(draft_id or "").strip()
     if not (did and card_revise_on(org_id) and _parts(org_id, thread, account_id, member)):
@@ -291,7 +316,8 @@ async def mark_revised(
         rec = await _read(org_id, thread, account_id, member)
         if all(d.draft_id != did for d in rec.drafts):
             return
-        rec.marker = {"act": act, "draft_id": did, "until": time.time() + MARKER_TTL_S}
+        rec.marker = {"act": act, "draft_id": did, "to": list(_addresses(to)),
+                      "until": time.time() + MARKER_TTL_S}
         await _write(org_id, thread, account_id, member, rec)
     except Exception as exc:  # the class only
         _log.warning("card_revise.marker_write_failed", error=type(exc).__name__)
@@ -302,7 +328,7 @@ async def mark_revised(
 async def note_draft(
     *, thread: str, account_id: str, member: str, draft_id: str,
     to: Iterable[Any] | None, subject: Any, digest: str = "", replaces: str = "",
-    only_if_known: bool = False, act: str = "", org: object = None,
+    only_if_known: bool = False, act: str = "", files: bool = False, org: object = None,
 ) -> None:
     """Write *draft_id* into the record, as the newest draft of this chat.
 
@@ -320,7 +346,7 @@ async def note_draft(
         if only_if_known and all(d.draft_id not in gone for d in rec.drafts):
             return
         rec.drafts = [d for d in rec.drafts if d.draft_id not in gone]
-        rec.drafts.append(ChatDraft(did, _addresses(to), subject_key(subject), digest))
+        rec.drafts.append(ChatDraft(did, _addresses(to), subject_key(subject), digest, files))
         if act and rec.marker.get("act") == act:
             rec.marker = {}
         await _write(org_id, thread, account_id, member, rec)
@@ -368,24 +394,29 @@ async def save_one_draft(
     and answers the stored draft. *read* answers a stored draft, or None.
     *delete* moves a draft to the trash (the delete path of a message).
 
-    With the id, the save checks it again against the record. A draft that
-    is gone gives a new draft. A draft that the member edited stays, and the
-    save makes a new draft (``kept_edited``). A save with files makes a new
-    draft and then deletes the old one. Else it updates the draft in place."""
+    With the id, the save checks it again against the record and the match
+    (:func:`_takes`). A draft that is gone gives a new draft. A draft that
+    the member edited stays, and the save makes a new draft (``kept_edited``).
+    When the save or the earlier draft holds files, the save makes a new
+    draft and then deletes the old one: an update adds files and never drops
+    one. Else it updates the draft in place."""
     account_id = str(payload.get("account_id") or "")
     org_id = _org(org)
     on = card_revise_on(org_id) and _parts(org_id, thread, account_id, member)
     if not on:
         return SavedDraft(dict(await put(payload) or {}))
-    target = await _known(str(replaces or "").strip(), org_id, thread, account_id, member)
+    target = await _known(str(replaces or "").strip(), org_id, thread, account_id, member,
+                          act=act, to=payload.get("to"), subject=payload.get("subject"))
     outcome, res = CREATED, None
+    files = _has_files(payload)
     if target:
         row = await read(target.draft_id)
-        if not isinstance(row, dict) or str(row.get("folder") or "").lower() not in _DRAFT_FOLDERS:
+        state = _state(row, target)
+        if state == GONE:
             _log.info("card_revise.earlier_draft_gone")
-        elif not target.digest or draft_digest(row) != target.digest:
+        elif state == EDITED:
             outcome = KEPT_EDITED
-        elif payload.get("attachments") or payload.get("artifacts"):
+        elif files or target.files or row.get("has_attachments") or row.get("attachments"):
             outcome = REPLACED
         else:
             try:
@@ -408,15 +439,61 @@ async def save_one_draft(
                      draft_id=str(res.get("id") or earlier), to=payload.get("to"),
                      subject=payload.get("subject"), digest=draft_digest(res),
                      replaces="" if outcome in (KEPT_EDITED, DELETE_FAILED) else earlier,
-                     act=act, org=org_id)
+                     act=act, files=files, org=org_id)
     if outcome == KEPT_EDITED:
         # The member's own version stays in Drafts, and never a target again.
         await _forget(earlier, org_id, thread, account_id, member)
     return SavedDraft(res, outcome, earlier)
 
 
-async def _known(did: str, org: str, thread: str, account_id: str, member: str) -> ChatDraft | None:
-    """The record entry of *did*, or None. A Redis fault gives None."""
+#: The state of an earlier draft before a save takes its place.
+OK, GONE, EDITED = "ok", "gone", "edited"
+
+
+def _has_files(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("attachments") or payload.get("artifacts"))
+
+
+def _state(row: Any, target: ChatDraft) -> str:
+    """``gone`` when *row* is no draft now, ``edited`` when its digest is not
+    the digest that the chat saved, else ``ok``."""
+    if not isinstance(row, dict) or str(row.get("folder") or "").lower() not in _DRAFT_FOLDERS:
+        return GONE
+    if not target.digest or draft_digest(row) != target.digest:
+        return EDITED
+    return OK
+
+
+async def target_state(
+    draft_id: str, *, thread: str, account_id: str, member: str,
+    read: Callable[[str], Awaitable[Any]], org: object = None,
+) -> str:
+    """The state of the draft that :func:`plan_save` named, BEFORE the card:
+    ``ok``, ``gone`` or ``edited``. So a card never promises to replace, or
+    to cancel the send of, a draft that the member edited. A draft that the
+    record does not hold reads as ``gone``."""
+    org_id = _org(org)
+    try:
+        rec = await _read(org_id, thread, account_id, member)
+    except Exception as exc:
+        _log.warning("card_revise.record_read_failed", error=type(exc).__name__)
+        return GONE
+    target = next((d for d in rec.drafts if d.draft_id == draft_id), None)
+    if target is None:
+        return GONE
+    state = _state(await read(draft_id), target)
+    if state == GONE:
+        # A draft that left Drafts is never a target again.
+        await _forget(draft_id, org_id, thread, account_id, member)
+    return state
+
+
+async def _known(
+    did: str, org: str, thread: str, account_id: str, member: str, *,
+    act: str, to: Any, subject: Any,
+) -> ChatDraft | None:
+    """The record entry of *did* when this save may take it (:func:`_takes`),
+    else None. A Redis fault gives None."""
     if not did:
         return None
     try:
@@ -424,7 +501,8 @@ async def _known(did: str, org: str, thread: str, account_id: str, member: str) 
     except Exception as exc:
         _log.warning("card_revise.record_read_failed", error=type(exc).__name__)
         return None
-    return next((d for d in rec.drafts if d.draft_id == did), None)
+    draft = next((d for d in rec.drafts if d.draft_id == did), None)
+    return draft if draft is not None and _takes(rec, draft, act, to, subject) else None
 
 
 async def _forget(did: str, org: str, thread: str, account_id: str, member: str) -> None:

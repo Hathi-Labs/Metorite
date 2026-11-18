@@ -2647,8 +2647,8 @@ _CLOSED_STEPS: dict[str, str] = {
         "as their own chat message. Read them in one of three ways. If they "
         "change this email, write it again. Keep every part that they did not "
         "ask to change. Then call edit_draft again with no draft_id, so a new "
-        "card shows. That save updates the draft of this email that this chat "
-        "saved before, so Drafts keeps one copy. If they do not want the email "
+        "card shows. If this chat saved this email before, the new card says "
+        "that it replaces it, so Drafts keeps one copy. If they do not want the email "
         "now, do nothing more, and tell them that no draft was saved. If they "
         "ask about something else, answer that. Do not show the card again "
         "until they ask for it."),
@@ -7042,7 +7042,8 @@ async def _new_mail_card(
     thread = _run_thread()
     # Task 3814: the draft that a Save draft replaces, named before the card.
     # The gateway keeps it on the card's record, and replaces nothing else.
-    replaces, pending = await _plan_chat_draft(_NEW_MAIL_ACT, account_id, to, subject)
+    plan = await _plan_chat_draft(_NEW_MAIL_ACT, account_id, to, subject)
+    replaces = plan.replaces
     try:
         prep = await _post("/email/new-card", {
             "account_id": account_id, "to": to, "cc": cc, "bcc": bcc,
@@ -7058,22 +7059,21 @@ async def _new_mail_card(
     if not card_id:
         return "Not sent. The card of this email could not be recorded. Try again."
     form = _new_mail_form(prep, notices)
-    for line in _replace_lines(replaces, pending):
+    for line in _replace_lines(plan, form=True):
         _form_notice(form, line)
     # §18.11 step 4: a chat message spends the old card, and the model starts
     # from the member's version. A revise that did not run shows the card again.
     answer, revised, came_back = await _ask_until_revised(
         form, card_id, thread, _NEW_MAIL_REVISED)
     if revised is not None:
-        await _mark_if_closed(_NEW_MAIL_ACT, account_id, replaces)
+        await _mark_if_closed(_NEW_MAIL_ACT, account_id, plan)
         return revised
-    out = await _new_mail_answered(answer, sender, usual, replaces, pending)
+    out = await _new_mail_answered(answer, sender, usual, plan)
     return _noted(out, came_back)
 
 
 async def _new_mail_answered(
-    answer: Any, sender: str, usual: str, replaces: str = "",
-    pending: list[dict[str, Any]] | None = None,
+    answer: Any, sender: str, usual: str, plan: _ChatPlan | None = None,
 ) -> str:
     """The end of a new-mail card that the member answered: the act of the
     answer, or the words of a card that sends nothing (§18.10)."""
@@ -7097,20 +7097,19 @@ async def _new_mail_answered(
     if res.get("action") == "send":
         # Task 3594: the mail went. A Save draft sent nothing.
         await _note_sent(res.get("id"), _sent_people(res), request_id=answer.request_id)
-    elif replaces:
-        return _new_mail_result(res, sender, usual) + await _form_replace_tail(
-            res, replaces, pending or [])
+        if plan is not None:
+            return _new_mail_result(res, sender, usual) + _send_tail(plan)
+    elif plan is not None:
+        return _new_mail_result(res, sender, usual) + await _form_replace_tail(res, plan)
     return _new_mail_result(res, sender, usual)
 
 
-async def _form_replace_tail(
-    res: dict[str, Any], replaces: str, pending: list[dict[str, Any]],
-) -> str:
+async def _form_replace_tail(res: dict[str, Any], plan: _ChatPlan) -> str:
     """Task 3814: what the answer of a Save draft on a new-mail card adds when
     the card named a draft to replace. The gateway says the outcome."""
     outcome = str(res.get("replace_outcome") or "")
     earlier = str(res.get("replaced") or "")
-    return await _replace_tail(outcome, earlier, replaces, pending)
+    return await _replace_tail(outcome, earlier, plan)
 
 
 async def _always_copy_cc(
@@ -7170,13 +7169,14 @@ async def _held_new_mail(
         return unparsed
     # Task 3814: only the form card of a new mail can Save draft, so only it
     # names the draft that the save replaces, before the card.
-    replaces, pending = (await _plan_chat_draft(_NEW_MAIL_ACT, account_id, to, subject)
-                         if _edit_card_open() else ("", []))
+    plan = (await _plan_chat_draft(_NEW_MAIL_ACT, account_id, to, subject)
+            if _edit_card_open() else _ChatPlan())
+    replaces = plan.replaces
     res = await _held_card({
         "kind": "new", "account_id": account_id, "to": to, "cc": list(cc or []),
         "bcc": list(bcc or []), "subject": subject or "", "note": body,
         "files": wanted, **({"replaces": replaces} if replaces else {}),
-    }, "Not sent", _NEW_MAIL_NOT_SENT, form=True, pending=pending)
+    }, "Not sent", _NEW_MAIL_NOT_SENT, form=True, plan=plan)
     if isinstance(res, str):
         return res
     files = int(res.get("files") or 0)
@@ -7185,11 +7185,11 @@ async def _held_new_mail(
         # §18.10: Save draft on the card wrote a new draft, and sent nothing.
         # No "Draft:" line, as in ``_new_mail_result``.
         did = str(res.get("draft_id") or "")
-        tail = await _form_replace_tail(res, replaces, pending) if replaces else ""
+        tail = await _form_replace_tail(res, plan)
         return (_held_sent_text(res, f"Saved in Drafts{note}, nothing was sent")
                 + (f" (draft_id {did})." if did else "") + tail + _new_mail_text_line(res))
     return (_held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
-            + _new_mail_text_line(res))
+            + _send_tail(plan) + _new_mail_text_line(res))
 
 
 def _size_text(size: Any) -> str:
@@ -7580,7 +7580,7 @@ _HELD_KIND_ACTS: dict[str, str] = {
 
 async def _held_card(
     body: dict[str, Any], lead: str, act: str, *, form: bool = False,
-    pending: list[dict[str, Any]] | None = None,
+    plan: _ChatPlan | None = None,
 ) -> dict[str, Any] | str:
     """Show the gateway's held card for *body*, and act on the answer.
 
@@ -7619,13 +7619,13 @@ async def _held_card(
             return _held_refusal(exc, lead)
         raise
     if edit and isinstance(prep.get("form"), dict):
-        replaces = str(body.get("replaces") or "")
+        plan = plan or _ChatPlan()
         out = await _held_form_card(prep, lead, act, thread, closed=closed,
-                                    lines=_replace_lines(replaces, pending or []))
+                                    lines=_replace_lines(plan, form=True))
         if isinstance(out, str):
             # Task 3814: when a chat message closed the card, the next save of
             # a new mail may take the draft that this card named.
-            await _mark_if_closed(_NEW_MAIL_ACT, str(body.get("account_id") or ""), replaces)
+            await _mark_if_closed(_NEW_MAIL_ACT, str(body.get("account_id") or ""), plan)
         return out
     answer = await ask_tools.request_confirmation(
         title=str(prep.get("title") or "Send this mail?"),
@@ -8273,8 +8273,8 @@ async def _new_draft(
         return "Nothing changed. The draft has too many recipients for one card."
     # Task 3814: the one-draft rule names the draft that this save replaces
     # BEFORE the card, so the card says so, and says which send it cancels.
-    replaces, pending = await _plan_chat_draft(_NEW_DRAFT_ACT, account_id, lists["to"], subject)
-    lines = _replace_lines(replaces, pending)
+    plan = await _plan_chat_draft(_NEW_DRAFT_ACT, account_id, lists["to"], subject)
+    lines = _replace_lines(plan)
     card_context = _with_draft_text(context, body)
     if lines:
         card_context = "\n".join(lines) + "\n\n" + card_context
@@ -8286,7 +8286,7 @@ async def _new_draft(
         closed="new_draft",
     )
     if refusal:
-        await _mark_if_closed(_NEW_DRAFT_ACT, account_id, replaces)
+        await _mark_if_closed(_NEW_DRAFT_ACT, account_id, plan)
         return refusal
     payload = {
         "account_id": account_id, "to": lists["to"], "cc": lists["cc"],
@@ -8294,11 +8294,11 @@ async def _new_draft(
         "from_chat": True,
     }
     try:
-        res, outcome, earlier = await _save_chat_draft(payload, replaces, _NEW_DRAFT_ACT)
+        res, outcome, earlier = await _save_chat_draft(payload, plan.replaces, _NEW_DRAFT_ACT)
     except GatewayError as exc:
         return _edit_save_refusal(exc)
     line = _draft_line(res.get("id"), subject)
-    tail = await _replace_tail(outcome, earlier, replaces, pending)
+    tail = await _replace_tail(outcome, earlier, plan)
     if outcome == "updated":
         # Task 3814: one draft for one email. The redraft went into the draft
         # of this email that the chat saved before.
@@ -8328,34 +8328,84 @@ def _chat_draft_rule() -> Any:
     return card_revise
 
 
+class _ChatPlan:
+    """What the one-draft rule knows BEFORE a card (task 3814).
+
+    ``replaces``: the draft of this chat that a save takes the place of, or
+    "". ``pending``: its queued sends. ``unchecked``: the read of those sends
+    failed. ``kept``: a draft of the same email that the member edited, which
+    the save leaves as it is, with its schedule. ``to``: the To of the card."""
+
+    __slots__ = ("replaces", "pending", "unchecked", "kept", "to")
+
+    def __init__(self, replaces: str = "", pending: list[dict[str, Any]] | None = None,
+                 unchecked: bool = False, kept: str = "", to: list[str] | None = None) -> None:
+        self.replaces = replaces
+        self.pending = list(pending or [])
+        self.unchecked = unchecked
+        self.kept = kept
+        self.to = list(to or [])
+
+
 async def _plan_chat_draft(
     act: str, account_id: str, to: list[str], subject: Any,
-) -> tuple[str, list[dict[str, Any]]]:
-    """``(id of the draft that a save replaces, its queued sends)``, before the
-    card (task 3814). With the flag off it is ``("", [])`` and reads nothing.
-    The thread and the member come from the run, never from the model."""
+) -> _ChatPlan:
+    """The plan of a save of *act*, before the card (task 3814). With the flag
+    off it is empty and reads nothing. The thread and the member come from
+    the run, never from the model.
+
+    A named draft that the member edited, or that is gone, is never named on
+    the card. So the card never promises to replace it, or to cancel its
+    send. A failed read of the queued sends never stops the card: the card
+    says that the send could not be checked."""
     rule = _chat_draft_rule()
     if rule is None:
-        return "", []
-    did = await rule.plan_save(act=act, thread=_run_thread(), account_id=account_id,
-                               member=_current_user_email(), to=to, subject=subject)
-    return did, (await _pending_schedules(did) if did else [])
+        return _ChatPlan()
+    thread, member = _run_thread(), _current_user_email()
+    did = await rule.plan_save(act=act, thread=thread, account_id=account_id,
+                               member=member, to=to, subject=subject)
+    if not did:
+        return _ChatPlan(to=to)
+    state = await rule.target_state(did, thread=thread, account_id=account_id,
+                                    member=member, read=_read_chat_draft)
+    if state != rule.OK:
+        return _ChatPlan(kept=did if state == rule.EDITED else "", to=to)
+    try:
+        pending = await _pending_schedules(did)
+    except Exception as exc:  # a 5xx or a fault: the card says so
+        _log.warning("email.chat_draft_schedules_unread", error=type(exc).__name__)
+        return _ChatPlan(did, [], unchecked=True, to=to)
+    return _ChatPlan(did, pending, to=to)
 
 
-def _replace_lines(replaces: str, pending: list[dict[str, Any]]) -> list[str]:
+#: The head of a line of the new-mail form card, which also has Send. Only
+#: Save draft replaces the earlier draft and cancels its send.
+_ON_SAVE = "If you press Save draft, "
+
+
+def _replace_lines(plan: _ChatPlan, *, form: bool = False) -> list[str]:
     """The lines of a card whose save replaces a draft of this chat: the
-    replace line, then the send that the save cancels."""
-    if not replaces:
+    replace line, then the send that the save cancels. On a *form* card, the
+    lines name the Save draft button, because Send replaces nothing."""
+    if not plan.replaces:
         return []
     from acb_skills.card_revise import REPLACES_LINE
 
-    return [REPLACES_LINE] + ([_cancel_line(pending).strip()] if pending else [])
+    lines = [REPLACES_LINE]
+    if plan.pending:
+        lines.append(_cancel_line(plan.pending).strip())
+    elif plan.unchecked:
+        lines.append("This chat could not check whether a send is scheduled for that draft.")
+    if form:
+        lines = [_ON_SAVE + line[0].lower() + line[1:] for line in lines]
+    return lines
 
 
-async def _mark_if_closed(act: str, account_id: str, replaces: str) -> None:
-    """A card that a chat message closed, and whose save named *replaces*,
-    leaves a redraft marker. The next save of *act* may take that draft."""
-    if not replaces:
+async def _mark_if_closed(act: str, account_id: str, plan: _ChatPlan) -> None:
+    """A card that a chat message closed, and whose save named a draft,
+    leaves a redraft marker with the To of the card. The next save of *act*
+    to the same people may take that draft."""
+    if not plan.replaces:
         return
     from acb_skills.ask_tools import CLOSED_BY_YOUR_MESSAGE, last_card_outcome
 
@@ -8363,28 +8413,48 @@ async def _mark_if_closed(act: str, account_id: str, replaces: str) -> None:
         return
     rule = _chat_draft_rule()
     if rule is not None:
-        await rule.mark_revised(act=act, draft_id=replaces, thread=_run_thread(),
-                                account_id=account_id, member=_current_user_email())
+        await rule.mark_revised(act=act, draft_id=plan.replaces, thread=_run_thread(),
+                                account_id=account_id, member=_current_user_email(),
+                                to=plan.to)
 
 
-async def _replace_tail(
-    outcome: str, earlier: str, replaces: str, pending: list[dict[str, Any]],
-) -> str:
-    """What the answer adds after a save of the one-draft rule. A save that
-    took the place of the earlier draft cancels its queued sends."""
-    if not replaces:
+#: The answer when a draft of the same email that the member edited stays.
+_KEPT_DRAFT_EDITED = (
+    " A draft of this email that this chat saved before was changed after it "
+    "was saved. It stays in Drafts as it was, beside this new draft, and any "
+    "send scheduled for it stays as it was.")
+
+
+async def _replace_tail(outcome: str, earlier: str, plan: _ChatPlan) -> str:
+    """What the answer adds after a save of the one-draft rule. Only a save
+    that took the place of the earlier draft cancels its queued sends."""
+    if plan.kept:
+        return _KEPT_DRAFT_EDITED
+    if not plan.replaces:
         return ""
-    if outcome in ("updated", "replaced") and earlier == replaces:
+    unread = (" This chat could not check whether a send was scheduled for that "
+              "draft.") if plan.unchecked else ""
+    if outcome in ("updated", "replaced") and earlier == plan.replaces:
         return (" It took the place of the draft that this chat saved before, so "
-                "Drafts keeps one copy." + await _cancel_schedules(pending))
+                "Drafts keeps one copy." + await _cancel_schedules(plan.pending) + unread)
     if outcome == "kept_edited":
-        return (" The draft that this chat saved before was changed after it was "
-                "saved, so it stays in Drafts as it was, beside this new draft.")
+        return _KEPT_DRAFT_EDITED
     if outcome == "delete_failed":
-        await _cancel_schedules(pending)
+        await _cancel_schedules(plan.pending)
         return (" The draft that this chat saved before could not be deleted, so "
                 "Drafts holds both. Tell the member.")
     return ""
+
+
+def _send_tail(plan: _ChatPlan) -> str:
+    """What the answer of a Send on a new-mail form card adds. A Send never
+    touches an earlier draft, so the model hears that it is still there."""
+    did = plan.replaces or plan.kept
+    if not did:
+        return ""
+    return (f" A draft of this email that this chat saved before stays in Drafts "
+            f"(draft_id {did}). Any send scheduled for it stays as it was. Ask the "
+            "member whether to delete that draft.")
 
 
 async def _read_chat_draft(draft_id: str) -> dict[str, Any] | None:

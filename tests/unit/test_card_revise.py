@@ -157,6 +157,9 @@ class _Mailbox:
         return {"id": did, "account_id": BOX, "folder": "drafts",
                 "subject": d.get("subject", ""), "body_text": d.get("body", ""),
                 "to_addresses": [{"email": a} for a in d.get("to") or []],
+                "cc_addresses": [{"email": a} for a in d.get("cc") or []],
+                "bcc_addresses": [{"email": a} for a in d.get("bcc") or []],
+                "has_attachments": bool(d.get("files")),
                 "files": list(d.get("files", []))}
 
     async def put(self, path: str, body: dict[str, Any]) -> Any:
@@ -264,6 +267,14 @@ def tool(monkeypatch: pytest.MonkeyPatch, redis: _Redis) -> _Mailbox:
     monkeypatch.setattr(agents, "_current_user_email", lambda: MEMBER)
     monkeypatch.setattr(agents, "_egress_held", lambda: False)
     return box
+
+
+async def _stored_draft(box: _Mailbox, did: str, **fields: Any) -> None:
+    """A draft that this chat saved before, in the mailbox and in the record."""
+    box.drafts[did] = {"account_id": BOX, "to": RAVI, "subject": "Rates", "body": "Hi.",
+                       **fields}
+    await cr.note_draft(thread=THREAD, account_id=BOX, member=MEMBER, draft_id=did,
+                        to=RAVI, subject="Rates", digest=cr.draft_digest(box._row(did)))
 
 
 async def _save(to: list[str], subject: str, body: str) -> str:
@@ -503,13 +514,13 @@ async def test_a_closed_card_marks_its_draft_for_the_redraft(
     monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards, redis: _Redis,
 ) -> None:
     """The member closes the card of a redraft with a message. The next save
-    of the same act may take that draft, with a new subject and new people."""
+    of the same act to the SAME people may take that draft, with a new subject."""
     _flag(monkeypatch, ORG)
     card.answers.extend([True, at.REVISED, True])
     await _save(RAVI, "Rates", "Hi Ravi.")
     out = await _save(RAVI, "Rates", "Hi Ravi, better.")
     assert out.startswith("Closed by your message")
-    await _save(["lee@contoso.test"], "Rates for Lee", "Hi Lee.")
+    await _save(RAVI, "The new rates for Ravi", "Hi Ravi, the new rates.")
     assert card[-1]["context"].startswith(cr.REPLACES_LINE)
     assert len(tool.creates()) == 1 and len(tool.drafts) == 1
     # The save spent the marker.
@@ -526,8 +537,48 @@ async def test_a_marker_lives_ten_minutes(
     await _save(RAVI, "Rates", "Hi Ravi, better.")
     now = cr.time.time()
     monkeypatch.setattr(cr.time, "time", lambda: now + cr.MARKER_TTL_S + 1)
+    await _save(RAVI, "The new rates for Ravi", "Hi Ravi.")
+    assert len(tool.creates()) == 2
+
+
+async def test_a_marker_never_takes_a_draft_for_other_people(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """Round 2, item 3: the marker keeps the To set of the closed card."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, at.REVISED, True])
+    await _save(RAVI, "Rates", "Hi Ravi.")
+    await _save(RAVI, "Rates", "Hi Ravi, better.")
     await _save(["lee@contoso.test"], "Rates for Lee", "Hi Lee.")
     assert len(tool.creates()) == 2
+    assert cr.REPLACES_LINE not in card[-1]["context"]
+
+
+async def test_the_save_checks_the_match_again(
+    monkeypatch: pytest.MonkeyPatch, redis: _Redis,
+) -> None:
+    """A card record that names a draft of other people, with no marker,
+    replaces nothing: ``save_one_draft`` checks the match again."""
+    _flag(monkeypatch, ORG)
+    box = _Mailbox()
+    first = await box.put("/email/drafts", {"account_id": BOX, "to": RAVI,
+                                            "subject": "Rates", "body": "Hi."})
+    await cr.note_draft(thread=THREAD, account_id=BOX, member=MEMBER, draft_id=first["id"],
+                        to=RAVI, subject="Rates", digest=cr.draft_digest(first))
+
+    async def put(body: dict[str, Any]) -> Any:
+        return await box.put("/email/drafts", body)
+
+    async def read(did: str) -> Any:
+        return box._row(did)
+
+    saved = await cr.save_one_draft(
+        put, {"account_id": BOX, "to": ["lee@contoso.test"], "subject": "Rates",
+              "body": "Hi Lee."},
+        replaces=first["id"], thread=THREAD, member=MEMBER, act="new_mail",
+        read=read, delete=box.delete)
+    assert saved.outcome == cr.CREATED
+    assert box.drafts[first["id"]]["body"] == "Hi."
 
 
 async def test_the_card_names_the_draft_and_the_send_it_cancels(
@@ -555,6 +606,8 @@ async def test_a_draft_that_the_member_edited_is_never_written_over(
     await _save(RAVI, "Rates", "Hi Ravi.")
     tool.drafts["d0001"]["body"] = "Hi Ravi. My own words."  # the Email app
     out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    # The card checked the draft first, so it promised nothing.
+    assert cr.REPLACES_LINE not in card[-1]["context"]
     assert tool.drafts["d0001"]["body"] == "Hi Ravi. My own words."
     assert len(tool.creates()) == 2
     assert "stays in Drafts as it was" in out
@@ -779,7 +832,8 @@ async def test_a_failed_delete_keeps_both_and_says_so(
     second = await _file_save(box, first.result["id"], ["a.pdf"], "Hi 2.")
     assert second.outcome == cr.DELETE_FAILED
     assert len(box.drafts) == 2
-    tail = await agents._replace_tail(second.outcome, second.earlier, first.result["id"], [])
+    tail = await agents._replace_tail(second.outcome, second.earlier,
+                                      agents._ChatPlan(first.result["id"]))
     assert "could not be deleted" in tail
 
 
@@ -911,8 +965,7 @@ async def test_revise_on_and_edit_card_off_has_no_save_path(
     assert ('if (rec.get("kind") == "new" and edit_card_on(org)\n'
             '            and looks_like_new_mail_answer(req.answer)):') in held
     # The tool names no draft when no form card can show.
-    await cr.note_draft(thread=THREAD, account_id=BOX, member=MEMBER, draft_id="d9",
-                        to=RAVI, subject="Rates", digest="x")
+    await _stored_draft(tool, "d9")
     bodies: list[dict[str, Any]] = []
 
     async def held_card(body: dict[str, Any], *_a: Any, **_kw: Any) -> Any:
@@ -938,8 +991,7 @@ async def test_the_new_mail_card_names_the_draft_before_the_card(
     """The tool of the new-mail edit card asks the record before the card,
     sends ``replaces`` to the gateway, and the form shows the line."""
     _flag(monkeypatch, ORG)
-    await cr.note_draft(thread=THREAD, account_id=BOX, member=MEMBER, draft_id="d9",
-                        to=RAVI, subject="Rates", digest="x")
+    await _stored_draft(tool, "d9")
     posts: list[tuple[str, dict[str, Any]]] = []
     forms: list[dict[str, Any]] = []
 
@@ -959,7 +1011,10 @@ async def test_the_new_mail_card_names_the_draft_before_the_card(
                                       notices=[], usual="")
     assert out == "REVISED"
     assert posts[0][0] == "/email/new-card" and posts[0][1]["replaces"] == "d9"
-    assert cr.REPLACES_LINE in forms[0]["notices"]
+    # Round 2, item 1: the form has Send too, so the line names Save draft.
+    assert "If you press Save draft, this replaces the draft saved earlier in this chat." \
+        in forms[0]["notices"]
+    assert cr.REPLACES_LINE not in forms[0]["notices"]
     # A chat message closed it, so the marker names d9 for the next new mail.
     [raw] = redis.data.values()
     assert json.loads(raw)["marker"]["draft_id"] == "d9"
@@ -970,7 +1025,7 @@ def test_each_chat_save_of_a_new_draft_goes_through_the_one_rule() -> None:
     the new-mail card saves of ``new_mail_card.py`` and ``held_card.py``."""
     agent = AGENT.read_text(encoding="utf-8")
     body = agent[agent.index("async def _new_draft("):agent.index("#: The acts of the one-draft")]
-    assert "_save_chat_draft(payload, replaces, _NEW_DRAFT_ACT)" in body
+    assert "_save_chat_draft(payload, plan.replaces, _NEW_DRAFT_ACT)" in body
     assert '_put("/email/drafts"' not in body
     gw = ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "email" / "automation"
     for name in ("new_mail_card.py", "held_card.py"):
@@ -1003,3 +1058,151 @@ def test_every_card_of_the_agent_is_on_a_path_of_the_table() -> None:
             continue
         bare.append(node.lineno)
     assert bare == [], f"a card with no steer path at lines {bare}"
+
+
+# ── 8. Fix round 2 ──────────────────────────────────────────────────────────
+
+
+async def test_a_send_on_the_form_card_leaves_the_earlier_draft_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, redis: _Redis,
+) -> None:
+    """Item 1: Send replaces nothing and cancels nothing. The form lines name
+    Save draft only, and the answer of a Send names the draft that stays."""
+    _flag(monkeypatch, ORG)
+    await _stored_draft(tool, "d9")
+    tool.scheduled = [{"id": "s1", "draft_id": "d9", "status": "queued",
+                       "send_at": "2026-11-19T09:00:00+05:30"}]
+    plan = await agents._plan_chat_draft("new_mail", BOX, RAVI, "Rates")
+    lines = agents._replace_lines(plan, form=True)
+    assert lines == [
+        "If you press Save draft, this replaces the draft saved earlier in this chat.",
+        "If you press Save draft, this cancels the send scheduled for "
+        "2026-11-19T09:00:00+05:30."]
+    answer = type("A", (), {"request_id": "r" * 32, "thread_id": THREAD, "answer": "{}",
+                            "choice": None})()
+
+    async def post(path: str, body: Any = None) -> Any:
+        tool.posts.append(path)
+        return {"action": "send", "id": "m1", "to": RAVI, "cc": []}
+
+    async def noted(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(agents, "_post", post)
+    monkeypatch.setattr(agents, "_note_sent", noted)
+    out = await agents._new_mail_answered(answer, "Fracktal", "", plan)
+    assert tool.posts == ["/email/new-card/act"]  # no cancel, no delete
+    assert tool.deleted == [] and "d9" in tool.drafts
+    assert "stays in Drafts (draft_id d9)" in out
+    assert "Any send scheduled for it stays as it was." in out
+
+
+async def test_a_save_on_the_form_card_takes_the_place_and_cancels(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, redis: _Redis,
+) -> None:
+    _flag(monkeypatch, ORG)
+    await _stored_draft(tool, "d9")
+    tool.scheduled = [{"id": "s1", "draft_id": "d9", "status": "queued",
+                       "send_at": "2026-11-19T09:00:00+05:30"}]
+    plan = await agents._plan_chat_draft("new_mail", BOX, RAVI, "Rates")
+    out = await agents._form_replace_tail(
+        {"action": "save", "replace_outcome": "updated", "replaced": "d9"}, plan)
+    assert "Drafts keeps one copy" in out
+    assert tool.posts == ["/email/drafts/scheduled/s1/cancel"]
+
+
+async def test_an_earlier_draft_with_files_is_replaced_never_updated(
+    redis: _Redis, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item 2: an update adds files and never drops one (Outlook PATCH). So
+    a save with no files over a draft with files makes a new draft."""
+    _flag(monkeypatch, ORG)
+    box = _Mailbox()
+    first = await _file_save(box, "", ["a.pdf"], "Hi.")
+    did = first.result["id"]
+    second = await _file_save(box, did, [], "Hi 2.")
+    assert second.outcome == cr.REPLACED
+    [only] = box.drafts.values()
+    assert only["files"] == [] and only["body"] == "Hi 2."
+
+
+async def test_a_draft_that_the_provider_says_has_files_is_replaced(
+    redis: _Redis, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The record has no files, but the stored draft has some (the member
+    added one): the read says so, and the save never updates it."""
+    _flag(monkeypatch, ORG)
+    box = _Mailbox()
+    first = await _file_save(box, "", [], "Hi.")
+    did = first.result["id"]
+
+    async def put(payload: dict[str, Any]) -> Any:
+        return await box.put("/email/drafts", payload)
+
+    async def read(d: str) -> Any:
+        return {**box._row(d), "has_attachments": True}
+
+    saved = await cr.save_one_draft(
+        put, {"account_id": BOX, "to": RAVI, "subject": "Rates", "body": "Hi 2."},
+        replaces=did, thread=THREAD, member=MEMBER, act="new_mail", read=read,
+        delete=box.delete)
+    assert saved.outcome == cr.REPLACED and box.deleted == [did]
+
+
+async def test_a_cc_added_by_hand_is_an_edit(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """Item 4: the digest holds the To, Cc and Bcc people too."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, True])
+    await _save(RAVI, "Rates", "Hi Ravi.")
+    tool.drafts["d0001"]["cc"] = ["boss@contoso.test"]  # the Email app
+    out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert len(tool.creates()) == 2
+    assert tool.drafts["d0001"]["body"] == "Hi Ravi."
+    assert "stays in Drafts as it was" in out
+
+
+async def test_an_edited_draft_keeps_its_schedule_and_the_card_promises_no_cancel(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """Item 5: the card checks the draft before it shows. An edited draft is
+    never named, so the card promises no cancel, and the answer says that
+    its send stays."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, True])
+    await _save(RAVI, "Rates", "Hi Ravi.")
+    tool.drafts["d0001"]["body"] = "Hi Ravi. My words."
+    tool.scheduled = [{"id": "s1", "draft_id": "d0001", "status": "queued",
+                       "send_at": "2026-11-19T09:00:00+05:30"}]
+    out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert "cancels" not in card[-1]["context"]
+    assert cr.REPLACES_LINE not in card[-1]["context"]
+    assert tool.posts == []
+    assert "any send scheduled for it stays as it was" in out
+
+
+async def test_a_5xx_of_the_schedules_never_stops_a_redraft(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """NOTED: a failed read of the queued sends is logged, the card says the
+    send could not be checked, and the save still goes."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, True])
+    await _save(RAVI, "Rates", "Hi Ravi.")
+
+    async def broken(_did: str) -> Any:
+        raise agents.GatewayError("Email GET failed (503)", 503)
+
+    monkeypatch.setattr(agents, "_pending_schedules", broken)
+    out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert "could not check whether a send is scheduled" in card[-1]["context"]
+    assert "The draft is updated" in out
+    assert "could not check whether a send was scheduled" in out
+    assert len(tool.creates()) == 1
+
+
+def test_the_new_draft_text_claims_no_earlier_draft() -> None:
+    text = agents._closed_by_message("new_draft")
+    assert "That save updates" not in text
+    assert "If this chat saved this email before" in text
