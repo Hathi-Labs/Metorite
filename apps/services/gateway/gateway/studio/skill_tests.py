@@ -22,8 +22,8 @@ the model cannot change a result. A test passes only when both hold:
    with no case folding. A key that ``fields`` leaves out is ignored.
 
 Then the reason is ``missing_write``, ``extra_write`` or ``field_mismatch``.
-A detail names a key or a tool, and never a value, so a test result holds no
-member data.
+A detail names a key or a tool, and never a value. The `writes` and `calls`
+of a result do hold the recorded arguments, so a store keeps codes and key names only.
 
 F4a builds the shape and the rule. F4b builds ``run_suite``, which runs a
 test on a real turn, and the credit cap and the flag with it. The reason
