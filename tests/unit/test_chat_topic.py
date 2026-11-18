@@ -368,19 +368,23 @@ def test_a_name_that_shows_passes(raw: str) -> None:
 
 
 def _list_headings_of_the_control_plane() -> tuple[str, ...]:
-    """``PINNED_GROUP`` and then ``DATE_GROUPS``, read from ``chatHistory.ts``."""
+    """``PINNED_GROUP``, ``DATE_GROUPS``, ``RECENT_GROUP`` and ``OTHER_GROUP``,
+    read from ``chatHistory.ts``."""
     src = (ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "chatHistory.ts"
            ).read_text(encoding="utf-8")
     pinned = re.search(r'export const PINNED_GROUP = "([^"]+)" as const;', src)
     dates = re.search(r"export const DATE_GROUPS = \[([^\]]+)\] as const;", src)
-    assert pinned and dates, "the parse of chatHistory.ts found no heading"
-    return (pinned.group(1), *re.findall(r'"([^"]+)"', dates.group(1)))
+    recent = re.search(r'export const RECENT_GROUP = "([^"]+)" as const;', src)
+    other = re.search(r'export const OTHER_GROUP = "([^"]+)" as const;', src)
+    assert pinned and dates and recent and other, "the parse of chatHistory.ts found no heading"
+    return (pinned.group(1), *re.findall(r'"([^"]+)"', dates.group(1)),
+            recent.group(1), other.group(1))
 
 
 def test_the_list_headings_are_the_headings_of_the_chat_list() -> None:
     """Visual review P3: one list of headings, pinned to the TypeScript.
-    Mutation: add a day group to ``DATE_GROUPS`` and not to ``LIST_HEADINGS``
-    -> red here."""
+    Mutation: add a day group to ``DATE_GROUPS`` and not to ``LIST_HEADINGS``,
+    or rename ``RECENT_GROUP`` or ``OTHER_GROUP`` (CO-2c) -> red here."""
     from gateway.chat_topic import LIST_HEADINGS
 
     assert _list_headings_of_the_control_plane() == LIST_HEADINGS
@@ -396,7 +400,7 @@ def test_the_heading_reader_can_fail() -> None:
 
 
 @pytest.mark.parametrize("heading", ["Pinned", "Today", "Yesterday", "Previous 7 days",
-                                     "Previous 30 days", "Older"])
+                                     "Previous 30 days", "Older", "Recent", "Other"])
 def test_a_name_of_a_list_heading_is_refused(heading: str) -> None:
     """Visual review P3: a topic called "Today" would read as the day group.
     Each heading is refused as it is, in another case, and with other spacing.
