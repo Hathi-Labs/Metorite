@@ -2,6 +2,7 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 792 and 1236.
 
+> **Built 2026-11-18, CRM-Q34-12 (task 3761):** a module route takes the API name or the label of a module. `modules.resolve_module` is the one resolver. It tries the API name, the folded API name, then the label, plural label and singular label. It never guesses between two modules, and an unknown module answers a 404 that names up to 3 close ones. The list, record, timeline, field list, field search and term paths use it. `aggregate.py` and `field_sql.py` still need one call to it: the lane that owns them adds it. No flag, no new tool. Fence: `tests/unit/test_crm_module_resolver.py`.
 > **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
 
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11

@@ -92,6 +92,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import date
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -155,6 +156,10 @@ REPORT_KINDS: tuple[str, ...] = ("pipeline", "funnel", "win-loss", "owners")
 
 #: The gateway's own module-name rule (``core._MODULE_NAME``).
 _MODULE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+#: What a module tool takes: an API name, or the label that people use
+#: ("Sales Orders"). The gateway resolves it (CRM-Q34-12). No slash, dot or
+#: colon, so a name cannot walk a path.
+_MODULE_TEXT = re.compile(r"^[A-Za-z][A-Za-z0-9_ \-]{0,99}$")
 
 #: The entity word of a mirrored module in the aggregate and the field list.
 MODULE_PREFIX = "module:"
@@ -787,6 +792,14 @@ def _entity_slug(entity: str, *, allow_module: bool = False) -> str:
     return slug
 
 
+def _field_path(slug: str) -> str:
+    """The path word of a field list: the label of a module, as typed, is
+    percent-encoded (CRM-Q34-12). A core slug has no mark to encode."""
+    if slug.startswith(MODULE_PREFIX):
+        return MODULE_PREFIX + quote(slug[len(MODULE_PREFIX):], safe="")
+    return slug
+
+
 def _entity_label(slug: str) -> str:
     """What an answer calls the entity: "Deal", or the module's API name."""
     return ENTITY_LABELS.get(slug) or slug[len(MODULE_PREFIX):]
@@ -857,7 +870,7 @@ def _module_name(module: str) -> str:
     name = str(module or "").strip()
     if name.lower().startswith(MODULE_PREFIX):
         name = name[len(MODULE_PREFIX):].strip()
-    if not _MODULE_NAME.match(name):
+    if not _MODULE_TEXT.match(name):
         raise GatewayRefusal(
             f"Invalid module name {module!r}. Use an api_name that "
             "crm_list_modules returned, for example 'Products'."
@@ -1152,7 +1165,7 @@ async def crm_list_fields(entity: str = "", page: int = 1, query: str | None = N
     # primary filter is the route's: `GET /crm/fields/{entity}` reads
     # `AND NOT is_system` (`fields._FIELDS_SQL`). This one is a second guard.
     defs = [
-        d for d in (await _get(f"/crm/fields/{slug}") or [])
+        d for d in (await _get(f"/crm/fields/{_field_path(slug)}") or [])
         if isinstance(d, dict) and not d.get("is_system")
     ]
     if not defs:
@@ -3855,9 +3868,10 @@ async def crm_list_module_records(
     measure or group. q matches the record name."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
-    data = await _get(f"/crm/modules/{mod}/records", {
+    data = await _get(f"/crm/modules/{quote(mod, safe='')}/records", {
         "q": q, "page": number, "page_size": size,
     }) or {}
+    mod = str(data.get("module") or mod)  # CRM-Q34-12: the API name
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
     if not rows:
@@ -3901,7 +3915,9 @@ async def _module_record_answer(mod: str, record: str, page: int | None) -> str:
     """One record of a module, each field under its label, with its key
     beside the label (CRM-Q34-6): the chat filters and totals by the key.
     *mod* and *record* passed their validators."""
-    data = await _get(f"/crm/modules/{mod}/records/{record}") or {}
+    data = await _get(f"/crm/modules/{quote(mod, safe='')}/records/{record}") or {}
+    summary = data.get("module")
+    mod = str(summary.get("api_name") or mod) if isinstance(summary, dict) else mod
     row = data.get("record") or {}
     defs = data.get("field_defs") or []
     lines = [f"{mod}: {row.get('name') or '(unnamed)'} (id={row.get('id')})"]
