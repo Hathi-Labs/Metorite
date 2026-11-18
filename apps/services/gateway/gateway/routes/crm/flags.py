@@ -245,27 +245,6 @@ def fill_rank_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
-def crm_module_find_orgs() -> frozenset[str]:
-    """The organization ids whose module reads take ``q`` across a module
-    (CRM-Q34-7). Empty means none."""
-    return _parse_orgs(str(get_settings().crm_module_find_orgs or ""))
-
-
-def module_find_allowed(organization_id: str | None) -> bool:
-    """True when ``q`` on a module list and a module total finds across the
-    module for this org (CRM-Q34-7, ``crm_platform.md`` §18.17).
-
-    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND
-    a place on ``CRM_MODULE_FIND_ORGS``, or ``*`` there. It reads the
-    settings and nothing else, and no module reads it at import, so a SIGHUP
-    reload applies a flip (``docs/flag_reload.md``)."""
-    if not crm_org_allowed(organization_id):
-        return False
-    org = str(organization_id).strip().lower()
-    orgs = crm_module_find_orgs()
-    return ALL_ORGS in orgs or org in orgs
-
-
 def crm_note_search_orgs() -> frozenset[str]:
     """The organization ids that get search by meaning. Empty means none."""
     return _parse_orgs(str(get_settings().crm_note_search_orgs or ""))

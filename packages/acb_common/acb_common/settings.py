@@ -311,16 +311,6 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_fill_rank_r8.py.
     crm_fill_rank_orgs: str = ""
-    # `crm_module_find_orgs` (WS-53 CRM-Q34-7, 2026-11-17) lists the
-    # organization ids whose module list and module total take `q` across
-    # the record name, each lookup name and each text value
-    # (`crm_platform.md` §18.17), in the grammar of `crm_orgs`. Default empty
-    # means NO organization (fail closed). An org outside the list keeps the
-    # 422 of `q` on a module total and the list search of the record name
-    # only. The one reader is `gateway.routes.crm.flags`. A name in the list
-    # spends nothing, so a flip on a box is gate `enforcement-flip`. Fence:
-    # tests/unit/test_crm_module_find.py.
-    crm_module_find_orgs: str = ""
     # `crm_note_search_orgs` (WS-53 CRM-Q27, 2026-10-16) lists the
     # organization ids that get search of CRM note text by meaning
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
@@ -1098,6 +1088,18 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_honorifics.py.
     address_forms_orgs: str = ""
 
+    # ── The claim check of an answer (HRD-13, chat_failure_modes.md §4.4) ───
+    #
+    # CHAT_CLAIM_CHECK_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and the orchestrator's run is as before. On, the run
+    # of the orchestrator gets ONE provider that reads the whole run at its
+    # end and logs ONE line, `answer_claims.checked`, with counts only. It is
+    # shadow only and never changes the answer (D-HRD-6). The one reader is
+    # `acb_skills.answer_claims.claim_check_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_answer_claims.py.
+    chat_claim_check_orgs: str = ""
+
     # ── The line of a slow tool (HRD-6, chat_failure_modes.md §4 row B6) ────
     #
     # CHAT_PROGRESS_NOTICE_ORGS: a comma list of organization ids, or `*`.
@@ -1517,6 +1519,21 @@ class Settings(BaseSettings):
     # D4, slice WT-5). The flip also waits for WT-1b and WT-2 (§9.3 item 9).
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
+
+    # ── The shadow join log (chat_organization.md §7, WS-CO CO-4) ──────────
+    #
+    # `chat_join_shadow_orgs` lists the organization ids where the first
+    # message of a new chat writes one row of the shadow join log: the outcome
+    # (join, carry, ask or clean) that §7.1 would take. Or `*` for each one.
+    # Empty means off, and the run route schedules nothing. The member sees
+    # nothing in either case. The one reader is
+    # `gateway.chat_join_shadow.shadow_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`). A value other than empty on a box is the gate
+    # `enforcement-flip`.
+    # Fences: tests/unit/test_chat_join_shadow.py,
+    # tests/unit/test_chat_join_shadow_r8.py.
+    chat_join_shadow_orgs: str = ""
 
     # ── Pin a chat (chat_organization.md §18, WS-CO CO-11) ─────────────────
     #

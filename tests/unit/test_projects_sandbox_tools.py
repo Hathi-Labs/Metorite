@@ -1202,9 +1202,13 @@ def test_a_covered_run_has_no_web_tool_and_the_host_sends_nothing(sandbox, monke
     # H-236 binds the covered run itself: its injection already leaves the
     # two tools out, so a call that names one finds no such tool. The
     # sandbox middleware still refuses it when a tool gets past injection.
+    # HRD-1c (task 3679): the stream run of the Projects assistant answers a
+    # name that it does not hold with the HRD-1 text, which starts "Not run".
+    # Its model never reads MAF's own "not found" text.
     refused = [
         r for body in model.bodies[1:] for r in _tool_results(body)
         if "has no network" in r or "off in this run" in r or "not found" in r
+        or r.startswith("Not run")
     ]
     assert len(set(refused)) == 2, refused
     assert sent == []

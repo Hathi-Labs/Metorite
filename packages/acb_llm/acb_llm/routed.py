@@ -642,9 +642,12 @@ class RouterStreamParser:
     def end(self) -> None:
         """The bytes ended. Raise unless they held a data frame, then ``[DONE]``.
 
-        ⚠️ A lone ``[DONE]`` is not an empty answer. The Console sends exactly
-        that when every step of the chain failed before a frame existed
-        (``main._stream_closed``), where the buffered call gets a 502.
+        ⚠️ A lone ``[DONE]`` is not an empty answer. Two Consoles send it. An
+        old one sends it when every step of the chain failed before a frame
+        existed. A new one sends it when a provider stream opens and yields
+        no chunk (``open_stream_chain`` returns an empty head). Since AO-3 a
+        new Console answers a failed open with 503 ``unavailable``
+        (``main._stream_unavailable``), and the client raises before this.
         """
         if not self.done:
             raise RouterStreamBroken("stream_truncated")

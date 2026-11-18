@@ -166,6 +166,17 @@ _FIELD_USES: dict[str, str] = {
     **dict.fromkeys(("select", "boolean", "lookup"), "group by value"),
     **dict.fromkeys(("date", "datetime"), "group by month, quarter or year"),
 }
+#: CRM-Q34-11: the use of a text field of a MODULE. A core text field has
+#: none, because only a module reads its text as numbers.
+_TEXT_NUMBER_USE = "sums and ranges if it holds numbers, the answer counts the rest"
+
+
+def _field_use(ftype: str, module: bool) -> str | None:
+    """What crm_aggregate can do with a field of *ftype* (:data:`_FIELD_USES`),
+    and the text field of a module (:data:`_TEXT_NUMBER_USE`)."""
+    if module and ftype == "text":
+        return _TEXT_NUMBER_USE
+    return _FIELD_USES.get(ftype)
 
 #: CRM-Q34-6: the value that a module filter (``field_filters`` of
 #: ``crm_aggregate``) takes for a field of each type. The words follow the
@@ -1168,7 +1179,7 @@ async def crm_list_fields(entity: str = "", page: int = 1, query: str | None = N
             str(o.get("label")) for o in d.get("options") or []
             if isinstance(o, dict) and o.get("label") and not o.get("retired")
         ]
-        use = _FIELD_USES.get(str(d.get("type")))
+        use = _field_use(str(d.get("type")), slug.startswith(MODULE_PREFIX))
         lines.append(
             f"- {d.get('label')} (key {d.get('key')}, {d.get('type')})"
             + (" - retired" if d.get("retired") else "")
@@ -1242,7 +1253,7 @@ def _field_hits(body: Any, query: str, module: str | None, page: int | None) -> 
     lines = [f"Fields of {where} that match '{query}' ({total}):"]
     for h in shown.items:
         ftype = str(h.get("type"))
-        use = _FIELD_USES.get(ftype)
+        use = _field_use(ftype, True)
         fill = h.get("fill")
         lines.append(
             f"- {h.get('module')}: {h.get('label')} (key {h.get('key')}, {ftype})"
@@ -1916,6 +1927,41 @@ def _split_head(plural: str, measure: str, data: dict[str, Any], split: list[Any
     return f"{plural}, {measure} of each field: {_split_text(split, None, measure)}{tail}"
 
 
+def _text_number_lines(data: dict[str, Any], split: list[Any]) -> list[str]:
+    """CRM-Q34-11: one line for each text field that the total read as
+    numbers (``text_numbers`` of the route): the three counts of the module,
+    the most common shapes of the values that are not numbers, and, for a
+    measured field, how many matching records gave a number. Empty with
+    none. The words of each shape come from the route."""
+    found = data.get("text_numbers")
+    if not isinstance(found, dict) or not found:
+        return []
+    measured = {str(s.get("field")): s for s in split if isinstance(s, dict)}
+    if not split and data.get("field"):
+        measured = {str(data["field"]): {"label": data.get("field_label"),
+                                         "values": data.get("values")}}
+    records = data.get("records")
+    out = []
+    for key, counts in found.items():
+        if not isinstance(counts, dict):
+            continue
+        one = measured.get(str(key)) or {}
+        numbers, empty = int(counts.get("numbers") or 0), int(counts.get("no_value") or 0)
+        other = int(counts.get("not_numbers") or 0)
+        line = (f"{one.get('label') or key} is a text field read as numbers. In this "
+                f"module: {numbers:,} {'number' if numbers == 1 else 'numbers'}, {empty:,} "
+                f"with no value, {other:,} not {'a number' if other == 1 else 'numbers'}.")
+        shapes = [f"{s.get('words')} ({int(s.get('count') or 0):,})"
+                  for s in counts.get("shapes") or [] if isinstance(s, dict)]
+        if shapes:
+            line += f" Left out, most common: {', '.join(shapes)}."
+        if one.get("values") is not None and records is not None:
+            line += (f" This total read {int(one['values']):,} numbers of "
+                     f"{int(records):,} matching records.")
+        out.append(line)
+    return out
+
+
 def _first_lines(data: dict[str, Any]) -> list[str]:
     """CRM-Q25e part 4: the findings of the route (``acb_common.number_sense``)
     as lines that the model says before the total. Empty with none."""
@@ -2125,7 +2171,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         lines = await _total_tail(head, slug, data, overlay)
         if display:
             lines.insert(1, display)
-        lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
+        lines.extend([*filters, *mine, *_text_number_lines(data, split),
+                      *await _revenue_lines(slug, measure, box)])
         return "\n".join([*first, *lines]) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
@@ -2159,7 +2206,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
     lines.extend(await _hint_lines(slug, data, overlay))
-    lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
+    lines.extend([*filters, *mine, *_text_number_lines(data, split),
+                  *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
 
 
@@ -2173,6 +2221,10 @@ async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any],
       the filter line (*rest*), and never "no values recorded".
     * CRM-Q25c item 3: records matched, and the measured field is empty in
       each. An empty field has no total, and 0 would be false."""
+    field, split = measured
+    # CRM-Q34-11: a text field read as numbers keeps its three counts and
+    # its shapes here too, as the total with no group does.
+    numbers = _text_number_lines(data, split)
     nothing = _no_match(params, data, lead)
     if nothing:
         overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
@@ -2181,10 +2233,10 @@ async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any],
             lines.append(_from_module(slug, str(overlay.get("module"))))
         lines.extend(await _hint_lines(slug, data, overlay))
         measure = str(params.get("measure") or "count")
-        return "\n".join([*lines, *rest, *await _revenue_lines(slug, measure, box)])
-    field, split = measured
+        return "\n".join([*lines, *rest, *numbers,
+                          *await _revenue_lines(slug, measure, box)])
     if field and data.get("values") == 0 and not split:
-        return f"{lead}: no values recorded for {field}."
+        return "\n".join([f"{lead}: no values recorded for {field}.", *numbers])
     return None
 
 
