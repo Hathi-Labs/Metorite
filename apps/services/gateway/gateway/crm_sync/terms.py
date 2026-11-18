@@ -36,14 +36,24 @@ counts each of them. :func:`value_matches` takes the distinct values of the
 field: the same value in another case, a short form that is the start of
 exactly one longer value (3 letters or more), and the initials of a value of
 two or more words.
+
+**A link (SEM-2a).** :func:`link_field` maps a word of the model to the
+stored key of one field. The first step of its ladder that finds a field
+decides: the exact key, the key in any case, the folded label, an admin's
+answer of the term, then the words of :func:`_hit`. Two or more fields at one
+step give each key and pick none. The caller passes only the fields that the
+member may use, and the caller applies :func:`close` to the totals of two
+money fields. The word never goes into the result.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from gateway.crm_sync.catalogue import SUM_KEY_JOIN
 
 #: The kind and the id prefix of a term question in the CRM-Q32 store.
 KIND_TERM = "term"
@@ -327,10 +337,132 @@ def alias_lines(state: Mapping[str, Any] | None) -> list[tuple[str, str, list[st
     return out
 
 
+# ── The link of a word to a field (SEM-2a) ──────────────────────────────────
+
+#: The longest word that :func:`link_field` reads. The route
+#: ``routes/crm/terms.py`` takes a term of the same length (its own
+#: ``TERM_MAX``), and ``tests/unit/test_crm_query_link.py`` checks that the
+#: two agree. This module imports no route, so it keeps its own copy.
+TERM_MAX = 80
+#: The first character of a key word of a module scope (``@amount``). A
+#: stored key never starts with it.
+KEY_WORD_MARK = "@"
+
+
+@dataclass(frozen=True)
+class Link:
+    """What :func:`link_field` found for one word.
+
+    ``keys`` holds stored field keys only, never the word: none, one, or up
+    to :data:`MAX_CANDIDATES` when ``step`` is ``ambiguous``. ``step`` names
+    the step that decided: ``exact``, ``case``, ``label``, ``term`` or
+    ``word`` for one field, ``ambiguous`` for two or more fields at one step,
+    ``none`` for no field, and ``passthrough`` for a key word or a sum of
+    keys that the caller reads on its old path. ``money`` is True when each
+    key is a field of :data:`MONEY_TYPES`, so the caller can apply
+    :func:`close` to their totals."""
+
+    keys: tuple[str, ...] = ()
+    step: str = "none"
+    money: bool = False
+
+
+def _fold(text: Any) -> str:
+    """A label in one form: lower case, with each character that is not a
+    letter or a digit dropped. It is the rule of ``fold_module`` in
+    ``routes/crm/modules.py`` (CRM-Q34-12). This module imports no route, so
+    it keeps its own copy."""
+    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+
+def _stored(fields: Iterable[Any]) -> list[tuple[str, str, str]]:
+    """``(key, label, type)`` of each stored field, once for each key, in the
+    order of *fields*. A key word (``@amount``) and a sum of keys are aliases
+    of stored fields, so they are left out. A field with no label reads its
+    key as its label."""
+    out: dict[str, tuple[str, str, str]] = {}
+    for f in fields:
+        key = str(getattr(f, "key", "") or "")
+        if not key or key in out or key.startswith(KEY_WORD_MARK) or SUM_KEY_JOIN in key:
+            continue
+        label = str(getattr(f, "label", "") or "") or key
+        out[key] = (key, label, str(getattr(f, "type", "") or ""))
+    return list(out.values())
+
+
+def _link(found: Sequence[tuple[str, str, str]], step: str) -> Link:
+    """The link of the fields that one step found: the one key, or each key
+    (at most :data:`MAX_CANDIDATES`) with the step ``ambiguous``."""
+    if len(found) > 1:
+        step, found = "ambiguous", found[:MAX_CANDIDATES]
+    return Link(keys=tuple(k for k, _label, _type in found), step=step,
+                money=all(t in MONEY_TYPES for _key, _label, t in found))
+
+
+def link_field(fields: Iterable[Any], word: str, *, module: str = "",
+               answers: Mapping[str, str] | None = None) -> Link:
+    """The stored field that *word* names, or the fields it can mean.
+
+    *fields* have ``key``, ``label`` and ``type``, as :func:`candidates`
+    reads them. The caller passes only the fields that the member may use, so
+    a hidden field is a target only when the caller passes it. This function
+    reads no ``visible`` flag.
+
+    A key word (it starts with ``@``) and a sum of keys (it holds ``+``) give
+    ``passthrough``, and the caller keeps its old path. A word longer than
+    :data:`TERM_MAX`, or with no letter and no digit, gives ``none``. Then the
+    first step that finds a field decides:
+
+    1. ``exact``: the stored key;
+    2. ``case``: the key in any case;
+    3. ``label``: the label, folded by :func:`_fold`;
+    4. ``term``: the admin's answer of the term question of *word* in
+       *module*. *answers* is ``term_state(...).answers``, which the caller
+       read. With no *module* or no *answers*, the step does not run;
+    5. ``word``: each word of *word* hits a word of the label or of the key
+       (:func:`_hit`).
+
+    One field at a step is the link. Two or more give ``ambiguous`` and pick
+    none. The result never holds *word*, and the function reads no database,
+    no setting and no clock, and logs nothing."""
+    asked = word if isinstance(word, str) else ""
+    trimmed = asked.strip()
+    if trimmed.startswith(KEY_WORD_MARK) or SUM_KEY_JOIN in trimmed:
+        return Link(step="passthrough")
+    if len(asked) > TERM_MAX or not any(ch.isalnum() for ch in asked):
+        return Link()
+    pool = _stored(fields)
+    found = [f for f in pool if f[0] == trimmed]
+    if found:
+        return _link(found, "exact")
+    case = trimmed.casefold()
+    found = [f for f in pool if f[0].casefold() == case]
+    if found:
+        return _link(found, "case")
+    folded = _fold(trimmed)
+    found = [f for f in pool if folded and _fold(f[1]) == folded]
+    if found:
+        return _link(found, "label")
+    wanted = list(dict.fromkeys(words(trimmed)))
+    if module and answers and wanted:
+        picked = answers.get(term_id(module, trimmed))
+        found = [f for f in pool if f[0] == picked]
+        if found:
+            return _link(found, "term")
+    if wanted:
+        found = [f for f in pool
+                 if all(_hit(w, list(dict.fromkeys([*words(f[1]), *words(f[0])])))
+                        for w in wanted)]
+        if found:
+            return _link(found, "word")
+    return Link()
+
+
 __all__ = [
     "ALIASES_BUCKET",
     "CLOSE_SHARE",
     "GENERAL_WORDS",
+    "KEY_WORD_MARK",
     "KIND_TERM",
     "MAX_CANDIDATES",
     "MONEY_TYPES",
@@ -338,15 +470,18 @@ __all__ = [
     "TAX_WORDS",
     "TERMS_BUCKET",
     "TERM_ANSWERS_BUCKET",
+    "TERM_MAX",
     "TERM_PREFIX",
     "WHY",
     "Candidate",
+    "Link",
     "Pick",
     "TermState",
     "alias_lines",
     "candidates",
     "close",
     "decide",
+    "link_field",
     "rule_pick",
     "slug",
     "term_id",
