@@ -1518,7 +1518,7 @@ describe("email-draftcard-recipients: a draft card keeps the recipients of its d
   });
 
   it("saves after an edit of the Cc or the Bcc (item 4, EM-G3c-2-f2)", () => {
-    expect(conversation).toContain("}, [body, quote, to, cc, bcc]);");
+    expect(conversation).toContain("}, [body, quote, to, cc, bcc, attachments, artifacts]);");
     expect(conversation).toContain("onChange={(v) => { dirty.current = true; setCc(v); }}");
     expect(conversation).toContain("onChange={(v) => { dirty.current = true; setBcc(v); }}");
     expect(conversation).not.toContain("onChange={setCc}");
