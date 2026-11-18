@@ -1523,6 +1523,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
 
+    # ── The shadow join log (chat_organization.md §7, WS-CO CO-4) ──────────
+    #
+    # `chat_join_shadow_orgs` lists the organization ids where the first
+    # message of a new chat writes one row of the shadow join log: the outcome
+    # (join, carry, ask or clean) that §7.1 would take. Or `*` for each one.
+    # Empty means off, and the run route schedules nothing. The member sees
+    # nothing in either case. The one reader is
+    # `gateway.chat_join_shadow.shadow_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`). A value other than empty on a box is the gate
+    # `enforcement-flip`.
+    # Fences: tests/unit/test_chat_join_shadow.py,
+    # tests/unit/test_chat_join_shadow_r8.py.
+    chat_join_shadow_orgs: str = ""
+
     # ── Pin a chat (chat_organization.md §18, WS-CO CO-11) ─────────────────
     #
     # `chat_pin_orgs` lists the organization ids where a member may pin a

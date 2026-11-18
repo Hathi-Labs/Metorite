@@ -266,7 +266,14 @@ async def _confirm(
         request_confirmation,
     )
 
-    await _check_card(context)
+    try:
+        await _check_card(context)
+    except BaseException:
+        # HRD-22b item 5: a card that is refused before it goes out never takes
+        # the facts that the tool bound for it, so they must not reach the
+        # digest of the next card.
+        _drop_card_facts()
+        raise
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
     if edit is not None and rows is None:
@@ -310,6 +317,15 @@ def _not_confirmed() -> str:
     except Exception:  # pragma: no cover — platform package absent in isolation
         return card_not_done_text()
     return parked_line() or card_not_done_text()
+
+
+def _drop_card_facts() -> None:
+    """Forget the facts bound for a card that was refused (HRD-22b item 5)."""
+    try:
+        from acb_skills.whatsapp_acts import drop_card_facts
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return
+    drop_card_facts()
 
 
 def _bind_card_facts(**facts: Any) -> None:

@@ -82,8 +82,8 @@ from tests.unit.test_late_approve_grant import (  # noqa: E402
 from tests.unit.test_pending_ask_flow import (  # noqa: E402, F401
     _ORG_A,
     _ORG_B,
-    _AskDb,
     _answer_client,
+    _AskDb,
     _events,
     flag_on,
 )
@@ -156,6 +156,10 @@ def ask_db(monkeypatch):
     for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks",
                  "read_stored_call", "claim_stored_call", "restore_stored_call"):
         monkeypatch.setattr(pending_ask, name, getattr(db, name))
+    # HRD-22b: the second witness is a Postgres read, and these rows are in
+    # memory. No twin ran in these scenes. The SQL is test_late_approve_twin_r8.py,
+    # and the real read is in test_resume_continuation_r8.py.
+    monkeypatch.setattr(pending_ask, "twin_approved_since", lambda *_a, **_k: False)
     pending_ask._reset_for_tests()
     executor._pending_user_input.clear()
     yield db
@@ -478,8 +482,12 @@ def test_the_equal_card_takes_the_yes_shows_no_card_and_is_spent(
     assert WRITES == [("deal", "d-neuro", "Payment Complete")]
     assert "cards" not in out and _cards(liveness, "t-yes") == []
     assert out["state"].outcome == "approved" and out["state"].taken
+    # One mark on the offer key of the thread, and (HRD-22b) one in the
+    # member-level key.
     spent = [k for k, v in resume_on.data.items() if v == late_approve._SPENT]
-    assert len(spent) == 1, "the act is SPENT, so a twin card never writes it again"
+    assert len(spent) == 2, "the act is SPENT, so a twin card never writes it again"
+    assert len([k for k in spent if f":{late_approve.OFFER_NAMESPACE}:" in k]) == 1
+    assert len([k for k in spent if f":{late_approve.SPENT_NAMESPACE}:" in k]) == 1
 
 
 def test_a_spent_act_takes_no_yes_so_a_twin_never_writes_twice(resume_on, ask_db, liveness):
@@ -918,7 +926,7 @@ def test_the_claim_is_one_statement_with_each_predicate():
                  "thread_id = :tid", "stored_call IS NOT NULL", "FOR UPDATE",
                  "state = 'answered'", "stored_call = NULL", "RETURNING old.stored_call"):
         assert part in sql, part
-    assert pending_ask._NO_CLAIM_CODES == {"40P01", "55P03"}
+    assert {"40P01", "55P03"} == pending_ask._NO_CLAIM_CODES
 
 
 def test_a_lock_timeout_and_a_deadlock_mean_no_claim(monkeypatch):
@@ -1084,7 +1092,8 @@ def test_a_live_approve_with_only_resume_on_marks_the_act_for_a_later_flip(
     tid = "t-p22-flip"
     out = _run(liveness, tid, live="APPROVE", deal_id="d-neuro", stage="Payment Complete")
     assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
-    assert list(resume_on.data.values()) == [late_approve._SPENT], "the mark, and no offer or grant"
+    assert list(resume_on.data.values()) == [late_approve._SPENT] * 2, (
+        "the thread mark and the member mark, and no offer or grant")
 
     monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
     twin = _yes_run(_stored(), lambda: _keyed(
@@ -1601,3 +1610,47 @@ def test_a_stale_row_loads_as_a_digest_drop_and_the_room_still_wins():
     fresh = store.StoredRow({}, store.transcript_digest(covered), "fp")
     assert store._decide(store.LoadState(chat_exists=True, stored=fresh), covered=covered,
                          fingerprint="fp", browser_history=None) == (store.HIT, "")
+
+
+# ---------------------------------------------------------------------------
+# HRD-22b (review, P1): the RESUME path asks the Postgres witness too
+# ---------------------------------------------------------------------------
+
+def test_the_resume_path_asks_postgres_before_the_claim(monkeypatch):
+    """A stall of Redis leaves no SPENT mark, and ``claim_act`` reads Redis
+    only. So ``_resume_from_row`` asks ``late_approve.twin_ran`` before it
+    admits the run or claims the stored call. A twin that ran gives None (the
+    old path, a card shows) and moves no row. Mutation: drop the check -> the
+    claim runs."""
+    from acb_skills import late_approve
+    from gateway.routes import agent as agent_routes
+
+    claimed: list[str] = []
+    row = {"agent_name": "orchestrator", "request_id": "r" * 32}
+
+    async def found(_req, _user):
+        return "org", "me@x.test", row, {}
+
+    async def at_rest(_tid):
+        return True
+
+    async def can_run(*_a, **_k):
+        return None
+
+    def claim(*_a, **_k):
+        claimed.append("claim")
+        return None
+
+    async def ran(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(agent_routes, "_resumable_row", found)
+    monkeypatch.setattr(agent_routes, "_thread_at_rest", at_rest)
+    monkeypatch.setattr(agent_routes, "assert_can_run_agent_in_session", can_run)
+    monkeypatch.setattr(pending_ask, "claim_stored_call", claim)
+    monkeypatch.setattr(late_approve, "twin_ran", ran)
+    req = type("R", (), {"thread_id": "t", "request_id": "r" * 32, "answer": "APPROVE"})()
+    assert asyncio.run(agent_routes._resume_from_row(req, object())) is None
+    assert claimed == [], "no row moved"
+    src = inspect.getsource(agent_routes._resume_from_row)
+    assert src.index("await twin_ran(") < src.index("claimed = await asyncio.to_thread")

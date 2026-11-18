@@ -495,7 +495,11 @@ def test_a_stream_that_FAILS_to_open_gives_its_hold_back(
         "model": tier, "stream": True,
         "messages": [{"role": "user", "content": "hi"}]})
 
-    assert r.status_code == 200  # a stream reports failure in-band
+    # AO-3: a stream that no step opens answers 503 `unavailable` before the
+    # first byte. It used to answer 200 with a lone `[DONE]`, which the chat
+    # read as an empty reply. The hold still goes back.
+    assert r.status_code == 503, r.text
+    assert r.json() == {"detail": {"reason": "unavailable"}}
     assert _holds(db, org_id) == 1
     assert _open_holds(db, org_id) == 0, "a failed stream kept its reservation"
     assert _balance(db, org_id) == before

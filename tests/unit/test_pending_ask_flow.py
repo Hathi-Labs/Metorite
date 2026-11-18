@@ -118,6 +118,11 @@ def ask_db(monkeypatch):
     db = _AskDb()
     for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks"):
         monkeypatch.setattr(pending_ask, name, getattr(db, name))
+    # HRD-22b: the second witness of a late grant is a Postgres read, and these
+    # rows are in memory. No twin ran in a scene of this file. A test of the
+    # witness patches its own (test_late_approve_grant.py, and the SQL in
+    # test_late_approve_twin_r8.py).
+    monkeypatch.setattr(pending_ask, "twin_approved_since", lambda *_a, **_k: False)
     pending_ask._reset_for_tests()
     executor._pending_user_input.clear()
     yield db
