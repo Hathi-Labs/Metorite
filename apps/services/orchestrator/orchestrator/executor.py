@@ -41,7 +41,7 @@ from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
-from acb_llm.run_errors import run_error_event
+from acb_llm.run_errors import classify_run_error, run_error_event
 from acb_skills import run_phase as _run_phase
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
@@ -2280,35 +2280,46 @@ def _apply_turn_pack_items(agents: list[Any], tier_run: Any) -> None:
 
 
 def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
-    """*agents*, with the first one on a per-run view that logs the tools of
-    each model request (WS-67 OA-8f, ``executor.request_tools``): the count
-    actually sent and a short hash of the names, with the tools of a context
-    provider and of an MCP server. Only the orchestrator, and never raises.
-    The view comes from ``agent_with_providers``, as the loader's does.
+    """*agents*, with the first one on the per-run views of the stream run.
+    Never raises. Each view comes from ``agent_with_providers``, as the
+    loader's does.
+
+    WS-67 OA-8f: for the orchestrator only, a view that logs the tools of
+    each model request (``executor.request_tools``): the count actually sent
+    and a short hash of the names, with the tools of a context provider and
+    of an MCP server.
 
     HRD-1: the next view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
     the one answer to a call of a tool that the run did not load, through the
     one hook :func:`_unknown_tool_view`. It goes after each seam of
     ``_inject_agent_tools``, so its chat middleware runs inside the hold,
     steer and number-check middleware, and rewrites the messages that they
-    pass on. Only the tier policy view comes later."""
-    if agent_name != _PACK_AGENT or not agents:
+    pass on. Only the tier policy view comes later.
+
+    HRD-1c: the stream run of EVERY agent gets that view, not only the
+    orchestrator. A member chats with the email assistant or the Projects
+    assistant directly, or names an agent in a room, and the member can quote
+    the model's text from any agent. The stream run is never a step: its one
+    caller is the chat route of the gateway, which always names a chat. An
+    agent that is not the orchestrator holds no loader, so its answer names
+    only a tool of its own request and never loads a pack."""
+    if not agents:
         return agents
-    try:
-        from agent_framework import Agent
+    if agent_name == _PACK_AGENT:
+        try:
+            from agent_framework import Agent
 
-        if not isinstance(agents[0], Agent):
-            return agents
-        from acb_skills.tool_guard import LogRequestToolsProvider
+            if isinstance(agents[0], Agent):
+                from acb_skills.tool_guard import LogRequestToolsProvider
 
-        from orchestrator._native_run_context import agent_with_providers
+                from orchestrator._native_run_context import agent_with_providers
 
-        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
-        # HRD-1: the answer to an unknown tool name, last, as before HRD-1b.
-        agents = _unknown_tool_view(agents, step=False)
-    except Exception as exc:  # a log never costs the turn
-        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
-    return agents
+                agents[0] = agent_with_providers(
+                    agents[0], [LogRequestToolsProvider(agent_name)])
+        except Exception as exc:  # a log never costs the turn
+            _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    # HRD-1 and HRD-1c: the answer to an unknown tool name, last, for each agent.
+    return _unknown_tool_view(agents, step=False)
 
 
 def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
@@ -2316,7 +2327,7 @@ def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
     ``acb_skills.unknown_tool.UnknownToolProvider`` (HRD-1, HRD-1b).
 
     The ONE hook of the answer to a call of an unknown tool name. The stream
-    run of the orchestrator (:func:`_log_request_tools_view`) and each batch
+    run of each agent (:func:`_log_request_tools_view`, HRD-1c) and each batch
     run (:func:`_assemble_batch_agents`) call it. A delegated agent, a worker
     and a self-anneal retry run through the batch run, so they get it there.
     The model then reads the HRD-1 text, and never MAF's own text. *step* is
@@ -7179,7 +7190,10 @@ def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
 def _resume_tool_name(resume_call: dict[str, Any] | None) -> str:
     """The tool name of the stored call in *resume_call*, the server's kwarg
     of :func:`run_agent_stream`, or "". Never a key of the event payload
-    (R11)."""
+    (R11). RESUME-4a-2: a declined call gives "", so the run holds no pack
+    for a tool that it must not call again."""
+    if isinstance(resume_call, dict) and resume_call.get("declined") is True:
+        return ""
     stored = resume_call.get("stored") if isinstance(resume_call, dict) else None
     name = stored.get("tool") if isinstance(stored, dict) else None
     return name if isinstance(name, str) else ""
@@ -7277,12 +7291,19 @@ async def _resume_prologue(
     (``resume_note``), and its reply has no user row before it, so the next
     turn would load a session that lacks the reply. A mark before the run
     fails closed: a crash later in the run still leaves a miss, never a
-    stale hit."""
+    stale hit.
+
+    RESUME-4a-2 (task 3478, D-RES-9): with ``declined`` True in
+    *resume_call*, the member declined the card late. After the mark, it
+    closes the old card as ``REJECT`` (the answer that a live decline of a
+    confirmation card closes with), runs NO tool, and makes the run's
+    message the note of a decline (``RESUMED_DECLINED``)."""
     await _mark_native_session_stale(agent_name, thread_id)
     from acb_skills.stored_call import resuming
     from gateway.chat_recovery import (
         RESUMED_APPROVED,
         RESUMED_CHANGED,
+        RESUMED_DECLINED,
         RESUMED_NOT_RUN,
         RESUMED_SPENT,
         RESUMED_UNKNOWN,
@@ -7292,13 +7313,21 @@ async def _resume_prologue(
     stored = resume_call.get("stored")
     request_id = str(resume_call.get("request_id") or "")
     title = str(resume_call.get("title") or "")
+    declined = resume_call.get("declined") is True
     if request_id:
         from acb_skills.ask_tools import CONFIRMATION_RESOLVED
 
         yield _sse({
             "type": "CUSTOM", "name": CONFIRMATION_RESOLVED,
-            "value": {"request_id": request_id, "answer": "APPROVE"},
+            "value": {"request_id": request_id,
+                      "answer": "REJECT" if declined else "APPROVE"},
         })
+    if declined:
+        # No tool lookup and no call: the decline only reaches the model.
+        _log.info("executor.resume_declined", agent=agent_name)
+        _set_run_note(event_payload, compose_resumed_call_note(
+            title, _declined_values(stored), RESUMED_DECLINED))
+        return
     name = str(stored.get("tool") or "") if isinstance(stored, dict) else ""
     tool = _resume_tool_of(agents, name)
     why = _resume_refusal(tool, agent_name, stored)
@@ -7353,8 +7382,26 @@ async def _resume_prologue(
         _log.info("executor.resume_ran", agent=agent_name, tool=name[:60],
                   outcome=state.outcome or "no_card", ok=ok)
         note = compose_resumed_call_note(title, text, outcome)
+    _set_run_note(event_payload, note)
+
+
+def _set_run_note(event_payload: dict[str, Any], note: str) -> None:
+    """Make the server's *note* the run's message, before any words."""
     existing = str(event_payload.get("message") or "").strip()
     event_payload["message"] = f"{note}\n\n{existing}" if existing else note
+
+
+def _declined_values(stored: Any) -> str:
+    """The tool and the values of a declined card, as text for the fence of
+    the note (RESUME-4a-2). The note quotes it as data, never as a call."""
+    if not isinstance(stored, dict):
+        return ""
+    try:
+        values = json.dumps(stored.get("arguments") or {}, ensure_ascii=False,
+                            sort_keys=True)
+    except (TypeError, ValueError):
+        values = ""
+    return f"tool: {stored.get('tool') or ''}\nvalues: {values}"
 
 
 async def run_agent_stream(
@@ -7382,6 +7429,7 @@ async def run_agent_stream(
     #: ``{"stored", "request_id", "title"}``. SERVER-ONLY: only the gateway's
     #: ``_resume_from_row`` sets it, from the claimed row. A key of
     #: *event_payload* never sets it (R11). See :func:`_resume_prologue`.
+    #: RESUME-4a-2: ``"declined": True`` marks a late decline (no tool runs).
     resume_call: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
@@ -8374,6 +8422,9 @@ async def run_agent_stream(
                     thread_id=_caller_thread_id,
                 ):
                     yield _resume_line
+                # HRD-13: the stored call ran with no middleware, so the claim
+                # check abstains on its acts (`answer_claims.RESUMED_KEY`).
+                _derive_ctx(resumed_call=True)
 
             # ── Tier 1: native MAF agent live streaming ─────────────────────
             # The intended ``agent_framework.ag_ui.stream_agent_response`` is not
@@ -8875,6 +8926,27 @@ async def run_agent_stream(
                             yield _sse(_ev)
                         yield _sse(run_error_event(
                             _nexc, run_id=run_id, where="native_maf_stream",
+                        ))
+                        return
+                    if classify_run_error(_nexc) == "ai_unavailable":
+                        # AO-3 (incident 2026-11-17): the Router could not
+                        # answer (a 502 or a 503), so every step of its chain
+                        # refused or it was down. Tier 2 asks the same Router
+                        # for the same chain, so it would only add a second
+                        # wait, and a buffered vendor 400 there reads as
+                        # `model_refused`. The turn ends here, and the chat
+                        # shows the resting card. The held routes go with it.
+                        _held_routes.clear()
+                        _log.warning(
+                            "executor.native_maf_ai_unavailable",
+                            agent=agent_name, run_id=run_id,
+                            error_type=type(_nexc).__name__,
+                        )
+                        for _ev in _close_text_message(_t_state):
+                            yield _sse(_ev)
+                        yield _sse(run_error_event(
+                            _nexc, run_id=run_id, code="ai_unavailable",
+                            where="native_maf_stream",
                         ))
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.

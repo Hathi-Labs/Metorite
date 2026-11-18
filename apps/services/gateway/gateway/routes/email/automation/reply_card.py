@@ -57,6 +57,7 @@ from acb_skills.reply_card import (
 )
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
+    FORMATTING_TEXT_ONLY,
     DraftReplyRequest,
     _store_ai_draft,
     _upsert_reply_draft,
@@ -73,6 +74,7 @@ from gateway.routes.email.core import (
     router,
 )
 from gateway.routes.email.mailbox_access import mailbox_predicate
+from gateway.routes.email.markdown_mail import draft_text, mail_text
 from gateway.routes.email.quoting import strip_for_reading
 from gateway.routes.email.signature import resolve_signature
 from gateway.routes.email.transport.send import (
@@ -1221,6 +1223,9 @@ class _CardRecord(NamedTuple):
     made_at: float | None = None
     #: The card meant to write a draft, and no id reached the record (item 10).
     draft_pending: bool = False
+    #: The held flag of the record, or None when no record was read. Only a
+    #: record that says False sends HTML (task 3605).
+    held: bool | None = None
 
 
 async def _take_reply_record(
@@ -1264,6 +1269,7 @@ async def _take_reply_record(
         str(_as_uuid(str(rec.get("draft_id") or "")) or ""),
         float(made) if isinstance(made, (int, float)) and not isinstance(made, bool) else None,
         rec.get("draft_pending") is True,
+        rec.get("held") is not False,
     )
 
 
@@ -1459,10 +1465,15 @@ async def reply_card_act(
         raise HTTPException(status_code=409, detail={"reason": reason, "message": words})
     subject = _reply_subject(mail.subject)
     if choice.action == "send":
+        # Task 3605: the text of the card is Markdown. Only a card whose record
+        # says that the chat is not held sends HTML. A held chat, and a card
+        # with no record, send the text part alone.
+        html_ok = card.held is False
         res = await send_email(
             SendEmailRequest(
                 account_id=mail.account_id, to=to, cc=cc or None, bcc=bcc or None,
-                subject=subject, body_text=body, reply_to_message_id=req.message_id,
+                subject=subject, body_text=body if html_ok else mail_text(body),
+                body_markdown=html_ok, reply_to_message_id=req.message_id,
             ),
             background, user,
         )
@@ -1482,8 +1493,11 @@ async def reply_card_act(
     draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, body,
                                  **({"bcc": bcc} if derived_bcc else {}))
     _log.info("email.reply_card_saved", reply_all=choice.reply_all)
+    # Task 3605: a draft holds text only (``_write_draft``), and the answer
+    # says when the Markdown formatting of the text did not go into it.
+    lost = {"formatting": FORMATTING_TEXT_ONLY} if draft_text(body)[1] else {}
     return {"ok": True, "action": "save", "to": to, "cc": cc, "mailbox": mail.mailbox,
-            "draft_id": draft_id, **({"bcc": bcc} if bcc else {})}
+            "draft_id": draft_id, **({"bcc": bcc} if bcc else {}), **lost}
 
 
 async def _chat_record(mail: _Mail) -> list[str] | None:
@@ -1515,7 +1529,13 @@ async def _write_draft(
 
     ``progress["provider"]`` becomes True when the provider write returned
     (task 1526, item 11). A fault after that point leaves a provider draft
-    that the rolled-back local row does not name."""
+    that the rolled-back local row does not name.
+
+    Task 3605: the text of a card is Markdown, and a draft holds text only.
+    So the provider draft and the record of ``chat_wrote`` both get the text
+    part of ``markdown_mail.mail_bodies``, the same string. A plain text
+    does not change."""
+    body = draft_text(body)[0]
     async with _tenant_session() as db:
         async with provider_session(db, owner, account_id=mail.account_id) as sess:
             wrote = await _upsert_reply_draft(

@@ -367,6 +367,8 @@ def test_the_chat_draws_each_text_as_a_draft_being_changed(act: str) -> None:
 # until task 1856.
 import json  # noqa: E402
 
+from fastapi import HTTPException  # noqa: E402
+from gateway.routes.email.automation import held_card as hc  # noqa: E402
 from gateway.routes.email.automation import redraft as _rd  # noqa: E402
 
 from tests.unit import _held_card_fakes as F  # noqa: E402
@@ -376,7 +378,8 @@ from tests.unit.test_email_redraft_snapshot import env  # noqa: E402, F401  (a f
 def test_act_of_reads_the_kinds_that_the_revise_knows():
     assert _rd.act_of({"kind": "new-mail"}) == "new"
     assert _rd.act_of({"kind": "new"}) == "new"
-    assert _rd.act_of({"kind": "forward"}) == ""  # joins in HRD-8b-2
+    assert _rd.act_of({"kind": "forward"}) == "forward"  # HRD-8b-2
+    assert _rd.act_of({"kind": "unsubscribe"}) == ""  # a kind that the revise does not read
     assert _rd.act_of({}) == ""
 
 
@@ -500,3 +503,192 @@ def _plain_form_for_changed() -> dict:
     return {"kind": "new", "mailbox": "Work", "subject": "Rates", "body": "Hi",
             "recipients": {"reply": people, "reply_all": people}, "files": [],
             "notices": [], "note": ""}
+
+
+# ═══ HRD-8b-2: a forward card joins the revise path ═══
+#
+# A held forward card is a rows card in the held-card namespace. It names its chat
+# thread, and a chat message that closes it spends it and writes the link with
+# ``act: "forward"``. The next card that can show the line (a new mail) takes the
+# link, and says the act changed. The forward card takes no link itself: it draws
+# no "Draft N" and no line, so it would only use the link up. A reply card has its
+# own record and joins in HRD-8b-3. Mutations (R7):
+#
+# 21. a forward record with no thread: ``test_a_forward_card_names_its_thread``.
+# 22. a revise that refuses a forward card: ``test_a_revised_forward_writes_the_link_with_its_act``.
+# 23. a forward card that leaves a link waiting: ``test_a_chain_of_forwards_leaves_no_stale_link``
+#     and ``test_a_forward_card_takes_a_matching_link_and_shows_nothing``.
+# 24. a snapshot kept for a forward card: ``test_no_snapshot_is_kept_for_a_forward_card``.
+# 25. an agent that never revises a closed forward:
+#     ``test_a_closed_forward_card_is_revised_in_an_edit_run_and_only_there``.
+
+
+async def _forward(thread: str | None = None, **kw: Any) -> dict[str, Any]:
+    from tests.unit.test_email_redraft_snapshot import THREAD
+
+    body = {"message_id": F.MAIL, "to": [F.KNOWN], "cc": [F.COLLEAGUE],
+            "card_thread_id": THREAD if thread is None else thread, **kw}
+    return await hc.held_card(hc.HeldCardRequest(kind="forward", **body), F.user())
+
+
+def test_a_forward_request_may_name_its_thread():
+    hc.HeldCardRequest(kind="forward", message_id=F.MAIL, to=[F.KNOWN], card_thread_id="t1")
+    with pytest.raises(Exception):  # noqa: B017 - pydantic's ValidationError
+        hc.HeldCardRequest(kind="draft", account_id=F.BOX, draft_id="d" * 8, card_thread_id="t1")
+
+
+async def test_a_forward_card_names_its_thread(env, monkeypatch):  # noqa: F811 — a fixture, by name
+    from tests.unit.test_email_redraft_snapshot import THREAD
+
+    card = await _forward()
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{card['card_id']}"])
+    assert rec["kind"] == "forward" and rec["thread"] == THREAD
+    # With the edit flag off the record names no thread, so nothing revises it.
+    from tests.unit import test_email_redraft_snapshot as snap
+
+    snap.edit_card(monkeypatch, "")
+    off = await _forward()
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{off['card_id']}"])
+    assert "thread" not in rec
+
+
+async def test_a_revised_forward_writes_the_link_with_its_act(env):  # noqa: F811
+    from tests.unit.test_email_redraft_snapshot import _revise
+
+    card = await _forward()
+    out = await _revise(card["card_id"])
+    assert out["revised"] is True and out["draft"] == 2 and out["snapshot"] == ""
+    links = [json.loads(v) for k, v in env["redis"].keys.items() if ":card_revised:" in k]
+    assert len(links) == 1
+    assert links[0]["act"] == "forward" and links[0]["cc"] == [F.COLLEAGUE]
+    assert links[0]["to"] == [F.KNOWN] and links[0]["card_id"] == card["card_id"]
+    # The record is spent: a late answer to the revised card finds no card.
+    assert f"cc:{F.ORG}:held-card:{card['card_id']}" not in env["redis"].keys
+
+
+async def test_a_new_mail_after_a_forward_says_the_act_changed(env):  # noqa: F811
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _forward()
+    await _revise(old["card_id"])
+    new = await _card(cc=[F.COLLEAGUE])
+    assert new["revises"] == old["card_id"] and new["draft"] == 2
+    assert new["changed"] == {"act": {"was": "forward", "now": "new"}}
+
+
+async def test_a_forward_card_takes_a_matching_link_and_shows_nothing(env):  # noqa: F811
+    """A forward is a rows card: it draws no "Draft N". It still TAKES a link that fits
+    it, so the link never waits for an unrelated card, and it records the draft number.
+    Mutation: drop ``link_fields`` from ``_forward_card`` -> red."""
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    fwd = await _forward()
+    assert "revises" not in fwd and "draft" not in fwd and "changed" not in fwd  # the answer
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{fwd['card_id']}"])
+    assert rec["revises"] == old["card_id"] and rec["draft"] == 2
+    assert rec["changed"] == {"act": {"was": "new", "now": "forward"}}
+    # The link is spent: it is no longer there for a later card.
+    assert [k for k in env["redis"].keys if ":card_revised:" in k] == []
+    assert "revises" not in await _card()
+
+
+async def test_a_chain_of_forwards_leaves_no_stale_link(env):  # noqa: F811
+    """forward, a chat message, forward again, then a new mail much later: the new mail
+    is not "Draft 2" of the forward. Mutation: drop ``link_fields`` -> red."""
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    first = await _forward()
+    await _revise(first["card_id"])
+    second = await _forward()
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{second['card_id']}"])
+    assert rec["revises"] == first["card_id"] and rec["draft"] == 2
+    assert [k for k in env["redis"].keys if ":card_revised:" in k] == []
+    # A third round counts on: Draft 3.
+    out = await _revise(second["card_id"])
+    assert out["draft"] == 3
+    third = await _forward()
+    assert json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{third['card_id']}"])["draft"] == 3
+    assert "revises" not in await _card()
+
+
+async def test_a_forward_chain_does_not_wipe_a_link_of_other_people(env):  # noqa: F811
+    """Case B of the review: a link of a card to other people stays for that card."""
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    first = await _forward()
+    await _revise(first["card_id"])
+    await _forward()
+    bob = await _card(to=[F.OTHER])
+    await _revise(bob["card_id"])
+    again = await _card(to=[F.OTHER])
+    assert again["revises"] == bob["card_id"] and again["draft"] == 2
+
+
+async def test_a_forward_to_other_people_takes_no_link(env):  # noqa: F811
+    from tests.unit.test_email_redraft_snapshot import _card, _revise
+
+    old = await _card()
+    await _revise(old["card_id"])
+    fwd = await _forward(to=[F.OTHER], cc=[])
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:held-card:{fwd['card_id']}"])
+    assert "revises" not in rec and rec.get("draft", 1) == 1
+    assert (await _card())["revises"] == old["card_id"]  # the link waits for its card
+
+
+async def test_a_forward_of_another_member_or_thread_is_not_revised(env):  # noqa: F811
+    from tests.unit.test_email_redraft_snapshot import OTHER_THREAD, _revise
+
+    card = await _forward()
+    with pytest.raises(HTTPException) as other_thread:
+        await _revise(card["card_id"], thread=OTHER_THREAD)
+    with pytest.raises(HTTPException) as other_member:
+        await _revise(card["card_id"], who=F.OTHER)
+    assert other_thread.value.status_code == 404 and other_member.value.status_code == 404
+    assert f"cc:{F.ORG}:held-card:{card['card_id']}" in env["redis"].keys  # nothing was spent
+
+
+async def test_no_snapshot_is_kept_for_a_forward_card(env):  # noqa: F811
+    from tests.unit.test_email_redraft_snapshot import _keep, _snapshot_keys
+
+    card = await _forward()
+    assert await _keep(card["card_id"]) is False
+    assert _snapshot_keys(env["redis"]) == []
+
+
+async def test_a_closed_forward_card_is_revised_in_an_edit_run_and_only_there(gw, monkeypatch):
+    """The agent spends a closed forward card in a run that can draw the edit card.
+    Mutation: drop the ``_revise_forward_card`` call in ``_held_card`` -> red."""
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: True)
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    posts: list[tuple[str, Any]] = []
+    fail = {"revise": False}
+
+    async def post(path: str, body: Any = None, **_kw: Any) -> Any:
+        posts.append((path, body))
+        if path == "/email/held-card":
+            return {"card_id": "a" * 32, "title": "Forward this email?", "detail": "",
+                    "context": "", "rows": []}
+        if fail["revise"]:
+            raise agents.GatewayError(500, "boom")
+        return {"revised": True, "draft": 2}
+
+    monkeypatch.setattr(agents, "_post", post)
+    # A plain run: no edit card, no thread, no revise.
+    assert await HELD["forward"]() == agents._closed_by_message("forward")
+    assert [p for p, _ in posts] == ["/email/held-card"]
+    assert "card_thread_id" not in posts[0][1]
+    # A run that draws the edit card: the closed forward is spent, and the text is the same.
+    posts.clear()
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: True)
+    monkeypatch.setattr(agents, "_run_thread", lambda: "chat-thread-1")
+    assert await HELD["forward"]() == agents._closed_by_message("forward")
+    assert [p for p, _ in posts] == ["/email/held-card", "/email/new-card/revise"]
+    assert posts[0][1]["card_thread_id"] == "chat-thread-1"
+    assert posts[1][1] == {"card_id": "a" * 32, "card_thread_id": "chat-thread-1"}
+    # A fault of the revise never changes the answer (the link is a label).
+    posts.clear()
+    fail["revise"] = True
+    assert await HELD["forward"]() == agents._closed_by_message("forward")
+    assert posts[-1][0] == "/email/new-card/revise"

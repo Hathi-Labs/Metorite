@@ -8,8 +8,8 @@ found.``, and it could quote that text to the member. That is the symptom
 that the owner saw ("Function query_inbox not found").
 
 ONE hook, ``executor._unknown_tool_view``, makes the provider for every
-path. ``_log_request_tools_view`` calls it for the stream run of the
-orchestrator, and ``_assemble_batch_agents`` calls it for each batch run. A
+path. ``_log_request_tools_view`` calls it for the stream run of each agent
+(HRD-1c), and ``_assemble_batch_agents`` calls it for each batch run. A
 sub-agent runs through the batch run. A run with a parent, or with no chat, is a step
 (``step=True``). Its answer names a tool of the request, or it is
 ``unknown_tool.NOT_IN_STEP``. It never names a pack and never asks a loader.
