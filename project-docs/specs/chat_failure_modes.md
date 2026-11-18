@@ -14,12 +14,19 @@ server half of the run phase, task 3438) is BUILT dark, 2026-11-16. Its flag
 is `CHAT_RUN_PHASE_ORGS`. HRD-5 (a per-turn budget for each read tool, task
 2984) is BUILT dark, 2026-11-16. Its flag is `TOOL_TURN_BUDGET_ORGS`.**
 
+**HRD-1b (the HRD-1 answer on the batch path, task 3230) is BUILT,
+2026-11-17, with no flag. The model of a batch run, a delegated agent and a
+worker reads the HRD-1 answer, and never MAF's own text.**
+
 **HRD-7 (one vocabulary of card outcomes, task 2986) is BUILT, 2026-11-15,
 with no flag. Projects, CRM and email take each card outcome text from
 `ask_tools.CARD_OUTCOMES`.**
 
 **HRD-8a (a closed email card keeps its act, task 2987) is BUILT, 2026-11-16,
-with no flag. HRD-8b (task 3459) is open.**
+with no flag. HRD-8b-1 (task 3459) is BUILT, 2026-11-17, with no flag: the
+revise link keeps the act kind and the Cc, and a changed card shows a line.
+Forward and reply cards join in HRD-8b-2. The owner has two open decisions on
+task 3459 (the words, and whether a changed act takes the link).**
 
 **HRD-9a (task 2988) is BUILT, 2026-11-16, with no flag. A card of a
 root-local tag, custom field or task type names the space and N, the count
@@ -43,6 +50,10 @@ item. §8 Q7 (a bare "this" and the page item) is OPEN and not built.
 from the member's typed words only. The per-turn block and each delegated
 task show the decisions on their own line. HRD-12b (the Undo chip) and
 HRD-12c (the flag flip) are not built.**
+
+**AO-3 (task 3682) is BUILT, 2026-11-17, with no flag.** When the AI cannot
+answer, the chat shows the resting card and not an empty reply. §4.8a holds
+the as-built note, and row I1 shows the state.
 
 Owner ask of 2026-11-12, in chat. Epic task 2978 (project AI Chat Interface).
 It is part of WS-CHAT.
@@ -642,7 +653,67 @@ chat change. For HRD-14d, take the migration number at build time (R1).
 |---|---|---|---|---|
 | H1 | A customer copied by mistake, or the recipients change between drafts | Live: the held card classes each recipient and leaves a new address unticked | HRD-8b shows a change of recipients on a redraft | HRD-8b |
 | H2 | A bulk act that fails part way | Projects stops and says what exists. Email and CRM are unchecked | §7 rule 6 binds each bulk tool | §7 |
-| I1 | Credits run out, or the provider fails, during a run | Live: `runErrors.ts` names the credit and rate cases | No change | none |
+| I1 | Credits run out, or the provider fails, during a run | Live: `runErrors.ts` names the credit and rate cases. Since AO-3 (2026-11-17), a turn that the AI Router cannot answer ends with the code `ai_unavailable`, and the chat shows the resting card (§4.8a) | When every AI step refuses, the member reads what happened and what to do, and the chat saves no empty reply | AO-3 |
+
+### 4.8a As built: the AI cannot answer (AO-3, task 3682)
+
+**The incident.** On 2026-11-17 the Anthropic account ran out of credits, and
+each Router call to it got a 400. The Console answered each chat stream with
+a 200 and a lone `[DONE]`. The agent read that as a finished turn, and the
+fold saved a reply with no text. The member saw an empty bubble. AO-1 (task
+3681) makes the Router fail over on a billing 400. AO-3 covers the case where
+no step can answer.
+
+**The stream contract.** A stream that no step can open gets HTTP 503 with
+the body `{"detail": {"reason": "unavailable"}}`. The Console decides this
+before the response starts, so a status is possible. The body holds no
+vendor text. It writes no usage row and no refusal row. The spend refusals
+keep their 402 and 403 and their reasons. The buffered path is not changed.
+
+**The gateway.** The stream hop reads a Console 5xx as a Router outage, and
+the agent gets the 502 of `_router_unavailable`. A 200 with no bytes, and the
+lone `[DONE]` of an older Console, get the same 502. The two units restart
+apart, so the gateway reads both answers.
+
+**The run.** `acb_llm.run_errors` maps a 502 or a 503 to `ai_unavailable`. A
+refused connection stays `connection`. A Tier 1 stream that fails with
+`ai_unavailable` before any output ends the turn. It does not fall back to
+Tier 2, because Tier 2 asks the same Router again. WhatsApp reads the new code
+as "the AI path is down" (WAC-13), so it still holds the message.
+
+**No empty reply.** A run whose only output is the `ai.route` label saves no
+row. The fold (`chat_fold.LABEL_EVENTS`) and the browser's checkpoint
+(`checkpointIsEmpty`) hold the same rule. The run route saves the member's
+own turn at the start, and AO-3 does not change it.
+
+**The card.** `ChatErrorCard.tsx` draws `ai_unavailable` as a notice with the
+resting elephant (`AiRestingArt.tsx`). The art is our own: a small sad
+elephant beside its unplugged cable. It is drawn in the design tokens, so it
+follows the mode, the density and the accent. It breathes as an idle agent's
+card does, and it stands still under reduced motion. The words are:
+
+- Title: "The AI is taking a breather"
+- Line: "It cannot answer right now. This is on our side, not yours. Your
+  message is saved, so try again in a few minutes."
+- Button: "Try again". It re-sends the member's last message once, through
+  the chat's one retry path.
+
+The card shows no "Show full error" fold, because the raw text names our own
+services. The server logs the ref.
+
+**A reload.** The slice saves no typed failure row. A reload shows the
+member's message with no reply and no card. The `custom_events` column could
+hold a marker with no migration, as `run_interrupted` does. That needs the
+history, the poll merge and the retry to skip the marker row, so it waits for
+a later slice. Task 3692 (AO-3b) holds that marker-row slice.
+
+**Fences.** `tests/unit/test_chat_ai_unavailable.py`,
+`tests/unit/test_customer_console_router.py`
+(`test_a_stream_that_never_starts_writes_no_usage_row`, R8),
+`tests/unit/test_v1_router_streaming.py`, `tests/unit/test_run_errors.py`,
+`evals/trajectories/test_chat_fold_trajectory.py`, and in the workbench
+`src/components/aiRestingCard.test.ts` and
+`src/lib/assistantCheckpoint.test.ts`.
 
 ## 5. The ladder (D211)
 
@@ -660,7 +731,7 @@ chat change. For HRD-14d, take the migration number at build time (R1).
 | Slice | Task | What | Fence (R7) | Tier |
 |---|---|---|---|---|
 | **HRD-0** | 2979 | This spec, the INDEX row and the WS-CHAT row | STE lint | LOW |
-| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-14:** the answer is live. D217 allows the auto-load, and it ships dark behind `CHAT_TOOL_AUTOLOAD` (default off). **Task 3599, BUILT 2026-11-17, with no flag:** a member saw MAF's text for `query_inbox` in the chat. The stream event of a step sent the `exception` of MAF's result, `'Function "query_inbox" not found.'`, before the HRD-1 rewrite. The saved step kept it. `event_translator.tool_result_fields` is now the one mapping of a result for the stream and for a batch sub-run. MAF's result shows `unknown_tool.MEMBER_LINE`, and the step stays failed. A run asks the loader once for each name. A turn with no unknown call is byte-identical. A new step saves no MAF text, so a count of B1 reads the saved steps for `MEMBER_LINE`, which also holds the sub-run calls. The log line `unknown_tool.answered` of the orchestrator misses them. **Not built:** the HRD-1 answer for the model of a sub-run (the worker, a delegated agent), and a client map for steps saved before the fix | `tests/unit/test_unknown_tool_answer.py`, `tests/unit/test_unloaded_pack_tool.py` | STANDARD |
+| **HRD-1** | 2980 | An unknown tool name gets a way through. **BUILT 2026-11-14:** the answer is live. D217 allows the auto-load, and it ships dark behind `CHAT_TOOL_AUTOLOAD` (default off). **Task 3599, BUILT 2026-11-17, with no flag:** a member saw MAF's text for `query_inbox` in the chat. The stream event of a step sent the `exception` of MAF's result, `'Function "query_inbox" not found.'`, before the HRD-1 rewrite. The saved step kept it. `event_translator.tool_result_fields` is now the one mapping of a result for the stream and for a batch sub-run. MAF's result shows `unknown_tool.MEMBER_LINE`, and the step stays failed. A run asks the loader once for each name. A turn with no unknown call is byte-identical. A new step saves no MAF text, so a count of B1 reads the saved steps for `MEMBER_LINE`, which also holds the sub-run calls. **HRD-1b (task 3230), BUILT 2026-11-17, with no flag:** the model of a batch run reads the HRD-1 answer too. One hook, `executor._unknown_tool_view`, makes the provider for the stream run of the orchestrator and for each batch run (`_assemble_batch_agents`): a WhatsApp run, a delegated agent, a worker and a self-anneal retry. A run with a parent, or with no chat, is a step. Its answer names a tool of the request, or it is `unknown_tool.NOT_IN_STEP`. A step never asks a loader and names no pack. Tier 2 of the orchestrator keeps the view of the stream run. The log line `unknown_tool.answered` now comes from the batch runs too, with `step` on a step. **Not built:** the answer for the stream run of an agent that is not the orchestrator (a direct chat, a mention in a room), and a client map for steps saved before the fix | `tests/unit/test_unknown_tool_answer.py`, `tests/unit/test_unloaded_pack_tool.py`, `tests/unit/test_unknown_tool_batch_paths.py` | STANDARD |
 | **HRD-2** | 2981 | Print the hidden ids. Accept a task number and a `kind:` prefix | `tests/unit/test_tool_id_provenance.py` | STANDARD |
 | **HRD-3** | 2982 | One wrapper on each pack tool: text for each failure, and each argument in its declared shape | `tests/unit/test_every_pack_tool_answers_text.py`, `tests/unit/test_tool_argument_shapes.py` | STANDARD |
 | **HRD-4** | 2983 | Search that finds | `tests/unit/test_search_fallback.py` | STANDARD |
@@ -669,7 +740,7 @@ chat change. For HRD-14d, take the migration number at build time (R1).
 | **CS-1** | 2898 | **The first words in 2 seconds** (Rung 1 of the chat ladder, D211). BUILT 2026-11-15, client only. Task 2875 measured production on 2026-11-11: the setup is 0.5 to 1.7 s and the first model request is 5 to 10 s before its first tool, so the chat cannot wait for the model. The line shows from the moment of Send: the run row and the header of the thinking trail both say `FIRST_STEP` ("Reading your message", `lib/runStatus.ts`), one fixed phrase and never model text, where they said "Starting" and "Thinking…". The first real step takes it over. Text before and between tools already streams per chunk from the executor to the screen, and stays in the answer body (the fence pins it). The tool names in plain words are `lib/toolSteps.ts` (`describeToolStep`), the one vocabulary. **Not built, and why:** a line of real server phases ("Setting up", "Asking the model") would touch the output accounting of the executor (`_n_emitted`, `_tier_run.seal()`) and the live and replay fold together, so it is its own HIGH slice; a persona rule for a lead-in sentence needs an eval run. `RUN_STARTED` is still dropped by the BFF route. | `src/lib/firstLine.test.ts` | STANDARD |
 | **HRD-7** | 2986 | One vocabulary of card outcomes. **BUILT 2026-11-15**, with no flag. `ask_tools.CARD_OUTCOMES` holds eight outcomes. Each has one lead, what happened and a next step. `request_confirmation` keeps its answer, and `last_card_outcome` tells why a card did nothing. Projects (`writes._not_confirmed`), CRM (`_not_written`) and email (`_not_done`, `_closed_card_line`, the heads of the redraft texts) take their words from the table. The chat cards draw by the lead (`src/lib/cardOutcomes.ts`), and each keeps its chip of before. A receipt shows a line in the second person and the act (`memberLineOf`), so the member never reads the text for the model. A parked card never draws as "Cancelled". Known edge, on `main` before HRD-7: the step trail labels a declined `create_lead` step "Created a lead". Not built here: a caller of "parked" (RESUME-4) and of "changed since" (HRD-10). The steps of the email redraft texts stay with HRD-8a. Lane cal-tasks owns six persona and pack lines that still call each card that did nothing a decline or a cancel: `agent-crm/instructions.md` lines 94 to 95, `agent-email-assistant/instructions.md` line 291, and `tool_packs.py` lines 224, 322, 419 and 3214. Three more lines quote a text that no tool gives now: `agent-email-assistant/instructions.md` lines 323 to 325 and 456 to 459 look for "Nothing changed. This needs your approval on a card", and the text is now "Not shown: ...". `orchestrator/agents.py` lines 70 to 73 tell the model to repeat "Reply discarded ..." | `tests/unit/test_card_outcome_vocabulary.py`, `src/lib/cardOutcomes.test.ts` | STANDARD |
 | **HRD-8a** | 2987 | The text of a closed email card names its act and its tool. **BUILT 2026-11-16**, text only, with no flag. It sits on HRD-7, because both edit the same texts. `agents._closed_by_message(act)` builds each text: the HRD-7 head, then the steps of the act, with "Its tool is" and the tool. The acts are a reply (`compose_reply`), a new mail and a send (`send_email`), a forward (`forward_email`), a send later (`schedule_send`), a draft send (`send_draft`) and an unsubscribe (`unsubscribe_sender`). A forward names `forward_email` and no other send tool, and it keeps the forward of the same email to the people that the member names. `send_email`, `forward_email` and `schedule_send` no longer return `_CARD_REVISED`, and only `compose_reply` gives it. Each held card takes the act of its kind (`_HELD_KIND_ACTS`), and `_HELD_CARD_REVISED` is gone. The chat still draws each text as "Draft being changed", with the member line alone. **Not built here:** the act kind on the held-card record, the revise link of a forward and a reply, and the line on the new card (HRD-8b). No live eval ran, so the fence proves the text, not what the model does with it | `tests/unit/test_redraft_keeps_act.py` | STANDARD |
-| **HRD-8b** | 3459 | The held-card record keeps its act kind. The revise link (`routes/email/automation/redraft.py`, `link_fields`, near :333 to :391) now covers a forward and a reply, and not only a new mail by To overlap. A new card whose act kind, or whose To and Cc, differ from the card it replaces shows a plain line (`ConfirmationCard.tsx` near :414 to :420, and `src/lib/redraftCard.ts`). **The owner decides two things:** the words of that line, and whether a card with a changed act still takes the revise link. The safe default, with no answer, is that it takes the link and shows the line. The Redis case lives in `TestTheOrderOnARealRedis`, which skips in pr-check until task 1856 adds the Redis service. HIGH, because `email_app_master_plan.md` §18.11 rates the send path HIGH | `tests/unit/test_redraft_keeps_act.py` (the Redis case in `TestTheOrderOnARealRedis`) | HIGH |
+| **HRD-8b** | 3459 | The held-card record keeps its act kind. The revise link (`routes/email/automation/redraft.py`, `link_fields`, near :333 to :391) now covers a forward and a reply, and not only a new mail by To overlap. A new card whose act kind, or whose To and Cc, differ from the card it replaces shows a plain line (`ConfirmationCard.tsx` near :414 to :420, and `src/lib/redraftCard.ts`). **The owner decides two things:** the words of that line, and whether a card with a changed act still takes the revise link. The safe default, with no answer, is that it takes the link and shows the line. The Redis case lives in `TestTheOrderOnARealRedis`, which skips in pr-check until task 1856 adds the Redis service. **HRD-8b-1 is BUILT (2026-11-17):** the link keeps the act kind and the Cc (`redraft.act_of`, `changed_since`), `link_fields` returns `changed`, the form check `ask_tools._new_mail_changed` keeps its shape, and `NewMailCardForm.tsx` draws one line (the words are in `redraftCard.ts`, `changedLinkLine`). The default holds: a card with a changed Cc takes the link and shows the line. The line sits in `NewMailCardForm.tsx`, not in `ConfirmationCard.tsx`. **HRD-8b-2 is open:** a forward and a reply card join the revise path, so a changed act can occur, and the Bcc is not in `changed`. HIGH, because `email_app_master_plan.md` §18.11 rates the send path HIGH | `tests/unit/test_redraft_keeps_act.py` (the Redis case in `TestTheOrderOnARealRedis`) | HIGH |
 | **HRD-9a** | 2988 | Root-local tags, custom fields and task types: one helper, one read, one card line. AGENT-SAFE, no flag. An Opus builder builds it, because the R8 count goes into the shared seam `core.py`. **BUILT 2026-11-16, with no flag.** `core.vocabulary_reach` and `core._TREE_PROJECTS_SQL` count N. The walk goes down from the root to `MAX_DEPTH`, through each folder, and does not stop at `owns_statuses`. Each row of the walk names the organization of the root, beside RLS. A hidden project counts with no bypass. The tenant session reads each row of the tenant, and the count adds no visibility clause. A sealed project and an archived project count, because a change reaches their tasks. `GET /projects/nodes/{project_id}/vocabulary/reach` answers `{root_id, root_name, root_kind, projects}`. `root_kind` is `space` or `personal`. `root_name` is null when the member cannot see the root, and the card then says "the space above it" (Q5). The read is class A (`vocabulary`) in both manifests, and `off_door` `LATER` in the door table. The seven tools name the space in the detail. The three update cards name it in the `project` row of the body too, and the delete cards name it in the impact line. The twelve tools add the line for N of 2 or more, after the detail, as PST-4 does. A failed read gives the space from the walk up the tree, and no N. A walk that fails too gives "the space above it". The rename count of `update_tag` reads `/tags/{id}/impact`, and a failed read gives the count of the list. An org-wide row reads no reach, and its card does not change. Not built here: the count of an org-wide row (HRD-9b). **Done when:** (1) a read returns, for any visible node, the id, name and kind of the root, plus N. N is the count of projects in the tree of the root that hold tasks. A folder and a team space do not count. A hidden project counts. A subproject that owns its statuses still counts, so do NOT reuse `_STATUS_USERS_SQL`, because the status rule stops at `owns_statuses`. The helper walks down over `parent_project_id`, bounded by `MAX_DEPTH`. It adds the root only when the root holds tasks (the `holds_lanes` rule). (2) The seven tools `update_tag`, `update_field`, `update_type`, `delete_tag`, `delete_field`, `delete_type` and `merge_tags` name the SPACE (the root), not the node, when they change a root-local row. When N is 2 or more, the card detail adds "Changes the {tags\|custom fields\|task types} of {space} for {N} projects". (3) The five create cards (`create_type`, `create_field`, `create_tag`, `create_tags`, `create_types`) show the same N. Their receipts do not change, and `test_projects_create_vocab.py` ~:144 pins them. (4) The rename count of `update_tag` comes from `/tags/{id}/impact`, so archived tasks count, as the rewrite does (`tags.py` ~:697). (5) An org-wide row keeps its card of today. A failed read gives the card with the space and no N. (6) No tool gains an argument, and no call that passes today is refused. (7) A node of org A answers 404 to org B, and the trees of org B change no count of org A. **Files:** `apps/services/gateway/gateway/routes/projects/core.py` (a helper beside `status_users` ~:3111), one read route (default `GET /projects/nodes/{project_id}/vocabulary/reach` in `routes/projects/vocabulary.py`), `packages/acb_common/acb_common/app_manifests/projects.py` (a class A row), `apps/skills/skill-projects/skill_projects/writes.py` (~:4698, ~:4715, ~:5074, ~:5224, ~:5321), `guarded.py` (~:1604, ~:1609, ~:1634, ~:1639, ~:1670, ~:1706), `forms.py` (~:2216) and `tests/fences.json`. **Verify:** `uv run pytest tests/unit/test_shared_vocab_guard.py tests/unit/test_projects_agent_writes.py tests/unit/test_projects_create_vocab.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_door_coverage.py tests/unit/test_app_door_coverage.py tests/unit/test_egress_card_bound_pin.py tests/unit/test_card_outcome_vocabulary.py -q`. Then, with a real database, `bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)" && uv run pytest tests/unit/test_shared_vocab_reach_r8.py tests/unit/test_projects_status_set_read_r8.py -v -rs`. Open PRs 2071 and 2094 also change `core.py`, so merge main before the merge. | `tests/unit/test_shared_vocab_guard.py` (hermetic tool-card cases), `tests/unit/test_shared_vocab_reach_r8.py` (R8, two orgs through `tenant_engine_scope`: a folder does not count, the team-space root does not count, a personal root counts, a project the member cannot see counts, a subproject with its own statuses counts, org B adds nothing to org A with a superuser control, and a node of another org answers 404) | STANDARD |
 | **HRD-9b** | 3465 | Org-wide rows get the count. AGENT-SAFE, no flag, after HRD-9a. A tag uses `/tags/{id}/impact`, which the chat already reads. Fields and types need the class X impact read opened to the chat. No "only this space" copy. **Done when:** the card of an org-wide tag, field or type change shows the count. **Verify:** the HRD-9a commands, plus the new test of this slice | `tests/unit/test_shared_vocab_guard.py` | STANDARD |
 | **HRD-9c** | 3466 | A refusal for tags, fields and types, in the style of PST-4. Built only if the owner rules for a refusal (§8, Q1). It runs behind a NEW flag, `SHARED_VOCAB_GUARD_ORGS`. The default is empty, which is off. Do NOT extend `STATUS_SET_GUARD_ORGS`. It is `*` on production, so an extension would switch on at merge with no owner preview. Needs new lines in `tool_packs.py` and `instructions.md` (lane cal-tasks owns them) and new egress pins (`egress.py` ~:1464). The flag flip is OWNER-GATE (`enforcement-flip`). The build is AGENT-SAFE. **Verify:** the HRD-9a commands, plus the new test of this slice | `tests/unit/test_shared_vocab_guard.py`, `tests/unit/test_egress_card_bound_pin.py` | STANDARD |

@@ -3073,6 +3073,8 @@ async def compose_reply(
         copy += f". The mail server refused {_addr_text(res.get('refused'))}, so they got nothing"
     box = res.get("mailbox") or form["mailbox"]
     if res.get("action") == "send":
+        # Task 3594: the reply went. A Save to Drafts sent nothing.
+        await _note_sent(res.get("id"), _sent_people(res), request_id=answer.request_id)
         return f"Sent to {to}{copy}, from {box}.{kept}"
     did = str(res.get("draft_id") or "")
     # The id lets the agent schedule the draft (``schedule_send``, H-375).
@@ -6099,6 +6101,57 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     return refs
 
 
+def _chat_file_refs(attachments: list[str] | None) -> list[str]:
+    """Each bare path of a file of a chat folder, as the ``artifact:`` ref
+    of that file (task 3598).
+
+    ``make_document`` and ``write_artifact`` give the path
+    ``outputs/<thread slug>/<file>``. The gateway takes such a file only as
+    ``artifact:<agent>:<path>``, the one form that pins a digest of the bytes
+    that the card showed. So the tool writes the ref.
+
+    The agent of the ref is the agent whose working dir holds the folder:
+    the dir that ``make_document`` wrote to. It comes from the
+    ``workspace_root`` of ``write_artifact._destination`` (the chat at the
+    top for a delegated run), as ``agent_paths.workspace_blob_key`` reads
+    it: ``state/<agent>/<slug>``. It never comes from ``agent_name``: a pack
+    call runs in ``tool_packs.owner_scope``, which sets ``agent_name`` to the
+    owner of the pack (``email-assistant``) and keeps ``workspace_root``.
+
+    The gateway still checks the room and the digest, and still refuses a
+    bare path. With no bound run, or a working dir outside ``state/`` (an
+    app's own dir), nothing changes. ``agent_paths.thread_file_parts`` is the
+    one shape rule, and any other spec stays as it is."""
+    if not attachments:
+        return attachments
+    try:
+        import importlib
+
+        from acb_skills.agent_paths import state_root, thread_file_parts, workspace_blob_key
+
+        # The package exports the tool under the module's own name, so the
+        # module comes through importlib, as ``acb_skills.documents`` does.
+        wa = importlib.import_module("acb_skills.write_artifact")
+    except ImportError:
+        return attachments
+    root = str(wa._destination(wa.artifact_context())[0].get("workspace_root") or "").strip()
+    if not root or Path(root).parent.parent != state_root():
+        return attachments
+    agent = workspace_blob_key(root)[0]
+    if not agent or ":" in agent:
+        return attachments
+    out: list[str] = []
+    for item in attachments:
+        s = str(item or "").strip()
+        head = s.split(":", 1)[0]
+        named = ":" in s and "/" not in head and "\\" not in head
+        if s and not named and thread_file_parts(s) is not None:
+            out.append(f"artifact:{agent}:{s}")
+        else:
+            out.append(item)
+    return out if out != list(attachments) else attachments
+
+
 # ── A file of a send resolves before its card (task 2491) ───────────────────
 #
 # Defect of 2026-11-09: a chat upload went to send_email, the member approved
@@ -6140,6 +6193,37 @@ def _not_attachable(paths: list[str], why: str = "") -> str:
         head = f"The files {listed} are not ones this mail can attach."
         why = why or "They are not files in your own workspace."
     return f"Not sent. {head} {why} {_FILE_NEXT_STEP}"
+
+
+#: The heads of a gateway refusal that is about a file of the send (task
+#: 3598). The gateway's own words for a file that cannot go: a workspace or
+#: chat file (``send._artifact_refused``), a Metorite file that the member
+#: cannot see, files over the cap, and a reference of no known form.
+_FILE_REFUSAL_HEADS = (
+    "The attachment '", "A named Metorite file", "The files are larger than",
+    "A task file is too large", "Name at most", "A file of a mail goes on",
+)
+
+
+def _refused_text(detail: object) -> str:
+    """``Not sent.`` and the gateway's words. When the words refuse a file,
+    the next step of task 2491 follows, so the model asks the member before
+    a send without the file (task 3598, an ``artifact:`` ref too)."""
+    text = str(detail or "").strip()
+    heads: tuple[str, ...] = _FILE_REFUSAL_HEADS
+    try:
+        from acb_skills.held_card import (
+            HELD_WORKSPACE_REFUSED,
+            METORITE_FILE_REFUSED,
+            WORKSPACE_FILE_REFUSED,
+        )
+
+        heads += (HELD_WORKSPACE_REFUSED, METORITE_FILE_REFUSED, WORKSPACE_FILE_REFUSED)
+    except ImportError:
+        pass
+    if text.startswith(heads):
+        return f"Not sent. {text} {_FILE_NEXT_STEP}"
+    return f"Not sent. {text}"
 
 
 async def _unattachable_files(refs: list[dict[str, Any]]) -> str | None:
@@ -6482,6 +6566,8 @@ async def send_email(
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
                                     bcc=bcc, reply_to_email_id=reply_to_email_id,
                                     attachments=attachments, reply_all=reply_all)
+    # Task 3598: a bare path of a file of this chat goes as its artifact ref.
+    attachments = _chat_file_refs(attachments)
     to = list(to or [])
     cc = list(cc or [])
     reply_notices: list[str] = []
@@ -6575,7 +6661,7 @@ async def send_email(
                                        {"refs": metorite}) or {}).get("files") or [])
         except GatewayError as exc:
             if exc.status in (404, 409, 422):
-                return f"Not sent. {str(getattr(exc, 'detail', '') or exc)}"
+                return _refused_text(getattr(exc, "detail", "") or exc)
             raise
         payload["metorite_files"] = [{"ref": f["ref"], "digest": f["digest"]} for f in shared]
     card_files: list[tuple[str, str]] = (
@@ -6622,6 +6708,9 @@ async def send_email(
             return line
         return _not_done(f"The {verb} was not sent.")
     res = await _post("/email/send", payload)
+    # Task 3594: the mail went, so the chat keeps the record of the send.
+    await _note_sent((res or {}).get("id"),
+                     _not_refused([*to, *cc, *(bcc or [])], res))
     count = len(refs) + len(shared)
     note = f" with {count} attachment(s)" if count else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
@@ -6831,6 +6920,10 @@ def _new_mail_form(prep: dict[str, Any], notices: list[str]) -> dict[str, Any]:
     # message revised. The tool copies the two fields, and sets neither.
     if prep.get("revises"):
         form["revises"], form["draft"] = prep["revises"], prep.get("draft")
+        # HRD-8b: what differs from that card (the act, the To, the Cc). The
+        # gateway computes it, and the tool copies it.
+        if prep.get("changed"):
+            form["changed"] = prep["changed"]
     # §18.11 rule 7: the gateway starts each person that the member unticked
     # on that card unticked, and names them. The tool copies the start and the
     # names, and sets neither. ``clean_reply_form`` checks that each name is a
@@ -6943,7 +7036,7 @@ async def _new_mail_card(
         }) or {}
     except GatewayError as exc:
         if exc.status in (404, 409, 422):
-            return f"Not sent. {getattr(exc, 'detail', '') or exc!s}"
+            return _refused_text(getattr(exc, "detail", "") or exc)
         raise
     card_id = str(prep.get("card_id") or "")
     if not card_id:
@@ -6978,6 +7071,9 @@ async def _new_mail_answered(answer: Any, sender: str, usual: str) -> str:
         if exc.status in (404, 409, 422):
             return f"Nothing was sent. {getattr(exc, 'detail', '') or exc!s}"
         raise
+    if res.get("action") == "send":
+        # Task 3594: the mail went. A Save draft sent nothing.
+        await _note_sent(res.get("id"), _sent_people(res), request_id=answer.request_id)
     return _new_mail_result(res, sender, usual)
 
 
@@ -7276,6 +7372,9 @@ async def forward_email(
     if note:
         payload["note"] = note
     res = await _post("/email/forward", payload)
+    # Task 3594: the forward went, so the chat keeps the record of the send.
+    await _note_sent((res or {}).get("id"),
+                     _not_refused([*to, *(cc or []), *(bcc or [])], res))
     sent = res.get("attachments") or []
     files_note = f" with {len(sent)} attachment(s)" if sent else " with no attachments"
     return (
@@ -7494,7 +7593,7 @@ async def _held_card(
     if answer.responder and member and answer.responder.strip().lower() != member:
         return card_outcome_text(CARD_OTHER_MEMBER, act)
     try:
-        return await _post("/email/held-card/act", {
+        res = await _post("/email/held-card/act", {
             "card_id": answer.request_id,
             "card_thread_id": answer.thread_id,
             "answer": answer.answer,
@@ -7503,6 +7602,9 @@ async def _held_card(
         if exc.status in (404, 409, 422):
             return _held_refusal(exc, lead)
         raise
+    # Task 3594: a send or a forward went. A schedule sent nothing yet.
+    await _note_held_sent(res, answer.request_id, str(body.get("draft_id") or ""))
+    return res
 
 
 async def _held_form_card(
@@ -7536,7 +7638,7 @@ async def _held_form_answered(answer: Any, lead: str) -> dict[str, Any] | str:
     if isinstance(answer, str):
         return answer
     try:
-        return await _post("/email/held-card/act", {
+        res = await _post("/email/held-card/act", {
             "card_id": answer.request_id,
             "card_thread_id": answer.thread_id,
             "answer": answer.answer,
@@ -7545,6 +7647,9 @@ async def _held_form_answered(answer: Any, lead: str) -> dict[str, Any] | str:
         if exc.status in (404, 409, 422):
             return _held_refusal(exc, lead)
         raise
+    # Task 3594: the held new mail went. A Save draft sent nothing.
+    await _note_held_sent(res, answer.request_id)
+    return res
 
 
 def _held_refusal(exc: Exception, lead: str) -> str:
@@ -7569,6 +7674,54 @@ def _held_sent_text(res: dict[str, Any], lead: str) -> str:
     tail = (f" The member left {left} row(s) unticked, and those did not go."
             if left else "")
     return f"{lead}: {'; '.join(parts)}.{tail}"
+
+
+def _sent_people(res: Any) -> list[str]:
+    """The To, Cc and Bcc of the act's answer: the people that the member
+    approved on the card and that the mail server took."""
+    if not isinstance(res, dict):
+        return []
+    return _not_refused(
+        [str(a) for key in ("to", "cc", "bcc") for a in (res.get(key) or [])], res)
+
+
+def _not_refused(people: list[str], res: Any) -> list[str]:
+    """*people* without an address that the mail server refused. The answer
+    of ``/email/send`` and ``/email/forward`` names them in ``refused``, and
+    the record must not say that the mail went to them."""
+    refused = res.get("refused") if isinstance(res, dict) else None
+    if not isinstance(refused, (list, tuple)) or not refused:
+        return list(people)
+    gone = {str(a).strip().lower() for a in refused}
+    return [a for a in people if str(a).strip().lower() not in gone]
+
+
+async def _note_sent(message_id: Any, people: list[str], *,
+                     request_id: str | None = None) -> None:
+    """Task 3594: the sent-mail record of the chat (``chat_organization.md``
+    §16.3). Call it only AFTER the mail went, with the provider id and the
+    approved addresses. Never on a decline, a close or a failure. The next
+    turn reads the record, so it does not send the same mail again. An
+    older platform, the flag off and a fault write nothing. Never raises."""
+    try:
+        from acb_skills.ask_tools import note_sent_message
+    except ImportError:  # an older platform with no record
+        return
+    try:
+        await note_sent_message(str(message_id or ""), list(people or []),
+                                request_id=request_id)
+    except Exception:  # the record never costs the send its answer
+        return
+
+
+async def _note_held_sent(res: Any, request_id: str, draft_id: str = "") -> None:
+    """:func:`_note_sent` for the act of a held card. Only a send and a
+    forward went. A save or a schedule sent nothing. A draft send answers no
+    provider id, so its id is the draft's own, as ``draft:<id>``."""
+    if not isinstance(res, dict) or res.get("action") not in ("send", "forward"):
+        return
+    mid = str(res.get("id") or "") or (f"draft:{draft_id}" if draft_id else "")
+    await _note_sent(mid, _sent_people(res), request_id=request_id)
 
 
 #: The longest subject of a draft from the chat (``drafting.SUBJECT_MAX``).
@@ -7768,6 +7921,9 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             "Not sent. The draft changed after the card showed it. Read the "
             "draft again, and ask the user before you send it."
         )
+    # Task 3594: the draft went. The route answers no provider id, so the
+    # record names the draft's own id.
+    await _note_sent(f"draft:{draft_id}", [a for v in lists.values() for a in v])
     return "Draft sent."
 
 

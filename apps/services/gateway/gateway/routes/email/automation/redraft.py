@@ -344,7 +344,9 @@ def _takes(link: dict[str, Any] | None, member: str, to: Any) -> bool:
     return bool(link.get("many")) or _shares_to(link, to)
 
 
-async def link_fields(user: UserContext, thread_id: str, to: Any) -> dict[str, Any]:
+async def link_fields(
+    user: UserContext, thread_id: str, to: Any, *, cc: Any = (), act: str = "new",
+) -> dict[str, Any]:
     """The link fields of a new-mail card of the thread (§18.11 step 6).
 
     It reads the link, checks it, and only then takes it (P3: compare, then
@@ -388,7 +390,14 @@ async def link_fields(user: UserContext, thread_id: str, to: Any) -> dict[str, A
     draft = link.get("draft")
     if not isinstance(draft, int) or isinstance(draft, bool) or not 1 < draft <= MAX_DRAFT:
         return {"draft": FIRST_DRAFT}
-    return {"draft": draft, "revises": str(link["card_id"])}
+    out: dict[str, Any] = {"draft": draft, "revises": str(link["card_id"])}
+    # HRD-8b: the default is that a card with a changed act still takes the link
+    # (``revises`` and ``draft``) and says what changed. The owner may change
+    # this on task 3459.
+    changed = changed_since(link, act=act, to=to, cc=cc)
+    if changed:
+        out["changed"] = changed
+    return out
 
 
 def form_link(linked: dict[str, Any]) -> dict[str, Any]:
@@ -396,7 +405,8 @@ def form_link(linked: dict[str, Any]) -> dict[str, Any]:
     or nothing for a card that no revise linked."""
     if not linked.get("revises"):
         return {}
-    return {"revises": linked["revises"], "draft": linked["draft"]}
+    return {"revises": linked["revises"], "draft": linked["draft"],
+            **({"changed": linked["changed"]} if linked.get("changed") else {})}
 
 
 #: The detail of each 503 of the revise: nothing was spent, so a retry is safe.
@@ -442,6 +452,7 @@ async def _drop_snapshot(user: UserContext, thread: str, card_id: str) -> None:
 
 async def _write_link(
     user: UserContext, thread: str, card_id: str, draft: int, to: list[str],
+    *, act: str = "", cc: list[str] | None = None,
 ) -> None:
     """Write the link of the thread (§18.11 step 4.4): the revised card, its
     next draft number, and its To in lower case, so only a card to the same
@@ -459,7 +470,10 @@ async def _write_link(
     from acb_common.tenant_redis import organization_scope
 
     member = _member(user)
-    link = json.dumps({"owner": member, "card_id": card_id, "draft": draft, "to": to})
+    # HRD-8b: the link keeps the act kind and the Cc of the revised card, so the
+    # next card can say what changed. The record of the card holds both.
+    link = json.dumps({"owner": member, "card_id": card_id, "draft": draft, "to": to,
+                       "act": act, "cc": cc or []})
     with organization_scope(hc._org_of(user)):
         redis = hc._tenant_redis()
         k = _key(LINK_PART, thread)
@@ -482,8 +496,47 @@ def _to_of(rec: dict[str, Any]) -> list[str]:
     return sorted(a for a in (people or {}).get("to", set()) if a)
 
 
+def _cc_of(rec: dict[str, Any]) -> list[str]:
+    """The Cc of a card record, in lower case and in a fixed order."""
+    people = _people_of(rec)
+    return sorted(a for a in (people or {}).get("cc", set()) if a)
+
+
+#: The act kind of each record kind that the revise reads (HRD-8b). A plain
+#: new-mail card and a held ``new`` card are one act, a new mail. A forward and
+#: a reply join when their cards take the revise (HRD-8b-2).
+ACT_OF_KIND: dict[str, str] = {"new-mail": "new", "new": "new"}
+
+
+def act_of(rec: dict[str, Any]) -> str:
+    """The act kind of the card record: ``new``, or ``""`` for a kind that the
+    revise does not read."""
+    return ACT_OF_KIND.get(str(rec.get("kind") or ""), "")
+
+
 def _strings(value: Any) -> list[str]:
     return [str(a) for a in value if isinstance(a, str)] if isinstance(value, list) else []
+
+
+def changed_since(link: dict[str, Any], *, act: str, to: Any, cc: Any) -> dict[str, Any]:
+    """What differs between the card that the link names and the new card
+    (HRD-8b): its act kind, its To and its Cc. A part that is equal is left
+    out, so an empty answer means "nothing changed". A link that was written
+    before the act and the Cc were kept (an old link) names no act and no Cc,
+    and then nothing is claimed for that part: the card says no more than the
+    gateway knows."""
+    out: dict[str, Any] = {}
+    was_act = link.get("act")
+    if isinstance(was_act, str) and was_act and act and was_act != act:
+        out["act"] = {"was": was_act, "now": act}
+    for name, now in (("to", to), ("cc", cc)):
+        if name not in link:
+            continue
+        was_set, now_set = _lower_set(link.get(name)), _lower_set(now)
+        added, removed = sorted(now_set - was_set), sorted(was_set - now_set)
+        if added or removed:
+            out[name] = {"added": added, "removed": removed}
+    return out
 
 
 # ── Rule 7: the people that the member unticked stay unticked ────────────────
@@ -647,7 +700,7 @@ async def revise_new_mail_card(
        seconds (rule 7, :func:`member_unticked`).
     4. Spend the record (``take_record``, strict), so a late answer finds no
        record and sends nothing.
-    5. Write the link of the thread, ``{card_id, draft, to}``, for 900
+    5. Write the link of the thread, ``{card_id, draft, to, act, cc}``, for 900
        seconds. ``draft`` is the draft number of the old card plus one. The
        link is a label, so a fault here only logs (fix round 6).
     6. Delete the snapshot. A fault here only logs, because the TTL clears it.
@@ -689,7 +742,8 @@ async def revise_new_mail_card(
         _log.warning("email.card_revise_refused", reason="not_spent")
         raise HTTPException(status_code=409, detail=nm.NO_CARD)
     try:
-        await _write_link(user, thread, req.card_id, nxt, _to_of(rec))
+        await _write_link(user, thread, req.card_id, nxt, _to_of(rec),
+                          act=act_of(rec), cc=_cc_of(rec))
     except Exception as exc:  # the class only: the link is a label, so the next card is "Draft 1"
         _log.warning("email.card_link_write_failed", error=type(exc).__name__)
     await _drop_snapshot(user, thread, req.card_id)

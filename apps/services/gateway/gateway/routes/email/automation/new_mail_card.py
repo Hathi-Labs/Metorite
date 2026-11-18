@@ -211,7 +211,7 @@ async def new_mail_card(
     # §18.11 step 6: the gateway, never the tool, links this card to the card
     # of the thread that a chat message revised ("Draft 2"). Only a card to
     # the same people takes the link (fix round 3).
-    linked = await link_fields(user, thread, lists["to"])
+    linked = await link_fields(user, thread, lists["to"], cc=lists["cc"], act="new")
     record = {
         "v": 1, "owner": owner.lower(), "kind": "new-mail", "account_id": req.account_id,
         "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
