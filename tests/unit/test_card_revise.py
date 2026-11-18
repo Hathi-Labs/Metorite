@@ -1198,8 +1198,12 @@ async def test_an_edited_draft_keeps_its_schedule_and_the_card_promises_no_cance
     out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
     assert "cancels" not in card[-1]["context"]
     assert cr.REPLACES_LINE not in card[-1]["context"]
+    # Round 5: the card and the answer say that its send still goes, at T.
+    goes = "Its send scheduled for 2026-11-19T09:00:00+05:30 still goes."
+    assert card[-1]["context"].startswith(
+        "The earlier draft was changed after this chat saved it, so it stays.\n" + goes)
     assert tool.posts == []
-    assert "any send scheduled for it stays as it was" in out
+    assert goes in out
 
 
 async def test_a_5xx_of_the_schedules_never_stops_a_redraft(
@@ -1433,3 +1437,63 @@ async def test_a_failed_delete_says_what_the_cancel_did(tool: _Mailbox, monkeypa
     monkeypatch.setattr(agents, "_cancel_schedules", cancel)
     out = await agents._replace_tail("delete_failed", "d9", agents._ChatPlan("d9", [{}]))
     assert out.endswith("Tell the member. 1 scheduled send(s) could not be cancelled.")
+
+
+# ── 11. Fix round 5 ─────────────────────────────────────────────────────────
+
+_T = "2026-11-19T09:00:00+05:30"
+_GOES = f"Its send scheduled for {_T} still goes."
+
+
+def _queued(did: str) -> list[dict[str, Any]]:
+    return [{"id": "s1", "draft_id": did, "status": "queued", "send_at": _T}]
+
+
+async def test_a_draft_gone_at_the_act_may_have_been_sent(tool: _Mailbox) -> None:
+    """Item 1: a draft that is gone at the act may have gone out. The answer
+    never says that it stays."""
+    out = await agents._replace_tail("created", "d9", agents._ChatPlan("d9", _queued("d9")))
+    assert out == (" The earlier draft d9 is no longer in Drafts. It may have been sent "
+                   "or deleted. Check before you send this one.")
+    # No record (earlier ""): the draft is still there, with its send.
+    rest = await agents._replace_tail("created", "", agents._ChatPlan("d9", _queued("d9")))
+    assert "stay as they were" in rest
+
+
+async def test_a_draft_with_files_names_its_send_that_still_goes(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """Item 2: the files state reads the queued sends, so the card and the
+    answer say that the old text still goes at T."""
+    _flag(monkeypatch, ORG)
+    card.answers.append(True)
+    await _stored_draft(tool, "d9", files=["rates.pdf"])
+    tool.scheduled = _queued("d9")
+    out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert card[-1]["context"].startswith(
+        "The earlier draft has files, so it stays.\n" + _GOES)
+    assert _GOES in out and tool.posts == []
+
+
+async def test_a_file_added_by_hand_before_save_names_the_send(tool: _Mailbox) -> None:
+    """The draft got a file after the card: the act keeps it, and the answer
+    names its send from the plan."""
+    out = await agents._replace_tail("kept_files", "d9", agents._ChatPlan("d9", _queued("d9")))
+    assert "The earlier draft d9 has files, so it stays" in out
+    assert out.endswith(_GOES)
+
+
+async def test_a_5xx_of_the_sends_of_a_kept_draft_is_said(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    _flag(monkeypatch, ORG)
+    card.answers.append(True)
+    await _stored_draft(tool, "d9", files=["rates.pdf"])
+
+    async def broken(_did: str) -> Any:
+        raise agents.GatewayError("Email GET failed (503)", 503)
+
+    monkeypatch.setattr(agents, "_pending_schedules", broken)
+    await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert card[-1]["context"].startswith(
+        "The earlier draft has files, so it stays.\n" + agents._SCHEDULE_UNREAD)

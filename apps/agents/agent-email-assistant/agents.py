@@ -8333,15 +8333,19 @@ async def _plan_chat_draft(
         return _ChatPlan(to=to)
     state = await rule.target_state(did, thread=thread, account_id=account_id,
                                     member=member, read=_read_chat_draft)
-    if state != rule.OK:
-        kept = did if state in (rule.EDITED, rule.FILES) else ""
-        return _ChatPlan(kept=kept, kept_files=state == rule.FILES, to=to)
+    if state == rule.GONE:
+        return _ChatPlan(to=to)
+    # Round 5: the sends of a draft that stays are read too, so the card and
+    # the answer say that its send still goes.
     try:
-        pending = await _pending_schedules(did)
+        pending, unchecked = await _pending_schedules(did), False
     except Exception as exc:  # a 5xx or a fault: the card says so
         _log.warning("email.chat_draft_schedules_unread", error=type(exc).__name__)
-        return _ChatPlan(did, [], unchecked=True, to=to)
-    return _ChatPlan(did, pending, to=to)
+        pending, unchecked = [], True
+    if state != rule.OK:
+        return _ChatPlan(pending=pending, unchecked=unchecked, kept=did,
+                         kept_files=state == rule.FILES, to=to)
+    return _ChatPlan(did, pending, unchecked=unchecked, to=to)
 
 
 #: The head of a line of the new-mail form card, which also has Send. Only
@@ -8354,8 +8358,11 @@ def _replace_lines(plan: _ChatPlan, *, form: bool = False) -> list[str]:
     replace line, then the send that the save cancels. On a *form* card, the
     lines name the Save draft button, because Send replaces nothing. An
     earlier draft with files stays, and the card says so."""
-    if plan.kept_files:
-        return [_KEPT_FILES_LINE]
+    if plan.kept:
+        head = _KEPT_FILES_LINE if plan.kept_files else _KEPT_EDITED_LINE
+        tail = ([_still_goes(plan.pending).strip()] if plan.pending
+                else [_SCHEDULE_UNREAD] if plan.unchecked else [])
+        return [head] + tail
     if not plan.replaces:
         return []
     from acb_skills.card_revise import REPLACES_LINE
@@ -8364,7 +8371,7 @@ def _replace_lines(plan: _ChatPlan, *, form: bool = False) -> list[str]:
     if plan.pending:
         lines.append(_cancel_line(plan.pending).strip())
     elif plan.unchecked:
-        lines.append("This chat could not check whether a send is scheduled for that draft.")
+        lines.append(_SCHEDULE_UNREAD)
     if form:
         lines = [_ON_SAVE + line[0].lower() + line[1:] for line in lines]
     return lines
@@ -8390,6 +8397,17 @@ async def _mark_if_closed(act: str, account_id: str, plan: _ChatPlan) -> None:
 #: The card line when the earlier draft holds files: a save never deletes a
 #: draft with files, so no file is lost (round 4).
 _KEPT_FILES_LINE = "The earlier draft has files, so it stays."
+#: The card line when the read of the queued sends failed.
+_SCHEDULE_UNREAD = "This chat could not check whether a send is scheduled for that draft."
+#: The card line when the member edited the earlier draft (round 5).
+_KEPT_EDITED_LINE = "The earlier draft was changed after this chat saved it, so it stays."
+
+
+def _still_goes(pending: list[dict[str, Any]]) -> str:
+    """" Its send scheduled for T still goes." for a draft that stays, or "".
+    The old text of that draft can still reach people, so the member hears it."""
+    when = ", ".join(str(r.get("send_at") or "") for r in pending)
+    return f" Its send scheduled for {when} still goes." if when else ""
 
 #: The answer when a draft of the same email that the member edited stays.
 _KEPT_DRAFT_EDITED = (
@@ -8404,7 +8422,7 @@ async def _replace_tail(outcome: str, earlier: str, plan: _ChatPlan) -> str:
     the card promised a replace and the save did not do it, the answer says
     plainly that the earlier draft and its send stay."""
     if plan.kept:
-        return _kept_text(plan.kept, plan.kept_files)
+        return _kept_text(plan.kept, plan.kept_files, plan.pending)
     if not plan.replaces:
         return ""
     did = plan.replaces
@@ -8418,11 +8436,15 @@ async def _replace_tail(outcome: str, earlier: str, plan: _ChatPlan) -> str:
                 "place. If the Drafts list still shows two, tell the member."
                 + await _cancel_schedules(plan.pending) + unread)
     if outcome in ("kept_edited", "kept_files"):
-        return _kept_text(did, outcome == "kept_files")
+        return _kept_text(did, outcome == "kept_files", plan.pending)
     if outcome == "delete_failed":
         cancelled = await _cancel_schedules(plan.pending)
         return (f" The earlier draft {did} could not be deleted, so Drafts holds both. "
                 f"Tell the member.{cancelled}")
+    if earlier == did:
+        # Round 5: the draft was gone at the act. The scheduler may have sent it.
+        return (f" The earlier draft {did} is no longer in Drafts. It may have been "
+                "sent or deleted. Check before you send this one.")
     # The card promised a replace, and the save made a new draft.
     when = ", ".join(str(r.get("send_at") or "") for r in plan.pending)
     send = f" and its send scheduled for {when}" if when else ""
@@ -8430,11 +8452,17 @@ async def _replace_tail(outcome: str, earlier: str, plan: _ChatPlan) -> str:
             "Tell the member.")
 
 
-def _kept_text(did: str, files: bool) -> str:
-    """The answer when the earlier draft *did* stays as it is."""
+def _kept_text(did: str, files: bool, pending: list[dict[str, Any]] | None = None) -> str:
+    """The answer when the earlier draft *did* stays as it is. A known send of
+    it is named with its time (round 5)."""
+    goes = _still_goes(pending or [])
     if files:
         return (f" The earlier draft {did} has files, so it stays in Drafts as it was, "
-                "beside this new draft. Any send scheduled for it stays as it was.")
+                "beside this new draft."
+                + (goes or " Any send scheduled for it stays as it was."))
+    if goes:
+        return (" A draft of this email that this chat saved before was changed after "
+                f"it was saved. It stays in Drafts as it was, beside this new draft.{goes}")
     return _KEPT_DRAFT_EDITED
 
 
