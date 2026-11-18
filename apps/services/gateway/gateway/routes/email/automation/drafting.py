@@ -3704,8 +3704,9 @@ class DraftUpsertRequest(BaseModel):
     from_chat: bool = False
     # Task 3605: True when ``body`` is Markdown, as the email assistant writes
     # it. A draft holds text only, so the save keeps the text part of
-    # ``markdown_mail.mail_bodies``: the words with no Markdown marks. The
-    # answer then says ``formatting: "text_only"`` when the body had any.
+    # ``markdown_mail.mail_bodies``: the Markdown as written, less the bidi
+    # controls. The answer says ``formatting: "text_only"`` when the body had
+    # real structure that the draft does not show.
     body_markdown: bool = False
 
 
@@ -3812,17 +3813,17 @@ def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
 def _markdown_draft_text(req: DraftUpsertRequest) -> tuple[DraftUpsertRequest, dict[str, str]]:
     """A save of a Markdown body (task 3605): the request with the text part
     of ``markdown_mail.mail_bodies`` as its body, and the ``formatting`` key
-    of the answer. A draft holds text only, so a body with Markdown marks
-    loses its formatting, and the answer says so. A plain body and a save
-    that keeps the stored body do not change."""
+    of the answer. A draft holds text only, so a body with real structure
+    shows no formatting there, and the answer says so. A save that keeps
+    the stored body does not change."""
     if not req.body_markdown or req.keep_body:
         return req, {}
     from gateway.routes.email.markdown_mail import draft_text
 
     body, lost = draft_text(req.body)
-    if not lost:
-        return req, {}
-    return req.model_copy(update={"body": body}), {"formatting": FORMATTING_TEXT_ONLY}
+    if body != req.body:
+        req = req.model_copy(update={"body": body})
+    return req, ({"formatting": FORMATTING_TEXT_ONLY} if lost else {})
 
 
 @router.put("/drafts")

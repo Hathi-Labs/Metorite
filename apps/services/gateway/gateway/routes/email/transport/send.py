@@ -338,16 +338,27 @@ def _bodies_of(req: SendEmailRequest) -> tuple[str, str | None]:
 
     Task 3605: with ``body_markdown`` the one converter
     (``markdown_mail.mail_bodies``) makes both parts from ``body_text``. A
-    body with no formatting keeps its text and gets no HTML, so it sends as
-    before. ``build_signed_bodies`` then adds the signature once to each part.
-    Without the flag, the request's own parts go as they are."""
+    body with no real structure keeps its text and gets no HTML, so it sends
+    as before. ``build_signed_bodies`` then adds the signature once to each
+    part. Without the flag, the request's own parts go as they are.
+
+    A fault of the converter, an import fault too, sends the text alone, as
+    before task 3605. A card act has spent its answer and its record when it
+    calls this, so a 500 here would lose the member's mail."""
     if not req.body_markdown:
         return req.body_text, req.body_html
     if req.body_html is not None:
         raise HTTPException(status_code=422, detail=MARKDOWN_AND_HTML)
-    from gateway.routes.email.markdown_mail import mail_bodies
+    try:
+        from gateway.routes.email.markdown_mail import mail_bodies
 
-    return mail_bodies(req.body_text)
+        return mail_bodies(req.body_text)
+    except Exception as exc:  # the mail goes as text, never a 500
+        from acb_common import get_logger
+
+        get_logger("gateway.email.send").warning(
+            "email.markdown_failed", error=type(exc).__name__)
+        return req.body_text, None
 
 
 def _as_uuid(value: str) -> str | None:

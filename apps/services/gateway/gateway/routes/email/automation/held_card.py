@@ -1629,8 +1629,8 @@ async def _act_new(
     from gateway.routes.email.transport.send import SendEmailRequest, send_email
 
     attachments, count = await _new_attachments(rec, files, user)
-    # Task 3605: the body is Markdown. A held chat read outside mail, so its
-    # mail goes as text only: no HTML, and each link shows its address.
+    # Task 3605: the body is Markdown. A held run (a ``no_egress`` run, H-236)
+    # sends text only: the Markdown as written, so each link shows its address.
     res = await send_email(SendEmailRequest(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
         bcc=ticked[KIND_BCC] or None, subject=rec.get("subject") or "",

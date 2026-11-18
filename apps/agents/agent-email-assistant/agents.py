@@ -137,18 +137,30 @@ def _lookalike_check(texts: dict[str, Any]) -> tuple[str | None, str | None]:
 #
 # The gateway makes the text part and the HTML part of a sent mail from the
 # Markdown (``gateway/routes/email/markdown_mail.py``). The card shows the
-# Markdown, and an edit on the card keeps it. A draft and a held chat keep
-# the text only. These helpers only add words for the member and the model.
+# Markdown, and an edit on the card keeps it. A draft and a held run (a
+# ``no_egress`` run, H-236) keep the text only. These helpers only add words
+# for the member and the model.
 
 #: The card line of a body with a Markdown mark.
 _FORMATTED_NOTICE = ("This text is Markdown. The sent email shows its headings, lists, "
                      "bold and links.")
 #: The line of a draft save of a body whose formatting did not go into it.
-_DRAFT_TEXT_ONLY = (" The draft holds the text without its formatting, because a "
-                    "draft holds text only. A send from this chat keeps the formatting.")
-#: A Markdown mark: a heading, a list item, a quote or a table row at a line
-#: start, or bold, code or a link anywhere. It only decides the card line.
-_MARKDOWN_MARK = re.compile(r"(?m)^ {0,3}(?:#{1,6} |[-*+] |\d{1,9}[.)] |> |\|)|\*\*|__|`|\]\(")
+#: ``send_draft`` sends the draft text as typed, marks and all.
+_DRAFT_TEXT_ONLY = (" The draft holds the Markdown text as typed, because a draft holds "
+                    "text only. send_draft sends it with its marks. send_email and "
+                    "compose_reply send the formatting.")
+#: The same line in a held run, which sends text only.
+_DRAFT_TEXT_ONLY_HELD = (" The draft holds the Markdown text as typed, because a draft "
+                         "holds text only. A send of it sends that text with its marks.")
+#: A Markdown mark: a heading, a list item or a table rule at a line start, or
+#: code, a link, bold, italics or strikethrough at word edges. It only decides
+#: the card line, so it follows where the gateway makes HTML. An autolink
+#: (``<https://…>``) and a quote (``> ``) are not marks: an autolink alone gets
+#: no HTML, and a quote after the first line gets none either.
+_MARKDOWN_MARK = re.compile(
+    r"(?m)^ {0,3}(?:#{1,6} |[-*+] |\d{1,9}[.)] |\|? *:?-{3,}:? *\|)|`[^`\n]+`|\]\("
+    r"|(?<![\w*])\*\*?[^\s*][^*\n]*(?<!\s)\*\*?(?![\w*])"
+    r"|(?<!\w)_[^\s_][^_\n]*(?<!\s)_(?!\w)|~~[^~\n]+~~")
 
 
 def _formatted_notice(body: str) -> str:
@@ -157,10 +169,13 @@ def _formatted_notice(body: str) -> str:
 
 
 def _draft_text_note(res: Any) -> str:
-    """:data:`_DRAFT_TEXT_ONLY` when the gateway says that a saved draft lost
-    the formatting of its text (``formatting: "text_only"``), else ""."""
+    """The line for a saved draft that lost the formatting of its text
+    (``formatting: "text_only"``), else "". A held run sends text only, so
+    its line does not say that a send keeps the formatting."""
     lost = isinstance(res, dict) and res.get("formatting") == "text_only"
-    return _DRAFT_TEXT_ONLY if lost else ""
+    if not lost:
+        return ""
+    return _DRAFT_TEXT_ONLY_HELD if _egress_held() else _DRAFT_TEXT_ONLY
 
 
 def _egress_held_answer(act: str) -> str:

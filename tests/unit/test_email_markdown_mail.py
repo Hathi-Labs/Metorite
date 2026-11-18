@@ -11,15 +11,21 @@ What this file fences (R7). Each test names the mutation that turns it red.
    table, each with an inline style. ``test_the_converter_*``.
 2. Nothing that loads or runs goes out: a script, a ``javascript:`` or a
    ``data:`` link, an event attribute, remote CSS, a frame, a form, an image,
-   a style with ``url(``. ``test_*_never_*``.
-3. A fixed sample gives a fixed HTML, and that HTML is a fixed point of the
-   sanitizer. ``test_the_golden_*``.
-4. A plain body sends as before: its own text, no HTML. ``test_plain_*``.
+   a style with ``url(``, a bidi control. The final pass alone drops them
+   too. A link whose words name another address is text, in every chat.
+   ``test_*_never_*``, ``test_the_final_pass_*``, ``test_a_link_*``.
+3. The text part is the body as written, and never loses a character. A
+   body with no real structure, or deeper than the parser limit, gets no
+   HTML. A fault of the converter sends the text. ``test_the_text_part_*``,
+   ``test_a_body_deeper_*``, ``test_a_fault_*``.
+4. A fixed sample gives a fixed HTML, and that HTML is a fixed point of the
+   sanitizer. ``test_the_golden_*``. A plain body sends as before: its own
+   text, no HTML. ``test_plain_*``.
 5. The signature joins once, in each part, below the text.
    ``test_the_signature_*``.
 6. The send route, the card acts and the draft saves pass the Markdown on.
-   A held chat and a draft keep the text only. ``test_the_send_*``,
-   ``test_the_*_act_*``, ``test_a_draft_*``.
+   A held run (a ``no_egress`` run, H-236) and a draft keep the text only.
+   ``test_the_send_*``, ``test_the_*_act_*``, ``test_a_draft_*``.
 7. The tool marks its payload as Markdown and tells the member on the card.
    ``test_the_tool_*``.
 
@@ -66,7 +72,7 @@ def test_the_converter_keeps_three_heading_sizes_with_inline_font_sizes() -> Non
     assert '<h2 style="margin: 16px 0 8px 0; font-size: 18px;' in out.html
     assert out.html.count("font-size: 16px") == 2  # a level 4 heading is a level 3
     assert "<h4" not in out.html
-    assert out.text == "One\n\nTwo\n\nThree\n\nFour"
+    assert out.text == "# One\n\n## Two\n\n### Three\n\n#### Four"
 
 
 def test_the_converter_keeps_a_nested_list_in_both_parts() -> None:
@@ -91,19 +97,19 @@ def test_the_converter_keeps_bold_italics_and_strikethrough() -> None:
     out = mm.mail_bodies("A **bold**, an _italic_ and a ~~gone~~ word.")
     assert out.html == ('<p style="margin: 0 0 12px 0">A <strong>bold</strong>, an '
                         "<em>italic</em> and a <s>gone</s> word.</p>")
-    assert out.text == "A bold, an italic and a gone word."
+    assert out.text == "A **bold**, an _italic_ and a ~~gone~~ word."
 
 
 def test_the_converter_keeps_each_link_the_sanitizer_keeps() -> None:
-    """https, mailto and tel stay links. The text part names each address.
-    Mutation: drop the address from ``_link_text`` → red."""
+    """https, mailto and tel stay links. An autolink stays a link beside
+    other structure. The text part is the Markdown as written."""
     out = mm.mail_bodies("See [the report](https://e.test/r), [Priya](mailto:p@e.test) "
                          "and [call](tel:+911234) or <https://e.test/x>.")
     assert out.html is not None
     for href in ("https://e.test/r", "mailto:p@e.test", "tel:+911234", "https://e.test/x"):
         assert f'<a href="{href}">' in out.html
-    assert out.text == ("See the report (https://e.test/r), Priya (p@e.test) "
-                        "and call (tel:+911234) or https://e.test/x.")
+    assert out.text == ("See [the report](https://e.test/r), [Priya](mailto:p@e.test) "
+                        "and [call](tel:+911234) or <https://e.test/x>.")
 
 
 def test_an_http_link_shows_its_words_and_its_address_as_text() -> None:
@@ -112,7 +118,7 @@ def test_an_http_link_shows_its_words_and_its_address_as_text() -> None:
     out = mm.mail_bodies("- [old site](http://e.test/o)")
     assert out.html is not None and "<a" not in out.html
     assert "old site (http://e.test/o)" in out.html
-    assert out.text == "- old site (http://e.test/o)"
+    assert out.text == "- [old site](http://e.test/o)"
 
 
 def test_the_converter_keeps_a_table_with_inline_borders() -> None:
@@ -127,7 +133,7 @@ def test_the_converter_keeps_a_table_with_inline_borders() -> None:
             ) in out.html
     assert ('<td style="border: 1px solid #cccccc; padding: 6px 10px; '
             'text-align: right">10</td>') in out.html
-    assert out.text == "Item | Cost\nA | 10"
+    assert out.text == "| Item | Cost |\n|---|--:|\n| A | 10 |"
 
 
 def test_the_converter_writes_a_quote_and_code_with_kept_tags_only() -> None:
@@ -140,7 +146,7 @@ def test_the_converter_writes_a_quote_and_code_with_kept_tags_only() -> None:
     assert "border-left: 3px solid #cccccc" in out.html
     assert "font-family: Consolas, Menlo, monospace" in out.html
     assert "line 1<br>line 2" in out.html and "<hr style=" in out.html
-    assert out.text == "    a quote\n\nUse x = 1.\n\nline 1\nline 2\n\n---\n\nEnd"
+    assert out.text.startswith("> a quote\n\nUse `x = 1`.")
 
 
 # ── 2. Nothing that loads or runs goes out ──────────────────────────────────
@@ -189,7 +195,7 @@ def test_an_image_never_loads() -> None:
     out = mm.mail_bodies("- ![logo *x*](https://e.test/logo.png)")
     assert out.html is not None and "<img" not in out.html
     assert "e.test/logo.png" not in out.html
-    assert out.text == "- logo x"
+    assert out.text == "- ![logo *x*](https://e.test/logo.png)"
 
 
 def test_a_style_that_loads_a_resource_never_goes_out(monkeypatch) -> None:
@@ -206,9 +212,133 @@ def test_a_character_reference_never_becomes_a_hidden_character() -> None:
     stays text. Mutation: enable the rule → red."""
     out = mm.mail_bodies("- a&#8203;b &#x202E; &amp;")
     assert out.html is not None
-    for hidden in ("​", "‮"):
+    for hidden in ("\u200b", "\u202e"):
         assert hidden not in out.html and hidden not in out.text
     assert out.text == "- a&#8203;b &#x202E; &amp;"
+
+
+def test_the_final_pass_alone_drops_what_loads_or_runs() -> None:
+    """The module's own final pass (``_sanitize``) is the mail allowlist. It
+    drops a script, an ``http:`` link and a style with ``url(`` by itself,
+    whatever the writer gives it. Mutation: ``_sanitize`` as the identity, or
+    any sanitizer but the mail allowlist → red."""
+    hostile = ('<p style="background: url(https://e.test/t.gif)">a</p>'
+               '<script>alert(1)</script><a href="http://a.test">x</a>'
+               '<img src="x" onerror="alert(1)"><iframe src="https://e.test"></iframe>')
+    clean = mm._sanitize(hostile)
+    for bad in ("<script", "alert(1)", 'href="http:', "url(", "<img", "onerror", "<iframe"):
+        assert bad not in clean, bad
+    assert mm._sanitize is clean_signature_html
+    # End to end: an http link never leaves as a link, even if ``_link_kept``
+    # said yes, because the final pass drops its address.
+    assert 'href="http:' not in (mm.mail_bodies("- [x](http://a.test)").html or "")
+
+
+@pytest.mark.parametrize("label_href", [
+    ("https://acme.test/pay", "https://evil.test/pay"),   # one address shown, another used
+    ("acme.test/pay", "https://evil.test/pay"),           # a dotted host, no scheme
+    ("https://acme.test", "https://evil.test"),           # another host
+    ("www.acme.test", "https://evil.test"),
+    ("jane@acme.test", "mailto:mallory@evil.test"),       # another mail address
+    ("b" + chr(0x430) + "nk.test/pay", "https://evil.test/pay"),  # a Cyrillic look-alike
+    ("".join(map(chr, (0x43F, 0x440, 0x438, 0x43C, 0x435, 0x440))) + ".xn/pay",
+     "https://evil.test/pay"),                            # a host with no Latin letter
+])
+def test_a_link_whose_words_name_another_address_is_text(label_href: tuple[str, str]) -> None:
+    """The review of task 3605, P1. A top-level chat that read a stranger's
+    mail is not a held run, so it sends HTML. A link whose words look like an
+    address must go there, or both show as text. Mutation: drop
+    ``_label_misleads`` from ``_inline_html`` → red."""
+    label, href = label_href
+    out = mm.mail_bodies(f"- [{label}]({href})")
+    assert out.html is not None and "<a" not in out.html
+    shown = href[len("mailto:"):] if href.startswith("mailto:") else href
+    assert f"{label} ({shown})" in out.html
+
+
+@pytest.mark.parametrize("label_href", [
+    ("https://acme.test/pay", "https://acme.test/pay"),   # the same address
+    ("acme.test/pay/", "https://acme.test/pay"),          # no scheme, an end slash
+    ("www.x.test", "https://x.test"),                     # ``www.`` and the case
+    ("WWW.X.TEST", "https://x.test/"),
+    ("the plan", "https://evil.test/plan"),               # plain words: a normal link
+    ("jane@acme.test", "mailto:jane@acme.test"),
+    ("Jane", "mailto:jane@acme.test"),
+])
+def test_a_link_whose_words_match_or_name_no_address_stays_a_link(
+    label_href: tuple[str, str],
+) -> None:
+    label, href = label_href
+    out = mm.mail_bodies(f"- [{label}]({href})")
+    assert out.html is not None and f'<a href="{href}">{label}</a>' in out.html
+
+
+@pytest.mark.parametrize("body", [
+    "2*3*4", "5*3 and a*b*c", "__init__", "snake_case", "Jane <jane@x.test>",
+    "<https://x.test>", "a | b", "Re: [JIRA-1] x", "[1]", "a**b**c",
+])
+def test_the_text_part_never_loses_a_character(body: str) -> None:
+    """The review of task 3605, P2. The text part is the body as written, and
+    a body with no real structure gets no HTML. Mutation: build the text part
+    from the render, or count ``a*b*c`` as italics → red."""
+    assert mm.mail_bodies(body) == (body, None)
+    assert mm.mail_bodies(f"- item\n\n{body}").text == f"- item\n\n{body}"
+
+
+def test_marks_inside_a_word_stay_as_typed_in_the_html() -> None:
+    """Beside real structure, ``2*3*4``, ``a**b**c`` and ``__init__`` still
+    show as typed in the HTML. Mutation: render each one as emphasis → red."""
+    out = mm.mail_bodies("- item\n\n2*3*4, a**b**c and __init__")
+    assert out.html is not None
+    assert "2*3*4, a**b**c and __init__" in out.html
+    assert "<em>" not in out.html and "<strong>" not in out.html
+
+
+@pytest.mark.parametrize("body", [
+    "- one\n- two", "## Plan", "**bold** words", "| a | b |\n|---|---|\n| 1 | 2 |",
+    "Use `x = 1`", "See [the plan](https://e.test/p)", "_note_ this",
+])
+def test_real_structure_sends_html_and_its_text_as_written(body: str) -> None:
+    out = mm.mail_bodies(body)
+    assert out.html is not None and out.text == body
+
+
+@pytest.mark.parametrize("body", [
+    "\n".join("  " * i + f"- w{i}" for i in range(25)),
+    "".join("> " * (i + 1) + f"q{i}\n" for i in range(25)),
+    # Four autolinks before it: their words count once, so they hide no cut.
+    # (The parser drops all that follows a cut, so they go first.)
+    " ".join(f"<https://a{i}.test/p/q/r/s>" for i in range(4)) + "\n\n"
+    + "\n".join("  " * i + f"- w{i}" for i in range(25)),
+])
+def test_a_body_deeper_than_the_parser_limit_gets_no_html(body: str) -> None:
+    """markdown-it drops content past 20 levels. That body sends as text,
+    whole. Mutation: drop the word count in ``_convert`` → red."""
+    assert mm.mail_bodies(body) == (body, None)
+
+
+def test_a_bidi_control_goes_from_both_parts() -> None:
+    """U+202A to U+202E and U+2066 to U+2069 can turn the text that a reader
+    sees around. A zero-width space stays: the card refuses hidden text.
+    Mutation: drop ``_BIDI`` → red."""
+    controls = "".join(chr(c) for c in (*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
+    out = mm.mail_bodies(f"- pay{controls} now\u200b")
+    assert out.html is not None
+    for c in controls:
+        assert c not in out.text and c not in out.html
+    assert out.text == "- pay now\u200b"
+    assert mm.mail_bodies(f"Hi{chr(0x202E)} Kim") == ("Hi Kim", None)
+
+
+def test_a_fault_of_the_converter_sends_the_text(monkeypatch) -> None:
+    """A fault gives the text part and no HTML, never a 500 after a card act
+    spent its answer. Mutation: drop the ``try`` in ``mail_bodies`` → red."""
+    def broken(_text: str) -> str:
+        raise RecursionError("deep")
+
+    monkeypatch.setattr(mm, "_convert", broken)
+    assert mm.mail_bodies("- one") == ("- one", None)
+    assert mm.draft_text("- one") == ("- one", False)
 
 
 # ── 3. The golden HTML ──────────────────────────────────────────────────────
@@ -249,10 +379,8 @@ GOLDEN_HTML = (
     '<p style="margin: 0 0 12px 0">See <a href="https://e.test/plan">the plan</a>.'
     "<br>Best,<br>Jane</p>"
 )
-GOLDEN_TEXT = (
-    "Agenda\n\n1. Budget\n   - Q3 numbers\n   - Risks\n2. Hiring\n\n"
-    "Item | Cost\nLaptops | 4\n\nSee the plan (https://e.test/plan).\nBest,\nJane"
-)
+#: The text part is the Markdown as written (the review of task 3605, P2).
+GOLDEN_TEXT = GOLDEN_MD
 
 
 def test_the_golden_sample_gives_the_golden_html_and_text() -> None:
@@ -296,7 +424,9 @@ def test_a_formatted_body_that_quoting_would_cut_gets_no_html() -> None:
     in ``mail_bodies`` → red."""
     out = mm.mail_bodies("- yes\n\nOn Mon, Priya wrote:\n> old")
     assert out.html is None
-    assert out.text.startswith("- yes\n\nOn Mon, Priya wrote:")
+    assert out.text == "- yes\n\nOn Mon, Priya wrote:\n> old"
+    # A Markdown quote after the first line is a quoted thread for the cut too.
+    assert mm.mail_bodies("- one\n\n> a quote\n\nEnd.").html is None
 
 
 # ── 5. The signature joins once ─────────────────────────────────────────────
@@ -325,11 +455,10 @@ def test_the_card_text_cleaners_keep_a_nested_list_and_a_table() -> None:
     assert mm.mail_bodies(cleaned).html == mm.mail_bodies(source).html
 
 
-@pytest.mark.parametrize("markdown", [GOLDEN_MD, "- one\n\n> a quote\n\nEnd."])
+@pytest.mark.parametrize("markdown", [GOLDEN_MD, "> a first quote\n\n```\ncode\n```\n\nEnd."])
 def test_the_signature_joins_once_below_the_text_in_each_part(markdown: str) -> None:
-    """A Markdown quote is not a quoted thread in the text part, so the
-    signature goes below all the text in both parts. Mutation: join the
-    signature twice, or write a quote as ``>`` → red."""
+    """The signature goes below all the text in both parts. Mutation: join
+    the signature twice → red."""
     parts = mm.mail_bodies(markdown)
     assert parts.html is not None
     text, html = build_signed_bodies(SIG, *parts)
@@ -406,6 +535,20 @@ async def test_the_send_route_refuses_markdown_with_html(monkeypatch) -> None:
         await _route_send(monkeypatch, body_text="# x", body_html="<p>x</p>",
                           body_markdown=True)
     assert e.value.status_code == 422 and e.value.detail == send_mod.MARKDOWN_AND_HTML
+
+
+async def test_the_send_route_sends_the_text_when_the_converter_fails(monkeypatch) -> None:
+    """A card act spent its answer and its record before the send, so a fault
+    of the converter sends the text alone, as before task 3605, and never a
+    500. Mutation: drop the ``try`` in ``_bodies_of`` → red."""
+    def broken(_source: str) -> Any:
+        raise ImportError("markdown_it")
+
+    monkeypatch.setattr(mm, "mail_bodies", broken)
+    sent = await _route_send(monkeypatch, body_text=GOLDEN_MD, body_markdown=True)
+    # The same mail as a send with no flag: the text, and the HTML of the text.
+    assert sent == await _route_send(monkeypatch, body_text=GOLDEN_MD)
+    assert sent["body_text"] == f"{GOLDEN_MD}\n\n{SIG_TEXT}" and "<h2" not in sent["body_html"]
 
 
 def test_a_draft_save_keeps_the_text_part_and_says_so() -> None:
@@ -542,12 +685,13 @@ async def _held_act(answer: str) -> dict[str, Any]:
 
 
 async def test_the_held_card_act_sends_the_text_part_only(world) -> None:
-    """A held chat read outside mail, so its mail has no HTML, and each link
-    shows its address. Mutation: send ``body_markdown=True`` → red."""
+    """A held run (a ``no_egress`` run, H-236) sends no HTML. Its text is the
+    Markdown as written, so each link shows its address. Mutation: send
+    ``body_markdown=True`` → red."""
     await _held_act(_answer(body="See [the form](https://e.test/f).\n\n- one"))
     [sent] = world["sends"].mails
     assert sent.body_markdown is False and sent.body_html is None
-    assert sent.body_text == "See the form (https://e.test/f).\n\n- one"
+    assert sent.body_text == "See [the form](https://e.test/f).\n\n- one"
 
 
 async def test_the_held_card_save_keeps_the_text_and_says_so(world) -> None:
@@ -640,8 +784,7 @@ async def test_the_reply_card_act_of_a_held_chat_sends_the_text_part(monkeypatch
     w = _ReplyWorld(monkeypatch)
     await w.act(held=True)
     [sent] = w.sent
-    assert sent.body_markdown is False
-    assert sent.body_text == "Hi Kim,\n\n- Rates for May\n- Terms"
+    assert sent.body_markdown is False and sent.body_text == TEXT_MD
 
 
 async def test_a_reply_record_names_its_held_flag_and_fails_closed(monkeypatch) -> None:
@@ -668,8 +811,9 @@ async def test_the_reply_card_save_says_the_draft_lost_the_formatting(monkeypatc
 
 async def test_the_reply_card_draft_and_its_record_get_the_same_text(monkeypatch) -> None:
     """The chat knows its own draft by its text (``email_ai_drafts``). The
-    provider draft and the record get the same text part. Mutation: drop the
-    conversion in ``_write_draft``, or convert one of the two → red."""
+    provider draft and the record get the same text part: the Markdown as
+    written, less the bidi controls. Mutation: drop ``draft_text`` in
+    ``_write_draft`` (the bidi control stays) → red."""
     wrote: dict[str, str] = {}
 
     @contextlib.asynccontextmanager
@@ -693,10 +837,9 @@ async def test_the_reply_card_draft_and_its_record_get_the_same_text(monkeypatch
     monkeypatch.setattr(rc, "_store_ai_draft", store)
     mail = types.SimpleNamespace(account_id="acc-1", thread_id="t1",
                                  provider_message_id="p1", address=MEMBER)
-    await rc._write_draft(mail, MEMBER, ["kim@contoso.test"], [], "Re: Quote", TEXT_MD,
-                          chat_wrote=True)
-    assert wrote == {"draft": "Hi Kim,\n\n- Rates for May\n- Terms",
-                     "record": "Hi Kim,\n\n- Rates for May\n- Terms"}
+    await rc._write_draft(mail, MEMBER, ["kim@contoso.test"], [], "Re: Quote",
+                          TEXT_MD + chr(0x202E), chat_wrote=True)
+    assert wrote == {"draft": TEXT_MD, "record": TEXT_MD}
 
 
 # ── 7. The tool ─────────────────────────────────────────────────────────────
@@ -715,15 +858,36 @@ def test_the_tool_text_says_the_body_is_markdown_in_the_same_words() -> None:
 
 @pytest.mark.parametrize(("body", "shown"), [
     (TEXT_MD, True), ("## Plan\nText", True), ("1. one\n2. two", True),
-    ("See [x](https://e.test)", True), ("Hi Kim,\n\nThanks.\n\nJane", False),
+    ("See [x](https://e.test)", True), ("Please *note* this", True),
+    ("_note_ well", True), ("~~gone~~ now", True), ("Use `x`", True),
+    ("Hi Kim,\n\nThanks.\n\nJane", False), ("2*3*4 and a*b*c", False),
+    ("__init__ and snake_case", False),
+    # An autolink alone gets no HTML from the gateway, so no card line.
+    ("Jane <jane@x.test> or <https://x.test>", False),
+    # A quote after the first line gets no HTML, and a pipe is no table.
+    ("Hi,\n\n> quote\n\nBye", False), ("| a | b |", False), ("don`t", False),
+    ("| a | b |\n|---|---|\n| 1 | 2 |", True),
 ])
 def test_the_tool_marks_a_card_of_a_markdown_body(body: str, shown: bool) -> None:
+    """The card line shows where the gateway makes HTML. Mutation: drop the
+    italics or strikethrough branch of ``_MARKDOWN_MARK`` → red."""
     assert bool(agents._formatted_notice(body)) is shown
+    gateway_html = mm.mail_bodies(body).html is not None
+    assert gateway_html is shown, body
 
 
-def test_the_tool_says_when_a_draft_lost_the_formatting() -> None:
-    assert agents._draft_text_note({"formatting": "text_only"}) == agents._DRAFT_TEXT_ONLY
+def test_the_tool_says_when_a_draft_lost_the_formatting(monkeypatch) -> None:
+    """A draft holds the Markdown as typed, and ``send_draft`` sends it so. A
+    held run sends text only, so its line names no send with formatting.
+    Mutation: one line for both, or a line that says a draft send keeps the
+    formatting → red."""
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
+    line = agents._draft_text_note({"formatting": "text_only"})
+    assert line == agents._DRAFT_TEXT_ONLY and "send_draft sends it with its marks" in line
     assert agents._draft_text_note({}) == agents._draft_text_note("x") == ""
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    held = agents._draft_text_note({"formatting": "text_only"})
+    assert held == agents._DRAFT_TEXT_ONLY_HELD and "formatting" not in held
 
 
 class _Gw:

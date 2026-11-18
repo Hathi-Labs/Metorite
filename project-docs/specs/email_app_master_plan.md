@@ -21620,7 +21620,25 @@ text part and the HTML part of the mail.
   Each link asks it first. An `https:`, `mailto:` or `tel:` link stays a link. Any other link
   shows its words and its address as text. A Markdown image shows its alt text and loads
   nothing.
-- A body with no formatting keeps its own text and gets no HTML, so it sends as before.
+- A link whose words look like an address must go to that address. The words look like an
+  address when they hold `://`, `www.`, `@` or a dotted host such as `bank.test/pay`. The
+  compare drops the scheme, `www.`, an end slash and the case. When the two differ, the words
+  and the address show as text, with no link. This rule binds every chat.
+- **The text part rule.** The text part is the Markdown as written, and it never loses a
+  character. Only the bidi controls U+202A to U+202E and U+2066 to U+2069 go, from both
+  parts. A held run and a draft send or hold this same text.
+- **The HTML rule.** A body gets HTML only when it holds real structure. A block structure is
+  a heading, a list, a table, a quote, a code block or a rule. An inline structure is inline
+  code, a `[words](address)` link, or bold, italics or strikethrough with its marks at word
+  edges. Any other body gets no HTML, so it sends byte for byte as before. These bodies go
+  as text alone: `2*3*4`, `a*b*c`, `__init__`, `snake_case`, `Jane <jane@x.test>`,
+  `<https://x.test>`, `a | b`, `Re: [JIRA-1] x` and `[1]`. Beside real structure, a mark
+  inside a word and `__` show as typed in the HTML.
+- A body also gets no HTML when the parser cuts it. The parser stops at 20 levels, and the
+  count of kept words then falls below the source. A body gets no HTML when
+  `quoting.split_quoted_text` would cut its text part, too. So a Markdown quote after the
+  first line sends text alone. A fault of
+  the converter also sends the text alone, and `POST /email/send` never answers 500 for it.
 - `signature.build_signed_bodies` adds the signature once to each part, below the text.
 
 **Where the HTML goes.**
@@ -21628,12 +21646,15 @@ text part and the HTML part of the mail.
 - `POST /email/send` takes `body_markdown`. The plain card of `send_email`, the act of the
   new-mail card and the act of the reply card set it. A request with `body_markdown` and
   `body_html` gets 422.
-- A held chat read outside mail, so it sends the text part only, with no HTML. Each link then
-  shows its address. The act of the reply card sends HTML only when the record of the card
-  says `held: false`.
-- A draft holds text only. A save from the chat keeps the text part, with no Markdown marks.
+- A held run sends the text part only, with no HTML. Each link then shows its address. Held
+  means a `no_egress` run (H-236). It is not each chat that read outside mail: a top-level
+  chat binds `no_egress` false, also when it read mail (`acb_skills.egress`). The act of the
+  reply card sends HTML only when the record of the card says `held: false`.
+- A draft holds text only. A save from the chat keeps the text part, the Markdown as written.
   This includes the Save of each card and a new text of `edit_draft`. The save answers
-  `formatting: "text_only"`, and the tool tells the member.
+  `formatting: "text_only"` for a body with real structure, and the tool tells the member.
+  A send of the draft (`send_draft`, send later, the Email app) sends the Markdown as typed,
+  with its marks. In a held run, the answer names no send that keeps the formatting.
 - The card shows the Markdown, and the member edits the Markdown. So an edit on the card keeps
   the formatting. The card of a body with a Markdown mark says so in one line.
 
@@ -21645,6 +21666,11 @@ text part and the HTML part of the mail.
 - A draft that keeps its formatting. A draft holds text only until the composer holds HTML.
 - The tool text of `edit_draft` and of `draft_reply` does not change. `draft_reply` has no
   body, because the server drafter writes the text.
+- The server drafter and the rewriter still ask for plain text, with Markdown links only
+  (`automation/drafting.py`, the two prompt lines "Plain text only"). This is by design: a
+  reply card with no `draft` shows the text of the server drafter, and that text stays plain.
+- A flag for each org. The slice has no flag. With a flag off, the send would go as text
+  alone. The owner decides whether to add one.
 
 **Fence:** `tests/unit/test_email_markdown_mail.py`.
 
