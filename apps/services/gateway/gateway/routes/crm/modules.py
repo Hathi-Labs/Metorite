@@ -690,15 +690,6 @@ FIND_MODULES_MAX = MODULE_CHOICES_MAX
 #: shorter than the engine's own limit, so the search gives what it found.
 FIND_STATEMENT_MS = 2_000
 
-#: The record names that the near lookup reads: the newest records of the
-#: mirrored modules. ``:cap`` is ``name_match.NEAR_VOCABULARY``.
-_NEAR_MODULE_NAMES_SQL = (
-    "SELECT name FROM crm_module_records "
-    "WHERE module = ANY(CAST(:modules AS text[])) AND name IS NOT NULL "
-    "ORDER BY ext_modified_at DESC NULLS LAST, id LIMIT :cap"
-)
-
-
 async def find_module_names(user: UserContext, q: str, limit: int) -> list[dict[str, Any]]:
     """The mirrored records that hold *q*, as the module list holds them: the
     SAME predicate, ``field_sql.find_where`` (``find_engine.md`` §4.4 rule 1).
@@ -748,24 +739,17 @@ async def find_module_names(user: UserContext, q: str, limit: int) -> list[dict[
 
 async def near_module_names(user: UserContext, words: list[str], k: int) -> dict[str, list[Any]]:
     """The record names of the mirrored modules that are near each of *words*
-    (``find_engine.md`` §4.3 ``near``). One read of the newest names, then
-    ``name_match.near_lookup`` scores them in a thread: the one matcher, with
-    its own floor and its own deadline (rule 3)."""
-    import asyncio
-
-    from acb_common import name_match
+    (``find_engine.md`` §4.3 ``near``). ``field_sql.near_record_names`` reads
+    the newest names and scores them with ``acb_common.name_match``: the one
+    matcher, with its own floor and its own deadline (rule 3)."""
+    from gateway.routes.crm.field_sql import near_record_names
 
     refuse_nul([("q", " ".join(words))])
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
         if not mirrored:
             return {}
-        rows = (await db.execute(text(_NEAR_MODULE_NAMES_SQL), {
-            "modules": list(mirrored)[:FIND_MODULES_MAX], "cap": name_match.NEAR_VOCABULARY,
-        })).fetchall()
-    return await asyncio.to_thread(
-        name_match.near_lookup, words, [str(r.name) for r in rows], k,
-        deadline=name_match.scoring_deadline())
+        return await near_record_names(db, list(mirrored)[:FIND_MODULES_MAX], words, k)
 
 
 @router.get("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)
