@@ -790,11 +790,15 @@ class TestStreaming:
             self, client, org_key):
         """AO-3. A vendor's own words can quote the request, so the 503
         carries our reason only. Mutation: answer ``detail=str(failed)``, and
-        the secret word reaches the body."""
+        the secret word reaches the body.
+
+        The refusal is a 402, the empty-account shape. AO-1 lifts a billing
+        400 to 402 only for a vendor's own sentence, so a 400 here would be a
+        terminal refusal (the AO-3 fix round), not an outage."""
         _, key = org_key
 
         class _Billing(Exception):
-            status_code = 400
+            status_code = 402
 
         async def _stub(**kwargs):
             raise _Billing("SECRETWORD9 Your credit balance is too low")
