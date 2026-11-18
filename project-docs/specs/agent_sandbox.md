@@ -213,7 +213,7 @@ records them.
 
 ## 0c. Amendment, 2026-11-19 (D227)
 
-**The ask.** On 2026-11-19 the owner answered the question "Should I plan the
+**The ask.** On 2026-11-19 (IST) the owner answered the question "Should I plan the
 sandbox build by milestones, including the HathiLabs-only pilot on our own
 machine?". The owner wrote:
 
@@ -227,7 +227,7 @@ optional pilot for the HathiLabs org on the home server. The agent reads the
 owner's choice as every org in place of the pilot. `work_plan.md` §3 records
 it as D227.
 
-**The second ask.** Later on 2026-11-19, in the same chat, the owner wrote:
+**The second ask.** Later on 2026-11-19 (IST), in the same chat, the owner wrote:
 
 ```text
 "with the orchestrator for the entire CI/CD session running separately, you should prioritize getting the sandbox plan done because it will greatly improve the functionality of the chat, right? Ensure that this is also prioritized in today's build and is finished by morning, and do whatever is needed to get it live and working."
@@ -292,6 +292,9 @@ the entry `*` is not allowed now, for `tools` and for the compute run.
    (`SELF_SERVE_SIGNUP_ENABLED`, `routes/signup.py`).
    While signup is on, a new org joins the list only by an owner act.
    Or SBX-6 excludes a trial org. A stranger who signs up gets no code sandbox.
+6. Before the SBX-G13 flip, read `/version` too. Confirm that the deployed
+   SHA holds SBX-18. An early `compute:` entry turns every target off, as an
+   early `tools:` entry does.
 
 ### How the design holds when code runs for many orgs
 
@@ -397,10 +400,10 @@ model never retypes rows. The output is framed as untrusted text (§5.7).
 `compute:<org>` in `MAF_CODING_SCOPE`, the one scope seam. The setting
 `COMPUTE_RUN_ORGS` is the hot kill switch only.
 
-It reloads on SIGHUP, and it stops one org or all orgs. It opens nothing
-alone. The flip is gate SBX-G13.
+`COMPUTE_RUN_ORGS` reloads on SIGHUP, and it stops one org or all orgs. It
+opens nothing alone. The flip is gate SBX-G13.
 
-It has the gate id `ws43-sandbox-flip`, which the dev-phase window does not
+SBX-G13 has the gate id `ws43-sandbox-flip`, which the dev-phase window does not
 open (`maf_coding_engine.md` §12). `compute:` and `COMPUTE_RUN_ORGS` take the
 explicit list of today's beta orgs. They take `*` only while self-serve
 signup is off.
@@ -416,9 +419,14 @@ WS43-G2 and WS43-G5. It also needs WS43-G1 (BH-3, the broker's own unit,
 D127.2, §4.6) and a price answer (SBX-G6). The owner decides on task 3786
 between two choices. Choice one: build BH-3 before the 6a′ flip.
 
-Choice two: waive BH-3 for the compute-only rung. Then the key to the box
-sits in the gateway unit. The box holds no long-lived secret and no data at
-rest. The agent does not decide this.
+Choice two: waive BH-3 for rung 6a′ only. This amends §4.6 ("BH-3 still
+binds") for that rung. The key to the box then sits in the gateway unit.
+The cost is this: a gateway compromise gets root on the sandbox box. 
+
+The box
+holds no long-lived secret and no data at rest. The waiver never reaches
+past 6a′. BH-3 is unconditional for 6e and SBX-9. The agent does not decide
+this.
 
 **The price.** SBX-19 writes a `usage_event` at price 0 through the one meter,
 if that is one call. If it is not, SBX-7 does it. Whether beta use is free is
@@ -457,18 +465,18 @@ only. So 6a′ can reach production before 6b and 6e.
 | **6b. The door and a tool (dev-stack preview)** | The chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4, WS-43g (egress proxy, not built) | None |
 | **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first | SBX-3, SBX-5 | None |
 | **6d. Repair, review and metering (dev-stack preview)** | A failed tool gets one repair. A holder of `studio:publish` approves a version. The owner sees credits fall. A step with no `sandbox` price row is refused | SBX-12, SBX-6, SBX-7 | None |
-| **6e. The tools half of the remote backend (dev-stack preview)** | A build, a smoke test and a run of a tool go to a second local daemon under `runsc`. A second org waits while the first holds the box | SBX-15b, BH-3 if the owner did not waive it | The install of BH-3 on the box is WS43-G1 |
+| **6e. The tools half of the remote backend (dev-stack preview)** | A build, a smoke test and a run of a tool go to a second local daemon under `runsc`. A second org waits while the first holds the box | SBX-15b, BH-3 (unconditional) | The install of BH-3 on the box is WS43-G1 |
 | **6f. Production on the dedicated box, the beta orgs** | The HathiLabs org runs a tool on the real box. The same day, `tools:<org>` opens it to each beta org of the list | SBX-9 | SBX-G1, SBX-G6, SBX-G9 to SBX-G11, WS43-G1 to WS43-G5 |
 
-- **The pass test of 6f, before the second flip.** One compute run returns
-  the right output. The run log shows `runsc`. A run of a second org is
-  refused while the HathiLabs run holds the box. Then the owner flips the
+- **The pass test of 6f, before the second flip.** One `tools` run returns
+  the right output. The run log shows `runsc`. A run of a second org waits
+  or answers "busy" while the HathiLabs run holds the box. Then the owner flips the
   list.
 - **The HathiLabs run is verification.** It proves the real box. It is not
   a narrower pilot. The agent reads "the same day" as this order. Both flips
   are owner acts.
 - **Rung 6 runs first (the second ask).** Rung 6a does not wait for rungs 1
-  to 5. The owner put rung 6 ahead of them in the words quoted above.
+  to 5. The agent reads the second ask as putting rung 6 ahead of them.
   SBX-1 needs no owner act except the flag flip of 6a.
 
 ### The critical path to SBX-9
@@ -1753,10 +1761,10 @@ the A2 model.
 | **SBX-13** (task 3428) | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
 | **SBX-14** (task 3429) | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
 | **SBX-15a** (task 3430) | (D187) (D227) **The `docker-remote` backend and the org lock** (§4.6, §0c): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. The lock is one org for each remote box across every target, counted by the broker's org label on the remote daemon. **Done when:** on the dev stack, a run goes to a second local daemon and the outputs come back through the safe opener. A second org waits while the first holds the box. In production mode the broker refuses a `runc` run on that backend | The broker (WS-43c), SBX-8 | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
-| **SBX-15b** (task to be made) | (D227) **The tools half of the remote backend:** a build, a smoke test and a run of a tool go to the remote daemon. It sets `user_tool_max_total` from the measured box and keeps `user_tool_max_per_org` below it (§0c, Gap B) | SBX-4, WS-43g, SBX-15a | AGENT-SAFE. Dark |
+| **SBX-15b** (task 3817) | (D227) **The tools half of the remote backend:** a build, a smoke test and a run of a tool go to the remote daemon. It sets `user_tool_max_total` from the measured box and keeps `user_tool_max_per_org` below it (§0c, Gap B) | SBX-4, WS-43g, SBX-15a | AGENT-SAFE. Dark |
 | **SBX-16** (task 3431) | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
 | **SBX-17** (task 3432) | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
-| **SBX-18** (task 3815) | (D227) **The `compute` broker target** (§0c, rung 6a′): no mount, a `--tmpfs /workspace` workdir and `--network none`. Files go in and out as tar over `docker exec`, parsed in memory. It takes regular files only, with flat names, no links, the types csv, png, json and txt, at most 5 files, 1 MB each and 3 MB in total. Limits: 1 CPU, 1g and pids 64. Its own caps are `compute_max_per_org=1` and `compute_max_total`, default 1. It starts containers through the org lock of SBX-15a. `compute` is in `MAF_CODING_TARGETS`. The flip is `compute:<org>` in `MAF_CODING_SCOPE` (SBX-G13). `COMPUTE_RUN_ORGS` reloads on SIGHUP and is the hot kill switch only, for one org or all orgs. A reaper stops the containers of a de-listed org. A production guard refuses unless the backend is `docker-remote` with `runsc`. **Done when:** SBX-F26 passes | SBX-8 and SBX-15a (tasks 3807, 3430), for the production guard and the lock | AGENT-SAFE. Dark. The flip is **OWNER-GATE** (SBX-G9 to SBX-G11, SBX-G13, WS43-G2, WS43-G5, SBX-G6). WS43-G1 (BH-3) binds it too (D127.2, §4.6). The owner decides on task 3786 to build BH-3 or waive it for this rung |
+| **SBX-18** (task 3815) | (D227) **The `compute` broker target** (§0c, rung 6a′): no mount, a `--tmpfs /workspace` workdir and `--network none`. Files go in and out as tar over `docker exec`, parsed in memory. It takes regular files only, with flat names, no links, the types csv, png, json and txt, at most 5 files, 1 MB each and 3 MB in total. Limits: 1 CPU, 1g and pids 64. Its own caps are `compute_max_per_org=1` and `compute_max_total`, default 1. It starts containers through the org lock of SBX-15a. `compute` is in `MAF_CODING_TARGETS`. The flip is `compute:<org>` in `MAF_CODING_SCOPE` (SBX-G13). `COMPUTE_RUN_ORGS` reloads on SIGHUP and is the hot kill switch only, for one org or all orgs. A reaper stops the containers of a de-listed org. A production guard refuses unless the backend is `docker-remote` with `runsc`. **Done when:** SBX-F26 passes | SBX-8 and SBX-15a (tasks 3807, 3430), for the production guard and the lock | AGENT-SAFE. Dark. The flip is **OWNER-GATE** (SBX-G9 to SBX-G11, SBX-G13, WS43-G2, WS43-G5, SBX-G6). WS43-G1 (BH-3) binds it too (D127.2, §4.6). The owner decides on task 3786 to build BH-3 or waive it for rung 6a′ only. The waiver amends §4.6, and a gateway compromise then gets root on the sandbox box |
 | **SBX-19** (task 3816) | (D227) **The `compute_run(code, inputs, timeout_s)` chat tool** for the main chat agent `orchestrator`. The inputs are `tr_` refs of tool results that the turn holds, from the one spill store `tool_result_spill`, keyed by org, member and thread. A `KeepForCompute` step keeps a ref for every plain-text tool result of the turn, from 1 character to 2 MB, while compute is on for the org. It does not depend on `TOOL_RESULT_SPILL` or on the 24,000-character threshold. Eviction works for each owner. The output is framed as untrusted. Files reach the chat as artifacts through the `write_artifact` seam. A daily cap of 50 runs for each org and 20 for each member goes through `tenant_redis`. Log lines hold no code and no output text. A run writes a `usage_event` at price 0 through the one meter if that is one call, and if not, SBX-7 does it. **Done when:** SBX-F25 passes | SBX-18 | AGENT-SAFE. Dark |
 
 ### 12.1 SBX-1 — the first dispatchable slice
