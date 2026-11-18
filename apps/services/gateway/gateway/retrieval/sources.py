@@ -325,6 +325,10 @@ class Source:
     #: Email). ``resolve_name`` then asks it with one word, the longest, and
     #: its name test checks the other words. The CRM matches word by word.
     names_word: bool = False
+    #: Kinds that :meth:`named_records` keeps beside :attr:`names` (FIND-11).
+    #: They are no closed kind of ``resolve_name``: the module record of the
+    #: CRM. ``names`` stays the one list of the kinds that the tool declares.
+    named_extra: tuple[str, ...] = ()
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -353,7 +357,7 @@ class Source:
         if self.named is None or not self.names or not name or not self.reaches(user):
             return [], False
         found, more = await self.named(user, name, k)
-        return [n for n in found if n.kind in self.names][:k], bool(more)
+        return [n for n in found if n.kind in self.names or n.kind in self.named_extra][:k], bool(more)
 
     async def related_refs(self, user: UserContext, refs: list[str]) -> list[tuple[str, str, str]]:
         """The triples of the refs of :attr:`takes` in *refs*, as *user*
@@ -1258,8 +1262,8 @@ REGISTRY: dict[str, Source] = {
                names_word=True),
         Source("crm", "crm", "CRM", _crm, gate=_crm_open, near=_crm_near,
                related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
-               kinds=CRM_REF_KINDS, names=(*CRM_NAME_KINDS, MODULE_KIND),
-               named=_crm_named),
+               kinds=CRM_REF_KINDS, names=CRM_NAME_KINDS, named=_crm_named,
+               named_extra=(MODULE_KIND,)),
         Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
         Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,

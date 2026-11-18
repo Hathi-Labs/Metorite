@@ -127,7 +127,8 @@ class TestOneSource:
 
     def test_the_crm_source_names_the_module_kind_and_never_relates_or_opens_it(self):
         crm = sources.REGISTRY["crm"]
-        assert sources.MODULE_KIND in crm.names
+        assert sources.MODULE_KIND in crm.named_extra
+        assert sources.MODULE_KIND not in crm.names
         assert sources.MODULE_KIND not in crm.kinds
         assert sources.MODULE_KIND not in crm.takes
         assert crm.near is sources._crm_near
