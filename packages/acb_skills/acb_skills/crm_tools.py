@@ -1893,36 +1893,31 @@ async def crm_aggregate(
     fields: list[str] | None = None,
 ) -> str:
     """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given. To split a total over
-    2 to 5 number fields (for example rent, IP and electricity), give fields
-    with every key in ONE call, never one call for each field. Quote the
-    Display value of a total as written. When the answer starts with FIRST,
-    tell the member that line before the total. entity is 'leads',
-    'deals', 'contacts', 'organizations' or 'module:<api_name>'
-    (crm_list_modules). measure is 'count', 'sum_amount' or 'weighted'
-    (deals: amount times the effective probability, open and ongoing stages
-    only), or 'sum', 'avg', 'min' or 'max' of the number field named by
-    field. The group is optional: give no group_by and no group_field for
-    one total over every record that the filters match (for example the sum
-    of an amount field for one month). Or give one of them. group_by is
-    'status', 'owner', 'pipeline', 'source', 'created_month',
-    'updated_month' or 'close_month' (a module: 'owner', 'created_month',
-    'updated_month'). group_field is a picklist, boolean, lookup or date
-    field; a date needs bucket 'month', 'quarter' or 'year'. A text field
-    cannot group: filter on it instead. Field keys and what each can do come
-    from crm_list_fields. A core entity takes the filters of
-    crm_list_records. A module takes field_filters: {key: value}, or
+    server computes every number: report them as given, and quote the
+    Display value as written. To split a total over 2 to 5 number fields,
+    give fields with every key in ONE call. When the answer starts with FIRST, tell the member that line
+    before the total. entity is 'leads', 'deals', 'contacts',
+    'organizations' or 'module:<api_name>' (crm_list_modules). measure is
+    'count', 'sum_amount' or 'weighted' (deals: amount times the
+    effective probability, open and ongoing only), or 'sum', 'avg', 'min' or
+    'max' of the number field named by field. The group is optional: with no
+    group_by and no group_field you get one total over every record that
+    the filters match. Or give one of them. group_by is 'status', 'owner', 'pipeline', 'source',
+    'created_month', 'updated_month' or 'close_month' (a module: 'owner',
+    'created_month', 'updated_month'). group_field is a picklist, boolean,
+    lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
+    A text field cannot group. Field keys come from crm_list_fields. A core
+    entity takes the filters of crm_list_records. A module takes field_filters: {key: value}, or
     {'key.from': date, 'key.to': date} for a date field, or
     {'key.from': N, 'key.to': M} for a number field. Both ends count, and
     text such as 'NA' counts as no value. A text or lookup filter matches
-    the exact stored value or name, or the record id.
+    the exact value, name or record id.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
     '@parent' (crm_list_modules names the key fields). On a module, term is
     the member's own word for the figure (for example 'service fees'): the
-    server maps it to one field the same way each time, and give no field
-    with it. When two fields give different totals, the answer says to ask
-    the member first, with both totals."""
+    server maps it to one field. Give no field with it. When two
+    fields give different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
         q=q, status=status, owner=owner, pipeline_id=pipeline_id,
