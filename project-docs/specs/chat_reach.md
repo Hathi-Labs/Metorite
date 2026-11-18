@@ -30,7 +30,7 @@ workflows, and published skills. Each has limits, listed below.
 2. **Plugins** (task 3562). The orchestrator has no reader of a plugin.
 3. **Seven key connectors:** Apollo, Google Maps, Instantly, Apify,
    Anymailfinder, Google Sheets and SMTP (task 3562).
-4. **A skill that names an MCP tool or an integration action** (task 3493).
+4. **A skill that names an MCP tool or an integration action** (TOF-5a, task 3423).
    Such a skill fails to load.
 
 **Three limits cut across the table:**
@@ -38,8 +38,10 @@ workflows, and published skills. Each has limits, listed below.
 - **One surface.** Packs, `find_tools` and skills load only in the member's own
   solo chat on the web (task 3494). WhatsApp, a shared room and a delegated run
   load none.
-- **One mail rule.** A run that holds the email pack gets no MCP server
-  (OA-7b). The fix is CSY-4 (task 3403), and it is not built.
+- **One mail rule.** A run that holds a mail pack holds no MCP tool (OA-7b),
+  and that rule stays (D-CSY-5). CSY-4 (task 3403) is not built. It changes
+  only the precedence of a sticky mail pack, when the words of the turn name
+  the server and not mail.
 - **One narrow finder.** `find_tools` searches the Studio packs only
   (`PACK_ONLY_OWNERS`). It does not find a CRM, mail or MCP tool (WS-TOF,
   task 3203 for MCP).
@@ -66,12 +68,12 @@ read a production flag value, so the table gives the default.
 | Org MCP server | Connections, MCP | `_inject_mcp_servers` (`_tool_injection.py:4923`) calls `attach_mcp_tools`. No card for a member run (MCP-NC1) | `MAF_MCP_ORGS`: empty by default, `*` in production on 2026-11-15 | partial | G1, G3, G4 |
 | Published Studio skill | Studio, Skills | F3: `_turn_with_skills` (`_tool_injection.py:4375`) loads a skill by name (`skill_packs.matches`) or by its description (TOF-1c). TOF-1b brings the packs of its tools | `STUDIO_ORGS`, `STUDIO_CHAT_TOOLS_ORGS` (empty by default), the pack flags | partial | G2, G3, G5 |
 | Skill offer ("Save this as a skill?") | Chat | A card after a finished turn (TOF-1d) | `STUDIO_SKILL_OFFER_ORGS`, `STUDIO_ORGS` | yes, dark | none |
-| Studio app, its records | Studio | Packs `studio`, `studio-more`. Granted apps give `app_<slug>_<action>` tools (`skill_families.py:275`). `search_company` source `studio` | `STUDIO_ORGS`, pack flags, an app grant | partial | G2, G7 |
+| Studio app, its records | Studio | Packs `studio`, `studio-more`. Granted apps give `app_<slug>_<action>` tools (`skill_families.py:279-291`). `search_company` source `studio` | `STUDIO_ORGS`, pack flags, an app grant | partial | G2, G7 |
 | Studio workflow | Studio, Workflows | Family `workflows`: `list_workflows`, `run_workflow`, `get_workflow_run`. Pack `studio-workflows` publishes and pauses | Pack `studio-workflows` is dark and owner-only | yes (run), partial (publish) | G2 |
 | API key, custom API | Integrations, API keys | None. A key feeds scripts only | none | no | G6 |
 | Plugin | Integrations, Plugins | None. The orchestrator reads no plugin (`gateway/routes/integrations.py:2395` lists them) | none | no | G6 |
 | Key connector: Apollo, Google Maps, Instantly, Apify, Anymailfinder, Google Sheets, SMTP | Connections | None | none | no | G6 |
-| Key connector: SerpAPI | Connections | `web_search` may use it | `WEB_RESEARCH` flag | yes | none |
+| Key connector: SerpAPI | Connections | `web_search` may use it | `WEB_RESEARCH_ORGS` and `SERPAPI_API_KEY` | yes | none |
 | Outside AI agent | Integrations, AI agents | By design, none. An outside agent calls the platform MCP and acts as the member | `MCP_*` flags of WS-55 | by design | none |
 | Built-in skills (families) | Integrations, Built-in skills | The `SKILL_FAMILIES` of `acb_skills` | admin toggles | yes | none |
 
@@ -84,18 +86,18 @@ several slices). Tier is the review tier of `next-ticket.md`.
 
 | Id | Gap | Evidence | Owner task | Size | Tier | Owner decision | Recommended next slice |
 |---|---|---|---|---|---|---|---|
-| G1 | A turn that holds the email pack gets no MCP server. A sticky mail pack stays for 8 turns | `_holds_untrusted_pack` returns early in `_inject_mcp_servers` (`_tool_injection.py:4854`, `:4923`) | CSY-4, task 3403 (planned, not built). CSY-1 task 3400 gives the brief | M | HIGH | Yes, D-CSY-2 (default yes) | CSY-4, then CSY-1 (§3.1) |
-| G2 | Packs, `find_tools` and skills load only in a solo web chat. WhatsApp, a shared room and a delegated run get none | `_start_pack_turn` returns None (`executor.py:2055`) | Task 3494 | M | HIGH | Yes (egress and cost on WhatsApp) | §3.2 |
-| G3 | A skill cannot name an MCP tool or an integration action. It fails to load with `action_unserved` | `skill_packs.action_tool` returns None for any other name (`skill_packs.py:223`) | Task 3493 | M | HIGH | No (D224 rung 1 covers it) | §3.3 |
+| G1 | A turn that holds a mail pack holds no MCP tool (OA-7b, kept by D-CSY-5). A sticky mail pack stays for 8 turns, so a later turn about the server alone also loses it | `_holds_untrusted_pack` returns early in `_inject_mcp_servers` (`_tool_injection.py:4854`, `:4923`) | CSY-4, task 3403 (planned, not built). CSY-1 task 3400 gives the brief | M | HIGH | Yes, D-CSY-2 (default yes) | CSY-4, then CSY-1 (§3.1) |
+| G2 | Packs, `find_tools` and skills load only in a solo web chat. WhatsApp, a shared room and a delegated run get none | `_start_pack_turn` returns None (`executor.py:2055`) | Task 3494 | M | HIGH | No for the dark build. The flip needs the owner's word | §3.2 |
+| G3 | A skill cannot name an MCP tool or an integration action. It fails to load with `action_unserved` | `skill_packs.action_tool` returns None for any other name (`skill_packs.py:223`) | TOF-5a, task 3423 (3493 records it) | M | HIGH | No (D224 rung 1 covers it) | §3.3 |
 | G4 | The chat does not know what a server holds, and `find_tools` does not list MCP tools | No `CONNECTED_SYSTEMS_ORGS` setting in `settings.py`. The finder owners are `PACK_ONLY_OWNERS` (`tool_packs.py:2985`) | CSY-1 (3400), CSY-5 (3405), CSY-6 (3406), TS-9 (3203) | M each | STANDARD, CSY-6 HIGH | D-CSY-1 and D-CSY-3 (default yes) | Already planned. Do not re-plan |
 | G5 | A skill reaches only the member who owns it, or the org by a visibility that no route sets | `list_loadable` loads an `org` skill, and no route sets `visibility` (`agent_sandbox.md` §0b) | TOF-4a, task 3421 | M | STANDARD | No | Already planned |
 | G6 | API keys, custom APIs, plugins and seven key connectors have no chat tool | The fences name them as `gap` | Task 3562 | L | HIGH (egress, secrets) | Yes: which keys, read or write, spend | A spec first (§3.4) |
-| G7 | A Studio app that the member builds reaches the chat only by a grant or the builder pack | `skill_families.py:275` grants by `app_grants` | Part of WS-STU | S | STANDARD | No | A check that a new app shows in chat (see §4) |
+| G7 | A Studio app that the member builds reaches the chat only by a grant or the builder pack | `skill_families.py:279-291` grants by `app_grants` | Part of WS-STU | S | STANDARD | No | A check that a new app shows in chat (see §4) |
 | G8 | `find_tools` searches the Studio packs only. A CRM, mail or calendar tool must load with its pack | `_find_candidates` (`_tool_injection.py:4751`) | WS-TOF (a3) | M | HIGH | No | Already planned |
 | G9 | Google Drive is read only. The chat cannot create or edit a Drive file | `sources.py:1203` has a read source and no write tool | None filed | M | HIGH | Yes (a write to a third party) | File a task when members ask |
 | G10 | Calendar writes. The chat reads synced events and plans the day. It does not create an event on Google or Outlook | CE-15 reads events only | WS-CAL | M | HIGH | Yes (a write to a third party) | WS-CAL owns it |
 
-**Already filed:** task 3493 is G3. Task 3494 is G2. Task 3562 is G6.
+**Already filed:** TOF-5a (task 3423) builds G3, and task 3493 only records it. Task 3494 is G2. Task 3562 is G6.
 
 Task 3463 is closed by CE-15 S1 and S2. The chat now reads synced events
 through `my_tasks_list_events`. Task 3440 holds this matrix.
@@ -152,7 +154,7 @@ cannot ask a held write.
 
 ### 3.3 G3: a skill that names an MCP tool
 
-Task 3493. The catalog of actions has no row for an MCP tool.
+TOF-5a, task 3423, builds this slice. This lane does not. The catalog of actions has no row for an MCP tool.
 
 - **Change:** `skill_packs.action_tool` maps `mcp:<server>.<tool>` to the tool
   name, only when the server is granted and its tool is approved (STU-B1b).
