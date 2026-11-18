@@ -806,7 +806,8 @@ _KIND_FIELDS: dict[str, frozenset[str]] = {
     "draft": frozenset({"account_id", "draft_id"}),
     "schedule": frozenset({"account_id", "draft_id", "send_at"}),
     "unsubscribe": frozenset({"account_id", "email", "emails"}),
-    "forward": frozenset({"account_id", "message_id", "to", "cc", "bcc", "note", "files"}),
+    "forward": frozenset({"account_id", "message_id", "to", "cc", "bcc", "note", "files",
+                          "card_thread_id"}),
     "new": frozenset({"account_id", "to", "cc", "bcc", "note", "subject", "files",
                       "card_thread_id"}),
 }
@@ -1380,9 +1381,22 @@ async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, An
     subject = " ".join(str(mail.subject or "(no subject)").split())
     context = "\n".join([f"Forwarding the email: {subject}", "",
                          "Your note above it:", note or "(no note)"])
+    # HRD-8b-2: the record names its chat thread, so a chat message that closes
+    # this card can spend it and link the next card (``redraft.revise_new_mail_card``).
+    # This card draws no "Draft N" and no line (it is a rows card), but it TAKES a
+    # link that fits it, so a link never waits for an unrelated card to pick it up.
+    # The record keeps the draft number, so a chain of forwards counts its drafts.
+    from acb_skills.reply_card import edit_card_on
+    from gateway.routes.email.automation.redraft import link_fields
+
+    edit = edit_card_on(_org_of(user))
+    thread = req.card_thread_id.strip() if edit else ""
+    linked = (await link_fields(user, thread, lists["to"], cc=lists["cc"], act="forward")
+              if thread else {})
     return await _person_card(user, req, rows, context, {
         "kind": "forward", "account_id": account_id, "message_id": req.message_id,
         "note": note, "subject": subject,
+        **({"thread": thread} if thread else {}), **linked,
     }, title="Forward this email?", mailbox=me)
 
 
