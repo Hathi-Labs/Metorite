@@ -8,7 +8,8 @@ What breaks this fence: the organization comes from input, a run with no
 tenant starts a container, a container of org A serves org B, a mount lies
 outside the allowed roots, or the eviction breaks the fair share. A full org
 stops its own oldest idle container. A full box stops the oldest idle
-container of any org.
+container of any org. An org holds more than half the box (D227 gap B), or a
+remote box serves two orgs at once (SBX-15).
 """
 from __future__ import annotations
 
@@ -354,6 +355,67 @@ async def test_the_caps_come_from_settings(
     with bound_run(ORG_A, thread="a2"):
         await broker.acquire()
     assert docker.removals() == [a1.container_id]
+
+
+def test_the_fair_share_is_never_more_than_half_the_box() -> None:
+    """D227 gap B (SBX-15). The defaults keep the share of before: 2 of 4."""
+    assert sb.fair_share(2, 4) == 2
+    assert sb.fair_share(2, 2) == 1
+    assert sb.fair_share(5, 4) == 2
+    assert sb.fair_share(1, 1) == 1
+    assert sb.fair_share(0, 4) == 1
+
+
+async def test_one_org_cannot_take_every_slot_of_the_box(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any], clock: Clock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D227 gap B. With 2 slots and a share of 2, org A still holds 1 only."""
+    monkeypatch.setattr(env["settings"], "sandbox_max_total", 2)
+    a1 = await _idle(broker, clock, ORG_A, "a1")
+    with bound_run(ORG_A, thread="a2"):
+        await broker.acquire()
+    assert docker.removals() == [a1.container_id], "org A stops its own, at half the box"
+    with bound_run(ORG_A, thread="a3"), pytest.raises(sb.SandboxBusy, match="share"):
+        await broker.acquire()
+    with bound_run(ORG_B, thread="b1"):
+        b1 = await broker.acquire()
+    assert b1.org == ORG_B, "the other half of the box stays open to another org"
+
+
+async def test_the_remote_box_serves_one_org_at_a_time(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SBX-15. On docker-remote, a container of org A holds the whole box.
+
+    Org B is busy until org A's run ends. A container that the registry does
+    not know (the daemon still labels it) holds the box too.
+    """
+    s = env["settings"]
+    monkeypatch.setattr(s, "sandbox_backend", "docker-remote")
+    monkeypatch.setattr(s, "sandbox_docker_host", "ssh://sandbox@10.0.0.9")
+    monkeypatch.setattr(s, "sandbox_runtime", "runsc")
+    with bound_run(ORG_A, thread="a1"):
+        a1 = await broker.acquire()
+    with bound_run(ORG_B, thread="b1"), pytest.raises(sb.SandboxBusy, match="one organization"):
+        await broker.acquire()
+    assert len(docker.runs()) == 1
+    await broker.release(a1)
+    with bound_run(ORG_A, thread="a1"):
+        assert await broker.end_run() is True
+    await broker.settle()
+    assert a1.removed
+    docker.ps_ids = [ORG_A]  # the daemon still holds a container of org A
+    with bound_run(ORG_B, thread="b1"), pytest.raises(sb.SandboxBusy, match="one organization"):
+        await broker.acquire()
+    assert len(docker.runs()) == 1
+    docker.ps_ids = []
+    with bound_run(ORG_B, thread="b1"):
+        b1 = await broker.acquire()
+    assert b1.org == ORG_B and len(docker.runs()) == 2
+    with bound_run(ORG_A, thread="a2"), pytest.raises(sb.SandboxBusy, match="one organization"):
+        await broker.acquire()
 
 
 # ── the scope (MAF_CODING_SCOPE) and covers() ───────────────────────────────
