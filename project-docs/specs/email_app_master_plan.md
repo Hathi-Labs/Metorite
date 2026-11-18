@@ -21179,7 +21179,7 @@ in step.
 
 **Status:** ✅ BUILT and MERGED on `main` (#1785, task 1650), dark behind
 `EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
-1533, slice 3 of 4. The link covers a new mail only. HRD-8b (§21.9, item 11) extends it.
+1533, slice 3 of 4. The link covered a new mail only. HRD-8b-1 and HRD-8b-2 (task 3459, task 3650) extend it: the link keeps the act kind and the Cc, and a held forward card joins the revise. A reply card joins in HRD-8b-3 (task 3651).
 
 **Fix round 1 (2026-11-05, Opus review).** A steer carries a snapshot of each open
 new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" line names
@@ -22042,7 +22042,7 @@ already see. Three stores own such a file. Each reference names its store.
 
 | Reference | Store | The read, as the member |
 |---|---|---|
-| `artifact:<agent>:<path>` | The member's own workspace of that agent, as the Artifacts app shows it | `send.load_artifact_attachments` |
+| `artifact:<agent>:<path>` | The member's own workspace of that agent, as the Artifacts app shows it. Since task 3598, also a chat folder of a shared agent, for a chat that the member can write to. Only this ref takes a chat file, because only this ref pins a digest | `send.load_artifact_attachments` |
 | `knowledge:<page id>` | A Knowledge page, sent as its Markdown | `knowledge.core.load_page`, behind `KNOWLEDGE_ENABLED` and `feature:knowledge` |
 | `task-file:<attachment id>` | A file on a task | `projects.attachments.visible_task_attachment`, behind `feature:projects` |
 
@@ -22064,6 +22064,44 @@ already see. Three stores own such a file. Each reference names its store.
   A file that does not resolve shows no card. The tool answer names the file
   and the next step. Before, the member approved a card, and then the send
   refused the file (production, 2026-11-09).
+- **A file that a chat made attaches by an artifact ref (task 3598).**
+  Status: built on 2026-11-17, branch `mail-attach`. The owner asked on
+  2026-11-17 that a PDF report of the chat go with an email. The orchestrator
+  is a shared agent. It writes the files of a chat to `outputs/<thread slug>/`
+  and `inputs/<thread slug>/` in the tenant dir of the org. The resolver read
+  only a personal agent's own folder, so it refused each such file with 422.
+  - **A chat file attaches only by an `artifact:<agent>:<path>` ref, because
+    only that ref pins a digest.** A room member or a container of the chat
+    can change the file after the card. Then the digest no longer matches,
+    and the send answers 409 with nothing sent. The bare path and the
+    `<agent>:<path>` form carry no digest, so the gateway refuses a chat file
+    in them with 422, as before this task.
+  - The model often passes the bare path that `make_document` gave. So
+    `send_email` writes the artifact ref for it (`agents._chat_file_refs`).
+    The agent of the ref is the one whose working dir holds the folder. The
+    tool reads it from the `workspace_root` of `write_artifact._destination`
+    (the chat at the top for a delegated run), through
+    `agent_paths.workspace_blob_key`. It never reads `agent_name`, because a
+    pack call (`tool_packs.owner_scope`) sets that to the owner of the pack.
+    The ref then goes through the digest door like any other, on the plain
+    card and on the one email card. A held chat, a run with no bound context
+    and a working dir outside `state/` keep the bare path, and it is
+    refused. `agent_paths.thread_file_parts` is the one shape rule, for the
+    tool and the gateway.
+  - A refused file of a send, an `artifact:` ref too, gets the next step of
+    task 2491: the model asks the member before a send without the file.
+  - For an artifact ref, `send.resolve_artifact_path` reads the member's own
+    folder first. With no file there, `workspace._chat_thread_file` reads the
+    chat folder of the path. The member must have `can_send` in that chat
+    (`rooms.resolve_room_access`): an owner or a member of the room. A viewer,
+    a reader of an org chat, a member who left and a chat with no row get
+    422. A failed lookup gets 503.
+  - The tenant dir comes from the member's session, never from the request.
+    The file opens with no link at any depth. The read takes at most one byte
+    over the cap of a send, and a larger file gets 422. The held card takes
+    no chat file, because a held run can write the folder of its own chat.
+  - A path that names no chat folder, such as `x.pdf`, stays refused. Open: a
+    bare file name does not find the folder of the current chat.
 
 **The tick boxes of the reply card.** Each To and Cc on the reply card has a
 tick box. The gateway stays the only source of the lists.
@@ -22100,6 +22138,7 @@ tick box. The gateway stays the only source of the lists.
 | A card never shows less than the send | `tests/unit/test_held_card_shows_less.py` |
 | A Metorite file, as the member (21.11) | `tests/unit/test_email_metorite_files.py` |
 | A file resolves before its card (21.11, task 2491) | `tests/unit/test_email_files_before_card.py` |
+| A file that a chat made, for a chat that the member can write to (21.11, task 3598) | `tests/unit/test_email_attach_shared_agent.py`, `tests/unit/test_email_attach_shared_agent_r8.py` (R8) |
 | The tick boxes of the reply card (21.11) | `tests/unit/test_email_chat_reply.py`, `workbench/control_plane/src/lib/replyCard.test.ts`, `workbench/control_plane/e2e/email-chat-reply.spec.ts` |
 
 ### 21.12 Recipient intent (2026-10-24)

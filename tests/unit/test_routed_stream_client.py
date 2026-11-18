@@ -226,8 +226,9 @@ def test_no_bytes_at_all_is_truncated() -> None:
 
 
 def test_a_lone_done_is_a_stream_that_never_opened() -> None:
-    """``customer_console.main._stream_closed`` sends exactly this when every
-    step of the chain failed before a frame. It is not an empty answer."""
+    """A Console from before AO-3 sends exactly this when every step of the
+    chain failed before a frame. It is not an empty answer. Since AO-3 the
+    Console answers 503 ``unavailable`` (``main._stream_unavailable``)."""
     parser, frames = _parse(DONE)
     assert frames == [] and parser.done
     with pytest.raises(RouterStreamBroken) as info:

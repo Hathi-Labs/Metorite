@@ -202,6 +202,20 @@ def test_the_chat_member_row_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE chat_session_member FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_chat_join_log_table_is_tenant_scoped() -> None:
+    """WS-CO CO-4 (``chat_organization.md`` §10). ``chat_join_log`` holds the
+    shadow outcome of the join match of one member's new chat. It must never
+    be exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "chat_join_log" in gen.discover_tables()
+    assert "chat_join_log" not in gen.EXEMPT
+    assert "chat_join_log" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE chat_join_log FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_crm_settings_table_is_tenant_scoped() -> None:
     """WS-53 CRM-T5 (``crm_platform.md`` §3.1, §16 Q3). ``crm_settings`` holds
     the CRM mode of an organization and who in it may open the CRM. It must
