@@ -321,6 +321,11 @@ export function ConversationView({
 
 export const isDraftEmail = isDraft;
 
+/** The identity of a picked file, for the set of files already on the draft. */
+function attKey(a: SendAttachment): string {
+  return `${a.filename}:${a.contentB64.length}`;
+}
+
 /** "1.2 MB" for a file chip. */
 function fileSizeText(bytes: number): string {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
@@ -446,6 +451,8 @@ export function DraftCard({
   const [attachments, setAttachments] = useState<SendAttachment[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactAttachmentRef[]>([]);
   const readingRef = useRef(0);
+  // The files that an earlier save of this card already put on the draft.
+  const filesOnDraft = useRef<Set<string>>(new Set());
   const addFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const picked = Array.from(files);
@@ -628,6 +635,8 @@ export function DraftCard({
     // the card has one session, 0 (EM-G3c-3 item 1).
     await autosave.drain(0);
     try {
+      const freshAtt = attachments.filter((a) => !filesOnDraft.current.has(attKey(a)));
+      const freshArt = artifacts.filter((a) => !filesOnDraft.current.has(a.path));
       // Persist the latest edits — Cc/Bcc included, now carried on the provider
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
       // sendDraft removes it from the list. No more full-send detour for a Cc'd
@@ -641,9 +650,13 @@ export function DraftCard({
         cc: ccList(),
         bcc: bccList(),
         subject: draft.subject || "",
-        attachments: attachments.length ? attachments : undefined,
-        artifacts: artifacts.length ? artifacts : undefined,
+        attachments: freshAtt.length ? freshAtt : undefined,
+        artifacts: freshArt.length ? freshArt : undefined,
       }, openedText, combinedBody(), provider));
+      // The provider ADDS the files of each save, so a retry of a failed send
+      // must not send these again.
+      freshAtt.forEach((a) => filesOnDraft.current.add(attKey(a)));
+      freshArt.forEach((a) => filesOnDraft.current.add(a.path));
       if (noticeAfterSave(saved)) markLost();
       // A `lost` stops the first press, and the card shows the notice. The
       // next press sends the text only (D-G3a-f7-12). A `lost` of an earlier
