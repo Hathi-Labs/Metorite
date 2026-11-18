@@ -429,7 +429,7 @@ def _reason(exc: BaseException) -> str:
     return REASON_UNREACHABLE
 
 
-def _record_failure(exc: BaseException, name: str) -> None:
+def _record_failure(failure: BaseException, name: str) -> None:
     """The capture site C7 of the failure log (TOF-2d,
     ``tool_failure_log.md`` §4.2 and §4.3). Never raises.
 
@@ -444,10 +444,10 @@ def _record_failure(exc: BaseException, name: str) -> None:
         from acb_common import failure_log
 
         failure_log.record_tool_failure(
-            exc, source="mcp_call", error_code=failure_log.mcp_error_code(exc),
+            failure, source="mcp_call", error_code=failure_log.mcp_error_code(failure),
             tool=name, kind="mcp", surface="studio")
-    except Exception as err:  # the class only: the answer stays
-        _log.debug("studio.mcp_tools.capture_failed", kind=type(err).__name__)
+    except Exception as exc:  # the class only: the answer stays
+        _log.debug("studio.mcp_tools.capture_failed", kind=type(exc).__name__)
 
 
 async def list_tools(org: str, server: str, *, lister: Lister | None = None) -> ToolList:
