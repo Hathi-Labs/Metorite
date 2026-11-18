@@ -564,43 +564,62 @@ def _entry_after(stream_id: Any, cut: str) -> bool:
     return a is not None and b is not None and a > b
 
 
+def _is_resumed_start(event: dict[str, Any], run_id: str) -> bool:
+    """True for the marked ``RUN_STARTED`` of a continuation of *run_id*."""
+    return (event.get("type") == "RUN_STARTED" and bool(run_id)
+            and str(event.get("runId") or "") == run_id and event.get("resumed") is True)
+
+
+def same_reply_own(
+    events: list[dict[str, Any]], run_id: str, parked_end_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """The events of THIS continuation run (RESUME-2b, review round 3 and its
+    delta, P2-1). With *parked_end_id*, the id of the parked end that its
+    start deleted: each event after that id, and no other. In a chain of two
+    continuations that excludes part two, which an earlier start marked too.
+    With no id (a record from before round 3): the events from the last
+    marked start (:func:`same_reply_tail`)."""
+    if parked_end_id:
+        return [e for e in events if _entry_after(e.get("_stream_id"), parked_end_id)]
+    return same_reply_tail(events, run_id)
+
+
 def same_reply_events(
     events: list[dict[str, Any]], run_id: str, message_id: str, fallback_id: str,
     parked_end_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """``(events, row id)`` that the fold of a same-reply run writes, or
     ``([], None)`` when it writes nothing (RESUME-2b, case A, review of
-    2026-11-17, P2-1, round 2, P2-a, and round 3, P2-1).
+    2026-11-17, P2-1, round 2, P2-a, and round 3, P2-1 and its delta).
 
     The decision reads the HEAD, as ``stream_relay.parked_end_of`` does
     (``stream_relay.part_one_at_head``). Part one starts with a plain
     ``RUN_STARTED`` of *run_id*, and each continuation with one marked
     ``resumed``. *parked_end_id* is the id of the parked end that the start
     of this run deleted (``stream_relay.start_detached``, the run record's
-    ``parkedEndId``). Each event of this run has a larger id.
+    ``parkedEndId``). The events of THIS run are the events after it
+    (:func:`same_reply_own`).
 
-    * A continuation start landed, and part one's start is at the head: the
-      replay is whole, so it all goes into *message_id*.
-    * A continuation start landed, and a trim took part one, also when two
-      continuation starts are left: the events from the last continuation
-      start go into *fallback_id*.
-    * No continuation start landed: the events AFTER *parked_end_id* go into
-      *fallback_id*. That is the ``run_interrupted`` marker of a run that died
-      before its start, or the rest of a part two whose start a trim took.
-      With no such event, or no *parked_end_id*, nothing new is written.
+    * This run's own marked start landed, and part one's start is at the
+      head: the replay is whole, so it all goes into *message_id*.
+    * Else the events of this run go into *fallback_id*: the rest of a run
+      whose part one a trim took, the ``run_interrupted`` marker of a run
+      that died before its start, or the rest of a part two whose start a
+      trim took. An earlier part of the chain never goes there again.
+    * With no event of this run, nothing new is written. With no
+      *parked_end_id*, a run with no marked start writes nothing new too.
 
     So part one is never written again, and a partial replay never writes
     over it."""
-    tail = same_reply_tail(events, run_id)
-    if not tail:
-        after = ([e for e in events if _entry_after(e.get("_stream_id"), parked_end_id)]
-                 if parked_end_id else [])
-        return (after, fallback_id) if after else ([], None)
+    own = same_reply_own(events, run_id, parked_end_id)
+    started = any(_is_resumed_start(e, run_id) for e in own)
     from orchestrator.stream_relay import part_one_at_head
 
-    if part_one_at_head(events, run_id):
+    if started and part_one_at_head(events, run_id):
         return events, message_id
-    return tail, fallback_id
+    if parked_end_id:
+        return (own, fallback_id) if own else ([], None)
+    return (own, fallback_id) if started else ([], None)
 
 
 async def persist_final_assistant_message(
@@ -691,6 +710,7 @@ async def persist_final_assistant_message(
                 )
                 return None
         _authority: Any = _NOT_READ
+        _skip_trace = False
         if same_reply_fallback_id:
             _run = expect_run_id or run_id
             events, target = same_reply_events(
@@ -707,11 +727,17 @@ async def persist_final_assistant_message(
                 _authority = await _run_authority(thread_id, user_id)
                 if not await _same_label_as_row(
                         thread_id, message_id, _authority, organization_id, user_id):
-                    events, target = same_reply_tail(events, _run), same_reply_fallback_id
+                    # Round 3 delta, P2-1: only the events of THIS run.
+                    events = same_reply_own(events, _run, same_reply_parked_end)
+                    target = same_reply_fallback_id
                     _log.warning("chat_fold.same_reply_label_changed",
                                  thread_id=thread_id[:12])
             if target == same_reply_fallback_id:
                 _log.warning("chat_fold.same_reply_partial", thread_id=thread_id[:12])
+                # Round 3 delta, NOTED: a run whose own start never landed
+                # writes no trace. The trace is an upsert on the shared run
+                # id, so it would set part one's tool counts to zero.
+                _skip_trace = not any(_is_resumed_start(e, _run) for e in events)
             message_id = target
         # Head-trim visibility (audit R1): the stream is MAXLEN-capped, and
         # Redis trims the OLDEST entries — so a very long turn can lose its
@@ -734,24 +760,27 @@ async def persist_final_assistant_message(
         # errored/flagged ones. Independent of message persistence: a run that
         # produced no assistant message (folded is None) still gets a trace row
         # (that itself is a debuggable outcome — e.g. an immediate error).
+        # RESUME-2b, round 3 delta: a same-reply run whose own start never
+        # landed writes no trace (`_skip_trace`).
         try:
             from gateway.run_trace import record_run_trace  # noqa: PLC0415
             _last_ms = (folded or {}).get("timestamp") or None
-            if holds_mail is None:
+            if holds_mail is None and not _skip_trace:
                 holds_mail = await _run_holds_mail(
                     agent_name, thread_id, user_id, organization_id)
-            await record_run_trace(
-                run_id=run_id or message_id,  # message_id is run-unique per turn
-                thread_id=thread_id,
-                agent_name=agent_name,
-                user_id=user_id,
-                model=model,
-                events=events,
-                folded=folded,
-                ended_ms=_last_ms,
-                organization_id=organization_id,
-                holds_mail=holds_mail,
-            )
+            if not _skip_trace:
+                await record_run_trace(
+                    run_id=run_id or message_id,  # message_id is run-unique per turn
+                    thread_id=thread_id,
+                    agent_name=agent_name,
+                    user_id=user_id,
+                    model=model,
+                    events=events,
+                    folded=folded,
+                    ended_ms=_last_ms,
+                    organization_id=organization_id,
+                    holds_mail=holds_mail,
+                )
         except Exception:  # noqa: BLE001
             pass
 

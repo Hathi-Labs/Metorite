@@ -2246,6 +2246,20 @@ def test_same_reply_events_decide_by_the_head():
         long_two, "fb")
     no_ids = [_evt("TEXT_MESSAGE_CONTENT", delta="x")]
     assert same_reply_events(no_ids, _RUN, _REPLY, "fb", parked_end_id=_GAP) == ([], None)
+    # Round 3 delta, P2-1: a chain of two continuations. The second dies
+    # before its start. Part two sits before the cut with a marked start of
+    # its own, and it never goes to the fallback row again.
+    chain = _ids([_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
+                  _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta="two"),
+                  _evt("CUSTOM", name="run_interrupted"), _evt("RUN_FINISHED")], gap_after=3)
+    assert same_reply_events(chain, _RUN, _REPLY, "fb", parked_end_id=_GAP) == (chain[4:], "fb")
+    # The second continuation started: its own start is after the cut.
+    chain_ok = _ids([_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
+                     _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta="two"),
+                     _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta="three")],
+                    gap_after=3)
+    assert same_reply_events(chain_ok, _RUN, _REPLY, "fb", parked_end_id=_GAP) == (
+        chain_ok, _REPLY)
     two = [_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
            _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta="two")]
     assert same_reply_events(two, _RUN, _REPLY, "fb") == (two, _REPLY)
@@ -2361,6 +2375,35 @@ def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
     assert writes == [("fb-row", "")], "part one is never written again"
     writes.clear()
     monkeypatch.setattr(chat_routes, "_upsert_messages", real_upsert)
+
+    # Round 3 delta, P2-1: a chain of two continuations, the second dies
+    # before its start, and a member joins before the sweep. Part two shows
+    # ONCE: the fallback row takes only the events after the cut. NOTED: a
+    # run with no own start writes no trace, and a whole run writes one.
+    traces: list[str] = []
+
+    async def _trace(**kw):
+        traces.append(kw["run_id"])
+
+    monkeypatch.setattr(run_trace, "record_run_trace", _trace)
+    late[0] = True
+    events[:] = _ids([*whole[:2], _start(resumed=True),
+                      _evt("TEXT_MESSAGE_CONTENT", delta=" Part two."),
+                      _evt("CUSTOM", name="run_interrupted", value={}),
+                      _evt("RUN_FINISHED", interrupted=True)], gap_after=3)
+    asyncio.run(chat_fold.persist_final_assistant_message(
+        "t-fold", _REPLY, user_id=_ALICE, run_id=_RUN, organization_id=_ORG_A,
+        expect_run_id=_RUN, holds_mail=False, same_reply_fallback_id="fb-row",
+        same_reply_parked_end=_GAP))
+    assert writes == [("fb-row", "")], "part two is not written a second time"
+    assert traces == [], "no own start: no trace over part one's"
+    late[0] = False
+    writes.clear()
+    events[:] = whole
+    fold("fb-row")
+    assert writes == [(_REPLY, "Part one. Part two.")] and traces == [_RUN], "non-vacuity"
+    writes.clear()
+    traces.clear()
     events[:] = whole[2:]
     fold(None)
     assert writes == [(_REPLY, " Part two.")], "with no fallback the fold is as before"

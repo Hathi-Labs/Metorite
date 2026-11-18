@@ -1491,19 +1491,35 @@ def test_a_continuation_with_no_start_never_writes_part_one_again(how, relay_sce
                 HOLD_BEFORE_START.append(hold)
             else:
                 TRIM_THROUGH_START.append(True)
+            parked_end = (await client.xrevrange(f"cc:stream:{tid}", count=1))[0][0]
             res = await _answer(tid, rid, _ALICE, w.org_a)
             assert isinstance(res, dict) and res["sameReply"] is True, res
             if how == "death":
                 # The process "dies": this process no longer holds the run,
                 # so its owner reads as dead, and the sweep closes it.
+                raw = None
                 for _ in range(200):
-                    if await client.hget(
-                            run_liveness.instance_runs_key(run_liveness.INSTANCE_ID), tid):
+                    raw = await client.hget(
+                        run_liveness.instance_runs_key(run_liveness.INSTANCE_ID), tid)
+                    if raw:
                         break
                     await asyncio.sleep(0.01)
+                # Round 3 delta, P2-2: the sweep's OWN copy of the cut, in the
+                # record of the run (the hset of `record_instance_run`).
+                assert raw and json.loads(raw)["parkedEndId"] == parked_end, raw
                 run_liveness._LOCAL_RUNS.discard(tid)
                 assert await run_liveness.run_liveness(tid) == "dead"
                 assert await recover_dead_run(tid, why="test") is not None
+                # The sweep alone wrote the fallback row and its marker. The
+                # task that waits has not folded anything yet.
+                swept = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+                assert swept[mid] == before[mid] and len(swept) == 2, swept
+                (swept_row,) = set(swept) - {mid}
+                with w.admin_engine.connect() as c:
+                    swept_names = [e["name"] for e in c.execute(text(
+                        "SELECT custom_events FROM chat_message WHERE id = :m"),
+                        {"m": swept_row}).scalar_one()]
+                assert run_liveness.INTERRUPTED_EVENT in swept_names, swept_names
                 # The dead process never runs again: its task ends here, and
                 # its own fold (the drain's finally) writes the same row.
                 task = stream_relay._DETACHED_TASKS.get(tid)

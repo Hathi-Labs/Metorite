@@ -2020,18 +2020,27 @@ the same reply. It needs no migration and no new flag.
   of a same-reply run `resumed` (`_same_reply_run`, from the server's kwarg).
   So the stream tells part one's start from a continuation's start
   (`stream_relay.part_one_at_head`). A case B run starts a stream of its own,
-  so its start has no mark. A later Approve can then go on in its reply. The
-  fold of a same-reply run (`chat_fold.same_reply_events`) takes three paths. With no
-  continuation start, nothing new goes to a row. With part one's start at the
-  head, the whole replay goes into the reply row. Else a trim took part one,
-  and the events from the last continuation start go into a fresh fallback
-  row. `parked_end_of` refuses a head whose first start carries the mark.
-- **No start in the replay (round 3, P2-1).** The start of a same-reply run
-  writes the id of the parked end that it deleted into the run record
-  (`parkedEndId`). With no continuation start in the replay, the fold writes
-  the events after that id into the fallback row. So the `run_interrupted`
-  marker of a run that died before its start lands on a row. The rest of a
-  part two that a trim cut lands there too. Part one is never written again.
+  so its start has no mark. A later Approve can then go on in its reply.
+  `parked_end_of` refuses a head whose first start carries the mark.
+- **The events of this run (round 3, P2-1, and its delta).** The start of a
+  same-reply run writes the id of the parked end that it deleted into the run
+  record (`parkedEndId`). The events of THIS run are the events after that id
+  (`chat_fold.same_reply_own`). In a chain of two continuations, that leaves
+  out part two, which an earlier start marked too. The fold
+  (`chat_fold.same_reply_events`) takes three paths:
+  1. This run's own marked start landed, and part one's start is at the head.
+     The whole replay goes into the reply row.
+  2. Else the events of this run go into a fresh fallback row. That is the
+     rest of a run whose part one a trim took. It is also the
+     `run_interrupted` marker of a run that died before its start, or the
+     rest of a part two whose start a trim took.
+  3. With no event after the id, nothing new goes to a row. A record from
+     before round 3 has no id. Then a run with no marked start writes nothing
+     new too, and the last marked start begins the events of the run.
+
+  Part one, and an earlier part of a chain, never go to a row again. A run
+  whose own start never landed writes no `agent_run` trace, because the trace
+  is an upsert on the shared run id.
 - **The mark of step 5.** A row of case A has no `run_interrupted` mark,
   because a dead run puts other events after the park. So the clear of step 5
   needs no code of its own.
