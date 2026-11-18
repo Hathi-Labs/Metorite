@@ -6082,6 +6082,20 @@ def _chat_file_refs(attachments: list[str] | None) -> list[str]:
     return out if out != list(attachments) else attachments
 
 
+#: Task 3812: the words of a draft that say a file goes with it.
+_FILE_PROMISE = re.compile(
+    r"\b(attached|attachments?|enclosed|enclosure)\b", re.IGNORECASE)
+#: The warning line of a card whose text promises a file that is not on it.
+_PROMISE_NO_FILE = (
+    "⚠ The text says a file is attached, but no file is attached to this mail. "
+    "Name the file to attach, or take the words out.")
+
+
+def _promises_file(text: str | None) -> bool:
+    """True when *text* says that a file is attached or enclosed."""
+    return bool(_FILE_PROMISE.search(text or ""))
+
+
 # ── A file of a send resolves before its card (task 2491) ───────────────────
 #
 # Defect of 2026-11-09: a chat upload went to send_email, the member approved
@@ -6545,6 +6559,10 @@ async def send_email(
         return refusal
     if warning:
         reply_notices.insert(0, warning)
+    # Task 3812: the text and the files agree. A text that says a file is
+    # attached, with no file on the mail, gets a warning line on the card.
+    if _promises_file(body) and not attachments:
+        reply_notices.append(_PROMISE_NO_FILE)
     # Task 2491: each workspace file resolves BEFORE either card, through the
     # resolver of the send. A file that the send would refuse shows no card,
     # so it costs the member no approval. A Metorite file resolves before

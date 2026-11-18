@@ -23,9 +23,11 @@ import { draftRecipients, ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
 import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import {
-  autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
-  type DraftStatus,
+  FILES_TOO_LARGE, autosaveWait, createAutosave, failedSaveStatus, holdPick, pickProblem,
+  saveFailureText, sendFailureText, type DraftStatus,
 } from "../lib/draftAutosave";
+import { fileToSendAttachment, type SendAttachment, type ArtifactAttachmentRef } from "../lib/api";
+import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import {
   draftSavePayload, draftText, isHtmlUnavailable, needsHtmlRead, noticeAfterSave,
   noticeWords, sendAfterPreSave, showsFormattingNotice,
@@ -320,6 +322,12 @@ export function ConversationView({
 export const isDraftEmail = isDraft;
 
 /** Inline editable draft: edit the body/recipients and send it into the thread. */
+/** "1.2 MB" for a file chip. */
+function fileSizeText(bytes: number): string {
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1000))} KB`;
+}
+
 export function DraftCard({
   draft,
   replyTo,
@@ -432,6 +440,31 @@ export function DraftCard({
   const [sending, setSending] = useState(false);
   // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
   const [sendError, setSendError] = useState<string | null>(null);
+  // Task 3812: files the member adds to this reply, from the computer or from
+  // Metorite. They go on the draft with the next save, as in the composer.
+  const [attachments, setAttachments] = useState<SendAttachment[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactAttachmentRef[]>([]);
+  const readingRef = useRef(0);
+  const addFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const picked = Array.from(files);
+    const problem = pickProblem(attachments, picked, readingRef.current);
+    if (problem) {
+      setSendError(problem);
+      return;
+    }
+    const release = holdPick(readingRef, picked);
+    try {
+      const added = await Promise.all(picked.map(fileToSendAttachment));
+      setAttachments((prev) => [...prev, ...added]);
+      dirty.current = true;
+      setSendError((prev) => (prev === FILES_TOO_LARGE ? null : prev));
+    } catch {
+      setSendError("Couldn't read one of the attachments");
+    } finally {
+      release();
+    }
+  };
   // EM-G3a-f7: the HTML that the card read for a Gmail draft with none, a
   // save that answered `lost`, and a stopped send. The member saw the notice
   // after a stop, so the next press sends the text only (D-G3a-f7-11, -12).
@@ -607,6 +640,8 @@ export function DraftCard({
         cc: ccList(),
         bcc: bccList(),
         subject: draft.subject || "",
+        attachments: attachments.length ? attachments : undefined,
+        artifacts: artifacts.length ? artifacts : undefined,
       }, openedText, combinedBody(), provider));
       if (noticeAfterSave(saved)) markLost();
       // A `lost` stops the first press, and the card shows the notice. The
@@ -847,6 +882,25 @@ export function DraftCard({
           <AppIcon name="Trash2" size={13} /> Discard
         </button>
         <AiButton active={aiOpen} onClick={() => setAiOpen((v) => !v)} />
+        <label
+          className="flex items-center px-2 py-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
+          title="Attach files from this computer (7.5 MB in all)"
+        >
+          <AppIcon name="Paperclip" size={13} />
+          <input
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => { void addFiles(e.target.files); e.target.value = ""; }}
+          />
+        </label>
+        <ArtifactAttachPicker
+          exclude={artifacts.map((a) => a.path)}
+          onPick={(ref) => {
+            dirty.current = true;
+            setArtifacts((prev) => (prev.some((a) => a.path === ref.path) ? prev : [...prev, ref]));
+          }}
+        />
         {saveFailure ? (
           <span className="text-[10px] text-destructive ml-auto">{saveFailure}</span>
         ) : (
@@ -859,6 +913,44 @@ export function DraftCard({
           </span>
         )}
       </div>
+      {(attachments.length > 0 || artifacts.length > 0) && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {attachments.map((a, i) => (
+            <span
+              key={`f-${i}`}
+              className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-border bg-secondary text-muted-foreground"
+            >
+              <AppIcon name="Paperclip" size={10} />
+              <span className="truncate max-w-[160px]" title={a.filename}>{a.filename}</span>
+              <span>{fileSizeText(Math.floor((a.contentB64.length * 3) / 4))}</span>
+              <button
+                onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                className="hover:text-foreground"
+                title="Remove attachment"
+              >
+                <AppIcon name="X" size={10} />
+              </button>
+            </span>
+          ))}
+          {artifacts.map((a, i) => (
+            <span
+              key={`a-${i}`}
+              className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-primary/40 bg-primary/5 text-primary"
+              title={a.path}
+            >
+              <AppIcon name="Paperclip" size={10} />
+              <span className="truncate max-w-[160px]">{a.name || a.path}</span>
+              <button
+                onClick={() => setArtifacts((prev) => prev.filter((_, j) => j !== i))}
+                className="hover:text-foreground"
+                title="Remove attachment"
+              >
+                <AppIcon name="X" size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {/* The slot of a failed send (EM-G3c-2 item 14) */}
       {sendError && (
         <p role="alert" className="mt-1.5 text-[10px] text-destructive">
