@@ -13,7 +13,10 @@ describe("DraftCard attach", () => {
     expect(src).toContain("<ArtifactAttachPicker");
   });
   it("sends the files with the draft save", () => {
-    expect(src).toMatch(/attachments: attachments\.length \? attachments : undefined/);
-    expect(src).toMatch(/artifacts: artifacts\.length \? artifacts : undefined/);
+    expect(src).toMatch(/attachments: freshAtt\.length \? freshAtt : undefined/);
+    expect(src).toMatch(/artifacts: freshArt\.length \? freshArt : undefined/);
+  });
+  it("keeps the files out of the autosave, which would double them", () => {
+    expect(src).toContain("}, [body, quote, to, cc, bcc]);");
   });
 });
