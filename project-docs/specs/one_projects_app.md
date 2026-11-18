@@ -1597,7 +1597,7 @@ Each fence is advisory until its slice builds.
 
 ## 9d. Personal work: Done in the inbox, a task with no project, the two space names, and My tasks in the sidebar (2026-11-18)
 
-**Status:** 📋 SPEC. Nothing is built. The owner asked for this on 2026-11-18, in chat, with a capture of My tasks. Verified against `origin/main` at `f4c6ff08f`. Metorite: spec task 3759, slices MW-1 to MW-4 are tasks 3753 to 3756, and the demo is task 3757.
+**Status:** 📋 SPEC. Nothing is built. The owner asked for this on 2026-11-18, in chat, with a capture of My tasks. The owner accepted the recommendations of §9d.5 the same day. Verified against `origin/main` at `f4c6ff08f`. Metorite: spec task 3759, slices MW-1 to MW-4 are tasks 3753 to 3756, and the demo is task 3757.
 
 ### 9d.1 The owner's asks
 
@@ -1660,7 +1660,7 @@ The owner also asked for a brainstorm about Calendar and the chat. The reply to 
    - If the create route takes no disposition, the slice adds one optional field to it. No migration.
 3. **The two names, with tips.** The name and the tip come from the two constants of §9d.2. So every place that reads them changes at once.
    - "Personal" becomes **"Personal space"**. Tip: "Only you can see this space. It is separate from your company's spaces. Keep your personal projects and tasks here."
-   - "Spaces" becomes **"Org spaces"**. Tip, proposed: "Your company's shared spaces. A new space is open to everyone in the company. Its lead can limit it to a team." The owner's words were "shared with everybody in the company". That is false for a space that its lead limited, so §9d.5 asks the owner.
+   - "Spaces" becomes **"Org spaces"**. Tip, accepted (Q-MW-1): "Your company's shared spaces. A new space is open to everyone in the company. Its lead can limit it to a team." The owner's words were "shared with everybody in the company". That is false for a space that its lead limited, so the owner accepted this text.
    - Each tip uses `InfoTip`, so it opens on hover, on keyboard focus and on a tap. The native `title` at `page.tsx:738-741` goes (rule 12 of the UI contract).
    - This amends the display name of D-OP-2. The stored name does not change.
 4. **My tasks in the sidebar.** "My tasks" returns to Personal Center as a link into Projects. It opens the same app, in the My tasks view. It is not a second app.
@@ -1678,13 +1678,15 @@ One rung (D211). Its demo is task 3757, on production. The owner closes a captur
 |---|---|---|---|---|
 | MW-1 | 3753 | Done on each inbox row, card and table, with Undo (§9d.3 item 1) | One tap closes a capture. The count drops at once. Undo puts it back in the inbox. A parent with open subtasks asks first | LOW. UI gate |
 | MW-2 | 3754 | A quick add in My tasks takes the chip on screen, in the Board and the List. A task in the personal root shows "No project" (§9d.3 item 2) | On each chip, the new task shows in that chip at once, and never in the inbox. Its row has no project chip. "Move to a project" moves it | STANDARD. UI gate |
-| MW-3 | 3755 | "Personal space" and "Org spaces", each with its tip (§9d.3 item 3) | Both names show in the rail, the pickers and the phone sheet. Each tip opens on hover, focus and tap. No native `title` stays | LOW. UI gate. Waits for Q-MW-1 |
+| MW-3 | 3755 | "Personal space" and "Org spaces", each with its tip (§9d.3 item 3) | Both names show in the rail, the pickers and the phone sheet. Each tip opens on hover, focus and tap. No native `title` stays | LOW. UI gate. Q-MW-1 answered |
 | MW-4 | 3756 | "My tasks" in Personal Center, linked into Projects, with the active rule (§9d.3 item 4) | One click opens My tasks in Projects. The entry shows active there, and "Projects" does not. The three files agree | STANDARD. UI gate |
 | T-8 | 3758 | The access panel of a space or a project. Owned by `project_management_app.md` §14.9 | Later. Not on this rung | — |
 
 MW-1, MW-2 and MW-3 touch different files, so they can run at once. MW-4 touches the shell, so it runs alone. Each UI slice states its interaction in one sentence and puts its captures on the "Visual review:" line (rule 14). This adds no new flag. Each change sits inside My work, behind the My work flag.
 
 ### 9d.5 Questions for the owner
+
+**The owner answered on 2026-11-18, in chat: "go ahead with your recommendations".** So Q-MW-1 to Q-MW-3 are ACCEPTED as recommended, and MW-3 no longer waits.
 
 | # | Question | Recommendation |
 |---|---|---|
