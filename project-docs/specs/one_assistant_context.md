@@ -3129,6 +3129,14 @@ separate HIGH design, and it is out of scope here.
    `custom_events`, `agent_state`, `authority`, `tool_events`,
    `member_summary` or a file reference. `prepare_new_session` purges by id
    only, so no file id crosses.
+   **HRD-19a (2026-11-17, task 2998).** The carry of a chat ROW stays as this item
+   says. Beside it, the route copies two server records of the SAME member, key
+   to key, in the store that owns each: the decisions of the OA-4 list
+   (`chat_constraints.carry_decisions`, under `CHAT_CONSTRAINTS`, the kind
+   `decision` only) and the item in focus (`chat_focus.carry_focus`, under
+   `CHAT_FOCUS_ORGS`, with its original time, only while it is fresh). A copy
+   writes no `text`, no `chat_message` row and no `continued_from` read. A shared
+   room copies nothing. Open cards and limits do not cross (HRD-19b).
 6. **No seed row.** The route writes no `chat_message` row. It returns
    `{session_id, text}`. The web shell puts `text` in the composer, and the
    member sends it. `_write_prompt_row` (`apps/services/gateway/gateway/routes/agent.py:2625`)
@@ -3184,6 +3192,11 @@ answer is 404, and the verification commands of §9.6 pass.
   - The route writes no `chat_message` row.
   - The new id is the server's.
   - The carry holds only `content`.
+- `tests/unit/test_continue_carries.py` (HRD-19a): the decisions and the item in
+  focus cross key to key, and the answer and `text` stay as above. Nothing else
+  of the old chat crosses: no limit, no record of another member or another
+  org, no old or bad item. A Redis fault gives the normal 200. A shared room and
+  every flag off copy nothing. The route holds no `cc:` key of its own.
 - `tests/unit/test_continued_from_readers.py`: a structural scan allows the
   `continued_from` column in three places only. They are the WT-1 route, the
   session list and the CO-5 chip read.
