@@ -779,7 +779,7 @@ async def write_artifact(
     """Write a file to the agent's workspace and surface it in the UI file browser.
 
     Call this for any file you make (a document, report, script, sheet, PDF
-    or image) that the operator must view or download.
+    or image) that the operator can view or download.
 
     Files go in ``outputs/`` unless you specify ``inputs/`` (user-provided
     files) or ``agent-data/`` (reference data). In a chat of a shared agent,

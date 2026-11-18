@@ -800,9 +800,9 @@ async def spawn_copilot_agent(    task: str,
     """Spawn a GitHub Copilot SDK agent to create or modify code, skills, or scripts.
 
     Use it when the user asks to add a skill, script or capability to an
-    agent, fix a bug, write tests or docs, or refactor code. The agent works
-    in an isolated container on the agent's repository (code, tests, commit,
-    push) and returns a summary.
+    agent, fix a bug, write tests or docs, refactor code, or improve any part
+    of the system. The agent works in an isolated container on the agent's
+    repository (code, tests, commit, push) and returns a summary.
 
     Args:
         task: What to build or fix. Name file paths, functions, inputs and outputs.
