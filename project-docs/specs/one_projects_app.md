@@ -397,10 +397,10 @@ list of pending OP-6 routes is empty since OP-6d. A second list names a route wh
 | Id | Decision | Default |
 |---|---|---|
 | **D-OP-1** | My Tasks stops being an app. Projects holds it as the My work section. The store of D53 does not change | Accept (owner directive) |
-| **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders. Amended 2026-10-30 (OP-12b): the PERSONAL heading IS the space and the root draws as no row. "Personal" is the display name everywhere, whatever the stored name. Each sidebar count is open tasks | Accept. Owner, 2026-10-30, verbatim: "I am still confused about the difference between my tasks and the space that shows up as my tasks under a personal rollup [...] Why does that exist in two places?" |
+| **D-OP-2** | The personal root shows in Projects as one private space, named "Personal". Areas are its folders. Amended 2026-10-30 (OP-12b): the PERSONAL heading IS the space and the root draws as no row. "Personal" is the display name everywhere, whatever the stored name. Each sidebar count is open tasks. **Amended by the owner, 2026-11-18 (§9d, MW-3):** the display name is "Personal space", and the company tree is "Org spaces" | Accept. Owner, 2026-10-30, verbatim: "I am still confused about the difference between my tasks and the space that shows up as my tasks under a personal rollup [...] Why does that exist in two places?" |
 | **D-OP-3** | The name of the section is **My work** | Accept. Other names: "My tasks", "Me" |
 | **D-OP-4** | `feature:tasks` gates My work and Personal. `feature:projects` gates the company tree | Accept |
-| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4. **Applied 2026-10-25.** |
+| **D-OP-5** | `/tasks` redirects. The nav entry "My Tasks" leaves `launch_surface.md` §2, so fourteen panes are live (fifteen today, 2026-10-24) | Accept, in OP-4. **Applied 2026-10-25.** **Amended by the owner, 2026-11-18 (§9d, MW-4):** "My tasks" returns to Personal Center as a link into Projects. It opens the same app, and `/tasks` still redirects |
 | **D-OP-6** | On a phone, every filter and view control lives in two bottom sheets. The first task row shows in the top third | Accept |
 | **D-OP-7** | The desktop takes the sheets as popovers, the active-filter row, the hidden zero counts and the load row at the end. It keeps the columns and the hover actions | Accept |
 | **D-OP-9** | Every act of the Projects app is reachable from the chat. A class C card guards each act that destroys data, writes access or reaches a person. Reverses D-PM-40 | Owner directive, 2026-10-23 (§5a) |
@@ -1594,6 +1594,114 @@ Each slice except TC-1 ships behind `NEXT_PUBLIC_TASK_CARD_V2`. None needs a mig
 - TC-3: a source scan that no surface draws a second task card.
 
 Each fence is advisory until its slice builds.
+
+## 9d. Personal work: Done in the inbox, a task with no project, the two space names, and My tasks in the sidebar (2026-11-18)
+
+**Status:** 📋 SPEC. Nothing is built. The owner asked for this on 2026-11-18, in chat, with a capture of My tasks. Verified against `origin/main` at `f4c6ff08f`. Metorite: the tasks are filed when the board connects again (§9d.4).
+
+### 9d.1 The owner's asks
+
+The words are the owner's, so they sit in a block that the linter does not read.
+
+```text
+In my task inbox, I might want to close a task directly in the task inbox in
+case I've already done it without clarifying, so that capability should be
+there.
+
+My tasks should be able to just hold tasks without the need to be in a
+particular personal or company project.
+
+Instead of personal, call it personal space. Which, when hovered, you can
+specify that these are the personal spaces that are visible only to you and
+separate from the organization, which can house personal projects. Similarly,
+the other spaces, instead of spaces, you call it Org Spaces. And simply tells
+the user that this is the space for company organization, which is shared with
+everybody in the company.
+
+Just check out whether the specs for being able to change the visibility and
+create teams and groups that will have different kinds of visibility for the
+projects have been factored in. This will eventually be built out later.
+
+On the left sidebar inside personal center. I want my tasks to also appear.
+Basically, that's just the projects app, but the view with my tasks. [...] it
+opens the same app, basically.
+```
+
+The owner also asked for a brainstorm about Calendar and the chat. The reply to the owner holds it, and it points at the slices that exist (§9d.6).
+
+### 9d.2 What the code does on 2026-11-18
+
+- **The inbox has no Done.** An inbox row offers Edit, Snooze, Someday, Reference and Clarify (`app/tasks/components/InboxCard.tsx:313-350`). The row menu offers Move to project and Delete, or Not mine and Open on board (`app/tasks/lib/inbox.ts:96-140`). No row closes a task. The server already has the close: `POST /projects/tasks/{id}/complete` (`gateway/routes/projects/personal.py:2729`), whose docstring says "Tick a task off from my inbox". The store calls it for a DONE disposition (`app/tasks/lib/taskStore.ts:1134`). No spec forbids a close from the inbox. D170 says only that the inbox holds captures.
+- **Every task has a project.** `pm_tasks.project_id` is `NOT NULL` (`infra/postgres/146_projects.sql:192`). A personal task is a private task in the member's personal project (D53.3). `ensure_personal_project` makes that root once for each member (`personal.py:481`).
+- **A quick add in My tasks goes to the inbox.** It files the task to the personal root (`app/projects/lib/myTasks.ts:516`), where it reads as INBOX (`MyTasksSpace.tsx:24`). So a task added under Today or Next does not show in Today or Next. Only the Board view offers a quick add (`MyTasksSpace.tsx:757`).
+- **The two section names.** "Personal" is `PERSONAL_SECTION_LABEL` (`app/projects/lib/personalTree.ts:20`). Its hint "Private to you" (`:23`) shows through a native `title` (`page.tsx:738-741`). "Spaces" is `SPACES_SECTION_LABEL` (`app/projects/lib/projectApps.ts:211`), drawn at `page.tsx:857` with no tip.
+- **An org space is not always open to everyone.** Visibility is a set of grants in `pm_project_grants` (D-PM-3). A new space gets an `org` grant, so everyone in the company sees it. Its lead or a settings admin can remove `org` and grant a team (`group:<slug>`) or one person (D12, D-OP-11).
+- **My Tasks left the sidebar on 2026-10-25** (D-OP-1, D-OP-5). The `/tasks` pane is `preview` (`lib/nav.ts:201-212`), and `/tasks` redirects to `/projects?app=my-tasks&chip=today` (`lib/tasksRedirect.ts`). The shell marks an entry active by its path only (`lib/shell/shellNav.ts:394-397`). So an entry whose address holds `?app=my-tasks` never shows active.
+
+**The visibility check (the owner's fourth ask).**
+
+| Part | State | Where |
+|---|---|---|
+| Grants on a space or a project: everyone, a team, or one person | BUILT on the server | `GET`, `POST` and `DELETE /projects/nodes/{id}/grants` (`routes/projects/tree.py`), D12, D-PM-3 |
+| Change access from the chat | BUILT, with an approve card | `grant_access` and `revoke_access` (OP-6b) |
+| Teams | BUILT. A team is a group, and an admin makes it | `/settings/groups` ("Teams"), `routes/admin/groups.py` |
+| A team view, a team chip, and sharing a space with a team | PLANNED, not built | `project_management_app.md` §14.9, T-1 to T-7 (tasks 2532 to 2538), flag `TEAMS_ORGS` |
+| A screen in Projects that shows and changes who can see a space or a project | NOT SPECIFIED until this section | The app reads the grants (`app/projects/lib/api.ts:2490`, `page.tsx:1693`) and writes none. §14.9 now holds it as T-8, Later |
+| A personal space shared with anyone | Refused by design | D-OP-2, D-OP-15. "Move to a project" is the way to share |
+
+### 9d.3 The design
+
+1. **Done in the inbox.** Each inbox row, card and table, gets one Done act beside Clarify. It closes the task through the store's DONE path, so the request is `POST /projects/tasks/{id}/complete`. A parent with open subtasks asks first (D-PM-38). The act shows a toast with Undo, and Undo puts the task back in the inbox. Clarify stays the main act of a row. A close is not a clarify, and D170 does not change.
+2. **A task with no project, in the member's eyes.** D53.3 does not change: the personal root holds the task. The change is what the member sees and where the task lands.
+   - A quick add in My tasks takes the chip on screen. Today gives Next with a start date of today. Next, Waiting and Someday give that disposition. All and New give Next.
+   - The task never lands in the inbox. Only Capture and the inbox's own add make a capture (D170).
+   - The List view gets the same add row as the Board.
+   - A task in the personal root shows no project chip on its row. The task panel shows "No project", with "Move to a project" (D53.4).
+   - If the create route takes no disposition, the slice adds one optional field to it. No migration.
+3. **The two names, with tips.** The name and the tip come from the two constants of §9d.2. So every place that reads them changes at once.
+   - "Personal" becomes **"Personal space"**. Tip: "Only you can see this space. It is separate from your company's spaces. Keep your personal projects and tasks here."
+   - "Spaces" becomes **"Org spaces"**. Tip, proposed: "Your company's shared spaces. A new space is open to everyone in the company. Its lead can limit it to a team." The owner's words were "shared with everybody in the company". That is false for a space that its lead limited, so §9d.5 asks the owner.
+   - Each tip uses `InfoTip`, so it opens on hover, on keyboard focus and on a tap. The native `title` at `page.tsx:738-741` goes (rule 12 of the UI contract).
+   - This amends the display name of D-OP-2. The stored name does not change.
+4. **My tasks in the sidebar.** "My tasks" returns to Personal Center as a link into Projects. It opens the same app, in the My tasks view. It is not a second app.
+   - Flip the `/tasks` pane (`lib/nav.ts:201`) to `live`, with the label "My tasks". Keep its manifest and its gate, `feature:tasks` (D-OP-4).
+   - While the My work flag is on, the entry links straight to `/projects?app=my-tasks`. So the click makes no redirect hop. A member with `feature:tasks` and no `feature:projects` keeps `/tasks`.
+   - The shell's active rule gets one case. On `/projects` with `app=my-tasks` or `app=my-inbox`, "My tasks" is active and "Projects" is not.
+   - The live set grows by one, in three files at once: `lib/nav.ts`, `launch_surface.md` §2 and `lib/nav.test.ts` (`LIVE_SET`).
+   - This amends D-OP-5, by the owner, 2026-11-18.
+
+### 9d.4 The slices
+
+One rung (D211). Its demo is on production. The owner closes a capture from the inbox and adds a task under Today with no project. Then the owner reads both tips and opens My tasks from the sidebar.
+
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| MW-1 | to file | Done on each inbox row, card and table, with Undo (§9d.3 item 1) | One tap closes a capture. The count drops at once. Undo puts it back in the inbox. A parent with open subtasks asks first | LOW. UI gate |
+| MW-2 | to file | A quick add in My tasks takes the chip on screen, in the Board and the List. A task in the personal root shows "No project" (§9d.3 item 2) | On each chip, the new task shows in that chip at once, and never in the inbox. Its row has no project chip. "Move to a project" moves it | STANDARD. UI gate |
+| MW-3 | to file | "Personal space" and "Org spaces", each with its tip (§9d.3 item 3) | Both names show in the rail, the pickers and the phone sheet. Each tip opens on hover, focus and tap. No native `title` stays | LOW. UI gate. Waits for Q-MW-1 |
+| MW-4 | to file | "My tasks" in Personal Center, linked into Projects, with the active rule (§9d.3 item 4) | One click opens My tasks in Projects. The entry shows active there, and "Projects" does not. The three files agree | STANDARD. UI gate |
+| T-8 | to file | The access panel of a space or a project. Owned by `project_management_app.md` §14.9 | Later. Not on this rung | — |
+
+MW-1, MW-2 and MW-3 touch different files, so they can run at once. MW-4 touches the shell, so it runs alone. Each UI slice states its interaction in one sentence and puts its captures on the "Visual review:" line (rule 14). This adds no new flag. Each change sits inside My work, behind the My work flag.
+
+### 9d.5 Questions for the owner
+
+| # | Question | Recommendation |
+|---|---|---|
+| Q-MW-1 | The tip of "Org spaces" | The accurate text of §9d.3 item 3: a new space is open to everyone, and its lead can limit it to a team |
+| Q-MW-2 | A task with no project | The member sees "No project", and the personal root holds the task. The store and D53.3 do not change |
+| Q-MW-3 | A quick add under All or New | It makes a Next task. It never makes a capture |
+
+### 9d.6 Fences
+
+- MW-1: a vitest that the Done act calls the DONE path and that Undo restores the inbox row. `tests/unit/test_chat_parity.py` stays green, because the request already exists.
+- MW-2: a vitest of the chip-to-disposition rule. An R8 test that the create route stores the disposition that it takes.
+- MW-3: a vitest that each name and tip comes from its one constant, and that the rail draws no native `title`.
+- MW-4: `lib/nav.test.ts` (`LIVE_SET`), and a vitest of the active rule for `app=my-tasks`.
+
+Each fence is advisory until its slice builds.
+
+**The brainstorm, by its owners.** The chat that changes the calendar is CE-7b (`calendar_events_reminders.md`). A capture with a time is CC-1, task 1968 (`my_day_command_centre.md`). A drag from a list onto the day is CC-6, task 1974. Chat parity for the day is CC-10, task 1978. This section adds no slice for them.
 
 ## 10. Verification
 
