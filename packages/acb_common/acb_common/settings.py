@@ -383,6 +383,17 @@ class Settings(BaseSettings):
     # owner's production run (CRM-Z10-run). Fence:
     # tests/unit/test_crm_cutover_switch_r8.py.
     crm_cutover_orgs: str = ""
+    # `crm_module_find_orgs` (WS-53 CRM-Q34-6, task 3699, 2026-11-18) lists
+    # the organization ids whose chat may find a field by its words, in one
+    # module or in each mirrored module, in the grammar of `crm_orgs`.
+    # Default empty means NO organization: `GET /crm/fields-search` answers
+    # 404 `module_find_off` and sends no SQL, and `crm_list_fields` ignores
+    # its `query` and answers as before. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_fields_search.py.
+    crm_module_find_orgs: str = ""
     # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
     # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
     # `off` (the default), `shadow` (check at the end of the answer and log
@@ -392,6 +403,16 @@ class Settings(BaseSettings):
     # A value on a box is the grant `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_check.py.
     crm_answer_check: str = "off"
+    # `find_claim_check` (WS-FIND FIND-7, `find_engine.md` §5.5 and §8) is the
+    # "not found" check of a chat answer: `off` (the default), `shadow` (log
+    # one line for an answer that says a record does not exist with no pass 2
+    # of `search_company` in the turn, no hold and no retry) or `on` (hold the
+    # answer and give the chat one more pass, the one retry of the run). Any
+    # other value reads as `off`. The one reader is `find_claim_check_mode`
+    # below. It is not a `*_ORGS` or `*_MODES` key, so a change needs a
+    # restart. `shadow` is AGENT-SAFE. `on` is the grant `enforcement-flip`,
+    # after 7 days of shadow (D-FIND-8). Fence: tests/unit/test_answer_not_found.py.
+    find_claim_check: str = "off"
 
     # `tool_result_spill` (CTX-1, Metorite #825, `one_assistant_context.md`
     # §7.1) keeps a large tool result out of the prompt: the model reads a
@@ -748,10 +769,20 @@ class Settings(BaseSettings):
     # `search_company` says how it matched (`matched_by`, `covers`, `of`), and
     # the hit with the most words comes first. `*` opens every org. Empty
     # opens none, and the answer is the one of KR-ZERO, byte for byte. It acts
-    # only with CONTEXT_RECENCY on. Reader: `gateway.retrieval.find.
-    # find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
+    # only with CONTEXT_RECENCY on. It also opens the chat tool `resolve_name`
+    # and its route `GET /search/names` (FIND-5). Reader: `gateway.retrieval.
+    # find.find_allowed`. A SIGHUP reload applies a change (docs/flag_reload.md).
     # Spec: find_engine.md section 8.
     find_orgs: str = ""
+    # WS-FIND HRD-21: CHAT_SEARCH_ORGS lists the org ids where company search
+    # reads the member's own past chats (the `chat` source, rung 6). `*`
+    # opens every org. Empty opens none, and the answer is the one of before
+    # HRD-21, byte for byte: `apps=chat` and each other unknown app get the
+    # 422 of before, whose list of keys has no `chat`. Reader: `gateway.retrieval.find.
+    # chat_search_named`. A SIGHUP reload applies a change
+    # (docs/flag_reload.md). The flip waits for the owner's preview. Spec:
+    # find_engine.md sections 6 and 8.
+    chat_search_orgs: str = ""
     # STU-B4a: STUDIO_LOGIC_ORGS lists the org ids where the Studio action
     # door runs a first-party logic module (`logic:<name>`). `*` opens every
     # org. Empty opens none. Reader: `gateway.routes.studio.flags.
@@ -1057,6 +1088,18 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_honorifics.py.
     address_forms_orgs: str = ""
 
+    # ── The claim check of an answer (HRD-13, chat_failure_modes.md §4.4) ───
+    #
+    # CHAT_CLAIM_CHECK_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and the orchestrator's run is as before. On, the run
+    # of the orchestrator gets ONE provider that reads the whole run at its
+    # end and logs ONE line, `answer_claims.checked`, with counts only. It is
+    # shadow only and never changes the answer (D-HRD-6). The one reader is
+    # `acb_skills.answer_claims.claim_check_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_answer_claims.py.
+    chat_claim_check_orgs: str = ""
+
     # ── The line of a slow tool (HRD-6, chat_failure_modes.md §4 row B6) ────
     #
     # CHAT_PROGRESS_NOTICE_ORGS: a comma list of organization ids, or `*`.
@@ -1070,6 +1113,32 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). It calls no model.
     # Fence: tests/unit/test_progress_notice.py.
     chat_progress_notice_orgs: str = ""
+
+    # ── The item in focus of a chat (HRD-11a, chat_failure_modes.md §6) ─────
+    #
+    # CHAT_FOCUS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default, and each turn keeps the bytes of its prompt. On, the chat
+    # keeps the email or the Projects task that a tool call read or acted on
+    # last, for each chat and member, in tenant Redis. The per-turn context of
+    # the orchestrator then shows its kind, its id and its link, after the
+    # OA-4 block, with the rule for "it", "this" and "mark it done". A shared
+    # room, a WhatsApp run and a delegated run read and write nothing. The one
+    # reader is `acb_skills.chat_focus.focus_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_focus_item.py.
+    chat_focus_orgs: str = ""
+
+    # ── The per-turn budget of a read tool (HRD-5, chat_failure_modes.md B5) ─
+    #
+    # TOOL_TURN_BUDGET_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and each run is as before. On, the next call to a read
+    # tool in a turn does not run after 3 empty or refused answers from that
+    # tool. Its answer is "Stop. You tried: ..." and tells the chat to ask the
+    # member one question. A write tool is never counted or stopped. The one
+    # reader is `orchestrator.tool_turn_budget.tool_turn_budget_on`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_tool_turn_budget.py.
+    tool_turn_budget_orgs: str = ""
 
     # ── The phase of a streamed run (CS-3a, chat_failure_modes.md §6) ───────
     #
@@ -1451,6 +1520,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
 
+    # ── The shadow join log (chat_organization.md §7, WS-CO CO-4) ──────────
+    #
+    # `chat_join_shadow_orgs` lists the organization ids where the first
+    # message of a new chat writes one row of the shadow join log: the outcome
+    # (join, carry, ask or clean) that §7.1 would take. Or `*` for each one.
+    # Empty means off, and the run route schedules nothing. The member sees
+    # nothing in either case. The one reader is
+    # `gateway.chat_join_shadow.shadow_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`). A value other than empty on a box is the gate
+    # `enforcement-flip`.
+    # Fences: tests/unit/test_chat_join_shadow.py,
+    # tests/unit/test_chat_join_shadow_r8.py.
+    chat_join_shadow_orgs: str = ""
+
     # ── Pin a chat (chat_organization.md §18, WS-CO CO-11) ─────────────────
     #
     # `chat_pin_orgs` lists the organization ids where a member may pin a
@@ -1463,6 +1547,19 @@ class Settings(BaseSettings):
     # `enforcement-flip`, after the owner preview.
     # Fences: tests/unit/test_chat_pin.py, tests/unit/test_chat_pin_r8.py.
     chat_pin_orgs: str = ""
+
+    # ── The card record (chat_organization.md §16.3, WS-CO CO-17) ───────────
+    #
+    # `chat_card_record_orgs` lists the organization ids where a write card
+    # that a member approved leaves one row in `chat_card_record`: the chat,
+    # the member, the card id, the outcome key, the act kind and the link of
+    # the record made. No text of the card. Empty means off: nothing is
+    # written. The one reader is `orchestrator.card_record.record_allowed`,
+    # and it fails closed. The name ends in `_orgs`, so a SIGHUP applies a
+    # change with no restart (`docs/flag_reload.md`). A value other than
+    # empty on a box is the gate `enforcement-flip`.
+    # Fences: tests/unit/test_card_record.py, tests/unit/test_card_record_r8.py.
+    chat_card_record_orgs: str = ""
 
     # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
     #
@@ -2829,6 +2926,26 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``FIND_CLAIM_CHECK`` (WS-FIND FIND-7).
+FIND_CLAIM_CHECK_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
+
+def find_claim_check_mode() -> str:
+    """The ONE reader of ``FIND_CLAIM_CHECK``: ``off``, ``shadow`` or ``on``.
+
+    Any other value, and a settings load that fails, read as ``off``. It
+    lives here, beside :func:`crm_answer_check_mode`, so that the
+    orchestrator reads the mode before it imports the check
+    (``find_engine.md`` §5.5).
+    """
+    try:
+        raw = str(getattr(get_settings(), "find_claim_check", "off") or "off")
+    except Exception:  # a broken settings load never turns the check on
+        return "off"
+    mode = raw.strip().lower()
+    return mode if mode in FIND_CLAIM_CHECK_MODES else "off"
 
 
 #: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).

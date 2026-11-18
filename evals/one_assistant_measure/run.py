@@ -606,6 +606,11 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     # are off by default, and the live run pins them off.
     mp.setattr(settings, "mem0_enabled", False, raising=False)
     mp.setattr(settings, "graphiti_enabled", False, raising=False)
+    # Task 3554: a call that the Router does not take runs on a dev box only.
+    # This eval sets no serving flag, and the executor's error recovery calls
+    # `acb_llm.client.complete` in process. So the live run says dev, and that
+    # call keeps the direct arm that it had before.
+    mp.setattr(settings, "acb_env", "dev", raising=False)
     harness.allow = (base + "/",)
     _system_one_seam(mp)
     tap_system_one(mp, harness.model_calls)

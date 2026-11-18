@@ -8,6 +8,7 @@ Serves both /v1/chat/completions (OpenAI standard) and /chat/completions (some S
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -670,10 +671,25 @@ async def _serve_via_router_stream(
     first: bytes | None = None
     try:
         first = await frames.__anext__()
+        if _is_lone_done(first):
+            # AO-3: an old Console answers a stream that no step opened with
+            # 200 and a lone `[DONE]`. A new Console sends the same when a
+            # provider stream opens and yields no chunk. Read both as the
+            # outage that a 503 means, so the agent never reads an empty
+            # stream as a finished turn. The two units restart apart.
+            with contextlib.suppress(Exception):
+                await frames.aclose()
+            raise ConsoleRouterUnavailable("stream_never_opened")
     except StopAsyncIteration:
-        # The Router answered 200 and sent nothing. Rare, and not an error we
-        # can improve on: relay the empty stream.
-        first = None
+        # AO-3: the Router answered 200 and sent nothing. That is no answer,
+        # so it fails as an outage. Before AO-3 this relayed the empty
+        # stream, and the member saw an empty reply.
+        _router_failed()
+        _log.error(
+            "v1.router_unavailable", error="stream_empty", stream=True,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return _router_unavailable()
     except ConsoleRouterVerdict as verdict:
         # A VERDICT, relayed with its own status: 402 out of credits, 400 a
         # bare model id, 403 the breaker. Flattening these into one 502 would
@@ -689,14 +705,7 @@ async def _serve_via_router_stream(
             "v1.router_unavailable", error=str(exc), stream=True,
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
-        return JSONResponse(
-            status_code=502,
-            content={"error": {
-                "message": "the AI Router is unavailable",
-                "type": "ConsoleRouterUnavailable",
-                "code": 502,
-            }},
-        )
+        return _router_unavailable()
 
     async def _relay() -> Any:
         if first is not None:
@@ -764,14 +773,7 @@ async def _serve_via_router(
             "v1.router_unavailable", error=str(exc),
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
-        return JSONResponse(
-            status_code=502,
-            content={"error": {
-                "message": "the AI Router is unavailable",
-                "type": "ConsoleRouterUnavailable",
-                "code": 502,
-            }},
-        )
+        return _router_unavailable()
 
     # §6B.5 hazard 2: this adds one network hop to the interactive path. The
     # number is LOGGED rather than assumed. On a box where the Console is a
@@ -791,6 +793,49 @@ async def _serve_via_router(
     return payload
 
 
+def _is_lone_done(chunk: bytes | None) -> bool:
+    """True for a first chunk that is only the SSE end, ``data: [DONE]``.
+
+    A real stream's first chunk holds a frame of the answer. The Console
+    pulls that frame before it answers 200 (``main._open_stream_chain``).
+    """
+    if not chunk:
+        return False
+    return chunk.strip() == b"data: [DONE]"
+
+
+def _router_unavailable() -> JSONResponse:
+    """The 502 of the Router hops when no answer came. One body, three uses."""
+    return JSONResponse(
+        status_code=502,
+        content={"error": {
+            "message": "the AI Router is unavailable",
+            "type": "ConsoleRouterUnavailable",
+            "code": 502,
+        }},
+    )
+
+
+def _refuse_unrouted() -> JSONResponse | None:
+    """The 502 for a call that the Router did not take, outside a dev box.
+
+    Task 3554 (2449 S3). ``acb_llm.routed.refuse_direct_arm`` is the one
+    rule. On a dev box it allows the local arm, and this returns None.
+    Elsewhere it raises ``ConsoleRouterUnavailable``, and the door answers
+    as for a Router outage: the same 502 body, and :func:`_router_failed`.
+    """
+    from acb_auth.console_resolve import ConsoleRouterUnavailable
+    from acb_llm.routed import refuse_direct_arm
+
+    try:
+        refuse_direct_arm("v1_compat")
+    except ConsoleRouterUnavailable as exc:
+        _router_failed()
+        _log.error("v1.router_unavailable", error=str(exc), unrouted=True)
+        return _router_unavailable()
+    return None
+
+
 async def _handle_chat_completions(request: Request) -> StreamingResponse | dict[str, Any]:
     """OpenAI-compatible chat completions. Supports streaming and tools."""
     body = await request.json()
@@ -804,12 +849,19 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     # need to do. A routed call must touch none of it.
     if _router_should_serve(body):
         # One branch, not two: `_handle_chat_completions` already sits over
-        # ruff's complexity ceiling (C901, 20 > 15) and this must not add to
-        # it. The two hops are NOT interchangeable — the buffered one returns
-        # a dict and would silently de-stream a chat UI.
+        # ruff's complexity ceiling (C901, 21 > 15 with the refusal of task
+        # 3554) and this must not add to it. The two hops are NOT
+        # interchangeable — the buffered one returns a dict and would
+        # silently de-stream a chat UI.
         hop = (_serve_via_router_stream if body.get("stream", False)
                else _serve_via_router)
         return await hop(request, body)
+
+    # Task 3554: the local arm runs on a dev box only. Elsewhere the door
+    # answers the Router's 502, before any key loads (`_refuse_unrouted`).
+    refusal = _refuse_unrouted()
+    if refusal is not None:
+        return refusal
 
     # H4: the provider credential this call sends is process-global and this
     # route has no tenant to scope it with — `_auth` is `require_llm_api_auth`,
