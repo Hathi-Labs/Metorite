@@ -1892,31 +1892,25 @@ async def crm_aggregate(
     page: int = 1,
     fields: list[str] | None = None,
 ) -> str:
-    """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given. Quote the Display
-    value as written. To split a total over 2 to 5 number fields, give
+    """Count, sum or average CRM records, as one total or by one group. Quote the
+    Display value as written. To split a total over 2 to 5 number fields, give
     fields with every key in ONE call, never one call for each field. When
-    the answer starts with FIRST, tell the member that line before the
-    total. entity is 'leads', 'deals', 'contacts', 'organizations' or
-    'module:<api_name>' (crm_list_modules). measure is 'count',
-    'sum_amount' or 'weighted' (deals: amount times the effective
-    probability, open and ongoing only), or 'sum', 'avg', 'min' or 'max' of
+    the answer starts with FIRST, tell the member that line first. entity is 'leads', 'deals', 'contacts', 'organizations' or
+    'module:<api_name>'. measure is 'count',
+    'sum_amount' or 'weighted' (deals: amount times
+    probability), or 'sum', 'avg', 'min' or 'max' of
     the number field named by field. The group is optional: with no group_by
-    and no group_field you get one total. group_by is 'status', 'owner',
+    or group_field you get one total. group_by is 'status', 'owner',
     'pipeline', 'source', 'created_month', 'updated_month' or 'close_month'
     (a module: 'owner', 'created_month', 'updated_month'). group_field is a
     picklist, boolean, lookup or date field; a date needs bucket 'month',
-    'quarter' or 'year'. A text field cannot group. Field keys come from
-    crm_list_fields. A core entity takes the filters of crm_list_records. A
-    module takes field_filters: {key: value}, or {'key.from': date,
+    'quarter' or 'year'. A module takes field_filters: {key: value}, {'key.from': date,
     'key.to': date} for a date field, or {'key.from': N, 'key.to': M} for a
-    number field. Both ends count, and text such as 'NA' counts as no value.
-    A text or lookup filter matches the exact value, name or record id. When
-    the module search is on, a module also takes q: it searches the first 40
-    text fields. On a module, 'sum_amount' sums its amount, and field,
+    number field; text such as 'NA' counts as no value.
+    A text or lookup filter matches the exact value, name or record id. On a module, 'sum_amount' sums its amount, and field,
     group_field and field_filters also take '@amount', '@date', '@status'
-    and '@parent'. term is the member's own word for the figure: the server
-    maps it to one field, so give no field with it. When two fields give
+    and '@parent'. term is the member's own word for the figure: give no
+    field with it. When two fields give
     different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
@@ -3771,20 +3765,24 @@ async def _modules_answer(page: int | None) -> str:
 @_read_tool
 async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
+    field_filters: dict[str, str] | None = None, fields: list[str] | None = None,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
-    with their ids, and the key and type of each field that crm_aggregate can
-    measure or group. q matches the record name. When the module search is
+    with their ids. q matches the record name. When the module search is
     on, q also finds words in a lookup name or text value, and marks a near
-    spelling. It searches the first 40 text fields."""
+    spelling. It searches the first 40 text fields. field_filters work as in
+    crm_aggregate. fields: up to 5 keys to show on each row."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
-    data = await _get(f"/crm/modules/{mod}/records", {
-        "q": q, "page": number, "page_size": size,
-    }) or {}
+    shown = _list_keys(fields)
+    params: dict[str, Any] = {"q": q, "page": number, "page_size": size}
+    for key, value in (field_filters or {}).items():
+        params[f"field.{key}"] = value
+    data = await _get(f"/crm/modules/{mod}/records", params) or {}
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
     found = find_line(data)
+    by_key = {str(d.get("key")): d for d in data.get("field_defs") or [] if isinstance(d, dict)}
     if not rows:
         return (f"No {mod} records match." + (f"\n{found}" if found else "")
                 + await _short_note(frozenset({MODULE_PREFIX + mod})))
@@ -3794,12 +3792,43 @@ async def crm_list_module_records(
         + (f" · owner {r['owner_email']}" if r.get("owner_email") else "")
         + (f" · near name {_quoted_name(r['matched'])}" if r.get("near") and r.get("matched")
            else "")
+        + _row_values(r, shown, by_key)
         + f" (id={r.get('id')})"
         for r in rows
     )
+    lines.extend(f"Unknown field key {k!r}: crm_list_fields lists the keys."
+                 for k in shown if k not in by_key)
     lines.append(_aggregate_fields(mod, data.get("field_defs") or []))
     return "\n".join(lines) + _more(total, number, size) + await _short_note(
         frozenset({MODULE_PREFIX + mod}))
+
+
+#: The most field keys that ``crm_list_module_records`` shows on a row (CRM-Q34-4).
+LIST_KEYS_MAX = 5
+#: The longest value of one field on a row, in characters.
+_LIST_VALUE_MAX = 80
+
+
+def _list_keys(keys: list[str] | None) -> list[str]:
+    """The ``fields`` of a module list: 1 to :data:`LIST_KEYS_MAX` distinct keys."""
+    found = [str(k).strip() for k in keys or []]
+    if keys is not None and (not found or len(found) > LIST_KEYS_MAX
+                             or any(not k for k in found) or len(set(found)) != len(found)):
+        raise GatewayRefusal(f"fields takes 1 to {LIST_KEYS_MAX} distinct field keys.")
+    return found
+
+
+def _row_values(row: dict[str, Any], keys: list[str], by_key: dict[str, Any]) -> str:
+    """The chosen field values of one row, each under its key (CRM-Q34-4)."""
+    values = row.get("fields") if isinstance(row.get("fields"), dict) else {}
+    shown = []
+    for key in keys:
+        value = values.get(key)
+        if value in (None, "", [], {}):
+            continue
+        text = " ".join(_option_label(by_key.get(key, {}), value).split())
+        shown.append(f"{key}: {text[:_LIST_VALUE_MAX]}")
+    return f" · {'; '.join(shown)}" if shown else ""
 
 
 def _aggregate_fields(mod: str, defs: list[Any]) -> str:

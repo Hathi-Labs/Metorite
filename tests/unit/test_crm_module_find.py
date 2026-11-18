@@ -374,6 +374,6 @@ def test_the_tools_say_that_a_module_takes_q() -> None:
 
     agg = " ".join((tools.crm_aggregate.__doc__ or "").split())
     lst = " ".join((tools.crm_list_module_records.__doc__ or "").split())
-    assert "When the module search is on, a module also takes q" in agg
+    assert "module search" not in agg  # the limit lives in the list text (token budget)
     assert "q matches the record name. When the module search is on" in lst
-    assert "first 40 text fields" in agg and "first 40 text fields" in lst
+    assert "first 40 text fields" in lst  # the one place of the limit (token budget)

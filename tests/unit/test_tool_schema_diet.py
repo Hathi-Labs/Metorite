@@ -89,8 +89,10 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                        'required': ['entity', 'record_id']},
     'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer'},
                         'required': ['entity']},
+    # CRM-Q34-4 added field_filters and fields.
     'crm_list_module_records': {'params': {'module': 'string', 'page': 'integer',
-                                           'page_size': 'integer', 'q': 'string'},
+                                           'page_size': 'integer', 'q': 'string',
+                                           'field_filters': 'object', 'fields': 'array'},
                                 'required': ['module']},
     'crm_list_modules': {'params': {'page': 'integer'}, 'required': []},
     'crm_list_owners': {'params': {'page': 'integer'}, 'required': []},
