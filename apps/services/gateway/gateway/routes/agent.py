@@ -3434,8 +3434,12 @@ async def run_agent_stream_endpoint(
         if _resume_launch is not None:
             # RESUME-2a review, P2: `_resume_from_row` found the thread at
             # rest, then claimed the row. A run that any party started since
-            # then keeps the thread, and the claim goes back. This comes
-            # before the mint, so a refusal writes no reply row.
+            # then keeps the thread, and the claim goes back. This check
+            # comes before the mint, so ITS refusal writes no reply row. The
+            # exclusive refusal of `start_detached` below comes AFTER the
+            # mint, so it leaves one empty reply row. The mint stays before
+            # the start: the run, its checkpoints and the restart sweep
+            # (`record.messageId`) write into that row.
             await _refuse_if_any_run_is_active(thread_id)
     except HTTPException:
         # The run will not start, so its cap reservation goes too.
@@ -3578,7 +3582,9 @@ async def run_agent_stream_endpoint(
             count_member_steers(_actor, _taken_steers)
             # Review, P2: `exclusive` refuses while ANY run is live on the
             # thread, so a continuation never cancels a run of this member
-            # in another tab. A refusal raises before anything began.
+            # in another tab. A refusal raises before the run began. The
+            # reply row minted above stays, empty (the note at
+            # `_refuse_if_any_run_is_active` says why).
             _resume_launch.phase = "starting"
             try:
                 await start_detached(
@@ -3860,8 +3866,8 @@ async def _resume_from_row(
 
     Each of these must hold, or it answers None and changes nothing:
 
-    * The answer is ``APPROVE``, and not a decline (RESUME-4 owns the late
-      decline).
+    * The answer is ``APPROVE``, and not a decline (RESUME-4a-2, task 3478, owns the
+      late decline and waits for D-RES-9).
     * The row of the session's org (RLS) waits, the session's member is its
       ``actor_email``, the request's thread is its thread, and its kind is
       ``confirmation``.
@@ -3907,6 +3913,16 @@ async def _resume_from_row(
     try:
         await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
     except HTTPException:
+        return None
+    # HRD-22b (review, P1): the claim of the stored call reads Redis only
+    # (`claim_act`), and a stall of Redis leaves no SPENT mark. So Postgres is
+    # asked first: when a twin of this card was approved after it was asked,
+    # in any thread, or when nobody can say, the old path takes the answer and
+    # a card shows again (the safe side). No row has moved yet.
+    from acb_skills.late_approve import twin_ran
+
+    if await twin_ran(org, me, row):
+        _log.info("agent.resume_twin_ran", request_id=req.request_id[:12])
         return None
     from orchestrator.run_cap import admit_member_run, release_member_slot
 
@@ -4631,13 +4647,20 @@ async def run_agent_async(
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:
+        from acb_common.no_person import no_person_scope  # noqa: PLC0415
+
         try:
             # H-201 part 3: the caller's tenant, never the thread's (see
             # run_agent_sync).
-            await run_agent(agent, req.payload, run_id=run_id,
-                            thread_id=req.thread_id, model=req.model,
-                            organization_id=getattr(user, "organization_id", None),
-                            session_user=_session_member(user))
+            # MCP-NC1 review: the caller has the 202 and left, so no person
+            # watches this run (AUTO-7a). The mark makes the MCP gate count
+            # no member, so a write of an outside app is refused, never run
+            # with no card, and no card waits for an answer.
+            with no_person_scope():
+                await run_agent(agent, req.payload, run_id=run_id,
+                                thread_id=req.thread_id, model=req.model,
+                                organization_id=getattr(user, "organization_id", None),
+                                session_user=_session_member(user))
         except Exception as exc:  # noqa: BLE001
             _log.error(
                 "agent.async_run_error",

@@ -188,8 +188,11 @@ class Resuming:
     once a card of the scope asked :func:`resume_answer`, so only the FIRST
     card takes the yes. *outcome* says what that card did: ``approved`` (the
     equal card, no card shows), ``changed`` (a card that is not equal, which
-    shows as normal) or ``""`` (no card asked). *card_shown* is True when a
-    card of the scope goes on to the member."""
+    shows as normal), ``spent`` (the equal card, but another approve took the
+    act already), ``unknown`` (the equal card, but the claim could not tell
+    if the act ran: RESUME-2a follow-up, P2-3) or ``""`` (no card asked).
+    The card shows for ``changed``, ``spent`` and ``unknown``. *card_shown*
+    is True when a card of the scope goes on to the member."""
 
     stored: dict[str, Any]
     taken: bool = False
@@ -235,8 +238,9 @@ async def resume_answer(card: Any) -> bool:
     never takes the yes. The yes takes the act with ONE ``SET … GET``
     (``late_approve.claim_act``): an act that is SPENT already (a twin row,
     or a twin approved at the same moment) takes no yes, so it never writes
-    twice. A run with no late-approve scope takes no yes either (fail
-    closed). Never raises, and a fault shows the card."""
+    twice. A claim that cannot tell (no scope, a Redis fault) takes no yes
+    either, and its outcome is ``unknown``, never ``spent`` (fail closed,
+    P2-3). Never raises, and a fault shows the card."""
     state = _RESUMING.get()
     if state is None or state.taken:
         return False
@@ -244,7 +248,13 @@ async def resume_answer(card: Any) -> bool:
     state.card_shown = True
     state.outcome = "changed"
     try:
-        from acb_skills.late_approve import _run_agent, act_of, claim_act
+        from acb_skills.late_approve import (
+            CLAIM_SPENT,
+            CLAIM_TAKEN,
+            _run_agent,
+            act_of,
+            claim_act,
+        )
 
         if card is None:
             return False
@@ -259,9 +269,11 @@ async def resume_answer(card: Any) -> bool:
             _log.info("stored_call.card_changed", tool=str(stored.get("tool") or "")[:60])
             return False
         # The LAST test: it marks the act SPENT, so nothing may refuse after it.
-        if not await claim_act(card):
-            state.outcome = "spent"
-            _log.info("stored_call.act_spent", tool=str(stored.get("tool") or "")[:60])
+        claim = await claim_act(card)
+        if claim != CLAIM_TAKEN:
+            state.outcome = "spent" if claim == CLAIM_SPENT else "unknown"
+            _log.info("stored_call.act_not_taken", tool=str(stored.get("tool") or "")[:60],
+                      claim=state.outcome)
             return False
     except Exception as exc:
         _log.warning("stored_call.resume_check_failed", error_type=type(exc).__name__)

@@ -1929,4 +1929,7 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
               if e is not None]
     if joined.snooze_edge is not None:
         edges.append(joined.snooze_edge)
-    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok and fr.band_ok))
+    # LOOP-4a: a fault of the learned path sets `cacheable` False and leaves
+    # `ok` True, so the answer is served and not stored.
+    kept = joined.ok and joined.cacheable and fr.band_ok
+    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=kept))

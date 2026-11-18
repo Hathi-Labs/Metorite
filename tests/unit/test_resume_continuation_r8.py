@@ -34,6 +34,9 @@ R7, each with the mutation that turns it red:
   and a SET, and both continuations write.
 * ``test_the_spent_mark_outlives_the_twin_row`` (review, P1-A (c)) — drop the
   row life from ``late_approve.spent_ttl_s``.
+* ``test_a_twin_claim_in_the_window_of_a_drop_still_writes_once`` (follow-up,
+  P2-1) — put back the GET and then the DELETE in ``late_approve.drop_offer``,
+  and the twin writes a second time.
 * ``test_flag_off_the_answer_is_as_before`` (review, P1-A (a)) — RESUME with
   ``CHAT_LATE_APPROVE_ORGS`` off resumes, so the twin guard has no mark.
 * ``test_a_refusal_after_the_claim_gives_the_row_back`` (review, P2) — drop
@@ -69,6 +72,8 @@ executor = pytest.importorskip("orchestrator.executor")
 pytest.importorskip("sqlalchemy")
 
 from acb_skills import late_approve  # noqa: E402
+
+_REAL_TWIN_RAN = late_approve.twin_ran
 from acb_skills.ask_tools import card_call, request_confirmation  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
@@ -167,6 +172,16 @@ def scene(as_app, liveness, no_persist, monkeypatch):
     # Review, P1-A (a): RESUME needs the late-approve flag too.
     monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", orgs)
     monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 0.05)
+
+    # HRD-22b (review, P1): the resume path also asks the Postgres witness
+    # (``late_approve.twin_ran``). These scenes test the REDIS layer (the mark,
+    # the ONE ``SET … GET``, the drop), so the witness answers "no twin ran"
+    # here. ``test_a_twin_that_ran_takes_the_old_path_with_no_redis_mark`` puts
+    # the real one back.
+    async def _no_twin(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(late_approve, "twin_ran", _no_twin)
 
     def _no_shared_redis() -> Any:
         raise RuntimeError("this test runs with no Redis: never a shared server")
@@ -605,6 +620,94 @@ def test_twin_rows_approved_at_the_same_moment_write_once(scene, monkeypatch):
     asyncio.run(go())
 
 
+class _DropWindow:
+    """The real ``TenantRedis``, with ONE window in a route's drop of the
+    offer (outside a continuation run): the hook runs after a GET of the
+    offer key, or just before the one atomic step of ``delete_unless``. A
+    continuation's first write of the mark waits for :attr:`release`, so it
+    can only land inside that window."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.hook: Any = None
+        self.fired = 0
+        self.release = asyncio.Event()
+
+    async def set(self, k: Any, value: Any, **kwargs: Any) -> Any:
+        if (IN_CONT.get() and getattr(k, "namespace", "") == late_approve.OFFER_NAMESPACE
+                and not self.release.is_set()):
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.release.wait(), timeout=20)
+        return await self._inner.set(k, value, **kwargs)
+
+    async def _gap(self, k: Any) -> None:
+        if (self.hook is None or IN_CONT.get()
+                or getattr(k, "namespace", "") != late_approve.OFFER_NAMESPACE):
+            return
+        hook, self.hook = self.hook, None
+        self.fired += 1
+        await hook()
+
+    async def get(self, k: Any) -> Any:
+        out = await self._inner.get(k)
+        await self._gap(k)
+        return out
+
+    async def delete_unless(self, k: Any, value: str) -> Any:
+        await self._gap(k)
+        return await self._inner.delete_unless(k, value)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def test_a_twin_claim_in_the_window_of_a_drop_still_writes_once(scene, monkeypatch):
+    """RESUME-2a follow-up, P2-1, end to end. Twin rows A and B of one act,
+    approved seconds apart. B's ``_resume_from_row`` drops its offer, and
+    A's continuation runs its claim in the window of that drop (SPENT). The
+    drop keeps the mark, so B's continuation reads SPENT, shows its card,
+    and writes nothing: ONE PATCH. Mutation: put back the GET and then the
+    DELETE in ``late_approve.drop_offer`` -> the mark goes -> two PATCHes
+    -> red."""
+    from acb_common.tenant_redis import TenantRedis
+
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        try:
+            _use_redis(monkeypatch, client)
+            first = await _park(r, tid, w.org_a)
+            twin = await _park(r, tid, w.org_a)
+            win = _DropWindow(TenantRedis(client))
+            monkeypatch.setattr(late_approve, "_redis", lambda: win)
+            a = await _answer(tid, first, _ALICE, w.org_a)
+            assert isinstance(a, dict) and a["resumed"] is True, a
+            # A's continuation waits at its claim. B's drop opens the window,
+            # and A's claim and write land in it.
+            async def _a_claims_in_the_window() -> None:
+                win.release.set()
+                await _settle()
+
+            win.hook = _a_claims_in_the_window
+            b = await _answer(tid, twin, _ALICE, w.org_a)
+            assert isinstance(b, dict) and b["resumed"] is True, b
+            assert win.fired == 1, "non-vacuity: A's claim landed in B's drop"
+            assert PATCHES == [("d-neuro", "Payment Complete")], "A wrote in the window"
+            await _settle()
+            assert len(STARTED) == 2, "two continuations ran"
+            assert PATCHES == [("d-neuro", "Payment Complete")], "ONE write"
+            assert len(_cards(r, tid)) == 3, "two parked cards, and one new card"
+            assert "Metorite ran the tool" in NOTES[0]
+            assert "already ran in this chat" in NOTES[1]
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
 def test_the_spent_mark_outlives_the_twin_row(scene, monkeypatch):
     """P1-A (c). After the first card writes, the SPENT mark on the real
     Redis lives at least as long as the twin row that still waits, so the
@@ -676,6 +779,42 @@ def test_a_refusal_after_the_claim_gives_the_row_back(scene, monkeypatch):
                 w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is True
             assert pending_ask.restore_stored_call(
                 w.org_a, rid, member=_ALICE, thread_id=tid, stored=stored) is False, "once"
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_twin_that_ran_takes_the_old_path_with_no_redis_mark(scene, monkeypatch):
+    """HRD-22b (review, P1). Both flags on. Twin rows A and B park. A is
+    approved and writes (one PATCH), and a stall of Redis leaves NO SPENT mark.
+    B's late Approve then reads Postgres: A was answered APPROVE after B was
+    asked, so ``_resume_from_row`` takes no claim. B gets the old path (the 409
+    ``run_restarted``, a card shows), and no second PATCH goes out. Mutation:
+    drop the ``twin_ran`` call of ``_resume_from_row`` -> B resumes and the
+    stored call writes again."""
+    monkeypatch.setattr(late_approve, "twin_ran", _REAL_TWIN_RAN)
+    w, r = scene
+    tid = w.t_alice
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            first = await _park(r, tid, w.org_a)
+            twin = await _park(r, tid, w.org_a)
+            res = await _answer(tid, first, _ALICE, w.org_a)
+            assert isinstance(res, dict) and res["resumed"] is True
+            await _settle()
+            assert PATCHES == [("d-neuro", "Payment Complete")]
+            await client.flushdb()  # the stall: no mark of the act survives
+            res2 = await _answer(tid, twin, _ALICE, w.org_a)
+            assert getattr(res2, "status_code", None) == 409
+            assert res2.detail["error"] == "run_restarted"
+            await _settle()
+            assert PATCHES == [("d-neuro", "Payment Complete")], "no second write"
+            assert _row(w, w.org_a, twin)[:2] == ("answered", "APPROVE")
         finally:
             await client.flushdb()
             await client.aclose()

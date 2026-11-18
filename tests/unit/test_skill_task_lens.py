@@ -250,6 +250,10 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_list_schedule",
      {"from_iso": "2026-09-24T00:00:00+05:30", "to_iso": "2026-09-25T00:00:00+05:30"},
      [("GET", "/projects/my/calendar")]),
+    # CE-15 (task 3463): the same read, the `entries` key only.
+    ("my_tasks_list_events",
+     {"from_iso": "2026-09-24T00:00:00+05:30", "to_iso": "2026-09-25T00:00:00+05:30"},
+     [("GET", "/projects/my/calendar")]),
     ("my_tasks_plan_day", {}, [("POST", "/tasks/calendar/plan-today")]),
     ("my_tasks_replan_day", {}, [("POST", "/tasks/calendar/replan-today")]),
     ("my_tasks_rollover", {}, [("POST", "/tasks/calendar/rollover-today")]),

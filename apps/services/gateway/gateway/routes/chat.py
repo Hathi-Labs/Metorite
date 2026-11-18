@@ -11,6 +11,9 @@ GET    /chat/sessions/{session_id}/messages    Fetch messages the caller may rea
 POST   /chat/sessions/{session_id}/messages    Upsert a batch of messages
 POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
 POST   /chat/sessions/{session_id}/continue    Continue a held chat in a fresh chat (WT-1)
+PUT    /chat/sessions/{session_id}/pin         Pin a chat for the caller (CO-11)
+DELETE /chat/sessions/{session_id}/pin         Unpin a chat for the caller (CO-11)
+PUT    /chat/sessions/{session_id}/topic       Move a chat into a topic, for the caller (CO-2b)
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -45,7 +48,9 @@ from acb_common import get_logger
 from acb_common.assistant_profile import PROFILE_USED_EVENT
 from acb_common.chat_continue_flag import continue_allowed
 from acb_common.pg_text import storable
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from gateway import chat_session_member as chat_pins
+from gateway import chat_topic
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -53,7 +58,7 @@ from gateway.rooms import (
     resolve_room_access,
     session_exists_elsewhere,
 )
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _log = get_logger("gateway.chat")
 
@@ -123,6 +128,86 @@ class MessageRecord(BaseModel):
 # Thin sync helpers (run in a thread to stay non-blocking)
 # ---------------------------------------------------------------------------
 
+#: The start of the id of a day's brief row (``chat_brief.brief_message_id``
+#: writes ``brief-<YYYY-MM-DD>``). ``_upsert_messages`` refuses a sealing write
+#: of such an id, so only ``chat_brief._post_row`` seals one (task 3564).
+BRIEF_ID_PREFIX = "brief-"
+
+#: The whole id of a brief row, as Postgres reads it: the rule of
+#: ``isBriefRow`` in ``briefTurn.ts``, with each ``\d`` as ``[0-9]``.
+#: ``assistant_summaries.BRIEF_ROW`` names the same shape in Python.
+BRIEF_ID_SQL_PATTERN = "^brief-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+
+#: The bound of the ids of a brief row on ``chat_message_pkey`` (review of
+#: a26ff7dda). The regex cannot bound an index scan under a non-C collation,
+#: so without this the probe reads each row of each chat. Each valid id sorts
+#: inside it in C, in en_US.utf8 and in ICU, and the R8 suite checks each
+#: collation that the server holds. ⚠️ Never ``>= 'brief-' AND < 'brief.'``:
+#: en_US.utf8 skips the hyphen at first, so the real brief sorts after
+#: ``'brief.'`` and the mark is lost.
+BRIEF_ID_RANGE = ("brief-0000-00-00", "brief-9999-99-99")
+
+#: Whether a chat holds the day's brief: the ``isBrief`` of the list (task
+#: 3564). It reads only what the server writes and a member cannot write. A
+#: client save inserts only a human row (S14), and the brief row is an agent
+#: row. A client update of a sealed row is refused (S13). Only
+#: ``chat_brief._post_row`` seals a row with a brief id, because
+#: ``_upsert_messages`` refuses a fold of one. The mark is computed and never
+#: stored, so it needs no migration. RLS binds the tenant of each row it reads.
+#:
+#: The probe reads one chat. ``BETWEEN`` gives ``chat_message_pkey`` the range
+#: of ids, so the scan reads only the rows of the chat inside that range. The
+#: regex stays the exact rule.
+#:
+#: ⚠️ A scalar subquery with ``LIMIT 1``, never ``EXISTS``. The planner can
+#: turn an ``EXISTS`` of the list into ONE hashed scan of every
+#: ``chat_message`` row of the tenant, for each list read. A scalar subquery
+#: is never hashed. The R8 suite reads the plan.
+#:
+#: The mark belongs to the chat, not to the reader. A room that holds the
+#: brief of another member reads true for each viewer, so the client folds a
+#: chat only when ``isOwner`` is true too.
+#: Fence: ``tests/unit/test_chat_sessions_is_brief_r8.py``.
+_IS_BRIEF_SQL = (
+    "COALESCE((SELECT true FROM chat_message b "
+    "          WHERE b.session_id = s.id "
+    f"           AND b.id BETWEEN '{BRIEF_ID_RANGE[0]}' AND '{BRIEF_ID_RANGE[1]}' "
+    f"           AND b.id ~ '{BRIEF_ID_SQL_PATTERN}' "
+    "            AND b.author_kind = 'agent' "
+    "            AND b.run_final_at IS NOT NULL "
+    "          LIMIT 1), false)"
+)
+
+#: The session list of ``_get_sessions``. A module constant, so the R8 suite
+#: reads the plan of this exact statement.
+_SESSIONS_SQL = (
+    "SELECT s.id, s.agent_name, s.title, s.last_preview, "
+    "       s.message_count, s.created_at, s.updated_at, "
+    "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
+    "       (SELECT count(*) FROM chat_session_participant p "
+    "          WHERE p.session_id = s.id) AS participant_count, "
+    # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
+    # The brief row is an agent turn, so a chat that holds only
+    # the brief reads false, and the nudge stays (§4.7). A scalar
+    # subquery for the reason of ``_IS_BRIEF_SQL`` (task 3564). It reads
+    # the rows of one chat by ``session_id`` until the first member row.
+    "       COALESCE((SELECT true FROM chat_message m "
+    "                 WHERE m.session_id = s.id AND m.role = 'user' "
+    "                 LIMIT 1), false) AS has_user_message, "
+    f"      {_IS_BRIEF_SQL} AS is_brief, "
+    "       me.role AS my_role, s.archived_at, "
+    # CO-13: the link of a chat that continues another one. The
+    # title is found below, in this same result (§17.5).
+    "       s.continued_from "
+    "FROM chat_session s "
+    # One join on the participant key, so no query per row.
+    "LEFT JOIN chat_session_participant me "
+    "  ON me.session_id = s.id AND me.subject = :uid "
+    f"WHERE {SESSION_VISIBLE_SQL} "
+    "ORDER BY s.updated_at DESC"
+)
+
+
 def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     """Every room this person can open, newest first.
 
@@ -133,31 +218,34 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
+    # CO-11 (`chat_organization.md` §18): the caller's own pins, only with the
+    # switch on. Off, the list sends today's one statement and today's keys.
+    pins_on = chat_pins.pin_allowed(organization_id)
+    pins: dict[str, Any] = {}
+    # CO-2b (§6): the caller's own topic of each chat, only with the switch on.
+    topics_on = chat_topic.topics_allowed(organization_id)
+    topics: dict[str, Any] = {}
     with tenant_session(organization_id) as s:
-        rows = s.execute(
-            text(
-                "SELECT s.id, s.agent_name, s.title, s.last_preview, "
-                "       s.message_count, s.created_at, s.updated_at, "
-                "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
-                "       (SELECT count(*) FROM chat_session_participant p "
-                "          WHERE p.session_id = s.id) AS participant_count, "
-                # WS-62 CF-5 (review of #1216): whether a MEMBER wrote in it.
-                # The brief row is an agent turn, so a chat that holds only
-                # the brief reads false, and the nudge stays (§4.7).
-                "       EXISTS (SELECT 1 FROM chat_message m "
-                "               WHERE m.session_id = s.id AND m.role = 'user') "
-                "         AS has_user_message, "
-                "       me.role AS my_role, s.archived_at "
-                "FROM chat_session s "
-                # One join on the participant key, so no query per row.
-                "LEFT JOIN chat_session_participant me "
-                "  ON me.session_id = s.id AND me.subject = :uid "
-                f"WHERE {SESSION_VISIBLE_SQL} "
-                "ORDER BY s.updated_at DESC"
-            ),
-            {"uid": user_id},
-        ).fetchall()
-    return [
+        rows = s.execute(text(_SESSIONS_SQL), {"uid": user_id}).fetchall()
+        if pins_on:
+            pins = chat_pins.pinned_at_of(s, user_id)
+        if topics_on:
+            topics = chat_pins.topics_of_chats(s, [r.id for r in rows], user_id)
+    # CO-13 (§17.5): the source of a continued chat is readable by this member
+    # exactly when it is a row of this list. The list holds every row that
+    # SESSION_VISIBLE_SQL passes, with no limit, under the bound tenant, so a
+    # source of another org or one that the member cannot read is not here.
+    # No second rule and no second query. A deleted source left a NULL link.
+    readable = {r.id: r.title for r in rows}
+
+    def _mark(link: str | None) -> dict | None:
+        if not link:
+            return None
+        if link in readable:
+            return {"id": link, "title": readable[link]}
+        return {"id": None, "title": None}
+
+    listed = [
         {
             "id": r.id,
             "agentName": r.agent_name,
@@ -185,12 +273,32 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
             "hasUserMessage": bool(r.has_user_message),
+            # Task 3564: the chat holds the day's brief (``_IS_BRIEF_SQL``).
+            # The sidebar folds a brief chat with no member message.
+            "isBrief": bool(r.is_brief),
             # D99 (migration 254): an archived chat stays in the list, and
             # the assistant shows it under "Archived".
             "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
+            # CO-13: null for a chat that continues nothing. An archived
+            # source stays in the list, so it keeps its title and its link.
+            "continuedFrom": _mark(r.continued_from),
         }
         for r in rows
     ]
+    if pins_on:
+        # Only the caller's pin: a colleague in the same room reads none of
+        # it. An archived chat reads as not pinned (`pin_fields`).
+        for item, r in zip(listed, rows, strict=True):
+            item.update(chat_pins.pin_fields(pins.get(r.id),
+                                             archived=r.archived_at is not None))
+    if topics_on:
+        # Only the caller's topic, and only a topic that shows to the caller.
+        # A colleague in the same room reads none of it (CO-2b). An archived
+        # chat reads as no topic, as it reads as not pinned.
+        for item, r in zip(listed, rows, strict=True):
+            item.update(chat_pins.topic_fields(topics.get(r.id),
+                                               archived=r.archived_at is not None))
+    return listed
 
 
 def _refuse_if_elsewhere(s: Any, session_id: str) -> bool:
@@ -533,6 +641,36 @@ def _delete_session(
             if pending_ask.durable_asks_enabled():
                 pending_ask.close_thread_asks(s, session_id)
         return deleted
+
+
+def _pin_session(
+    session_id: str, user_id: str, *, organization_id: str | None,
+) -> chat_pins.PinResult:
+    """Pin the chat for *user_id* in the caller's tenant (CO-11)."""
+    from acb_graph import tenant_session
+
+    with tenant_session(organization_id) as s:
+        return chat_pins.pin(s, session_id, viewer=user_id)
+
+
+def _unpin_session(
+    session_id: str, user_id: str, *, organization_id: str | None,
+) -> bool:
+    """Clear the pin of *user_id* in the caller's tenant (CO-11)."""
+    from acb_graph import tenant_session
+
+    with tenant_session(organization_id) as s:
+        return chat_pins.unpin(s, session_id, viewer=user_id)
+
+
+def _move_session(
+    session_id: str, user_id: str, topic_id: str | None, *, organization_id: str | None,
+) -> chat_pins.TopicMove:
+    """Move the chat of *user_id* into a topic, or to "No topic" (CO-2b)."""
+    from acb_graph import tenant_session
+
+    with tenant_session(organization_id) as s:
+        return chat_pins.set_topic(s, session_id, viewer=user_id, topic_id=topic_id)
 
 
 def _get_messages(
@@ -961,6 +1099,10 @@ def _upsert_messages(
     (``_TOUCH_SESSION_SQL``, PZ-33b round 4). The seed of the summary job
     finds the chats of its window by that column.
 
+    With ``author_from_run`` an id that starts with :data:`BRIEF_ID_PREFIX`
+    writes nothing and is in the return value (task 3564). So the brief mark
+    of the list stays a mark that only the brief route makes.
+
     ⚠️ **No setup value is stored** (WS-54 fix round 2, item 5). Every text
     field of every turn passes through ``acb_common.setup_markers``, so a
     ``<<<SETUP:service:KEY=value>>>`` marker in a model answer leaves no
@@ -1006,6 +1148,16 @@ def _upsert_messages(
         except SessionOfAnotherTenant:
             return [m.id for m in messages]
         for m in messages:
+            # Task 3564: a sealing write never takes a brief id. The fold
+            # seals the row under the id that the client sent, so a run could
+            # otherwise forge the list's brief mark (``_IS_BRIEF_SQL``). Only
+            # ``chat_brief._post_row`` seals a brief row, with no fold. The
+            # run's final reply is then not saved, and only the log says so.
+            # That is accepted: no client of ours sends a ``brief-`` id.
+            if author_from_run and m.id.startswith(BRIEF_ID_PREFIX):
+                _log.warning("chat.brief_id_fold_refused", session_id=session_id[:12])
+                declined.append(m.id)
+                continue
             kind, author = _attribute(m, actor_email, agent_name)
             # S14: a client inserts a human row only. The fold and the mint
             # are the server, and they may insert an agent row.
@@ -1131,6 +1283,115 @@ async def patch_session(
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
+
+
+def _pin_member(user: UserContext) -> str:
+    """The address of the session, the key of a pin (CO-11). A caller with no
+    address gets 403: a shared key such as ``default`` would give every such
+    caller one pin row."""
+    email = (user.email or "").strip()
+    if not email:
+        raise HTTPException(status_code=403, detail="Sign in to pin a chat.")
+    return email
+
+
+@router.put("/sessions/{session_id}/pin", summary="Pin a chat for the caller")
+async def pin_session(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """CO-11 (`chat_organization.md` §18). The pin is the caller's own: the
+    member is the session's, never a request field (R11). Any member who can
+    read the chat may pin it. 404 while `CHAT_PIN_ORGS` leaves the org out,
+    and for a chat that the caller cannot read. 409 for an archived chat. A
+    second pin keeps the time of the first."""
+    org = user.organization_id
+    if not chat_pins.pin_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    member = _pin_member(user)
+    result = await asyncio.to_thread(
+        _pin_session, session_id, member, organization_id=org,
+    )
+    if result.state == "missing":
+        raise HTTPException(status_code=404, detail="Session not found")
+    if result.state == "archived":
+        raise HTTPException(
+            status_code=409, detail="This chat is archived. Restore it, then pin it.",
+        )
+    return {"ok": True, "pinned": True,
+            "pinnedAt": result.at.isoformat() if result.at else None}
+
+
+@router.delete("/sessions/{session_id}/pin", summary="Unpin a chat for the caller")
+async def unpin_session(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """CO-11. Clears the caller's own pin, and no pin of a colleague. A chat
+    with no pin answers 200 too. 404 while the switch is off, and for a chat
+    that the caller cannot read."""
+    org = user.organization_id
+    if not chat_pins.pin_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    member = _pin_member(user)
+    found = await asyncio.to_thread(
+        _unpin_session, session_id, member, organization_id=org,
+    )
+    if not found:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True, "pinned": False, "pinnedAt": None}
+
+
+class TopicMoveIn(BaseModel):
+    """The move of a chat (CO-2b): a topic id, or null for "No topic". The
+    member and the org come from the session, so any other key gets 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic_id: str | None = Field(max_length=64)
+
+
+@router.put("/sessions/{session_id}/topic", summary="Move a chat into a topic, for the caller")
+async def move_session_topic(
+    session_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """CO-2b (`chat_organization.md` §6, D163). The topic is the caller's own:
+    a colleague in the same room keeps their topic. The pass never writes over
+    this move. The member is the session's, never a request field (R11).
+
+    404 while `CHAT_TOPICS_ORGS` leaves the org out, before the body is read.
+    No body parameter is declared, because FastAPI parses a declared body
+    before the handler. 404 "Topic not found" for a topic that the caller may
+    not use: a colleague's topic, a hidden company topic, an unknown id and an
+    id that is not a UUID. 404 "Session not found" for a chat that the caller
+    cannot read. 409 for an archived chat, as for the pin. The body is
+    :class:`TopicMoveIn`."""
+    from gateway.routes.chat_topics import NOT_FOUND, _body
+
+    org = user.organization_id
+    if not chat_topic.topics_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    member = (user.email or "").strip()
+    if not member:
+        raise HTTPException(status_code=403, detail="Sign in to move a chat.")
+    payload = await _body(request, TopicMoveIn)
+    tid: str | None = None
+    if payload.topic_id is not None:
+        tid = chat_topic.topic_id(payload.topic_id)
+        if tid is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    moved = await asyncio.to_thread(_move_session, session_id, member, tid, organization_id=org)
+    if moved.state == "no_topic":
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if moved.state == "archived":
+        raise HTTPException(
+            status_code=409, detail="This chat is archived. Restore it, then move it.",
+        )
+    if moved.state != "set":
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True, **chat_pins.topic_fields(moved.topic)}
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1425,6 +1686,9 @@ async def continue_session(
     while ``CHAT_CONTINUE_ORGS`` does not hold the caller's org, and when the
     caller cannot read the source. It is 409 when the source holds no row
     that the caller typed. The request names no id, no org and no member.
+    Beside it, HRD-19a copies the member's decisions and item in focus to the new
+    chat, key to key. They are in no field of the answer, and the log holds their
+    counts. The answer keeps the shape that ``test_continue_carry.py`` pins.
     """
     org = user.organization_id
     me = (user.email or "").strip()
@@ -1465,7 +1729,21 @@ async def continue_session(
     if not linked:
         # The source left between the read and the write.
         raise HTTPException(status_code=404, detail="Session not found")
-    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12])
+    # HRD-19a (chat_failure_modes.md E3): the member's own decisions and the item in
+    # focus cross KEY TO KEY, each under the flag of its own store. Nothing is written
+    # into `text` or into a `chat_message` row, so a decision never becomes a message that
+    # the member "typed". The org and the member come from the session. A shared room
+    # carries nothing: its records are the records of one member in one chat.
+    carried_records = {"decisions": 0, "focus": False}
+    if not room.is_shared:
+        from acb_skills import chat_constraints, chat_focus
+
+        carried_records["decisions"] = await chat_constraints.carry_decisions(
+            org or "", session_id, new_id, me)
+        carried_records["focus"] = await chat_focus.carry_focus(
+            org or "", session_id, new_id, me)
+    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12],
+              decisions=carried_records["decisions"], focus=carried_records["focus"])
     return {"session_id": new_id, "text": carried}
 
 

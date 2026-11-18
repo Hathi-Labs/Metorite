@@ -49,6 +49,7 @@ __all__ = [
     "EXEMPT",
     "EXEMPT_KINDS",
     "F3_FILES",
+    "P0_CEILING",
     "TOOL_SOURCES",
     "UNREAD_CEILING",
     "WAVES",
@@ -146,18 +147,22 @@ def app_of(path: str) -> str | None:
     return found
 
 
-#: A wave of the epic -> what it gives the chat, and the apps it covers.
+#: A wave of the epic -> what it gives the chat, the apps it covers, and the
+#: Metorite tasks of the board that build it (PAR-1b, task 3100). A wave with no
+#: task is a wave that nobody builds, so ``test_chat_parity.py`` refuses it. A
+#: wave that splits into slices lists the task of each slice.
 #: P-1 is the next slice. The epic sets the order of the waves after it.
-WAVES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "P-1": ("Calendar and Tasks", ("calendar", "tasks")),
-    "P-2": ("Email", ("email",)),
-    "P-3": ("CRM", ("crm",)),
-    "P-4": ("Notes and WhatsApp", ("notes", "whatsapp")),
-    "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory")),
-    "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents")),
-    "P-7": ("Chat threads and the shell", ("chat", "shell")),
-    "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations")),
-    "P-9": ("AI Studio", ("studio",)),
+WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
+    "P-1": ("Calendar and Tasks", ("calendar", "tasks"), (3112,)),
+    "P-2": ("Email", ("email",), (3111,)),
+    "P-3": ("CRM", ("crm",), (3678,)),
+    "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
+    "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"), (3105, 3114)),
+    "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"), (3115,)),
+    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115,)),
+    "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
+            (3102, 3107, 3108, 3109)),
+    "P-9": ("AI Studio", ("studio",), (3115,)),
 }
 
 #: The kinds of a request that is not a member's act. An exemption names one.
@@ -940,12 +945,20 @@ DEBT: dict[str, str] = {
     "DELETE /api/chat/sessions/{}": "P-7",
     "DELETE /api/chat/sessions/{}/agents/{}": "P-7",
     "DELETE /api/chat/sessions/{}/participants/{}": "P-7",
+    # CO-11 (task 3510): Unpin and Pin of a chat. No chat tool lists or opens
+    # chats today, so P-7 pays both in a separate slice. That slice can need a
+    # line in tool_packs.py, which the cal-tasks session owns.
+    "DELETE /api/chat/sessions/{}/pin": "P-7",
     "GET /api/agent/workspace/{}": "P-7",
     "GET /api/agent/workspace/{}/history": "P-7",
     "GET /api/chat/directory": "P-7",
     "GET /api/chat/pending-asks": "P-7",
     "GET /api/chat/sessions": "P-7",
     "GET /api/chat/sessions/{}/room": "P-7",
+    # CO-2b (task 3588): the topic chip reads the topics, makes a private
+    # topic, and moves a chat. No chat tool lists or moves chats today, so P-7
+    # pays the three with the chat tool of the chat list, as for the pin.
+    "GET /api/chat/topics": "P-7",
     "GET /api/models/all": "P-7",
     "PATCH /api/agent/workspace/{}": "P-7",
     "PATCH /api/chat/sessions/{}": "P-7",
@@ -958,9 +971,12 @@ DEBT: dict[str, str] = {
     "POST /api/chat/sessions/{}/agents": "P-7",
     "POST /api/chat/sessions/{}/participants": "P-7",
     "POST /api/chat/suggestions": "P-7",
+    "POST /api/chat/topics": "P-7",
     "POST /api/documents/pdf": "P-7",
     "POST /api/feedback": "P-7",
     "PUT /api/agent/workspace/{}/file": "P-7",
+    "PUT /api/chat/sessions/{}/pin": "P-7",
+    "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
     "DELETE /api/push/subscriptions": "P-7",
     "GET /api/actions/pending": "P-7",
@@ -1082,28 +1098,40 @@ DEBT: dict[str, str] = {
     "POST /api/integrations/plugins": "P-8",
 }
 
+#: The debt of each app at P-0 (2026-11-01, ``0ffbd35d3``), the baseline. A ceiling of
+#: ``DEBT_CEILING`` above its baseline went UP, and its comment must name the task
+#: that pays it: "paid by task N", with N a task of the wave of that app
+#: (:data:`WAVES`). An app that P-0 did not hold (AI Studio) has the baseline 0.
+#: PAR-1b (task 3100). Fence: ``test_chat_parity.py``.
+P0_CEILING: dict[str, int] = {
+    "projects": 7, "tasks": 11, "calendar": 1, "email": 13, "crm": 74, "notes": 51,
+    "whatsapp": 25, "people": 19, "knowledge": 17, "memory": 5, "workflows": 24,
+    "apps": 29, "agents": 20, "chat": 25, "shell": 15, "settings": 21, "admin": 36,
+    "integrations": 19, "studio": 0,
+}
+
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 9,
-    "calendar": 5,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5).
-    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
+    "calendar": 5,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). Paid by task 3112.
+    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111.
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
-    "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
+    "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.
     "memory": 5,
     "workflows": 18,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18).
     "apps": 28,
     "agents": 20,
-    "chat": 25,
-    "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it.
-    "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write.
+    "chat": 30,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). P-7 pays them with the chat tool of the chat list, a separate slice. Paid by task 3115.
+    "shell": 16,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. P-7 pays it. Paid by task 3115.
+    "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 36,
-    "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access.
-    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3).
+    "integrations": 22,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. Paid by task 3109.
+    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). Paid by task 3115.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
