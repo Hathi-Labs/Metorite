@@ -379,6 +379,34 @@ async def _steer_followup_gate(thread_id: str) -> Response | None:
     return None
 
 
+def _paste_raw_parts(
+    sent_words: str,
+    taken_steers: list[dict[str, Any]],
+    *,
+    client_text: bool,
+    followup: bool,
+    resume_launch: bool,
+) -> tuple[str, ...]:
+    """The raw member parts of ONE turn, for ``paste_frame.RAW_PARTS`` (HRD-14b).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The raw binding". In order, as
+    the turn holds them: the raw text of each steer that the ENGAGE seam
+    replays (``steer.format_replayed`` skips an empty one too), then the sent
+    words while ``message`` is still the client's text. That covers a typed
+    turn, a pill, a retry, an API call, a card answer and a Continue with no
+    restart marker. A Continue whose note the server wrote adds nothing for
+    the note, and a steer follow-up sends no words. RESUME-2a is the empty
+    tuple: the executor writes its note. An empty tuple is still a bound run.
+    The words are the RAW sent words, never ``typed_text`` (``MEMBER_SENT``)."""
+    if resume_launch:
+        return ()
+    parts = [str(s.get("text") or "") for s in taken_steers
+             if isinstance(s, dict) and str(s.get("text") or "").strip()]
+    if client_text and not followup and str(sent_words or "").strip():
+        parts.append(str(sent_words))
+    return tuple(parts)
+
+
 async def _resume_note_for(
     thread_id: str, member: str, organization_id: str | None,
 ) -> str | None:
@@ -3078,10 +3106,14 @@ async def run_agent_stream_endpoint(
         _typed_mark = False  # and its row is not typed (D-PZ-37)
         _prompt = None if _prompt is None else _prompt.model_copy(
             update={"member_typed": False})
+    # HRD-14b: True while `message` is still the client's text. The raw
+    # binding of the paste frame (`_raw_parts` below) reads it.
+    _client_text = True
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
             req.payload["message"] = _note
+            _client_text = False
 
     # ── The steer follow-up (owner, 2026-10-12) ──────────────────────────────
     # The chat asks for it once the run it steered has ended. It carries no
@@ -3547,7 +3579,15 @@ async def run_agent_stream_endpoint(
         count_member_steers,
         member_typed,
     )
+    from acb_skills.paste_frame import bind_raw_parts  # noqa: PLC0415
     from acb_skills.tool_packs import surface_scope  # noqa: PLC0415
+
+    # HRD-14b: the raw member parts of this turn, for the paste frame. Read
+    # after the ENGAGE seam took the steers it replays. Never MEMBER_SENT.
+    _raw_parts = _paste_raw_parts(
+        _sent_words, _taken_steers, client_text=_client_text,
+        followup=_followup, resume_launch=_resume_launch is not None,
+    )
 
     # The detached run of this turn: the same arguments for a run that this
     # request reads (`run_detached` below) and for a continuation run that no
@@ -3577,8 +3617,10 @@ async def run_agent_stream_endpoint(
         # for a turn, so the run reads no typed or sent words.
         from orchestrator.stream_relay import start_detached
 
-        # A continuation has no app of the dock, so it binds no surface.
-        with member_typed(_typed, sent=_sent_text), surface_scope(None):
+        # A continuation has no app of the dock, so it binds no surface. Its
+        # raw parts are the empty tuple: a bound run with no member text.
+        with member_typed(_typed, sent=_sent_text), surface_scope(None), \
+                bind_raw_parts(_raw_parts):
             count_member_steers(_actor, _taken_steers)
             # Review, P2: `exclusive` refuses while ANY run is live on the
             # thread, so a continuation never cancels a run of this member
@@ -3616,7 +3658,9 @@ async def run_agent_stream_endpoint(
             # copies the context here, so the run reads them, and nothing
             # else does. D-PZ-37: `sent` is the sent words. They open only
             # the confirm card, and they feed the tool-pack chooser.
-            with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
+            # HRD-14b: the raw parts ride the same scope (`_raw_parts`).
+            with member_typed(_typed, sent=_sent_text), surface_scope(_surface), \
+                    bind_raw_parts(_raw_parts):
                 # PZ-31: the session's member is the run member. Their own
                 # typed steers that ENGAGE took count now, and a tool result
                 # that reads one later adds it (`steer.take_steer_turns`).
