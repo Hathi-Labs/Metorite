@@ -5,7 +5,9 @@ D226). The rest stays PROPOSED. Nothing is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
 owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
-D-CSY-1, D-CSY-3 and D-CSY-4 stay open. So rungs 1 and 2 are ACTIVE. The
+D-CSY-1, D-CSY-3 and D-CSY-4 stay open.
+
+So rungs 1 and 2 are ACTIVE. The
 slices of rung 3 that need no D-CSY answer are ACTIVE too. SEM-14 needs D-CSY-1
 and stays PROPOSED. Verified against `origin/main` at `f4c6ff08f`
 (2026-11-18).
