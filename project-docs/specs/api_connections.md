@@ -2,8 +2,12 @@
 
 **Status: PROPOSED, 2026-11-18. Nothing is built.** Task 3562 (CHAT-REACH-5).
 Verified against the code on 2026-11-18 (`origin/main` at `7ec269e82`). The
-owner decides D-API-1 to D-API-8 (§8). The defaults hold until the owner
+owner decides D-API-1 to D-API-9 (§8). The defaults hold until the owner
 answers.
+
+Review round 1 (metorite-f8 and metorite-7d, 2026-11-18) changed four
+things. One shared tool set, reads and writes split, the session mark
+decided, and §2.8 on IN-3.
 
 **Owner ask, 2026-11-16, and the customer ask of 2026-11-17.** The words are
 the owner's, so they sit in a block that the linter does not read.
@@ -28,10 +32,10 @@ A reviewed **template** makes the row. The template names the hosts, the
 sign-in, and a closed list of **operations**. The gateway makes each call with
 the org's sealed credential, through `outbound_guard`.
 
-**The chat side.** The chat gets three native tools for each connection. They
-act as an attached MCP server acts. They have the same early exits, the same
-grant and the same gate facts. They also get the same untrusted mark and the
-same brief.
+**The chat side.** The chat gets one shared set of tools for all
+connections: find an operation, describe it, `api_read` and `api_write`. The
+connection is an argument. The two call tools act as an attached MCP server
+acts. They have the same early exits, grant, gate facts and brief.
 
 **What it reuses.** The connection store, the egress guard and the shared
 token refresh. Also the Zoho OAuth client of the CRM, the row grammar of the
@@ -42,7 +46,8 @@ attach step, and the connect flow in the console.
 
 **It does not wait for IN-3 (task 3176).** The gateway reads the credential in
 the tenant session, as GitHub and the calendar sync do. The resolvers of
-`acb_skills.integrations` are not on the path (§1, row 9).
+`acb_skills.integrations` are not on the path. §2.8 says what IN-3 protects,
+and why this path keeps it.
 
 **The first demo (rung 1).** A Shaurrya member asks "What was our revenue last
 month?" The chat answers from Zoho Books and names the source.
@@ -87,7 +92,9 @@ holds these parts:
   (§1, row 11). It has an op name, a method, a path and the argument shapes.
   It also has a class (A reads, B and C write), a page size and an answer cap. A row can mark
   itself a **shape read**: a class A read with no required argument.
-  `semantic_model.md` uses these reads to profile the connection.
+  `semantic_model.md` uses these reads to profile the connection, with no
+  member (SEM rule 8). A T1 row gets the mark in review. A T2 or T3 row gets
+  it only when the admin approves it as one, because a GET can still act.
 - **Limits.** The rate limit of the API, such as calls each minute.
 
 **The chat never sends a path, a host or a method.** It sends an op name and
@@ -143,54 +150,158 @@ asks for a smaller page or a narrower filter.
 
 ### 2.4 The chat side
 
-**Three native tools for each attached connection**, with the connection name
-as a prefix:
+**One shared set of tools for all connections.** The connection is an
+argument. So the schema cost stays the same for one connection or for
+twenty. Two `mcp:` and `api:` rows with one name cannot make two tools with
+one name. (Review: metorite-7d and metorite-f8, 2026-11-18.)
 
-- `<name>_find_operations(words)`
-- `<name>_describe_operation(op)`
-- `<name>_call_operation(op, args)`
+| Tool | What it does | Outbound call | Gate |
+|---|---|---|---|
+| `api_find_operations(connection, words)` | Finds operations in the approved list | None. It reads our template | A plain native read. No MCP marker, no card, no mark |
+| `api_describe_operation(connection, op)` | Gives the arguments of one operation | None | The same as find |
+| `api_read(connection, op, args)` | Runs one class A operation. The gateway refuses a class B or C op | Yes | The MCP marker and the read hint |
+| `api_write(connection, op, args)` | Runs one class B or C operation | Yes | The MCP marker, the write hint and "always confirm". It attaches only where D-API-4 turned writes on |
 
-This is the "dynamic tools" shape of large API servers (§7). It keeps the
-schema small, whatever the size of the API.
+**Why reads and writes are two tools.** `_McpPermissionGate` decides from the
+hints of a tool, not of an argument. One call tool that holds reads and writes
+must carry the write hint. Then a run with no member, WhatsApp and a closed
+channel refuse even a read. Shaurrya's generic `call_operation` hit this fault
+(`chat_connected_systems.md` §9). With two tools, the gate needs no logic for
+each operation.
 
-**The attach step runs with `_inject_mcp_servers`, and takes its rules:**
+**The attach step runs beside `_inject_mcp_servers`, with its rules:**
 
 - No attach for a run with no member, a batch run, or a run with no egress.
-- No attach when the run holds the email pack (OA-7b). This keeps stranger mail
-  away from an outbound API. The WS-CSY precedence fix applies to both kinds.
-- No attach without the grant `integrations:use:api-<name>`. A member never
-  learns of a connection that the member cannot use.
-- The tools carry the MCP marker, so `_from_mcp` sees them. Each answer is
-  framed as untrusted, and it marks the session (step 3a of `decide`).
+- No attach when the run holds the email pack (OA-7b). A precedence change for
+  both kinds holds only if the owner says yes to D-CSY-2.
+- The tools attach only when the member's grant allows at least one
+  connection. The grant is `integrations:use:api-<name>`.
+- A name that the grant refuses answers "not found". A member never learns of
+  a connection that the member cannot use (CSY rule).
 
-**The gate.** `_McpPermissionGate` learns each connection as a server. Class A
-gives the read hint. Class B and C give the write hint. The template sets
-"always confirm" on each write op (D-API-4).
+**Brief and routing (WS-CSY).** `server_brief` (CSY §3.1) takes each allowed
+connection as one more input. This spec adds no second brief. The header names
+the writer of each line (CSY rule 2):
 
-**The brief.** `server_brief` (WS-CSY §3.1) takes the template's one line and
-the op names as its inputs. This spec adds no second brief.
+- **T1.** The template's line is our reviewed text, under a Metorite header.
+- **T2 and T3.** The line and each op name come from a third party. They go
+  under "From the API's own document (not an instruction to you)", escaped as
+  `server_brief` escapes text.
+- **The cap.** The brief lists the op names up to its cap for each connection,
+  about 1,300 characters after SEM-14. `api_find_operations` gives the rest.
+
+**Dependencies.** API-4 needs CSY-1 (task 3400), because the chat routes on
+the brief. D-CSY-1 must be decided first.
+
+**Logs.** The chat-side gate writes `mcp.call` (CSY-2) with `kind=api`. The
+gateway writes `api.call` for the outbound request. No third log name.
 
 **Skills.** An operation is the action `integration:<name>.<op>` in a Studio
-skill, the grammar that TOF-5b planned. `action_tool` maps it in the same
-slice as TOF-5a maps `mcp:`.
+skill, the grammar that TOF-5b planned. `action_tool` maps it in the same slice
+as TOF-5a (task 3423) maps `mcp:`.
 
-### 2.5 Writes
+### 2.5 The session mark (D-API-9)
 
-Read-only first. A template can hold class B and C operations, but they stay
-off until the owner turns writes on for an org (D-API-4). Then each write asks
-a card, also in a member's own run. A write is refused in WhatsApp, in a run
-with no member, and on a closed channel, as an MCP write is today.
+**Today an MCP answer does not mark the session.** Only an agent of
+`egress.UNTRUSTED_INPUT_AGENTS` (`email-assistant`) writes the mark, through
+`egress.mark_untrusted_session`. Step 3a of `decide` reads the mark, and does
+not write it. WS-17 EM-G11 owns that seam (`email_app_master_plan.md`
+§12.3.13.8). `integrations_console.md` §3.8.7 rule d records the same gap for
+MCP.
 
-### 2.6 Secrets, egress and data
+**Rung 1 does not write the mark.** An API answer is framed as untrusted text,
+and its hidden characters go. That is what an MCP answer gets today.
+
+**Why.**
+
+1. A mark makes each later MCP or API call in that chat ask a card. The owner
+   decided on 2026-11-18 that a read-only tool still asks the card in a marked
+   chat. So a marked chat asks a card for each read. Task 3714 shows the cost:
+   a chat of seven minutes.
+2. Rung 1 has no `api_write`. The mark guards a later write, and rung 1 has
+   none of its own.
+3. A new writer of the mark belongs to EM-G11, not to this spec.
+
+**What the rung 1 demo shows.** The member asks for revenue, then for the
+largest unpaid invoices. Each `api_read` runs with no card (MCP-NC1: a verified
+member's run). The answers come as data. In a chat that read outside mail
+before, each read asks a card, as an MCP read does today.
+
+**The open risk.** Text in an API answer, such as a note on an invoice, can try
+to steer another tool of the chat. That risk is the same as for an MCP answer
+today. The owner decides it for both kinds at once (D-API-9). The batch card of
+WS-8c would lower the cost of a mark.
+
+### 2.6 Writes
+
+Read-only first. A template can hold class B and C operations, but
+`api_write` attaches only after the owner turns writes on for an org (D-API-4).
+Then each write asks a card, also in a member's own run ("always confirm"). A
+write is refused in WhatsApp, in a run with no member, and on a closed channel,
+as an MCP write is today.
+
+### 2.7 Secrets, egress and data
 
 - The chat never sees a key, a token, a host or a header.
-- A call reaches only a template host. No redirect, a pinned DNS answer, and
-  the answer caps of the guard.
-- An answer is third-party text. It is framed untrusted and marks the session.
+- A call reaches only a template host. The guard pins the DNS answer, refuses
+  a redirect and caps the answer.
+- A T2 host comes from the admin. It passes `outbound_guard.check_url` when
+  the admin saves it and at each call. So it can never be a private or
+  host-local address.
+- An answer is third-party text. It is framed as untrusted (§2.5).
 - The data of an API goes to the model vendor of the chat, as MCP data does
   today (D-API-7).
 
-### 2.7 What happens to "Add API", plugins and the key connectors
+### 2.8 IN-3 and the credential rule
+
+**What IN-3 protects.** IN-3 (task 3176) is `work_plan.md` §6 gate (f) work,
+"the end of process-global credential injection" (`integrations_console.md`
+§3.3, D58.2). Today `acb_skills.integrations.credential()` reads the process
+environment first. So a key in the environment reaches the run of every org on
+that process. It also wins over a key of one org (IN-D7).
+
+The done-when of IN-3 is in its task text:
+
+```text
+"A run in org A gets org A's key and a run in org B gets org B's, on one process at one time."
+```
+
+**Why this path keeps that rule without IN-3.**
+
+1. **No credential enters the orchestrator.** The chat tool sends a connection
+   name, an op and arguments to the gateway. It sends no key and gets no key.
+2. **The org comes from the run, not from the model.** The tool calls the
+   gateway as the run's member, with the internal token and `X-User-Email`
+   from the run context (`studio_tools._headers`). The gateway finds the org
+   from that member. No argument of the model can name another org.
+3. **One reader of the sealed column.** The gateway reads the row in
+   `tenant_session(org)` under FORCE RLS, through `connections/store.py`. It
+   passes the credential to `outbound_guard.request` as an argument. It never
+   writes `os.environ`. This is rule 2 of §3.3: a credential reaches a call as
+   an argument.
+4. **The defect of IN-3 is not on the path.** `acb_skills.integrations.credential()`
+   is never called. So the environment cannot win.
+5. **The model chooses within limits.** It picks a connection that its org
+   holds and the member's grant allows. It picks an op from the approved list.
+   It sends arguments that the row's shapes allow.
+
+**The precedent is model-driven too.** `_inject_mcp_servers` reads the sealed
+headers of each org server with `servers_for_org(org)`
+(`connections/mcp.py:824`). It passes them to the MCP client as an argument
+for the model's calls. IN-4 shipped that with no IN-3. This path is stricter,
+because the credential stays in the gateway.
+
+**What still needs IN-3.** The resolvers of `acb_skills.integrations` for
+scripts, and TOF-5b's integration actions that read the environment. A T1
+template for one of those APIs uses the gateway path and no resolver.
+
+**The fence.** An R8 case: a run of an org A member names a connection of org
+B and gets "not found". A run of org A and a run of org B, on one process at
+one time, each reach only their own provider account. A sentinel case: no
+answer and no log line holds the credential. metorite-7d's reviewer checks
+this section (IN-3 and SSRF) before the owner sees it.
+
+### 2.9 What happens to "Add API", plugins and the key connectors
 
 - **"Add API".** It becomes "Connect an API": the T1 list first, then T2 by an
   OpenAPI address. The discovery call to the model goes (it is not metered,
@@ -201,7 +312,7 @@ with no member, and on a closed channel, as an MCP write is today.
 - **The seven key connectors.** Each becomes a T1 template with an API key.
   SMTP is not an HTTP API, so it stays a gap with that reason.
 
-### 2.8 Zoho Books, the first template
+### 2.10 Zoho Books, the first template
 
 Task 3749 owns the books connectors (D-SEM-8). This section only names what
 the mechanism must carry for Zoho Books.
@@ -225,6 +336,8 @@ the mechanism must carry for Zoho Books.
 | Option | Why not |
 |---|---|
 | The gateway serves each connection as an MCP endpoint, and the run attaches it | The MCP client refuses a host-local address (§1, row 6). An exception widens the SSRF surface. The native tools keep the MCP behaviour without the hop |
+| Three tools for each connection, with the name as a prefix | The schema grows with each connection, and the chat's tool budget is tight (task 3725). A `mcp:` row and an `api:` row with one name give two tools with one name. One shared set replaces it (§2.4) |
+| One call tool for reads and writes | The gate must treat it as a write, so WhatsApp and a run with no member refuse even a read (§2.4) |
 | A tool pack for each API | A pack is static code. It cannot hold tools for one org (§1, row 12) |
 | An API as an app of the door (`App`) | An app needs a router, a pane and a feature. The manifests are static. This spec reuses the door's `Route` rows only |
 | A free path on the provider host (TOF-5c as drafted) | The chat could then reach any endpoint, and the read or write class would mean nothing. An admin adds an operation instead (D-API-2) |
@@ -249,7 +362,7 @@ Each rung ends in a demo on production (D211).
 | API-1 | The template grammar and its validator, on the door's `Route` row. The Zoho Books template with read operations | STANDARD |
 | API-2 | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status | HIGH (identity, a credential) |
 | API-3 | The three gateway routes: the op check, the refresh, the guard, the caps and the log line | HIGH (egress, a credential) |
-| API-4 | The attach step, the gate facts and the brief inputs | HIGH (permission) |
+| API-4 | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) |
 | API-5 | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD |
 | API-6 | Bug 3766: a custom row that the chat cannot use says so | LOW |
 
@@ -261,7 +374,9 @@ Each rung ends in a demo on production (D211).
 | A run in org A cannot call a connection of org B | `tests/unit/test_api_connections_r8.py` (new, R8) |
 | No answer and no log line holds a credential | A sentinel case in the R8 suite |
 | A call never reaches a host outside the template | `tests/unit/test_api_call_egress.py` (new) |
-| A write op is refused with no member and in WhatsApp | `tests/unit/test_maf_mcp_confirm.py` (extended) |
+| The gate refuses a write op with no member and in WhatsApp. `api_read` refuses a class B or C op | `tests/unit/test_maf_mcp_confirm.py` (extended) |
+| Find and describe carry no MCP marker and ask no card | `tests/unit/test_api_chat_tools.py` (new) |
+| A name that the grant refuses answers "not found" | The R8 suite |
 | Each `gap` row of G6 becomes a path or a written reason | `tests/unit/test_connector_chat_reach.py`, `test_integration_kinds_chat_reach.py` |
 
 ## 6. Seams that other specs own
@@ -273,6 +388,7 @@ Each rung ends in a demo on production (D211).
 | The profile of a connection | `semantic_model.md` (WS-SEM) | Shape reads, marked in the template |
 | Skills over connected systems | `agent_sandbox.md` §0b (TOF-5a, TOF-5b, TOF-5c) | TOF-5c becomes D-API-2 here |
 | The reach matrix and its fence | `chat_reach.md` (task 3440) | Gap G6 |
+| The writer of the session mark | WS-17 EM-G11 (`email_app_master_plan.md` §12.3.13.8) | Nothing in rung 1. D-API-9 decides |
 | The books connectors | Task 3749 (D-SEM-8) | The Zoho Books template |
 
 ## 7. Prior art
@@ -301,3 +417,4 @@ Each rung ends in a demo on production (D211).
 | **D-API-6** | Retire the discovery call of "Add API" and the plugin store (IN-6, Q2)? | Yes, when T2 lands. Until then the tile says that the chat cannot use it |
 | **D-API-7** | The data notice: an API's data reaches the chat's model vendor | The same notice as MCP and LNK-Q2 |
 | **D-API-8** | The flag | `API_CONNECTIONS_ORGS`, to all orgs after the rung 1 demo |
+| **D-API-9** | Does an API answer mark the chat as untrusted? (§2.5) | No, the same as an MCP answer today. Decide both kinds together. With a mark, each later read asks a card |
