@@ -184,6 +184,22 @@ moves a chat, and answers 404 with the org off. The chat list sends
 the answer to the client as `chat_topics`, so a tab shows a change at its
 next shell read.
 
+`COMPUTE_RUN_ORGS` is the kill switch of the `compute` target of the sandbox
+broker (`agent_sandbox.md` §0c rung 6a', SBX-18). It does not turn compute on.
+Compute needs `compute:<org>` in `MAF_CODING_SCOPE`. That is a sealed owner
+gate, and a change needs a restart. Never put `compute:*` there while
+`SELF_SERVE_SIGNUP_ENABLED` is true. It is true on production today.
+
+For each org in both lists, the broker runs Python over data that the chat
+holds. The container has no network, no secret and no mount. `*` in this flag
+lists every org, and the default is empty. Empty means the broker refuses
+every compute run.
+
+The one reader is `orchestrator.sandbox_broker.compute_enabled`.
+The reaper asks it too, so a flip to off stops a running compute container at
+the next tick. In production the broker also needs a remote gVisor backend. A
+reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`).
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the
