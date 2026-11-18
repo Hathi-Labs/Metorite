@@ -38,7 +38,8 @@ numbers in each write tool. Set both units to the same value. Then restart
 sends the `updated_at` of the read that the card shows as `If-Match`. A task
 that changed while the card waited gets a 412, and the tool writes nothing. The
 tool then answers "Changed since the card", with the old and new values of the
-fields on the card. `*` lists every org, and the default is empty.
+fields on the card. For a deal, the CRM tool `crm_update_record` does the
+same (HRD-10c). `*` lists every org, and the default is empty.
 
 Empty gives the PATCH of before, with no `If-Match`. Its one reader is
 `acb_skills.ask_tools.card_precondition_on`. It reads the org from the run

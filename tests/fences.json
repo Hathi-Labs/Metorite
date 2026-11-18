@@ -251,6 +251,7 @@
       "tests/unit/test_console_dependency_boundary.py",
       "tests/unit/test_continue_mark_r8.py",
       "tests/unit/test_credential_tenant_threading.py",
+      "tests/unit/test_crm_card_precondition.py",
       "tests/unit/test_crm_change_history.py",
       "tests/unit/test_crm_lead_pipelines.py",
       "tests/unit/test_crm_pipelines_native.py",
