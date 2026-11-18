@@ -50,6 +50,17 @@ later turn of the chat then gets one line for each of the last 5 sent mails,
 in its run context. The run asks the flag at the start of each turn, so a
 reload applies at the next turn.
 
+`CHAT_CLAIM_CHECK_ORGS` turns on the claim check of an answer
+(`chat_failure_modes.md` §6 row HRD-13). For each listed org, the run of the
+orchestrator logs one line, `answer_claims.checked`, at its end. The line
+counts the claims of acts and promises that no tool outcome of the run backs.
+The check is shadow only, and it never changes the answer (D-HRD-6).
+
+`*` lists every org, and the default is empty. Its one reader is
+`acb_skills.answer_claims.claim_check_on`. The injection asks it at the start
+of each run, so a reload applies to the next run. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The
