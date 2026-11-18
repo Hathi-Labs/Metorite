@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import dataclasses
 import functools
 import os
@@ -2022,6 +2023,18 @@ def _image_withheld() -> frozenset[str]:
     return frozenset({"analyze_image"})
 
 
+#: SBX-19 fix round. Whether ``compute_run`` fits in the request of THIS turn.
+#: The tool has the LOWEST priority for a place: the pack step
+#: (:func:`_apply_tool_packs`) sets it after it counts the base and the packs,
+#: and it does not count the tool itself. A turn with two big packs then
+#: keeps both packs and drops the tool, and never the reverse. The base was at
+#: the 110-tool cap (``tool_packs.MAX_REQUEST_TOOLS``), so a place in the
+#: always-on base would push a mixed turn over it. Default True: with packs
+#: off no cap logic runs. Fence: ``tests/unit/test_compute_run.py``.
+_COMPUTE_ROOM: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "compute_room", default=True)
+
+
 def _compute_withheld() -> frozenset[str]:
     """``compute_run`` when the compute target is off for the run's org (SBX-19).
 
@@ -2035,7 +2048,7 @@ def _compute_withheld() -> frozenset[str]:
         from acb_skills.compute_run import compute_enabled_for
     except ImportError:
         return frozenset({"compute_run"})
-    if compute_enabled_for(_run_org_or_none()):
+    if compute_enabled_for(_run_org_or_none()) and _COMPUTE_ROOM.get():
         return frozenset()
     return frozenset({"compute_run"})
 
@@ -4204,7 +4217,10 @@ def _pack_base_names(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | _image_withheld() | _compute_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | gone
+                # SBX-19: never in the base. It takes a place only after the
+                # packs (`_COMPUTE_ROOM`), so it cannot cost a pack its place.
+                | frozenset({"compute_run"}))
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}
@@ -4309,6 +4325,7 @@ async def _apply_tool_packs(
     turn = await _turn_with_skills(turn)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
+    _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
     # WS-67 TS-2a (D222 decision 13): ``find_tools`` rides in each request of
     # a run where the search is on, so the cap counts it before the first
     # choice. The org is the bound tenant, never a request field (R5). At the
@@ -4428,6 +4445,8 @@ async def _apply_tool_packs(
     # reaches). The inject step after this one adds nothing to the count.
     planned_tools = (base - int(loader_counted) + int(bool(plan.offered))
                   + len(added) - sum(_specialist_counts(pool, replaced).values()))
+    # SBX-19: ``compute_run`` takes the place that is left, and no other.
+    _COMPUTE_ROOM.set(planned_tools + 1 <= tool_packs.MAX_REQUEST_TOOLS)
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)

@@ -494,14 +494,82 @@ class TestThePerOwnerCap:
             trs._keep(a, "x" * 10, False, "t")
         assert (*a, first) not in trs._STORE
 
-    def test_the_process_cap_takes_from_the_heaviest_owner(self, monkeypatch) -> None:
-        monkeypatch.setattr(trs, "MAX_ENTRIES", 6)
+    def test_the_entry_cap_takes_from_the_owner_with_most_entries(self, monkeypatch) -> None:
+        """Many small owners and ONE owner with a single large entry. The
+        entry cap binds, and it must not take the large entry."""
+        monkeypatch.setattr(trs, "MAX_ENTRIES", 40)
+        large = ("org-b", "bob@b.test", "t-9")
+        keep = trs._keep(large, "L" * 1_000_000, False, "t")
+        for n in range(30):
+            owner = ("org-a", f"m{n}@a.test", f"t-{n}")
+            for _ in range(5):
+                trs._keep(owner, "s" * 10, False, "t")
+        assert (*large, keep) in trs._STORE and len(trs._STORE) <= 40
+
+    def test_the_character_cap_takes_from_the_owner_with_most_characters(
+            self, monkeypatch) -> None:
+        monkeypatch.setattr(trs, "MAX_TOTAL_CHARS", 5_000)
         small = ("org-b", "bob@b.test", "t-9")
-        keep = trs._keep(small, "y" * 5, False, "t")
+        keep = trs._keep(small, "y" * 50, False, "t")
         big = ("org-a", "ann@a.test", "t-1")
         for _ in range(20):
             trs._keep(big, "x" * 1000, False, "t")
-        assert (*small, keep) in trs._STORE and len(trs._STORE) <= 6
+        assert (*small, keep) in trs._STORE and trs._total_chars() <= 5_000
+
+
+# ── the marker: where the member does not see it, and one real footer ────────
+
+NL = chr(10)
+MARK = "[tr_0123abcd usable as input of compute_run]"
+
+
+class TestTheMarker:
+    def test_the_member_text_loses_one_trailing_marker(self) -> None:
+        from orchestrator.event_translator import tool_result_fields
+
+        class _C:
+            exception = None
+            result = "rows here" + NL + MARK
+            call_id = "c"
+            name = "crm_list_records"
+
+        text, ok = tool_result_fields(_C())
+        assert text == "rows here" and ok is True
+        assert trs.strip_compute_marker("a" + NL + "b") == "a" + NL + "b"
+        assert trs.strip_compute_marker(MARK) == ""
+        # a marker in the middle is data and stays
+        mid = "x " + MARK + " y"
+        assert trs.strip_compute_marker(mid) == mid
+
+    async def test_the_model_keeps_the_marker(self, box) -> None:
+        client = ScriptedClient([("call", "fetch_mid", {}), ("text", "done")])
+        agent = Agent(client=client, name="orchestrator", tools=[fetch_mid])
+        await _run_view(agent, spill=False).run("go")
+        assert "usable as input of compute_run]" in _results(client)[-1]
+
+    async def test_a_quoted_old_footer_does_not_give_its_ref(self, box) -> None:
+        old = box["keep"]("old rows " * 200)
+        footer = (f"[Stored result {old}: 9 chars, ~2 tokens, 1 lines. Shown: chars 0-9. "
+                  f"Call read_tool_result(ref={old}, offset=9) to read on.]")
+        quoted = footer + NL + ("fresh rows" + NL) * 100
+
+        async def fetch_quote() -> str:
+            return quoted
+
+        client = ScriptedClient([("call", "fetch_quote", {}), ("text", "done")])
+        agent = Agent(client=client, name="orchestrator", tools=[fetch_quote])
+        await _run_view(agent, spill=False).run("go")
+        marker_ref = _results(client)[-1].rstrip().split("[")[-1].split()[0]
+        assert marker_ref != old and trs.peek(marker_ref)[0] == quoted
+
+
+# ── the output folder ───────────────────────────────────────────────────────
+
+def test_the_rules_say_files_go_into_out() -> None:
+    from acb_skills import addendum
+
+    assert "out/" in addendum.COMPUTE_RULE and "out/result.csv" in addendum.COMPUTE_RULE
+    assert "out/" in cr.compute_run.__doc__
 
 
 # ── the reach ────────────────────────────────────────────────────────────────

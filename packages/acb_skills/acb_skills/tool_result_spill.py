@@ -64,10 +64,11 @@ COMPUTE_SOURCE_ID = "metorite-keep-for-compute"
 #: A stored result lives this long in the gateway process.
 TTL_S = 30 * 60
 
-#: The most results the process keeps. The owner with the most entries loses
-#: its oldest one first, so a small owner keeps its refs. It is 16 owners at
-#: the per-owner cap, and it binds only under a load that the beta does not
-#: reach.
+#: The most results the process keeps. When this cap binds, the owner with the
+#: most ENTRIES loses its oldest one first. When the character cap binds, the
+#: owner with the most CHARACTERS does (:func:`_pressure_oldest`). So a small
+#: owner keeps its refs. It is 16 owners at the per-owner cap, and it binds
+#: only under a load that the beta does not reach.
 MAX_ENTRIES = 512
 
 #: SBX-19: the most entries and characters ONE owner (org, member, thread)
@@ -188,22 +189,25 @@ def _keep(owner: tuple[str, str, str], text: str, untrusted: bool, tool: str) ->
     while mine and (len(mine) >= MAX_OWNER_ENTRIES or held + size > MAX_OWNER_CHARS):
         gone = mine.pop(0)
         held -= len(_STORE.pop(gone).text)
-    # The process cap: the heaviest owner loses its oldest entry, so one
-    # busy owner cannot evict the refs of another.
+    # The process cap: the owner that causes the pressure loses its oldest
+    # entry, so one busy owner cannot evict the refs of another. The entry
+    # cap takes from the owner with the MOST ENTRIES, and the character cap
+    # from the owner with the MOST CHARACTERS.
     while _STORE and (_total_chars() + size > MAX_TOTAL_CHARS or len(_STORE) >= MAX_ENTRIES):
-        _STORE.pop(_heaviest_oldest())
+        _STORE.pop(_pressure_oldest(by_entries=len(_STORE) >= MAX_ENTRIES))
     ref = "tr_" + secrets.token_hex(4)
     _STORE[(*owner, ref)] = _Entry(
         now + TTL_S, text[0:MAX_STORED_CHARS], untrusted, tool, len(text))
     return ref
 
 
-def _heaviest_oldest() -> tuple[str, str, str, str]:
-    """The oldest key of the owner that holds the most characters."""
-    chars: dict[tuple[str, str, str], int] = {}
+def _pressure_oldest(*, by_entries: bool) -> tuple[str, str, str, str]:
+    """The oldest key of the owner that holds the most entries
+    (*by_entries*) or else the most characters."""
+    load: dict[tuple[str, str, str], int] = {}
     for k, e in _STORE.items():
-        chars[k[:3]] = chars.get(k[:3], 0) + len(e.text)
-    heavy = max(chars, key=lambda o: chars[o])
+        load[k[:3]] = load.get(k[:3], 0) + (1 if by_entries else len(e.text))
+    heavy = max(load, key=lambda o: load[o])
     return next(k for k in _STORE if k[:3] == heavy)
 
 
@@ -471,6 +475,20 @@ COMPUTE_MARKER = "[{ref} usable as input of compute_run]"
 _SPILL_REF = re.compile(r"\[Stored result (tr_[0-9a-f]{8}):")
 
 
+_MARKER_LINE = re.compile(r"^\[tr_[0-9a-f]{8} usable as input of compute_run\]$")
+
+
+def strip_compute_marker(text: str) -> str:
+    """*text* without ONE trailing marker line. The model keeps the marker in
+    its session. The member never sees it: ``event_translator.tool_result_fields``,
+    the one mapping of a tool result for the stream and the saved message,
+    calls this."""
+    head, sep, last = text.rstrip().rpartition(NL)
+    if sep and _MARKER_LINE.match(last.strip()):
+        return head
+    return "" if _MARKER_LINE.match(text.strip()) else text
+
+
 class KeepForCompute(FunctionMiddleware):
     """Keeps every plain-text result of 1 character to 2 MB as an input of ``compute_run``
     and adds ONE footer line with its ref (rung 6a', ``agent_sandbox.md``).
@@ -498,12 +516,16 @@ class KeepForCompute(FunctionMiddleware):
             if owner is None:
                 return
             ref = None
-            spilled = _SPILL_REF.search(text)
+            # Only the LAST line is the real footer of a spill. A result that
+            # quotes an old footer higher up gets its own ref.
+            spilled = _SPILL_REF.match(text.rstrip().rsplit(NL, 1)[-1])
             if spilled:
                 held = _STORE.get((*owner, spilled.group(1)))
                 if held is not None and held.total == len(held.text):
                     ref = spilled.group(1)
-            if ref is None and not spilled and COMPUTE_KEEP_MIN <= len(text) <= MAX_STORED_CHARS:
+                elif held is not None:
+                    return  # the spill kept only a part: no marker, no second copy
+            if ref is None and COMPUTE_KEEP_MIN <= len(text) <= MAX_STORED_CHARS:
                 ref = _keep(owner, text, await _untrusted(function, text), name)
             if ref is None:
                 return
@@ -599,6 +621,7 @@ __all__ = [
     "TOOLS",
     "KeepForCompute",
     "KeepForComputeProvider",
+    "strip_compute_marker",
     "SpillToolResults",
     "ToolResultSpillProvider",
     "clear_store",

@@ -1573,3 +1573,60 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+# ── SBX-19: compute_run never costs a pack its place ────────────────────────
+
+
+@pytest.fixture
+def compute_on(monkeypatch) -> None:
+    """The compute target is on for the org (SBX-18's reader, a fake here)."""
+    from orchestrator import sandbox_broker
+
+    monkeypatch.setattr(sandbox_broker, "compute_enabled", lambda org: True, raising=False)
+    ti._COMPUTE_ROOM.set(True)
+
+
+def test_the_base_count_never_holds_compute_run(orchestrator, compute_on) -> None:
+    """The base was at the cap, so a place in it cost a pack a place (111 > 110
+    at 57 + 31 + 23). With the org on, the estimate is the one of the dark
+    run. Mutation: count ``compute_run`` in the base -> one more -> red."""
+    on = _measured_base(orchestrator)
+    names = ti._pack_base_names(
+        orchestrator[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
+        agent_config=CONFIG, disabled=frozenset())
+    assert "compute_run" not in names
+    assert on + 31 + 23 + 1 <= tp.MAX_REQUEST_TOOLS + 1  # the numbers of the review
+
+
+async def test_a_mixed_email_turn_keeps_both_packs_with_compute_on(
+    store, orchestrator, compute_on,
+) -> None:
+    """"Make a recurring task from this email" loads email and projects, and
+    ``compute_run`` leaves when the request is full (55 + 1 + 31 + 23 = 110,
+    the cap, so no place is left). Mutation: ``choose`` sees
+    the tool in the base -> the Projects pack is skipped -> red."""
+    with _tenant():
+        applied = await _apply(orchestrator, "email me my overdue tasks", allowed=EVERY)
+    assert applied is not None and applied.record.slugs == ("email", "projects")
+    assert tp.MAX_REQUEST_TOOLS >= 110
+
+
+async def test_compute_run_leaves_when_the_base_is_at_the_cap(
+    store, orchestrator, compute_on, monkeypatch,
+) -> None:
+    """A base of 110 leaves no place, so the tool goes and no pack does."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *a, **k: tp.MAX_REQUEST_TOOLS)
+    with _tenant():
+        await _apply(orchestrator, "Tell Anil that we pay on Friday", allowed=EVERY)
+    assert ti._COMPUTE_ROOM.get() is False
+    assert ti._compute_withheld() == frozenset({"compute_run"})
+
+
+async def test_compute_run_stays_when_a_place_is_left(store, orchestrator, compute_on) -> None:
+    with _tenant():
+        await _apply(orchestrator, "Tell Anil that we pay on Friday", allowed=EVERY)
+    assert ti._COMPUTE_ROOM.get() is True
+    assert ti._compute_withheld() == frozenset()
+
+

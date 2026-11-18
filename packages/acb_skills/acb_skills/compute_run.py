@@ -210,8 +210,9 @@ async def compute_run(
     A tool result that ends with a line "[tr_xxxxxxxx usable as input of
     compute_run]" is stored. Pass its ref in inputs. The code reads each one
     as the text file inputs/tr_xxxxxxxx.txt, in the working dir. Write each
-    result file (csv, png, json, txt) to the working dir, and the chat shows
-    it as a card. Print the answer to stdout. The run has no network, no
+    result file (csv, png, json, txt) into the folder out/, for example
+    out/result.csv or out/chart.png, and the chat shows it as a card. A file
+    outside out/ is lost. Print the answer to stdout. The run has no network, no
     secret, no access to Metorite and no saved state. It ends when the code
     ends or after timeout_s.
 
