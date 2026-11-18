@@ -108,12 +108,13 @@ def test_a_delegated_run_keeps_its_own_floor(parent, own, want) -> None:
     assert ex._sub_agent_tier(parent, _agent(own), {}, "", is_copilot=False) == want
 
 
-def test_the_email_assistant_defaults_to_powerful() -> None:
+def test_the_email_assistant_defaults_to_balanced() -> None:
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[2] / "apps" / "agents"
            / "agent-email-assistant" / "agents.py").read_text(encoding="utf-8")
-    assert 'os.environ.get("EMAIL_AGENT_MODEL", "tier-powerful")' in src
+    # Owner, 2026-11-18 (task 3813): the floor is tier-balanced.
+    assert 'os.environ.get("EMAIL_AGENT_MODEL", "tier-balanced")' in src
 
 
 # ── 3. The email drafter ─────────────────────────────────────────────────────

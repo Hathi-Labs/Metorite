@@ -87,8 +87,9 @@ def _assert_no_retired_read(db: _StoredTiersDb) -> None:
 def test_the_tier_table() -> None:
     """The best process, written once. A change here is a product decision."""
     assert dict(assistant_mod.EMAIL_TASK_TIERS) == {
-        # compose: the owner chose tier-powerful on 2026-11-16 (task 3541).
-        "draft": "tier-powerful", "compose": "tier-powerful", "chat": "tier-powerful"}
+        # Owner, 2026-11-18 (task 3813): all mail the member sends is written on
+        # tier-balanced. It was tier-powerful from 2026-11-16 (task 3541).
+        "draft": "tier-balanced", "compose": "tier-balanced", "chat": "tier-balanced"}
     with pytest.raises(TypeError):
         assistant_mod.EMAIL_TASK_TIERS["draft"] = "tier-fast"  # type: ignore[index]
 
@@ -114,7 +115,7 @@ async def test_draft_reply_ignores_a_stored_tier(monkeypatch) -> None:
     await drafting_mod.draft_reply_smart(
         drafting_mod.DraftReplyRequest(account_id="acc-1", message_id="m1"),
         SimpleNamespace(email="me@example.com"))
-    assert seen["model"] == "tier-powerful", (
+    assert seen["model"] == "tier-balanced", (
         "the stored compose tier changed the tier of Draft with AI")
     _assert_no_retired_read(db)
 
@@ -142,7 +143,7 @@ async def test_compose_assist_ignores_a_stored_tier(monkeypatch, mode) -> None:
         account_id="acc-1", mode=mode,
         message_id="m1" if mode == "reply" else None)
     await drafting_mod.compose_assist(req, SimpleNamespace(email="me@example.com"))
-    assert seen["model"] == "tier-powerful", mode
+    assert seen["model"] == "tier-balanced", mode
     _assert_no_retired_read(db)
 
 
@@ -163,7 +164,7 @@ async def test_a_rule_draft_ignores_a_stored_tier(monkeypatch) -> None:
         db, None, "m1", "p1", [{"type": "DRAFT_EMAIL"}],
         email={"from": "sender@example.com", "subject": "s", "body": "hello"},
         account_id="acc-1")
-    assert seen["model"] == "tier-powerful", (
+    assert seen["model"] == "tier-balanced", (
         "the stored draft tier changed the tier of a rule draft")
     _assert_no_retired_read(db)
 

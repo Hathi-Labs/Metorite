@@ -132,7 +132,7 @@ def _normalize_text(s: str) -> str:
 # ── Drafting context budgets ─────────────────────────────────────────────────
 # Generous UPPER BOUNDS only. The LLM layer (acompletion_with_fallback →
 # fit_messages_to_context) already trims the prompt to the model's real context
-# window (the draft model defaults to tier-powerful ≈ 200k input tokens), keeping
+# window (the draft model defaults to tier-balanced, 2026-11-18, task 3813), keeping
 # a head + tail around a marker. So we pass the FULL incoming email + thread and
 # let that layer fit — instead of pre-truncating here. The old tight caps (the
 # message being replied to was cut to [:2000] chars) made a long email reach the
@@ -1069,7 +1069,7 @@ def draft_failure(exc: BaseException) -> tuple[int, str]:
 async def _llm_draft_reply(
     email: dict[str, str], about: str, signature: str,
     instructions: str = "", context: str = "", user_email: str = "",
-    *, model: str = "tier-powerful", interactive_fallback: bool = False,
+    *, model: str = "tier-balanced", interactive_fallback: bool = False,
     on_delta: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> str:
     """Draft a reply body with the LLM, using the user's About context plus any
@@ -1473,7 +1473,7 @@ def _address_in(addr: str, people: list[str]) -> bool:
 async def _llm_compose_assist(
     *, about: str, signature: str, current_body: str, instruction: str,
     mode: str, recipient: str = "", subject: str = "", thread: str = "",
-    reply_to_body: str = "", user_email: str = "", model: str = "tier-powerful",
+    reply_to_body: str = "", user_email: str = "", model: str = "tier-balanced",
     on_delta: Callable[[str, str], Awaitable[None]] | None = None,
     sender: str = "", copied: str = "", forwarded_from: str = "",
     sender_is_reader: bool = False,
@@ -2032,7 +2032,7 @@ async def _agent_draft_reply(
     email: dict[str, str], about: str, signature: str, user_email: str,
     *, use_agent: bool = False, max_agents: int = 2, agent_timeout: float = 90.0,
     follow_up: bool = False, confidence: str = "ALL_EMAILS",
-    model: str = "tier-powerful", account_id: str = "",
+    model: str = "tier-balanced", account_id: str = "",
     interactive_fallback: bool = False, extra_instructions: str = "",
     on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_delta: Callable[[str, str], Awaitable[None]] | None = None,
@@ -2168,7 +2168,7 @@ def _consult_no_egress(user_email: str) -> Iterator[None]:
 async def _orchestrate_draft(
     email: dict[str, str], about: str, signature: str, user_email: str,
     *, max_agents: int = 2, agent_timeout: float = 90.0, instructions: str = "",
-    model: str = "tier-powerful", account_id: str = "",
+    model: str = "tier-balanced", account_id: str = "",
     interactive_fallback: bool = False,
     on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_delta: Callable[[str, str], Awaitable[None]] | None = None,

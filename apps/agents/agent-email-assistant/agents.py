@@ -10073,11 +10073,10 @@ def build_agents() -> list[Any]:
     from acb_llm.attribution import attributed_openai
 
     prov = _llm_provider()  # {type, base_url=…/v1, api_key=gateway master key}
-    # tier-powerful by default (owner, 2026-10-22): mail asks for judgement,
-    # and the Email app's chat already ran on it (EMAIL_CHAT_TIER). Under the
-    # tier policy this is the floor.
+    # tier-balanced by default (owner, 2026-11-18, task 3813; it was
+    # tier-powerful from 2026-10-22). Under the tier policy this is the floor.
     client = OpenAIChatCompletionClient(
-        model=os.environ.get("EMAIL_AGENT_MODEL", "tier-powerful"),
+        model=os.environ.get("EMAIL_AGENT_MODEL", "tier-balanced"),
         # Stamp identity so the gateway (v1_compat) attributes this agent's model
         # calls + cost to it on the observability bus. Fail-soft (absent header →
         # source="chat", no agent). See specs/observability_e2.md Phase 6.2.

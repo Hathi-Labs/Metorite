@@ -270,7 +270,7 @@ async def test_compose_assist_reply_empty_body_uses_shared_reply_drafter() -> No
     assert calls["agent_email"]["body"] == "TEMPLATE_BODY"
     # Manual "Draft with AI" runs on the COMPOSE tier, which the code picks
     # (tier-powerful since 2026-11-16, task 3541).
-    assert calls["agent_kwargs"]["model"] == "tier-powerful"
+    assert calls["agent_kwargs"]["model"] == "tier-balanced"
 
 
 async def test_compose_assist_improve_passes_reply_to_body() -> None:
@@ -304,7 +304,7 @@ async def test_compose_assist_improve_passes_reply_to_body() -> None:
     assert calls["reply_to_body"] == "TEMPLATE_BODY"
     assert calls["current_body"] == "my rough draft"
     # Interactive improve runs on the compose model too.
-    assert calls["model"] == "tier-powerful"
+    assert calls["model"] == "tier-balanced"
 
 
 async def test_compose_assist_reply_empty_body_passes_user_instruction() -> None:

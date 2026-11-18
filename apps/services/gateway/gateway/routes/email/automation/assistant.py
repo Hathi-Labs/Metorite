@@ -179,17 +179,19 @@ def _learned_text(value: Any, *, one_line: bool = False) -> str:
 # covers email-assistant, because the tier policy then picks each step (D90).
 EMAIL_TASK_TIERS: Mapping[str, str] = MappingProxyType({
     # BACKGROUND draft writing: a rule draft action and a follow-up nudge.
-    # Nobody waits on these, so the strong tier writes them.
-    "draft": "tier-powerful",
-    # MANUAL "Draft with AI" in the composer. The owner chose the strong tier
+    # Owner, 2026-11-18 (task 3813): every path that writes mail the member
+    # sends is on the balanced tier. A long mail still moves up for its
+    # window (draft_budget).
+    "draft": "tier-balanced",
+    # MANUAL "Draft with AI" in the composer. The owner chose the strong tier (until 2026-11-18)
     # for a better draft, and accepted a few seconds more for each click
     # (2026-11-16, task 3541, amends D-EM-61). A long thread stays on it,
     # because tier_for_size never lowers a tier. A stalled model shows the
     # member a named error, never a stock reply (task 3541).
-    "compose": "tier-powerful",
+    "compose": "tier-balanced",
     # The email chat when the tier policy does not cover it. A strong
     # tool-caller keeps the chat actions reliable.
-    "chat": "tier-powerful",
+    "chat": "tier-balanced",
 })
 
 # The request fields that once chose a tier (D-EM-61). The model declares them
