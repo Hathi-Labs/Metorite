@@ -556,8 +556,8 @@ async def test_production_refuses_an_argv_without_runsc_even_with_the_settings(
 ) -> None:
     _remote_runsc(env, monkeypatch, runtime_arg=False)
 
-    async def admit(org: str) -> bool:
-        return True
+    async def admit(org: str) -> None:
+        return None
 
     monkeypatch.setattr(broker, "_remote_org_admit", admit, raising=False)
     with bound_run(ORG), pytest.raises(sb.SandboxRefused):
@@ -569,17 +569,16 @@ async def test_production_refuses_a_start_that_skips_the_org_lock(
     broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SBX-F26: a start with --runtime=runsc but no org admit is refused."""
+    """SBX-F26: a start with --runtime=runsc but no org admit is refused, and an admit that raises stops it."""
     _remote_runsc(env, monkeypatch, runtime_arg=True)
     with bound_run(ORG), pytest.raises(sb.SandboxRefused):  # no _remote_org_admit
         await broker.run_compute({"main.py": MAIN}, timeout_s=5)
-    for answer in (False, None):
-        async def admit(org: str, answer: Any = answer) -> Any:
-            return answer
+    async def refuse(org: str) -> None:
+        raise sb.SandboxBusy("another org holds the box")
 
-        monkeypatch.setattr(broker, "_remote_org_admit", admit, raising=False)
-        with bound_run(ORG), pytest.raises(sb.SandboxRefused):
-            await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+    monkeypatch.setattr(broker, "_remote_org_admit", refuse, raising=False)
+    with bound_run(ORG), pytest.raises(sb.SandboxBusy):
+        await broker.run_compute({"main.py": MAIN}, timeout_s=5)
     assert docker.runs() == []
 
 
@@ -590,9 +589,8 @@ async def test_production_runs_with_runsc_and_an_admit(
     _remote_runsc(env, monkeypatch, runtime_arg=True)
     seen: list[str] = []
 
-    def admit(org: str) -> bool:
+    async def admit(org: str) -> None:
         seen.append(org)
-        return True
 
     monkeypatch.setattr(broker, "_remote_org_admit", admit, raising=False)
     with bound_run(ORG):

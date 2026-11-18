@@ -2593,8 +2593,10 @@ class SandboxBroker:
         kwargs: dict[str, Any] = {}
         runtime = str(getattr(settings, "sandbox_runtime", "") or "")
         # TODO(task 3430, SBX-15): `build_run_argv(runtime=...)` and
-        # `SandboxBroker._remote_org_admit(org)` come with that branch. Both
-        # are read by name, so this start picks them up when it merges.
+        # `async SandboxBroker._remote_org_admit(org) -> None` come with that
+        # branch. Both are read by name. The admit raises to refuse. On the
+        # local backend it returns at once, so production also keeps the
+        # backend check and the `--runtime=runsc` check below.
         if runtime and "runtime" in inspect.signature(build_run_argv).parameters:
             kwargs["runtime"] = runtime
         argv = build_run_argv(
@@ -2604,10 +2606,12 @@ class SandboxBroker:
         admit = getattr(self, "_remote_org_admit", None)
         admitted = False
         if admit is not None:
+            # SBX-15's contract: it returns None to admit and RAISES
+            # SandboxBusy or SandboxUnavailable to refuse. A raise propagates.
             result = admit(handle.org)
             if inspect.isawaitable(result):
-                result = await result
-            admitted = result is True
+                await result
+            admitted = True
         if _production_mode(settings) and (
             "--runtime=runsc" not in argv or not admitted
         ):

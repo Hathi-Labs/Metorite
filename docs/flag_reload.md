@@ -190,6 +190,10 @@ Compute needs `compute:<org>` in `MAF_CODING_SCOPE`. That is a sealed owner
 gate, and a change needs a restart. Never put `compute:*` there while
 `SELF_SERVE_SIGNUP_ENABLED` is true. It is true on production today.
 
+While it is true, a `compute:*` scope entry or a `*` in `COMPUTE_RUN_ORGS`
+refuses compute for every org, also an org that the list names. This is
+intended, and it is not a fault.
+
 For each org in both lists, the broker runs Python over data that the chat
 holds. The container has no network, no secret and no mount. `*` in this flag
 lists every org, and the default is empty. Empty means the broker refuses
