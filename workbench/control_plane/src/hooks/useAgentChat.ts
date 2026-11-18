@@ -1437,10 +1437,21 @@ export function useAgentChat({
               case RUN_RESUMED_FRAME: {
                 // RESUME-3b, case A: the parked run goes on in this reply. A
                 // replay that the server cut before it (RESUME-2d) brought no
-                // part one, so the shadow starts from the reply that shows.
+                // part one, so the shadow starts from the body of the reply
+                // that shows. The shadow keeps its own flags (CS-1, CS-3b).
                 if (shadow && !hasBody(shadow)) {
                   const cur = getSessionState(threadId).messages.find((m) => m.id === lastId);
-                  if (cur && hasBody(cur)) shadow = { ...cur, firstLine: undefined, phaseWord: undefined };
+                  if (cur && hasBody(cur)) {
+                    shadow = {
+                      ...shadow,
+                      content: cur.content,
+                      toolEvents: cur.toolEvents ?? [],
+                      reasoningBlocks: cur.reasoningBlocks ?? [],
+                      segments: cur.segments ?? [],
+                      progressLines: cur.progressLines ?? [],
+                      customEvents: cur.customEvents ?? [],
+                    };
+                  }
                 }
                 // The reply streams again after the `done` of its park.
                 updLast((m) => ({ ...m, streaming: true, isThinkingActive: true }));
