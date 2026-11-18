@@ -54,6 +54,8 @@ Verify: `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)
 6. **Each fault gives no map**: the approvals read, the lookahead and the cache. `_mcp_may_attach` still reads a lookahead fault as True for its own use.
 7. **The email pack.** `_skills_present` reads the agent's own tools (`_holds_untrusted_pack`) and the builds of the turn. A skill can bring the email pack through a `tool:` action and also name an MCP tool. That skill fails with `mail_and_mcp`, and the brought pack leaves.
 8. **The log lines.** `executor.skill_mcp_refused` names the server and the reason (`mcp_unreachable`, `mcp_not_approved`, `approvals_unread`, `lookahead_failed`). `executor.skill_refused` keeps its reason. `executor.skill_mcp_unattached` names the skill, the version and the server, after the attach of the stream run.
+9. **A first-party name is reserved (review P1).** A local name can equal a first-party tool, for example `crm_update_record` from a server `crm` with a tool `update_record`. MAF then drops the whole server for the clash. The skill rules would then send the model to the first-party tool. So such an id never serves, and the build gives `mcp_name_reserved`. The reserved set is `skill_packs.reserved_names` and the CSY-10 set of the run (`_reserved_tool_names`).
+10. **An MCP name brings no pack.** `pack_needs` leaves each MCP local name out. `_log_skill_mcp_unattached` counts only a function of `agent.mcp_tools`.
 
 ## Open owner questions
 

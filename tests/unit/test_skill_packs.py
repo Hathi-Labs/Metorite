@@ -1618,3 +1618,39 @@ async def test_with_a_flag_off_the_turn_reads_no_mcp_fact(monkeypatch, off: str)
     assert turn.skills == ()
     assert env.calls == []
     assert _events(env.lines, "executor.skill_refused")[0]["reason"] == "chat_tools_off"
+
+
+@pytest.mark.parametrize(("mcp_id", "local"), [
+    ("mcp:crm.update_record", "crm_update_record"),
+    ("mcp:web.search", "web_search"),
+    ("mcp:github.search", "github_search"),
+])
+def test_a_local_name_of_a_first_party_tool_is_reserved(mcp_id: str, local: str) -> None:
+    """Review P1. ``build`` refuses an MCP id whose local name is a first-party
+    tool, also when the map serves it and also before the approval check.
+    The run can add its own names (*mcp_reserved*). Mutation: drop the
+    check of ``reserved_names`` → red."""
+    assert local in sp.reserved_names()
+    assert _mcp_build([mcp_id], served={mcp_id: local}) == "mcp_name_reserved"
+    assert _mcp_build([mcp_id], served={}, unapproved={mcp_id}) == "mcp_name_reserved"
+    assert _mcp_build([_MCP_ID], served={_MCP_ID: _MCP_LOCAL},
+                      unapproved=(), ) != "mcp_name_reserved", "non-vacuity"
+    other = sp.build(_ID_A, "Deal desk", "", 2, "f" * 64, _body(actions=[_MCP_ID]),
+                     max_tools=tp.MAX_PACK_TOOLS, chat_tools=True,
+                     mcp_tools={_MCP_ID: _MCP_LOCAL}, mcp_reserved=[_MCP_ID])
+    assert other == "mcp_name_reserved"
+
+
+def test_an_mcp_name_never_brings_a_first_party_pack() -> None:
+    """Review P1. ``pack_needs`` leaves each MCP local name out, also one that
+    a pack of the scope holds. Mutation: read ``found.tools`` alone → the
+    CRM pack comes → red."""
+    import dataclasses
+
+    assert sp.chat_tools().get("crm_update_record") == "crm-records", "non-vacuity"
+    base = _pack(actions=["knowledge.get_page"])
+    forged = dataclasses.replace(base, tools=("crm_update_record",),
+                                 mcp_tools=(("crm", "crm_update_record"),))
+    assert sp.pack_needs((forged,), set()) == {}
+    plain = dataclasses.replace(base, tools=("crm_update_record",))
+    assert sp.pack_needs((plain,), set()) == {plain.slug: ("crm-records",)}

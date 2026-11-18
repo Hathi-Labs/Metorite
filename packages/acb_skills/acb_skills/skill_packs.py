@@ -93,6 +93,7 @@ __all__ = [
     "matches",
     "mcp_local_name",
     "pack_needs",
+    "reserved_names",
     "rules_text",
     "skill_slug",
 ]
@@ -175,6 +176,30 @@ CHAT_TOOL_LEFT_OUT: frozenset[str] = frozenset({"email-setup"})
 _STUDIO_TOOL = "studio_"
 #: TOF-5a-1. The prefix of an MCP action of the catalog: ``mcp:<server>.<tool>``.
 MCP_PREFIX = "mcp:"
+
+
+#: TOF-5a-1 review P1. The loader tools of the platform. No MCP local name
+#: may take one of them.
+_LOADER_TOOLS = frozenset({"load_skill_tools", "find_tools"})
+
+
+def reserved_names() -> frozenset[str]:
+    """TOF-5a-1 review P1. The first-party tool names that this module knows:
+    each tool of a pack of ``skill_families``, each door op tool,
+    ``run_workflow``, the record tools and the loaders.
+
+    An MCP local name ``<server>_<tool>`` can equal one of them, for example
+    a server ``crm`` with a tool ``update_record``. Then MAF drops the whole
+    server for a name clash, and the rules of the skill would send the model
+    to the first-party tool. So :func:`build` refuses such an id with
+    ``mcp_name_reserved``. The run adds the names of its own surface
+    (``_tool_injection._reserved_tool_names``) through *mcp_reserved*."""
+    from acb_skills import skill_families
+
+    names = {str(n) for fam in skill_families.SKILL_FAMILIES.values()
+             for n in fam.get("tools", ())}
+    return frozenset(names | _door_tools() | set(OBJECT_VERB_TOOLS.values())
+                     | {"run_workflow"} | _LOADER_TOOLS)
 
 
 def mcp_local_name(action_id: object) -> tuple[str, str] | None:
@@ -318,8 +343,12 @@ def pack_needs(skills: Iterable[Any], held: Iterable[str]) -> dict[str, tuple[st
     for found in skills:
         slug = str(getattr(found, "slug", "") or "")
         packs: list[str] = []
+        # TOF-5a-1 review P1: an MCP local name never brings a first-party pack.
+        mcp = {str(n) for _s, n in tuple(getattr(found, "mcp_tools", ()) or ())}
         for raw in tuple(getattr(found, "tools", ()) or ()):
             name = str(raw)
+            if name in mcp:
+                continue
             owner_pack = scope.get(name)
             if owner_pack and name not in have and owner_pack not in packs:
                 packs.append(owner_pack)
@@ -416,11 +445,13 @@ def build(skill_id: str, name: str, description: str, version: int,
           content_hash: str, body: Mapping[str, Any],
           *, max_tools: int, chat_tools: bool = False,
           mcp_tools: Mapping[str, str] | None = None,
-          mcp_unapproved: Iterable[str] = ()) -> SkillPack | str:
+          mcp_unapproved: Iterable[str] = (),
+          mcp_reserved: Iterable[str] = ()) -> SkillPack | str:
     """The pack of one stored skill version, or the reason it fails to load.
 
     The reasons are ``no_instructions``, ``unresolved_variable``,
-    ``chat_tools_off``, ``mcp_not_approved``, ``action_unserved``,
+    ``chat_tools_off``, ``mcp_name_reserved``, ``mcp_not_approved``,
+    ``action_unserved``,
     ``too_many_tools`` and ``too_long``.
 
     TOF-1b: *chat_tools* is the answer of ``STUDIO_CHAT_TOOLS_ORGS`` for the
@@ -431,7 +462,9 @@ def build(skill_id: str, name: str, description: str, version: int,
     local name. None, the default, says that ``STUDIO_CHAT_TOOLS_ORGS`` or
     ``MAF_MCP_ORGS`` is off, and an ``mcp:`` id gives ``chat_tools_off``. An
     id of *mcp_unapproved* gives ``mcp_not_approved``. An id that the map
-    does not hold gives ``action_unserved``."""
+    does not hold gives ``action_unserved``. Review P1: an id of
+    *mcp_reserved*, or whose local name is in :func:`reserved_names`, gives
+    ``mcp_name_reserved``."""
     clean_name = strip_hidden(str(name or "")).strip()
     raw_desc = body.get("description") if isinstance(body, Mapping) else None
     desc = strip_hidden(str(raw_desc if isinstance(raw_desc, str) else description or "")).strip()
@@ -446,12 +479,13 @@ def build(skill_id: str, name: str, description: str, version: int,
     tools: list[str] = []
     mcp: list[tuple[str, str]] = []
     unapproved = frozenset(str(i).strip() for i in mcp_unapproved)
+    reserved = frozenset(str(i).strip() for i in mcp_reserved)
     for action in actions:
         raw = strip_hidden(str(action))
         if not chat_tools and raw.strip().startswith(CHAT_TOOL_PREFIX):
             return "chat_tools_off"
         if raw.strip().startswith(MCP_PREFIX):
-            reason = _mcp_reason(raw.strip(), chat_tools, mcp_tools, unapproved)
+            reason = _mcp_reason(raw.strip(), chat_tools, mcp_tools, unapproved, reserved)
             found = mcp_local_name(raw)
             if reason or found is None:
                 return reason or "action_unserved"
@@ -477,16 +511,19 @@ def build(skill_id: str, name: str, description: str, version: int,
 
 
 def _mcp_reason(action: str, chat_tools: bool, served: Mapping[str, str] | None,
-                unapproved: frozenset[str]) -> str:
+                unapproved: frozenset[str], reserved: frozenset[str]) -> str:
     """TOF-5a-1. The reason that the ``mcp:`` id *action* fails, or ``""``.
 
     The local name in *served* must be the name of :func:`mcp_local_name`,
-    so a caller cannot map an id to a tool of another name."""
+    so a caller cannot map an id to a tool of another name. A local name of
+    a first-party tool fails first (review P1)."""
     if not chat_tools or served is None:
         return "chat_tools_off"
+    found = mcp_local_name(action)
+    if action in reserved or (found is not None and found[1] in reserved_names()):
+        return "mcp_name_reserved"
     if action in unapproved:
         return "mcp_not_approved"
-    found = mcp_local_name(action)
     if found is None or served.get(action) != found[1]:
         return "action_unserved"
     return ""

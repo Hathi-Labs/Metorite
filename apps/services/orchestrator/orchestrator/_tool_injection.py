@@ -4477,13 +4477,15 @@ async def _turn_with_skills(turn: Any, *, reach: McpReach | None = None) -> Any:
     chat_tools = (flag if flag is not None else _chat_tools_open()) if pairs else False
     mcp_tools: Mapping[str, str] | None = None
     unapproved: frozenset[str] = frozenset()
+    reserved: frozenset[str] = frozenset()
     if mcp_open:
-        mcp_tools, unapproved = await _skill_mcp_map(org, mcp_ids, approved, reach)
+        mcp_tools, unapproved, reserved = await _skill_mcp_map(org, mcp_ids, approved, reach)
     for skill, version in pairs:
         built = skill_packs.build(
             skill.id, skill.name, skill.description, version.version,
             version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS,
-            chat_tools=chat_tools, mcp_tools=mcp_tools, mcp_unapproved=unapproved)
+            chat_tools=chat_tools, mcp_tools=mcp_tools, mcp_unapproved=unapproved,
+            mcp_reserved=reserved)
         if isinstance(built, str):
             _log.info("executor.skill_refused", skill=skill.id, version=version.version,
                       reason=built)
@@ -4541,8 +4543,8 @@ async def _skill_mcp_approvals(db: Any) -> dict[tuple[str, str], str] | None:
 async def _skill_mcp_map(
     org: str, ids: Sequence[str], approved: Mapping[tuple[str, str], str] | None,
     reach: McpReach | None,
-) -> tuple[dict[str, str], frozenset[str]]:
-    """TOF-5a-1. The MCP map of one turn: ``(served, unapproved)``.
+) -> tuple[dict[str, str], frozenset[str], frozenset[str]]:
+    """TOF-5a-1. The MCP map of one turn: ``(served, unapproved, reserved)``.
 
     ONE lookahead (:func:`_mcp_reach_rows`) gives the servers that the run can
     attach for this member. A run with no grant check reaches no server, so
@@ -4554,12 +4556,19 @@ async def _skill_mcp_map(
     Each fault gives an empty map: an approvals read that failed (*approved*
     None), a lookahead fault and a cache fault. Each refusal writes one
     ``executor.skill_mcp_refused`` line with the server name and the reason,
-    and nothing else: no argument, no header, no url and no tool text."""
+    and nothing else: no argument, no header, no url and no tool text.
+
+    Review P1: *reserved* holds each id whose local name equals a
+    first-party tool name: CSY-10's ``_reserved_tool_names`` of the agent and
+    ``skill_packs.reserved_names``. Such an id never serves, and the build
+    gives ``mcp_name_reserved``. Else MAF would drop the whole server for the
+    clash, and the rules of the skill would send the model to the
+    first-party tool."""
     servers = sorted({_mcp_server_of(i) for i in ids} - {""})
     if approved is None:
         for name in servers:
             _log.info("executor.skill_mcp_refused", server=name, reason="approvals_unread")
-        return {}, frozenset()
+        return {}, frozenset(), frozenset()
     rows: list[Any] | None = []
     if reach is not None and reach.is_authorized is not None:
         rows = await _mcp_reach_rows(
@@ -4568,7 +4577,7 @@ async def _skill_mcp_map(
     if rows is None:
         for name in servers:
             _log.info("executor.skill_mcp_refused", server=name, reason="lookahead_failed")
-        return {}, frozenset()
+        return {}, frozenset(), frozenset()
     reachable = [r for r in rows if str(r.name) in servers]
     names = {str(r.name) for r in reachable}
     for name in servers:
@@ -4582,10 +4591,21 @@ async def _skill_mcp_map(
         served, unapproved = mcp_actions.skill_tool_map(ids, lists, approved=approved)
     except Exception as exc:  # the class only: a cache message can echo a value
         _log.warning("executor.skill_mcp_tools_unread", error_type=type(exc).__name__)
-        return {}, frozenset()
+        return {}, frozenset(), frozenset()
+    # Review P1: a local name of a first-party tool of this run never serves.
+    from acb_skills import skill_packs
+
+    taken = _reserved_tool_names(reach.agent if reach is not None else None)
+    taken |= skill_packs.reserved_names()
+    reserved = frozenset(i for i in {*served, *unapproved}
+                         if (skill_packs.mcp_local_name(i) or ("", ""))[1] in taken)
+    served = {i: n for i, n in served.items() if i not in reserved}
+    unapproved = frozenset(unapproved - reserved)
+    for name in sorted({_mcp_server_of(i) for i in reserved}):
+        _log.info("executor.skill_mcp_refused", server=name, reason="mcp_name_reserved")
     for name in sorted({_mcp_server_of(i) for i in unapproved}):
         _log.info("executor.skill_mcp_refused", server=name, reason="mcp_not_approved")
-    return served, unapproved
+    return served, unapproved, reserved
 
 
 def _mcp_server_of(action_id: str) -> str:
@@ -4755,12 +4775,12 @@ def _log_skill_mcp_unattached(applied: Any, agent: Any) -> None:
     closes it. The line names the skill, the version and the server, and
     never a url, a header or a text. It never raises."""
     try:
-        from orchestrator import _maf_mcp
-
         found = [s for s in getattr(applied, "skills", ()) or () if getattr(s, "mcp_tools", ())]
         if not found:
             return
-        held = _maf_mcp._names_held(agent)
+        # Review P1: only a function of ``agent.mcp_tools`` counts. A
+        # first-party tool of the same name is not the MCP tool.
+        held = _mcp_function_names(agent)
         for skill in found:
             lost = sorted({server for server, name in skill.mcp_tools if name not in held})
             if lost:
@@ -4768,6 +4788,19 @@ def _log_skill_mcp_unattached(applied: Any, agent: Any) -> None:
                              version=skill.version, servers=lost)
     except Exception as exc:  # a log line never fails the run
         _log.info("executor.skill_mcp_unattached_unread", error_type=type(exc).__name__)
+
+
+def _mcp_function_names(agent: Any) -> set[str]:
+    """TOF-5a-1 review P1. The names of the functions of the MCP tools of
+    *agent* (``agent.mcp_tools``), the shown ones and the ones that the
+    loaders hide. No other tool of the run counts."""
+    from acb_skills.tool_guard import tool_name
+
+    names: set[str] = set()
+    for tool in getattr(agent, "mcp_tools", None) or []:
+        for attr in ("functions", "_functions"):
+            names |= {tool_name(f) for f in getattr(tool, attr, None) or []}
+    return {n for n in names if n}
 
 
 def _loader_agent_ok(agent: Any) -> bool:
@@ -4919,7 +4952,7 @@ async def _plan_pack_loader(
     if len(held) < tool_packs.MAX_PACKS and reads_mail:
         mcp = await _mcp_may_attach(
             agent, agent_name, no_egress=no_egress, is_authorized=is_authorized,
-            held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
+            held_untrusted=_builds_read_mail(builds))
     if available is None:
         available = await _pack_available(allow, persona=persona, bullets=bullets)
     return tool_packs.plan_loader(

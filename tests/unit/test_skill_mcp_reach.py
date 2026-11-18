@@ -72,7 +72,9 @@ class _Db:
 def mcp_env(monkeypatch: pytest.MonkeyPatch, *, tools: list[dict[str, Any]] | None = None,
             chat_tools: bool = True, maf_mcp: bool = True, granted: bool = True,
             approved: bool = True, approvals_fault: bool = False, meta_fault: bool = False,
-            cache_fault: bool = False, actions: list[str] | None = None) -> SimpleNamespace:
+            cache_fault: bool = False, actions: list[str] | None = None,
+            server: str = SERVER, tool: dict[str, Any] | None = None,
+            agent: Any = None) -> SimpleNamespace:
     """The stubs of one turn that names the skill "Deal desk". Its body names
     *actions* (the MCP id by default). The stubs keep each call and each log
     line. The cache is the real reader over a fake Redis client."""
@@ -83,16 +85,18 @@ def mcp_env(monkeypatch: pytest.MonkeyPatch, *, tools: list[dict[str, Any]] | No
     from orchestrator import _tool_injection as ti
     from orchestrator import executor as ex
 
-    listed = [dict(TOOL)] if tools is None else tools
+    tool = dict(tool or TOOL)
+    listed = [tool] if tools is None else tools
     calls: list[str] = []
     lines: list[tuple[str, dict[str, Any]]] = []
-    meta = SimpleNamespace(name=SERVER, enabled=True, agent_scope=["*"], transport="http",
+    meta = SimpleNamespace(name=server, enabled=True, agent_scope=["*"], transport="http",
                            url=SECRET_URL, connected_by="admin@tof5a.test", created_at=None,
                            headers={"Authorization": "hdr-value-77"})
     head = SimpleNamespace(id=SKILL, name="Deal desk", slug="deal-desk", description="")
     version = SimpleNamespace(version=2, content_hash="0" * 64, body={
         "instructions": "Look up the deal, then answer.",
-        "actions": list(actions if actions is not None else [MCP_ID])})
+        "actions": list(actions if actions is not None
+                        else [f"mcp:{server}.{tool['name']}"])})
 
     class _Store:
         async def list_loadable(self, _db: Any, _member: str) -> list[Any]:
@@ -131,7 +135,7 @@ def mcp_env(monkeypatch: pytest.MonkeyPatch, *, tools: list[dict[str, Any]] | No
         assert session is db, "the read runs in the session of the turn"
         if approvals_fault:
             raise RuntimeError("relation studio_mcp_tool_approvals: s3cr3t")
-        return {(SERVER, "lookup_deal"): mcp_actions.tool_text_hash(TOOL)} if approved else {}
+        return {(server, tool["name"]): mcp_actions.tool_text_hash(tool)} if approved else {}
 
     monkeypatch.setattr(mcp_approvals, "approved_hashes", _hashes)
 
@@ -157,8 +161,9 @@ def mcp_env(monkeypatch: pytest.MonkeyPatch, *, tools: list[dict[str, Any]] | No
     for level in ("info", "warning"):
         monkeypatch.setattr(ti._log, level,
                             lambda event, **kw: lines.append((event, kw)))
-    reach = ti.McpReach(agent=object(), agent_name="orchestrator", no_egress=False,
-                        is_authorized=lambda svc: granted and svc == f"mcp-{SERVER}")
+    reach = ti.McpReach(agent=agent if agent is not None else object(),
+                        agent_name="orchestrator", no_egress=False,
+                        is_authorized=lambda svc: granted and svc == f"mcp-{server}")
     return SimpleNamespace(ti=ti, reach=reach, lines=lines, calls=calls, db=db, meta=meta)
 
 
@@ -275,7 +280,8 @@ async def test_a_fault_of_the_approval_read_gives_no_map(monkeypatch) -> None:
     assert [e["reason"] for e in _events(env.lines, "executor.skill_refused")] == [
         "action_unserved"]
     with _tenant():
-        assert await env.ti._skill_mcp_map(ORG, [MCP_ID], None, env.reach) == ({}, frozenset())
+        assert await env.ti._skill_mcp_map(ORG, [MCP_ID], None, env.reach) == (
+            {}, frozenset(), frozenset())
     _no_secret(env.lines)
 
 
@@ -371,3 +377,63 @@ def test_a_skill_whose_server_did_not_attach_writes_one_line(monkeypatch) -> Non
                            mcp_tools=[SimpleNamespace(functions=[], _functions=[fn])])
     ti._log_skill_mcp_unattached(applied, held)
     assert lines == []
+
+
+# ── Review P1: a local name of a first-party tool ──────────────────────────
+
+
+@pytest.mark.parametrize(("server", "name", "local"), [
+    ("crm", "update_record", "crm_update_record"),  # a CRM pack tool
+    ("web", "search", "web_search"),  # a platform tool
+    ("github", "search", "github_search"),  # a tool of a pack family
+])
+async def test_an_mcp_tool_with_a_first_party_name_never_serves(
+    monkeypatch, server: str, name: str, local: str,
+) -> None:
+    """An approved and reachable tool whose local name equals a first-party
+    tool fails with ``mcp_name_reserved``. MAF would drop the whole server
+    for the clash, and the rules would send the model to the first-party
+    tool. The trace is a log line with the server name only. Mutation: drop
+    the reserved check from ``_skill_mcp_map`` and from ``build`` → red."""
+    tool = dict(TOOL, name=name)
+    env = mcp_env(monkeypatch, server=server, tool=tool)
+    assert await _skills(env) == ()
+    assert "cache" in env.calls, "non-vacuity: the tool was approved and reachable"
+    assert [e["reason"] for e in _events(env.lines, "executor.skill_refused")] == [
+        "mcp_name_reserved"]
+    assert _events(env.lines, "executor.skill_mcp_refused") == [
+        {"server": server, "reason": "mcp_name_reserved"}]
+    assert local not in repr(env.lines)
+    _no_secret(env.lines)
+
+
+async def test_a_name_that_the_run_holds_is_reserved_too(monkeypatch) -> None:
+    """CSY-10's set: a tool that the agent holds is a first-party name for
+    this run, also when no pack family names it. Mutation: read only
+    ``skill_packs.reserved_names`` in the run → red."""
+    def acme_sync() -> str:
+        return ""
+
+    agent = SimpleNamespace(default_options={"tools": [acme_sync]}, mcp_tools=[])
+    tool = dict(TOOL, name="sync")
+    env = mcp_env(monkeypatch, server="acme", tool=tool, agent=agent)
+    assert await _skills(env) == ()
+    assert [e["reason"] for e in _events(env.lines, "executor.skill_refused")] == [
+        "mcp_name_reserved"]
+    plain = mcp_env(monkeypatch, server="acme", tool=tool)
+    assert [s.tools for s in await _skills(plain)] == [("acme_sync",)], "non-vacuity"
+
+
+def test_the_unattached_log_counts_only_mcp_functions(monkeypatch) -> None:
+    """A first-party tool of the local name is not the MCP tool. Mutation:
+    count each held name of the run → red."""
+    from orchestrator import _tool_injection as ti
+
+    lines: list[Any] = []
+    monkeypatch.setattr(ti._log, "warning", lambda event, **kw: lines.append((event, kw)))
+    applied = SimpleNamespace(skills=(_mcp_pack(MCP_ID),))
+    same_name = SimpleNamespace(name=LOCAL)
+    agent = SimpleNamespace(default_options={"tools": [same_name]}, mcp_tools=[])
+    ti._log_skill_mcp_unattached(applied, agent)
+    assert _events(lines, "executor.skill_mcp_unattached") == [
+        {"skill": SKILL, "version": 2, "servers": [SERVER]}]
