@@ -107,8 +107,10 @@ def invoices(ns, monkeypatch):
     """Org A: 1,000 invoices over 120 sites and 4 months, one with no site
     and one with no date. Org B: one invoice of its own site."""
     a, b = ns.org_a, ns.org_b
+    # Org A also mirrors Works, the module of item 9.
+    _mirror_org(ns, a, [_module("Invoices"), _module("Works")])
+    _mirror_org(ns, b, [_module("Invoices")])
     for org in (a, b):
-        _mirror_org(ns, org, [_module("Invoices")])
         _defs(ns, org, "module:Invoices", _INVOICE_DEFS)
     with ns.admin_engine.begin() as c:
         c.execute(text(_SEED_SQL), {"o": a, "n": 1000, "sites": 120})
@@ -350,7 +352,6 @@ def works(invoices):
     from tests.unit.test_crm_text_numbers_r8 import _INVOICES, _MISSING
 
     a = invoices.org_a
-    _mirror_org(invoices, a, [_module("Invoices"), _module("Works")])
     _defs(invoices, a, "module:Works", _WORK_DEFS)
     with invoices.admin_engine.begin() as c:
         for i, (ext, fiber, day, more) in enumerate(_INVOICES):
