@@ -6,7 +6,7 @@ Gate: AGENT-SAFE, dark. Task 3423, epic 3393 (WS-TOF, D224 rung 5). No migration
 
 ## What
 
-**Not built (row written 2026-11-18, after the Opus spec audit of that day).** **An approved MCP tool can be a skill action.** Today `skill_packs.action_tool` gives None for each id with a colon. So `mcp_actions.py` sets `"tool": None` for an `mcp:<server>.<tool>` row, and `build()` marks it `action_unserved`. A skill can name an MCP row, and no chat tool runs it.
+🔨 **BUILT, dark (2026-11-18, task 3423): the slice TOF-5a-1.** TOF-5a-2 is not built. **An approved MCP tool can be a skill action.** Today `skill_packs.action_tool` gives None for each id with a colon. So `mcp_actions.py` sets `"tool": None` for an `mcp:<server>.<tool>` row, and `build()` marks it `action_unserved`. A skill can name an MCP row, and no chat tool runs it.
 
 This row is the narrowed slice **TOF-5a-1**, the build-time half. **TOF-5a-2**, the run-time check after the attach and the progressive-disclosure handling, comes after CSY-1 and CSY-5 merge.
 
@@ -43,6 +43,17 @@ Fences, named before the build (R7):
 - Regression: `test_studio_mcp_approvals.py`, `test_studio_mcp_approvals_r8.py`, `test_studio_mcp_catalog.py`, `test_studio_mcp_tools.py`, `test_maf_mcp_confirm.py`, `test_maf_mcp_injection.py`, `test_maf_mcp_budget.py`, `test_pack_guards.py`, `test_load_skill_tools.py` and `test_crm_email_tool_refusals.py`.
 
 Verify: `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"`, then `uv run pytest` on the files above.
+
+## Build notes (TOF-5a-1, 2026-11-18)
+
+1. **Two pure inputs.** `build()` takes `mcp_tools` and `mcp_unapproved`. No map (None) means that a flag is off, and an `mcp:` id gives `chat_tools_off`. The map must give the name of `skill_packs.mcp_local_name`, or the id gives `action_unserved`.
+2. **The local name.** `mcp_local_name` gives `<server>_<tool>`. MAF trims a `_` or a `-` at the start of a tool name. So such a name gives no local name, and the skill fails closed. A parity test reads the MAF rule.
+3. **The order of the reads.** The approvals come first, in the tenant session of the turn, in a savepoint. Then one lookahead (`_mcp_reach_rows`, the rules of `_mcp_may_attach`), then one cache read for the reachable servers only (`mcp_tools.skill_tools`). A tool of a server out of reach gives `action_unserved`, never `mcp_not_approved`.
+4. **A tool that the cache does not hold** is not approved, because no current text exists to hash.
+5. **No grant check, no server.** A run whose `is_authorized` is None reaches no server for a skill, so the member's grant always counts.
+6. **Each fault gives no map**: the approvals read, the lookahead and the cache. `_mcp_may_attach` still reads a lookahead fault as True for its own use.
+7. **The email pack.** `_skills_present` reads the agent's own tools (`_holds_untrusted_pack`) and the builds of the turn. A skill can bring the email pack through a `tool:` action and also name an MCP tool. That skill fails with `mail_and_mcp`, and the brought pack leaves.
+8. **The log lines.** `executor.skill_mcp_refused` names the server and the reason (`mcp_unreachable`, `mcp_not_approved`, `approvals_unread`, `lookahead_failed`). `executor.skill_refused` keeps its reason. `executor.skill_mcp_unattached` names the skill, the version and the server, after the attach of the stream run.
 
 ## Open owner questions
 

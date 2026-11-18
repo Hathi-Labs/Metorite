@@ -30,6 +30,8 @@ e. A turn that names a skill loads its rules and its tools. A turn that names
    a skill that the member may not load gets none.
 f. TOF-1c (``ai_studio_rows/TOF-1c.md``): a turn loads a skill by its
    description only when the member may load that skill.
+g. TOF-5a-1 (``ai_studio_rows/TOF-5a.md``): an approval of org B never
+   serves an ``mcp:`` action of a skill of org A.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -47,6 +49,7 @@ f. TOF-1c (``ai_studio_rows/TOF-1c.md``): a turn loads a skill by its
   ``OR s.visibility <> 'private'``. Ben's group skill loads for Ana by its
   description, so ``test_r8_a_description_loads_only_a_skill_the_member_may_load``
   goes red. Run on 2026-11-16: red as expected.
+* M6 (TOF-5a-1). See ``test_r8_an_approval_of_org_b_never_serves_org_a``.
 """
 from __future__ import annotations
 
@@ -312,6 +315,95 @@ def test_r8_a_description_loads_only_a_skill_the_member_may_load(world, monkeypa
     assert _ids(ANA, "The broken machine needs a repair") == [ids["mine"]]
     assert _ids(BEN, "My customer wants a refund for the delayed shipment") == [ids["private"]]
     assert _ids(BEN, "Chase the overdue supplier order") == [ids["group"]]
+
+
+def test_r8_an_approval_of_org_b_never_serves_org_a(world, monkeypatch) -> None:
+    """g. TOF-5a-1 (``ai_studio_rows/TOF-5a.md``): through
+    ``_turn_with_skills`` on the real database. Org A's skill names
+    ``mcp:<server>.<tool>``. Org B approves that same tool with the right
+    hash, and org A does not. The approvals read runs in the tenant session
+    of the turn, so FORCE RLS and the org filter give org A no row: the skill
+    fails with ``mcp_not_approved``. Once org A approves the tool, the skill
+    loads with the local name. The flags, the lookahead and the cache are
+    stubs, because this case tests the approvals read.
+
+    Mutation M6: drop the ``organization_id = _BOUND_ORG`` filter of
+    ``mcp_approvals._READ_SQL`` AND the FORCE RLS of the table, or read the
+    approvals outside the tenant session. Org B's row serves org A → red."""
+    from gateway.connections import mcp_tools
+    from gateway.studio import mcp_actions, mcp_approvals
+    from orchestrator import _tool_injection as ti
+    from orchestrator import executor as ex
+
+    a, b = world.p.org_a, world.p.org_b
+    server = f"r8-{TAG}"
+    tool = {"name": "lookup_deal", "description": "Find one deal.",
+            "annotations": {"readOnlyHint": True}}
+    good = mcp_actions.tool_text_hash(tool)
+    mcp_id = f"mcp:{server}.lookup_deal"
+
+    async def seed() -> str:
+        slug = f"deal-desk-{TAG}"
+        async with tenant_session(a) as db:
+            skill = await store.create_skill(db, ANA, name="Deal desk", slug=slug)
+            await store.add_version(db, ANA, skill.id, {
+                "description": "Use this for a deal.",
+                "instructions": "Look up the deal, then answer.",
+                "actions": [mcp_id]})
+            await store.set_state(db, ANA, skill.id, "published")
+        async with tenant_session(b) as db:
+            await mcp_approvals.upsert(db, server=server, tool="lookup_deal",
+                                       text_hash=good, member=BEN)
+        return skill.id
+
+    skill_id = _go(world, seed)
+    meta = SimpleNamespace(name=server)
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    monkeypatch.setattr(ti, "_chat_tools_open", lambda: True)
+    monkeypatch.setattr(ti, "_skill_mcp_flag_open", lambda org: org == a)
+
+    async def _open() -> bool:
+        return True
+
+    async def _rows(*_a: Any, **_k: Any) -> list[Any]:
+        return [meta]
+
+    async def _lists(org: str, servers: Any) -> dict[str, list[dict[str, Any]]]:
+        assert org == a
+        return {server: [tool]} if list(servers) == [meta] else {}
+
+    monkeypatch.setattr(ti, "_studio_member_open", _open)
+    monkeypatch.setattr(ti, "_mcp_reach_rows", _rows)
+    monkeypatch.setattr(mcp_tools, "skill_tools", _lists)
+    monkeypatch.setattr(ex, "_verified_run_member", lambda: ANA)
+    lines: list[Any] = []
+    monkeypatch.setattr(ti._log, "info", lambda event, **kw: lines.append((event, kw)))
+    reach = ti.McpReach(agent=object(), agent_name="orchestrator", no_egress=False,
+                        is_authorized=lambda _svc: True)
+
+    async def go() -> Any:
+        with _tenant(a):
+            turn = tp.PackTurn(a, "chat-tof5a-r8", tp._member_part(ANA), 1, (),
+                               "use the deal desk", True)
+            return await ti._turn_with_skills(turn, reach=reach)
+
+    try:
+        assert _go(world, go).skills == ()
+        assert [kw["reason"] for e, kw in lines if e == "executor.skill_refused"] == [
+            "mcp_not_approved"]
+
+        async def approve_a() -> None:
+            async with tenant_session(a) as db:
+                await mcp_approvals.upsert(db, server=server, tool="lookup_deal",
+                                           text_hash=good, member=ANA)
+
+        _go(world, approve_a)
+        got = _go(world, go).skills
+        assert [(s.skill_id, s.tools) for s in got] == [(skill_id, (f"{server}_lookup_deal",))]
+    finally:
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM studio_mcp_tool_approvals WHERE server = :s"),
+                      {"s": server})
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:

@@ -7716,6 +7716,12 @@ async def run_agent_stream(
                     member_present=_authorizer is not None and not _batch_thread
                     and bool(_verified_run_member()),
                 )
+            if _pack_apply is not None and agents:
+                # TOF-5a-1: a skill whose MCP server did not attach is a log
+                # line. TOF-5a-2 closes the gap.
+                from orchestrator._tool_injection import _log_skill_mcp_unattached
+
+                _log_skill_mcp_unattached(_pack_apply, agents[0])
             _laps.lap("mcp")
 
             # Per-session workspace override (Custom Apps builder sessions):
