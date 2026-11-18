@@ -1134,7 +1134,9 @@ def test_crm_module_record_pages_its_fields(monkeypatch) -> None:
     _gw(monkeypatch, crm_tools, lambda p, q: record)
     first = asyncio.run(crm_tools.crm_get_module_record("Products", rid))
     assert "Call again with page=2 for the rest." in first
-    assert "Field 60: v60" in asyncio.run(crm_tools.crm_get_module_record("Products", rid, page=2))
+    # CRM-Q34-6: the key stands beside the label of a module field.
+    last = asyncio.run(crm_tools.crm_get_module_record("Products", rid, page=2))
+    assert "Field 60 (key f60): v60" in last
 
 
 def test_crm_owners_say_when_the_route_cap_is_hit(monkeypatch) -> None:
