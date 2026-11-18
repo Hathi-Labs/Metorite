@@ -6084,7 +6084,10 @@ def _chat_file_refs(attachments: list[str] | None) -> list[str]:
 
 #: Task 3812: the words of a draft that say a file goes with it.
 _FILE_PROMISE = re.compile(
-    r"\b(attached|attachments?|enclosed|enclosure)\b", re.IGNORECASE)
+    r"(please find (the |my |our )?(attached|enclosed)|\b(attached|enclosed) (is|are|you)\b"
+    r"|\b(i|we)('ve| have|'m| am| are)? (attached|attaching|enclosing|enclosed)\b"
+    r"|\bsee (the )?(attached|attachment|enclosed)\b|\bthe attached (file|pdf|document|deck|report|presentation)\b)",
+    re.IGNORECASE)
 #: The warning line of a card whose text promises a file that is not on it.
 _PROMISE_NO_FILE = (
     "⚠ The text says a file is attached, but no file is attached to this mail. "

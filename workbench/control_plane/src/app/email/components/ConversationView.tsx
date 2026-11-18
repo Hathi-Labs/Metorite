@@ -321,13 +321,13 @@ export function ConversationView({
 
 export const isDraftEmail = isDraft;
 
-/** Inline editable draft: edit the body/recipients and send it into the thread. */
 /** "1.2 MB" for a file chip. */
 function fileSizeText(bytes: number): string {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1000))} KB`;
 }
 
+/** Inline editable draft: edit the body/recipients and send it into the thread. */
 export function DraftCard({
   draft,
   replyTo,
@@ -594,6 +594,8 @@ export function DraftCard({
           cc: ccList(),
           bcc: bccList(),
           subject: draft.subject || "",
+          attachments: attachments.length ? attachments : undefined,
+          artifacts: artifacts.length ? artifacts : undefined,
         }, openedText, combinedBody(), provider));
         if (noticeAfterSave(saved)) markLost();
         setDraftStatus("saved");
@@ -609,7 +611,7 @@ export function DraftCard({
     return () => autosave.hold();
     // An edit of the Cc or the Bcc saves too (EM-T10 item 4, EM-G3c-2-f2).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, quote, to, cc, bcc]);
+  }, [body, quote, to, cc, bcc, attachments, artifacts]);
 
   // An unmount, and a switch of the card to another draft, run the pending
   // save at once (EM-G3c-2 item 11). The save names the draft of before.
@@ -924,7 +926,7 @@ export function DraftCard({
               <span className="truncate max-w-[160px]" title={a.filename}>{a.filename}</span>
               <span>{fileSizeText(Math.floor((a.contentB64.length * 3) / 4))}</span>
               <button
-                onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                onClick={() => { dirty.current = true; setAttachments((prev) => prev.filter((_, j) => j !== i)); }}
                 className="hover:text-foreground"
                 title="Remove attachment"
               >
@@ -941,7 +943,7 @@ export function DraftCard({
               <AppIcon name="Paperclip" size={10} />
               <span className="truncate max-w-[160px]">{a.name || a.path}</span>
               <button
-                onClick={() => setArtifacts((prev) => prev.filter((_, j) => j !== i))}
+                onClick={() => { dirty.current = true; setArtifacts((prev) => prev.filter((_, j) => j !== i)); }}
                 className="hover:text-foreground"
                 title="Remove attachment"
               >
