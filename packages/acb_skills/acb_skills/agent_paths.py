@@ -99,6 +99,7 @@ __all__ = [
     "skill_top_rel",
     "state_root",
     "tenant_instance",
+    "thread_file_parts",
     "thread_inputs_rel",
     "thread_outputs_rel",
     "thread_scoped_rel",
@@ -392,6 +393,34 @@ def is_loose_rel(rel: str) -> bool:
     """
     parts = _rel_parts(rel)
     return len(parts) >= 2 and parts[0] in THREAD_HEADS and not is_thread_slug(parts[1])
+
+
+def thread_file_parts(rel: object) -> tuple[list[str], str] | None:
+    """The parts of ``<inputs|outputs>/<thread slug>/<file>`` and the chat id
+    that the slug names, else ``None`` (task 3598).
+
+    THE one shape rule of a file of a chat folder. The gateway resolver
+    (``workspace._chat_path_parts``) and the email tool's rewrite of a bare
+    path to an ``artifact:`` ref both use it. It reads no disk and no store.
+
+    A NUL, an absolute path, a drive, a ``..`` or ``.`` part, a head that is
+    not ``inputs`` or ``outputs`` in lower case, and a path with no file
+    below the slug give ``None``. The slug must be the exact slug of its id
+    (:func:`thread_slug`), so one slug names one chat.
+    """
+    text = str(rel or "").replace("\\", "/")
+    if "\x00" in text or text.startswith("/") or (len(text) > 1 and text[1] == ":"):
+        return None
+    parts = [p for p in text.split("/") if p != ""]
+    if any(p in (".", "..") for p in parts):
+        return None
+    if len(parts) < 3 or parts[0] not in THREAD_HEADS or not is_thread_slug(parts[1]):
+        return None
+    session_id = parts[1].rsplit("-", 1)[0]
+    try:
+        return (parts, session_id) if thread_slug(session_id) == parts[1] else None
+    except ValueError:
+        return None
 
 
 # ── Names that no reader serves (the gateway's file routes, package_artifacts) ──
