@@ -2022,6 +2022,24 @@ def _image_withheld() -> frozenset[str]:
     return frozenset({"analyze_image"})
 
 
+def _compute_withheld() -> frozenset[str]:
+    """``compute_run`` when the compute target is off for the run's org (SBX-19).
+
+    The org is the run's own (:func:`_run_org_or_none`), never request input.
+    The answer is per org and not per thread, so the tool list holds from turn
+    to turn. The tool checks the flag again on each call, so a flip between
+    the list and the call refuses the late call. Fence:
+    ``tests/unit/test_compute_run.py``.
+    """
+    try:
+        from acb_skills.compute_run import compute_enabled_for
+    except ImportError:
+        return frozenset({"compute_run"})
+    if compute_enabled_for(_run_org_or_none()):
+        return frozenset()
+    return frozenset({"compute_run"})
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -2250,6 +2268,15 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     try:
         from acb_skills.documents import make_document
         _all_tools = [*_all_tools, make_document]
+    except ImportError:
+        pass
+
+    # SBX-19: Python over the tool results of this chat, in the sealed `compute`
+    # target. It is no finder and no shell tool (D85, D225). It is dark per org:
+    # `_compute_withheld` takes it out of the scope and the final list.
+    try:
+        from acb_skills.compute_run import compute_run
+        _all_tools = [*_all_tools, compute_run]
     except ImportError:
         pass
 
@@ -2565,7 +2592,7 @@ def _inject_agent_tools(
     # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
     # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
     # so no prompt names them for another org.
-    _facts_off = _facts_withheld() | _image_withheld()
+    _facts_off = _facts_withheld() | _image_withheld() | _compute_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
         withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
@@ -2985,6 +3012,9 @@ def _inject_agent_tools(
     # CTX-1: a large tool result as a preview and a handle. It goes FIRST, so
     # its middleware is the outermost and the number check below still reads
     # the full result.
+    # SBX-19: it goes BEFORE the spill, so it wraps the spill and reads the
+    # preview. It keeps a result for `compute_run` and never a second copy.
+    _apply_keep_for_compute(agents, agent_name)
     _apply_tool_result_spill(agents, agent_name)
     # H-236: the agent's OWN egress tools and MCP servers leave as well, and
     # a native MAF agent gets the call-time refusal, as a per-run view.
@@ -3234,6 +3264,39 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
         agents[i] = agent_with_providers(agent, [AnswerCheckProvider(numbers, claim_mode=claims)])
         extra = {"claim_mode": claims} if claims != "off" else {}
         _log.info("executor.answer_check_on", agent=agent_name, mode=numbers, **extra)
+
+
+def _apply_keep_for_compute(agents: list[Any], agent_name: str | None) -> None:
+    """The ``compute_run`` input marker on ONE run (SBX-19).
+
+    It replaces each native MAF ``Agent`` that holds ``compute_run`` with a
+    per-run view that carries ``KeepForComputeProvider``, as
+    :func:`_apply_tool_result_spill` does. Nothing is attached for an org with
+    the compute target off, and a run with no org attaches nothing. Call it
+    BEFORE the spill step, so its middleware wraps the spill's.
+    """
+    org = _run_org_or_none()
+    if not org:
+        return
+    try:
+        from acb_skills.compute_run import compute_enabled_for
+        from acb_skills.tool_result_spill import KeepForComputeProvider
+        from agent_framework import Agent
+    except ImportError as exc:
+        _log.warning("executor.keep_for_compute_unavailable", error=str(exc)[:200])
+        return
+    if not compute_enabled_for(org):
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if not isinstance(agent, Agent):
+            continue
+        held = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
+        if "compute_run" not in held:
+            continue
+        agents[i] = agent_with_providers(agent, [KeepForComputeProvider()])
+        _log.info("executor.keep_for_compute_on", agent=agent_name)
 
 
 def _apply_tool_result_spill(agents: list[Any], agent_name: str | None) -> None:
@@ -4141,7 +4204,7 @@ def _pack_base_names(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | _image_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | _compute_withheld() | gone)
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}

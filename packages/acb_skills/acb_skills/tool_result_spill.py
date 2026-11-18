@@ -59,12 +59,24 @@ from acb_skills.untrusted import MARKER_LINE_RE, UntrustedFrame, has_marker_shap
 _log = get_logger("acb_skills.tool_result_spill")
 
 SOURCE_ID = "metorite-tool-result-spill"
+COMPUTE_SOURCE_ID = "metorite-keep-for-compute"
 
 #: A stored result lives this long in the gateway process.
 TTL_S = 30 * 60
 
-#: The most results the process keeps. The oldest goes first.
-MAX_ENTRIES = 128
+#: The most results the process keeps. The owner with the most entries loses
+#: its oldest one first, so a small owner keeps its refs. It is 16 owners at
+#: the per-owner cap, and it binds only under a load that the beta does not
+#: reach.
+MAX_ENTRIES = 512
+
+#: SBX-19: the most entries and characters ONE owner (org, member, thread)
+#: keeps. ``KeepForCompute`` keeps every plain-text result of a run, so a busy
+#: chat must not push another org's refs out. 32 entries is about 4 turns of 8
+#: tool calls. 8 MB is four of the largest result (2 MB). The oldest entry of
+#: the SAME owner goes first.
+MAX_OWNER_ENTRIES = 32
+MAX_OWNER_CHARS = 8_000_000
 
 #: The most characters of one result that the store keeps.
 MAX_STORED_CHARS = 2_000_000
@@ -72,7 +84,7 @@ MAX_STORED_CHARS = 2_000_000
 #: The most characters the store keeps in all, across every entry. An add that
 #: would pass it evicts the least recently used entries first. An entry larger
 #: than this is not stored, and the result passes through whole.
-MAX_TOTAL_CHARS = 16_000_000
+MAX_TOTAL_CHARS = 64_000_000
 
 #: The size of one page of :func:`read_tool_result`.
 PAGE_CHARS = 16_000
@@ -166,18 +178,62 @@ def _keep(owner: tuple[str, str, str], text: str, untrusted: bool, tool: str) ->
     total cap (:data:`MAX_TOTAL_CHARS`). The least recently used entries go
     first, until the new entry fits."""
     size = _stored_size(text)
-    if size > MAX_TOTAL_CHARS:
+    if size > MAX_TOTAL_CHARS or size > MAX_OWNER_CHARS:
         return None
     now = time.monotonic()
     _sweep(now)
-    while _STORE and _total_chars() + size > MAX_TOTAL_CHARS:
-        _STORE.popitem(last=False)
+    # The owner's own cap first: the oldest entry of the SAME owner goes.
+    mine = [k for k in _STORE if k[:3] == owner]
+    held = sum(len(_STORE[k].text) for k in mine)
+    while mine and (len(mine) >= MAX_OWNER_ENTRIES or held + size > MAX_OWNER_CHARS):
+        gone = mine.pop(0)
+        held -= len(_STORE.pop(gone).text)
+    # The process cap: the heaviest owner loses its oldest entry, so one
+    # busy owner cannot evict the refs of another.
+    while _STORE and (_total_chars() + size > MAX_TOTAL_CHARS or len(_STORE) >= MAX_ENTRIES):
+        _STORE.pop(_heaviest_oldest())
     ref = "tr_" + secrets.token_hex(4)
     _STORE[(*owner, ref)] = _Entry(
         now + TTL_S, text[0:MAX_STORED_CHARS], untrusted, tool, len(text))
-    while len(_STORE) > MAX_ENTRIES:
-        _STORE.popitem(last=False)
     return ref
+
+
+def _heaviest_oldest() -> tuple[str, str, str, str]:
+    """The oldest key of the owner that holds the most characters."""
+    chars: dict[tuple[str, str, str], int] = {}
+    for k, e in _STORE.items():
+        chars[k[:3]] = chars.get(k[:3], 0) + len(e.text)
+    heavy = max(chars, key=lambda o: chars[o])
+    return next(k for k in _STORE if k[:3] == heavy)
+
+
+def peek_entry(ref: str) -> _Entry | None:
+    """The stored entry of *ref* for the run's own key, or ``None``.
+
+    A foreign org, member or thread, a missing run binding, a malformed ref
+    and an expired ref all answer ``None``, so the caller gives ONE text for
+    every case. It marks no session, and it frames nothing.
+    """
+    owner = _owner_key()
+    key = str(ref or "").strip()
+    if owner is None or not _REF.match(key):
+        return None
+    _sweep(time.monotonic())
+    entry = _STORE.get((*owner, key))
+    if entry is not None:
+        _STORE.move_to_end((*owner, key))
+    return entry
+
+
+def peek(ref: str) -> tuple[str, bool] | None:
+    """``(text, untrusted)`` of a stored result of THIS run's owner, or ``None``.
+
+    SBX-19: ``compute_run`` reads its inputs here. Unlike
+    :func:`read_tool_result`, it does NOT mark the session. The caller holds
+    the chat itself (``mark_untrusted_answer``) when an input is untrusted.
+    """
+    entry = peek_entry(ref)
+    return None if entry is None else (entry.text, entry.untrusted)
 
 
 # ── The text of a result ─────────────────────────────────────────────────────
@@ -404,6 +460,74 @@ class ToolResultSpillProvider(ContextProvider):
         )
 
 
+# ── SBX-19: keep a result as an input of compute_run ─────────────────────────
+
+#: A result of at least this many characters is kept for ``compute_run``. It
+#: does not depend on ``TOOL_RESULT_SPILL`` or on the spill size.
+NL = chr(10)
+COMPUTE_KEEP_MIN = 1
+#: The marker line that names the ref. The model passes the ref to the tool.
+COMPUTE_MARKER = "[{ref} usable as input of compute_run]"
+_SPILL_REF = re.compile(r"\[Stored result (tr_[0-9a-f]{8}):")
+
+
+class KeepForCompute(FunctionMiddleware):
+    """Keeps every plain-text result of 1 character to 2 MB as an input of ``compute_run``
+    and adds ONE footer line with its ref (rung 6a', ``agent_sandbox.md``).
+
+    It sits OUTSIDE :class:`SpillToolResults`, so it reads the result after
+    the spill. A result that the spill already kept and replaced with a
+    preview gets the marker for that ref and no second copy. The text is
+    kept in the one store, so the owner key, the TTL and the caps are the
+    spill's own. It is attached only for an org whose compute flag is on.
+    """
+
+    async def process(self, context: Any, call_next: Any) -> None:
+        await call_next()
+        function = getattr(context, "function", None)
+        if function is None:
+            return
+        name = tool_name(function)
+        if name in EXEMPT_TOOLS or name == "compute_run" or _is_delegation(function):
+            return
+        try:
+            text = _plain_text(getattr(context, "result", None))
+            if text is None:
+                return
+            owner = _owner_key()
+            if owner is None:
+                return
+            ref = None
+            spilled = _SPILL_REF.search(text)
+            if spilled:
+                held = _STORE.get((*owner, spilled.group(1)))
+                if held is not None and held.total == len(held.text):
+                    ref = spilled.group(1)
+            if ref is None and not spilled and COMPUTE_KEEP_MIN <= len(text) <= MAX_STORED_CHARS:
+                ref = _keep(owner, text, await _untrusted(function, text), name)
+            if ref is None:
+                return
+            context.result = text.rstrip(NL) + NL + COMPUTE_MARKER.format(ref=ref)
+        except Exception as exc:  # a fault leaves the result as it is
+            _log.warning("tool_result.compute_keep_failed", tool=name, error=type(exc).__name__)
+
+
+class KeepForComputeProvider(ContextProvider):
+    """Adds :class:`KeepForCompute` to ONE run of a native MAF agent.
+
+    ``_tool_injection._apply_keep_for_compute`` attaches it BEFORE the spill
+    provider, so its middleware wraps the spill and reads the preview.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(COMPUTE_SOURCE_ID)
+
+    async def before_run(
+        self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
+    ) -> None:
+        context.extend_middleware(COMPUTE_SOURCE_ID, [KeepForCompute()])
+
+
 # ── The read tool ────────────────────────────────────────────────────────────
 
 def _page_footer(ref: str, start: int, end: int, total: int) -> str:
@@ -467,14 +591,19 @@ read_tool_result.__tool_risk__ = _risk(READ_TOOL)  # type: ignore[attr-defined]
 TOOLS = (read_tool_result,)
 
 __all__ = [
+    "COMPUTE_MARKER",
     "EXEMPT_TOOLS",
     "NOT_FOUND",
     "READ_TOOL",
     "SOURCE_ID",
     "TOOLS",
+    "KeepForCompute",
+    "KeepForComputeProvider",
     "SpillToolResults",
     "ToolResultSpillProvider",
     "clear_store",
+    "peek",
+    "peek_entry",
     "preview",
     "read_tool_result",
     "spill_result",
