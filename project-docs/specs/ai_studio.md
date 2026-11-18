@@ -1170,7 +1170,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **F2c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/F2c.md) |
 | **F2d** | 🔨 BUILT, dark (2026-11-03) | HIGH | AGENT-SAFE | [row](ai_studio_rows/F2d.md) |
 | **F3** | 🔨 BUILT, dark (2026-11-11, Metorite task 1181) | HIGH | AGENT-SAFE | [row](ai_studio_rows/F3.md) |
-| **F4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/F4.md) |
+| **F4** | F4a built 2026-11-18, F4b open | STD | AGENT-SAFE | [row](ai_studio_rows/F4.md) |
 | **F5a** | 🔨 BUILT, dark (2026-11-13, task 1183) | STD | AGENT-SAFE | [row](ai_studio_rows/F5a.md) |
 | **F5b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/F5b.md) |
 | **F5c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/F5c.md) |
@@ -1610,7 +1610,7 @@ The same gates bind a skill (a tool set), a workflow and an app.
 | Stage | The gate | State |
 |---|---|---|
 | **Build** | The A2 validator, catalog actions only, no class X, the secret scan, the caps, the plan card (G2) | Built |
-| **Build** | Preview on sample data (G4), dry-run tests with no real write (F4) | G4: server built, client built (G4b). F4: not built |
+| **Build** | Preview on sample data (G4), dry-run tests with no real write (F4) | G4: server built, client built (G4b). F4a (the test shape, the pass rule, the hold-and-record middleware, the carry-forward of `tests`) built 2026-11-18. F4b (the run, the caps, the flag) not built |
 | **Publish** | One immutable version (A4). A review of the manifest diff by a holder of `studio:publish` (J2) | Version built, review not built |
 | **Install** | The consent screen (J6): what the app reads, what it writes, what it sends, who sees it, its runtime kind and its sensitive fields | Not built |
 | **Run** | One door, the viewer's rights, approval by action class, the trust ladder (D131), a credit cap, the kill switch (J3), the audit row | Door and audit built for class A. The stop of a package is built dark (J3a). The reads of a run with no viewer are built dark (B6a). The rest are not built |

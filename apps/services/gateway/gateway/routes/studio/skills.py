@@ -393,7 +393,10 @@ async def add_skill_version(
     await _check_body(new.body)
     async with _tenant_session() as db:
         with _store_errors():
-            stored = await store.add_version(db, user.email, sid, new.body)
+            # F4a: a body with no ``tests`` keeps the tests of the newest
+            # version. The undo copies a body exactly, so it skips this.
+            body = await store.carry_tests(db, user.email, sid, new.body)
+            stored = await store.add_version(db, user.email, sid, body)
             if stored is None:
                 raise HTTPException(status_code=404, detail=NOT_FOUND)
             # The UPDATE of add_version holds the row lock until the commit,

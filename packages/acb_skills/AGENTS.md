@@ -288,6 +288,7 @@ not write a second copy of that seam. A bare test file name is under
    - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`, `test_studio_record_writes.py`, `test_studio_workflow_tools.py`, cases ap to as of `test_studio_action_door_r8.py` (R8).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
    - `CC_CLASSES` mirrors the stylesheet in `SandboxedHtml.tsx`, so register a new `cc-` block in BOTH places. Fence: `test_artifact_lint.py`.
+7. skill_dry_run.py -- the dry-run door of a skill test (WS-STU F4a). `HoldAndRecord` runs a tool for real only when the registry says `read_only=True` and `open_world=False`. A member, extra-call, delegation or loader tool never runs. It records every other call with its arguments, and the model reads one fixed text. `dry_run_scope` is the ONE setter of the mark, and F4b wires it. Fences: `test_skill_dry_run.py`, `test_skill_tests.py`.
 
 ## Work Guidance
 

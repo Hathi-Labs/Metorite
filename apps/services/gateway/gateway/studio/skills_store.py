@@ -37,8 +37,8 @@ member. A tool pack id (F3) uses the skill ``id``, never the slug.
 
 **The body.** :func:`add_version` checks a light shape only: an object with a
 non-empty ``description`` and ``instructions``, and ``actions`` as a list of
-strings. The other parts of §3.5 (``cards``, ``knowledge``, ``tests``) pass
-as given. The full manifest check is A2, and this module does not import it.
+strings. ``tests`` has the shape of ``skill_tests.parse_tests`` (F4a). The
+other parts of §3.5 (``cards``, ``knowledge``) pass as given. The full manifest check is A2, and this module does not import it.
 The CHECK ``studio_skill_versions_body_size`` caps the jsonb text at
 :data:`MAX_BODY_BYTES`, and the store refuses a bigger body first. The store
 measures its own JSON text, and that text has the same length as the jsonb
@@ -83,6 +83,8 @@ from typing import Any
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem
 from acb_skills.skill_slug import MAX_SLUG_CHARS  # defined once, in acb_skills
 from sqlalchemy import text
+
+from gateway.studio.skill_tests import SkillTestError, parse_tests
 
 #: The four states, as the CHECK ``studio_skills_state`` holds them.
 STATES: tuple[str, ...] = ("draft", "published", "paused", "archived")
@@ -329,6 +331,12 @@ def check_body(body: object) -> str:
     hidden = body_hidden_problem(body)
     if hidden is not None:
         raise SkillStoreError(hidden)
+    # After the hidden walk, so a hidden character keeps its own refusal.
+    if "tests" in body:
+        try:
+            parse_tests(body)
+        except SkillTestError as exc:
+            raise SkillStoreError(str(exc)) from None
     return encoded
 
 
@@ -414,9 +422,38 @@ async def set_state(db: Any, member: str, skill_id: str, state: str) -> bool:
     return bool(getattr(result, "rowcount", 0))
 
 
+async def carry_tests(db: Any, member: str, skill_id: str,
+                      body: Mapping[str, Any]) -> Mapping[str, Any]:
+    """*body* with the ``tests`` of the newest version, when *body* has no
+    ``tests`` key and that version holds a list that passes
+    ``skill_tests.parse_tests``. Otherwise *body* itself (F4a).
+
+    The route of a new version calls it, because the editor form sends no
+    ``tests``. The undo route does not, because it copies an older body
+    exactly, and ``add_version`` carries nothing. ``"tests": []`` in *body*
+    clears the tests, and a list replaces them. The read takes no lock. A
+    second save at the same moment can carry the older list, and only a
+    save with an explicit ``tests`` changes the list, so the window is narrow.
+    """
+    if "tests" in body:
+        return body
+    newest = await get_version(db, member, skill_id)
+    kept = newest.body.get("tests") if newest is not None else None
+    if not kept:
+        return body
+    try:
+        parse_tests({"tests": kept})
+    except SkillTestError:
+        return body  # an old list of a free shape is dropped, never copied
+    return {**body, "tests": kept}
+
+
 async def add_version(db: Any, member: str, skill_id: str,
                       body: Mapping[str, Any]) -> Version | None:
     """Store *body* as the next version of the skill *skill_id* of *member*.
+
+    It stores *body* as given. :func:`carry_tests` does the carry-forward of
+    ``tests``, and the route of a new version calls it first.
 
     The number is ``current_version + 1``, or 1 for the first version, and
     the skill's ``current_version`` moves to it in the same statement.
