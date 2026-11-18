@@ -1091,6 +1091,51 @@ def _new_mail_redraft(form: dict) -> dict:
                 or not 1 < draft <= _NEW_MAIL_DRAFT_MAX):
             raise ValueError("a new-mail form names the card it revises and its draft")
         out["revises"], out["draft"] = revises, draft
+    if "changed" in form:
+        if "revises" not in out:
+            raise ValueError("a new-mail form names what changed only with the card it revises")
+        out["changed"] = _new_mail_changed(form["changed"])
+    return out
+
+
+#: The act kinds that a link names (``redraft.ACT_OF_KIND``), and the parts of ``changed``.
+_CHANGED_ACTS = frozenset({"new", "forward", "reply"})
+_CHANGED_PEOPLE = ("to", "cc")
+
+
+def _new_mail_changed(value: Any) -> dict:
+    """What differs from the card that this card replaces (HRD-8b), checked.
+
+    The gateway sets it (``redraft.changed_since``), and the tool copies it. It
+    holds an ``act`` of ``{was, now}`` and the ``to`` and ``cc`` of
+    ``{added, removed}``, each a short list of text. Anything else raises
+    ``ValueError``, so no card draws a claim of a model."""
+    from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
+
+    if not isinstance(value, dict) or not value or set(value) - {"act", *_CHANGED_PEOPLE}:
+        raise ValueError("a new-mail form names what changed as act, to and cc")
+    out: dict = {}
+    if "act" in value:
+        act = value["act"]
+        if (not isinstance(act, dict) or set(act) != {"was", "now"}
+                or act["was"] not in _CHANGED_ACTS or act["now"] not in _CHANGED_ACTS):
+            raise ValueError("a new-mail form names a changed act as was and now")
+        out["act"] = {"was": act["was"], "now": act["now"]}
+    for name in _CHANGED_PEOPLE:
+        if name not in value:
+            continue
+        part = value[name]
+        if not isinstance(part, dict) or set(part) != {"added", "removed"}:
+            raise ValueError(f"a new-mail form names changed {name} as added and removed")
+        lists = {}
+        for side in ("added", "removed"):
+            items = part[side]
+            if (not isinstance(items, list) or len(items) > MAX_REPLY_RECIPIENTS
+                    or not all(isinstance(a, str) and 0 < len(a) <= 320 for a in items)):
+                raise ValueError(f"a new-mail form names {name} {side} as a list of addresses")
+            lists[side] = list(items)
+        if lists["added"] or lists["removed"]:
+            out[name] = lists
     return out
 
 
@@ -1571,10 +1616,19 @@ def card_not_done_text(act: str = "") -> str:
 
 
 #: CO-17: the card id of the last card that the member approved on this frame,
-#: and the chat it was in, or None. :func:`note_record_link` reads it.
-#: ⚠️ The default is None, never a mutable object.
-_LAST_APPROVED: _contextvars.ContextVar[tuple[str, str] | None] = (
+#: the chat it was in, and the tool call frame (:data:`_CARD_FRAME`) of the
+#: card, or None. :func:`note_record_link` and :func:`note_sent_message` read
+#: it. ⚠️ The default is None, never a mutable object.
+_LAST_APPROVED: _contextvars.ContextVar[tuple[str, str, object | None] | None] = (
     _contextvars.ContextVar("acb_last_approved_card", default=None))
+
+#: Task 3594: the frame of ONE tool call. :func:`card_call` sets a new object
+#: for each call, and the approved card keeps it. On the Copilot path one
+#: context is copied to each tool of a run, so a card that one tool approved
+#: could reach a later tool that showed no card. A send counts only in the
+#: same frame as its card. ⚠️ The default is None, never a mutable object.
+_CARD_FRAME: _contextvars.ContextVar[object | None] = _contextvars.ContextVar(
+    "acb_card_frame", default=None)
 
 
 async def _record_approved_card(request_id: str | None, responder: str = "") -> None:
@@ -1601,27 +1655,43 @@ async def _record_approved_card(request_id: str | None, responder: str = "") -> 
         tid = resolve_relay_thread_id() or ""
         if not tid:
             return
-        _LAST_APPROVED.set((tid, request_id))
+        _LAST_APPROVED.set((tid, request_id, _CARD_FRAME.get()))
         await record_approved(tid, request_id, act_kind_of(_CARD_TOOL.get()),
                               responder=responder)
     except Exception:  # noqa: BLE001
         return
 
 
-async def note_sent_message(message_id: str) -> bool:
-    """CO-17 and task 3594: a send tool says the id of the message that went,
-    after its approved card. The card record of the last approved card of this
-    frame takes it once, so the chat can answer "did it go?" from the record
-    (``orchestrator.card_record.was_sent``). Only a token counts, never mail
-    text. False with no approved card, with the flag off and on a fault.
+async def note_sent_message(message_id: str, recipients: Any = (), *,
+                            request_id: str | None = None) -> bool:
+    """CO-17 and task 3594: a send tool says what went, AFTER the provider
+    took the mail. Never before the send, and never on a decline, a close or
+    a failure.
+
+    *message_id* is the provider id of the mail, a token. *recipients* are the
+    addresses that the member approved on the card. *request_id* is the id of
+    the card that the tool itself awaited, when the tool knows it.
+
+    The card record of the approved card takes them once, so the next turn
+    of the chat reads the send (``orchestrator.card_record.set_sent``). The
+    bind is explicit: the approved card must be of THIS tool call frame
+    (:data:`_CARD_FRAME`). With no frame, *request_id* must name the card.
+    A use spends the hold, so a second send of the same card counts for
+    nothing. False with no approved card, with the flag off and on a fault.
     Never raises."""
     held = _LAST_APPROVED.get()
     if held is None:
         return False
+    tid, rid, frame = held
+    if frame is not _CARD_FRAME.get():
+        return False
+    if frame is None and (request_id is None or request_id != rid):
+        return False
+    _LAST_APPROVED.set(None)
     try:
-        from orchestrator.card_record import set_message_id
+        from orchestrator.card_record import set_sent
 
-        return await set_message_id(held[0], held[1], message_id)
+        return await set_sent(tid, rid, message_id, list(recipients or []))
     except Exception:  # noqa: BLE001
         return False
 
@@ -2033,9 +2103,21 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
     token = _CARD_CALL.set(keys)
     tool_token = _CARD_TOOL.set(None if keyless else fn)
     args_token = _CARD_ARGS.set(None if keyless else arguments)
+    # Task 3594: a new frame for this call, and no approved card of an
+    # earlier call. A send of this call counts only after a card of this call.
+    frame_token = _CARD_FRAME.set(object())
+    approved_token = _LAST_APPROVED.set(None)
     try:
         yield
     finally:
+        try:
+            _LAST_APPROVED.reset(approved_token)
+        except ValueError:
+            _LAST_APPROVED.set(None)
+        try:
+            _CARD_FRAME.reset(frame_token)
+        except ValueError:
+            _CARD_FRAME.set(None)
         try:
             _CARD_ARGS.reset(args_token)
         except ValueError:

@@ -209,6 +209,10 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - ⚠️ The build runs in its own task, within `_BRIEFING_TIMEOUT_S`. `acb_auth.deps.member_context` binds the member's org, and the task keeps that binding away from the run. A fault costs the block, never the turn. A failed identity or role read (`identity_read_failed()`, `role_read_failed()`) stops the build, so the store keeps nothing.
    - The block sits right after the profile block. Each block above it keeps its bytes. Fences: `test_executor_briefing_block.py`, `test_executor_briefing_block_r8.py` (R8), `test_setup_laps.py`.
 30. **The per-turn context carries one celebration line** (WS-63 PZ-43, `personalization.md` §16.6). It ships dark behind `CELEBRATIONS_ORGS`. `_prime_celebrations` has the same gates as the briefing prime and reads ONE row (`celebrations.READ_SQL`). `_celebration_line` reads the run binding and asks the pure `celebrations.celebration_line`. The line comes in the first reply of the member's local day only, and it follows a profile block whose greeting is not `none`. Fence: `tests/unit/test_celebrations.py`.
+31. **The per-turn context states the mails that this chat sent** (task 3594, `chat_organization.md` §16.3). It ships dark behind `CHAT_CARD_RECORD_ORGS`.
+   - `_prime_sent_acts` runs in `run_agent_stream` after `_prime_celebrations`. It reads the last 5 sent acts of the chat from `card_record.sent_acts`, as the verified member, within one second. A delegated run gets none, and so does a batch run. A chat with untrusted input still gets the line.
+   - `_sent_acts_block` reads the run binding only, and comes last in `_context_preamble_parts`. Each block above it keeps its bytes. A fault gives no line, and the turn runs as before.
+   - `card_record.py` is the one module that runs SQL on `chat_card_record`. A send tool writes through `ask_tools.note_sent_message`, after the mail went. Fences: `tests/unit/test_sent_record.py`, `tests/unit/test_sent_record_r8.py` (R8).
 
 ## Work Guidance
 
