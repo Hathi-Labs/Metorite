@@ -331,3 +331,77 @@ async def test_thirty_thousand_records_in_two_hundred_groups(invoices, app_engin
     assert body["group_count"] == 200 and len(body["groups"]) == 200
     assert body["records"] == 30_000
     assert seconds < 10.0
+
+
+# ── 9. A text field that holds numbers (CRM-Q34-11) ─────────────────────────
+
+_WORK_DEFS = [
+    ("Site", "lookup", {"lookup_module": "Sites"}, False, False),
+    ("Invoice_Date", "date", None, False, False),
+    ("Fiber", "text", None, False, False),
+    ("Notes", "text", None, False, False),
+]
+
+
+@pytest.fixture
+def works(invoices):
+    """Module Works of org A: the dirty Fiber values of CRM-Q34-11, over two
+    sites. The number of each value comes from that suite, written by hand."""
+    from tests.unit.test_crm_text_numbers_r8 import _INVOICES, _MISSING
+
+    a = invoices.org_a
+    _mirror_org(invoices, a, [_module("Invoices"), _module("Works")])
+    _defs(invoices, a, "module:Works", _WORK_DEFS)
+    with invoices.admin_engine.begin() as c:
+        for i, (ext, fiber, day, more) in enumerate(_INVOICES):
+            fields = {"Site": {"id": f"w{i % 2}", "name": f"Works {i % 2}"},
+                      "Invoice_Date": day, **more}
+            if fiber is not _MISSING:
+                fields["Fiber"] = fiber
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Works', 'zoho', :e, :e, "
+                "CAST(:f AS jsonb))"), {"o": a, "e": ext, "f": json.dumps(fields)})
+    return invoices
+
+
+def _work_truth(p: Any, org: str) -> dict[tuple[str, str], float]:
+    """The sum of Fiber for each site and month, by a join on the numbers
+    written by hand, in SQL that shares no code with the route."""
+    from tests.unit.test_crm_text_numbers_r8 import _INVOICE_NUMBERS
+
+    values = ", ".join(f"(:r{i}, CAST(:n{i} AS numeric))" for i in range(len(_INVOICE_NUMBERS)))
+    args: dict[str, Any] = {"o": org}
+    for i, (raw, number) in enumerate(_INVOICE_NUMBERS.items()):
+        args[f"r{i}"], args[f"n{i}"] = raw, str(number)
+    with p.admin_engine.begin() as c:
+        rows = c.execute(text(
+            "SELECT r.fields -> 'Site' ->> 'id' AS k1, left(r.fields ->> 'Invoice_Date', 7) "
+            f"AS k2, sum(x.n) AS v FROM crm_module_records r JOIN (VALUES {values}) "
+            "x(raw, n) ON r.fields ->> 'Fiber' = x.raw WHERE r.organization_id = "
+            "CAST(:o AS uuid) AND r.module = 'Works' GROUP BY 1, 2"), args).fetchall()
+    return {(r.k1, r.k2): float(r.v) for r in rows}
+
+
+async def test_a_text_field_of_numbers_sums_in_two_groups(works, app_engine) -> None:
+    a = works.org_a
+    query = {"entity": "module:Works", "measure": "sum", "field": "Fiber",
+             "group_field": "Site", "group_field2": "Invoice_Date", "bucket": "month"}
+    two = await _ok(works, a, **query, group_page_size=200)
+    one = await _ok(works, a, entity="module:Works", measure="sum", field="Fiber",
+                    group_field="Invoice_Date", bucket="month")
+    truth = _work_truth(works, a)
+    got = {(g.get("key"), g.get("key2")): g["value"] for g in two["groups"]}
+    # A pair whose every Fiber is no number has a None value, as one field has.
+    assert {k: v for k, v in got.items() if v is not None} == {
+        k: round(v, 2) for k, v in truth.items() if v}
+    # The same three counts, the same total, the same records as one field.
+    assert two["text_numbers"] == one["text_numbers"]
+    assert set(two["text_numbers"]["Fiber"]) >= {"numbers", "no_value", "not_numbers"}
+    assert (two["total"], two["values"], two["records"]) == (
+        one["total"], one["values"], one["records"])
+    assert two["total"] == round(sum(truth.values()), 2)
+    # Text equality stays text equality: "12" in Notes is one record.
+    eq = await _ok(works, a, **query, **{"field.Notes": "12"})
+    assert eq["records"] == 1 and [(g["key"], g["key2"]) for g in eq["groups"]] == [
+        ("w0", "2026-11")]
