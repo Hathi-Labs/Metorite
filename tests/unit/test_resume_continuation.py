@@ -1731,6 +1731,8 @@ def test_keep_stream_goes_on_in_the_parked_stream(streams):
     ``mark_active`` -> the order test -> red."""
     tid = "t-keep"
     _parked_stream(streams, tid)
+    parked_end = streams.store[f"cc:stream:{tid}"][-1][0]
+    record: dict[str, Any] = {"runId": _RUN, "messageId": _REPLY}
 
     async def go() -> None:
         task = await stream_relay.start_detached(
@@ -1738,10 +1740,12 @@ def test_keep_stream_goes_on_in_the_parked_stream(streams):
                             {"type": "TEXT_MESSAGE_CONTENT", "delta": "The deal moved."},
                             {"type": "RUN_FINISHED", "threadId": tid}),
             tee=True, exclusive=True, keep_stream=True, actor=_ALICE,
-            organization_id=_ORG_A, record={"runId": _RUN, "messageId": _REPLY})
+            organization_id=_ORG_A, record=record)
         await asyncio.wait_for(task, timeout=10)
 
     asyncio.run(go())
+    # Round 3, P2-1: the caller's record names the deleted end, for the fold.
+    assert record["parkedEndId"] == parked_end
     kinds = [(e.get("type"), e.get("parked"), e.get("delta")) for e in _entries(streams, tid)]
     assert kinds == [
         ("RUN_STARTED", None, None), ("TEXT_MESSAGE_CONTENT", None, "Let me move it."),
@@ -1983,6 +1987,9 @@ def test_the_run_route_keeps_the_stream_only_in_case_a(monkeypatch, liveness):
         assert seen["run_kwargs"][-1]["resume_call"]["same_reply"] is same, "the mark"
         assert kw["organization_id"] == _ORG_A
         assert started.same_reply is same
+        if same:
+            # What `start_detached(keep_stream=True)` writes into the record.
+            kw["record"]["parkedEndId"] = "1700000000005-0"
         asyncio.run(kw["on_complete"]())
         fold = folds[-1]
         if same:
@@ -1993,10 +2000,12 @@ def test_the_run_route_keeps_the_stream_only_in_case_a(monkeypatch, liveness):
             back = fold["same_reply_fallback_id"]
             assert fold["mid"] == _REPLY and back and back != _REPLY
             assert kw["record"]["sameReplyFallbackId"] == back
+            assert fold["same_reply_parked_end"] == "1700000000005-0", "round 3, P2-1"
         else:
             assert started.message_id and started.message_id != _REPLY
             assert kw["record"]["messageId"] == started.message_id
             assert fold["same_reply_fallback_id"] is None
+            assert fold["same_reply_parked_end"] is None
             assert "sameReplyFallbackId" not in kw["record"]
 
 
@@ -2188,6 +2197,21 @@ def _evt(kind: str, **kw: Any) -> dict[str, Any]:
     return {"type": kind, **kw}
 
 
+#: The id of a deleted parked end in the tests of the cut (round 3, P2-1).
+_GAP = "1700000000100-0"
+
+
+def _ids(events: list[dict[str, Any]], *, gap_after: int) -> list[dict[str, Any]]:
+    """*events* with Redis entry ids. The ids of the first ``gap_after + 1``
+    events come before :data:`_GAP`, and the rest after it. -1 puts each
+    event after it."""
+    out = []
+    for i, e in enumerate(events):
+        ms = 1700000000000 + i if i <= gap_after else 1700000000200 + i
+        out.append({**e, "_stream_id": f"{ms}-0"})
+    return out
+
+
 def _start(*, resumed: bool = False, run_id: str = _RUN) -> dict[str, Any]:
     return _evt("RUN_STARTED", runId=run_id, **({"resumed": True} if resumed else {}))
 
@@ -2208,6 +2232,20 @@ def test_same_reply_events_decide_by_the_head():
 
     one = [_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"), _evt("RUN_ERROR")]
     assert same_reply_events(one, _RUN, _REPLY, "fb") == ([], None), "nothing new"
+    # Round 3, P2-1. With the id of the deleted parked end, the events after
+    # it go into the fallback row: the marker of a run that died before its
+    # start. Part one is never written again.
+    died = _ids([_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
+                 _evt("CUSTOM", name="run_interrupted"), _evt("RUN_FINISHED")], gap_after=1)
+    assert same_reply_events(died, _RUN, _REPLY, "fb", parked_end_id=_GAP) == (died[2:], "fb")
+    assert same_reply_events(died[:2], _RUN, _REPLY, "fb", parked_end_id=_GAP) == ([], None)
+    # A part two longer than MAXLEN: the trim took part one AND its start.
+    long_two = _ids([_evt("TEXT_MESSAGE_CONTENT", delta="tail of two"), _evt("RUN_FINISHED")],
+                    gap_after=-1)
+    assert same_reply_events(long_two, _RUN, _REPLY, "fb", parked_end_id=_GAP) == (
+        long_two, "fb")
+    no_ids = [_evt("TEXT_MESSAGE_CONTENT", delta="x")]
+    assert same_reply_events(no_ids, _RUN, _REPLY, "fb", parked_end_id=_GAP) == ([], None)
     two = [_start(), _evt("TEXT_MESSAGE_CONTENT", delta="one"),
            _start(resumed=True), _evt("TEXT_MESSAGE_CONTENT", delta="two")]
     assert same_reply_events(two, _RUN, _REPLY, "fb") == (two, _REPLY)
@@ -2303,6 +2341,26 @@ def test_a_same_reply_fold_never_writes_over_part_one(monkeypatch):
     events[:] = [*whole[:2], _evt("RUN_ERROR")]  # the continuation never started
     fold("fb-row")
     assert writes == [], "nothing new"
+    # Round 3, P2-1: a death before the start. The sweep pushes the marker
+    # after the deleted end, and the fold puts it on the fallback row.
+    events[:] = _ids([*whole[:2], _evt("CUSTOM", name="run_interrupted", value={}),
+                      _evt("RUN_FINISHED", interrupted=True)], gap_after=1)
+    marked: list[Any] = []
+    real_upsert = chat_routes._upsert_messages
+
+    def _upsert_events(thread_id, records, **kw):
+        marked.extend((r.id, [c["name"] for c in r.custom_events]) for r in records)
+        return real_upsert(thread_id, records, **kw)
+
+    monkeypatch.setattr(chat_routes, "_upsert_messages", _upsert_events)
+    asyncio.run(chat_fold.persist_final_assistant_message(
+        "t-fold", _REPLY, user_id=_ALICE, run_id=_RUN, organization_id=_ORG_A,
+        expect_run_id=_RUN, holds_mail=False, same_reply_fallback_id="fb-row",
+        same_reply_parked_end=_GAP))
+    assert marked == [("fb-row", ["run_interrupted"])], "the marker lands on a row"
+    assert writes == [("fb-row", "")], "part one is never written again"
+    writes.clear()
+    monkeypatch.setattr(chat_routes, "_upsert_messages", real_upsert)
     events[:] = whole[2:]
     fold(None)
     assert writes == [(_REPLY, " Part two.")], "with no fallback the fold is as before"
@@ -2322,6 +2380,9 @@ def test_the_sweep_passes_the_fallback_of_a_same_reply_run(monkeypatch):
     monkeypatch.setattr(chat_fold, "persist_final_assistant_message", _persist)
     base = {"threadId": "t-s", "messageId": _REPLY, "org": _ORG_A, "runId": _RUN}
     assert asyncio.run(chat_recovery.persist_interrupted(
-        [{**base, "sameReplyFallbackId": "fb-1"}, base])) == 2
+        [{**base, "sameReplyFallbackId": "fb-1", "parkedEndId": "17-0"}, base,
+         {**base, "parkedEndId": "18-0"}])) == 3
     assert calls[0]["same_reply_fallback_id"] == "fb-1"
+    assert calls[0]["same_reply_parked_end"] == "17-0", "round 3, P2-1"
     assert "same_reply_fallback_id" not in calls[1]
+    assert "same_reply_parked_end" not in calls[1] and "same_reply_parked_end" not in calls[2]

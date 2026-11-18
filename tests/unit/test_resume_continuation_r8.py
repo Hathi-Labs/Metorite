@@ -815,6 +815,13 @@ IN_WINDOW: list[Any] = []
 #: Each entry makes ONE stand-in continuation raise before its start
 #: (review round 2, P2-a: a continuation that never started).
 RAISE_BEFORE_START: list[bool] = []
+#: Each entry is an event that ONE stand-in continuation awaits before its
+#: start, so the test can let its process "die" there (review round 3, P2-1).
+HOLD_BEFORE_START: list[asyncio.Event] = []
+#: Each entry makes ONE stand-in continuation delete each entry up to and
+#: with its own start after it pushed its events, as a trim of a part two
+#: longer than MAXLEN does (review round 3, P2-1).
+TRIM_THROUGH_START: list[bool] = []
 #: Each entry makes ONE stand-in continuation end in a park, as a new card
 #: of part two does (review round 2, P2-a: three parts).
 PARK_AT_END: list[bool] = []
@@ -887,6 +894,8 @@ def relay_scene(as_app, monkeypatch):
             if RAISE_BEFORE_START:
                 RAISE_BEFORE_START.pop()
                 raise RuntimeError("the run died before its start")
+            if HOLD_BEFORE_START:
+                await HOLD_BEFORE_START.pop().wait()
             if TRIM_HEAD:
                 TRIM_HEAD.pop()
                 r = await stream_relay._get_client()
@@ -895,6 +904,16 @@ def relay_scene(as_app, monkeypatch):
             for evt in events:
                 await stream_relay.push_event(thread_id, evt)
                 yield f"data: {json.dumps(evt)}\n\n"
+            if TRIM_THROUGH_START:
+                TRIM_THROUGH_START.pop()
+                r = await stream_relay._get_client()
+                key = f"cc:stream:{thread_id}"
+                gone = []
+                for eid, fields in await r.xrange(key):
+                    gone.append(eid)
+                    if json.loads(fields["event"]).get("resumed") is True:
+                        break
+                assert await r.xdel(key, *gone) == len(gone)
         return _gen()
 
     async def _session_access(session_id, actor):
@@ -932,6 +951,8 @@ def relay_scene(as_app, monkeypatch):
     CAPS.clear()
     IN_WINDOW.clear()
     RAISE_BEFORE_START.clear()
+    HOLD_BEFORE_START.clear()
+    TRIM_THROUGH_START.clear()
     PARK_AT_END.clear()
     yield as_app
     pending_ask._reset_for_tests()
@@ -1432,11 +1453,28 @@ def test_a_member_who_left_and_came_back_gives_a_new_reply(relay_scene, monkeypa
     asyncio.run(go())
 
 
-def test_a_continuation_that_never_started_writes_nothing_new(relay_scene, monkeypatch):
-    """Review round 2, P2-a (a). The continuation raises after the XDEL and
-    before its own start. The replay then holds one start, part one's. The
-    fold writes nothing new: one reply row with part one once. Mutation:
-    fold that replay into the fallback row -> part one shows twice -> red."""
+@pytest.mark.parametrize("how", ["raise", "death", "trim through the start"])
+def test_a_continuation_with_no_start_never_writes_part_one_again(how, relay_scene, monkeypatch):
+    """Review round 2, P2-a (a), and round 3, P2-1. No start of the
+    continuation is in the replay, and the reply row keeps part one as it
+    was in each case.
+
+    * ``raise``: the run raises after the XDEL and before its start. Its
+      RUN_ERROR folds into no row, so nothing new is written.
+    * ``death``: the process dies there. The sweep (``recover_dead_run``)
+      pushes ``run_interrupted``. The fold cuts the stream at the deleted end
+      (``parkedEndId`` of the run record), so the marker lands on the
+      fallback row.
+    * ``trim through the start``: a part two longer than MAXLEN loses part
+      one AND its own start to a trim. The rest of part two still lands on
+      the fallback row.
+
+    Mutation: give back "nothing new" when no start is in the replay ->
+    ``death`` and ``trim`` write no row -> red. Fold the whole replay into
+    the fallback row -> part one shows twice -> red."""
+    from gateway.chat_recovery import recover_dead_run
+    from orchestrator import run_liveness
+
     w = relay_scene
 
     async def go() -> None:
@@ -1444,17 +1482,51 @@ def test_a_continuation_that_never_started_writes_nothing_new(relay_scene, monke
         _real_relay(monkeypatch, client)
         try:
             tid = _new_chat(w, w.org_a)
-            rid, _run_id, _mid = await _parked_turn(w, tid, w.org_a)
+            rid, _run_id, mid = await _parked_turn(w, tid, w.org_a)
             before = {r[0]: r[1] for r in _assistant_rows(w, tid)}
-            RAISE_BEFORE_START.append(True)
+            hold = asyncio.Event()
+            if how == "raise":
+                RAISE_BEFORE_START.append(True)
+            elif how == "death":
+                HOLD_BEFORE_START.append(hold)
+            else:
+                TRIM_THROUGH_START.append(True)
             res = await _answer(tid, rid, _ALICE, w.org_a)
             assert isinstance(res, dict) and res["sameReply"] is True, res
+            if how == "death":
+                # The process "dies": this process no longer holds the run,
+                # so its owner reads as dead, and the sweep closes it.
+                for _ in range(200):
+                    if await client.hget(
+                            run_liveness.instance_runs_key(run_liveness.INSTANCE_ID), tid):
+                        break
+                    await asyncio.sleep(0.01)
+                run_liveness._LOCAL_RUNS.discard(tid)
+                assert await run_liveness.run_liveness(tid) == "dead"
+                assert await recover_dead_run(tid, why="test") is not None
+                # The dead process never runs again: its task ends here, and
+                # its own fold (the drain's finally) writes the same row.
+                task = stream_relay._DETACHED_TASKS.get(tid)
+                assert task is not None and not task.done()
+                task.cancel()
             await _run_ends(tid)
             await _quiet()
-            assert RAISE_BEFORE_START == [], "non-vacuity: the run died before its start"
-            events = await _stream(client, tid)
-            assert [e.get("resumed") for e in events if e["type"] == "RUN_STARTED"] == [None]
-            assert {r[0]: r[1] for r in _assistant_rows(w, tid)} == before, "nothing new"
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            assert rows[mid] == before[mid], "part one is never written again"
+            if how == "raise":
+                assert rows == before, "nothing new"
+                return
+            (other,) = set(rows) - {mid}
+            with w.admin_engine.connect() as c:
+                names = [e["name"] for e in c.execute(text(
+                    "SELECT custom_events FROM chat_message WHERE id = :m"),
+                    {"m": other}).scalar_one()]
+            if how == "death":
+                assert run_liveness.INTERRUPTED_EVENT in names, names
+                assert "Let me move it." not in rows[other]
+            else:
+                assert "The deal moved." in rows[other], rows
+                assert "Let me move it." not in rows[other]
         finally:
             await _quiet()
             await client.flushdb()

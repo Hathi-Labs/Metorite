@@ -3409,6 +3409,21 @@ async def run_agent_stream_endpoint(
         fold_message_id(None, thread_id)
         if _resume_launch is not None and _resume_launch.same_reply else None
     )
+    # What the restart sweep needs to save this run's partial reply if this
+    # process dies (orchestrator.run_liveness). Server-side facts only.
+    # RESUME-2b, round 3, P2-1: with `keep_stream`, `start_detached` adds the
+    # id of the parked end that it deleted (`parkedEndId`). The fold below
+    # reads it from this same dict at the end of the run.
+    _run_record: dict[str, Any] = {
+        "messageId": _persist_message_id,
+        "agent": agent_name,
+        "runId": run_id,
+        "model": req.model,
+        # RESUME-2b, P2-1: the sweep of a same-reply run that died never
+        # writes part one over either (chat_recovery).
+        **({"sameReplyFallbackId": _same_reply_fallback}
+           if _same_reply_fallback else {}),
+    }
 
     async def _persist_on_complete() -> None:
         # WS-17 EM-G11f3: ONE answer of the mail predicate for the run end,
@@ -3434,6 +3449,8 @@ async def run_agent_stream_endpoint(
             # Fence: tests/unit/test_chat_fold_other_run.py.
             expect_run_id=run_id,
             same_reply_fallback_id=_same_reply_fallback,
+            same_reply_parked_end=(str(_run_record.get("parkedEndId") or "") or None
+                                   if _same_reply_fallback else None),
         )
         if _superseded_ids:
             # A cancelled run on another worker can fold its row after the
@@ -3593,17 +3610,9 @@ async def run_agent_stream_endpoint(
         "source": str(req.payload.get("source") or "chat"),
         "floor": _floor,
         # What the restart sweep needs to save this run's partial
-        # reply if this process dies (orchestrator.run_liveness).
-        "record": {
-            "messageId": _persist_message_id,
-            "agent": agent_name,
-            "runId": run_id,
-            "model": req.model,
-            # RESUME-2b, P2-1: the sweep of a same-reply run that died
-            # never writes part one over either (chat_recovery).
-            **({"sameReplyFallbackId": _same_reply_fallback}
-               if _same_reply_fallback else {}),
-        },
+        # reply if this process dies (orchestrator.run_liveness). ONE dict,
+        # which the fold reads too (`_run_record` above).
+        "record": _run_record,
     }
 
     if _resume_launch is not None:

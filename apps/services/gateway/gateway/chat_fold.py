@@ -553,30 +553,49 @@ def same_reply_tail(events: list[dict[str, Any]], run_id: str) -> list[dict[str,
     return events[starts[-1]:] if run_id and starts else []
 
 
+def _entry_after(stream_id: Any, cut: str) -> bool:
+    """True when the Redis entry id *stream_id* comes after the id *cut*. An
+    id of another shape (a local id, no id) gives False."""
+    def _key(value: Any) -> tuple[int, int] | None:
+        ms, _, seq = str(value or "").partition("-")
+        return (int(ms), int(seq or 0)) if ms.isdigit() and (seq or "0").isdigit() else None
+
+    a, b = _key(stream_id), _key(cut)
+    return a is not None and b is not None and a > b
+
+
 def same_reply_events(
     events: list[dict[str, Any]], run_id: str, message_id: str, fallback_id: str,
+    parked_end_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """``(events, row id)`` that the fold of a same-reply run writes, or
     ``([], None)`` when it writes nothing (RESUME-2b, case A, review of
-    2026-11-17, P2-1, and round 2, P2-a).
+    2026-11-17, P2-1, round 2, P2-a, and round 3, P2-1).
 
     The decision reads the HEAD, as ``stream_relay.parked_end_of`` does
     (``stream_relay.part_one_at_head``). Part one starts with a plain
     ``RUN_STARTED`` of *run_id*, and each continuation with one marked
-    ``resumed``.
+    ``resumed``. *parked_end_id* is the id of the parked end that the start
+    of this run deleted (``stream_relay.start_detached``, the run record's
+    ``parkedEndId``). Each event of this run has a larger id.
 
-    * No continuation start landed (a death after the XDEL, a Stop, a raise
-      before the start): the replay holds part one only, and the row holds
-      it already. Nothing new.
-    * Part one's start is at the head: the replay is whole, so it all goes
-      into *message_id*.
-    * Else a trim took part one, also when two continuation starts are left:
-      the events from the last continuation start go into *fallback_id*.
+    * A continuation start landed, and part one's start is at the head: the
+      replay is whole, so it all goes into *message_id*.
+    * A continuation start landed, and a trim took part one, also when two
+      continuation starts are left: the events from the last continuation
+      start go into *fallback_id*.
+    * No continuation start landed: the events AFTER *parked_end_id* go into
+      *fallback_id*. That is the ``run_interrupted`` marker of a run that died
+      before its start, or the rest of a part two whose start a trim took.
+      With no such event, or no *parked_end_id*, nothing new is written.
 
-    So a partial replay never writes over part one."""
+    So part one is never written again, and a partial replay never writes
+    over it."""
     tail = same_reply_tail(events, run_id)
     if not tail:
-        return [], None
+        after = ([e for e in events if _entry_after(e.get("_stream_id"), parked_end_id)]
+                 if parked_end_id else [])
+        return (after, fallback_id) if after else ([], None)
     from orchestrator.stream_relay import part_one_at_head
 
     if part_one_at_head(events, run_id):
@@ -596,16 +615,20 @@ async def persist_final_assistant_message(
     expect_run_id: str | None = None,
     holds_mail: bool | None = None,
     same_reply_fallback_id: str | None = None,
+    same_reply_parked_end: str | None = None,
 ) -> dict[str, Any] | None:
     """Replay the run's event log and upsert the authoritative message row.
 
     ``same_reply_fallback_id`` (RESUME-2b, case A, review of 2026-11-17,
-    P2-1, and round 2, P1 and P2-a) marks the fold of a run that went on in
-    the SAME reply. *message_id* then holds part one, which the fold at the
-    park wrote. :func:`same_reply_events` decides by the head: no
-    continuation start writes nothing new, part one's start at the head
-    writes the whole replay into *message_id*, and else the events from the
-    last continuation start go into the fallback row. A whole replay goes
+    P2-1, round 2, P1 and P2-a, and round 3, P2-1) marks the fold of a run
+    that went on in the SAME reply. *message_id* then holds part one, which
+    the fold at the park wrote. ``same_reply_parked_end`` is the id of the
+    parked end that the start deleted. :func:`same_reply_events` decides by
+    the head. Part one's start at the head writes the whole replay into
+    *message_id*. A trim of part one sends the events from the last
+    continuation start to the fallback row. With no continuation start, the
+    events after the parked end go to the fallback row, so a
+    ``run_interrupted`` marker lands on a row. A whole replay goes
     into *message_id* only when the label of now equals the row's label
     (:func:`_same_label_as_row`). Else part two goes into the fallback row.
     So a partial replay, and a part two at another intersection, never write
@@ -672,6 +695,7 @@ async def persist_final_assistant_message(
             _run = expect_run_id or run_id
             events, target = same_reply_events(
                 events, _run, message_id, same_reply_fallback_id,
+                parked_end_id=same_reply_parked_end,
             )
             if target is None:
                 _log.info("chat_fold.same_reply_nothing_new", thread_id=thread_id[:12])

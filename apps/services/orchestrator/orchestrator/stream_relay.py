@@ -1519,7 +1519,9 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
                    parked ``RUN_FINISHED`` (:func:`parked_end_of`). Then it
                    deletes that entry (XDEL) BEFORE it marks the thread
                    active, so a tab that attaches reads one run with a pause
-                   in it. It implies *exclusive*.
+                   in it. It implies *exclusive*. It writes the id of the
+                   deleted end into *record* (``parkedEndId``), so the fold
+                   can cut the stream there.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
@@ -1606,6 +1608,13 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
         if _deleted != 1:
             _log.info("stream_relay.parked_end_taken", thread_id=thread_id[:12])
             raise ParkedStreamGone(thread_id, "no parked stream", actor or "")
+        # Review round 3, P2-1: the id of the deleted end goes into the
+        # caller's run record (``parkedEndId``), so the record of the run
+        # below carries it too. Each event of this run has a larger id. The
+        # fold of the run and the restart sweep cut the stream there when no
+        # start of this run landed (``gateway.chat_fold.same_reply_events``).
+        if record is not None:
+            record["parkedEndId"] = _parked_end
 
     # Fresh run boundary: clear previous events so replay-from-0 is exact.
     # NOTE this DELETES the previous run's event log — reaching this line means

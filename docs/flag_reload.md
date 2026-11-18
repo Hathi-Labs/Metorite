@@ -94,8 +94,16 @@ default is empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
 RESUME-2b: when the parked turn is the last turn, the call goes on in the
 same reply. For an org on both lists, a park keeps the stream of the run 24
-hours (D-RES-7). The same reply needs the chat side of RESUME-3b (task 3475).
-So do not add an org to `CHAT_RESUME_ORGS` before RESUME-3b merges.
+hours (D-RES-7). The same flag turns on this case A, so it has two more
+preconditions.
+
+⚠️ Do not add an org to `CHAT_RESUME_ORGS` before both of these merge:
+
+1. RESUME-3b (task 3475), the chat side of the same reply.
+2. RESUME-2d, the reconnect replay that obeys the history waterline and the
+   label (`chat_run_continuity.md` §4.12.7). Before it,
+   `GET /agent/run/{thread_id}/reconnect` replays a parked stream from `0-0`
+   for 24 hours. It checks no waterline and no caps of the reader.
 
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
 a late Approve takes the path of before. The SPENT mark stops the stored call

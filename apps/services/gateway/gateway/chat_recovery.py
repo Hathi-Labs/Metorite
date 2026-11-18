@@ -689,8 +689,13 @@ async def persist_interrupted(records: list[dict[str, Any]]) -> int:
             continue
         # RESUME-2b, P2-1: a same-reply run that died never writes over part
         # one with a replay that lost it. Only its record names the key.
+        # Round 3, P2-1: the record also names the parked end that its start
+        # deleted, so a run that died before its own start still folds its
+        # `run_interrupted` marker into the fallback row.
         fallback = str(rec.get("sameReplyFallbackId") or "")
-        extra = {"same_reply_fallback_id": fallback} if fallback else {}
+        extra: dict[str, Any] = {"same_reply_fallback_id": fallback} if fallback else {}
+        if fallback and rec.get("parkedEndId"):
+            extra["same_reply_parked_end"] = str(rec.get("parkedEndId"))
         try:
             folded = await persist_final_assistant_message(
                 tid, mid,
