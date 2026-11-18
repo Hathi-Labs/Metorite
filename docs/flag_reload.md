@@ -72,6 +72,17 @@ Its one reader is `acb_skills.chat_focus.focus_on`. The executor asks it at
 the start of each turn, and each write and each block ask it again. So a
 reload applies to the next turn. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_JOIN_SHADOW_ORGS` turns on the shadow join log
+(`chat_organization.md` §7, CO-4). For each listed org, the first message of
+a new web chat with Mira writes one row of `chat_join_log`. The row holds the
+outcome that §7.1 would take, as codes and ids only. The member sees nothing.
+`*` lists every org, and the default is empty. Empty means the run route
+schedules no match.
+
+Its one reader is `gateway.chat_join_shadow.shadow_allowed`. The run route
+asks it at each first message, so a reload applies to the next new chat. A
+flip is the gate `enforcement-flip`.
+
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
 Approve of a parked plain card approves the same card once in the next run.

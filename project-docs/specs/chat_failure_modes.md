@@ -51,6 +51,10 @@ from the member's typed words only. The per-turn block and each delegated
 task show the decisions on their own line. HRD-12b (the Undo chip) and
 HRD-12c (the flag flip) are not built.**
 
+**AO-3 (task 3682) is BUILT, 2026-11-17, with no flag.** When the AI cannot
+answer, the chat shows the resting card and not an empty reply. §4.8a holds
+the as-built note, and row I1 shows the state.
+
 **HRD-13 (claims and promises, task 2992) is BUILT dark, 2026-11-17, in
 shadow only. Its flag is `CHAT_CLAIM_CHECK_ORGS`. The check logs one line for
 each run of the orchestrator, and it never changes the answer (D-HRD-6).**
@@ -653,7 +657,67 @@ chat change. For HRD-14d, take the migration number at build time (R1).
 |---|---|---|---|---|
 | H1 | A customer copied by mistake, or the recipients change between drafts | Live: the held card classes each recipient and leaves a new address unticked | HRD-8b shows a change of recipients on a redraft | HRD-8b |
 | H2 | A bulk act that fails part way | Projects stops and says what exists. Email and CRM are unchecked | §7 rule 6 binds each bulk tool | §7 |
-| I1 | Credits run out, or the provider fails, during a run | Live: `runErrors.ts` names the credit and rate cases | No change | none |
+| I1 | Credits run out, or the provider fails, during a run | Live: `runErrors.ts` names the credit and rate cases. Since AO-3 (2026-11-17), a turn that the AI Router cannot answer ends with the code `ai_unavailable`, and the chat shows the resting card (§4.8a) | When every AI step refuses, the member reads what happened and what to do, and the chat saves no empty reply | AO-3 |
+
+### 4.8a As built: the AI cannot answer (AO-3, task 3682)
+
+**The incident.** On 2026-11-17 the Anthropic account ran out of credits, and
+each Router call to it got a 400. The Console answered each chat stream with
+a 200 and a lone `[DONE]`. The agent read that as a finished turn, and the
+fold saved a reply with no text. The member saw an empty bubble. AO-1 (task
+3681) makes the Router fail over on a billing 400. AO-3 covers the case where
+no step can answer.
+
+**The stream contract.** A stream that no step can open gets HTTP 503 with
+the body `{"detail": {"reason": "unavailable"}}`. The Console decides this
+before the response starts, so a status is possible. The body holds no
+vendor text. It writes no usage row and no refusal row. The spend refusals
+keep their 402 and 403 and their reasons. The buffered path is not changed.
+
+**The gateway.** The stream hop reads a Console 5xx as a Router outage, and
+the agent gets the 502 of `_router_unavailable`. A 200 with no bytes, and the
+lone `[DONE]` of an older Console, get the same 502. The two units restart
+apart, so the gateway reads both answers.
+
+**The run.** `acb_llm.run_errors` maps a 502 or a 503 to `ai_unavailable`. A
+refused connection stays `connection`. A Tier 1 stream that fails with
+`ai_unavailable` before any output ends the turn. It does not fall back to
+Tier 2, because Tier 2 asks the same Router again. WhatsApp reads the new code
+as "the AI path is down" (WAC-13), so it still holds the message.
+
+**No empty reply.** A run whose only output is the `ai.route` label saves no
+row. The fold (`chat_fold.LABEL_EVENTS`) and the browser's checkpoint
+(`checkpointIsEmpty`) hold the same rule. The run route saves the member's
+own turn at the start, and AO-3 does not change it.
+
+**The card.** `ChatErrorCard.tsx` draws `ai_unavailable` as a notice with the
+resting elephant (`AiRestingArt.tsx`). The art is our own: a small sad
+elephant beside its unplugged cable. It is drawn in the design tokens, so it
+follows the mode, the density and the accent. It breathes as an idle agent's
+card does, and it stands still under reduced motion. The words are:
+
+- Title: "The AI is taking a breather"
+- Line: "It cannot answer right now. This is on our side, not yours. Your
+  message is saved, so try again in a few minutes."
+- Button: "Try again". It re-sends the member's last message once, through
+  the chat's one retry path.
+
+The card shows no "Show full error" fold, because the raw text names our own
+services. The server logs the ref.
+
+**A reload.** The slice saves no typed failure row. A reload shows the
+member's message with no reply and no card. The `custom_events` column could
+hold a marker with no migration, as `run_interrupted` does. That needs the
+history, the poll merge and the retry to skip the marker row, so it waits for
+a later slice. Task 3692 (AO-3b) holds that marker-row slice.
+
+**Fences.** `tests/unit/test_chat_ai_unavailable.py`,
+`tests/unit/test_customer_console_router.py`
+(`test_a_stream_that_never_starts_writes_no_usage_row`, R8),
+`tests/unit/test_v1_router_streaming.py`, `tests/unit/test_run_errors.py`,
+`evals/trajectories/test_chat_fold_trajectory.py`, and in the workbench
+`src/components/aiRestingCard.test.ts` and
+`src/lib/assistantCheckpoint.test.ts`.
 
 ## 5. The ladder (D211)
 
