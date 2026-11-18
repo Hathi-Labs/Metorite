@@ -19,6 +19,8 @@ the order of the list: Recent first, and each group by its newest chat (§6.1,
 
 CO-17, the card record, and its sent-mail record are BUILT and dark behind
 `CHAT_CARD_RECORD_ORGS` (tasks 3516 and 3594, 2026-11-17).
+CO-4, the shadow join log, is BUILT and dark behind `CHAT_JOIN_SHADOW_ORGS`
+(task 3503, 2026-11-16).
 
 **Proposed:** §15 to §20 (task 3491, owner ask of 2026-11-16). The owner has not
 decided them, so they add no decision number. §19 holds the questions. Some
@@ -572,7 +574,10 @@ holds `organization_id`, has FORCE RLS (R5), and joins `test_tenant_coverage.py`
 - `chat_session_digest` (CO-1): one row for each chat that the pass covers.
   §10.1 holds its name and its source rule. §10.2 holds its columns.
 - `chat_join_log`: the shadow record of CO-4: the session, the candidate, the
-  outcome and the override.
+  outcome and the override. CO-4 built it (migration 461), one row for each new
+  chat. Each text is a code from a fixed list, and no column holds a word of
+  the member. `gateway/chat_join_shadow.py` is the one module that runs SQL on
+  it. The member purge deletes the rows of a leaver.
 - `chat_topic_note` (CO-16): one row for each version of a note. `id`,
   `organization_id`, `member_email`, `topic_id`, `version`, `focus`, `body`,
   `sources` (session ids only, never a title), `source_deleted_at`,
@@ -660,7 +665,7 @@ transaction of its seam:
 | CO-2 | 3501 | 2 | Topics store, rail and chip (§6, §10). **CO-2a BUILT, dark** (2026-11-16): the table, `/chat/topics` and the purge, flag `CHAT_TOPICS_ORGS`. **CO-2b BUILT, dark** (task 3588, 2026-11-17): the topic of a chat, the move, the rule of the pass, the rail and the chip (§6.1). The seed of the company list is not built. CO-1 builds after it (§5.6) | AGENT-SAFE, dark. HIGH tier: new tables | A member's move survives the next pass, and a private topic never reaches a colleague (R8 test) |
 | CO-2c | 3647 | 2 | The order of the list: Recent, then Pinned, then each group by its newest chat (§6.1). **BUILT, dark** (2026-11-17). UI only: no data, no route, no migration | AGENT-SAFE, dark. STANDARD tier | The list shows the five newest chats in Recent, and each chat in its own group too |
 | CO-3 | 3502 | Later | One search of chats and files, on MEM-2. Reconcile first (§10.1) | AGENT-SAFE, dark | A word inside a chat and a word inside a file both return, and a colleague's private chat does not |
-| CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log` | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
+| CO-4 | 3503 | 3 | Shadow matching: no UI, `chat_join_log`. **BUILT, dark** (2026-11-16), migration 461, flag `CHAT_JOIN_SHADOW_ORGS`. The first message of a new chat writes one row of codes and ids, and no text. The held mark is not read yet. The `record_link` of CO-17 is not read yet. The context share is an estimate (the length of the chat text, divided by 4, over a 128k window). `ASSISTANT_CHAT_SUMMARY_ORGS` is off on production, so the first week measures titles and records, with no summary text | AGENT-SAFE, dark | One week of Fracktal data shows the outcomes it would have taken |
 | CO-5 | 3504 | 3 | The chip with a preview, join, carry and undo (§7, §17.1) | **OWNER-GATE** for the flip | Each row of §7.1 and each bar of §7.2 has a test, and the override rate is under 10 % on Fracktal |
 | CO-6 | 3505 | Later | Promotion to company topics | AGENT-SAFE, dark | The admin card shows the count and no name |
 | CO-7 | 3506 | Later | The shared chat pointer | AGENT-SAFE, dark | A private chat never shows (R8 test) |
@@ -778,6 +783,17 @@ CO-2b adds two fences:
   a private topic. Three more are two orgs, a chat that the member cannot
   read and a hidden topic. The rest are the merge, a move and a merge at the
   same time, the purge, the pin and the switch.
+
+CO-4 adds two fences:
+
+- `tests/unit/test_chat_join_shadow.py`: each row of §7.1 and each bar of
+  §7.2 has a case, and the same record outranks similar words. No column and
+  no argument of the module carries a text of the member. Only the module and
+  the member purge name `chat_join_log` in Python. The hook starts the
+  match only for a turn that the member sent, with the org and the member of
+  the session.
+- `tests/unit/test_chat_join_shadow_r8.py` (R8): one row for each new chat,
+  the bars on real rows, two orgs, a colleague, the cascade and the purge.
 
 ## 14. Risks
 

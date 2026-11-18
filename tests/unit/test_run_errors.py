@@ -76,7 +76,10 @@ class TestTheClassifier:
             (_status_error(400), "model_refused"),
             (_status_error(422), "model_refused"),
             (_status_error(403), "permission"),
-            (_status_error(503), "connection"),
+            # AO-3: our Router door answers 502 or 503 when the AI produced
+            # no answer. A refused connection above stays `connection`.
+            (_status_error(503), "ai_unavailable"),
+            (_wrapped(_status_error(502)), "ai_unavailable"),
             (_status_error(504), "timeout"),
             (_status_error(401), "unknown"),
             (_status_error(409), "run_in_progress"),

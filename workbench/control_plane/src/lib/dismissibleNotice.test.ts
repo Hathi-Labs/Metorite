@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { RUN_ERROR_WORDS, isInfoOnlyNotice, type RunErrorCode } from "@/lib/runErrors";
 
@@ -86,6 +86,15 @@ function findElement(node: ReactNode, match: (props: Record<string, unknown>) =>
   if (match(props)) return node;
   return findElement(props.children as ReactNode, match);
 }
+
+// The first cold load of the card's module graph took 4.3 s on the Windows
+// dev box before AO-3, and 5 s after its picture joined the graph. That is
+// the whole 5 s budget of the first test. One warm load here pays the
+// transform once. Each test still loads its own fresh modules.
+beforeAll(async () => {
+  await loadWith(memoryStorage());
+  vi.unstubAllGlobals();
+}, 60_000);
 
 afterEach(() => {
   vi.unstubAllGlobals();
