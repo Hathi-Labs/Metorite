@@ -441,7 +441,8 @@ export function DraftCard({
   // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
   const [sendError, setSendError] = useState<string | null>(null);
   // Task 3812: files the member adds to this reply, from the computer or from
-  // Metorite. They go on the draft with the next save, as in the composer.
+  // Metorite. Only the save before the send carries them: a provider ADDS the
+  // files of each save, so an autosave that sent them would double them.
   const [attachments, setAttachments] = useState<SendAttachment[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactAttachmentRef[]>([]);
   const readingRef = useRef(0);
@@ -594,8 +595,6 @@ export function DraftCard({
           cc: ccList(),
           bcc: bccList(),
           subject: draft.subject || "",
-          attachments: attachments.length ? attachments : undefined,
-          artifacts: artifacts.length ? artifacts : undefined,
         }, openedText, combinedBody(), provider));
         if (noticeAfterSave(saved)) markLost();
         setDraftStatus("saved");
@@ -611,7 +610,7 @@ export function DraftCard({
     return () => autosave.hold();
     // An edit of the Cc or the Bcc saves too (EM-T10 item 4, EM-G3c-2-f2).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, quote, to, cc, bcc, attachments, artifacts]);
+  }, [body, quote, to, cc, bcc]);
 
   // An unmount, and a switch of the card to another draft, run the pending
   // save at once (EM-G3c-2 item 11). The save names the draft of before.
