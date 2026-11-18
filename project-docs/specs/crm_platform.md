@@ -8481,35 +8481,58 @@ Status: built 2026-11-18 on `crm-q34-11-mt-37c6f980` (task 3728), no flag.
 - **Why.** A member's module `Invoices` keeps a fiber length and a battery
   fee in TEXT fields. The chat said "the field is free text" and gave no
   month totals.
-- **Scope.**
-  - `field_sql.admit_text_numbers` reads a field of type `text` of a module
-    as a number. A core entity never. It reads the measured field, each key
-    of a split and each key of a `.from` or `.to` range.
-  - ONE statement counts the filled values and the plain numbers of each such
-    field over the whole module. It runs in the tenant session, and it binds
-    the org, the module and each key.
-  - When 90% of the filled values are plain numbers (`TEXT_NUMBER_SHARE`),
-    the field reads as a number. Below that, the 422 gives the two counts. A
-    field with no filled value keeps its 422 of before.
-  - A plain number may group its thousands with commas, only in the strict
-    shape: 1 to 3 digits, then groups of 3 (`_NUMBER_GROUPED`). `1,200` is a
-    number. `1,5`, `12,34`, `Rs 500`, `₹500`, `NA`, `N/A` and `-` count as no
-    value, never as an error.
-  - The answer carries `text_numbers`. The tool then adds one line: how many
-    matching records hold a plain number, and how many count as no value.
-  - This changes item 4 of CRM-Q34-2 for such a field only. A range on a
-    text field of words is still a 422.
+- **The rule: strict, never a guess.** A wrong total that looks right is
+  worse than a refusal. A text value is a number only when its whole shape
+  is clearly a number. The route counts each other value and names it.
+- **Scope.** Module fields of type `text` only. The core custom fields of
+  contacts, leads, deals and companies are out of this slice. Nothing
+  changes the type in `crm_field_defs`, because the sync owns it.
+- **A number** (`field_sql.TEXT_NUMBER_PATTERN`):
+  - ASCII digits only. An optional minus right before the digits. No
+    leading zero, so `0` and `0.5` are numbers and `007` is a code.
+  - Commas only in a Western (`1,234,567`) or an Indian (`12,34,567`)
+    grouping. `1,5`, `12,34` and `1,2,3` are not numbers.
+  - An optional `.` and 1 to 30 digits. At most 30 digits before it.
+  - One currency mark before or after it (`₹`, `Rs`, `Rs.`, `INR`, in any
+    case), or a `%` after it. Outer white space and U+00A0 are trimmed.
+  - At most 32 characters. A JSON number stays a number.
+- **Not a number.** Ranges, dates, any slash, exponents, `NaN` and
+  `Infinity` are not numbers. A unit word (`500 m`), two numbers, brackets
+  and a trailing minus are not numbers either. Nor is a digit of another
+  script, or a JSON list, object or boolean.
+- **No value.** A blank value, `-`, `—`, `NA`, `N/A`, `nil`, `none`,
+  `null` in any case, a JSON null and a missing key. Zero is a number.
+- **The gate** (`admit_text_numbers`). ONE statement reads three counts
+  over the whole module. It counts the numbers, the values with no value,
+  and the values that are not numbers. With no number, the read is a 422
+  with the three counts. Below half of the filled values, the field is a
+  code or free text. Then the 422 also names the most common shapes.
+- **The shapes.** One more statement reads the 2 most common shapes of
+  the values that are not numbers. A shape keeps the structure only: a
+  digit run is `9` and a letter run is `a`. So no stored value leaves the
+  database.
+- **Three places read it.** A measure (`sum`, `avg`, `min`, `max`), a
+  split of `fields=` and a `.from` or `.to` range. They use the one
+  builder, `_amount`. A text equality filter stays a text filter, in a
+  call that also sums the field.
+- **What the model reads.** The answer names the three counts and the
+  shapes. `crm_list_fields` names the use of a text field of a module.
+  No tool docstring changed.
 - **No flag.** Each call that this changes was a 422 before. A call that
-  names no text field sends the same statements, and its answer is the same.
+  names no text field sends the same statements, and its answer is the
+  same to the byte.
 - **Limit.** The count reads each record of the module once more, on each
-  call that names a text field. The statement timeout of the read holds it.
-  Nobody measured it yet on a large module.
-- **Fences.** `tests/unit/test_crm_text_numbers.py` is hermetic. It pins the
-  SQL of every other field to the byte, the shape of a number and the 90%
-  share. It also pins no statement more, the wire and the tool line.
-  `tests/unit/test_crm_text_numbers_r8.py` runs on Postgres. It proves the
-  month sums, a range, a split and the 422 counts. It also proves 90% and
-  89%, org B, and a number field as before.
+  call that names a text field. The statement timeout of the read holds
+  it. Nobody measured it yet on a large module.
+- **Next (CRM-Q34-11b, planned).** A number with one unit word, then
+  negatives in brackets and lakh or crore words, when the data shows them.
+- **Fences.** `tests/unit/test_crm_text_numbers.py` is hermetic. It pins
+  the SQL of every other field to the byte, the pattern, the gate, the
+  equality filter, the wire and the tool text.
+  `tests/unit/test_crm_text_numbers_r8.py` runs on Postgres. Its matrix
+  reads each raw value back through the route. It also proves a month
+  sum against an independent SQL sum, the gate, org B, and a number field
+  as before.
 
 #### 18.17.2 Rung 1
 

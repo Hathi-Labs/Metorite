@@ -479,11 +479,12 @@ class AggregateResponse(BaseModel):
     #: CRM-Q25e part 2: the total of each field of ``fields``, in order. The
     #: first one is also ``field`` and ``total``. Absent with no split.
     split: list[SplitTotal] = Field(default_factory=list, exclude_if=lambda value: not value)
-    #: CRM-Q34-11: each text field of a module that the call read as a
-    #: number → ``{"filled": n, "plain": n}``, the counts over the whole
-    #: module. Absent when the call read no text field, so the wire is the
-    #: one of before.
-    text_numbers: dict[str, dict[str, int]] | None = Field(
+    #: CRM-Q34-11: each text field of a module that the call read as
+    #: numbers → its counts over the whole module (``numbers``, ``no_value``
+    #: and ``not_numbers``) and the most common ``shapes`` of the values that
+    #: are not numbers (``field_sql.TextNumbers.wire``). Absent when the call
+    #: read no text field, so the wire is the one of before.
+    text_numbers: dict[str, dict[str, Any]] | None = Field(
         default=None, exclude_if=lambda value: not value)
     #: CRM-Q25e part 4: what the reader must know before the total
     #: (``acb_common.number_sense``), for example one day that holds most
@@ -919,8 +920,8 @@ async def _read(
         if status_group:
             status_field(scope)
         field_measure, field = module_measure(measure, field)
-        # CRM-Q34-11: a text field that holds plain numbers reads as a
-        # number. With no text field named, no statement runs.
+        # CRM-Q34-11: a measure or a range on a text field that holds
+        # numbers reads them. With no text field named, no statement runs.
         scope, text_numbers = await admit_text_numbers(
             db, scope, text_number_keys(field_measure, field, fields, pairs))
         # CRM-Q25b: one zone for each bucket and each range of the answer.
@@ -1405,10 +1406,7 @@ async def _compute(
         overlay=read.overlay,
         matched=read.matched or None,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
-        text_numbers={
-            key: {"filled": found.filled, "plain": found.plain}
-            for key, found in read.text_numbers.items()
-        } or None,
+        text_numbers={key: found.wire() for key, found in read.text_numbers.items()} or None,
         findings=_findings(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),

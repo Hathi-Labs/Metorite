@@ -2,17 +2,18 @@
 
 Spec: ``project-docs/specs/crm_platform.md`` §18.17, the row CRM-Q34-11.
 
-Hermetic. The behaviour on a real database is proved in
-``tests/unit/test_crm_text_numbers_r8.py``. Here:
+Hermetic. The behaviour on a real database, with the matrix of raw values,
+is proved in ``tests/unit/test_crm_text_numbers_r8.py``. Here:
 
 1. The number of every other field keeps its SQL text of before, byte for
-   byte.
-2. The grouped number takes "1,200" and refuses "1,5", "Rs 500" and "NA".
-3. ``admit_text_numbers`` reads a text field as a number at 90% and refuses
-   it below, with the counts.
+   byte. The text number runs its regex once, inside the CASE.
+2. The pattern uses ASCII digits only, and no ``\\d`` or ``\\s``.
+3. ``admit_text_numbers`` takes a field at half of its filled values, and
+   refuses one below half, or with no number, with the counts and shapes.
 4. A call that names no text field runs no statement more.
-5. The wire is the one of before when no text field was read.
-6. The tool says how many matching records hold no plain number.
+5. A text equality filter stays the text filter of before.
+6. The wire is the one of before when no text field was read.
+7. The tool text: the answer line and the use of a text field.
 """
 
 from __future__ import annotations
@@ -40,27 +41,30 @@ def _scope(**types: str) -> Any:
 
 
 class _Result:
-    def __init__(self, row: tuple) -> None:
-        self._row = row
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
 
     def one(self) -> tuple:
-        return self._row
+        return self._rows[0]
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
 
 
 class _Db:
-    """A session that answers the one count statement with *row*, and keeps
-    each statement that it got."""
+    """A session that answers each statement with the next list of rows,
+    and keeps each statement that it got."""
 
-    def __init__(self, row: tuple = ()) -> None:
-        self.row = row
+    def __init__(self, *answers: list[tuple]) -> None:
+        self.answers = list(answers)
         self.seen: list[tuple[str, dict]] = []
 
     async def execute(self, statement: Any, params: dict | None = None) -> _Result:
         self.seen.append((str(statement), dict(params or {})))
-        return _Result(self.row)
+        return _Result(self.answers.pop(0))
 
 
-# ── 1. The SQL text of every other field ─────────────────────────────────────
+# ── 1. The SQL text ───────────────────────────────────────────────────────────
 
 
 def test_the_number_of_every_other_field_keeps_its_text_of_before() -> None:
@@ -73,107 +77,151 @@ def test_the_number_of_every_other_field_keeps_its_text_of_before() -> None:
     assert sql == _NUMBER_BEFORE.replace(":k", ":k_0") and bound == {"k_0": "Amount"}
 
 
-def test_only_a_text_number_reads_the_grouped_number() -> None:
+def test_a_text_number_runs_its_regex_once_inside_the_case() -> None:
     from gateway.routes.crm import field_sql as fs
 
-    ref = fs.FieldRef(key="Fiber", type="number", label="Fiber", text_number=True)
-    (sql, _bound), = fs._numbers("c", ref, "k")
-    assert sql != _NUMBER_BEFORE.replace(":k", ":k_0")
-    assert "replace(c ->> :k_0, ',', '')" in sql
-    assert "Fiber" not in sql
+    ref = fs.FieldRef(key="Fiber", type="text", label="Fiber", text_number=True)
+    (sql, bound), = fs._numbers("c", ref, "k")
+    assert bound == {"k_0": "Fiber", fs.TEXT_NUMBER_PARAM: fs.TEXT_NUMBER_PATTERN}
+    assert "Fiber" not in sql and sql.count("substring(") == 1
+    # The cast reads only the captured number, in the THEN of the CASE, and
+    # the length bound runs before it.
+    assert sql.startswith("(CASE WHEN ") and sql.endswith(" END)")
+    assert f"<= {fs.TEXT_NUMBER_MAX_CHARS} THEN CAST(replace(substring(" in sql
+    assert sql.index("length(") < sql.index("substring(")
+    assert " ~ " not in sql
 
 
-# ── 2. The shape of a grouped number ─────────────────────────────────────────
-
-
-def _grouped(value: str) -> bool:
+def test_every_cast_of_the_two_reads_sits_in_a_then() -> None:
+    """The fence of the brief: never ``regex AND cast`` in a WHERE. Each
+    cast of a value is the THEN of a CASE. The other casts read a bound org,
+    the bound words, or the empty jsonb of the one detoast."""
     from gateway.routes.crm import field_sql as fs
 
-    return re.search(fs._NUMBER_GROUPED[1:-1], value) is not None
+    for sql, params in (fs.text_numbers_sql(["Ka", "Kb"]), fs.text_shapes_sql(["Ka", "Kb"])):
+        for found in re.finditer(r"CAST\(", sql):
+            at = found.start()
+            assert (sql[:at].endswith("THEN ")
+                    or sql[at:].startswith(("CAST(:agf_org", "CAST(:agf_nv", "CAST('{}'"))), sql[at - 40:at + 40]
+        assert "Ka" not in sql and "Kb" not in sql
+        assert {params["agf_n0_0"], params["agf_n1_0"]} == {"Ka", "Kb"}
 
 
-@pytest.mark.parametrize("value", [
-    "120", "1,200", "-1,200.50", "1,200,000", "1,200,000.50", " 75.5 ", "999,999",
+# ── 2. The pattern ────────────────────────────────────────────────────────────
+
+
+def test_the_pattern_reads_ascii_digits_only() -> None:
+    from gateway.routes.crm import field_sql as fs
+
+    for banned in ("\\d", "\\s", "\\w", "\\D", "\\S"):
+        assert banned not in fs.TEXT_NUMBER_PATTERN, banned
+    assert "[0-9]" in fs.TEXT_NUMBER_PATTERN
+    # One capture group: substring gives the number, never a currency mark.
+    assert re.compile(fs.TEXT_NUMBER_PATTERN).groups == 1
+    assert fs.TEXT_NUMBER_MAX_CHARS == 32
+
+
+@pytest.mark.parametrize(("value", "number"), [
+    ("120", "120"), ("0", "0"), ("-0.5", "-0.5"), ("1,234,567.89", "1,234,567.89"),
+    ("12,34,567", "12,34,567"), ("₹ 1,200", "1,200"), ("Rs. 500", "500"),
+    ("500 INR", "500"), ("12.5 %", "12.5"),
+    ("1,5", None), ("12,34", None), ("1,2,3", None), ("007", None), ("NaN", None),
+    ("Infinity", None), ("1e3", None), ("500 m", None), ("Rs 500 INR", None),
+    ("٣", None), ("1" * 31, None),
 ])
-def test_the_grouped_number_takes_a_strict_thousands_shape(value: str) -> None:
-    assert _grouped(value)
+def test_the_pattern_in_python_agrees_with_the_matrix(value: str, number: str | None) -> None:
+    """A mirror of the R8 matrix in Python. Postgres is the proof: the R8
+    file reads the same values back through the route."""
+    from gateway.routes.crm import field_sql as fs
+
+    found = re.search(fs.TEXT_NUMBER_PATTERN, value)
+    assert (found.group(1) if found else None) == number
 
 
-@pytest.mark.parametrize("value", [
-    "1,5", "12,34", "1,20", ",100", "1,2000", "1234,567", "Rs 500", "₹500", "NA", "N/A",
-    "-", "", " ", "1e5", "1" * 31, "1,000,000,000,000,000,000,000,000,000,000",
-])
-def test_the_grouped_number_refuses_every_other_shape(value: str) -> None:
-    assert not _grouped(value)
+# ── 3. The gate ───────────────────────────────────────────────────────────────
 
 
-# ── 3. The share of 90% ───────────────────────────────────────────────────────
-
-
-async def test_a_text_field_at_90_percent_reads_as_a_number() -> None:
+async def test_a_text_field_at_half_of_its_filled_values_reads_as_numbers() -> None:
     from gateway.routes.crm import field_sql as fs
 
     scope = _scope(Fiber="text", Amount="currency", Invoice_Date="date")
-    db = _Db(row=(10, 9))
+    # 12 records: 5 numbers, 2 with no value, 5 not numbers.
+    db = _Db([(12, 5, 2)], [(0, "9 a", 4), (0, "9,9", 1)])
     out, counts = await fs.admit_text_numbers(db, scope, ["Fiber", "Amount"])
-    assert counts == {"Fiber": fs.TextNumbers(filled=10, plain=9)}
-    assert out.fields["Fiber"].type == "number" and out.fields["Fiber"].text_number
+    assert counts == {"Fiber": fs.TextNumbers(numbers=5, no_value=2, not_numbers=5,
+                                              shapes=(("9 a", 4), ("9,9", 1)))}
+    fiber = out.fields["Fiber"]
+    assert (fiber.type, fiber.text_number) == ("text", True)
     assert out.fields["Amount"] == scope.fields["Amount"]
-    # The input scope is frozen and stays as it was.
-    assert scope.fields["Fiber"].type == "text"
+    assert not scope.fields["Fiber"].text_number
     assert fs.check_measure(out, "Fiber").text_number
-    # ONE statement, with each key, the org and the module bound.
-    (sql, params), = db.seen
-    assert "Fiber" not in sql and "Invoices" not in sql
-    assert params["agf_n0_0"] == "Fiber" and params["agf_module"] == "Invoices"
-    assert "agf_org" in params and fs.DETOAST_JOIN in sql
+    # Two statements: the counts, then the shapes. Each binds the key.
+    assert len(db.seen) == 2
+    for sql, params in db.seen:
+        assert "Fiber" not in sql and "Invoices" not in sql
+        assert params["agf_n0_0"] == "Fiber" and params["agf_module"] == "Invoices"
+        assert params[fs.TEXT_NUMBER_PARAM] == fs.TEXT_NUMBER_PATTERN
+        assert params["agf_nv"] == list(fs.NO_VALUE_WORDS) and "agf_org" in params
+        assert fs.DETOAST_JOIN in sql
+    assert f"LIMIT {fs.SHAPES_MAX}" in db.seen[1][0]
+    assert counts["Fiber"].wire() == {
+        "numbers": 5, "no_value": 2, "not_numbers": 5,
+        "shapes": [{"shape": "9 a", "words": "a number with a unit word", "count": 4},
+                   {"shape": "9,9", "words": "a comma that is no thousands group",
+                    "count": 1}],
+    }
 
 
-async def test_a_text_field_below_90_percent_is_a_422_with_its_counts() -> None:
+async def test_a_field_with_every_value_a_number_reads_no_shapes() -> None:
+    from gateway.routes.crm import field_sql as fs
+
+    db = _Db([(10, 9, 1)])
+    _out, counts = await fs.admit_text_numbers(db, _scope(Fiber="text"), ["Fiber"])
+    assert len(db.seen) == 1 and counts["Fiber"].shapes == ()
+
+
+async def test_a_field_below_half_is_a_422_with_its_counts_and_shapes() -> None:
     from fastapi import HTTPException
     from gateway.routes.crm import field_sql as fs
 
     scope = _scope(Notes="text", Amount="currency")
+    db = _Db([(10, 4, 1)], [(0, "a", 3), (0, "a-a-9", 2)])
     with pytest.raises(HTTPException) as caught:
-        await fs.admit_text_numbers(_Db(row=(100, 89)), scope, ["Notes"])
+        await fs.admit_text_numbers(db, scope, ["Notes"])
     detail = caught.value.detail
     assert caught.value.status_code == 422 and detail["code"] == "unfit_field"
-    assert detail["message"].startswith(
-        "'Notes' is a text field. Only 89 of its 100 filled values are plain numbers, "
-        "too few to total.")
-    assert "The number fields of module:Invoices are: Amount." in detail["message"]
+    assert detail["message"] == (
+        "'Notes' is a text field, and fewer than half of its filled values are numbers, "
+        "so it looks like a code or free text. In this module: 4 numbers, 1 with no value, "
+        "5 not numbers. Most common of these: words only (3), a code (2). A measure takes "
+        "a field of type number, decimal, currency, percent, or a text field that holds "
+        "numbers. The number fields of module:Invoices are: Amount.")
 
 
-@pytest.mark.parametrize(("filled", "plain", "fits"), [
-    (10, 9, True), (100, 90, True), (100, 89, False), (1, 1, True), (1, 0, False),
-    (7283, 7231, True), (10549, 10549, True), (0, 0, False),
+async def test_a_field_with_no_number_is_a_422_with_its_counts() -> None:
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_sql as fs
+
+    with pytest.raises(HTTPException) as caught:
+        await fs.admit_text_numbers(_Db([(3, 0, 3)]), _scope(Fiber="text"), ["Fiber"])
+    assert caught.value.detail["message"].startswith(
+        "'Fiber' is a text field, and no value of it is a number. In this module: "
+        "0 numbers, 3 with no value, 0 not numbers. A measure takes")
+
+
+@pytest.mark.parametrize(("numbers", "not_numbers", "fits"), [
+    (5, 5, True), (50, 50, True), (49, 51, False), (1, 0, True), (0, 0, False),
+    (0, 5, False), (7231, 52, True), (10549, 0, True), (1, 1, True), (1, 2, False),
 ])
-def test_the_share_is_90_percent_of_the_filled_values(filled: int, plain: int,
-                                                      fits: bool) -> None:
+def test_the_gate_is_half_of_the_filled_values(numbers: int, not_numbers: int,
+                                               fits: bool) -> None:
     from gateway.routes.crm import field_sql as fs
 
-    assert fs.text_number_fits(fs.TextNumbers(filled=filled, plain=plain)) is fits
+    found = fs.TextNumbers(numbers=numbers, no_value=99, not_numbers=not_numbers)
+    assert fs.text_number_fits(found) is fits
 
 
-async def test_a_text_field_with_no_value_keeps_the_refusal_of_before() -> None:
-    from gateway.routes.crm import field_sql as fs
-
-    scope = _scope(Fiber="text")
-    out, counts = await fs.admit_text_numbers(_Db(row=(0, 0)), scope, ["Fiber"])
-    assert out is scope and counts == {}
-
-
-async def test_two_text_fields_take_one_statement() -> None:
-    from gateway.routes.crm import field_sql as fs
-
-    scope = _scope(Fiber="text", Fee="text")
-    db = _Db(row=(10, 10, 4, 4))
-    _out, counts = await fs.admit_text_numbers(db, scope, ["Fiber", "Fee"])
-    assert len(db.seen) == 1 and set(counts) == {"Fiber", "Fee"}
-    assert counts["Fee"] == fs.TextNumbers(filled=4, plain=4)
-
-
-# ── 4. No statement more without a text field ────────────────────────────────
+# ── 4. No statement more ─────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("keys", [
@@ -189,7 +237,7 @@ async def test_a_call_that_names_no_text_field_runs_no_statement(keys: list[str]
     assert out is scope and counts == {} and db.seen == []
 
 
-async def test_a_core_entity_never_reads_a_text_field_as_a_number() -> None:
+async def test_a_core_entity_never_reads_a_text_field_as_numbers() -> None:
     from gateway.routes.crm import field_sql as fs
 
     ref = fs.FieldRef(key="Fiber", type="text", label="Fiber")
@@ -199,7 +247,7 @@ async def test_a_core_entity_never_reads_a_text_field_as_a_number() -> None:
     assert out is scope and counts == {} and db.seen == []
 
 
-def test_the_keys_that_a_call_reads_as_a_number() -> None:
+def test_the_keys_that_a_call_reads_as_numbers() -> None:
     from gateway.routes.crm import field_sql as fs
 
     pairs = [("Fiber.from", "100"), ("Fiber.to", "2000"), ("Notes", "x"),
@@ -207,12 +255,11 @@ def test_the_keys_that_a_call_reads_as_a_number() -> None:
     assert fs.text_number_keys("sum", "Fee", None, pairs) == ["Fee", "Fiber", "Invoice_Date"]
     assert fs.text_number_keys("count", "Fee", None, []) == []
     assert fs.text_number_keys("avg", None, "Fiber, Amount", []) == ["Fiber", "Amount"]
+    # An equality filter is never read as a number.
     assert fs.text_number_keys("count", None, None, [("Notes", "1")]) == []
 
 
 def test_the_read_admits_before_any_check() -> None:
-    """``_read`` admits the text fields right after it reads the scope, and
-    before the first check or filter reads it."""
     import inspect
 
     from gateway.routes.crm import aggregate
@@ -220,10 +267,60 @@ def test_the_read_admits_before_any_check() -> None:
     body = inspect.getsource(aggregate._read)
     admit = body.index("admit_text_numbers(")
     assert body.index("module_measure(") < admit < body.index("module_where(")
+    assert admit < body.index("text_matches(")
     assert admit < body.index("check_split(") and admit < body.index("check_measure(")
 
 
-# ── 5. The wire ───────────────────────────────────────────────────────────────
+def test_a_sum_of_fields_never_takes_a_text_part() -> None:
+    """``@amount`` and a ``+`` sum take currency parts only, so a text
+    field never reaches a sum of fields."""
+    scope = _scope(Fiber="text", Rent="currency")
+    assert scope._sum_of("Fiber+Rent") is None
+
+
+# ── 5. Text equality stays text equality ─────────────────────────────────────
+
+
+def test_a_text_equality_filter_is_the_filter_of_before() -> None:
+    from dataclasses import replace
+
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_sql as fs
+
+    before = _scope(Fiber="text")
+    after = replace(before, fields={"Fiber": replace(before.fields["Fiber"],
+                                                     text_number=True)})
+    pairs = [("Fiber", "1,200")]
+    old = fs.module_where(before, "Invoices", pairs, zone="UTC")
+    new = fs.module_where(after, "Invoices", pairs, zone="UTC")
+    assert (new.sql, new.params, new.source) == (old.sql, old.params, old.source)
+    # A range reads the number. Without the mark, a range is a 422, as before.
+    ranged = fs.module_where(after, "Invoices", [("Fiber.from", "100")], zone="UTC")
+    assert "substring(" in ranged.sql and ranged.params["agf_v0"] == "100"
+    with pytest.raises(HTTPException):
+        fs.module_where(before, "Invoices", [("Fiber.from", "100")], zone="UTC")
+    with pytest.raises(HTTPException):
+        fs.check_measure(before, "Fiber")
+
+
+# ── 6. The shapes and the wire ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("shape", "words"), [
+    ("9 a", "a number with a unit word"), ("9a", "a number with a unit word"),
+    ("9 a a", "a number with a unit word"), ("a", "words only"), ("a a", "words only"),
+    ("9-9", "a range"), ("9 - 9", "a range"), ("9-9-9", "a date or a code"),
+    ("9/9/9", "a date or a code"), ("a-a-9", "a code"), ("a/a/9-9/9", "a code"),
+    ("a_a_9", "a code"), ("a9", "a code"), ("9 9", "two numbers"),
+    ("9", "digits with a leading zero, or too many digits"),
+    ("9,9", "a comma that is no thousands group"), ("(9,9)", "a number in brackets"),
+    ("9a9", "an exponent or a code"), ("(array)", "a JSON list"),
+    ("(object)", "a JSON object"), ("(boolean)", "true or false"), ("+9", "the shape '+9'"),
+])
+def test_each_shape_has_its_words(shape: str, words: str) -> None:
+    from gateway.routes.crm import field_sql as fs
+
+    assert fs.shape_words(shape) == words
 
 
 def _response(**extra: Any) -> Any:
@@ -238,69 +335,99 @@ def test_the_wire_is_the_one_of_before_with_no_text_field() -> None:
     assert "text_numbers" not in plain
     assert _response(text_numbers=None).model_dump_json() == plain
     assert _response(text_numbers={}).model_dump_json() == plain
-    shown = _response(text_numbers={"Fiber": {"filled": 10, "plain": 9}}).model_dump()
-    assert shown["text_numbers"] == {"Fiber": {"filled": 10, "plain": 9}}
+    entry = {"numbers": 5, "no_value": 2, "not_numbers": 1,
+             "shapes": [{"shape": "9 a", "words": "a number with a unit word", "count": 1}]}
+    assert _response(text_numbers={"Fiber": entry}).model_dump()["text_numbers"] == {
+        "Fiber": entry}
 
 
-# ── 6. The tool line ──────────────────────────────────────────────────────────
+# ── 7. The tool text ──────────────────────────────────────────────────────────
 
 
 def _answer(**extra: Any) -> dict[str, Any]:
     return {"entity": "module:Invoices", "measure": "sum", "field": "Fiber",
-            "field_type": "number", "field_label": "Fiber Length", "groups": [],
-            "total": 1395.5, "other": 0, "omitted": 0, "values": 4, "records": 9, **extra}
+            "field_type": "text", "field_label": "Fiber Length", "groups": [],
+            "total": 1395.5, "other": 0, "omitted": 0, "values": 7_231,
+            "records": 7_283, **extra}
 
 
-async def test_a_total_says_how_many_records_hold_no_plain_number(monkeypatch) -> None:
+_COUNTS = {"numbers": 7_231, "no_value": 0, "not_numbers": 52, "shapes": [
+    {"shape": "9 a", "words": "a number with a unit word", "count": 37},
+    {"shape": "a", "words": "words only", "count": 15}]}
+_LINE = ("Fiber Length is a text field read as numbers. In this module: 7,231 numbers, "
+         "0 with no value, 52 not numbers. Left out, most common: a number with a unit "
+         "word (37), words only (15). This total read 7,231 numbers of 7,283 matching "
+         "records.")
+
+
+async def test_a_total_names_the_three_counts_and_the_shapes(monkeypatch) -> None:
     import acb_skills.crm_tools as tools
 
     async def _get(path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
-        return _answer(text_numbers={"Fiber": {"filled": 9, "plain": 4}})
+        return _answer(text_numbers={"Fiber": _COUNTS})
 
     monkeypatch.setattr(tools, "_get", _get)
     out = await tools.crm_aggregate("module:Invoices", measure="sum", field="Fiber")
-    assert ("Fiber Length is a text field that holds numbers: 4 of 9 matching records "
-            "hold a plain number. The other 5 count as no value.") in out.splitlines()
+    assert _LINE in out.splitlines()
 
 
-async def test_a_grouped_total_says_it_too(monkeypatch) -> None:
+async def test_a_grouped_total_names_them_too(monkeypatch) -> None:
     import acb_skills.crm_tools as tools
 
     async def _get(path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
-        return _answer(
-            values=7_231, records=7_283, group_field="Invoice_Date", bucket="month",
-            group_field_label="Invoice Date", group_field_type="date",
-            groups=[{"key": "2026-10", "label": "2026-10", "value": 1395.5}],
-            text_numbers={"Fiber": {"filled": 7_283, "plain": 7_231}})
+        return _answer(group_field="Invoice_Date", bucket="month",
+                       group_field_label="Invoice Date", group_field_type="date",
+                       groups=[{"key": "2026-10", "label": "2026-10", "value": 1395.5}],
+                       text_numbers={"Fiber": _COUNTS})
 
     monkeypatch.setattr(tools, "_get", _get)
     out = await tools.crm_aggregate("module:Invoices", measure="sum", field="Fiber",
                                     group_field="Invoice_Date", bucket="month")
-    assert ("Fiber Length is a text field that holds numbers: 7,231 of 7,283 matching "
-            "records hold a plain number. The other 52 count as no value.") in out.splitlines()
+    assert _LINE in out.splitlines()
 
 
 async def test_an_answer_with_no_text_field_has_no_such_line(monkeypatch) -> None:
     import acb_skills.crm_tools as tools
 
     async def _get(path: str, params: dict | None = None, timeout: float = 30.0) -> dict:
-        return _answer(field="Amount", field_label="Amount")
+        return _answer(field="Amount", field_label="Amount", field_type="currency")
 
     monkeypatch.setattr(tools, "_get", _get)
     out = await tools.crm_aggregate("module:Invoices", measure="sum", field="Amount")
     assert "text field" not in out
 
 
-def test_a_split_names_each_text_field_with_its_own_count() -> None:
+def test_a_split_and_a_range_name_each_text_field() -> None:
     import acb_skills.crm_tools as tools
 
     split = [{"field": "Fiber", "label": "Fiber", "values": 6},
              {"field": "Amount", "label": "Amount", "values": 9}]
-    data = _answer(split=split, text_numbers={"Fiber": {"filled": 8, "plain": 6}})
+    one = {"numbers": 6, "no_value": 1, "not_numbers": 1, "shapes": []}
+    data = _answer(split=split, records=9, text_numbers={"Fiber": one})
     assert tools._text_number_lines(data, split) == [
-        "Fiber is a text field that holds numbers: 6 of 9 matching records hold a "
-        "plain number. The other 3 count as no value."]
-    # A range alone reads no value, so it gives no line.
-    assert tools._text_number_lines(_answer(field=None, values=None,
-                                            text_numbers={"Fiber": {"filled": 8, "plain": 6}}),
-                                    []) == []
+        "Fiber is a text field read as numbers. In this module: 6 numbers, 1 with no "
+        "value, 1 not a number. This total read 6 numbers of 9 matching records."]
+    # A range alone reads no value of the field: the counts only.
+    ranged = _answer(field=None, values=None, measure="count",
+                     text_numbers={"Fiber": one})
+    assert tools._text_number_lines(ranged, []) == [
+        "Fiber is a text field read as numbers. In this module: 6 numbers, 1 with no "
+        "value, 1 not a number."]
+
+
+async def test_the_field_list_names_the_use_of_a_text_field_of_a_module(monkeypatch) -> None:
+    import acb_skills.crm_tools as tools
+
+    defs = [{"key": "Fiber", "label": "Fiber", "type": "text"},
+            {"key": "Amount", "label": "Amount", "type": "currency"}]
+
+    async def _get(path: str, params: dict | None = None, timeout: float = 30.0) -> Any:
+        return defs
+
+    monkeypatch.setattr(tools, "_get", _get)
+    module = await tools.crm_list_fields("module:Invoices")
+    assert ("- Fiber (key Fiber, text) [sums and ranges if it holds numbers, the answer "
+            "counts the rest]") in module.splitlines()
+    # A core entity is out of this slice: its text field names no use.
+    core = await tools.crm_list_fields("deals")
+    assert "(key Fiber, text)" in core and "(key Fiber, text) [" not in core
