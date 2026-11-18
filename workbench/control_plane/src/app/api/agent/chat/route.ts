@@ -55,6 +55,7 @@ import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTo
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
 import { bindToRun } from "@/lib/runBinding";
+import { runResumedFrameOf } from "@/lib/chatResume";
 import { MAX_CARD_DRAFTS } from "@/lib/redraftCard";
 import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
@@ -573,6 +574,13 @@ async function translateAndPersistStream(
             ...(typeof ev.code === "string" ? { code: ev.code } : {}),
             ...(typeof ev.ref === "string" ? { ref: ev.ref } : {}),
           };
+        } else if (t === "RUN_STARTED") {
+          // RESUME-3b: a second start of THIS run, marked `resumed` (case A
+          // of RESUME-2b), says that the run goes on after its park. The
+          // binding above accepted it, so its run id is this reader's. The
+          // chat then keeps the reply open past an earlier `done`. A plain
+          // start sends no frame, as before.
+          out = runResumedFrameOf(ev);
         }
 
         // Forward the Redis stream ID so the frontend can track the last
