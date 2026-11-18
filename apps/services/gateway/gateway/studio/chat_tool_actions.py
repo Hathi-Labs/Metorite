@@ -57,6 +57,7 @@ Fences: ``tests/unit/test_studio_catalog.py`` (``TestTheChatToolSource``),
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -92,11 +93,32 @@ def risk_of(tool: Any) -> Mapping[str, Any] | None:
     return None
 
 
-def _owner_tools(packs: Mapping[str, str]) -> dict[str, Any]:
+def _cached_tools(packs: Mapping[str, str]) -> dict[str, Any]:
+    """The tools that the loader holds already, by name. It never builds, never
+    takes the lock and never raises. A pack with no cached tools gives none, so
+    its rows are class C and a pack that did load keeps its real classes."""
+    out: dict[str, Any] = {}
+    try:
+        from acb_skills.tool_guard import tool_name
+        from orchestrator._tool_injection import _cached_pack_tools
+    except Exception:
+        return out
+    for slug, owner in packs.items():
+        try:
+            for fn in _cached_pack_tools(slug, owner) or ():
+                out[tool_name(fn)] = fn
+        except Exception:
+            continue
+    out.pop("", None)
+    return out
+
+
+def _owner_tools(packs: Mapping[str, str], failed: set[str] | None = None) -> dict[str, Any]:
     """The built tools of each pack of *packs* (``{slug: owner}``), by name.
 
     Best effort, and never raises. An owner that does not load gives no tool,
-    and the rows of its tools are then class C."""
+    and the rows of its tools are then class C. *failed*, when given, takes the
+    slug of each pack whose owner or tool build failed."""
     out: dict[str, Any] = {}
     try:
         from acb_skills.tool_guard import tool_name
@@ -109,12 +131,16 @@ def _owner_tools(packs: Mapping[str, str]) -> dict[str, Any]:
             module = _pack_owner_module(owner)
             if module is None:
                 _log.warning("studio.chat_tools_owner_unavailable", pack=slug, owner=owner)
+                if failed is not None:
+                    failed.add(slug)
                 continue
             for fn in _owner_pack_tools(slug, owner, module):
                 out[tool_name(fn)] = fn
         except Exception as exc:  # a fault raises a class, never the catalog
             _log.warning("studio.chat_tools_pack_unavailable", pack=slug, owner=owner,
                          error_type=type(exc).__name__)
+            if failed is not None:
+                failed.add(slug)
     out.pop("", None)
     return out
 
@@ -128,6 +154,10 @@ def _title(name: str) -> str:
 _WARM = threading.Event()
 _WARM_LOCK = threading.Lock()
 _warm_thread: threading.Thread | None = None
+#: When the last try of :func:`warm` failed (``time.monotonic``), or None.
+_warm_failed_at: float | None = None
+#: How long a failed warm-up waits before the next try, as the module loader does.
+WARM_RETRY_S = 60.0
 
 
 def _owner_packs() -> dict[str, str]:
@@ -147,19 +177,21 @@ def warm() -> bool:
     """Load the owners of the scope now. Blocking: call it off the event loop.
 
     Never raises. It returns True, and :func:`is_warm` holds, only when every
-    owner loaded. An owner that fails leaves it False, and the next catalog
-    read starts a new try (the loader keeps a failure for 60 s)."""
+    pack of the scope loaded its owner AND built its tools. A failure leaves it
+    False, and the next try waits :data:`WARM_RETRY_S`."""
+    global _warm_failed_at
     try:
-        packs = _owner_packs()
-        built = _owner_tools(packs)
-        from orchestrator._tool_injection import _pack_owner_module
-
-        ok = bool(built) and all(_pack_owner_module(o) is not None for o in set(packs.values()))
+        failed: set[str] = set()
+        built = _owner_tools(_owner_packs(), failed)
+        ok = bool(built) and not failed
     except Exception as exc:  # a fault leaves the catalog on class C
         _log.warning("studio.chat_tools_warm_failed", error_type=type(exc).__name__)
-        return False
+        ok = False
     if ok:
+        _warm_failed_at = None
         _WARM.set()
+    else:
+        _warm_failed_at = time.monotonic()
     return ok
 
 
@@ -170,6 +202,8 @@ def start_warm() -> bool:
     with _WARM_LOCK:
         if _WARM.is_set() or (_warm_thread is not None and _warm_thread.is_alive()):
             return False
+        if _warm_failed_at is not None and time.monotonic() - _warm_failed_at < WARM_RETRY_S:
+            return False
         _warm_thread = threading.Thread(target=warm, name="chat-tools-warm", daemon=True)
         _warm_thread.start()
         return True
@@ -179,7 +213,9 @@ def chat_tool_rows(*, defer_cold: bool = False) -> list[dict[str, Any]]:
     """One row for each chat tool of :func:`acb_skills.skill_packs.chat_tools`.
 
     With *defer_cold* (the request path) the call never loads an owner: when
-    :func:`warm` has not finished, it starts it and gives class C rows.
+    :func:`warm` has not finished, it starts it. The rows of a pack whose
+    tools the loader holds already keep their real class, and the rows of
+    each other pack are class C.
 
     The unfiltered builder: the caller checks ``STUDIO_CHAT_TOOLS_ORGS``
     first (``routes/studio/actions._chat_tool_rows``). The rows keep the order
@@ -187,7 +223,7 @@ def chat_tool_rows(*, defer_cold: bool = False) -> list[dict[str, Any]]:
     scope = chat_tools()
     if defer_cold and not _WARM.is_set():
         start_warm()
-        built: dict[str, Any] = {}
+        built: dict[str, Any] = _cached_tools(_owner_packs())  # a cache hit, no build
     else:
         built = _owner_tools(_owner_packs())
     rows: list[dict[str, Any]] = []

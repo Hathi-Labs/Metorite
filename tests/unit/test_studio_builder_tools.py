@@ -541,6 +541,11 @@ async def test_list_actions_leaves_out_the_chat_tool_rows(monkeypatch) -> None:
                                                  "integration:slack.post"]
     assert out["total"] == 3
     assert (await st.studio_list_actions("lead"))["actions"] == []
+    # P1 of the review: the skill flow keeps the rows, or a skill could not hold one.
+    both = await st.studio_list_actions(for_skill=True)
+    assert [r["id"] for r in both["actions"]][-1] == "tool:create_lead" and both["total"] == 4
+    assert [r["id"] for r in (await st.studio_list_actions("lead", for_skill=True))["actions"]] == [
+        "tool:create_lead"]
 
 
 async def test_list_actions_is_capped(monkeypatch) -> None:

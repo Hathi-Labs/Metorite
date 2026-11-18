@@ -1024,7 +1024,7 @@ _STUDIO_MORE_RULES = """STUDIO SKILL, RECORD AND WORKFLOW TOOLS. You hold more t
 - A pause asks on no card, and so does a save, except in a chat that read outside mail. There each shows one card. Archive and delete are not in chat: they are in Studio.
 - The error text is the server text. On a 409 for a name, call studio_skill_list,
   then save a version of that skill or pick a new name. On a 422 with an
-  actions path, list the actions of AI Studio and use only their ids. When this
+  actions path, list the actions of AI Studio with the skill option on and use only their ids. When this
   chat holds no tool that lists them, load the studio pack with load_skill_tools
   first, then list the actions. When a save, a
   publish or a pause may have worked, call studio_skill_list before you try again.

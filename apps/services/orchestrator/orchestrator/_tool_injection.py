@@ -3804,7 +3804,10 @@ def _owner_pack_tools(slug: str, owner: str, source: Any) -> list[Any]:
     if callable(getattr(source, "_narrow_tool", None)):
         return tool_packs.owner_tools(slug, source)
     builder = getattr(source, "_agent_tools", None)
-    with _PACK_LOAD_LOCK:  # TOF-1e: the warm-up thread and a run share the dicts
+    hit = _cached_pack_tools(slug, owner, source)
+    if hit is not None:  # TOF-1e: a cache hit takes no lock, so a run never waits on the warm-up
+        return hit
+    with _PACK_LOAD_LOCK:  # a miss: the warm-up thread and a run share the dicts
         entry = _PACK_OWNER_TOOLS.get(owner)
         if entry is None or entry[0] is not source or entry[1] is not builder:
             entry = (source, builder, {})
@@ -3812,6 +3815,20 @@ def _owner_pack_tools(slug: str, owner: str, source: Any) -> list[Any]:
         if slug not in entry[2]:
             entry[2][slug] = tool_packs.owner_tools(slug, source)
         return list(entry[2][slug])
+
+
+def _cached_pack_tools(slug: str, owner: str, source: Any = None) -> list[Any] | None:
+    """The tools of pack *slug* already built for *owner*, or None. Never builds
+    and never takes the lock. With no *source*, it uses the loaded module of the
+    owner. An owner with ``_narrow_tool`` keeps no cache, so it gives None."""
+    source = source if source is not None else _PACK_OWNER_MODULES.get(owner)
+    if source is None or callable(getattr(source, "_narrow_tool", None)):
+        return None
+    entry = _PACK_OWNER_TOOLS.get(owner)
+    if entry is None or entry[0] is not source or entry[1] is not getattr(source, "_agent_tools", None):
+        return None
+    built = entry[2].get(slug)
+    return list(built) if built is not None else None
 
 
 def _pack_func(fn: Any) -> Any:
