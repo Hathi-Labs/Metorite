@@ -4445,8 +4445,17 @@ async def _apply_tool_packs(
     # reaches). The inject step after this one adds nothing to the count.
     planned_tools = (base - int(loader_counted) + int(bool(plan.offered))
                   + len(added) - sum(_specialist_counts(pool, replaced).values()))
-    # SBX-19: ``compute_run`` takes the place that is left, and no other.
-    _COMPUTE_ROOM.set(planned_tools + 1 <= tool_packs.MAX_REQUEST_TOOLS)
+    # SBX-19: ``compute_run`` takes the place that is left, and no other. It
+    # leaves room for the largest pack that the loader OFFERS and that fits
+    # without it, so a load never misses by the one place of the tool.
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    cap = tool_packs.MAX_REQUEST_TOOLS
+    reserve = max(
+        (n for n in (len(SKILL_FAMILIES[slug]["tools"]) for slug in plan.offered
+                     if slug in SKILL_FAMILIES) if planned_tools + n <= cap),
+        default=0)
+    _COMPUTE_ROOM.set(planned_tools + reserve + 1 <= cap)
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)
