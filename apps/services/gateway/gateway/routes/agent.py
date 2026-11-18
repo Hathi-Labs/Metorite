@@ -4078,18 +4078,7 @@ async def _resume_from_row(
         organization_id=org, member=_session_member(user), thread_id=req.thread_id,
     )
     if not admission.admitted:
-        if declined:
-            # Review of 4a-2, P2-1 (a): a "no" needs no run slot. The late
-            # decline of before closes the row, with no run.
-            return None
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "error": "too_many_runs",
-                "limit": admission.limit,
-                "running": list(admission.running),
-            },
-        )
+        return _cap_refused(admission, declined=declined)
     try:
         if declined:
             claimed = await asyncio.to_thread(
@@ -4173,6 +4162,23 @@ async def _resume_from_row(
         # and only the member who approved reads the answer.
         out["messageId"] = started.message_id
     return out
+
+
+def _cap_refused(admission: Any, *, declined: bool) -> Response | None:
+    """The answer of :func:`_resume_from_row` when the run cap refuses the
+    continuation. An Approve gets the 429 ``too_many_runs``, and its card
+    waits. A decline gets None (review of 4a-2, P2-1 (a)): a "no" needs no run
+    slot, so the late decline of before closes the row, with no run."""
+    if declined:
+        return None
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "error": "too_many_runs",
+            "limit": admission.limit,
+            "running": list(admission.running),
+        },
+    )
 
 
 def _resume_launch_of(

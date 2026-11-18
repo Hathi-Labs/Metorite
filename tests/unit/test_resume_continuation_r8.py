@@ -59,6 +59,15 @@ writes its events to that stream. The fold, the mint and the rows are real.
 * ``test_a_real_park_keeps_the_stream_24h`` (D-RES-7) — the real
   ``pending_ask.park`` and the real drain. Expire with ``STREAM_TTL_SECONDS``
   in ``mark_inactive``, and the life is 1 hour.
+* ``test_a_late_decline_of_a_case_a_card_takes_the_path_of_4a_2`` — drop
+  ``None if declined else`` in ``_resume_from_row``, and the decline takes
+  the parked run's id and writes over part one.
+* ``test_a_true_twin_takes_the_old_path_and_never_case_a`` — the REAL
+  HRD-22b witness. Drop the ``twin_ran`` check, and case A runs.
+
+The relay tests stub ``late_approve.twin_ran`` to "no twin", as ``scene``
+does, and each card has a title of its own thread (``_title_of``). Only
+the twin test puts the real witness back.
 
 RESUME-4a-2 (task 3478, D-RES-9), the late decline:
 
@@ -844,6 +853,15 @@ def test_a_refusal_after_the_claim_gives_the_row_back(scene, monkeypatch):
 # ---------------------------------------------------------------------------
 
 _TITLE_A = "Move this deal to Payment Complete?"
+
+
+def _title_of(tid: str) -> str:
+    """The title of each card of the chat *tid* (verifier of PR 2583). A
+    title of its own thread, so the real HRD-22b witness
+    (``pending_ask.twin_approved_since``, the same member and title in ANY
+    thread) never takes a card of another test for a twin. A clock that
+    steps back on the box made an earlier approve read as "after"."""
+    return f"{_TITLE_A} ({tid})"
 _CAROL_A = "carol@pa-a.test"
 #: The events of each stand-in continuation run, by thread.
 RUNS: dict[str, list[dict[str, Any]]] = {}
@@ -870,6 +888,77 @@ TRIM_THROUGH_START: list[bool] = []
 #: of part two does (review round 2, P2-a: three parts).
 PARK_AT_END: list[bool] = []
 _ZOHO = "integrations:use:zoho-crm"
+
+
+def _stand_in_run_agent_stream(agent_name, payload, *, run_id=None, thread_id=None,
+                                resume_call=None, **_kw):
+    """The stand-in executor of the relay tests. It tees each event to the
+    relay, as `_sse` does. It marks the start of a same-reply run (P2-a), as
+    the executor does. A late decline (RESUME-4a-2, ``declined``) runs NO
+    tool: it closes the card as REJECT and says that nothing was done."""
+    declined = (resume_call or {}).get("declined") is True
+
+    async def _gen():
+        rid = (resume_call or {}).get("request_id")
+        start = {"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
+                 **({"resumed": True} if (resume_call or {}).get("same_reply")
+                    and not declined else {})}
+        n = len(RUNS.get(thread_id, [])) + 2
+        events = [start, {"type": "CUSTOM", "name": "confirmation_resolved",
+                          "value": {"request_id": rid,
+                                    "answer": "REJECT" if declined else "APPROVE"}}]
+        if declined:
+            events.append({"type": "TEXT_MESSAGE_CONTENT", "messageId": f"seg-{n}",
+                           "delta": "Nothing was done."})
+        else:
+            events += [
+                {"type": "TOOL_CALL_START", "toolCallId": "call_abc",
+                 "toolCallName": "update_deal_status"},
+                {"type": "TOOL_CALL_RESULT", "toolCallId": "call_abc",
+                 "content": "Neuropeak moved to Payment Complete.", "success": True},
+                {"type": "TEXT_MESSAGE_CONTENT", "messageId": f"seg-{n}",
+                 "delta": "The deal moved." if n == 2 else f" Part {n}."},
+            ]
+        events.append({"type": "RUN_FINISHED", "threadId": thread_id, "parked": True}
+                      if PARK_AT_END and PARK_AT_END.pop() else
+                      {"type": "RUN_FINISHED", "threadId": thread_id})
+        RUNS.setdefault(thread_id, []).append({"run_id": run_id, "resume": resume_call})
+        await _stand_in_hooks(thread_id)
+        for evt in events:
+            await stream_relay.push_event(thread_id, evt)
+            yield f"data: {json.dumps(evt)}\n\n"
+        if TRIM_THROUGH_START:
+            TRIM_THROUGH_START.pop()
+            await _trim_through_start(thread_id)
+    return _gen()
+
+
+async def _stand_in_hooks(thread_id: str) -> None:
+    """The controls that act before the stand-in's own start."""
+    if IN_WINDOW:
+        await IN_WINDOW.pop()()
+    if RAISE_BEFORE_START:
+        RAISE_BEFORE_START.pop()
+        raise RuntimeError("the run died before its start")
+    if HOLD_BEFORE_START:
+        await HOLD_BEFORE_START.pop().wait()
+    if TRIM_HEAD:
+        TRIM_HEAD.pop()
+        r = await stream_relay._get_client()
+        head = await r.xrange(f"cc:stream:{thread_id}", count=1)
+        assert head and await r.xdel(f"cc:stream:{thread_id}", head[0][0]) == 1
+
+
+async def _trim_through_start(thread_id: str) -> None:
+    """Delete each entry up to and with the stand-in's own start."""
+    r = await stream_relay._get_client()
+    key = f"cc:stream:{thread_id}"
+    gone = []
+    for eid, fields in await r.xrange(key):
+        gone.append(eid)
+        if json.loads(fields["event"]).get("resumed") is True:
+            break
+    assert await r.xdel(key, *gone) == len(gone)
 
 
 @pytest.fixture
@@ -908,58 +997,6 @@ def relay_scene(as_app, monkeypatch):
     async def _memory(**_kw):
         return ""
 
-    def _run_agent_stream(agent_name, payload, *, run_id=None, thread_id=None,
-                          resume_call=None, **_kw):
-        async def _gen():
-            # The executor tees each event to the relay (`_sse`), so the
-            # stand-in pushes each one too.
-            rid = (resume_call or {}).get("request_id")
-            # The executor marks the start of a continuation (P2-a).
-            start = {"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
-                     **({"resumed": True} if (resume_call or {}).get("same_reply") else {})}
-            n = len(RUNS.get(thread_id, [])) + 2
-            events = [
-                start,
-                {"type": "CUSTOM", "name": "confirmation_resolved",
-                 "value": {"request_id": rid, "answer": "APPROVE"}},
-                {"type": "TOOL_CALL_START", "toolCallId": "call_abc",
-                 "toolCallName": "update_deal_status"},
-                {"type": "TOOL_CALL_RESULT", "toolCallId": "call_abc",
-                 "content": "Neuropeak moved to Payment Complete.", "success": True},
-                {"type": "TEXT_MESSAGE_CONTENT", "messageId": f"seg-{n}",
-                 "delta": "The deal moved." if n == 2 else f" Part {n}."},
-                ({"type": "RUN_FINISHED", "threadId": thread_id, "parked": True}
-                 if PARK_AT_END and PARK_AT_END.pop() else
-                 {"type": "RUN_FINISHED", "threadId": thread_id}),
-            ]
-            RUNS.setdefault(thread_id, []).append({"run_id": run_id, "resume": resume_call})
-            if IN_WINDOW:
-                await IN_WINDOW.pop()()
-            if RAISE_BEFORE_START:
-                RAISE_BEFORE_START.pop()
-                raise RuntimeError("the run died before its start")
-            if HOLD_BEFORE_START:
-                await HOLD_BEFORE_START.pop().wait()
-            if TRIM_HEAD:
-                TRIM_HEAD.pop()
-                r = await stream_relay._get_client()
-                head = await r.xrange(f"cc:stream:{thread_id}", count=1)
-                assert head and await r.xdel(f"cc:stream:{thread_id}", head[0][0]) == 1
-            for evt in events:
-                await stream_relay.push_event(thread_id, evt)
-                yield f"data: {json.dumps(evt)}\n\n"
-            if TRIM_THROUGH_START:
-                TRIM_THROUGH_START.pop()
-                r = await stream_relay._get_client()
-                key = f"cc:stream:{thread_id}"
-                gone = []
-                for eid, fields in await r.xrange(key):
-                    gone.append(eid)
-                    if json.loads(fields["event"]).get("resumed") is True:
-                        break
-                assert await r.xdel(key, *gone) == len(gone)
-        return _gen()
-
     async def _session_access(session_id, actor):
         # The real `resolve_session_access` opens the async engine of
         # DATABASE_URL, which is not this suite's database. This is its email
@@ -988,7 +1025,17 @@ def relay_scene(as_app, monkeypatch):
     monkeypatch.setattr(agent_routes, "_extract_run_memory", _ok)
     monkeypatch.setattr(mp, "memory_preread", _memory)
     monkeypatch.setattr(egress, "run_holds_mail", _no_mail)
-    monkeypatch.setattr(executor, "run_agent_stream", _run_agent_stream)
+    monkeypatch.setattr(executor, "run_agent_stream", _stand_in_run_agent_stream)
+
+    # HRD-22b: the resume path asks the Postgres witness of a twin
+    # (``late_approve.twin_ran``) before the claim. These scenes test the
+    # stream and the rows, so the witness answers "no twin ran", as in
+    # ``scene``. ``test_a_true_twin_takes_the_old_path_and_never_case_a`` puts
+    # the real witness back (verifier of PR 2583).
+    async def _no_twin(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(late_approve, "twin_ran", _no_twin)
     pending_ask._reset_for_tests()
     RUNS.clear()
     TRIM_HEAD.clear()
@@ -1063,7 +1110,7 @@ async def _parked_turn(w, tid: str, org: str) -> tuple[str, str, str]:
         {"type": "TOOL_CALL_START", "toolCallId": "call_abc",
          "toolCallName": "update_deal_status"},
         {"type": "CUSTOM", "name": "confirmation_requested",
-         "value": {"request_id": rid, "title": _TITLE_A}},
+         "value": {"request_id": rid, "title": _title_of(tid)}},
         {"type": "RUN_FINISHED", "threadId": tid, "parked": True},
     ):
         await stream_relay.push_event(tid, evt)
@@ -1078,8 +1125,8 @@ async def _parked_turn(w, tid: str, org: str) -> tuple[str, str, str]:
               "message_id": mid}
     assert pending_ask.insert_ask(org, {
         "request_id": rid, "thread_id": tid, "run_id": run_id, "actor_email": _ALICE,
-        "agent_name": "orchestrator", "kind": "confirmation", "question": _TITLE_A,
-        "payload": {"request_id": rid, "title": _TITLE_A}, "stored_call": stored})
+        "agent_name": "orchestrator", "kind": "confirmation", "question": _title_of(tid),
+        "payload": {"request_id": rid, "title": _title_of(tid)}, "stored_call": stored})
     assert pending_ask.move_ask(org, rid, to="parked", from_states=("open",)) is not None
     return rid, run_id, mid
 
@@ -1149,6 +1196,99 @@ def test_case_a_goes_on_in_the_same_reply(relay_scene, monkeypatch):
             assert "confirmation_requested" in names and "confirmation_resolved" in names
             assert _user_rows(w, tid) == 1, "no member turn"
             assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True)
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_late_decline_of_a_case_a_card_takes_the_path_of_4a_2(relay_scene, monkeypatch):
+    """Verifier of PR 2583, the R8 fence of the decline rule. The card is
+    ready for case A: it parked, its reply is the last turn, and the room did
+    not change. A late "Not now" still takes the path of RESUME-4a-2: a NEW
+    run id, the 200 of 4a-2 with no ``sameReply`` and no ``messageId``, the
+    row ``closed``, the stream reset, no tool, and part one kept in the
+    parked row. Mutation: drop ``None if declined else`` in
+    ``_resume_from_row`` -> the decline takes the parked run's id and its
+    reply row -> red."""
+    w = relay_scene
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            rid, run_id, mid = await _parked_turn(w, tid, w.org_a)
+            before = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            res = await _decline(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict), res
+            assert res == {"ok": True, "resumed": True, "declined": True,
+                           "threadId": tid, "runId": res["runId"]}, res
+            assert res["runId"] != run_id, "a new run, never the parked one"
+            await _run_ends(tid)
+            await _quiet()
+            (cont,) = RUNS[tid]
+            assert cont["run_id"] == res["runId"] and cont["resume"]["declined"] is True
+            assert "same_reply" not in cont["resume"], "no case A kwarg"
+            assert _row(w, w.org_a, rid) == ("closed", None, True)
+            events = await _stream(client, tid)
+            assert events[0]["type"] == "RUN_STARTED" and events[0]["runId"] == res["runId"]
+            assert not events[0].get("resumed"), "the start of a decline is never marked"
+            texts = [e.get("delta") for e in events if e["type"] == "TEXT_MESSAGE_CONTENT"]
+            assert texts == ["Nothing was done."], "the stream was reset"
+            assert not [e for e in events if e["type"] == "TOOL_CALL_START"], "no tool"
+            rows = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            assert rows[mid] == before[mid], "part one is kept in the parked row"
+            (new,) = set(rows) - {mid}
+            assert "Nothing was done." in rows[new] and "Let me move it." not in rows[new]
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_true_twin_takes_the_old_path_and_never_case_a(relay_scene, monkeypatch):
+    """Verifier of PR 2583: the REAL HRD-22b witness composes with case A.
+    The card is ready for case A, and a twin of it (the same member, title,
+    detail and context) was approved after it was asked, in another thread.
+    ``_resume_from_row`` asks ``twin_ran`` before the claim, so the late
+    Approve takes the old path: the 409 ``run_restarted``, no continuation,
+    no kept stream, and the parked reply as it was. The twin is approved one
+    minute after the card by the database clock, so a clock that steps back
+    cannot hide it. Mutation: drop the ``twin_ran`` check -> case A runs ->
+    red."""
+    w = relay_scene
+    monkeypatch.setattr(late_approve, "twin_ran", _REAL_TWIN_RAN)
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            rid, _run_id, _mid = await _parked_turn(w, tid, w.org_a)
+            before = {r[0]: r[1] for r in _assistant_rows(w, tid)}
+            stream_before = await _stream(client, tid)
+            with w.admin_engine.begin() as c:
+                c.execute(text(
+                    "INSERT INTO chat_pending_ask (organization_id, request_id, thread_id, "
+                    "  actor_email, agent_name, kind, question, payload, state, answer, "
+                    "  answered_at) "
+                    "VALUES (CAST(:o AS uuid), :r, :t, :a, 'orchestrator', 'confirmation', "
+                    "  :q, CAST(:p AS jsonb), 'answered', 'APPROVE', "
+                    "  now() + interval '1 minute')"),
+                    {"o": w.org_a, "r": uuid.uuid4().hex, "t": f"{tid}-twin", "a": _ALICE,
+                     "q": _title_of(tid), "p": json.dumps({"title": _title_of(tid)})})
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert getattr(res, "status_code", None) == 409, res
+            assert res.detail["error"] == "run_restarted"
+            assert RUNS.get(tid) is None, "no continuation ran"
+            assert await _stream(client, tid) == stream_before, "the stream is as it was"
+            assert {r[0]: r[1] for r in _assistant_rows(w, tid)} == before
+            assert _row(w, w.org_a, rid)[:2] == ("answered", "APPROVE"), "the old path"
         finally:
             await _quiet()
             await client.flushdb()
@@ -1623,7 +1763,8 @@ def test_a_case_b_run_that_parks_again_can_go_on_in_its_own_reply(relay_scene, m
             assert pending_ask.insert_ask(w.org_a, {
                 "request_id": rid2, "thread_id": tid, "run_id": run_b,
                 "actor_email": _ALICE, "agent_name": "orchestrator", "kind": "confirmation",
-                "question": _TITLE_A, "payload": {"request_id": rid2, "title": _TITLE_A},
+                "question": _title_of(tid),
+                "payload": {"request_id": rid2, "title": _title_of(tid)},
                 "stored_call": {"v": 1, "kind": "confirmation", "tool": "update_deal_status",
                                 "module": "agent:orchestrator", "agent": "orchestrator",
                                 "arguments": {"deal_id": "d-orbit", "stage": "Won"},
@@ -1674,7 +1815,8 @@ def test_three_parts_go_into_one_row_unless_a_trim_took_part_one(trim, relay_sce
             assert pending_ask.insert_ask(w.org_a, {
                 "request_id": rid2, "thread_id": tid, "run_id": run_id,
                 "actor_email": _ALICE, "agent_name": "orchestrator", "kind": "confirmation",
-                "question": _TITLE_A, "payload": {"request_id": rid2, "title": _TITLE_A},
+                "question": _title_of(tid),
+                "payload": {"request_id": rid2, "title": _title_of(tid)},
                 "stored_call": {"v": 1, "kind": "confirmation", "tool": "update_deal_status",
                                 "module": "agent:orchestrator", "agent": "orchestrator",
                                 "arguments": {"deal_id": "d-orbit", "stage": "Won"},
@@ -1730,8 +1872,8 @@ def test_a_real_park_keeps_the_stream_24h(both, relay_scene, monkeypatch):
             rid = uuid.uuid4().hex
             assert pending_ask.insert_ask(w.org_a, {
                 "request_id": rid, "thread_id": tid, "run_id": "run-p", "actor_email": _ALICE,
-                "agent_name": "orchestrator", "kind": "confirmation", "question": _TITLE_A,
-                "payload": {"request_id": rid, "title": _TITLE_A}})
+                "agent_name": "orchestrator", "kind": "confirmation",
+                "question": _title_of(tid), "payload": {"request_id": rid, "title": _title_of(tid)}})
             hold = asyncio.Event()
 
             async def _waits():

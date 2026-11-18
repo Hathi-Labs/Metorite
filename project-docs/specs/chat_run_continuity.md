@@ -2121,8 +2121,14 @@ The tie rule has `test_the_case_a_checks_on_real_rows` (R8). The head has
 `test_same_reply_events_decide_by_the_head` and
 `test_a_same_reply_fold_never_writes_over_part_one`.
 
-The decline rule has `test_a_late_decline_never_goes_on_in_the_same_reply`
-and `test_a_decline_is_never_a_same_reply_run`.
+The decline rule has `test_a_late_decline_never_goes_on_in_the_same_reply`,
+`test_a_decline_is_never_a_same_reply_run` and
+`test_a_late_decline_of_a_case_a_card_takes_the_path_of_4a_2` (R8). The real
+HRD-22b witness composes with case A in
+`test_a_true_twin_takes_the_old_path_and_never_case_a` (R8). The other relay
+tests stub that witness, and each card has a title of its own thread
+(`_title_of`). A clock that steps back made an earlier approve read as a twin
+(verifier of PR 2583).
 
 **What RESUME-4a-2 built (2026-11-17).** D-RES-9 decides it. A late decline
 (`declined: true`) of a row with a stored call takes the path of a late
