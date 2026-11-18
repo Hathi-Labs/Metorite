@@ -1892,31 +1892,25 @@ async def crm_aggregate(
     page: int = 1,
     fields: list[str] | None = None,
 ) -> str:
-    """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given. Quote the Display
-    value as written. To split a total over 2 to 5 number fields, give
+    """Count, sum or average CRM records, as one total or by one group. Quote the
+    Display value as written. To split a total over 2 to 5 number fields, give
     fields with every key in ONE call, never one call for each field. When
-    the answer starts with FIRST, tell the member that line before the
-    total. entity is 'leads', 'deals', 'contacts', 'organizations' or
-    'module:<api_name>' (crm_list_modules). measure is 'count',
-    'sum_amount' or 'weighted' (deals: amount times the effective
-    probability, open and ongoing only), or 'sum', 'avg', 'min' or 'max' of
+    the answer starts with FIRST, tell the member that line first. entity is 'leads', 'deals', 'contacts', 'organizations' or
+    'module:<api_name>'. measure is 'count',
+    'sum_amount' or 'weighted' (deals: amount times
+    probability), or 'sum', 'avg', 'min' or 'max' of
     the number field named by field. The group is optional: with no group_by
-    and no group_field you get one total. group_by is 'status', 'owner',
+    or group_field you get one total. group_by is 'status', 'owner',
     'pipeline', 'source', 'created_month', 'updated_month' or 'close_month'
     (a module: 'owner', 'created_month', 'updated_month'). group_field is a
     picklist, boolean, lookup or date field; a date needs bucket 'month',
-    'quarter' or 'year'. A text field cannot group. Field keys come from
-    crm_list_fields. A core entity takes the filters of crm_list_records. A
-    module takes field_filters: {key: value}, or {'key.from': date,
+    'quarter' or 'year'. A module takes field_filters: {key: value}, {'key.from': date,
     'key.to': date} for a date field, or {'key.from': N, 'key.to': M} for a
-    number field. Both ends count, and text such as 'NA' counts as no value.
-    A text or lookup filter matches the exact value, name or record id. When
-    the module search is on, a module also takes q: it searches the first 40
-    text fields. On a module, 'sum_amount' sums its amount, and field,
+    number field; text such as 'NA' counts as no value.
+    A text or lookup filter matches the exact value, name or record id. On a module, 'sum_amount' sums its amount, and field,
     group_field and field_filters also take '@amount', '@date', '@status'
-    and '@parent'. term is the member's own word for the figure: the server
-    maps it to one field, so give no field with it. When two fields give
+    and '@parent'. term is the member's own word for the figure: give no
+    field with it. When two fields give
     different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
@@ -3773,8 +3767,7 @@ async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
-    with their ids, and the key and type of each field that crm_aggregate can
-    measure or group. q matches the record name. When the module search is
+    with their ids. q matches the record name. When the module search is
     on, q also finds words in a lookup name or text value, and marks a near
     spelling. It searches the first 40 text fields."""
     mod = _module_name(module)
