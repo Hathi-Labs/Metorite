@@ -35,12 +35,13 @@ in ONE block of the label :data:`PASTE_LABEL`, and runs ``neutralise`` on
 the lead too. The marker lines come only from :class:`UntrustedFrame`.
 
 The checks of an address, a link and a phone number are closed rules (spec
-section 4.7b). Each one reads a scan copy of the line first
-(:func:`_scan`). A form beyond that copy is a named residual: an IP address
-as a host with no scheme, a number in words, and a Cyrillic or Greek
-look-alike letter. The spec also
-names these residuals of a link: a word-like domain with a plain label before
-a space and a word (``Pay at acme.in now``, ``Thanks.to all``), a word-like
+section 4.7b). Each one reads two scan copies of the line, spaced and
+joined, and counts a hit in either (:func:`_scan`). A form beyond the copies
+is a named residual: an IP address as a host with no scheme, a number in
+words, a Cyrillic or Greek look-alike letter, the bullet U+2022 as a dot,
+``ravi<at>acme<dot>test`` and ``ravi at acme . com``. The spec also names
+these residuals of a link: a word-like domain with a plain label before a
+space and a word (``Pay at acme.in now``, ``Thanks.to all``), a word-like
 domain in capitals with no path, and a top-level domain that is not on the
 list. It names ``+91 9845-01-23 45`` as a residual of a phone number.
 
@@ -166,12 +167,14 @@ _BRACKET_WORD_RE = re.compile(r"[\[\(\{]\s*(at|dot)(?:\s*[\]\)\}]|\s)")
 #: and NFKC can make the copy longer. A longer text or copy counts as a hit,
 #: which is the safe side. Each rule reads the copy in linear time.
 _SCAN_MAX = 2_000
-#: The categories of a character whose NFKC form stays joined to its
-#: neighbours: a letter or a decimal digit, such as a full-width ``a``. Any
-#: other character whose NFKC form holds a letter or a digit, such as ``TM``
-#: or a superscript ``2``, gets a space on each side, so it cannot hide the
-#: end of a domain.
-_JOINED = frozenset({"Lu", "Ll", "Lt", "Lm", "Lo", "Nd"})
+#: The categories of a plain letter or decimal digit. In the SPACED copy, a
+#: character of another category whose NFKC form is new and holds a letter or
+#: a digit gets a space on each side: ``TM``, a superscript ``2``, a modifier
+#: letter such as U+1D43. So it cannot hide the end of a domain. The JOINED
+#: copy adds no space, so a circled or a Roman-numeral letter stays inside
+#: its word: ``paypa`` + U+217C + ``.com`` reads ``paypal.com``. A rule
+#: counts a hit when either copy holds one.
+_PLAIN = frozenset({"Lu", "Ll", "Lt", "Lo", "Nd"})
 
 
 def _hidden(ch: str) -> bool:
@@ -184,31 +187,38 @@ def _hidden(ch: str) -> bool:
     return is_invisible_char(ch)
 
 
-def _scan_char(ch: str) -> str:
-    """One character of the scan copy. NFKD first, so a combining mark comes
+def _scan_char(ch: str, spaced: bool) -> str:
+    """One character of a scan copy. NFKD first, so a combining mark comes
     apart from its letter. Then each hidden character and each combining mark
-    (Mn, Me) goes, and NFKC folds the rest."""
+    (Mn, Me) goes, and NFKC folds the rest. The *spaced* copy puts a space on
+    each side of a new letter or digit that a sign of another category makes
+    (:data:`_PLAIN`)."""
     parts = "".join(c for c in unicodedata.normalize("NFKD", ch)
                     if not _hidden(c) and unicodedata.category(c) not in ("Mn", "Me"))
     out = unicodedata.normalize("NFKC", parts)
-    if unicodedata.category(ch) not in _JOINED and any(c.isalnum() for c in out):
+    if (spaced and out != ch and unicodedata.category(ch) not in _PLAIN
+            and any(c.isalnum() for c in out)):
         return f" {out} "
     return out
 
 
-def _scan(text: str) -> tuple[str, str] | None:
-    """``(kept, lower)``: the scan copy of *text* with its case kept, and in
-    lower case. None when *text* or its copy is longer than
-    :data:`_SCAN_MAX`, so the caller counts a hit. The copy is only for the
-    rules: the lead keeps its own text."""
+def _scan(text: str) -> list[tuple[str, str]] | None:
+    """The two scan copies of *text*, spaced and joined, each as ``(kept,
+    lower)``: its case kept, and in lower case. None when *text* or a copy is
+    longer than :data:`_SCAN_MAX`, so the caller counts a hit. A rule counts
+    a hit when either copy holds one. The copies are only for the rules: the
+    lead keeps its own text."""
     raw = str(text or "")
     if len(raw) > _SCAN_MAX:
         return None
-    kept = "".join(_scan_char(ch) for ch in raw if not _hidden(ch))
-    kept = _BRACKET_DOT_RE.sub(".", kept.translate(_DOTS))
-    if len(kept) > _SCAN_MAX:
-        return None
-    return kept, kept.lower()
+    copies: list[tuple[str, str]] = []
+    for spaced in (True, False):
+        kept = "".join(_scan_char(ch, spaced) for ch in raw if not _hidden(ch))
+        kept = _BRACKET_DOT_RE.sub(".", kept.translate(_DOTS))
+        if len(kept) > _SCAN_MAX:
+            return None
+        copies.append((kept, kept.lower()))
+    return copies
 
 
 #: The spelled address of the spec: `` at `` and later `` dot `` and a word.
@@ -283,11 +293,14 @@ def _has_address(text: str) -> bool:
     """True when the scan copy of *text* holds an ``@``, or `` at `` and
     later `` dot ``. ``at`` or ``dot`` in brackets counts as the word. A text
     or a copy over :data:`_SCAN_MAX` counts as one."""
-    scan = _scan(text)
-    if scan is None:
+    copies = _scan(text)
+    if copies is None:
         return True
-    low = " ".join(_BRACKET_WORD_RE.sub(r" \1 ", scan[1]).split())
-    return "@" in low or _SPELLED_RE.search(low) is not None
+    for _, lower in copies:
+        low = " ".join(_BRACKET_WORD_RE.sub(r" \1 ", lower).split())
+        if "@" in low or _SPELLED_RE.search(low) is not None:
+            return True
+    return False
 
 
 def _label_start(kept: str, dot: int) -> int:
@@ -361,13 +374,11 @@ def _has_link(text: str) -> bool:
     (:func:`_domain_hit`). A domain of :data:`WORD_TLDS` takes the rule of
     :func:`_word_tld`. A text or a copy over :data:`_SCAN_MAX` counts as
     one."""
-    scan = _scan(text)
-    if scan is None:
+    copies = _scan(text)
+    if copies is None:
         return True
-    kept, low = scan
-    if _SCHEME_RE.search(low) or _WWW_RE.search(low):
-        return True
-    return _domain_hit(kept)
+    return any(_SCHEME_RE.search(low) or _WWW_RE.search(low) or _domain_hit(kept)
+               for kept, low in copies)
 
 
 def _has_phone(text: str) -> bool:
@@ -375,16 +386,17 @@ def _has_phone(text: str) -> bool:
     digits, or 10 or more digits with a separator between them. A bare run
     of digits is not a phone number, and a date is never part of one. A text
     or a copy over :data:`_SCAN_MAX` counts as one."""
-    scan = _scan(text)
-    if scan is None:
+    copies = _scan(text)
+    if copies is None:
         return True
-    for m in _PHONE_RUN_RE.finditer(_DATE_RE.sub("#", scan[1])):
-        core = m.group(2)
-        digits = sum(ch.isdigit() for ch in core)
-        if m.group(1) and digits >= 8:
-            return True
-        if digits >= 10 and not core.isdigit():
-            return True
+    for _, lower in copies:
+        for m in _PHONE_RUN_RE.finditer(_DATE_RE.sub("#", lower)):
+            core = m.group(2)
+            digits = sum(ch.isdigit() for ch in core)
+            if m.group(1) and digits >= 8:
+                return True
+            if digits >= 10 and not core.isdigit():
+                return True
     return False
 
 

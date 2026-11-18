@@ -302,11 +302,15 @@ _TAIL_END = "opens or closes a block."
 
 
 def _note_body(head: str, tail: str) -> str:
-    """The note that ends with *tail*: the text of *head* from the end of the
-    note before it, or from the start, to the last copy of *tail*."""
+    """The note that ends with *tail*: the text of *head* to the last copy of
+    *tail*, from the start of its line or the end of the note before it,
+    whichever is later. A note is one line, so a lead of the member above it
+    is not part of the note (HRD-14a)."""
     end = head.rfind(tail)
-    start = head.rfind(_TAIL_END, 0, end)
-    return head[start + len(_TAIL_END) if start >= 0 else 0:end]
+    line = head.rfind("\n", 0, end) + 1
+    before = head.rfind(_TAIL_END, 0, end)
+    start = max(line, before + len(_TAIL_END) if before >= 0 else 0)
+    return head[start:end]
 
 
 def _note_fits(body: str, pasted: bool) -> bool:
