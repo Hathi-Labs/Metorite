@@ -17,6 +17,7 @@ release keeps the work.
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
+| S5 — the amber dot on a waiting chat (task 3600, rung 0, STANDARD, AGENT-SAFE) | **BUILT** 2026-11-17, branch `stu-needs-dot`, no flag. The dot on a chat row in `/chat` and the chat picker says "Needs your answer" in amber when the server marks the thread `needs_input`. It wins over the green and the blue dot. Done when a card opens in chat A, the member opens chat B, and the row of chat A shows the amber dot. The dot goes when the row closes. The side rails keep the old dot. The text of §8 that says `CHAT_DURABLE_ASKS` is off is stale: production has it on |
 | S6 — the activity of the other signed-in accounts | Spec only |
 | S7 — browser push for "needs your answer" and "finished" | The transport is BUILT and dark (WS-66 PN-1, 2026-10-25). The two chat events are not built (H-289). D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
@@ -2445,7 +2446,7 @@ HELD_R8_REDIS_URL=redis://127.0.0.1:16406/0 uv run pytest tests/unit/test_resume
 
 **What exists, dark.**
 - `chat_pending_ask` (migration 237, `orchestrator/pending_ask.py`) keeps a waiting card. The flag is `CHAT_DURABLE_ASKS`, off. With it on, the run parks after 600 s, and the row stays answerable for 168 h.
-- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`, which is empty in production. Its title says only "{agent} asked you a question".
+- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`. In production that list holds `reminders,agent_questions` (read 2026-11-16, deployed `1f482db9e`). The card shows only when `chat` is on the list. Its title says only "{agent} asked you a question".
 - The "AI waiting on you" group of My Day (`lib/shell/AiWaitingCard.tsx`) reads chats in the state `needs_input`. That state exists only with the flag on.
 - A late answer goes to `POST /agent/respond-input`, and it starts a new run. For an approval, that run asks again on a new card. With `CHAT_LATE_APPROVE_ORGS` on (S2 item 8, HRD-22), the late tap is the member's own consent instead. It approves the same card once, in the same thread, within 30 minutes.
 
