@@ -75,8 +75,8 @@ NEW_DRAFT = "new_draft"
 NEW_MAIL = "new_mail"
 
 #: The outcome of a save.
-CREATED, UPDATED, REPLACED, KEPT_EDITED, DELETE_FAILED = (
-    "created", "updated", "replaced", "kept_edited", "delete_failed")
+CREATED, UPDATED, REPLACED, KEPT_EDITED, KEPT_FILES, DELETE_FAILED = (
+    "created", "updated", "replaced", "kept_edited", "kept_files", "delete_failed")
 
 
 # ── The flag ─────────────────────────────────────────────────────────────────
@@ -266,12 +266,6 @@ def _live_marker(rec: _Record, act: str, to: Iterable[Any] | None) -> str:
     return did if any(d.draft_id == did for d in rec.drafts) else ""
 
 
-def _takes(rec: _Record, draft: ChatDraft, act: str, to: Any, subject: Any) -> bool:
-    """True when a save of *act* to *to* with *subject* may take *draft*: the
-    same email, or a live marker of the same act and To set that names it."""
-    return same_mail(draft, to, subject) or _live_marker(rec, act, to) == draft.draft_id
-
-
 # ── Before the card ──────────────────────────────────────────────────────────
 
 async def plan_save(
@@ -394,29 +388,36 @@ async def save_one_draft(
     and answers the stored draft. *read* answers a stored draft, or None.
     *delete* moves a draft to the trash (the delete path of a message).
 
-    With the id, the save checks it again against the record and the match
-    (:func:`_takes`). A draft that is gone gives a new draft. A draft that
-    the member edited stays, and the save makes a new draft (``kept_edited``).
-    When the save or the earlier draft holds files, the save makes a new
-    draft and then deletes the old one: an update adds files and never drops
-    one. Else it updates the draft in place."""
+    With the id, the save checks that the member's record still holds it.
+    The card showed the promise, so the save honours the id even when the
+    member changed the subject or unticked a To on the card, or the marker
+    ran out. Only the state of the draft can stop it (:func:`_state`):
+
+    * ``gone``: the save makes a new draft (``created``).
+    * ``edited``: the member edited it. It stays, and the save makes a new
+      draft (``kept_edited``).
+    * ``files``: it holds files. An update never drops a file, and a delete
+      loses a file for good, so it stays, and the save makes a new draft
+      (``kept_files``).
+    * ``ok``: a save with files makes a new draft and then deletes the old
+      one (``replaced``). Any other save updates it in place (``updated``)."""
     account_id = str(payload.get("account_id") or "")
     org_id = _org(org)
     on = card_revise_on(org_id) and _parts(org_id, thread, account_id, member)
     if not on:
         return SavedDraft(dict(await put(payload) or {}))
-    target = await _known(str(replaces or "").strip(), org_id, thread, account_id, member,
-                          act=act, to=payload.get("to"), subject=payload.get("subject"))
+    target = await _known(str(replaces or "").strip(), org_id, thread, account_id, member)
     outcome, res = CREATED, None
     files = _has_files(payload)
     if target:
-        row = await read(target.draft_id)
-        state = _state(row, target)
+        state = _state(await read(target.draft_id), target)
         if state == GONE:
             _log.info("card_revise.earlier_draft_gone")
         elif state == EDITED:
             outcome = KEPT_EDITED
-        elif files or target.files or row.get("has_attachments") or row.get("attachments"):
+        elif state == FILES:
+            outcome = KEPT_FILES
+        elif files:
             outcome = REPLACED
         else:
             try:
@@ -438,16 +439,18 @@ async def save_one_draft(
     await note_draft(thread=thread, account_id=account_id, member=member,
                      draft_id=str(res.get("id") or earlier), to=payload.get("to"),
                      subject=payload.get("subject"), digest=draft_digest(res),
-                     replaces="" if outcome in (KEPT_EDITED, DELETE_FAILED) else earlier,
+                     replaces="" if outcome in (*_KEPT, DELETE_FAILED) else earlier,
                      act=act, files=files, org=org_id)
-    if outcome == KEPT_EDITED:
-        # The member's own version stays in Drafts, and never a target again.
+    if outcome in _KEPT:
+        # The earlier draft stays in Drafts as it is, and is never a target again.
         await _forget(earlier, org_id, thread, account_id, member)
     return SavedDraft(res, outcome, earlier)
 
 
 #: The state of an earlier draft before a save takes its place.
-OK, GONE, EDITED = "ok", "gone", "edited"
+OK, GONE, EDITED, FILES = "ok", "gone", "edited", "files"
+#: The outcomes where the earlier draft stays as it is.
+_KEPT = (KEPT_EDITED, KEPT_FILES)
 
 
 def _has_files(payload: dict[str, Any]) -> bool:
@@ -456,11 +459,14 @@ def _has_files(payload: dict[str, Any]) -> bool:
 
 def _state(row: Any, target: ChatDraft) -> str:
     """``gone`` when *row* is no draft now, ``edited`` when its digest is not
-    the digest that the chat saved, else ``ok``."""
+    the digest that the chat saved, ``files`` when it holds a file (the
+    record says so, or the stored draft: a file added by hand), else ``ok``."""
     if not isinstance(row, dict) or str(row.get("folder") or "").lower() not in _DRAFT_FOLDERS:
         return GONE
     if not target.digest or draft_digest(row) != target.digest:
         return EDITED
+    if target.files or row.get("has_attachments") or row.get("attachments"):
+        return FILES
     return OK
 
 
@@ -469,9 +475,9 @@ async def target_state(
     read: Callable[[str], Awaitable[Any]], org: object = None,
 ) -> str:
     """The state of the draft that :func:`plan_save` named, BEFORE the card:
-    ``ok``, ``gone`` or ``edited``. So a card never promises to replace, or
-    to cancel the send of, a draft that the member edited. A draft that the
-    record does not hold reads as ``gone``."""
+    ``ok``, ``gone``, ``edited`` or ``files``. So a card never promises to
+    replace, or to cancel the send of, a draft that the member edited or that
+    holds files. A draft that the record does not hold reads as ``gone``."""
     org_id = _org(org)
     try:
         rec = await _read(org_id, thread, account_id, member)
@@ -489,11 +495,10 @@ async def target_state(
 
 
 async def _known(
-    did: str, org: str, thread: str, account_id: str, member: str, *,
-    act: str, to: Any, subject: Any,
+    did: str, org: str, thread: str, account_id: str, member: str,
 ) -> ChatDraft | None:
-    """The record entry of *did* when this save may take it (:func:`_takes`),
-    else None. A Redis fault gives None."""
+    """The record entry of *did*, the draft that the card named, or None when
+    the member's record does not hold it. A Redis fault gives None."""
     if not did:
         return None
     try:
@@ -501,8 +506,7 @@ async def _known(
     except Exception as exc:
         _log.warning("card_revise.record_read_failed", error=type(exc).__name__)
         return None
-    draft = next((d for d in rec.drafts if d.draft_id == did), None)
-    return draft if draft is not None and _takes(rec, draft, act, to, subject) else None
+    return next((d for d in rec.drafts if d.draft_id == did), None)
 
 
 async def _forget(did: str, org: str, thread: str, account_id: str, member: str) -> None:

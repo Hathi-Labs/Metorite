@@ -554,11 +554,11 @@ async def test_a_marker_never_takes_a_draft_for_other_people(
     assert cr.REPLACES_LINE not in card[-1]["context"]
 
 
-async def test_the_save_checks_the_match_again(
+async def test_the_save_honours_the_draft_that_the_card_named(
     monkeypatch: pytest.MonkeyPatch, redis: _Redis,
 ) -> None:
-    """A card record that names a draft of other people, with no marker,
-    replaces nothing: ``save_one_draft`` checks the match again."""
+    """Round 4, item 1: the card showed the promise, so the save takes the
+    named draft even when the answered To differs. Only its state stops it."""
     _flag(monkeypatch, ORG)
     box = _Mailbox()
     first = await box.put("/email/drafts", {"account_id": BOX, "to": RAVI,
@@ -573,12 +573,12 @@ async def test_the_save_checks_the_match_again(
         return box._row(did)
 
     saved = await cr.save_one_draft(
-        put, {"account_id": BOX, "to": ["lee@contoso.test"], "subject": "Rates",
+        put, {"account_id": BOX, "to": ["lee@contoso.test"], "subject": "Other",
               "body": "Hi Lee."},
         replaces=first["id"], thread=THREAD, member=MEMBER, act="new_mail",
         read=read, delete=box.delete)
-    assert saved.outcome == cr.CREATED
-    assert box.drafts[first["id"]]["body"] == "Hi."
+    assert saved.outcome == cr.UPDATED and len(box.drafts) == 1
+    assert box.drafts[first["id"]]["body"] == "Hi Lee."
 
 
 async def test_the_card_names_the_draft_and_the_send_it_cancels(
@@ -803,13 +803,13 @@ async def _file_save(box: _Mailbox, replaces: str, files: list[str], body: str) 
 async def test_a_save_with_files_makes_a_new_draft_and_deletes_the_old(
     redis: _Redis, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No provider can drop a file of a draft (Gmail and Outlook add the
-    files of an update). So the files of the one draft are the ticked files."""
+    """No provider can drop a file of a draft, so a save that carries files
+    over a draft with none makes a new draft, then deletes the old one."""
     _flag(monkeypatch, ORG)
     box = _Mailbox()
-    first = await _file_save(box, "", ["a.pdf", "b.pdf"], "Hi.")
+    first = await _file_save(box, "", [], "Hi.")
     did = first.result["id"]
-    second = await _file_save(box, did, ["a.pdf"], "Hi 2.")  # b.pdf unticked
+    second = await _file_save(box, did, ["a.pdf"], "Hi 2.")
     assert second.outcome == cr.REPLACED and second.earlier == did
     assert box.deleted == [did]
     [only] = box.drafts.values()
@@ -823,7 +823,7 @@ async def test_a_failed_delete_keeps_both_and_says_so(
 ) -> None:
     _flag(monkeypatch, ORG)
     box = _Mailbox()
-    first = await _file_save(box, "", ["a.pdf"], "Hi.")
+    first = await _file_save(box, "", [], "Hi.")
 
     async def broken(_path: str) -> Any:
         raise RuntimeError("provider down")
@@ -1111,26 +1111,28 @@ async def test_a_save_on_the_form_card_takes_the_place_and_cancels(
     assert tool.posts == ["/email/drafts/scheduled/s1/cancel"]
 
 
-async def test_an_earlier_draft_with_files_is_replaced_never_updated(
+async def test_an_earlier_draft_with_files_is_never_updated_or_deleted(
     redis: _Redis, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Item 2: an update adds files and never drops one (Outlook PATCH). So
-    a save with no files over a draft with files makes a new draft."""
+    """Round 4, item 2: an update never drops a file, and a delete loses a
+    file for good. So a draft with files stays, with or without files in the
+    new save, and the save makes a new draft (``kept_files``)."""
     _flag(monkeypatch, ORG)
     box = _Mailbox()
     first = await _file_save(box, "", ["a.pdf"], "Hi.")
     did = first.result["id"]
     second = await _file_save(box, did, [], "Hi 2.")
-    assert second.outcome == cr.REPLACED
-    [only] = box.drafts.values()
-    assert only["files"] == [] and only["body"] == "Hi 2."
+    assert second.outcome == cr.KEPT_FILES
+    assert box.deleted == [] and box.drafts[did]["files"] == ["a.pdf"]
+    assert box.drafts[did]["body"] == "Hi."
+    assert len(box.drafts) == 2
 
 
-async def test_a_draft_that_the_provider_says_has_files_is_replaced(
+async def test_a_file_added_by_hand_keeps_the_draft(
     redis: _Redis, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The record has no files, but the stored draft has some (the member
-    added one): the read says so, and the save never updates it."""
+    """(a) The record has no files, but the stored draft has one: the member
+    added it in the Email app. The save never deletes or updates it."""
     _flag(monkeypatch, ORG)
     box = _Mailbox()
     first = await _file_save(box, "", [], "Hi.")
@@ -1146,7 +1148,25 @@ async def test_a_draft_that_the_provider_says_has_files_is_replaced(
         put, {"account_id": BOX, "to": RAVI, "subject": "Rates", "body": "Hi 2."},
         replaces=did, thread=THREAD, member=MEMBER, act="new_mail", read=read,
         delete=box.delete)
-    assert saved.outcome == cr.REPLACED and box.deleted == [did]
+    assert saved.outcome == cr.KEPT_FILES and box.deleted == []
+    assert box.drafts[did]["body"] == "Hi."
+
+
+async def test_a_redraft_after_a_form_save_with_a_file_keeps_that_draft(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards, redis: _Redis,
+) -> None:
+    """(b) The chat saved D with a file through the form card. A later
+    ``edit_draft`` redraft to the same To and subject carries no file. The
+    card says that D stays, and the answer says so too."""
+    _flag(monkeypatch, ORG)
+    card.answers.append(True)
+    await _stored_draft(tool, "d9", files=["rates.pdf"])
+    out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert card[-1]["context"].startswith("The earlier draft has files, so it stays.")
+    assert cr.REPLACES_LINE not in card[-1]["context"]
+    assert tool.deleted == [] and tool.drafts["d9"]["files"] == ["rates.pdf"]
+    assert "The earlier draft d9 has files, so it stays in Drafts" in out
+    assert len(tool.creates()) == 1
 
 
 async def test_a_cc_added_by_hand_is_an_edit(
@@ -1329,3 +1349,87 @@ async def test_the_held_form_card_shows_the_replace_and_cancel_lines(
         "If you press Save draft, this replaces the draft saved earlier in this chat.",
         "If you press Save draft, this cancels the send scheduled for "
         "2026-11-19T09:00:00+05:30."]
+
+
+# ── 10. Fix round 4 ─────────────────────────────────────────────────────────
+
+
+async def _form_round(
+    gw_drafts: Any, answer: str, *, before_act: Any = None,
+) -> dict[str, Any]:
+    await gw_drafts.seed([F.KNOWN], "Rates", "Old text.")
+    card = await NM._card(card_thread_id=CHAT, replaces=D9, cc=[])
+    if before_act is not None:
+        before_act()
+    return await NM._act(card["card_id"], answer)
+
+
+async def test_a_changed_subject_on_the_form_still_takes_the_named_draft(
+    gw_drafts: Any,
+) -> None:
+    """Item 1: the member changed the subject on the card, which promised a
+    replace. The save honours the named draft."""
+    out = await _form_round(gw_drafts, NM._answer(action="save", subject="New rates",
+                                                  body="New text.", cc=()))
+    [saved] = gw_drafts.saves
+    assert saved.draft_id == D9 and saved.subject == "New rates"
+    assert out["replace_outcome"] == "updated"
+
+
+async def test_an_unticked_to_on_the_form_still_takes_the_named_draft(
+    gw_drafts: Any,
+) -> None:
+    await gw_drafts.seed([F.KNOWN, F.COLLEAGUE], "Rates", "Old text.")
+    card = await NM._card(card_thread_id=CHAT, replaces=D9, to=[F.KNOWN, F.COLLEAGUE],
+                          cc=[])
+    out = await NM._act(card["card_id"], NM._answer(action="save", to=(F.KNOWN,), cc=(),
+                                                     body="New text."))
+    [saved] = gw_drafts.saves
+    assert saved.draft_id == D9 and saved.to == [F.KNOWN]
+    assert out["replace_outcome"] == "updated"
+
+
+async def test_an_expired_marker_still_takes_the_named_draft(
+    gw_drafts: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The plan named D by the marker. The marker runs out before the act,
+    and the save still honours the card's promise."""
+    now = cr.time.time()
+    out = await _form_round(
+        gw_drafts, NM._answer(action="save", subject="Other", body="New.", cc=()),
+        before_act=lambda: monkeypatch.setattr(cr.time, "time",
+                                               lambda: now + cr.MARKER_TTL_S + 1))
+    [saved] = gw_drafts.saves
+    assert saved.draft_id == D9 and out["replace_outcome"] == "updated"
+
+
+async def test_a_promise_that_the_save_could_not_keep_is_said_plainly(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox,
+) -> None:
+    """Item 1: the card promised a replace and a cancel, and the save made a
+    new draft. The answer names the draft and its send, which stay."""
+    plan = agents._ChatPlan("d9", [{"id": "s1", "draft_id": "d9", "status": "queued",
+                                   "send_at": "2026-11-19T09:00:00+05:30"}])
+    out = await agents._replace_tail("created", "", plan)
+    assert out == (" This is a new draft. The earlier draft d9 and its send scheduled "
+                   "for 2026-11-19T09:00:00+05:30 stay as they were. Tell the member.")
+    assert tool.posts == []
+
+
+async def test_a_replace_never_claims_one_copy_as_sure(tool: _Mailbox) -> None:
+    """Item 3: the delete of a message logs a provider fault and answers OK,
+    so the answer of a replace asks the member to look."""
+    out = await agents._replace_tail("replaced", "d9", agents._ChatPlan("d9"))
+    assert "Drafts keeps one copy" not in out
+    assert "The earlier draft d9 was deleted" in out
+    assert "If the Drafts list still shows two, tell the member." in out
+
+
+async def test_a_failed_delete_says_what_the_cancel_did(tool: _Mailbox, monkeypatch) -> None:
+    """Item 4: the answer of a failed delete carries the cancel's own words."""
+    async def cancel(_pending: Any) -> str:
+        return " 1 scheduled send(s) could not be cancelled."
+
+    monkeypatch.setattr(agents, "_cancel_schedules", cancel)
+    out = await agents._replace_tail("delete_failed", "d9", agents._ChatPlan("d9", [{}]))
+    assert out.endswith("Tell the member. 1 scheduled send(s) could not be cancelled.")
