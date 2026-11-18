@@ -209,8 +209,11 @@ not write it. WS-17 EM-G11 owns that seam (`email_app_master_plan.md`
 §12.3.13.8). `integrations_console.md` §3.8.7 rule d records the same gap for
 MCP.
 
-**Rung 1 does not write the mark.** An API answer is framed as untrusted text,
-and its hidden characters go. That is what an MCP answer gets today.
+**The owner decides the mark (D-API-9), because it is a security trade-off.**
+The recommendation is that rung 1 writes no mark. Then an API answer gets what
+an MCP answer gets today: an untrusted frame, and its hidden characters go.
+Rung 1 builds dark either way. The flip of `API_CONNECTIONS_ORGS` waits for
+the answer.
 
 **Why.**
 
@@ -417,4 +420,4 @@ Each rung ends in a demo on production (D211).
 | **D-API-6** | Retire the discovery call of "Add API" and the plugin store (IN-6, Q2)? | Yes, when T2 lands. Until then the tile says that the chat cannot use it |
 | **D-API-7** | The data notice: an API's data reaches the chat's model vendor | The same notice as MCP and LNK-Q2 |
 | **D-API-8** | The flag | `API_CONNECTIONS_ORGS`, to all orgs after the rung 1 demo |
-| **D-API-9** | Does an API answer mark the chat as untrusted? (§2.5) | No, the same as an MCP answer today. Decide both kinds together. With a mark, each later read asks a card |
+| **D-API-9** | Does an API answer mark the chat as untrusted? A security trade-off (§2.5) | No, the same as an MCP answer today. Decide both kinds together. **Cost of a mark:** each later MCP or API read in that chat asks a card (task 3714). **Open risk with no mark:** text in an answer, such as an invoice note, can try to steer another tool of the chat. Rung 1 builds dark either way, and the flag flip waits for this answer |
