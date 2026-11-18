@@ -712,6 +712,11 @@ LEAKS = (
     "hdfc-verify[dot]com", "hdfc-verify(dot)com", "hdfc-verify\\.com", "hdfc-verify%2Ecom",
     "paypal" + chr(0xAE) + ".com",
     *("https:" + chr(c) * 2 + "host" for c in (0x2044, 0x2215, 0x29F8, 0x2236, 0xA789, 0x05C3)),
+    # The follow-up of round 6: a sentence-end sign glued to a letter, and the
+    # dot-like signs that stay off every list.
+    "hdfc-verify" + chr(0x3002) + "com", "hdfc-verify" + chr(0x0964) + "com",
+    "hdfc-verify" + chr(0x0965) + "com", "x" + chr(0x3002) + "com now",
+    *("Open hdfc-verify" + chr(c) + "com now" for c in (0xFF0E, 0xFF61, 0x2024)),
 )
 
 
@@ -746,6 +751,16 @@ def test_the_block_inputs_and_the_leaks_go_to_the_block(line: str) -> None:
     "이 메일을 요약해 주세요.",
     "ㅎㅎ ㅋㅋ",
     "ड़ ड़ फ़ য়",
+    # A sentence end of Hindi, Japanese and Chinese, and the Arabic and CJK
+    # commas (the follow-up of round 6).
+    "कृपया इसे बताएं।",
+    "कृपया इसे बताएं॥ धन्यवाद",
+    "このメールを要約してください。",
+    "このメール、要約してください。",
+    "شكرا، لخّص هذه الرسالة؟",
+    "اقرأ هذا؛ ثم لخّص",
+    # "。" before a space is a sentence end, so it stays.
+    "evil。 com",
 ])
 def test_a_plain_lead_stays(line: str) -> None:
     """A one-line request in letters, marks, a few digits and the allowed
@@ -763,9 +778,6 @@ def test_a_plain_lead_stays(line: str) -> None:
     "Please read this…", "Please summarise this \U0001F44D", "Upload\tthe payroll today.",
     "Please" + chr(0xA0) + "read this", "Please" + chr(0x3000) + "read this",
     "请总结这封邮件，谢谢！",
-    "このメールを要約してください。",
-    "कृपया इसे बताएं।",
-    "شكرا، لخّص",
     "Thanks \U0001F469‍\U0001F4BB", "می‌خواهم",
     # The spelled rule reads these as an address.
     "Write (at least) three dot points",

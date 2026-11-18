@@ -140,14 +140,21 @@ def _upload_note(paths: tuple[str, ...]) -> str:
 # -- the lead rules (step 6) ------------------------------------------------------
 
 #: The punctuation that a lead may hold anywhere: the comma, ``!``, ``?``,
-#: ``;``, the straight and curly quotes, the brackets, the hyphen-minus, and
-#: the en and em dashes. Each other sign of category P or S sends the lead to
-#: the block.
+#: ``;``, the straight and curly quotes, the brackets, the hyphen-minus, the
+#: en and em dashes, the ideographic comma (U+3001), and the Arabic comma,
+#: semicolon and question mark (U+060C, U+061B, U+061F). No browser reads one
+#: of them as a dot or a slash. Each other sign of category P or S sends the
+#: lead to the block.
 _PUNCT = frozenset(",!?;'\"()-" + "".join(map(chr, (0x2018, 0x2019, 0x201C, 0x201D,
-                                                     0x2013, 0x2014))))
+                                                     0x2013, 0x2014, 0x3001, 0x060C,
+                                                     0x061B, 0x061F))))
 #: The punctuation that a lead may hold only before a space or at its end: a
-#: sentence period and a colon. So ``acme.com`` and ``https:`` + ``//`` fail.
-_END_PUNCT = frozenset(".:")
+#: sentence period, a colon, the Devanagari danda and double danda (U+0964,
+#: U+0965) and the ideographic full stop (U+3002). So ``acme.com``,
+#: ``https:`` + ``//`` and ``evil`` + U+3002 + ``com`` fail. No other sign
+#: that looks like a dot is on a list: U+FF0E, U+FF61 and U+2024 go to the
+#: block.
+_END_PUNCT = frozenset(".:" + "".join(map(chr, (0x0964, 0x0965, 0x3002))))
 #: Two letters (category Lo) that look like a dot: the Latin sinological dot
 #: (U+A78F) and the Canadian syllabics final middle dot (U+1427). A lead that
 #: holds one goes to the block. Other letters that look like a sign are a
