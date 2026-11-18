@@ -8480,6 +8480,40 @@ Status: a second builder takes it, in `crm_tools.py` only.
 `q` on a module (CRM-Q34-7) is Rung 1, dark behind a new flag. One filter
 builder for a module list and a module total (CRM-Q34-4) is Rung 1 too.
 
+**CRM-Q34-10 · Two group fields, and pages of groups.**
+Status: built 2026-11-18 on `crm-q34-10-mt-a22ac1fb` (task 3727), not merged.
+Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
+
+- **Need.** A member asked for each site by month, over several hundred sites.
+  The total took only one field as its group, and it kept only the 50
+  largest groups.
+- **Outcome.** A module total takes `group_field2`, a second group field. At
+  most one of the two fields is a date, and `bucket` goes to it. The route
+  pages the groups in SQL with `group_page` and `group_page_size` (1 to 200,
+  default 50). The answer gives `group_count`, `group_page` and
+  `group_pages`.
+- **Scope.**
+  - The order of a page is the value, largest first, then each key. A key
+    ends the order, so two pages never share a group or skip one.
+  - `total` and `records` stay the answer over every group. A group with no
+    value in a field is its own group, with the label "(none)".
+  - The filters are the ones of the module total of today, through one
+    helper (`aggregate._module_filters`).
+  - A core entity, two date fields, one field twice, a bucket on a value
+    field and a split each give a 422.
+  - Off the list, `group_field2` and a `group_page` past 1 give a 422. It
+    names the way without them: group by one field, and filter by the other.
+    Every other call gives the answer of today.
+  - The tool `crm_aggregate` takes `group_field2`. Its `page` is the page of
+    the route when it sends `group_field2`, or a page past 1 of a module group.
+- **Limits.** A paged answer has no findings of one day. Its `other` is None,
+  and its `omitted` counts the groups that are not on the page.
+- **Fences.** `tests/unit/test_crm_two_group.py` (each refusal, the SQL of one
+  group field, the total order and the tool text) and
+  `tests/unit/test_crm_two_group_r8.py` (each group of each page against an
+  independent `GROUP BY`, the list count, org B, the base answer byte for
+  byte, the 503, and 30,000 records in 200 groups).
+
 ## 19. The daily-use UX (2026-10-12)
 
 **Bottom line.** The CRM reads its data correctly, but a sales rep cannot yet

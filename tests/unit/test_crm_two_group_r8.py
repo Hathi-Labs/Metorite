@@ -250,7 +250,26 @@ async def test_org_b_never_shows(invoices, app_engine) -> None:
 #: The answer of a one-field call, recorded on the base code (origin/main
 #: cc9c0a584, run on 2026-11-18 with the base aggregate.py and field_sql.py
 #: put back in place). This slice must not change one byte of it.
-_BASE_ONE_FIELD = None
+_BASE_ONE_FIELD = [
+    (
+        '{"entity":"module:Invoices","measure":"sum","group_by":null,"group_field":"Statu'
+        's","field":"Amount","field_type":"currency","field_label":"Amount","group_field_'
+        'label":"Status","keys":{},"group_field_type":"select","bucket":null,"groups":[{"'
+        'key":"Due","label":"Due","value":24164.0},{"key":"Paid","label":"Paid","value":1'
+        '2013.0}],"total":36177.0,"other":0.0,"omitted":0,"zone":"UTC","values":720,"reco'
+        'rds":720}'
+    ),
+    (
+        '{"entity":"module:Invoices","measure":"count","group_by":null,"group_field":"Inv'
+        'oice_Date","field":null,"field_type":null,"field_label":null,"group_field_label"'
+        ':"Invoice Date","keys":{},"group_field_type":"date","bucket":"month","groups":[{'
+        '"key":"2026-07","label":"2026-07","value":281.0},{"key":"2026-08","label":"2026-'
+        '08","value":240.0},{"key":"2026-09","label":"2026-09","value":240.0},{"key":"202'
+        '6-10","label":"2026-10","value":240.0},{"key":null,"label":"(none)","value":1.0}'
+        '],"total":1002.0,"other":0.0,"omitted":0,"zone":"UTC","values":null,"records":10'
+        '02}'
+    ),
+]
 
 
 async def test_off_the_list_a_second_field_is_a_422(invoices, app_engine, monkeypatch) -> None:
@@ -274,7 +293,6 @@ async def test_a_one_field_call_is_the_answer_of_the_base_code(
     month = await _get(invoices, a, entity="module:Invoices", group_field="Invoice_Date",
                        bucket="month")
     assert month.status_code == 200, month.text
-    print('BASEJSON', json.dumps([res.text, month.text]))
     assert [res.text, month.text] == _BASE_ONE_FIELD
 
 

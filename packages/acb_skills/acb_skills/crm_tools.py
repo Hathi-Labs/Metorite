@@ -95,7 +95,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from acb_common.paging import page_line, paged, prefix_page
+from acb_common.paging import Page, page_line, paged, prefix_page
 from acb_common.tool_refusals import (
     GatewayRefusal,
     RefusalVoice,
@@ -1981,6 +1981,7 @@ async def crm_aggregate(
     field: str | None = None,
     group_field: str | None = None,
     bucket: str | None = None,
+    group_field2: str | None = None,
     q: str | None = None,
     status: str | None = None,
     owner: str | None = None,
@@ -2005,13 +2006,12 @@ async def crm_aggregate(
     'organizations' or 'module:<api_name>' (crm_list_modules). measure is
     'count', 'sum_amount' or 'weighted' (deals: amount times the
     effective probability, open and ongoing only), or 'sum', 'avg', 'min' or
-    'max' of the number field named by field. The group is optional: with no
-    group_by and no group_field you get one total over every record that
-    the filters match. Or give one of them. group_by is 'status', 'owner', 'pipeline', 'source',
+    'max' of the number field named by field. With no group_by and no
+    group_field you get one total over every matching record. group_by is 'status', 'owner', 'pipeline', 'source',
     'created_month', 'updated_month' or 'close_month' (a module: 'owner',
     'created_month', 'updated_month'). group_field is a picklist, boolean,
     lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
-    A text field cannot group. Field keys come from crm_list_fields. A core
+    On a module, group_field2 adds a second one, at most one a date. Field keys come from crm_list_fields. A core
     entity takes the filters of crm_list_records. A module takes field_filters: {key: value}, or
     {'key.from': date, 'key.to': date} for a date field, or
     {'key.from': N, 'key.to': M} for a number field. Both ends count, and
@@ -2040,6 +2040,10 @@ async def crm_aggregate(
         entity=slug, group_by=group_by, measure=measure, field=field,
         group_field=group_field, bucket=bucket,
     )
+    if slug.startswith(MODULE_PREFIX) and group_field and (group_field2 or _page(page) > 1):
+        # CRM-Q34-10: the route pages the groups, so page N is its page N.
+        params.update(group_field2=group_field2 or None, group_page=_page(page),
+                      group_page_size=MAX_ROWS)
     if fields:
         # CRM-Q25e part 2: one statement reads each field. The route checks
         # each key and the count (2 to 5).
@@ -2135,7 +2139,10 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         return "\n".join([*first, *lines]) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
-    shown = _page_of(groups, page, "groups")
+    # CRM-Q34-10: a second group field, and a page that the route cut.
+    by += f" and {data['group_field2_label']}" if data.get("group_field2_label") else ""
+    paged_by_route = data.get("group_count") is not None
+    shown = _route_page(groups, data) if paged_by_route else _page_of(groups, page, "groups")
     empty = await _empty_groups(slug, params, data, f"{plural}, {what} by {by}",
                                 (field or data.get("field"), split), first,
                                 [*filters, *mine], box)
@@ -2151,7 +2158,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         lines.append(display)
     if shown.line:
         lines.append(shown.line)
-    omitted = int(data.get("omitted") or 0)
+    omitted = 0 if paged_by_route else int(data.get("omitted") or 0)
     if omitted:
         # Past the route's 50 largest groups. The total counts them. A split
         # names each field (CRM-Q25e).
@@ -2167,6 +2174,24 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     lines.extend(await _hint_lines(slug, data, overlay))
     lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
+
+
+def _route_page(groups: list[Any], data: dict[str, Any]) -> Page:
+    """CRM-Q34-10: the page that the route cut, each group named
+    ``<label> · <label2>``, and one line with the page and the count of
+    every group."""
+    groups = [{**g, "label": f"{g['label']} · {g['label2']}"} if "label2" in g else g
+              for g in groups]
+    count, page = int(data.get("group_count") or 0), int(data.get("group_page") or 1)
+    pages = int(data.get("group_pages") or 0)
+    start = (page - 1) * MAX_ROWS
+    if not groups:
+        line = f"Nothing on page {page}. The last page is {pages}." if count else ""
+    else:
+        line = f"Groups {start + 1}-{start + len(groups)} of {count}, page {page} of {pages}."
+        if page < pages:
+            line += f" Ask for page {page + 1} for more."
+    return Page(groups, count, start, line if pages > 1 or not groups else "")
 
 
 async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any], lead: str,
