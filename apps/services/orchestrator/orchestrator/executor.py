@@ -2313,35 +2313,46 @@ def _apply_turn_pack_items(agents: list[Any], tier_run: Any) -> None:
 
 
 def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
-    """*agents*, with the first one on a per-run view that logs the tools of
-    each model request (WS-67 OA-8f, ``executor.request_tools``): the count
-    actually sent and a short hash of the names, with the tools of a context
-    provider and of an MCP server. Only the orchestrator, and never raises.
-    The view comes from ``agent_with_providers``, as the loader's does.
+    """*agents*, with the first one on the per-run views of the stream run.
+    Never raises. Each view comes from ``agent_with_providers``, as the
+    loader's does.
+
+    WS-67 OA-8f: for the orchestrator only, a view that logs the tools of
+    each model request (``executor.request_tools``): the count actually sent
+    and a short hash of the names, with the tools of a context provider and
+    of an MCP server.
 
     HRD-1: the next view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
     the one answer to a call of a tool that the run did not load, through the
     one hook :func:`_unknown_tool_view`. It goes after each seam of
     ``_inject_agent_tools``, so its chat middleware runs inside the hold,
     steer and number-check middleware, and rewrites the messages that they
-    pass on. Only the tier policy view comes later."""
-    if agent_name != _PACK_AGENT or not agents:
+    pass on. Only the tier policy view comes later.
+
+    HRD-1c: the stream run of EVERY agent gets that view, not only the
+    orchestrator. A member chats with the email assistant or the Projects
+    assistant directly, or names an agent in a room, and the member can quote
+    the model's text from any agent. The stream run is never a step: its one
+    caller is the chat route of the gateway, which always names a chat. An
+    agent that is not the orchestrator holds no loader, so its answer names
+    only a tool of its own request and never loads a pack."""
+    if not agents:
         return agents
-    try:
-        from agent_framework import Agent
+    if agent_name == _PACK_AGENT:
+        try:
+            from agent_framework import Agent
 
-        if not isinstance(agents[0], Agent):
-            return agents
-        from acb_skills.tool_guard import LogRequestToolsProvider
+            if isinstance(agents[0], Agent):
+                from acb_skills.tool_guard import LogRequestToolsProvider
 
-        from orchestrator._native_run_context import agent_with_providers
+                from orchestrator._native_run_context import agent_with_providers
 
-        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
-        # HRD-1: the answer to an unknown tool name, last, as before HRD-1b.
-        agents = _unknown_tool_view(agents, step=False)
-    except Exception as exc:  # a log never costs the turn
-        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
-    return agents
+                agents[0] = agent_with_providers(
+                    agents[0], [LogRequestToolsProvider(agent_name)])
+        except Exception as exc:  # a log never costs the turn
+            _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    # HRD-1 and HRD-1c: the answer to an unknown tool name, last, for each agent.
+    return _unknown_tool_view(agents, step=False)
 
 
 def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
@@ -2349,7 +2360,7 @@ def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
     ``acb_skills.unknown_tool.UnknownToolProvider`` (HRD-1, HRD-1b).
 
     The ONE hook of the answer to a call of an unknown tool name. The stream
-    run of the orchestrator (:func:`_log_request_tools_view`) and each batch
+    run of each agent (:func:`_log_request_tools_view`, HRD-1c) and each batch
     run (:func:`_assemble_batch_agents`) call it. A delegated agent, a worker
     and a self-anneal retry run through the batch run, so they get it there.
     The model then reads the HRD-1 text, and never MAF's own text. *step* is
