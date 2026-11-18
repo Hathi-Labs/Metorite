@@ -6364,14 +6364,21 @@ The owner answered the question "Should I plan the sandbox build by milestones, 
 "Go ahead with your recommendations. Start with all of the accounts since all of our customers are pilots. All of them can test out. I hope you've taken proper consideration of the architecture to be the most robust possible when it comes down to this."
 ```
 
-1. **Every org.** SBX-9 and gate SBX-G1 change from `tools:<Fracktal>` to `tools:*`. All orgs are beta customers (owner rule, 2026-11-18). D179 holds the same rule for Studio.
-2. **No home-server pilot.** D187 decision 5 keeps member data with the hosting provider that processes it today. The home server is a residential PC that also runs CI and the agent lanes. So no customer code and no customer data runs there. The first production run is on the dedicated gVisor box of `agent_sandbox.md` §4.6.
-3. **D85 stands.** This decision does not lift D85. It opens no owner gate. SBX-G1, SBX-G9, SBX-G10, SBX-G11 and WS43-G1 to WS43-G5 stay with the owner.
-4. **The order of work.** `agent_sandbox.md` §0c plans milestones M1 to M6 backward from SBX-9 (D211). M6 runs the HathiLabs org on the real box first. That run is verification. `tools:*` follows the same day. Rung 6 of D224 stays rung 6.
-5. **Two new gaps.** Gap A: no switch turns off one org under `tools:*`. SBX-6 adds `user_tool_disabled_orgs`. Gap B: `user_tool_max_total` of 1 lets one run block every org. SBX-15 sizes it from the box and adds a fair share.
-6. **`tools` is not yet a scope target.** `tools:*` parses only when `MAF_CODING_TARGETS` holds `tools`. An early entry turns every target off. SBX-4 adds the target, and fence SBX-F24 guards the order.
+Later the same day, in the same chat, the owner wrote:
 
-Fence: SBX-F24 of `agent_sandbox.md` §0c, advisory until SBX-6 and SBX-9 build it. `tests/unit/test_decision_ids.py` fails when two D227 entries merge. **Re-check this number at merge.** On 2026-11-19, main held D225 at most, and open PR 2585 holds D226. The search read PR titles and bodies only, so a branch with D227 in a diff only was not seen.
+```text
+"with the orchestrator for the entire CI/CD session running separately, you should prioritize getting the sandbox plan done because it will greatly improve the functionality of the chat, right? Ensure that this is also prioritized in today's build and is finished by morning, and do whatever is needed to get it live and working."
+```
+
+1. **Every org.** SBX-9 and gate SBX-G1 change from `tools:<Fracktal>` to `tools:*`. The owner wrote "all of our customers are pilots", so every org is a beta org. D179 holds the same stance for Studio. The owner's words replace ring 1 of `engineering_practice.md` §2 for this target.
+2. **No home-server pilot.** The agent reads the choice of the owner as this withdrawal, and asks the owner to confirm it on task 3786. The reason is D187 decision 5: member data stays with the hosting provider that processes it today. The home server is a residential PC that also runs CI and the agent lanes. So no customer code and no customer data runs there. The first production run is on the dedicated gVisor box of `agent_sandbox.md` §4.6.
+3. **D85 stands.** This decision does not lift D85. It opens no owner gate. SBX-G1, SBX-G6, SBX-G9, SBX-G10, SBX-G11 and WS43-G1 to WS43-G5 stay with the owner. SBX-G6 is the credit price. With no price, SBX-7 refuses a step.
+4. **The order of work.** The second quote moves rung 6 of D224 ahead of the open rungs 1 to 5. `agent_sandbox.md` §0c plans the sub-rungs 6a to 6f backward from SBX-9 (D211). Rung 6f runs the HathiLabs org on the real box first. The agent reads "the same day" as this: `tools:*` follows the HathiLabs run after a pass test. That run is verification. The owner's answer on the gates and on a narrower first version is pending on task 3786. This entry records no answer to either.
+5. **Two new gaps and one control.** Gap A: no switch turns off one org under `tools:*`. SBX-6 adds `user_tool_disabled_orgs`, which takes `*`. Gap B: `user_tool_max_total` of 1 lets one run block every org. SBX-15 sizes it from the box and keeps `user_tool_max_per_org` below it. The control: the box runs one org at a time, so an escape from one org meets no capability of another (§0c, residual risk 1).
+6. **`tools` is not yet a scope target.** `tools:*` parses only when `MAF_CODING_TARGETS` holds `tools`. An early entry turns every target off. SBX-4 adds the target. SBX-9 reads `/version` and confirms that the deployed SHA holds SBX-4 before each flip.
+7. **An end condition for `*`.** The entry `tools:*` holds only while self-serve signup (`SELF_SERVE_SIGNUP_ENABLED`) is off. When signup opens, the entry becomes the list of beta orgs, or SBX-6 excludes a trial org.
+
+Fence: SBX-F24 of `agent_sandbox.md` §11, advisory until SBX-6 and SBX-9 build it. `tests/unit/test_decision_ids.py` fails when two D227 entries merge. **Re-check this number at merge.** On 2026-11-19, main held D225 at most. Open PRs 2585 and 2599 hold D226. A diff scan of the open PRs found no D227, but the scan did not finish all 167 branches. Check again at merge.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
