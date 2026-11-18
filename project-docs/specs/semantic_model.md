@@ -2,7 +2,8 @@
 
 **Status: PROPOSED (2026-11-17, owner ask). Nothing is built.** The owner
 must answer D-SEM-1 first (`building_blocks.md` §6.1 step 4). No code slice of
-rung 3 starts before that answer. Verified against `origin/main` at `a4cfeedc7`
+rung 3 starts before that answer. The owner chose D-SEM-3 = Option A on
+2026-11-18. Verified against `origin/main` at `a4cfeedc7`
 (2026-11-17).
 
 **Names.** The workstream is **WS-SEM**, and its slice prefix is **SEM-n**.
@@ -326,7 +327,7 @@ This design cites that plan and does not depend on its details.
 | 1. A short brief | A fixed, capped text per stored version: the approved measures by name, the key parts, the rules. Same bytes for the same version (rule 3) | CRM: the CRM facts block (`crm_platform.md` §18.14.4 point 2). A connection: one input of `server_brief`, with its own header and cap (rule 1) | CRM: at most 3 more lines in a block of 13 lines today. A connection: at most 300 characters. The admin's 400 and the server's 600 already fill the 1,000 of `chat_connected_systems.md` §5. The WS-CSY planner decides whether the cap rises or the parts share it |
 | 2. The full model on demand | The model asks `org_facts` for an entity, a measure or a verified query | The `org_facts` tool. It loads with the CRM family today. It also loads when a server with an approved model attaches. It is not a core tool, so the core ceiling (`test_tool_schema_diet.py`, 7,040) does not move | One tool call |
 | 3. Link on the server | A field, a measure or an entity named by a word, not a key, resolves on the server by label, synonym and term, before any 422. Two close candidates follow the confidence rule of §18.16.4: ask first when the totals differ by more than 5% | `field_sql.FieldScope.ref`, `crm_sync/terms.py` | 0 tokens |
-| 4. Resolve values | A filter by name finds the value that the member means, as the member. In rung 1 it is the old `field.@parent=<words>`. After SEM-1b it is the clause `{"field": "@parent", "op": "matches", "value": "<words>"}`. One match binds. Several follow the confidence rule. None gives an honest zero with the near spellings | `field_sql.text_matches`, `terms.value_matches`, `name_match` | 0 tokens |
+| 4. Resolve values | A filter by name finds the value that the member means, as the member. In rung 1 it is the old `field.@parent=<words>`. After SEM-1b-1 it is the clause `{"field": "@parent", "op": "matches", "value": "<words>"}`. One match binds. Several follow the confidence rule. None gives an honest zero with the near spellings | `field_sql.text_matches`, `terms.value_matches`, `name_match` | 0 tokens |
 | 5. Verified query first | When the member's words match a verified question, the server fills its parameters and runs it. The answer says "a verified question" | New, §6.2 | 0 tokens |
 | 6. One typed query | Else the model sends one query in the one grammar (§5.1), or the source's own read tool for a connection | `routes/crm/aggregate.py`, MCP tools | One tool call |
 | 7. Validate | The parser refuses an unknown field, an operator that the type does not take, or a bad value. The refusal lists the legal fields and operators. An MCP call checks its arguments against the tool's input schema first | `acb_common/studio_query.py`, `tool_refusals.py` | 0 tokens |
@@ -340,7 +341,7 @@ This design cites that plan and does not depend on its details.
 A number field takes `field.<key>.from` and `.to`. A module total takes `q`,
 which matches the record name, as the module list does. No grammar changes.
 
-**Rung 2 unifies the grammar (SEM-1b).** Three spellings exist: the CRM
+**Rung 2 unifies the grammar (SEM-1b-1 and SEM-1b-2).** Three spellings exist: the CRM
 parameters, `acb_common/studio_query.py`, and the filter set of
 the CRM UI research draft (§4.1, not on `main`). Two options:
 
@@ -354,9 +355,24 @@ the CRM UI research draft (§4.1, not on `main`). Two options:
 | Cost | Larger, HIGH. One shape for the chat, the sidebar, saved views and Studio | Smaller, HIGH. A third spelling until a later merge |
 
 **Recommendation: Option A for the shape, with a value hook for each store.**
-The chat then learns one query form for every app. This is D-SEM-3. Until the
-owner decides it, SEM-1b and the CRM UI research draft S1 must not both start, because
-together they would write two grammars.
+The chat then learns one query form for every app. This is D-SEM-3.
+
+**The owner chose Option A on 2026-11-18.** The shape of
+`acb_common/studio_query.py` serves every store. It gets one `any` group,
+`matches`, and a value hook for each store. Each store keeps its own compiler
+and its own value rules. The CRM UI research draft S1 (Option B) does not
+start.
+
+**The six conflicts, answered for the CRM store in SEM-1b-1.**
+
+| Conflict | The CRM store | Studio |
+|---|---|---|
+| ZONE | The CRM keeps `crm_zone`. A day on a datetime field is the day in the CRM zone, through `_calendar_day` | Keeps UTC |
+| MONEY | CRM number, decimal, currency and percent compare the guarded `_amount` with `_decimal(str(v))`. A JSON number and a numeric string both pass. A bool is refused. No minor units and no currency check | Keeps minor units |
+| SPELLING | CRM `eq` on text and select keeps today's variant count `text_matches`, so lowering changes no total. `matches` waits for SEM-3 and CRM-Q34-7 | Unchanged |
+| HOT FIELDS | The CRM has no hot rule and never raises `query_not_indexed` | Unchanged |
+| TIMEOUT | Each store keeps its own: 10 s plus the long read for the CRM | 5 s |
+| KEY SPELLING | CRM keys are mixed-case API names and `@` key words. The CRM resolves a key through `FieldScope.ref`, with the key words and the near-field hint. The shared shape check does not apply the Studio `NAME_PATTERN` | `NAME_PATTERN` is `[a-z][a-z0-9_]{0,47}` in `studio_fields.py` |
 
 **Never model-written SQL on our Postgres.** A typed query fails loudly, and
 free SQL fails with a plausible wrong answer (dbt, 2026-04-07).
@@ -554,7 +570,8 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-4** | 1 | A refusal lists the legal fields (the 8 most filled) and the legal operators. One repair. One `semantic.refusal` line and a daily counter | `tool_refusals.py`, `crm_tools.py`, `aggregate.py` | STANDARD · AGENT-SAFE | none: text only | `test_crm_refusal_next.py`, `test_semantic_refusal_counter.py` (new) | none |
 | **SEM-5** | 1 | The text of `crm_aggregate` says that a word is fine and the server finds the field, and that a module takes `q` | `crm_tools.py` | STANDARD · AGENT-SAFE | none: text only | `test_tool_schema_diet.py` | SEM-1a, SEM-2 |
 | **SEM-6** | 1 | A scripted replay of the four refusal classes, and a fixed set of 20 questions with synthetic data | `evals/semantic/` (new) | LOW · AGENT-SAFE | none | `test_semantic_eval_scripted.py` (new) | SEM-1a to SEM-5 |
-| **SEM-1b** | 2 | The one grammar of §5.1, by the option that the owner picks in D-SEM-3. The CRM aggregate takes `query`, and the old parameters lower into it. `crm_aggregate` takes `query` beside its old arguments | Option A: `acb_common/studio_query.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_query_grammar.py` and `_r8` (new), `test_studio_query_r8.py`, `test_tool_schema_diet.py` | D-SEM-3, SEM-6 |
+| **SEM-1b-1** | 2 | `GET /crm/aggregate` on a MODULE entity takes `query`, in the grammar of §5.1 Option A. The old parameters lower into it. Leaf: `{"field": <CRM key or key word>, "op": <op>, "value": <v>}`. Group: `{"any": [leaf, ...]}`, 2 to 8 leaves, one level, no nesting. See the rules below this table | `packages/acb_common/acb_common/studio_query.py` (a pure shape check that takes the `any` node and a set of ops for each store, and Studio callers do not change), `apps/services/gateway/gateway/routes/crm/field_sql.py` (a new CRM compiler on the one filter builder of CRM-Q34-4, PR 2584, that reuses `_filter` and `_filter_value`), `routes/crm/aggregate.py` (`compute` gets one keyword, default None), `routes/crm/flags.py`, `packages/acb_common/acb_common/settings.py`, `docs/flag_reload.md`, `tests/unit/test_flag_reload.py` (add `SEMANTIC_MODEL_ORGS` beside `CRM_MODULE_FIND_ORGS` of PR 2584) | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` (new) | `test_crm_query_grammar.py` and `test_crm_query_grammar_r8.py` (new). Acceptance (a) to (j) below | CRM-Q34-4 (PR 2584) merged first. SEM-6 (task 3723, PR 2576) is the replay fence. SEM-1b-1 may start from its branch if it is not merged |
+| **SEM-1b-2** | 2 | `crm_aggregate` takes a `query` argument (about 32 to 49 tokens), the lowering of `custom.<key>`, and the ops `ne`, `is_empty`, `contains` and `matches` | `crm_tools.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_tool_schema_diet.py`, `test_crm_query_grammar.py` (extended) | SEM-1b-1, and the owner's ruling on the token budget (D-SEM-12) |
 | **SEM-7** | 2 | The CRM model reader. The plan learns `measure`, `join` and `query`. `org_facts` serves them | `crm_sync/catalogue.py`, `routes/crm/mapping_plans.py`, `routes/crm/facts.py` | HIGH (plan) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_plan_kinds_semantic.py` (new), `test_org_facts_r8.py` | SEM-R0 |
 | **SEM-8** | 2 | Verified queries: save with parameters, match, run, the "verified" mark, stale on a shape change, one repair | `routes/crm/` (a new module), `crm_tools.py` | HIGH · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_verified_queries.py` and `_r8` (new) | SEM-7 |
 | **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS` and `SEMANTIC_MODEL_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` | SEM-7 |
@@ -567,6 +584,35 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-16** | 3 | The panel: the draft as a diff, accept per part, "Read it again" | `ConnectionSheet.tsx` | STANDARD UI · captures before merge | `CONNECTION_MODEL_ORGS` | Vitest of `ConnectionSheet.tsx` (extended) | SEM-13, CSY-9 (task 3409) |
 | **SEM-17** | 3 | The Tally reads of §4.3 through the local link, with the untrusted mark | the LNK adapter | HIGH · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler_tally.py` (new, synthetic) | SEM-13, the LNK build slices (PR 2550) |
 
+**The rules of SEM-1b-1.**
+
+- `query` is a JSON text parameter of at most 4000 characters. Bad JSON gives 422 `query_value_invalid`.
+- A query is a list of nodes joined by AND, with at most 8 leaf conditions.
+- The ops now are `eq`, `in`, `gte`, `lte`, `gt` and `lt`. An `in` expands to an `any` group of `eq` leaves.
+- The deferred ops `ne`, `is_empty`, `contains` and `matches` give 422 `query_op_not_allowed`. The refusal lists the legal ops.
+- The lowering: `field.<key>=v` becomes `eq`, `field.<key>.from=v` becomes `gte`, and `field.<key>.to=v` becomes `lte`.
+- The lowered pairs and `query` join by AND. The cap of 8 applies to `query` only, so an old request never starts to fail.
+- `q` stays a separate parameter, outside the grammar.
+- `custom.<key>` and `custom.<key>.in` (core entities) wait for SEM-1b-2.
+- `query` on a core entity gives a 422 that names a working step: "A query takes a module entity. For leads, deals, contacts or organizations, give the filters of crm_list_records."
+- `query` from an org off the flag gives a 422 that names `field_filters`. The server never drops it with no message. Off the flag, every other answer stays byte for byte the same.
+- The `crm_aggregate` tool does not change (0 schema tokens). No new op enters the shared `OPS` tuple of `studio_query.py`, and `_LIST_INPUT_SCHEMA` does not change. The Studio tool schema stays byte for byte the same. No migration.
+
+**Acceptance of SEM-1b-1.**
+
+- (a) Each R8 seed gives the same total and count three ways. The ways are the old parameters off the flag, the old parameters on the flag, and the equal `query`.
+- (b) An `any` group ORs its leaves on a real database.
+- (c) A datetime day filter in a CRM zone other than UTC counts across midnight as the old range does.
+- (d) A currency stored as a numeric string sums and filters like a number. "NA" counts as no value.
+- (e) A lookup by name and by Metorite id matches as `field.<key>` does.
+- (f) The records of org B, of the same module and key, never count for org A.
+- (g) An unknown key gives a 422 that names the legal fields.
+- (h) A `query` on a core entity, and a `query` from an org off the flag, each give a 422 that names a working step.
+- (i) The Studio tests and the Studio schema bytes do not change.
+- (j) The `crm_aggregate` schema token count does not change.
+
+**The token budget of SEM-1b-2.** The per-tool cap test `test_crm_aggregate_costs_no_more_tokens_than_when_main_was_green` allows 687. The count on `main` was 675 on 2026-11-17 by one measure and 665 by the test's own counter on 2026-11-18. Measure it again on the merge result. The Studio chat budget `SCHEMA_TOKEN_BUDGET = 30_000` in `evals/one_assistant_measure/checks.py` has about 2 tokens of room. One CRM tool token costs about 3 tokens of that budget.
+
 **Flags.** `SEMANTIC_MODEL_ORGS` (the CRM rungs) and `CONNECTION_MODEL_ORGS`
 (the connection rung). Both are `*_ORGS` flags, default empty, and both reload
 with no restart (`docs/flag_reload.md`). A flip on a live org needs the
@@ -576,7 +622,7 @@ with no restart (`docs/flag_reload.md`). A flip on a live org needs the
 SEM-3 and SEM-4 can start at once and run in parallel. SEM-2 starts after
 SEM-R0. SEM-5 and SEM-6 close rung 1.
 
-**Later rungs.** SEM-1b opens rung 2, after the owner answers D-SEM-3. Rung 3
+**Later rungs.** SEM-1b-1 opens rung 2. The owner chose D-SEM-3 on 2026-11-18. Rung 3
 waits for CSY-1 and for the owner's answers to D-SEM-2 and D-CSY-1.
 
 ### 10.3 The map to the CRM-Q34 slices (epic task 3689)
@@ -586,11 +632,12 @@ spec adds no second slice for the same work. The map:
 
 | Here | CRM slice | Task | Rule |
 |---|---|---|---|
-| SEM-1a | CRM-Q34-1: a number range on a module field, and a lookup by the Metorite id of a core record | 3693 | Same work. box-num builds it. It is in build |
-| SEM-4 | CRM-Q34-2 (the refusals name a working field, module or filter) and CRM-Q34-3 (the tool text) | 3694, 3695 | SEM-4 includes both. Build them once |
+| SEM-1a | CRM-Q34-1: a number range on a module field, and a lookup by the Metorite id of a core record | 3693 | Same work. Merged (PR 2573) |
+| SEM-4 | CRM-Q34-2 (the refusals name a working field, module or filter) and CRM-Q34-3 (the tool text) | 3694, 3695 | Both are merged (PR 2573 and PR 2574 are in `main`). SEM-4 builds on them and adds the counter |
 | SEM-3 | CRM-Q34-7: `q` finds across a module | 3700 | The two overlap. The one that starts first owns the code, and the other cites it |
-| SEM-1b | CRM-Q34-4 and CRM-Q34-4b: one filter builder | 3697, 3711 | Q34-4 is the builder that SEM-1b lowers into |
-| none | CRM-Q34-5: the filter words a member needs | 3698 | **Waits for D-SEM-3.** The words are part of the one grammar |
+| SEM-1b-1 | CRM-Q34-4 and CRM-Q34-4b: one filter builder | 3697, 3711 | Q34-4 (PR 2584) is the builder that SEM-1b-1 lowers into |
+| SEM-6 | The scripted replay of the four refusal classes | 3723 | PR 2576 is open |
+| none | CRM-Q34-5: the filter words a member needs | 3698 | D-SEM-3 is decided (Option A). The words are part of the one grammar |
 
 The tasks of the rows SEM-1a to SEM-6 are made when the owner approves the
 spec, under the epic of WS-SEM. No row of SEM-12 to SEM-17 gets a task before
@@ -626,9 +673,8 @@ the owner answers D-SEM-1.
 3. **D-SEM-3. Which one query grammar** (§5.1). Option A: the shape of
    `studio_query` for every store. It gets one `any` group, `matches`, and a
    value hook for each store. Option B: a CRM `filter_grammar.py`, as
-   the CRM UI research draft S1 proposes. Recommendation: A. It costs more, because of
-   the zone, money, spelling and hot-field conflicts that §5.1 lists. B leaves
-   a third spelling. Rung 1 does not wait for this answer.
+   the CRM UI research draft S1 proposes. **DECIDED, 2026-11-18: the owner chose
+   Option A.** §5.1 answers its six conflicts for the CRM store.
 4. **D-SEM-4. Who approves.** The CRM admin for the CRM (as CRM-Q32). A holder
    of `integrations:manage` for a connection. AI Studio reads a model and does
    not edit it. Recommendation: yes. Three permissions approve different
@@ -664,7 +710,11 @@ the owner answers D-SEM-1.
       does not read them either.
     - **D-CSY-4** (match words for a server). A model's synonyms could feed the
       words, but only after a yes.
-13. **The rung 0 flip.** If SEM-R0 finds the built CRM layers off for the live
+13. **D-SEM-12 (open). The token budget of SEM-1b-2.** The owner of WS-67
+    raises the Studio 30,000 schema budget, or cuts CRM tool text.
+14. **D-SEM-13 (open). The meaning of CRM `ne` and `is_empty`**, beside the
+    checkbox exception of Studio.
+15. **The rung 0 flip.** If SEM-R0 finds the built CRM layers off for the live
     org, the owner decides each flip after a preview.
 
 ---
@@ -695,4 +745,21 @@ uv run pytest tests/unit/test_crm_aggregate.py tests/unit/test_tool_schema_diet.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_studio_query_r8.py tests/unit/test_org_facts_r8.py \
   tests/unit/test_crm_answer_consistency_r8.py -q
+```
+
+**SEM-1b-1.** Run these on the merge result with PR 2584. An R8 skip is not a
+pass. `test_crm_module_list_filters.py` and its `_r8` file come with PR 2584.
+
+```bash
+uv run pytest tests/unit/test_crm_query_grammar.py tests/unit/test_studio_query.py \
+  tests/unit/test_crm_aggregate.py tests/unit/test_crm_module_list_filters.py \
+  tests/unit/test_tool_schema_diet.py tests/unit/test_crm_email_tool_refusals.py \
+  tests/unit/test_one_assistant_measure_search.py tests/unit/test_flag_reload.py -q
+
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_crm_query_grammar_r8.py tests/unit/test_studio_query_r8.py \
+  tests/unit/test_crm_aggregate_r8.py tests/unit/test_crm_aggregate_fields_r8.py \
+  tests/unit/test_crm_module_list_filters_r8.py tests/unit/test_tenancy_boundary.py -q
+uv run ruff check <changed files>
+uv run mypy <changed files>
 ```
