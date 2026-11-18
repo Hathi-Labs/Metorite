@@ -3922,19 +3922,24 @@ async def _modules_answer(page: int | None) -> str:
 @_read_tool
 async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
+    field_filters: dict[str, str] | None = None, fields: list[str] | None = None,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
     with their ids. q matches the record name. When the module search is
     on, q also finds words in a lookup name or text value, and marks a near
-    spelling. It searches the first 40 text fields."""
+    spelling. It searches the first 40 text fields. field_filters work as in
+    crm_aggregate. fields: up to 5 keys to show on each row."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
-    data = await _get(f"/crm/modules/{mod}/records", {
-        "q": q, "page": number, "page_size": size,
-    }) or {}
+    shown = _list_keys(fields)
+    params: dict[str, Any] = {"q": q, "page": number, "page_size": size}
+    for key, value in (field_filters or {}).items():
+        params[f"field.{key}"] = value
+    data = await _get(f"/crm/modules/{mod}/records", params) or {}
     rows = data.get("rows") or []
     total = int(data.get("total") or len(rows))
     found = find_line(data)
+    by_key = {str(d.get("key")): d for d in data.get("field_defs") or [] if isinstance(d, dict)}
     if not rows:
         return (f"No {mod} records match." + (f"\n{found}" if found else "")
                 + await _short_note(frozenset({MODULE_PREFIX + mod})))
@@ -3944,12 +3949,43 @@ async def crm_list_module_records(
         + (f" · owner {r['owner_email']}" if r.get("owner_email") else "")
         + (f" · near name {_quoted_name(r['matched'])}" if r.get("near") and r.get("matched")
            else "")
+        + _row_values(r, shown, by_key)
         + f" (id={r.get('id')})"
         for r in rows
     )
+    lines.extend(f"Unknown field key {k!r}: crm_list_fields lists the keys."
+                 for k in shown if k not in by_key)
     lines.append(_aggregate_fields(mod, data.get("field_defs") or []))
     return "\n".join(lines) + _more(total, number, size) + await _short_note(
         frozenset({MODULE_PREFIX + mod}))
+
+
+#: The most field keys that ``crm_list_module_records`` shows on a row (CRM-Q34-4).
+LIST_KEYS_MAX = 5
+#: The longest value of one field on a row, in characters.
+_LIST_VALUE_MAX = 80
+
+
+def _list_keys(keys: list[str] | None) -> list[str]:
+    """The ``fields`` of a module list: 1 to :data:`LIST_KEYS_MAX` distinct keys."""
+    found = [str(k).strip() for k in keys or []]
+    if keys is not None and (not found or len(found) > LIST_KEYS_MAX
+                             or any(not k for k in found) or len(set(found)) != len(found)):
+        raise GatewayRefusal(f"fields takes 1 to {LIST_KEYS_MAX} distinct field keys.")
+    return found
+
+
+def _row_values(row: dict[str, Any], keys: list[str], by_key: dict[str, Any]) -> str:
+    """The chosen field values of one row, each under its key (CRM-Q34-4)."""
+    values = row.get("fields") if isinstance(row.get("fields"), dict) else {}
+    shown = []
+    for key in keys:
+        value = values.get(key)
+        if value in (None, "", [], {}):
+            continue
+        text = " ".join(_option_label(by_key.get(key, {}), value).split())
+        shown.append(f"{key}: {text[:_LIST_VALUE_MAX]}")
+    return f" · {'; '.join(shown)}" if shown else ""
 
 
 def _aggregate_fields(mod: str, defs: list[Any]) -> str:
