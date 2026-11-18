@@ -11374,10 +11374,14 @@ Console calls no box.
   of the org, `key("provider_alerts", "sent")`, with no TTL. A new process
   reads it and finds no change.
 - **Who hears it.** The active members of the listed org who pass the shell's
-  admin test (`admin:members:read`). The member list is
-  `kb_access.resolve.load_members` in `tenant_session(org)`. Each grant comes
-  from `resolve_access_in_org`. The org comes from the flag and the job
-  worker, never from request input.
+  admin test (`admin:members:read`). The `owner`, `admin` and `manager` roles
+  hold it. The member list is `kb_access.resolve.load_members` in
+  `tenant_session(org)`. Each grant comes from `resolve_access_in_org` in
+  strict mode. The org comes from the flag and the job worker, never from
+  request input. `OPERATOR_ORG_ID` is not read: the flag is the one config.
+- **A read fault.** The job reads the admins before it moves any state. A
+  fault stops the pass with no state moved, so the next bucket tries again.
+  The worker gives each job one try (`max_attempts=1`), because the job sends.
 - **The bell.** The needs source `providers` (`routes/shell/needs.py`, kind
   `provider_alert`) reads the stored state. It shows each vendor that is `out`
   or `low`, and each "serves again" for 24 hours. The row links to the
