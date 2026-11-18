@@ -8488,8 +8488,12 @@ Status: built 2026-11-18 on `crm-q34-11-mt-37c6f980` (task 3728), no flag.
   contacts, leads, deals and companies are out of this slice. Nothing
   changes the type in `crm_field_defs`, because the sync owns it.
 - **A number** (`field_sql.TEXT_NUMBER_PATTERN`):
-  - ASCII digits only. An optional minus right before the digits. No
-    leading zero, so `0` and `0.5` are numbers and `007` is a code.
+  - ASCII digits only. No leading zero, so `0` and `0.5` are numbers and
+    `007` is a code.
+  - An optional minus, only as the first character and before any
+    currency mark. `-₹500` and `-Rs 500` are -500. `Rs-5`, `RS-485`,
+    `₹-500` and `- 5` are not numbers, because a code such as `RS-232`
+    has that shape.
   - Commas only in a Western (`1,234,567`) or an Indian (`12,34,567`)
     grouping. `1,5`, `12,34` and `1,2,3` are not numbers.
   - An optional `.` and 1 to 30 digits. At most 30 digits before it.
@@ -8507,23 +8511,29 @@ Status: built 2026-11-18 on `crm-q34-11-mt-37c6f980` (task 3728), no flag.
   and the values that are not numbers. With no number, the read is a 422
   with the three counts. Below half of the filled values, the field is a
   code or free text. Then the 422 also names the most common shapes.
-- **The shapes.** One more statement reads the 2 most common shapes of
+- **The shapes.** The same statement reads the 2 most common shapes of
   the values that are not numbers. A shape keeps the structure only: a
   digit run is `9` and a letter run is `a`. So no stored value leaves the
   database.
+- **One scan for every key** (`text_numbers_sql`). The statement reads
+  the module once, for all the text keys of the call. A LATERAL VALUES
+  list gives one row for each record and key. So a split of three text
+  keys detoasts the module once, and not three times.
 - **Three places read it.** A measure (`sum`, `avg`, `min`, `max`), a
   split of `fields=` and a `.from` or `.to` range. They use the one
   builder, `_amount`. A text equality filter stays a text filter, in a
   call that also sums the field.
 - **What the model reads.** The answer names the three counts and the
-  shapes. `crm_list_fields` names the use of a text field of a module.
+  shapes. The answer of a grouped total names them as well, also when no
+  matched value is a number. `crm_list_fields` names the use of a text field of a module.
   No tool docstring changed.
 - **No flag.** Each call that this changes was a 422 before. A call that
   names no text field sends the same statements, and its answer is the
   same to the byte.
 - **Limit.** The count reads each record of the module once more, on each
-  call that names a text field. The statement timeout of the read holds
-  it. Nobody measured it yet on a large module.
+  call that names a text field. This is one scan, for any number of text
+  keys. The statement timeout of the read holds it. Nobody measured it
+  yet on a large module.
 - **Next (CRM-Q34-11b, planned).** A number with one unit word, then
   negatives in brackets and lakh or crore words, when the data shows them.
 - **Fences.** `tests/unit/test_crm_text_numbers.py` is hermetic. It pins

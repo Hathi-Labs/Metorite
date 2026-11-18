@@ -2227,6 +2227,10 @@ async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any],
       the filter line (*rest*), and never "no values recorded".
     * CRM-Q25c item 3: records matched, and the measured field is empty in
       each. An empty field has no total, and 0 would be false."""
+    field, split = measured
+    # CRM-Q34-11: a text field read as numbers keeps its three counts and
+    # its shapes here too, as the total with no group does.
+    numbers = _text_number_lines(data, split)
     nothing = _no_match(params, data, lead)
     if nothing:
         overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
@@ -2235,10 +2239,10 @@ async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any],
             lines.append(_from_module(slug, str(overlay.get("module"))))
         lines.extend(await _hint_lines(slug, data, overlay))
         measure = str(params.get("measure") or "count")
-        return "\n".join([*lines, *rest, *await _revenue_lines(slug, measure, box)])
-    field, split = measured
+        return "\n".join([*lines, *rest, *numbers,
+                          *await _revenue_lines(slug, measure, box)])
     if field and data.get("values") == 0 and not split:
-        return f"{lead}: no values recorded for {field}."
+        return "\n".join([f"{lead}: no values recorded for {field}.", *numbers])
     return None
 
 

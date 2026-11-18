@@ -83,6 +83,11 @@ MATRIX: list[tuple[Any, str, float | None]] = [
     ("\uff11\uff12\uff13", NOT_NUMBER, None), ("1" * 40, NOT_NUMBER, None), ("1" * 31, NOT_NUMBER, None),
     ("Rs 500 INR", NOT_NUMBER, None), ("₹500%", NOT_NUMBER, None),
     ("ABC-DEF-12", NOT_NUMBER, None), ([1, 2], NOT_NUMBER, None),
+    # Review of 7f2656b91: a minus only as the first character, before a mark.
+    ("-₹500", NUMBER, -500.0), ("-Rs 500", NUMBER, -500.0), ("-500 INR", NUMBER, -500.0),
+    ("RS-485", NOT_NUMBER, None), ("Rs-5", NOT_NUMBER, None), ("₹-500", NOT_NUMBER, None),
+    ("Rs -5", NOT_NUMBER, None), ("- 5", NOT_NUMBER, None), ("--5", NOT_NUMBER, None),
+    ("-Rs 500 INR", NOT_NUMBER, None), ("-₹500%", NOT_NUMBER, None),
     ({"a": 1}, NOT_NUMBER, None), (True, NOT_NUMBER, None),
     ("", NO_VALUE, None), ("  ", NO_VALUE, None), ("-", NO_VALUE, None),
     ("—", NO_VALUE, None), ("NA", NO_VALUE, None), ("N/A", NO_VALUE, None),
@@ -142,7 +147,21 @@ _INVOICE_DEFS = [
 ]
 _BILL_DEFS = [("Share50", "text", None, False, False),
               ("Share49", "text", None, False, False),
-              ("Empty", "text", None, False, False)]
+              ("Empty", "text", None, False, False),
+              ("Mixed", "text", None, False, False)]
+
+
+def _mixed(i: int) -> str:
+    """The Mixed field of bill *i*: 70 numbers (1 to 70), 10 with no value,
+    12 with a unit word, 5 codes and 3 words. Each count differs, so no
+    collation decides the order of the shapes."""
+    if i < 70:
+        return str(i + 1)
+    if i < 80:
+        return "NA"
+    if i < 92:
+        return "5 kg"
+    return "A-1" if i < 97 else "x"
 
 
 def _fields(raw: Any, key: str = "Raw", **more: Any) -> dict[str, Any]:
@@ -182,6 +201,7 @@ def _seed(p: Any) -> None:
                 "Share50": "1" if i < 50 else "y",
                 "Share49": "1" if i < 49 else "y",
                 "Empty": "NA",
+                "Mixed": _mixed(i),
             })
 
 
@@ -318,6 +338,42 @@ async def test_a_split_of_a_text_field_and_a_number_field(inv, app_engine) -> No
     totals = {s["field"]: (s["total"], s["values"]) for s in body["split"]}
     assert totals == {"Fiber": (1237512.5, _NUMBERS), "Amount": (600.0, 3)}
     assert body["text_numbers"] == {"Fiber": _FIBER}
+
+
+def _relations(plan: Any) -> list[str]:
+    """Each table that a node of an ``EXPLAIN (FORMAT JSON)`` plan scans."""
+    if isinstance(plan, list):
+        return [name for node in plan for name in _relations(node)]
+    if not isinstance(plan, dict):
+        return []
+    own = [plan["Relation Name"]] if "Relation Name" in plan else []
+    return own + [name for value in plan.values() for name in _relations(value)]
+
+
+async def test_a_split_of_two_text_fields_counts_each_in_one_scan(inv, app_engine) -> None:
+    """Review of 7f2656b91: the counts and the shapes of every key come from
+    ONE scan of the module. Two text fields with other counts and other
+    shapes each keep their own, and the plan reads the table once."""
+    from gateway.routes.crm import field_sql as fs
+
+    body = await _agg(inv, inv.org_a, entity="module:Bills", measure="sum",
+                      fields="Share50,Mixed")
+    totals = {s["field"]: (s["total"], s["values"]) for s in body["split"]}
+    assert totals == {"Share50": (50.0, 50), "Mixed": (2485.0, 70)}
+    assert body["text_numbers"] == {
+        "Share50": {"numbers": 50, "no_value": 0, "not_numbers": 50,
+                    "shapes": [{"shape": "a", "words": "words only", "count": 50}]},
+        "Mixed": {"numbers": 70, "no_value": 10, "not_numbers": 20,
+                  "shapes": [{"shape": "9 a", "words": "a number with a unit word",
+                              "count": 12},
+                             {"shape": "a-9", "words": "a code", "count": 5}]},
+    }
+    sql, params = fs.text_numbers_sql(["Share50", "Mixed"])
+    with inv.admin_engine.begin() as c:
+        plan = c.execute(text("EXPLAIN (FORMAT JSON) " + sql), {
+            **params, "agf_org": inv.org_a, "agf_module": "Bills"}).scalar_one()
+    plan = json.loads(plan) if isinstance(plan, str) else plan
+    assert _relations(plan).count("crm_module_records") == 1, plan
 
 
 # ── 4. Text equality stays text equality ─────────────────────────────────────

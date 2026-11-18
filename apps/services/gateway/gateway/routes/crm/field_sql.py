@@ -118,8 +118,11 @@ _NUMBER_TEXT = r"'^\s*-?[0-9]{1,30}(\.[0-9]{1,30})?\s*$'"
 #:
 #: * ASCII digits only, ``[0-9]``. Never ``\d``: it can take a digit of
 #:   another script, and then the cast would fail the whole read.
-#: * An optional minus right before the digits. No leading zero: ``0`` and
-#:   ``0.5`` are numbers, and ``007`` is a code.
+#: * An optional minus, only as the first character, before any currency
+#:   mark: ``-₹500`` and ``-Rs 500`` are -500. A minus after a mark
+#:   (``Rs-5``, ``RS-485``, ``₹-500``) or before a space (``- 5``) is no
+#:   number, because a code such as ``RS-232`` has that shape.
+#: * No leading zero: ``0`` and ``0.5`` are numbers, and ``007`` is a code.
 #: * Commas only in a Western (``1,234,567``) or an Indian (``12,34,567``)
 #:   grouping. ``1,5``, ``12,34`` and ``1,2,3`` are not numbers.
 #: * An optional ``.`` and 1 to 30 digits. At most 30 digits before it.
@@ -128,17 +131,19 @@ _NUMBER_TEXT = r"'^\s*-?[0-9]{1,30}(\.[0-9]{1,30})?\s*$'"
 #: * Spaces and tabs only between a mark and the number, never ``\s``.
 #:
 #: ``NaN`` and ``Infinity`` never match: the cast of ``numeric`` takes them.
-#: The one capture group is the number with its commas. The pattern is a
-#: BOUND value (:data:`TEXT_NUMBER_PARAM`): its ``(?:`` would read as a bind
-#: name in the SQL text.
+#: The two capture groups are the minus and the number with its commas.
+#: ``regexp_match`` gives both, and ``array_to_string`` joins them, so the
+#: cast gets the sign and the digits, or NULL. The pattern is a BOUND value
+#: (:data:`TEXT_NUMBER_PARAM`): its ``(?:`` would read as a bind name in the
+#: SQL text.
 _MONEY_MARK = r"(?:₹|rs\.?|inr)"
 _TEXT_NUMBER_DIGITS = (
-    r"-?(?:0|[1-9][0-9]{0,2}(?:,[0-9]{3}){1,9}"
+    r"(?:0|[1-9][0-9]{0,2}(?:,[0-9]{3}){1,9}"
     r"|[1-9][0-9]?(?:,[0-9]{2}){0,12},[0-9]{3}"
     r"|[1-9][0-9]{0,29})(?:\.[0-9]{1,30})?"
 )
 TEXT_NUMBER_PATTERN = (
-    r"(?i)^(?!" + _MONEY_MARK + r".*[^0-9]$)"
+    r"(?i)^(-)?(?!" + _MONEY_MARK + r".*[^0-9]$)"
     r"(?:" + _MONEY_MARK + r"[ \t]*)?"
     r"(" + _TEXT_NUMBER_DIGITS + r")"
     r"(?:[ \t]*(?:" + _MONEY_MARK + r"|%))?$"
@@ -756,10 +761,11 @@ def _number(column: str, p: str, text_number: bool = False) -> str:
     only when it is a plain decimal, so no cast error can reach the route.
 
     CRM-Q34-11: with *text_number*, a string is a number only in the strict
-    shape of :data:`TEXT_NUMBER_PATTERN`. ``substring`` gives the captured
-    number or NULL, so the regex runs once and the cast only ever gets a
-    captured number. The length bound runs first, and the cast stays inside
-    the CASE. Without *text_number* the SQL text is the text of before."""
+    shape of :data:`TEXT_NUMBER_PATTERN`. ``regexp_match`` gives the minus
+    and the number, or NULL, and ``array_to_string`` joins them. So the
+    regex runs once and the cast only ever gets a captured number. The
+    length bound runs first, and the cast stays inside the CASE. Without
+    *text_number* the SQL text is the text of before."""
     if text_number:
         t = _trimmed(column, p)
         return (
@@ -767,8 +773,8 @@ def _number(column: str, p: str, text_number: bool = False) -> str:
             f"THEN CAST({column} ->> :{p} AS numeric) "
             f"WHEN jsonb_typeof({column} -> :{p}) = 'string' "
             f"AND length({t}) <= {TEXT_NUMBER_MAX_CHARS} "
-            f"THEN CAST(replace(substring({t} FROM :{TEXT_NUMBER_PARAM}), ',', '') "
-            "AS numeric) END)"
+            f"THEN CAST(replace(array_to_string(regexp_match({t}, "
+            f":{TEXT_NUMBER_PARAM}), ''), ',', '') AS numeric) END)"
         )
     return (
         f"(CASE WHEN jsonb_typeof({column} -> :{p}) = 'number' "
@@ -1003,7 +1009,7 @@ NO_VALUE_WORDS: tuple[str, ...] = ("", "-", "—", "na", "n/a", "nil", "none", "
 SHAPES_MAX = 2
 #: The longest shape. A shape is the structure of a value, never its text.
 SHAPE_CHARS = 24
-#: The prefix of the bound keys of the two reads, and the bound names.
+#: The prefix of the bound keys of the one read, and the bound names.
 _TEXT_KEY = "agf_n"
 _NO_VALUE = "agf_nv"
 #: The longest value that a shape reads, so a long value costs little.
@@ -1067,9 +1073,11 @@ def _shape(column: str, p: str) -> str:
     ``9``, each run of letters is ``a``, and each other character that is
     not plain punctuation is ``?``. So the shape never carries the text or
     the digits of the value. A JSON list, object or boolean gives its type
-    in brackets. At most :data:`SHAPE_CHARS` characters."""
+    in brackets. At most :data:`SHAPE_CHARS` characters. Each colon of the
+    class ``[:alpha:]`` has a backslash, or ``text()`` reads ``:alph`` as a
+    bind name. ``text()`` takes the backslash off."""
     digits = f"regexp_replace(left({_trimmed(column, p)}, {_SHAPE_READ}), '[0-9]+', '9', 'g')"
-    letters = f"regexp_replace({digits}, '[[:alpha:]]+', 'a', 'g')"
+    letters = f"regexp_replace({digits}, '[[\\:alpha\\:]]+', 'a', 'g')"
     other = f"regexp_replace({letters}, '[^9a ./,%()_+#&₹-]+', '?', 'g')"
     return (
         f"(CASE WHEN jsonb_typeof({column} -> :{p}) = 'string' "
@@ -1087,46 +1095,49 @@ def _text_part(key: str, prefix: str) -> tuple[str, str, dict[str, Any]]:
     return number, p, bound
 
 
-_TEXT_FROM = (
-    f"FROM crm_module_records{DETOAST_JOIN} "
-    f"WHERE organization_id = CAST(:agf_org AS uuid) AND module = :{_MODULE}"
-)
-
-
 def text_numbers_sql(keys: Sequence[str]) -> tuple[str, dict[str, Any]]:
-    """ONE statement over the whole module: for each key, the count of
-    numbers, the count of values with no value, and the count of every
-    record. It reads each record once (:data:`DETOAST_JOIN`). Each key, the
-    pattern, the words, the org and the module are bound."""
-    columns = ["count(*) AS total"]
+    """ONE statement and ONE scan of the whole module for every key: the
+    count of numbers, of values with no value and of values that are not
+    numbers, and the :data:`SHAPES_MAX` most common shapes of the last.
+
+    The scan reads each record once (:data:`DETOAST_JOIN`). A LATERAL
+    VALUES list gives one row for each record and key, with the guarded
+    number test and the no-value test. The shape runs only on a value that
+    is not a number. The rows are MATERIALIZED, so the counts and the
+    shapes read them and not the table. Each key, the pattern, the words,
+    the org and the module are bound. Only the shape leaves the database.
+
+    A row for each key and shape, in the order of the key and the rank:
+    ``(k, numbers, no_value, not_numbers, shape, count)``. A key with no
+    shape has one row with a NULL shape. An empty module gives no row."""
     params: dict[str, Any] = {_NO_VALUE: list(NO_VALUE_WORDS)}
+    rows, shapes = [], []
     for i, key in enumerate(keys):
         number, p, bound = _text_part(key, f"{_TEXT_KEY}{i}")
         params.update(bound)
-        columns.append(
-            f"count(*) FILTER (WHERE {number} IS NOT NULL) AS n{i}, "
-            f"count(*) FILTER (WHERE {_no_value(DETOAST_COLUMN, p)}) AS v{i}"
-        )
-    return f"SELECT {', '.join(columns)} {_TEXT_FROM}", params
-
-
-def text_shapes_sql(keys: Sequence[str]) -> tuple[str, dict[str, Any]]:
-    """ONE statement: the :data:`SHAPES_MAX` most common shapes of the
-    values of each key that are not numbers and hold a value, with their
-    counts. Each key, the pattern, the words, the org and the module are
-    bound. Only the shape leaves the database, never a value."""
-    parts = []
-    params: dict[str, Any] = {_NO_VALUE: list(NO_VALUE_WORDS)}
-    for i, key in enumerate(keys):
-        number, p, bound = _text_part(key, f"{_TEXT_KEY}{i}")
-        params.update(bound)
-        parts.append(
-            f"(SELECT {i} AS k, {_shape(DETOAST_COLUMN, p)} AS shape, count(*) AS n "
-            f"{_TEXT_FROM} AND {number} IS NULL "
-            f"AND NOT coalesce({_no_value(DETOAST_COLUMN, p)}, false) "
-            f"GROUP BY 2 ORDER BY 3 DESC, 2 LIMIT {SHAPES_MAX})"
-        )
-    return " UNION ALL ".join(parts), params
+        rows.append(f"({i}, {number} IS NOT NULL, "
+                    f"coalesce({_no_value(DETOAST_COLUMN, p)}, false))")
+        shapes.append(f"WHEN {i} THEN {_shape(DETOAST_COLUMN, p)}")
+    sql = (
+        "WITH agf_tv AS MATERIALIZED (SELECT agf_x.k, agf_x.num, agf_x.nv, "
+        f"CASE WHEN NOT agf_x.num AND NOT agf_x.nv THEN CASE agf_x.k {' '.join(shapes)} "
+        "END END AS shape "
+        f"FROM crm_module_records{DETOAST_JOIN} "
+        f"CROSS JOIN LATERAL (VALUES {', '.join(rows)}) AS agf_x(k, num, nv) "
+        f"WHERE organization_id = CAST(:agf_org AS uuid) AND module = :{_MODULE}), "
+        "agf_tc AS (SELECT k, count(*) FILTER (WHERE num) AS numbers, "
+        "count(*) FILTER (WHERE nv) AS no_value, "
+        "count(*) FILTER (WHERE NOT num AND NOT nv) AS not_numbers "
+        "FROM agf_tv GROUP BY k), "
+        "agf_ts AS (SELECT k, shape, count(*) AS n, row_number() OVER "
+        "(PARTITION BY k ORDER BY count(*) DESC, shape) AS agf_r "
+        "FROM agf_tv WHERE shape IS NOT NULL GROUP BY k, shape) "
+        "SELECT agf_tc.k, agf_tc.numbers, agf_tc.no_value, agf_tc.not_numbers, "
+        "agf_ts.shape, agf_ts.n FROM agf_tc LEFT JOIN agf_ts "
+        f"ON agf_ts.k = agf_tc.k AND agf_ts.agf_r <= {SHAPES_MAX} "
+        "ORDER BY agf_tc.k, agf_ts.agf_r"
+    )
+    return sql, params
 
 
 def text_number_fits(found: TextNumbers) -> bool:
@@ -1151,7 +1162,7 @@ _SHAPE_WORDS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^-?9 9$", "two numbers"),
         (r"^-?9(\.9)?$", "digits with a leading zero, or too many digits"),
         (r"^-?9(,9)+(\.9)?$", "a comma that is no thousands group"),
-        (r"^\(.*\)$", "a number in brackets"),
+        (r"^\(.*9.*\)$", "a number in brackets"),
         (r"^-?9a9$", "an exponent or a code"),
         (r"^a.*9", "a code"),
     )
@@ -1215,10 +1226,11 @@ async def admit_text_numbers(
     unchanged, so the checks after this give their 422 of before. With no
     text key, no statement runs.
 
-    ONE statement counts every key over the whole module, in the caller's
-    tenant session, with the org in the predicate and RLS under it. When a
-    field has values that are not numbers, ONE more statement reads their
-    most common shapes. A field that fits (:func:`text_number_fits`) keeps
+    ONE statement and ONE scan (:func:`text_numbers_sql`) read the counts of
+    every key over the whole module and the most common shapes of its
+    values that are not numbers. It runs in the caller's tenant session,
+    with the org in the predicate and RLS under it. An empty module counts
+    0 for each key. A field that fits (:func:`text_number_fits`) keeps
     its type ``text`` and gets ``text_number``, so a measure and a range
     read it as a number, and a text filter stays a text filter. A field that
     does not fit is a 422 with its counts and its shapes. *measured* holds
@@ -1237,20 +1249,15 @@ async def admit_text_numbers(
 
     where = {"agf_org": str(current_tenant()), _MODULE: scope.owner[len(MODULE_OWNER):]}
     sql, params = text_numbers_sql(texts)
-    row = (await db.execute(text(sql), {**params, **where})).one()
-    total = int(row[0] or 0)
+    rows = (await db.execute(text(sql), {**params, **where})).fetchall()
     counts: dict[str, TextNumbers] = {}
     for i, key in enumerate(texts):
-        numbers, no_value = int(row[1 + 2 * i] or 0), int(row[2 + 2 * i] or 0)
-        counts[key] = TextNumbers(numbers=numbers, no_value=no_value,
-                                  not_numbers=total - numbers - no_value)
-    shaped = [k for k in texts if counts[k].not_numbers > 0]
-    if shaped:
-        sql, params = text_shapes_sql(shaped)
-        rows = (await db.execute(text(sql), {**params, **where})).fetchall()
-        for i, key in enumerate(shaped):
-            found = tuple((str(r[1]), int(r[2])) for r in rows if int(r[0]) == i)
-            counts[key] = replace(counts[key], shapes=found)
+        mine = [r for r in rows if int(r[0]) == i]
+        head = mine[0] if mine else (i, 0, 0, 0, None, None)
+        counts[key] = TextNumbers(
+            numbers=int(head[1] or 0), no_value=int(head[2] or 0),
+            not_numbers=int(head[3] or 0),
+            shapes=tuple((str(r[4]), int(r[5])) for r in mine if r[4] is not None))
     for key in texts:
         if not text_number_fits(counts[key]):
             raise _text_refusal(scope, key, counts[key],
@@ -2005,7 +2012,6 @@ __all__ = [
     "text_number_fits",
     "text_number_keys",
     "text_numbers_sql",
-    "text_shapes_sql",
     "used_keys",
     "value_counts",
     "zoned",
