@@ -1612,14 +1612,20 @@ def batch_read_tools(tools: Iterable[Any]) -> list[Any]:
     that the risk registry marks read-only (``subagent_contract.
     annotated_read_only``). A tool with no entry counts as a write, so the
     filter fails closed. A tool of :data:`CHAT_FILE_TOOLS` is no read, so it
-    leaves too."""
-    from acb_skills.subagent_contract import annotated_read_only
+    leaves too. A display tool (``subagent_contract.DISPLAY_TOOLS``:
+    ``open_in_app``, ``show_view``, ``render_*``, ``studio_plan``) leaves
+    as well. It acts on the web page or needs a card, a relative link does
+    not open on a phone, and a live web run on the same thread would get its
+    page moved. Mutation: drop the DISPLAY_TOOLS test -> red
+    (``test_every_pack_tool_in_the_batch_subset_is_a_read``)."""
+    from acb_skills.subagent_contract import DISPLAY_TOOLS, annotated_read_only
     from acb_skills.tool_guard import tool_name
 
     kept: list[Any] = []
     for item in tools:
         try:
-            if annotated_read_only(tool_name(item)):
+            name = tool_name(item)
+            if name not in DISPLAY_TOOLS and annotated_read_only(name):
                 kept.append(item)
         except Exception:  # an unreadable tool is a write
             continue

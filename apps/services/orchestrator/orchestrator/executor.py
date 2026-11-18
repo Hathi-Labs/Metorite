@@ -6653,7 +6653,6 @@ async def _run_agent_inner(
                 no_egress=_no_egress,  # H-236: from the parent's binding
                 mcp=_batch_mcp,
                 packs=_batch_packs,  # G2: None unless the flag names the org
-
                 step=_answer_step,  # HRD-1b
             )
             # The retry narrows to what this attempt holds (never a union).

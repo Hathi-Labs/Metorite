@@ -392,11 +392,26 @@ def test_every_pack_tool_in_the_batch_subset_is_a_read() -> None:
             continue
         built = tp.owner_tools(slug, module)
         kept = {ti._tool_name(t) for t in tp.batch_read_tools(built)}
+        from acb_skills.subagent_contract import DISPLAY_TOOLS
+
         for name in (ti._tool_name(t) for t in built):
-            assert (name in kept) == annotated_read_only(name), (slug, name)
+            assert (name in kept) == (annotated_read_only(name) and name not in DISPLAY_TOOLS), (slug, name)
         assert not kept & _writes(), (slug, sorted(kept & _writes()))
+        assert not kept & DISPLAY_TOOLS, (slug, sorted(kept & DISPLAY_TOOLS))
         kept_all |= kept
     assert {"find_tasks", "my_tasks_list_events"} <= kept_all, "non-vacuity"
+
+
+def test_a_display_tool_never_joins_the_batch_subset() -> None:
+    """``open_in_app`` and ``studio_plan`` hold a read mark in the registry, yet
+    each acts on the web page or needs a card. Mutation: ``batch_read_tools``
+    drops its DISPLAY_TOOLS test -> red."""
+    from acb_skills.subagent_contract import DISPLAY_TOOLS
+
+    names = ["find_tasks", "open_in_app", "studio_plan", "show_view"]
+    assert {"open_in_app", "studio_plan"} <= DISPLAY_TOOLS
+    tools = [_probe(n) for n in names]
+    assert [ti._tool_name(t) for t in tp.batch_read_tools(tools)] == ["find_tasks"]
 
 
 def test_a_tool_with_no_read_mark_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -798,7 +798,8 @@ def test_only_the_run_that_layer_a_serves_offers_the_loader() -> None:
     ``run_agent_stream`` calls, after ``_start_pack_turn`` said yes
     (``test_tool_packs_choice.py``). G2 (task 3494): the WhatsApp batch run
     calls it too, through ``_apply_batch_packs`` with ``read_only=True``, and
-    that branch passes ``offer_loader=False`` (``test_chat_packs_batch.py``).
+    that branch passes ``offer_loader=False``, pinned by
+    ``test_tool_packs_choice.py::test_the_read_only_pack_apply_offers_no_loader``.
     Mutation: offer the loader from another path → red."""
     executor = "apps/services/orchestrator/orchestrator/executor.py"
     injection = "apps/services/orchestrator/orchestrator/_tool_injection.py"
