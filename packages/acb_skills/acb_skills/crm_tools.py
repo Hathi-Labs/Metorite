@@ -531,6 +531,10 @@ def _fields_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[str, int
     entity (the tool then gives its own refusal)."""
     entity = kwargs.get("entity", args[0] if args else "")
     page = kwargs.get("page", args[1] if len(args) > 1 else 1)
+    query = kwargs.get("query", args[2] if len(args) > 2 else None)
+    if str(query or "").strip():
+        # CRM-Q34-6: a search is never cached, and never reads the plain list.
+        return None
     try:
         return _entity_slug(str(entity), allow_module=True), _page(page)
     except Exception:

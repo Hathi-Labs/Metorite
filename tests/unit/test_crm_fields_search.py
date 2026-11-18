@@ -329,10 +329,6 @@ def test_a_core_record_keeps_its_custom_lines_without_a_key() -> None:
     assert T._custom_lines({"cf_region": "N"}, _CORE_DEFS) == ["- Region: North"]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "CRM-Q34-6 BLOCKER of the flag flip: the run cache keys crm_list_fields on "
-    "(entity, page) and ignores query (_fields_key). Return None there for a "
-    "non-blank query, then drop this mark."))
 def test_the_run_cache_never_serves_a_plain_list_for_a_search(monkeypatch) -> None:
     _gateway(monkeypatch, _HITS)
 
