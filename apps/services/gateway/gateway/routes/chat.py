@@ -1803,6 +1803,9 @@ async def continue_session(
     while ``CHAT_CONTINUE_ORGS`` does not hold the caller's org, and when the
     caller cannot read the source. It is 409 when the source holds no row
     that the caller typed. The request names no id, no org and no member.
+    Beside it, HRD-19a copies the member's decisions and item in focus to the new
+    chat, key to key. They are in no field of the answer, and the log holds their
+    counts. The answer keeps the shape that ``test_continue_carry.py`` pins.
     """
     org = user.organization_id
     me = (user.email or "").strip()
@@ -1843,7 +1846,21 @@ async def continue_session(
     if not linked:
         # The source left between the read and the write.
         raise HTTPException(status_code=404, detail="Session not found")
-    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12])
+    # HRD-19a (chat_failure_modes.md E3): the member's own decisions and the item in
+    # focus cross KEY TO KEY, each under the flag of its own store. Nothing is written
+    # into `text` or into a `chat_message` row, so a decision never becomes a message that
+    # the member "typed". The org and the member come from the session. A shared room
+    # carries nothing: its records are the records of one member in one chat.
+    carried_records = {"decisions": 0, "focus": False}
+    if not room.is_shared:
+        from acb_skills import chat_constraints, chat_focus
+
+        carried_records["decisions"] = await chat_constraints.carry_decisions(
+            org or "", session_id, new_id, me)
+        carried_records["focus"] = await chat_focus.carry_focus(
+            org or "", session_id, new_id, me)
+    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12],
+              decisions=carried_records["decisions"], focus=carried_records["focus"])
     return {"session_id": new_id, "text": carried}
 
 
