@@ -280,6 +280,16 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`PROVIDER_ALERT_ORGS` names the org whose admins hear when an AI vendor runs
+out of credit or runs low (`customer_console.md` §6A.17b, AO-2). They get one
+bell row and one phone push. Set it to the operator org id. The default is
+empty, and empty sends nothing. The reader refuses `*`, because a customer's
+admins must never get our vendor alerts. Its one reader is
+`gateway.provider_alerts.alert_orgs`. The seed hook, the job and the bell
+source ask it on each call, so a reload applies at the next 15-minute bucket.
+It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
 edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
 `create_task` carries a form of its values, and the write takes the values
