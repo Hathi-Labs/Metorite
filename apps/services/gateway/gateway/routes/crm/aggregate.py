@@ -923,7 +923,8 @@ async def _read(
         # CRM-Q34-11: a measure or a range on a text field that holds
         # numbers reads them. With no text field named, no statement runs.
         scope, text_numbers = await admit_text_numbers(
-            db, scope, text_number_keys(field_measure, field, fields, pairs))
+            db, scope, text_number_keys(field_measure, field, fields, pairs),
+            measured=text_number_keys(field_measure, field, fields, []))
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
         # §18.16 part 6: a text filter counts each case and short form.

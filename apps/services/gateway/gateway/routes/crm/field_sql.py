@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -1180,20 +1180,32 @@ def text_counts_words(found: TextNumbers) -> str:
     return out
 
 
-def _text_refusal(scope: FieldScope, key: str, found: TextNumbers) -> HTTPException:
-    """The 422 of a text field that does not hold numbers, with its counts."""
+def _text_refusal(scope: FieldScope, key: str, found: TextNumbers,
+                  measured: bool) -> HTTPException:
+    """The 422 of a text field that does not hold numbers, with its counts.
+    A measure names the number fields. A range keeps the words of the range
+    422 of before (CRM-Q34-2 item 4): the date and number fields, and the
+    equality filter."""
     why = ("no value of it is a number" if found.numbers == 0 else
            "fewer than half of its filled values are numbers, so it looks like a "
            "code or free text")
+    head = f"'{key}' is a text field, and {why}. {text_counts_words(found)}"
+    if measured:
+        return _refuse(
+            f"{head} A measure takes a field of type {_type_words(MEASURE_TYPES)}, or a "
+            "text field that holds numbers. The number fields of "
+            f"{scope.owner} are: {scope.choices(MEASURE_TYPES)}.",
+        )
     return _refuse(
-        f"'{key}' is a text field, and {why}. {text_counts_words(found)} A measure takes "
-        f"a field of type {_type_words(MEASURE_TYPES)}, or a text field that holds "
-        f"numbers. The number fields of {scope.owner} are: {scope.choices(MEASURE_TYPES)}.",
+        f"{head} A range takes a date or a number field. The date and number fields of "
+        f"{scope.owner} are: {scope.choices(DATE_TYPES + MEASURE_TYPES)}. "
+        f"To match one value, give {scope.filter_word(key)}=<value>.",
     )
 
 
 async def admit_text_numbers(
     db: Any, scope: FieldScope, keys: Sequence[str],
+    measured: Collection[str] | None = None,
 ) -> tuple[FieldScope, dict[str, TextNumbers]]:
     """*scope* with each text field of *keys* that holds numbers marked
     ``text_number``, and the counts of each such field (CRM-Q34-11).
@@ -1209,7 +1221,9 @@ async def admit_text_numbers(
     most common shapes. A field that fits (:func:`text_number_fits`) keeps
     its type ``text`` and gets ``text_number``, so a measure and a range
     read it as a number, and a text filter stays a text filter. A field that
-    does not fit is a 422 with its counts and its shapes."""
+    does not fit is a 422 with its counts and its shapes. *measured* holds
+    the keys of a measure or a split, and None means every key. The 422 of
+    any other key, a range, keeps the words of a range."""
     if scope.column != MODULE_COLUMN:
         return scope, {}
     texts = [
@@ -1239,7 +1253,8 @@ async def admit_text_numbers(
             counts[key] = replace(counts[key], shapes=found)
     for key in texts:
         if not text_number_fits(counts[key]):
-            raise _text_refusal(scope, key, counts[key])
+            raise _text_refusal(scope, key, counts[key],
+                                measured is None or key in measured)
     fields = {**scope.fields, **{
         k: replace(scope.fields[k], text_number=True) for k in texts}}
     return replace(scope, fields=fields), counts

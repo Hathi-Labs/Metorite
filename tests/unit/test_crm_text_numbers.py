@@ -209,6 +209,22 @@ async def test_a_field_with_no_number_is_a_422_with_its_counts() -> None:
         "0 numbers, 3 with no value, 0 not numbers. A measure takes")
 
 
+async def test_a_range_on_a_text_field_keeps_the_words_of_a_range() -> None:
+    """CRM-Q34-2 item 4 named the date and number fields, and the equality
+    filter. A range on a text field that holds no number still does."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import field_sql as fs
+
+    scope = _scope(Note="text", Fee="currency", Start="date")
+    with pytest.raises(HTTPException) as caught:
+        await fs.admit_text_numbers(_Db([(4, 0, 4)]), scope, ["Note"], measured=[])
+    assert caught.value.detail["message"] == (
+        "'Note' is a text field, and no value of it is a number. In this module: 0 numbers, "
+        "4 with no value, 0 not numbers. A range takes a date or a number field. The date "
+        "and number fields of module:Invoices are: Fee, Start. To match one value, give "
+        "field.Note=<value>.")
+
+
 @pytest.mark.parametrize(("numbers", "not_numbers", "fits"), [
     (5, 5, True), (50, 50, True), (49, 51, False), (1, 0, True), (0, 0, False),
     (0, 5, False), (7231, 52, True), (10549, 0, True), (1, 1, True), (1, 2, False),

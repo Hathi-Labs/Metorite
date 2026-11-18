@@ -362,7 +362,8 @@ async def test_half_takes_a_field_and_below_half_is_a_422(inv, app_engine) -> No
     assert empty.status_code == 422, empty.text
     assert empty.json()["detail"]["message"].startswith(
         "'Empty' is a text field, and no value of it is a number. In this module: "
-        "0 numbers, 100 with no value, 0 not numbers.")
+        "0 numbers, 100 with no value, 0 not numbers. A range takes a date or a "
+        "number field.")
 
 
 # ── 6. Organization B ─────────────────────────────────────────────────────────
