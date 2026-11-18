@@ -404,3 +404,58 @@ def test_the_org_of_the_write_is_the_bound_org(store: FakeStore) -> None:
     _fail(ORG_B, member_email=f"x@{ORG_A}")
     asyncio.run(fl.flush())
     assert {org for org, _ in store.tallies()} == {ORG_B}
+
+
+# ── Fences added after the review of TOF-2b ─────────────────────────────────
+
+
+def test_record_tool_failure_takes_no_org_argument() -> None:
+    """R5: the org is the bound tenant. A parameter of that kind fails here (the
+    mutation: add ``org=`` to the signature)."""
+    import inspect
+
+    names = set(inspect.signature(fl.record_tool_failure).parameters)
+    assert not {n for n in names if "org" in n or "tenant" in n}, names
+
+
+def test_the_writer_asks_the_field_check_before_it_queues(monkeypatch) -> None:
+    """The mutation: skip ``fields_problem``. A bad record would then fail the
+    whole tenant write, and the good rows of that write would roll back."""
+    monkeypatch.setattr(ff, "fields_problem", lambda *_a, **_k: "forced refusal")
+    _fail()
+    assert fl.pending() == 0
+
+
+def test_a_hung_redis_costs_one_wait_for_the_whole_org(store, monkeypatch) -> None:
+    """Review P2: the slot lookups run at the same time. Six groups with a hung
+    Redis must still write inside WRITE_TIMEOUT_S."""
+    import time
+
+    async def hung(org: str, fingerprint: str, n: int) -> int:
+        await asyncio.sleep(0.5)
+        return min(n, fl.SAMPLE_CAP)
+
+    monkeypatch.setattr(fl, "_sample_slots", hung)
+    for i in range(6):
+        _fail(tool="create_task", error_code=("exception", "bad_arguments", "unknown_tool",
+                                              "auth_401", "gateway_unreachable",
+                                              "outside_unreachable")[i])
+    start = time.monotonic()
+    asyncio.run(fl.flush())
+    assert time.monotonic() - start < fl.WRITE_TIMEOUT_S
+    assert len(store.tallies()) >= 1
+
+
+def test_a_record_from_a_thread_with_no_loop_still_drains(store) -> None:
+    """Review P2: a sync tool in an executor has no running loop."""
+    import threading
+    import time
+
+    t = threading.Thread(target=_fail)
+    t.start()
+    t.join()
+    deadline = time.monotonic() + 5
+    while fl.pending() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert fl.pending() == 0
+    assert len(store.tallies()) == 1

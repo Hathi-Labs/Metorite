@@ -294,11 +294,35 @@ def _ensure_drain() -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        _drain_from_thread()
         return
     task = _DRAIN
     if task is not None and not task.done() and task.get_loop() is loop:
         return
     _DRAIN = loop.create_task(_drain(), name="failure_log.drain")
+
+
+_THREAD_DRAIN = threading.Event()
+
+
+def _drain_from_thread() -> None:
+    """A record from a thread with no running loop (a sync tool in an executor)
+    still drains: one short thread runs the drain with its own loop. One such
+    thread runs at a time, and the queue is still bounded."""
+    if _THREAD_DRAIN.is_set():
+        return
+    _THREAD_DRAIN.set()
+
+    def run() -> None:
+        try:
+            asyncio.run(_drain())
+        except Exception as err:  # never raises into the caller's process
+            with contextlib.suppress(Exception):
+                _log.warning("failure_log.thread_drain_failed", error=type(err).__name__)
+        finally:
+            _THREAD_DRAIN.clear()
+
+    threading.Thread(target=run, name="failure_log.drain", daemon=True).start()
 
 
 async def _drain() -> None:
@@ -371,7 +395,10 @@ async def _open_session(org: str) -> AsyncIterator[Any]:
 async def _write_org(org: str, groups: list[list[Record]]) -> None:
     from sqlalchemy import text
 
-    slots = [await _sample_slots(org, group[0].fingerprint, len(group)) for group in groups]
+    # At the same time, so a hung Redis costs one wait of REDIS_TIMEOUT_S for the
+    # whole org and not one for each group (review of TOF-2b, P2).
+    slots = list(await asyncio.gather(
+        *(_sample_slots(org, group[0].fingerprint, len(group)) for group in groups)))
     async with _open_session(org) as db:
         await db.execute(text("SELECT set_config('statement_timeout', :ms, true)"),
                          {"ms": str(int(WRITE_TIMEOUT_S * 1000))})

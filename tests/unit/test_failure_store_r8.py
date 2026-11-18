@@ -540,3 +540,13 @@ def test_the_app_role_prunes_its_own_tenant_rows_only(world) -> None:
     assert gone == 1
     assert _admin(world, "SELECT organization_id::text FROM failure_events") == [(world.b,)]
 
+
+
+def test_both_tenant_tables_force_row_level_security(world) -> None:
+    """The mutation: drop FORCE from the migration. The suite role does not own
+    the tables, so only the catalogue shows it."""
+    rows = _admin(world, "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class "
+                         "WHERE relname IN ('failure_events', 'failure_org_days') "
+                         "AND relkind = 'r'")
+    assert {r[0] for r in rows} == {"failure_events", "failure_org_days"}
+    assert all(r[1] and r[2] for r in rows), rows
