@@ -171,6 +171,10 @@ TOF-5a, task 3423, builds this slice. This lane does not. The catalog of actions
 A spec first, because this gap needs owner decisions: which keys, read or
 write, and which spend needs a card. The first slice is the read of one key
 connector with a read-only pack, for example Google Sheets. Task 3562 owns it.
+`project-docs/specs/api_connections.md` (PROPOSED) holds the design. When its
+API-4 slice lands, the gap rows for keys, custom APIs and the key connectors
+become a new path, `api`, in both reach fences. SMTP stays a gap, because it
+is not an HTTP API.
 
 ## 4. The fence
 
