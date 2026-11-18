@@ -1998,27 +1998,27 @@ async def crm_aggregate(
     page: int = 1,
     fields: list[str] | None = None,
 ) -> str:
-    """Count, sum or average CRM records, as one total or by group. The
+    """Count, sum or average CRM records. The
     server computes every number: report them as given. Quote the Display
-    value as written. To split a total over 2 to 5 number fields,
+    value. To split a total over 2 to 5 number fields,
     give fields with every key in ONE call, never one call for each field. When the answer starts with FIRST, tell the member that line
     before the total. entity is 'leads', 'deals', 'contacts',
     'organizations' or 'module:<api_name>' (crm_list_modules). measure is
     'count', 'sum_amount' or 'weighted' (deals: amount times the
-    effective probability, open and ongoing only), or 'sum', 'avg', 'min' or
+    probability, open and ongoing only), or 'sum', 'avg', 'min' or
     'max' of the number field named by field. With no group_by and no
     group_field you get one total of every matching record. group_by is 'status', 'owner', 'pipeline', 'source',
     'created_month', 'updated_month' or 'close_month' (a module: 'owner',
     'created_month', 'updated_month'). group_field is a picklist, boolean,
     lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
-    group_field2 adds a second one on a module, at most one a date. Field keys come from crm_list_fields. A core
+    group_field2 adds a second group on a module. Field keys come from crm_list_fields. A core
     entity takes the filters of crm_list_records. A module takes field_filters: {key: value}, or
     {'key.from': date, 'key.to': date} for a date field, or
     {'key.from': N, 'key.to': M} for a number field. Both ends count, and
     text such as 'NA' counts as no value. A text or lookup filter matches
-    the exact value, name or record id.
+    the exact value, name or id.
     On a module, 'sum_amount' sums its amount, and field, group_field and
-    field_filters also take the key words '@amount', '@date', '@status' and
+    field_filters take the key words '@amount', '@date', '@status' and
     '@parent'. term is the member's own word for
     a module figure: the server maps it to one field. Give no field with it. When two
     fields give different totals, ask the member first, with both totals."""
@@ -3875,8 +3875,8 @@ async def crm_list_module_records(
     module: str, q: str | None = None, page: int = 1, page_size: int = 25,
 ) -> str:
     """The records of one mirrored module (an api_name from crm_list_modules),
-    with their ids, and the key and type of each field that crm_aggregate can
-    measure or group. q matches the record name."""
+    with ids, and the key and type of each field that crm_aggregate can
+    measure or group. q matches the name."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
     data = await _get(f"/crm/modules/{mod}/records", {
