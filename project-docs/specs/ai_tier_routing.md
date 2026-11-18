@@ -69,8 +69,11 @@ on a box is the owner's (§13.1).
 delegated run waited up to 3 s for the turn kind before its first request.
 With `AI_TURN_KIND_NOWAIT_ORGS` naming the org, such a run asks no question
 and starts at once on the `chat` kind. The flag ships empty, and a value on
-production is the owner's (§13.1). `ai_route.turn_kind` now also logs
-`waited_ms`. §4.3 carries the detail.
+production is the owner's (§13.1).
+
+The member's own stream turn does not
+change: it never waited for the question, and it still asks. `ai_route.turn_kind`
+now also logs `waited_ms`. §4.3 carries the detail.
 
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
@@ -1518,7 +1521,7 @@ source `system_one`.
 |---|---|
 | Put an agent in `AI_TIER_ROUTING` on production | It changes what a live organization is charged |
 | Put an agent in `AI_TURN_KIND_PARALLEL` on production | A restart can bill a prompt twice, so it changes what a live organization pays |
-| Put an org in `AI_TURN_KIND_NOWAIT_ORGS` on production | A delegated `plan`, `analysis` or `code` task keeps the agent's own tier, so it changes the answer and what the org pays |
+| Put an org in `AI_TURN_KIND_NOWAIT_ORGS` on production | A delegated `plan`, `analysis` or `code` task keeps the agent's own tier, so it changes the answer and what the org pays. With `AI_REASONING_OFF_AGENTS` naming the agent, such a task also runs with thinking off (kind `chat`, effort `auto`) |
 | Turn on `NEXT_PUBLIC_AI_TIER_ROUTING` in production | It is build-time and reaches every organization at once |
 | Bind `tier-fast` to a vendor that is not yet a sub-processor | §6.6. A covered run would send content to it |
 
