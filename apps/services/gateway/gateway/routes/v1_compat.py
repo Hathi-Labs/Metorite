@@ -284,6 +284,43 @@ def _eviction_units(messages: list[dict[str, Any]]) -> list[list[int]]:
     return units
 
 
+def _restore_cut_pastes(
+    before: list[dict[str, Any]], after: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """*after*, with each paste block that the char-trim cut made whole again
+    (HRD-14b, ``chat_failure_modes.md`` §4.7b, "The restore").
+
+    It acts ONLY when ``CHAT_PASTE_FRAME_ORGS`` holds ``*``
+    (``paste_frame.paste_frame_everywhere``). This door binds no tenant, and
+    it never reads an org from a header or the body (R5, R11). A list of org
+    ids restores nothing here. Production never runs this path: the Router
+    takes the call and nothing cuts. When the hygiene step of the trim
+    changed the number of messages, the pairs are unknown, and each changed
+    text is read alone. It never raises."""
+    try:
+        from acb_skills.paste_frame import paste_frame_everywhere
+        from acb_skills.untrusted import restore_cut_paste
+
+        if not paste_frame_everywhere():
+            return after
+        paired = len(before) == len(after)
+        out: list[dict[str, Any]] = []
+        for i, message in enumerate(after):
+            # A paste block lives only in a user turn (the seam frames no other).
+            user = isinstance(message, dict) and message.get("role") == "user"
+            content = message.get("content") if user else None
+            old = before[i].get("content") if paired and isinstance(before[i], dict) else None
+            if not isinstance(content, str) or (paired and content == old):
+                out.append(message)
+                continue
+            fixed = restore_cut_paste(old if isinstance(old, str) else None, content)
+            out.append(message if fixed == content else {**message, "content": fixed})
+        return out
+    except Exception:  # noqa: BLE001 — the guard must never break a working call
+        _log.warning("v1.paste_restore_failed", exc_info=True)
+        return after
+
+
 def _fit_context_window(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -351,11 +388,14 @@ def _fit_context_window(
 
         # 3 + 4. Shrink the output to the minimum, then char-trim what is
         # still too long.
+        _pre_cut = out
         out, _trimmed = fit_messages_to_context(
             out, model,
             max_output_tokens=_CONTEXT_FIT_MIN_OUTPUT,
             safety_margin=_CONTEXT_FIT_SAFETY_TOKENS,
         )
+        if _trimmed:
+            out = _restore_cut_pastes(_pre_cut, out)
         final_prompt = count_message_tokens(out, model) + tools_tokens
         _log.warning(
             "v1.context_fit_messages_evicted", model=model, window=window,
