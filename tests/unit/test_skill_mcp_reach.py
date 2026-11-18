@@ -386,6 +386,8 @@ def test_a_skill_whose_server_did_not_attach_writes_one_line(monkeypatch) -> Non
     ("crm", "update_record", "crm_update_record"),  # a CRM pack tool
     ("web", "search", "web_search"),  # a platform tool
     ("github", "search", "github_search"),  # a tool of a pack family
+    ("app", "crm_update_deal", "app_crm_update_deal"),  # a Custom App action tool
+    ("whatsapp", "ui", "whatsapp_ui"),  # the WhatsApp UI tool
 ])
 async def test_an_mcp_tool_with_a_first_party_name_never_serves(
     monkeypatch, server: str, name: str, local: str,
@@ -437,3 +439,80 @@ def test_the_unattached_log_counts_only_mcp_functions(monkeypatch) -> None:
     ti._log_skill_mcp_unattached(applied, agent)
     assert _events(lines, "executor.skill_mcp_unattached") == [
         {"skill": SKILL, "version": 2, "servers": [SERVER]}]
+
+
+#: Re-review P1. Each call whose tools ``_inject_agent_tools`` adds to the
+#: run, and the decision that reserves its names. A new site fails the test
+#: below until it gets a decision here and in ``skill_packs``.
+_LATE_SITES = {
+    "_collect_injectable_platform_tools": "families",
+    "load_app_action_tools": "prefix app_",
+    "load_workflow_tools": "families",
+    "_whatsapp_ui_tools": "late name",
+}
+
+
+def _added_calls(fn: Any) -> set[str]:
+    """The names of the calls whose result joins ``_extra_tools`` or
+    ``_all_tools`` in the source of *fn*: an assignment from a call, a
+    ``+`` of a call, and an ``append`` or ``extend`` of one."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    targets = {"_extra_tools", "_all_tools"}
+    found: set[str] = set()
+
+    def _calls(node: Any) -> None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                name = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
+                if name:
+                    found.add(str(name))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) in targets for t in node.targets):
+            if isinstance(node.value, ast.BinOp):
+                _calls(node.value.right)
+            elif isinstance(node.value, ast.Call):
+                _calls(node.value)
+        if (isinstance(node, ast.Call) and getattr(node.func, "attr", None) in {"append", "extend"}
+                and getattr(node.func.value, "id", None) in targets):
+            for arg in node.args:
+                _calls(arg)
+    return found
+
+
+def test_each_late_injection_site_has_a_decision() -> None:
+    """Re-review P1. The tools that injection adds after the packs step are
+    reserved by name or by prefix (``skill_packs.RESERVED_LOCAL_PREFIXES``,
+    ``RESERVED_LATE_NAMES`` and the families). A new site that adds a tool
+    fails here until it has a decision. Mutation: drop ``app_`` or
+    ``whatsapp_ui`` from the lists, or add a site → red."""
+    import inspect
+
+    from orchestrator import _tool_injection as ti
+    from orchestrator import app_tools, workflow_tools
+
+    sites = _added_calls(ti._inject_agent_tools)
+    # The filters and the gate keep the list, and they add no tool.
+    sites -= {"_drop_withheld", "_gate_injected_tool", "_is_egress", "getattr"}
+    assert sites == set(_LATE_SITES), sites
+    assert "app_" in sp.RESERVED_LOCAL_PREFIXES
+    assert 'f"app_{slug}_{name}"' in inspect.getsource(app_tools)
+    assert sp.is_reserved_local("app_any_action", frozenset())
+    assert "whatsapp_ui" in sp.RESERVED_LATE_NAMES
+    from acb_skills.whatsapp_ui import whatsapp_ui
+
+    assert whatsapp_ui.__name__ in sp.RESERVED_LATE_NAMES
+    families = sp.family_tool_names()
+    trio = {f.__name__ for f in (workflow_tools.list_workflows, workflow_tools.run_workflow,
+                                 workflow_tools.get_workflow_run)}
+    assert trio <= families, trio - families
+    from acb_skills.skill_families import injected_tool_names
+
+    assert set(injected_tool_names()) <= families
+    assert sp.LOADER_TOOLS <= sp.reserved_names()
+    assert ti._FIRST_PARTY_LOADERS is sp.LOADER_TOOLS, "one owner of the loader names"

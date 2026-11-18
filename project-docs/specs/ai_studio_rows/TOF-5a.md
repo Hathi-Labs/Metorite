@@ -56,6 +56,15 @@ Verify: `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)
 8. **The log lines.** `executor.skill_mcp_refused` names the server and the reason (`mcp_unreachable`, `mcp_not_approved`, `approvals_unread`, `lookahead_failed`). `executor.skill_refused` keeps its reason. `executor.skill_mcp_unattached` names the skill, the version and the server, after the attach of the stream run.
 9. **A first-party name is reserved (review P1).** A local name can equal a first-party tool, for example `crm_update_record` from a server `crm` with a tool `update_record`. MAF then drops the whole server for the clash. The skill rules would then send the model to the first-party tool. So such an id never serves, and the build gives `mcp_name_reserved`. The reserved set is `skill_packs.reserved_names` and the CSY-10 set of the run (`_reserved_tool_names`).
 10. **An MCP name brings no pack.** `pack_needs` leaves each MCP local name out. `_log_skill_mcp_unattached` counts only a function of `agent.mcp_tools`.
+11. **The names that the run adds after the packs step (re-review P1).** The reserved set comes before `_inject_agent_tools`, so it must also hold each name that comes later. `skill_packs.RESERVED_LOCAL_PREFIXES` and `RESERVED_LATE_NAMES` own that decision. The sites of `_inject_agent_tools` are these:
+    - `_collect_injectable_platform_tools`: each name is in a family (`family_tool_names`), and `test_skills_registry.py` fences it.
+    - `load_app_action_tools`: `app_<slug>_<action>`, so each local name with the prefix `app_` is reserved.
+    - `load_workflow_tools`: `list_workflows`, `run_workflow` and `get_workflow_run`, each in the `workflows` family.
+    - `_whatsapp_ui_tools`: `whatsapp_ui`, a late name.
+    - `_offer_pack_loader`: `load_skill_tools` and `find_tools`, in `skill_packs.LOADER_TOOLS`, the one list. `_tool_injection._FIRST_PARTY_LOADERS` reads it.
+    - `_add_crm_facts_block` and `_log_request_tools_view` add no tool.
+
+    `test_skill_mcp_reach.py::test_each_late_injection_site_has_a_decision` reads the source of `_inject_agent_tools`. A new site that adds a tool makes it fail until the site has a decision. `build` reads `reserved_names` once for each build.
 
 ## Open owner questions
 

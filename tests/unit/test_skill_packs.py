@@ -1624,13 +1624,15 @@ async def test_with_a_flag_off_the_turn_reads_no_mcp_fact(monkeypatch, off: str)
     ("mcp:crm.update_record", "crm_update_record"),
     ("mcp:web.search", "web_search"),
     ("mcp:github.search", "github_search"),
+    ("mcp:app.crm_update_deal", "app_crm_update_deal"),  # a Custom App action
+    ("mcp:whatsapp.ui", "whatsapp_ui"),
 ])
 def test_a_local_name_of_a_first_party_tool_is_reserved(mcp_id: str, local: str) -> None:
     """Review P1. ``build`` refuses an MCP id whose local name is a first-party
     tool, also when the map serves it and also before the approval check.
     The run can add its own names (*mcp_reserved*). Mutation: drop the
     check of ``reserved_names`` → red."""
-    assert local in sp.reserved_names()
+    assert sp.is_reserved_local(local, sp.reserved_names())
     assert _mcp_build([mcp_id], served={mcp_id: local}) == "mcp_name_reserved"
     assert _mcp_build([mcp_id], served={}, unapproved={mcp_id}) == "mcp_name_reserved"
     assert _mcp_build([_MCP_ID], served={_MCP_ID: _MCP_LOCAL},
@@ -1654,3 +1656,25 @@ def test_an_mcp_name_never_brings_a_first_party_pack() -> None:
     assert sp.pack_needs((forged,), set()) == {}
     plain = dataclasses.replace(base, tools=("crm_update_record",))
     assert sp.pack_needs((plain,), set()) == {plain.slug: ("crm-records",)}
+
+
+def test_reserved_names_are_read_once_a_build(monkeypatch) -> None:
+    """Re-review. ``build`` reads ``reserved_names`` once, not once for each
+    ``mcp:`` action, and a build with no ``mcp:`` action reads it never.
+    Mutation: read it inside ``_mcp_reason`` → red."""
+    calls: list[int] = []
+    real = sp.reserved_names
+
+    def _count() -> frozenset[str]:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(sp, "reserved_names", _count)
+    two = ["mcp:crm-srv.lookup_deal", "mcp:crm-srv.find_deal"]
+    built = _mcp_build(two, served={two[0]: "crm-srv_lookup_deal",
+                                    two[1]: "crm-srv_find_deal"})
+    assert isinstance(built, sp.SkillPack), built
+    assert len(calls) == 1
+    calls.clear()
+    assert isinstance(_pack(), sp.SkillPack)
+    assert calls == []

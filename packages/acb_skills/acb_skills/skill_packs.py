@@ -78,9 +78,12 @@ __all__ = [
     "CHAT_TOOL_LEFT_OUT",
     "CHAT_TOOL_OWNERS",
     "CHAT_TOOL_PREFIX",
+    "LOADER_TOOLS",
     "MAX_RULES_TOKENS",
     "MCP_PREFIX",
     "MIN_NAME_CHARS",
+    "RESERVED_LATE_NAMES",
+    "RESERVED_LOCAL_PREFIXES",
     "OBJECT_VERB_TOOLS",
     "SKILL_PREFIX",
     "SkillPack",
@@ -89,6 +92,8 @@ __all__ = [
     "button_tools",
     "chat_tools",
     "estimate_tokens",
+    "family_tool_names",
+    "is_reserved_local",
     "is_skill_slug",
     "matches",
     "mcp_local_name",
@@ -178,9 +183,46 @@ _STUDIO_TOOL = "studio_"
 MCP_PREFIX = "mcp:"
 
 
-#: TOF-5a-1 review P1. The loader tools of the platform. No MCP local name
-#: may take one of them.
-_LOADER_TOOLS = frozenset({"load_skill_tools", "find_tools"})
+#: TOF-5a-1 review P1. The loader tools of the platform: THE one list.
+#: ``_tool_injection._FIRST_PARTY_LOADERS`` (CSY-10) reads it. No MCP local
+#: name may take one of them.
+LOADER_TOOLS: frozenset[str] = frozenset({"load_skill_tools", "find_tools"})
+
+#: TOF-5a-1 re-review P1. The first-party names that the run adds AFTER the
+#: packs step, so a set of the names of the run at that step cannot hold
+#: them. The one owner of this decision. Each injection site of
+#: ``_tool_injection._inject_agent_tools`` that adds a tool has one entry
+#: here, or its names are in ``skill_families`` (:func:`family_tool_names`):
+#:
+#: * ``_collect_injectable_platform_tools``: each name is in a family
+#:   (fence ``test_skills_registry.py``).
+#: * ``orchestrator.app_tools.load_app_action_tools``: ``app_<slug>_<action>``,
+#:   so the prefix ``app_``.
+#: * ``orchestrator.workflow_tools.load_workflow_tools``: the trio, each in the
+#:   ``workflows`` family.
+#: * ``_tool_injection._whatsapp_ui_tools``: ``whatsapp_ui``.
+#: * The loaders of ``_offer_pack_loader``: :data:`LOADER_TOOLS`.
+#:
+#: The fence is ``test_skill_mcp_reach.py::test_each_late_injection_site_has_a_decision``.
+RESERVED_LOCAL_PREFIXES: tuple[str, ...] = ("app_",)
+RESERVED_LATE_NAMES: frozenset[str] = frozenset({"whatsapp_ui"})
+
+
+def family_tool_names() -> frozenset[str]:
+    """THE union of the tools of each pack of ``skill_families``. The run's
+    CSY-10 set (``_tool_injection._reserved_tool_names``) reads it too."""
+    from acb_skills import skill_families
+
+    return frozenset(str(n) for fam in skill_families.SKILL_FAMILIES.values()
+                     for n in fam.get("tools", ()))
+
+
+def is_reserved_local(name: str, reserved: frozenset[str]) -> bool:
+    """True when the MCP local name *name* is a first-party name: in
+    *reserved*, in :data:`RESERVED_LATE_NAMES`, or with a prefix of
+    :data:`RESERVED_LOCAL_PREFIXES`."""
+    return (name in reserved or name in RESERVED_LATE_NAMES
+            or name.startswith(RESERVED_LOCAL_PREFIXES))
 
 
 def reserved_names() -> frozenset[str]:
@@ -194,12 +236,8 @@ def reserved_names() -> frozenset[str]:
     to the first-party tool. So :func:`build` refuses such an id with
     ``mcp_name_reserved``. The run adds the names of its own surface
     (``_tool_injection._reserved_tool_names``) through *mcp_reserved*."""
-    from acb_skills import skill_families
-
-    names = {str(n) for fam in skill_families.SKILL_FAMILIES.values()
-             for n in fam.get("tools", ())}
-    return frozenset(names | _door_tools() | set(OBJECT_VERB_TOOLS.values())
-                     | {"run_workflow"} | _LOADER_TOOLS)
+    return frozenset(family_tool_names() | _door_tools() | set(OBJECT_VERB_TOOLS.values())
+                     | {"run_workflow"} | LOADER_TOOLS | RESERVED_LATE_NAMES)
 
 
 def mcp_local_name(action_id: object) -> tuple[str, str] | None:
@@ -463,8 +501,8 @@ def build(skill_id: str, name: str, description: str, version: int,
     ``MAF_MCP_ORGS`` is off, and an ``mcp:`` id gives ``chat_tools_off``. An
     id of *mcp_unapproved* gives ``mcp_not_approved``. An id that the map
     does not hold gives ``action_unserved``. Review P1: an id of
-    *mcp_reserved*, or whose local name is in :func:`reserved_names`, gives
-    ``mcp_name_reserved``."""
+    *mcp_reserved*, or whose local name :func:`is_reserved_local` names
+    against :func:`reserved_names`, gives ``mcp_name_reserved``."""
     clean_name = strip_hidden(str(name or "")).strip()
     raw_desc = body.get("description") if isinstance(body, Mapping) else None
     desc = strip_hidden(str(raw_desc if isinstance(raw_desc, str) else description or "")).strip()
@@ -480,12 +518,15 @@ def build(skill_id: str, name: str, description: str, version: int,
     mcp: list[tuple[str, str]] = []
     unapproved = frozenset(str(i).strip() for i in mcp_unapproved)
     reserved = frozenset(str(i).strip() for i in mcp_reserved)
+    taken: frozenset[str] | None = None  # reserved_names(), once a build
     for action in actions:
         raw = strip_hidden(str(action))
         if not chat_tools and raw.strip().startswith(CHAT_TOOL_PREFIX):
             return "chat_tools_off"
         if raw.strip().startswith(MCP_PREFIX):
-            reason = _mcp_reason(raw.strip(), chat_tools, mcp_tools, unapproved, reserved)
+            if taken is None:
+                taken = reserved_names()
+            reason = _mcp_reason(raw.strip(), chat_tools, mcp_tools, unapproved, reserved, taken)
             found = mcp_local_name(raw)
             if reason or found is None:
                 return reason or "action_unserved"
@@ -511,7 +552,8 @@ def build(skill_id: str, name: str, description: str, version: int,
 
 
 def _mcp_reason(action: str, chat_tools: bool, served: Mapping[str, str] | None,
-                unapproved: frozenset[str], reserved: frozenset[str]) -> str:
+                unapproved: frozenset[str], reserved: frozenset[str],
+                taken: frozenset[str]) -> str:
     """TOF-5a-1. The reason that the ``mcp:`` id *action* fails, or ``""``.
 
     The local name in *served* must be the name of :func:`mcp_local_name`,
@@ -520,7 +562,7 @@ def _mcp_reason(action: str, chat_tools: bool, served: Mapping[str, str] | None,
     if not chat_tools or served is None:
         return "chat_tools_off"
     found = mcp_local_name(action)
-    if action in reserved or (found is not None and found[1] in reserved_names()):
+    if action in reserved or (found is not None and is_reserved_local(found[1], taken)):
         return "mcp_name_reserved"
     if action in unapproved:
         return "mcp_not_approved"

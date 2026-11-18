@@ -4597,8 +4597,8 @@ async def _skill_mcp_map(
 
     taken = _reserved_tool_names(reach.agent if reach is not None else None)
     taken |= skill_packs.reserved_names()
-    reserved = frozenset(i for i in {*served, *unapproved}
-                         if (skill_packs.mcp_local_name(i) or ("", ""))[1] in taken)
+    reserved = frozenset(i for i in {*served, *unapproved} if skill_packs.is_reserved_local(
+        (skill_packs.mcp_local_name(i) or ("", ""))[1], taken))
     served = {i: n for i, n in served.items() if i not in reserved}
     unapproved = frozenset(unapproved - reserved)
     for name in sorted({_mcp_server_of(i) for i in reserved}):
@@ -5285,8 +5285,15 @@ async def _inject_mcp_servers(
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
 
 
-#: Tools of the platform that no MCP server may take the look of.
-_FIRST_PARTY_LOADERS = frozenset({"load_skill_tools", "find_tools"})
+#: Tools of the platform that no MCP server may take the look of. The one
+#: list is ``skill_packs.LOADER_TOOLS`` (TOF-5a-1 re-review).
+def _first_party_loaders() -> frozenset[str]:
+    from acb_skills.skill_packs import LOADER_TOOLS
+
+    return LOADER_TOOLS
+
+
+_FIRST_PARTY_LOADERS = _first_party_loaders()
 
 
 def _reserved_tool_names(agent: Any) -> frozenset[str]:
@@ -5299,13 +5306,13 @@ def _reserved_tool_names(agent: Any) -> frozenset[str]:
         held = _maf_mcp._names_held(agent)
     except Exception:  # a fault gives the platform surface alone
         held = set()
-    packs: set[str] = set()
+    packs: frozenset[str] = frozenset()
     try:
-        from acb_skills.skill_families import SKILL_FAMILIES
+        from acb_skills.skill_packs import family_tool_names
 
-        packs = {n for fam in SKILL_FAMILIES.values() for n in fam["tools"]}
+        packs = family_tool_names()
     except Exception:  # the platform surface alone
-        packs = set()
+        packs = frozenset()
     return frozenset(held | _registered_platform_surface() | packs | _FIRST_PARTY_LOADERS)
 
 
