@@ -689,15 +689,35 @@ def test_replay_events_sends_no_block() -> None:
         assert "block" not in {kw.arg for kw in call.keywords}
 
 
+def _called(fn: Any) -> list[Any]:
+    """Each call in the code of *fn*, by AST, so a docstring never counts."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+
+
+def _names(calls: list[Any]) -> set[str]:
+    import ast
+
+    return {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
+            for c in calls}
+
+
 def test_send_once_reads_the_stream_head_only() -> None:
+    import ast
     import inspect
 
-    src = inspect.getsource(send_once)
-    assert "xread" not in src and "replay_events(" not in src
-    head = inspect.getsource(send_once._stream_run_id)
-    assert "stream_relay.stream_head(" in head
-    body = inspect.getsource(stream_relay.stream_head)
-    assert ".xrange(" in body and "xread" not in body and "block" not in body
+    module_calls = _names([n for n in ast.walk(ast.parse(inspect.getsource(send_once)))
+                           if isinstance(n, ast.Call)])
+    assert not module_calls & {"xread", "replay_events", "subscribe_events"}
+    assert "stream_head" in _names(_called(send_once._stream_run_id))
+    head = _called(stream_relay.stream_head)
+    assert "xrange" in _names(head) and "xread" not in _names(head)
+    for call in head:
+        assert "block" not in {kw.arg for kw in call.keywords}
 
 
 def test_the_scripts_compare_before_they_write() -> None:
