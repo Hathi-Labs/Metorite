@@ -257,6 +257,20 @@ def test_an_exact_tool_keeps_its_answer_and_a_close_name_gives_way() -> None:
         ut.WITHHELD_MAIL.format(name=HELD))
 
 
+def test_a_server_named_like_a_platform_family_keeps_the_close_name_answer() -> None:
+    """Review P2: a server named ``crm`` must not turn a typo of a tool of the
+    platform into the "connected system" text. The close name keeps its answer."""
+    held = ut.Withheld(prefixes=frozenset({"crm_"}), reason=ut.WITHHELD_MAIL_REASON)
+    real = "crm_update_record"
+    typo = "crm_update_records"
+    assert not held.holds(typo)
+    assert ut.answer_for(typo, live=[real], offered=(), withheld=held) == (
+        ut.SUGGEST_LIVE.format(name=typo, near=real))
+    # Non-vacuity: a name of that server that no tool of the platform is near to
+    # still gets the reason.
+    assert held.holds("crm_zzzz_unrelated_operation")
+
+
 def test_a_step_ignores_the_value() -> None:
     """A delegated run or a run with no chat keeps NOT_IN_STEP (HRD-1b)."""
     held = ut.Withheld(prefixes=frozenset({"ledger_"}), reason=ut.WITHHELD_MAIL_REASON)
@@ -731,15 +745,15 @@ async def _orchestrator_turn(
 
 
 async def test_a_held_back_name_never_asks_the_loader(monkeypatch) -> None:
-    """(e): ``CHAT_TOOL_AUTOLOAD`` on. ``crm_create_task`` is close to
-    ``create_task`` of the offered «projects» pack. With the server ``crm``
-    held back, the loader is not asked and nothing loads. Non-vacuity: with
-    no row, the same turn loads the pack. Mutation: let a held name reach
-    ``_autoload`` → a load → red."""
+    """(e): ``CHAT_TOOL_AUTOLOAD`` on. With the server ``ledger`` held back,
+    the loader is not asked and nothing loads. Non-vacuity: with no row, the
+    same name keeps the answer of HRD-1c. Mutation: let a held name reach
+    ``_autoload`` → a load → red. (A server named like a family of the
+    platform, such as ``crm``, keeps the close-name answer: review P2.)"""
     monkeypatch.setattr(ut, "autoload_enabled", lambda: True)
-    name = "crm_create_task"
+    name = "ledger_call_operation"
     client, loader, ran, reads = await _orchestrator_turn(
-        monkeypatch, _calls(name), rows=[_row("crm")])
+        monkeypatch, _calls(name), rows=[_row("ledger")])
     assert _tool_texts(client) == [ut.WITHHELD_MAIL.format(name=name)]
     assert loader.record.holds() == (), "a held name never loads a pack"
     assert reads == [ORG] and ran == []
@@ -747,9 +761,9 @@ async def test_a_held_back_name_never_asks_the_loader(monkeypatch) -> None:
 
     client, loader, _ran2, _reads = await _orchestrator_turn(
         monkeypatch, _calls(name), rows=[])
-    assert loader.record.holds() == ("projects",), "non-vacuity: the close name loads"
-    assert _tool_texts(client)[0].startswith(
-        f"Not run: no tool is named {name}. The closest tool is create_task.")
+    assert loader.record.holds() == (), "nothing near the name: nothing loads"
+    assert _tool_texts(client)[0].startswith(f"Not run: no tool is named {name}"), (
+        "non-vacuity: with no row the old answer returns")
 
 
 async def test_the_auto_load_stays_dark(monkeypatch) -> None:
@@ -760,8 +774,8 @@ async def test_the_auto_load_stays_dark(monkeypatch) -> None:
     get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
     assert ut.autoload_enabled() is False
     client, loader, _ran, _reads = await _orchestrator_turn(
-        monkeypatch, _calls("crm_create_task"), rows=[_row("crm")])
-    assert _tool_texts(client) == [ut.WITHHELD_MAIL.format(name="crm_create_task")]
+        monkeypatch, _calls("ledger_call_operation"), rows=[_row("ledger")])
+    assert _tool_texts(client) == [ut.WITHHELD_MAIL.format(name="ledger_call_operation")]
     assert loader.record.holds() == ()
 
 

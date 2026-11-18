@@ -236,6 +236,13 @@ def _first_party(name: str) -> bool:
     return any(name in tuple(getattr(p, "tools", ()) or ()) for p in tp.PACKS.values())
 
 
+def _first_party_names() -> set[str]:
+    """The tool names of every pack of the platform."""
+    from acb_skills import tool_packs as tp
+
+    return {t for p in tp.PACKS.values() for t in tuple(getattr(p, "tools", ()) or ())}
+
+
 @dataclass(frozen=True)
 class Withheld:
     """HRD-1d: the MCP servers that ONE run held back on purpose, and why.
@@ -260,7 +267,10 @@ class Withheld:
             return False
         if not any(p and name.startswith(p) and len(name) > len(p) for p in self.prefixes):
             return False
-        return not _first_party(name)
+        # A server may share its name with a family of the platform (``crm``).
+        # A near miss of a tool of the platform then keeps its close-name
+        # answer, so the model corrects itself in the same turn (review P2).
+        return not _first_party(name) and not _closest(name, _first_party_names())
 
 
 def answer_for(
