@@ -2,6 +2,8 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 792 and 1236.
 
+> **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
+
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the

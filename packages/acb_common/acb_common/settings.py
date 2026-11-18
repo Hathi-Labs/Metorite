@@ -393,6 +393,17 @@ class Settings(BaseSettings):
     # owner's production run (CRM-Z10-run). Fence:
     # tests/unit/test_crm_cutover_switch_r8.py.
     crm_cutover_orgs: str = ""
+    # `crm_module_find_orgs` (WS-53 CRM-Q34-6, task 3699, 2026-11-18) lists
+    # the organization ids whose chat may find a field by its words, in one
+    # module or in each mirrored module, in the grammar of `crm_orgs`.
+    # Default empty means NO organization: `GET /crm/fields-search` answers
+    # 404 `module_find_off` and sends no SQL, and `crm_list_fields` ignores
+    # its `query` and answers as before. The one reader is
+    # `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload applies
+    # it (`docs/flag_reload.md`). A name in the list spends nothing, so a
+    # flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_fields_search.py.
+    crm_module_find_orgs: str = ""
     # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
     # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
     # `off` (the default), `shadow` (check at the end of the answer and log
