@@ -73,7 +73,10 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
     "resolve_metorite_files_route": (
         "H-392 (owner, 2026-10-24). Reads no email table and no mailbox. It "
         "resolves Metorite files through their own stores, as the member: an "
-        "Artifacts file through _member_agent_workspace and _safe_resolve, a "
+        "Artifacts file through _member_agent_workspace and _safe_resolve, or "
+        "a chat file of a shared agent through _chat_thread_file, which needs "
+        "can_send in the room of that chat (task 3598, "
+        "test_email_attach_shared_agent.py), a "
         "Knowledge page through load_page and visible_pages_clause, a task "
         "attachment through visible_task_attachment (test_email_metorite_files.py)."
     ),

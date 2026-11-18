@@ -2007,6 +2007,102 @@ def _celebration_line(agent_name: str, zone: str | None) -> str:
         return ""
 
 
+# ── The sent acts of this chat (task 3594, chat_organization.md §16.3) ──────
+# Run a8ad07f3 (2026-11-16): turn 2 did not see that turn 1 sent a mail, sent
+# it again, and then said that neither mail went. The async prime step reads
+# the last sent acts of this chat from the card record (``card_record.
+# sent_acts``), as the member, and binds them into the run. The sync context
+# builder states them, one fact line each, then one rule line. The block rides
+# the run context (instructions), never a stored message, and the persona
+# does not change. A fault, a timeout and the flag off all give no line, and
+# the turn runs as before. Fence: ``tests/unit/test_sent_record.py``.
+
+_SENT_ACTS_KEY = "sent_acts"
+#: The longest wait of a turn for the read. A slower read gives no line.
+_SENT_ACTS_TIMEOUT_S = 1.0
+
+
+async def _prime_sent_acts(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the sent acts of this chat into the run, or bind nothing.
+
+    Gates: a run that is not delegated and not batch, the run's own org, a
+    verified member, and ``CHAT_CARD_RECORD_ORGS`` for the org
+    (``card_record.record_allowed``). The run binding must name the member and
+    this chat. All of it comes from the run boundary, never from input (R5). A
+    chat that holds untrusted input still gets the line. Never raises, apart
+    from a cancel of the turn."""
+    _ = agent_name  # each agent of the member's own chat gets the line
+    if delegated or batch_thread:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member:
+        return
+    try:
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        from orchestrator import card_record
+
+        if not card_record.record_allowed(org):
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        if str(ctx.get("member") or "").strip().lower() != member:
+            return
+        acts = await card_record.sent_acts(org, session, member,
+                                           timeout_s=_SENT_ACTS_TIMEOUT_S)
+        if acts:
+            derive_artifact_context(**{_SENT_ACTS_KEY: (run_id, org, member, tuple(acts))})
+    except ImportError:
+        return
+    except Exception as exc:  # fail open: no line, the turn runs as before
+        _log.warning("executor.sent_acts_read_failed", error=type(exc).__name__)
+
+
+def _sent_acts_block(agent_name: str) -> str:
+    """The sent acts of this run, or ``""``. It reads the binding that
+    :func:`_prime_sent_acts` set, and no database. It checks the flag, the
+    org, the member and the run id again, so a delegated run never gets the
+    block of its parent, and a flag turned off drops it at once. No exception
+    escapes."""
+    _ = agent_name
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        from orchestrator import card_record
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or not card_record.record_allowed(org):
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_SENT_ACTS_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, acts = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        return card_record.sent_acts_text(list(acts))
+    except Exception:
+        return ""
+
+
 # ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
 # ``one_assistant_context.md`` §4.2.2 and §4.2.8. Layer (a) in a live run.
 # The read starts beside the load (:func:`_start_pack_turn`), the apply runs
@@ -2190,11 +2286,12 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
     provider and of an MCP server. Only the orchestrator, and never raises.
     The view comes from ``agent_with_providers``, as the loader's does.
 
-    HRD-1: the same view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
-    the one answer to a call of a tool that the run did not load. It goes
-    after each seam of ``_inject_agent_tools``, so its chat middleware runs
-    inside the hold, steer and number-check middleware, and rewrites the
-    messages that they pass on. Only the tier policy view comes later."""
+    HRD-1: the next view carries ``acb_skills.unknown_tool.UnknownToolProvider``,
+    the one answer to a call of a tool that the run did not load, through the
+    one hook :func:`_unknown_tool_view`. It goes after each seam of
+    ``_inject_agent_tools``, so its chat middleware runs inside the hold,
+    steer and number-check middleware, and rewrites the messages that they
+    pass on. Only the tier policy view comes later."""
     if agent_name != _PACK_AGENT or not agents:
         return agents
     try:
@@ -2203,15 +2300,43 @@ def _log_request_tools_view(agents: list[Any], agent_name: str) -> list[Any]:
         if not isinstance(agents[0], Agent):
             return agents
         from acb_skills.tool_guard import LogRequestToolsProvider
+
+        from orchestrator._native_run_context import agent_with_providers
+
+        agents[0] = agent_with_providers(agents[0], [LogRequestToolsProvider(agent_name)])
+        # HRD-1: the answer to an unknown tool name, last, as before HRD-1b.
+        agents = _unknown_tool_view(agents, step=False)
+    except Exception as exc:  # a log never costs the turn
+        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+    return agents
+
+
+def _unknown_tool_view(agents: list[Any], *, step: bool) -> list[Any]:
+    """*agents*, with the first one on a per-run view that carries
+    ``acb_skills.unknown_tool.UnknownToolProvider`` (HRD-1, HRD-1b).
+
+    The ONE hook of the answer to a call of an unknown tool name. The stream
+    run of the orchestrator (:func:`_log_request_tools_view`) and each batch
+    run (:func:`_assemble_batch_agents`) call it. A delegated agent, a worker
+    and a self-anneal retry run through the batch run, so they get it there.
+    The model then reads the HRD-1 text, and never MAF's own text. *step* is
+    True for a delegated run or a run with no chat: its text names no pack,
+    and it never asks a loader. A Copilot SDK agent is not a MAF ``Agent``,
+    so it gets no view. Never raises: a fault leaves MAF's text, as before."""
+    if not agents:
+        return agents
+    try:
+        from agent_framework import Agent
+
+        if not isinstance(agents[0], Agent):
+            return agents
         from acb_skills.unknown_tool import UnknownToolProvider
 
         from orchestrator._native_run_context import agent_with_providers
 
-        # HRD-1: the answer to an unknown tool name rides in the same view.
-        agents[0] = agent_with_providers(
-            agents[0], [LogRequestToolsProvider(agent_name), UnknownToolProvider()])
-    except Exception as exc:  # a log never costs the turn
-        _log.warning("executor.request_tools_log_off", error_type=type(exc).__name__)
+        agents[0] = agent_with_providers(agents[0], [UnknownToolProvider(step=step)])
+    except Exception as exc:  # the better text never costs the turn
+        _log.warning("executor.unknown_tool_view_off", error_type=type(exc).__name__)
     return agents
 
 
@@ -5831,7 +5956,9 @@ class _BatchRunInputs:
     credential names the first attempt resolved, after the acting member's
     filter. A retry resolves no authority again: it gets those names only.
     ``None`` on any of the three means the first attempt failed before that
-    step, and the retry then fails closed (nothing).
+    step, and the retry then fails closed (nothing). *step* (HRD-1b) is the
+    mode of the answer to an unknown tool name. The run decides it before
+    the first attempt, so the retry answers the same way.
     """
 
     repo_name: str | None = None
@@ -5839,6 +5966,7 @@ class _BatchRunInputs:
     held: frozenset[str] | None = None
     run_tools: frozenset[str] | None = None
     integrations: frozenset[str] | None = None
+    step: bool = False
 
 
 @dataclasses.dataclass
@@ -5862,6 +5990,7 @@ async def _assemble_batch_agents(
     loaded: Any, *, agent_name: str, no_egress: bool,
     held: frozenset[str] | None = None,
     mcp: _BatchMcp | None = None,
+    step: bool = False,
 ) -> tuple[list[Any], Any, frozenset[str]]:
     """Build and arm the agents of a batch run.
 
@@ -5880,6 +6009,11 @@ async def _assemble_batch_agents(
     stream path does, with the same org, access lookup and card rule. A
     ``no_egress`` run gets none (H-236). A retry passes no *mcp*, so it
     holds no server: a retry only narrows.
+
+    HRD-1b: the first agent goes on a view that answers a call of an unknown
+    tool name (:func:`_unknown_tool_view`). *step* is the mode of that
+    answer. The view comes after each seam of the injection and before the
+    MCP servers, in the order of the stream path.
     """
     agents = loaded.build_agents()
     # Honour .github/agents/<name>.agent.md (instructions override).
@@ -5905,6 +6039,8 @@ async def _assemble_batch_agents(
     # CRM-Q32-5: the CRM facts block, read as the member.
     run_tools = await _add_crm_facts_block(agents, run_tools, no_egress=no_egress)
     _log_agent_tools_resolved(agent_name, agents, own_tools)
+    # HRD-1b: the model never reads MAF's "not found" text in a batch run.
+    agents = _unknown_tool_view(agents, step=step)
     # WS-47 WAC-P3: the org's MCP servers, exactly as the stream path adds
     # them. H-236: an MCP server reaches outside, so a no_egress run gets
     # none. MCP-NC1: a member's run calls a tool that can change data with
@@ -6062,6 +6198,10 @@ async def _run_agent_inner(
     # belong to the organization (write_artifact). A delegated run is not:
     # its parent's chat may hold a member's data.
     _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
+    # HRD-1b: the mode of the answer to an unknown tool name. A delegated run
+    # (the same test as `sub_run` below) answers another model, and a run
+    # with no chat answers no member. So each is a step (`unknown_tool`).
+    _answer_step = bool(_parent_ctx.get("run_id")) or _batch_thread
     # CRM-Q29: the member's own words, a source of the number check.
     _member_words = _member_words_for_run(_parent_ctx, event_payload)
     # WS-67 OA-1: the member's messages of the chat, for each delegated task.
@@ -6198,7 +6338,7 @@ async def _run_agent_inner(
     _is_copilot_agent = False
     # What the first attempt used. The self-anneal retry rebuilds from it, so
     # a retry can only narrow the tools of this run.
-    _anneal_inputs = _BatchRunInputs()
+    _anneal_inputs = _BatchRunInputs(step=_answer_step)
     # WS-47 WAC-P3: the MCP servers that this run opens. The finally closes them.
     _batch_mcp: _BatchMcp | None = None
     try:
@@ -6230,6 +6370,7 @@ async def _run_agent_inner(
             pass
         _anneal_inputs = _BatchRunInputs(
             repo_name=_registry_repo_name, local_path=_registry_local_path,
+            step=_answer_step,
         )
 
         # §15.4: refused as absent unless a first-party admin runs it. An
@@ -6362,6 +6503,7 @@ async def _run_agent_inner(
                 loaded, agent_name=agent_name,
                 no_egress=_no_egress,  # H-236: from the parent's binding
                 mcp=_batch_mcp,
+                step=_answer_step,  # HRD-1b
             )
             # The retry narrows to what this attempt holds (never a union).
             _anneal_inputs = dataclasses.replace(
@@ -7893,6 +8035,13 @@ async def run_agent_stream(
                 agent_name, organization_id=organization_id, thread_id=thread_id,
                 delegated=_delegated_run, shows_cards=shows_cards,
                 batch_thread=_batch_thread,
+            )
+            # Task 3594: the sent acts of this chat, from the card record, for
+            # the sync context. Dark behind CHAT_CARD_RECORD_ORGS. One second
+            # at most, and a fault costs the line, never the turn.
+            await _prime_sent_acts(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, batch_thread=_batch_thread,
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -10159,6 +10308,7 @@ async def _self_anneal(
                 loaded, agent_name=agent_name,
                 no_egress=no_egress,  # H-236
                 held=inputs.held,
+                step=inputs.step,  # HRD-1b: the first attempt's mode
             )
             # ``run_tools`` (§14.10): the retry ALWAYS binds its own, the part
             # of the first attempt's set that it holds. A first attempt that
@@ -11775,7 +11925,8 @@ def _context_preamble_parts(
     (``acb_common.today.today_line``), and last the member's part of the day
     beside a profile block that greets (``part_of_day_line``, PZ-4), then the
     line of the tool packs that left at the start of the turn
-    (:func:`_pack_left_block`, task 1747). :func:`_build_event_message`
+    (:func:`_pack_left_block`, task 1747), and last the sent acts of this
+    chat (:func:`_sent_acts_block`, task 3594). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -11916,6 +12067,11 @@ def _context_preamble_parts(
     # payload (R5). Last, so each block above keeps its place. An empty line
     # adds nothing.
     parts.extend(filter(None, [_pack_left_block(agent_name)]))
+    # Task 3594 (chat_organization.md §16.3): the mails that the member
+    # approved and the system sent in this chat, then one rule line. From the
+    # run binding that `_prime_sent_acts` set, never the payload (R5). Last,
+    # so each block above keeps its place and its bytes.
+    parts.extend(filter(None, [_sent_acts_block(agent_name)]))
     return parts
 
 
