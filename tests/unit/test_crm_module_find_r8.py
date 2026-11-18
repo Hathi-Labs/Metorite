@@ -12,8 +12,9 @@ superuser, so each read below is the first thing the app role does.
 2. Org B stays out: no record and no name of org B in an answer of org A,
    in its near names or in its nearest names.
 3. ``%``, ``_``, ``\\`` and a quote are literal. An accent and any case
-   match. An empty ``q`` is no ``q``. 201 characters, a NUL and 9 words are
-   a 422.
+   match. An empty ``q`` and a lone ``&`` are no ``q``. ``&``, ``/`` and
+   ``-`` between two words are no word, as in the core lists. 201
+   characters and a NUL are a 422. 9 words are one phrase.
 4. The flag: off, the total keeps the 422 of CRM-Q34-2 and the list keeps its
    answer, byte for byte. On, the new answer.
 5. A near spelling is marked, and a zero names at most 3 nearest names.
@@ -58,6 +59,10 @@ pytestmark = _DB_GATE
 
 #: The LOCAL statement_timeout of the aggregate, in seconds.
 TIMEOUT_S = 10.0
+#: The bound of a whole answer with a near hit over 30,000 rows of 3 KB.
+#: Measured on the box with the first fix round, then doubled and more,
+#: and it stays under the timeout. See the report of task 3700.
+NEAR_HIT_BOUND_S = 5.0
 
 _DEFS = [
     ("Customer", "lookup", {"lookup_module": "Contacts"}, False, False),
@@ -65,6 +70,7 @@ _DEFS = [
     ("Notes", "textarea", None, False, False),
     ("Amount", "currency", None, False, False),
     ("Status", "select", None, False, False),
+    ("Meta", "text", None, False, False),
 ]
 
 #: Org A: (name, customer, subject, notes).
@@ -75,6 +81,12 @@ _ROWS_A = [
     ("INV-004", "Acme East", "It's a quote", None),
     ("INV-005", "Acme North", "underXscore backslash plain", None),
     ("Monthly bill", "Gamma Traders", "Fiber", None),
+    # No hyphen, slash or ampersand in this row (fix round, F1).
+    ("Ltd bill", "Acme Ltd", "Plain", None),
+    ("Freight job", "O'Brien Logistics", "Plain", None),
+    # A text field that holds an object, and a lookup that holds an array
+    # (fix round, P2-2 and F4).
+    ("Meta row", ["Array lookup"], "Plain", None),
 ]
 _ROWS_B = [("Secret B Name", "Sharath Secret", "Fiber rent", "Café opening")]
 
@@ -83,9 +95,12 @@ def _seed(p: Any, org: str, rows: list[tuple]) -> None:
     with p.admin_engine.begin() as c:
         for i, (name, customer, subject, notes) in enumerate(rows):
             fields: dict[str, Any] = {
-                "Customer": {"id": f"z{i}", "name": customer}, "Subject": subject,
-                "Amount": 100 * (i + 1),
+                "Customer": ({"id": f"z{i}", "name": customer} if isinstance(customer, str)
+                             else customer),
+                "Subject": subject, "Amount": 100 * (i + 1),
             }
+            if name == "Meta row":
+                fields["Meta"] = {"id": "m1", "name": "Ravi", "email": "x@y.test"}
             if notes:
                 fields["Notes"] = notes
             c.execute(text(
@@ -155,7 +170,7 @@ def _names(page: dict) -> list[str]:
 @pytest.mark.parametrize(("q", "names"), [
     ("fiber", ["INV-001", "Monthly bill"]),
     ("fiber rent", ["INV-001"]),
-    ("acme", ["INV-002", "INV-003", "INV-004", "INV-005"]),
+    ("acme", ["INV-002", "INV-003", "INV-004", "INV-005", "Ltd bill"]),
     ("opening", ["INV-003"]),
     ("Sharath", ["INV-001"]),
     ("Acmo", []),
@@ -167,11 +182,46 @@ async def test_the_total_counts_the_rows_of_the_list(inv, app_engine, q: str,
     assert total["records"] == page["total"] == len(names)
 
 
-async def test_the_total_and_the_list_agree_with_a_field_filter(inv, app_engine) -> None:
-    """A field filter AND ``q``: the total counts the list of the same rows."""
-    total = await _total(inv, inv.org_a, q="acme", **{"field.Customer": "Acme Ltd"})
-    page = await _list(inv, inv.org_a, q="acme", **{"custom.Subject": "under_score item 500"})
+async def test_q_with_the_same_subject_filter_counts_one_row_on_both(inv, app_engine) -> None:
+    """The same filter on both sides: Subject is "under_score item 500".
+    The total takes it as ``field.Subject``, and the list as
+    ``custom.Subject``. The total takes no ``custom.<key>`` (a 422 of
+    ``MODULE_PARAMS``), and the list takes no ``field.<key>`` (CRM-Q34-4)."""
+    value = "under_score item 500"
+    total = await _total(inv, inv.org_a, q="acme", **{"field.Subject": value})
+    page = await _list(inv, inv.org_a, q="acme", **{"custom.Subject": value})
     assert total.json()["records"] == page.json()["total"] == 1
+    assert [r["name"] for r in page.json()["rows"]] == ["INV-002"]
+
+
+@pytest.mark.parametrize("q", ["Acme & Ltd", "Acme / Ltd", "Acme - Ltd"])
+async def test_a_mark_between_two_words_is_no_word(inv, app_engine, q: str) -> None:
+    """F1: the words of ``core.search_words``. «Ltd bill» holds "Acme Ltd"
+    and no mark, so it matches only when the mark is dropped."""
+    total, page = await _both(inv, inv.org_a, q)
+    assert _names(page) == ["INV-002", "Ltd bill"]
+    assert total["records"] == page["total"] == 2
+
+
+@pytest.mark.parametrize(("q", "names"), [
+    ("id", []), ("name", []), ("email", []), ("array", []), ("Ravi", ["Meta row"]),
+])
+async def test_a_json_value_is_never_text(inv, app_engine, q: str, names: list[str]) -> None:
+    """P2-2 and F4: a text field that holds an object reads its name only,
+    and a lookup that holds an array reads nothing."""
+    total, page = await _both(inv, inv.org_a, q)
+    assert _names(page) == names
+    assert total["records"] == page["total"] == len(names)
+
+
+async def test_the_offered_nearest_name_finds_the_record(inv, app_engine) -> None:
+    """P2-1: a nearest name with an apostrophe, given back as q, finds it."""
+    total, page = await _both(inv, inv.org_a, "Obrein Logistix")
+    assert total["records"] == page["total"] == 0
+    assert "O'Brien Logistics" in total["nearest"]
+    assert total["nearest"] == page["nearest"]
+    found, page = await _both(inv, inv.org_a, "O'Brien Logistics")
+    assert found["records"] == page["total"] == 1 and _names(page) == ["Freight job"]
 
 
 # ── 2. Org B stays out ───────────────────────────────────────────────────────
@@ -208,12 +258,18 @@ async def test_each_character_of_q_is_literal(inv, app_engine, q: str,
     assert total["records"] == page["total"]
 
 
-async def test_an_empty_q_is_no_q(inv, app_engine) -> None:
-    total, page = await _both(inv, inv.org_a, "")
+@pytest.mark.parametrize("q", ["", "&", " / "])
+async def test_an_empty_q_is_no_q(inv, app_engine, q: str) -> None:
+    total, page = await _both(inv, inv.org_a, q)
     assert total["records"] == page["total"] == len(_ROWS_A)
 
 
-@pytest.mark.parametrize("q", ["x" * 201, "a\x00b", "a b c d e f g h i"])
+async def test_nine_words_are_one_phrase(inv, app_engine) -> None:
+    total, page = await _both(inv, inv.org_a, "a b c d e f g h i")
+    assert total["records"] == page["total"] == 0
+
+
+@pytest.mark.parametrize("q", ["x" * 201, "a\x00b"])
 async def test_an_unfit_q_is_a_422(inv, app_engine, q: str) -> None:
     assert (await _total(inv, inv.org_a, q=q)).status_code == 422
     assert (await _list(inv, inv.org_a, q=q)).status_code == 422
@@ -344,6 +400,8 @@ async def test_thirty_thousand_rows_answer_inside_the_timeout(big, app_engine) -
         "list": lst + urlencode({"q": "Party 42"}),
         "total_zero": agg + urlencode({"q": "Pardy zzqq"}),
         "list_zero": lst + urlencode({"q": "Pardy zzqq"}),
+        "total_near": agg + urlencode({"q": "Partyy"}),
+        "list_near": lst + urlencode({"q": "Partyy"}),
     }
     event.listen(Engine, "before_cursor_execute", _record_sql)
     try:
@@ -355,6 +413,13 @@ async def test_thirty_thousand_rows_answer_inside_the_timeout(big, app_engine) -
         seen.clear()
         timed.update(await _timed(big, a, {k: paths[k] for k in ("total_zero", "list_zero")}))
         near_sql = [s for s in seen if "unnest(ARRAY[" in s]
+        seen.clear()
+        timed.update(await _timed(big, a, {"total_near": paths["total_near"]}))
+        hit_total = [s for s in seen if "crm_module_records" in s]
+        seen.clear()
+        timed.update(await _timed(big, a, {"list_near": paths["list_near"]}))
+        hit_list = [s for s in seen if "crm_module_records" in s]
+        hit_timeout = [s for s in seen if "statement_timeout" in s]
     finally:
         event.remove(Engine, "before_cursor_execute", _record_sql)
     print("\nCRM-Q34-7 30,000 rows of 3 KB, seconds:",
@@ -378,6 +443,20 @@ async def test_thirty_thousand_rows_answer_inside_the_timeout(big, app_engine) -
     assert len(total_sql) == 1 and len(list_sql) == 2, (len(total_sql), len(list_sql))
     assert all(s.count("CROSS JOIN LATERAL") == 1 for s in total_sql + list_sql)
     assert len(near_sql) == 2  # one bounded near read for each zero answer
+    # A near HIT (fix round, P3): "Partyy" is in no row, and the 10 first
+    # "Party N" names by name are near, each on 60 rows. The whole answer
+    # is the exact read, the near read and one more read of the rows.
+    print("CRM-Q34-7 near hit, statements on crm_module_records:",
+          {"total": len(hit_total), "list": len(hit_list)})
+    near_total, near_list = timed["total_near"][1], timed["list_near"][1]
+    assert near_total["records"] == near_list["total"] == 10 * (_BIG // 500)
+    assert near_total["near"] == near_list["near"] and len(near_total["near"]) == 10
+    assert all(r["near"] is True for r in near_list["rows"])
+    for name in ("total_near", "list_near"):
+        assert timed[name][2] < NEAR_HIT_BOUND_S, (name, timed[name][2])
+    # F2: the list's find reads run under the LOCAL statement timeout.
+    # The warm-up total sets it once, and the list sets it once.
+    assert len(hit_timeout) >= 2, hit_timeout
     # The plan of the total, as the superuser, with the same predicate.
     scope = fs.FieldScope(column="fields", owner="module:Ledger", fields={
         key: fs.FieldRef(key=key, type=kind, label=key) for key, kind, *_r in _BIG_DEFS})

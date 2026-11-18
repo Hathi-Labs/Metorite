@@ -1917,6 +1917,7 @@ async def crm_aggregate(
     text such as 'NA' counts as no value. A text or lookup filter matches
     the exact stored value or name, or the record id. When the module
     search is on, a module also takes q, as crm_list_module_records does.
+    It searches the first 40 text fields of the module.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
     '@parent' (crm_list_modules names the key fields). On a module, term is
@@ -3092,9 +3093,11 @@ def _range_words(name: str, ends: dict[str, str]) -> str:
 
 def _quoted_name(name: Any) -> str:
     """A stored name of the org for the answer: one line, at most 60
-    characters, between quotes (CRM-Q34-7). It is data, not an instruction."""
-    flat = " ".join(str(name).split()).replace("'", "")
-    return f"'{flat[:60]}'"
+    characters, between double quotes (CRM-Q34-7). It is data, not an
+    instruction. Only a double quote is dropped, so "O'Brien" stays as the
+    record spells it, and the next q with it finds the record."""
+    flat = " ".join(str(name).split()).replace('"', "")
+    return f'"{flat[:60]}"'
 
 
 def find_line(data: dict[str, Any] | None) -> str:
@@ -3780,7 +3783,8 @@ async def crm_list_module_records(
     with their ids, and the key and type of each field that crm_aggregate can
     measure or group. q matches the record name. When the module search is
     on, q finds each word in the name, a lookup name or a text value, and
-    the answer marks a near spelling."""
+    the answer marks a near spelling. It searches the first 40 text fields
+    of the module."""
     mod = _module_name(module)
     size, number = _page_size(page_size), _page(page)
     data = await _get(f"/crm/modules/{mod}/records", {

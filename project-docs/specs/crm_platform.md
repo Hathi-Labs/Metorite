@@ -8498,26 +8498,37 @@ merged. Flag `CRM_MODULE_FIND_ORGS`, empty. A flip is `enforcement-flip`.
   (`DETOAST_JOIN`). Then `ILIKE ALL` takes one pattern for each word.
 - **The fields.** The fields of type `text`, `textarea`, `email`, `phone`,
   `url` and `lookup` in the field definitions of the module, by position. A
-  lookup gives its name. At most 40 fields (`FIND_KEYS_MAX`), because
-  Postgres takes at most 100 arguments in one call. A field past the cap is
-  not searched.
-- **The words.** At most 200 characters and 8 words. A longer `q` is a 422
-  `unfit_q`, and a NUL is the 422 of `refuse_nul`. `%`, `_` and `\` in `q` are
-  literal: `like_pattern` escapes them. The core lists do not escape them
-  (`core.search_where`), and this slice does not change them.
+  lookup gives the name of an object or a string. A text field gives a
+  string, a number or the name of an object. An array and each other value
+  give nothing, so the JSON text of a value never matches. At most 40
+  fields (`FIND_KEYS_MAX`), because Postgres takes at most 100 arguments in
+  one call. A field past the cap is not searched, and the tool text says so.
+- **The words.** The words are the ones of `core.search_words`, the splitter
+  of the core lists. A word holds a letter or a digit, so `&`, `/` or `-`
+  between two words is no word. A `q` with no letter and no digit is no
+  `q`. A `q` of more than 8 words is one phrase. A `q` of more than 200
+  characters is the 422 of `search_words`, and a NUL is the 422 of
+  `refuse_nul`. `%`, `_` and `\` in `q` are literal: `like_pattern` escapes
+  them. The core lists do not escape them (`core.search_where`), and this
+  slice does not change them.
 - **The near pass.** Only when the exact pass counts no row. ONE read takes
   at most 2,000 stored names (`NEAR_NAMES_SCAN`) under the same filters. A
   stored name is the record name or a lookup name. The most frequent come
   first, then the order is by name.
-  `acb_common.name_match` scores them in Python. A `q` of at most 3 words
-  gets the pass. Each word of 4 letters or more also matches a row that
-  holds one of its 10 nearest names (`NEAR_SCORE`). The answer then carries `near`: the names it
-  counted. Each list row of the near pass carries `near: true` and its name
+  `acb_common.name_match` scores them in a thread, with the deadline of
+  HRD-18b. The words are the ones of `core.near_words`: a `q` of at most 3
+  words gets the pass, and each word of 4 letters or more. Such a word also
+  matches a row that holds one of its 10 nearest names (`NEAR_SCORE`). A
+  name that holds the word itself is no near name. The answer then carries
+  `near`: the names it counted. Each list row of the near pass carries `near: true` and its name
   in `matched`.
 - **A zero.** When no row matches, the answer carries `nearest`: at most 3
   stored names whose `name_score` against `q` reaches
   `NEAR_CANDIDATE_SIMILARITY`. Each name is one line of at most 60
-  characters. The chat tools quote each name.
+  characters. The chat tools put each name between double quotes and keep
+  an apostrophe, so the next `q` with that name finds the record.
+- **Timeout.** The list reads run under the LOCAL statement timeout of the
+  total, 10 s, and a cancel is the same 503 `aggregate_timeout`.
 - **Visibility.** The reads run in the member's tenant session, so RLS keeps
   them in the org. A module record has no visibility of its own: the CRM
   access rule admits the member to every record of the org, or to none.

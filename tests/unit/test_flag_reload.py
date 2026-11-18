@@ -252,6 +252,7 @@ def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert crm_flags.module_find_allowed("acme")
     assert not crm_flags.module_find_allowed("globex")
 
+
 def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU C5a, ai_studio.md §14 C5a. The reload list holds the key, and
     the one reader of the search switch sees a change with no restart."""

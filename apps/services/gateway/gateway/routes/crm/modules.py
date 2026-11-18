@@ -92,6 +92,7 @@ from gateway.routes.crm.fill_rank import annotate, fills_for
 from gateway.routes.crm.records import refuse_nul, refuse_nul_tree
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 #: The provider whose profile names the modules. One provider today.
 PROVIDER = "zoho"
@@ -581,17 +582,46 @@ async def _find_page(
     and the page read the detoasted copy once for each row. When the count is
     0, the near pass of ``field_sql.find_near`` runs: its rows carry
     ``near: true`` and the stored name in ``matched``. A ``q`` that still
-    finds no row gives ``nearest``."""
+    finds no row gives ``nearest``.
+
+    The reads run under the LOCAL statement timeout of the aggregate
+    (``aggregate.STATEMENT_TIMEOUT_MS``), and a cancel is its 503
+    ``aggregate_timeout`` (fix round, F2)."""
+    from gateway.routes.crm.aggregate import (
+        _TIMEOUT_SQL,
+        STATEMENT_TIMEOUT_MS,
+        TIMEOUT_DETAIL,
+        _is_timeout,
+    )
+    from gateway.routes.crm.field_sql import find_words
+
+    words = find_words(q)
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
+    try:
+        return await _find_rows(db, module, words, sort=sort, direction=direction,
+                                page=page, page_size=page_size, owner=owner,
+                                extra_where=extra_where, extra_params=extra_params,
+                                user=user)
+    except DBAPIError as exc:
+        if _is_timeout(exc):
+            raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
+        raise
+
+
+async def _find_rows(
+    db: Any, module: str, words: list[str], *, sort: str | None, direction: str,
+    page: int, page_size: int, owner: str | None, extra_where: tuple[str, ...],
+    extra_params: dict[str, Any], user: UserContext,
+) -> ModuleListResponse:
+    """The reads of :func:`_find_page`, under its statement timeout."""
     from gateway.routes.crm.field_sql import (
         DETOAST_JOIN,
         find_near,
         find_where,
-        find_words,
         module_scope,
         row_near_name,
     )
 
-    words = find_words(q)
     scope = await module_scope(db, module)
     query = list_contract(
         MODULE_RECORDS, q=None, sort=sort, direction=direction,
