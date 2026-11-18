@@ -11310,6 +11310,29 @@ The Router runs litellm with no `drop_params`. A step whose model refuses a samp
 - A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
 - Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
+### 6A.17a A billing refusal reads as a 402 — BUILT (task 3681, AO-1)
+
+The 402 rule of 2026-09-29 says an empty vendor account falls over to the next
+vendor. On 2026-11-17 the Anthropic account ran empty. Anthropic answered
+HTTP 400, not 402, so the walk stopped and the DeepSeek steps never ran.
+
+- `router.effective_status(exc, vendor)` gives the status that the walk reads.
+  It gives 402 for a 400, 403 or 429 whose message holds a phrase that
+  `BILLING_PHRASES` lists for THAT vendor. Any other error keeps its status.
+- The phrases are whole vendor sentences, scoped by vendor. Anthropic has "credit
+  balance is too low" and "you have reached your specified api usage limits".
+  OpenAI has "exceeded your current quota". Gemini sends that sentence on a
+  per-minute 429, so it never lifts there. No bare word such as "billing"
+  appears, because a vendor 400 can quote the request back.
+- `walk_chain` calls the function in one place. `on_refusal` gets 402, so
+  `provider_balance` shows the vendor `out` with cause `payment`.
+- A vendor with no balance probe (Anthropic, OpenAI) clears a 402 or a 401 when
+  a call it served is newer than the refusal. A vendor with a probe keeps the
+  probe rule.
+- Native handlers send fixed text and are never lifted. Their own status holds.
+- The refusal log line adds the hint `billing` when the status is 402. The
+  message is matched and never logged, stored or returned.
+
 ### 6A.18 Model setup in one step (MS) — MS-1 BUILT, MS-2 TO MS-4 SPEC ONLY (2026-11-09, Metorite epic task 2458)
 
 **Gate: AGENT-SAFE to build.** MS-1 and MS-2 are HIGH tier, because they write credentials and tier chains. The owner approved the preview and all six owner calls on 2026-11-09. The Opus review ran on 2026-11-09 (owner call 6). Its verdict was "GO after spec edits", and this text holds those edits.
