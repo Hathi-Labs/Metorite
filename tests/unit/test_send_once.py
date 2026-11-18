@@ -559,7 +559,7 @@ async def test_a_lost_confirm_stops_the_run_before_its_work(world) -> None:
     repeat took the key. Its RUN_STARTED then fails to confirm, and the run
     stops before the load and the model."""
     slow = await _started(world)
-    _age_value(world, send_once.PENDING_STALE_SECONDS + 1)
+    _age_value(world, send_once.PENDING_STALE_SECONDS + 120)  # wide: the box clock steps
     taker = await _begin()
     assert taker.kind == send_once.NEW
     closed: list[bool] = []
@@ -609,7 +609,7 @@ async def test_a_pending_run_that_nothing_names_goes_stale(world) -> None:
     """R3 for a run id: the process died between the move and the run's
     start. After the stale limit, a repeat takes the key and runs as new."""
     await _started(world)  # pending, and no stream and no live run
-    _age_value(world, send_once.PENDING_STALE_SECONDS + 1)
+    _age_value(world, send_once.PENDING_STALE_SECONDS + 120)  # wide: the box clock steps
     out = await _begin()
     assert out.kind == send_once.NEW
     assert _held(world)["state"] == "claim"
@@ -645,6 +645,72 @@ async def test_a_stuck_redis_step_ends_in_busy_and_never_in_a_run(world, monkeyp
     monkeypatch.setattr(send_once, "BEGIN_TIMEOUT_SECONDS", 0.1)
     out = await asyncio.wait_for(_begin(), 2)
     assert out.kind == send_once.BUSY
+
+
+async def test_a_redis_that_stalls_on_the_first_claim_fails_open(world, monkeypatch) -> None:
+    """F-C: a FIRST send whose claim gets no answer takes the old path, as a
+    refusing Redis does (R10). It is never a 409."""
+    monkeypatch.setattr(send_once, "STEP_TIMEOUT_SECONDS", 0.05)
+    real_set = world.raw.set
+
+    async def _stall(*a, **k):
+        await asyncio.Event().wait()
+        return await real_set(*a, **k)
+
+    world.raw.set = _stall
+    out = await asyncio.wait_for(_begin(), 2)
+    assert out.kind == send_once.OPEN
+
+
+async def test_a_start_into_an_empty_key_starts_nothing(world) -> None:
+    """F-E: the key is gone at the start. It ran out, or a taker ran and a
+    Stop released it. The move never writes into an empty key."""
+    first = await _begin()
+    world.raw.kv.pop(_key())
+    assert await first.claim.start(RUN) is False
+    assert first.claim.lost and _held(world) is None
+
+
+# ── The fences of the reads and the scripts (F-F), with no Redis ────────────
+
+
+def test_replay_events_sends_no_block() -> None:
+    """``XREAD BLOCK 0`` waits forever. ``replay_events`` must send no
+    ``block`` argument at all, so a read past the last entry returns."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(stream_relay.replay_events)))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "xread"]
+    assert calls, "replay_events reads with XREAD"
+    for call in calls:
+        assert "block" not in {kw.arg for kw in call.keywords}
+
+
+def test_send_once_reads_the_stream_head_only() -> None:
+    import inspect
+
+    src = inspect.getsource(send_once)
+    assert "xread" not in src and "replay_events(" not in src
+    head = inspect.getsource(send_once._stream_run_id)
+    assert "stream_relay.stream_head(" in head
+    body = inspect.getsource(stream_relay.stream_head)
+    assert ".xrange(" in body and "xread" not in body and "block" not in body
+
+
+def test_the_scripts_compare_before_they_write() -> None:
+    """``replace_if`` and ``delete_if`` act only when the key holds the
+    value. A script that always writes passes no other hermetic test."""
+    from acb_common import tenant_redis
+
+    for script, act in ((tenant_redis._REPLACE_IF_LUA, "redis.call('SET'"),
+                        (tenant_redis._DELETE_IF_LUA, "redis.call('DEL'")):
+        compare = "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+        assert script.startswith(compare), script
+        assert script.index(compare) < script.index(act)
+        assert script.count("redis.call(") == 2 and script.rstrip().endswith("return 0")
 
 
 async def test_an_old_run_gets_finished_at_once(world) -> None:
@@ -1128,6 +1194,122 @@ def test_route_a_busy_claim_gets_409(route) -> None:
     code, _h, text = _post(_send())
     assert code == 409 and json.loads(text)["detail"]["error"] == "send_in_progress"
     assert route.runs == []
+
+
+# ── Each exit before the run start releases the claim (F-A) ─────────────────
+
+
+def test_route_a_cap_refusal_releases_the_claim(route, monkeypatch) -> None:
+    """A 429 of the run cap starts no run, so the claim goes at once."""
+    from orchestrator import run_cap
+
+    class _Refused:
+        admitted = False
+        limit = 5
+        running: tuple = ("t-1",)
+
+    async def _refuse(**_k):
+        return _Refused()
+
+    monkeypatch.setattr(run_cap, "admit_member_run", _refuse)
+    code, _h, text = _post(_send())
+    assert code == 429 and json.loads(text)["error"] == "too_many_runs"
+    assert _held(route) is None and route.runs == []
+
+
+def test_route_a_raise_of_the_turn_decision_releases_the_claim(route, monkeypatch) -> None:
+    """``_apply_turn_decision`` raises (the steer floor 409): no run, no key."""
+    from fastapi import HTTPException
+    from gateway.routes import agent
+
+    async def _floor(*_a, **_k):
+        raise HTTPException(status_code=409, detail={"error": "steer_outside_run_floor"})
+
+    monkeypatch.setattr(agent, "_apply_turn_decision", _floor)
+    code, _h, text = _post(_send())
+    assert code == 409 and json.loads(text)["detail"]["error"] == "steer_outside_run_floor"
+    assert _held(route) is None and route.runs == []
+
+
+def test_route_a_refusal_of_another_members_run_releases_the_claim(route, monkeypatch) -> None:
+    """``_refuse_if_another_run_is_active`` gives 409: no run, no key."""
+    from fastapi import HTTPException
+    from gateway.routes import agent
+
+    async def _refuse(thread_id, actor):
+        raise HTTPException(status_code=409, detail={"error": "run_in_progress"})
+
+    monkeypatch.setattr(agent, "_refuse_if_another_run_is_active", _refuse)
+    code, _h, text = _post(_send())
+    assert code == 409 and json.loads(text)["detail"]["error"] == "run_in_progress"
+    assert _held(route) is None and route.runs == []
+
+
+class _LiveTask:
+    """A drain task that ``start_detached`` registered, and that has not run
+    its first step yet."""
+
+    def done(self) -> bool:
+        return False
+
+
+def test_route_a_client_that_leaves_after_the_start_keeps_the_live_key(route, monkeypatch) -> None:
+    """The client left after ``start_detached`` and before the drain pulled a
+    line. The run is live, so its pending key must stay, and a repeat must
+    never start a second run."""
+    released: list[str] = []
+    real_release_soon = send_once.SendClaim.release_soon
+
+    def _spy(self):
+        released.append(self.value)
+        real_release_soon(self)
+
+    async def _start_then_leave(thread_id, gen, **kw):
+        stream_relay._DETACHED_TASKS[thread_id] = _LiveTask()
+        raise _Gone()
+        yield  # an async generator, as the real one is
+
+    async def _no_tail(*_a, **_k):
+        return
+        yield
+
+    monkeypatch.setattr(send_once.SendClaim, "release_soon", _spy)
+    monkeypatch.setattr(stream_relay, "run_detached", _start_then_leave)
+    monkeypatch.setattr(stream_relay, "subscribe_events", _no_tail)
+    try:
+        try:
+            _post(_send())
+        except BaseException as exc:
+            assert isinstance(exc, _Gone) or "_Gone" in repr(exc)
+        assert released == []
+        held = _held(route)
+        assert held is not None and held["state"] == "pending" and held["run_id"]
+        code, _h, text = _post(_send())
+        assert code == 409 and json.loads(text)["detail"]["error"] == "send_in_progress"
+        assert route.runs == [], "a repeat never starts a second run"
+        route.active[THREAD] = True
+        route.live_index(ORG_A, THREAD, held["run_id"])
+        code, headers, _t = _post(_send())
+        assert code == 200 and headers["x-run-id"] == held["run_id"]
+        assert route.runs == []
+    finally:
+        stream_relay._DETACHED_TASKS.pop(THREAD, None)
+
+
+def test_route_a_start_after_the_claim_ran_out_starts_nothing(route, monkeypatch) -> None:
+    """F-E: the claim is gone at the start (a taker ran and released it, or
+    it ran out). The request cannot tell the two apart, so it starts nothing,
+    and a Stop of the taker's run is never undone."""
+    real_start = send_once.SendClaim.start
+
+    async def _gone_then_start(self, run_id):
+        route.raw.kv.pop(_key(), None)
+        return await real_start(self, run_id)
+
+    monkeypatch.setattr(send_once.SendClaim, "start", _gone_then_start)
+    code, _h, text = _post(_send())
+    assert code == 200 and _sse(text)[-1]["code"] == "send_in_progress"
+    assert route.runs == [] and _held(route) is None
 
 
 # ── The ONE replay: /reconnect keeps its bytes ───────────────────────────────

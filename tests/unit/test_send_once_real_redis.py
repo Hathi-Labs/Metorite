@@ -126,7 +126,7 @@ async def test_a_newer_run_in_the_stream_answers_finished(real) -> None:
 async def test_a_pending_run_that_never_wrote_its_stream_goes_stale(real) -> None:
     """R3 for a run id: no RUN_STARTED, no live run, older than the limit.
     The repeat takes the key with the real script and runs as new."""
-    await _store(real, "pending", RUN, age=send_once.PENDING_STALE_SECONDS + 5)
+    await _store(real, "pending", RUN, age=send_once.PENDING_STALE_SECONDS + 120)
     out = await _begin()
     assert out.kind == send_once.NEW
     with organization_scope(ORG):
@@ -148,6 +148,26 @@ async def test_the_real_scripts_move_and_release_only_their_own_value(real) -> N
     await real.set(k.value, other)
     await claim.release()
     assert await real.get(k.value) == other
+
+
+async def test_the_real_scripts_compare_first(real) -> None:
+    """``replace_if`` and ``delete_if`` on a real server: a wrong value, or no
+    key, changes nothing. A script that always writes fails here."""
+    client = TenantRedis(real)
+    with organization_scope(ORG):
+        k = client.key("send-once", "t-cmp", "m", "id-compare")
+        await client.set(k, "mine", ex=60)
+        assert await client.replace_if(k, "not-mine", "theirs", 60) == 0
+        assert await client.get(k) == "mine"
+        assert await client.delete_if(k, "not-mine") == 0
+        assert await client.get(k) == "mine"
+        assert await client.replace_if(k, "mine", "next", 60) == 1
+        assert await client.get(k) == "next"
+        assert await client.delete_if(k, "next") == 1
+        assert await client.get(k) is None
+        # No key: the move never writes into an empty key (F-E).
+        assert await client.replace_if(k, "next", "again", 60) == 0
+        assert await client.get(k) is None
 
 
 async def test_replay_events_of_a_missing_stream_returns_at_once(real) -> None:

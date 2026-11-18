@@ -60,8 +60,10 @@ A deliberate resend can then run. A clean end keeps the key for 24 hours.
 :meth:`SendClaim.release` deletes each value that this request wrote, or
 was about to write, and never a value of another request.
 
-**Fail open.** With Redis down, :func:`begin` gives :data:`OPEN`, and the send
-takes the old path (R10). With the flag off, the route makes no call here.
+**Fail open.** With Redis down, or stalled on the claim, :func:`begin` gives
+:data:`OPEN`, and the send takes the old path (R10). A stall after a key is
+known gives :data:`BUSY`, never a run. With the flag off, the route makes no
+call here.
 
 Fence: ``tests/unit/test_send_once.py``, and with a private real Redis
 ``tests/unit/test_send_once_real_redis.py``.
@@ -286,7 +288,16 @@ class SendClaim:
 
     async def _move(self, new: str, state: str) -> bool | None:
         """Move the key from :attr:`value` to *new*. True: moved. False:
-        another request holds it. None: a Redis fault (fail open)."""
+        the key holds another value, or no value. None: a Redis fault (fail
+        open).
+
+        A key with no value is a loss too. Its claim ran out, or a request
+        took it as stale, ran, and then a Stop or an error released it. The
+        two look the same, and only the first is safe to run, so the move
+        never writes into an empty key (F-E of the review). A request slower
+        than :data:`CLAIM_TTL_SECONDS` then starts nothing, and a resend of
+        the same id runs.
+        """
         self.written.append(new)  # BEFORE the await: a cancel still releases it
         try:
             from acb_common.tenant_redis import organization_scope
@@ -295,9 +306,6 @@ class SendClaim:
                 r = await _client()
                 k = send_key(self.org, self.thread_id, self.member, self.sid)
                 ok = bool(await _step(r.replace_if(k, self.value, new, RUN_TTL_SECONDS)))
-                if not ok and state == PENDING:
-                    # The claim ran out with no taker: the key is free.
-                    ok = bool(await _step(r.set(k, new, nx=True, ex=RUN_TTL_SECONDS)))
         except Exception as exc:
             _log.warning("send_once.move_open", state=state, error=type(exc).__name__)
             self.closed = True
@@ -473,6 +481,35 @@ async def begin(
         return Outcome(BUSY)
 
 
+async def _is_stale(held: dict[str, str], thread_id: str) -> bool:
+    """R3, after the wait of R5 ran out with nothing that names the value: the
+    request of the value died or left before its run began.
+
+    A claim (no run id) is stale when no run is live on the thread. A pending
+    run is stale when it is :data:`PENDING_STALE_SECONDS` old.
+    """
+    if held["run_id"]:
+        return _age(held) >= PENDING_STALE_SECONDS
+    from orchestrator import stream_relay
+
+    return not await _step(stream_relay.is_active(thread_id))
+
+
+async def _claim_step(r: Any, k: Any, claim_value: str) -> bool | None:
+    """The SET NX of a claim. True: claimed. False: the key holds a value.
+    None: the step stalled.
+
+    F-C of the review: a Redis that stalls on the claim does not answer, as
+    a refusing one does not (R10). No key is known yet, so the send fails
+    open. A step that stalls after a key is known gives BUSY, never a run.
+    """
+    try:
+        return bool(await _step(r.set(k, claim_value, nx=True, ex=CLAIM_TTL_SECONDS)))
+    except TimeoutError:
+        _log.warning("send_once.open", error="TimeoutError")
+        return None
+
+
 async def _begin(
     org: str, thread_id: str, member: str, sid: str, text: str,
 ) -> Outcome:
@@ -482,8 +519,6 @@ async def _begin(
     try:
         from acb_common.tenant_redis import organization_scope
 
-        from orchestrator import stream_relay
-
         with organization_scope(org):
             r = await _client()
             k = send_key(org, thread_id, member, sid)
@@ -492,7 +527,10 @@ async def _begin(
             seen: Any = None
             stale_takes = 0
             for _ in range(_max_rounds()):
-                if await _step(r.set(k, claim_value, nx=True, ex=CLAIM_TTL_SECONDS)):
+                claimed = await _claim_step(r, k, claim_value)
+                if claimed is None:
+                    return Outcome(OPEN)
+                if claimed:
                     return Outcome(NEW, claim=SendClaim(
                         org=org, thread_id=thread_id, member=_member(member),
                         sid=sid, digest=digest, token=token, value=claim_value,
@@ -528,13 +566,7 @@ async def _begin(
                 if waiting:
                     await asyncio.sleep(POLL_SECONDS)
                     continue
-                # R5 ran out. R3: the request of this value died or left
-                # before its run began.
-                if run_id:
-                    stale = _age(held) >= PENDING_STALE_SECONDS
-                else:
-                    stale = not await _step(stream_relay.is_active(thread_id))
-                if not stale or stale_takes >= MAX_STALE_TAKES:
+                if not await _is_stale(held, thread_id) or stale_takes >= MAX_STALE_TAKES:
                     _log.info("send_once.busy", thread_id=thread_id[:12])
                     return Outcome(BUSY)
                 stale_takes += 1
