@@ -298,7 +298,11 @@ def split(text: str, paths_exist: PathsExist = no_path_proven) -> tuple[str, str
     With no block, the lead is *text* as it came and the paste is empty. With
     a block, the lead is one line of the member's words or empty, the paste
     is the block, and the tail is always empty: a tail stays inside the
-    paste (Q-HRD-14-2). A proven upload note is in none of the three."""
+    paste (Q-HRD-14-2). A proven upload note is in none of the three.
+
+    ``split`` has no token. :func:`frame_member_text` applies one more rule
+    with the token of the run: a lead that ``neutralise`` would change goes
+    into the block."""
     parts = _parts(text, paths_exist)
     return parts.lead, parts.paste, parts.tail
 
@@ -308,17 +312,23 @@ def frame_member_text(
 ) -> str:
     """*text* with its paste in ONE block of :data:`PASTE_LABEL`.
 
-    The lead stays outside, after ``neutralise``. The paste note goes right
+    The lead stays outside only when ``neutralise`` leaves it as it is. The
+    rules checked the raw lead, and ``neutralise`` removes each copy of the
+    token, so a changed lead could read differently after the check. Such a
+    lead goes into the block, which fails closed. The paste note goes right
     before the block, in the same text. A proven upload note goes after the
     END line, written again from its paths. With no block, the result is
     *text* byte for byte."""
     parts = _parts(text, paths_exist)
     if not parts.paste:
         return str(text or "")
+    lead, paste = parts.lead, parts.paste
+    if lead and neutralise(lead, frame.token) != lead:
+        lead, paste = "", f"{lead}\n\n{paste}"
     out: list[str] = []
-    if parts.lead:
-        out += [neutralise(parts.lead, frame.token), ""]
-    out += [frame.paste_note(), frame.wrap(PASTE_LABEL, parts.paste)]
+    if lead:
+        out += [lead, ""]
+    out += [frame.paste_note(), frame.wrap(PASTE_LABEL, paste)]
     if parts.paths:
         out += ["", neutralise(_upload_note(parts.paths), frame.token)]
     return "\n".join(out)

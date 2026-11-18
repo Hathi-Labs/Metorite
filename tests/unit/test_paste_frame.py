@@ -30,8 +30,8 @@ Mutations checked by hand (each one turns a test here red):
   ``a25-two-line-request`` get a lead.
 * M13 the proof read as truthy, not ``is True``: the upload note tests.
 * M13b no proof at all: row ``a16-forged-upload-note``.
-* M14 no ``neutralise`` on the lead: ``test_the_upload_note_is_neutralised``
-  and the corpus rows with a lead.
+* M14 no compare of the lead after ``neutralise`` in ``frame_member_text``:
+  ``test_a_lead_with_the_token_goes_to_the_block``.
 * M15 the note after the block: ``noted`` fails on each framed row.
 * M16 the two-token check relaxed for each label: the strict-check test.
 * M17 ``_paste_heads`` that reads the system message: the strict-check test.
@@ -816,6 +816,7 @@ def test_a_plain_lead_stays(line: str) -> None:
     # The spelled rule reads these as an address.
     "Write (at least) three dot points",
     "Look at the dot points below.",
+    "Invoices 1042 and 1043 are late.",
     # Round 7: more named costs of one ask.
     "\u3053\u306e\u30e1\u30fc\u30eb\u3001\u8981\u7d04\u3057\u3066\u3002"
     "\u304a\u9858\u3044\u3057\u307e\u3059\u3002",
@@ -852,6 +853,9 @@ def test_the_named_costs_go_to_the_block(line: str) -> None:
     "hdfc-verify . com",
     "ravi at acme period com",
     "Call 1234567 now",
+    # The last round: a spacing mark (Mc) inside "dot" keeps the scan copy from
+    # reading the word, because the copy drops only Mn and Me.
+    "ravi at acme do" + chr(0x093E) + "t com",
 ])
 def test_the_named_residuals_keep_the_lead(line: str) -> None:
     """The spec names these as residuals: a spelled address in another
@@ -955,3 +959,23 @@ def test_the_rules_are_linear_and_safe_on_a_long_text() -> None:
         paste_frame._lead_ok(text)
         split(text + "\n" + "\n".join(["line"] * 8))
     assert time.perf_counter() - start < 2
+
+
+def test_a_lead_with_the_token_goes_to_the_block() -> None:
+    """The rules check the raw lead, and ``neutralise`` removes each copy of
+    the token of the run, in any case. So a lead that holds the token could
+    read ``ravi at acme dot com`` after the check. ``frame_member_text`` sends
+    such a lead into the block. ``split`` has no token, so it keeps the lead."""
+    token = "abcdefabcdefabcd"
+    mail = _mail(8, "x")
+    for lead in (f"ravi a{token}t acme d{token}ot com",
+                 f"ravi a{token.upper()}t acme d{token.upper()}ot com"):
+        text = f"{lead}\n\n{mail}"
+        assert split(text)[0] == lead, "split has no token"
+        frame = UntrustedFrame(token)
+        before, block, _ = _block(frame_member_text(text, frame), token)
+        assert before == frame.paste_note(), "no lead outside the block"
+        assert "ravi a" in block and token not in block.lower()
+    plain = "Summarise this."
+    out = frame_member_text(f"{plain}\n\n{mail}", UntrustedFrame(token))
+    assert out.startswith(plain + "\n\n")
