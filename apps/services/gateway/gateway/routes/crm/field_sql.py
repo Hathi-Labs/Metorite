@@ -171,6 +171,8 @@ MODULE_MEASURES: dict[str, tuple[str, str]] = {"sum_amount": ("sum", AMOUNT_WORD
 #: prefix, except :data:`ZONE_PARAM`, which holds the same zone.
 _MEASURE_KEY = "agf_m"
 _GROUP_KEY = "agf_g"
+#: CRM-Q34-10: the bound key of the second field of a two-field group.
+GROUP2_KEY = "agf_g2"
 _MODULE = "agf_module"
 
 
@@ -697,6 +699,25 @@ def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> Field
     return ref
 
 
+def check_groups(scope: FieldScope, key: str | None, key2: str | None,
+                 bucket: str | None) -> tuple[FieldRef, FieldRef]:
+    """CRM-Q34-10: the two fields of a two-field group, or a 422. The two
+    are different fields, and at most one is a date. *bucket* goes to the
+    date field. With no date, it goes to the first field, which refuses it."""
+    first, second = scope.ref(key), scope.ref(key2)
+    if first.key == second.key:
+        raise _refuse("Give two different fields as group_field and group_field2.")
+    dated = (first.type in DATE_TYPES, second.type in DATE_TYPES)
+    if all(dated):
+        raise _refuse(
+            f"'{first.key}' and '{second.key}' are both dates. Give one date field, "
+            "and one picklist, boolean or lookup field.",
+        )
+    to_first = dated[0] or not dated[1]
+    return (check_group(scope, key, bucket if to_first else None),
+            check_group(scope, key2, None if to_first else bucket))
+
+
 # ── The expressions. Every key and value is a bound parameter. ──────────────
 
 
@@ -918,15 +939,18 @@ def split_sql(scope: FieldScope, refs: Sequence[FieldRef], measure: str) -> list
 
 def group_sql(
     scope: FieldScope, ref: FieldRef, bucket: str | None, *, zone: str,
+    prefix: str = _GROUP_KEY,
 ) -> GroupSql:
     """The group key of the field *ref*. A date groups by its bucket.
 
     A ``date`` keeps the day that Zoho wrote. A ``datetime`` reads the whole
     value with its offset, and takes its bucket on the clock of *zone*, the
     CRM zone (CRM-Q25b). So it agrees with ``created_month``. A module
-    group reads the detoasted copy (task 3127).
+    group reads the detoasted copy (task 3127). *prefix* names the bound
+    key. Only the second field of a two-field group (CRM-Q34-10) gives
+    another one, :data:`GROUP2_KEY`.
     """
-    column, p = _reads(scope.column), _GROUP_KEY
+    column, p = _reads(scope.column), prefix
     source = _source_of(scope.column)
     if ref.type in DATE_TYPES:
         unit, fmt = BUCKETS[bucket or ""]

@@ -63,6 +63,18 @@ the measure over the rest, and ``omitted`` counts them. The order stays: the
 status groups in board order, the month and date buckets in time order, and
 each other group largest first.
 
+**Two group fields, and pages of groups** (CRM-Q34-10, ``crm_platform.md``
+§18.17). On a module, ``group_field2`` names a second field, so a group is a
+pair, such as a site and a month. At most one of the two is a date, and
+``bucket`` goes to it. ``group_page`` and ``group_page_size`` (1 to
+:data:`GROUP_PAGE_MAX`, default :data:`MAX_GROUPS`) page the groups IN SQL,
+largest value first, then by each key. That order is a total order, so two
+pages never share a group. The answer adds ``group_count``, ``group_page``
+and ``group_pages``. ``total`` and ``records`` stay the answer over every
+group. It is dark behind ``CRM_MODULE_FIND_ORGS`` (``module_find_allowed``).
+Off the list, ``group_field2`` and a ``group_page`` past 1 are a 422 that
+names the way without them. Every other call is the answer of today.
+
 **One zone for each month** (CRM-Q25b). ``created_month``, ``updated_month``
 and a ``datetime`` bucket take the month on the clock of the CRM zone,
 ``field_sql.crm_zone``: the zone of the Zoho org, or UTC. The zone is a bound
@@ -143,11 +155,13 @@ from gateway.routes.crm.field_sql import (
     DATE_TYPES,
     FIELD_MEASURES,
     FIELD_PREFIX,
+    GROUP2_KEY,
     STATUS_WORD,
     ZONE_PARAM,
     FieldRef,
     FieldScope,
     check_group,
+    check_groups,
     check_measure,
     check_split,
     core_scope,
@@ -178,7 +192,7 @@ from gateway.routes.crm.field_sql import (
     used_keys,
     zoned,
 )
-from gateway.routes.crm.flags import long_read_allowed
+from gateway.routes.crm.flags import long_read_allowed, module_find_allowed
 from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.overlay import (
     SLOT_OF,
@@ -254,6 +268,7 @@ MODULE_PREFIX = "module:"
 MODULE_PARAMS = frozenset({
     "entity", "measure", "group_by", "group_field", "field", "bucket",
     "page", "page_size", "sort", "dir", "fields", "long_read",
+    "group_field2", "group_page", "group_page_size",
 })
 
 #: The groups that only a deal has.
@@ -264,6 +279,17 @@ MONTH_GROUPS = frozenset({"created_month", "updated_month", "close_month"})
 
 #: The most groups one answer holds. The rest fold into ``other``.
 MAX_GROUPS = 50
+
+#: CRM-Q34-10: the most groups on one page of a paged answer.
+GROUP_PAGE_MAX = 200
+
+#: CRM-Q34-10: what an org off ``CRM_MODULE_FIND_ORGS`` reads for a second
+#: group field or a page of groups past 1.
+TWO_GROUP_OFF = (
+    "Two group fields and pages of groups are not on for this organization. "
+    "Group by one field, and filter by the other: group_field=<a> with "
+    "field.<b>=<value>."
+)
 
 #: The limit of each statement of the aggregate, in milliseconds (CRM-Q25).
 STATEMENT_TIMEOUT_MS = 10_000
@@ -406,6 +432,11 @@ class AggregateGroup(BaseModel):
     #: Absent with no split.
     split: dict[str, float | None] = Field(
         default_factory=dict, exclude_if=lambda value: not value)
+    #: CRM-Q34-10: the key and the name of the second group field. Absent
+    #: with one group field. ``key2`` is also absent for the group of the
+    #: records with no value there, and ``label2`` then reads "(none)".
+    key2: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    label2: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class SplitTotal(BaseModel):
@@ -482,6 +513,18 @@ class AggregateResponse(BaseModel):
     #: ``sentence``. Absent with none.
     findings: list[dict[str, Any]] = Field(
         default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-10: the second group field, its label and its stored type.
+    #: Absent with one group field.
+    group_field2: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    group_field2_label: str | None = Field(
+        default=None, exclude_if=lambda value: value is None)
+    group_field2_type: str | None = Field(
+        default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-10: a paged answer only. The count of every group, this page
+    #: (from 1), and the count of pages. Absent from every other answer.
+    group_count: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    group_page: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    group_pages: int | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -897,26 +940,11 @@ async def _read(
     zone = ""
     field_measure = measure
     if module is not None:
-        _require_module(await mirrored_modules(db), module)
-        scope = await module_scope(db, module)
-        # CRM-Q34-2: `q` on a module is a 422 that names the fields to use.
-        if params.q is not None:
-            raise q_refusal(scope)
-        # CRM-Q34-2: `group_by=status` reads `@status`, or names the selects.
-        if status_group:
-            status_field(scope)
-        field_measure, field = module_measure(measure, field)
-        # CRM-Q25b: one zone for each bucket and each range of the answer.
-        zone = await crm_zone(db, current_tenant())
-        # §18.16 part 6: a text filter counts each case and short form.
-        matches = await text_matches(db, str(current_tenant()), scope, module, pairs)
-        # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
-        ids = await lookup_ids(db, str(current_tenant()), scope, pairs)
-        where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+        scope, field_measure, field, zone, where, matched = await _module_filters(
+            db, module, measure=measure, field=field, pairs=pairs, params=params,
+            status_group=status_group)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         source = where.source
-        matched = {pairs[i][0]: list(found) for i, found in matches.items()}
-        await _seed_aliases(db, module, pairs, matches)
     else:
         assert found is not None
         matched = {}
@@ -1024,6 +1052,252 @@ async def _read(
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
                  currency=currency, codes=codes, split=split, day=day, days=days)
+
+
+async def _module_filters(
+    db: Any, module: str, *, measure: str, field: str | None,
+    pairs: list[tuple[str, str]], params: ListParams, status_group: bool,
+) -> tuple[FieldScope, str, str | None, str, Any, dict[str, list[str]]]:
+    """The scope, the field measure, the field, the zone, the WHERE and the
+    matched text values of ONE module read. The one place that builds the
+    filters of a module total, so :func:`_read` and :func:`_read_pages`
+    count the same records (CRM-Q34-10)."""
+    _require_module(await mirrored_modules(db), module)
+    scope = await module_scope(db, module)
+    # CRM-Q34-2: `q` on a module is a 422 that names the fields to use.
+    if params.q is not None:
+        raise q_refusal(scope)
+    # CRM-Q34-2: `group_by=status` reads `@status`, or names the selects.
+    if status_group:
+        status_field(scope)
+    field_measure, field = module_measure(measure, field)
+    # CRM-Q25b: one zone for each bucket and each range of the answer.
+    zone = await crm_zone(db, current_tenant())
+    # §18.16 part 6: a text filter counts each case and short form.
+    matches = await text_matches(db, str(current_tenant()), scope, module, pairs)
+    # Task 3128: a lookup filter by a Metorite id also matches its Zoho id.
+    ids = await lookup_ids(db, str(current_tenant()), scope, pairs)
+    where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+    matched = {pairs[i][0]: list(found) for i, found in matches.items()}
+    await _seed_aliases(db, module, pairs, matches)
+    return scope, field_measure, field, zone, where, matched
+
+
+# ── Two group fields, and pages of groups (CRM-Q34-10) ─────────────────────
+
+#: The measure over every group, from the column ``value`` of each group.
+#: ``avg`` reads ``s`` and ``n`` instead. Each value is a literal.
+_WHOLE: dict[str, str] = {"min": "min(value)", "max": "max(value)"}
+
+#: The order of the groups of a page: the largest value first, then each
+#: key. (key, key2) is unique for each group, so the order is TOTAL, and two
+#: pages never share a group or skip one.
+GROUP_ORDER = "value DESC NULLS LAST, key ASC NULLS LAST, key2 ASC NULLS LAST"
+
+
+@dataclass
+class _Pages:
+    """One page of a paged read, and the measure over every group."""
+
+    rows: list[Any]
+    whole: Any
+    measured: FieldRef | None
+    grouped: FieldRef
+    grouped2: FieldRef | None
+    zone: str
+    keys: dict[str, str | list[str]]
+    matched: dict[str, list[str]]
+
+
+def paged_sql(inner: str, whole: str) -> str:
+    """ONE statement over the groups of *inner*: a first row (``agf_pos`` 0)
+    with the measure over every group and the count of groups, then the rows
+    of one page (``agf_pos`` from ``:agf_lo`` + 1 to ``:agf_hi``). The page is
+    cut in SQL, so the answer never holds every group. *inner* is SQL of this
+    module, *whole* a value of :data:`_WHOLE`, and the page bounds are bound
+    values."""
+    cols = "key, label, key2, label2, value, s, n, c"
+    return (
+        f"WITH agf_groups AS MATERIALIZED ({inner}) "
+        "SELECT 0 AS agf_pos, NULL AS key, NULL AS label, NULL AS key2, NULL AS label2, "
+        f"{whole} AS value, sum(s) AS s, sum(n) AS n, sum(c) AS c, "
+        "count(*) AS agf_count FROM agf_groups "
+        f"UNION ALL SELECT * FROM (SELECT row_number() OVER (ORDER BY {GROUP_ORDER}) "
+        f"AS agf_pos, {cols}, 0 AS agf_count FROM agf_groups) agf_page "
+        "WHERE agf_pos > :agf_lo AND agf_pos <= :agf_hi"
+    )
+
+
+async def _read_pages(
+    db: Any, module: str, *, measure: str, field: str | None, group_field: str,
+    group_field2: str | None, bucket: str | None, pairs: list[tuple[str, str]],
+    params: ListParams, page: int, size: int, timeout_ms: int | None,
+    status_group: bool,
+) -> _Pages:
+    """One page of the groups of a module total, by one or two fields, in
+    the caller's tenant session (CRM-Q34-10). The filters are the ones of
+    :func:`_read` (:func:`_module_filters`), and every key is bound."""
+    ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
+    deadline = None if timeout_ms is None else time.monotonic() + timeout_ms / 1000
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
+    scope, field_measure, field, zone, where, matched = await _module_filters(
+        db, module, measure=measure, field=field, pairs=pairs, params=params,
+        status_group=status_group)
+    measured = check_measure(scope, field) if field else None
+    if group_field2 is None:
+        grouped, grouped2 = check_group(scope, group_field, bucket), None
+    else:
+        grouped, grouped2 = check_groups(scope, group_field, group_field2, bucket)
+    bound = dict(where.params)
+    first = group_sql(scope, grouped, bucket if grouped.type in DATE_TYPES else None,
+                      zone=zone)
+    bound.update(first.params)
+    sources = [where.source, first.source]
+    key2_sql, label2_sql, group_by_sql = "NULL", "NULL", " GROUP BY 1"
+    if grouped2 is not None:
+        second = group_sql(scope, grouped2,
+                           bucket if grouped2.type in DATE_TYPES else None,
+                           zone=zone, prefix=GROUP2_KEY)
+        key2_sql, label2_sql, group_by_sql = second.key, second.label, " GROUP BY 1, 3"
+        bound.update(second.params)
+        sources.append(second.source)
+    value_sql, sum_sql, count_sql = MEASURES["count"], "0", "0"
+    if measured is not None:
+        sql = measure_sql(scope, measured, field_measure)
+        value_sql, sum_sql, count_sql = sql.value, sql.sum, sql.count
+        bound.update(sql.params)
+        sources.append(sql.source)
+    bound[ZONE_PARAM] = zone
+    bound.update(agf_lo=(page - 1) * size, agf_hi=page * size)
+    inner = (
+        f"SELECT {first.key} AS key, {first.label} AS label, {key2_sql} AS key2, "
+        f"{label2_sql} AS label2, {value_sql} AS value, {sum_sql} AS s, "
+        f"{count_sql} AS n, count(*) AS c "
+        f"FROM {MODULE_TABLE}{from_source(*sources)}{where.sql}{group_by_sql}"
+    )
+    whole = _WHOLE.get(field_measure, "sum(value)")
+    await _keep_deadline(db, deadline)
+    rows = (await db.execute(
+        text(paged_sql(inner, whole)), bound,
+    )).fetchall()
+    head = next(r for r in rows if int(r.agf_pos) == 0)
+    page_rows = sorted((r for r in rows if int(r.agf_pos) > 0), key=lambda r: int(r.agf_pos))
+    keys = used_keys(scope, [field, group_field, group_field2,
+                             *(name for name, _value in pairs)])
+    return _Pages(page_rows, head, measured, grouped, grouped2, zone, keys, matched)
+
+
+def _paging(
+    module: str | None, group_field: str | None, fields: str | None,
+    group_field2: str | None, group_page: int | None, group_page_size: int | None,
+) -> tuple[int, int] | None:
+    """CRM-Q34-10: the page and its size for a paged answer, None for the
+    answer of today, or a 422. Off ``CRM_MODULE_FIND_ORGS``, a call with no
+    second field and no page past 1 is the call of today."""
+    if group_field2 is None and group_page is None and group_page_size is None:
+        return None
+    if group_page is not None and group_page < 1:
+        raise _refuse("group_page counts from 1.")
+    needs = group_field2 is not None or (group_page or 1) > 1
+    if module is None:
+        if needs:
+            raise _refuse("group_field2 and group_page take a module entity: "
+                          "'module:<ApiName>'.")
+        return None
+    if not module_find_allowed(current_tenant()):
+        if needs:
+            raise _refuse(TWO_GROUP_OFF)
+        return None
+    if group_field is None:
+        raise _refuse("group_field2 and group_page go with group_field.")
+    if fields:
+        raise _refuse("A split takes one group field and no page. Give field=<key>.")
+    size = MAX_GROUPS if group_page_size is None else group_page_size
+    if not 1 <= size <= GROUP_PAGE_MAX:
+        raise _refuse(f"group_page_size is 1 to {GROUP_PAGE_MAX}.")
+    return group_page or 1, size
+
+
+async def _compute_pages(
+    module: str, *, measure: str, field: str | None, group_field: str,
+    group_field2: str | None, bucket: str | None, pairs: list[tuple[str, str]],
+    params: ListParams, paging: tuple[int, int], timeout_ms: int | None,
+    timed_out: dict[str, Any], status_group: bool,
+) -> AggregateResponse:
+    """The paged answer of :func:`_compute` (CRM-Q34-10). A field that is
+    not on the module names the modules that hold it (task 3690), and a
+    statement past the timeout is the 503 of today."""
+    try:
+        async with _tenant_session() as db:
+            try:
+                got = await _read_pages(
+                    db, module, measure=measure, field=field, group_field=group_field,
+                    group_field2=group_field2, bucket=bucket, pairs=pairs,
+                    params=params, page=paging[0], size=paging[1],
+                    timeout_ms=timeout_ms, status_group=status_group,
+                )
+            except HTTPException as exc:
+                raise await field_hint(db, module, exc) from None
+    except DBAPIError as exc:
+        if _is_timeout(exc):
+            raise HTTPException(status_code=503, detail=timed_out) from None
+        raise
+    return _paged_answer(f"{MODULE_PREFIX}{module}", measure, group_field, bucket,
+                         got, *paging)
+
+
+def _paged_answer(
+    entity: str, measure: str, group_field: str, bucket: str | None, got: _Pages,
+    page: int, size: int,
+) -> AggregateResponse:
+    """The answer of one page (CRM-Q34-10). A group is named as in the answer
+    of today: the lookup name, the option label, the key, or "(none)".
+    ``omitted`` counts the groups that are not on this page. ``other`` is
+    None: the read does not measure them apart."""
+    measured, grouped, grouped2 = got.measured, got.grouped, got.grouped2
+    head = got.whole
+    values = int(head.n or 0) if measured is not None else None
+    count = int(head.agf_count or 0)
+
+    def named(key: Any, name: Any, ref: FieldRef | None) -> str:
+        options = ref.options if ref is not None else {}
+        return name or options.get(key or "") or key or "(none)"
+
+    groups = [
+        AggregateGroup(
+            key=_key(r.key), label=named(_key(r.key), r.label, grouped),
+            value=None if values == 0 or r.value is None else _rounded(float(r.value)),
+            key2=_key(r.key2) if grouped2 is not None else None,
+            label2=named(_key(r.key2), r.label2, grouped2) if grouped2 is not None else None,
+        )
+        for r in got.rows
+    ]
+    if values == 0:
+        total = None
+    elif measure == "avg":
+        n = int(head.n or 0)
+        total = _rounded(float(head.s or 0) / n) if n else None
+    else:
+        total = None if head.value is None else _rounded(float(head.value))
+        if total is None and measure in SUMMING_MEASURES:
+            total = 0.0
+    dated = (grouped.type in DATE_TYPES
+             or (grouped2 is not None and grouped2.type in DATE_TYPES))
+    return AggregateResponse(
+        entity=entity, measure=measure, group_by=None, group_field=group_field,
+        field=measured.key if measured is not None else None,
+        field_type=measured.type if measured is not None else None,
+        field_label=measured.label if measured is not None else None,
+        group_field_label=grouped.label, keys=got.keys,
+        group_field_type=grouped.type, bucket=bucket if dated else None,
+        groups=groups, total=total, other=None,
+        omitted=max(0, count - len(groups)), zone=got.zone, values=values,
+        records=int(head.c or 0), matched=got.matched or None,
+        group_field2=grouped2.key if grouped2 is not None else None,
+        group_field2_label=grouped2.label if grouped2 is not None else None,
+        group_field2_type=grouped2.type if grouped2 is not None else None,
+        group_count=count, group_page=page, group_pages=-(-count // size),
+    )
 
 
 async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
@@ -1179,11 +1453,17 @@ async def aggregate(
     bucket: str | None = None,
     fields: str | None = None,
     long_read: bool = False,
+    group_field2: str | None = None,
+    group_page: int | None = None,
+    group_page_size: int | None = None,
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> AggregateResponse:
     """One measure of one entity or module, by one group or over every
     record, over the filters.
+
+    ``group_field2``, ``group_page`` and ``group_page_size`` give two group
+    fields and pages of groups on a module (CRM-Q34-10, the module doc).
 
     ``fields=a,b,c`` reads 2 to 5 number fields in ONE statement (CRM-Q25e
     part 2). ``long_read=true`` asks for the long read of an org on
@@ -1195,7 +1475,7 @@ async def aggregate(
     # (CRM-Q25 fix round). `group_field=` alone is then "no group": one total.
     group_by, field = group_by or None, field or None
     group_field, bucket = group_field or None, bucket or None
-    fields = fields or None
+    fields, group_field2 = fields or None, group_field2 or None
     _found, module = _check(entity, measure, group_by, group_field, field, bucket, fields)
     # CRM-Q20-3a: a core entity passes its field.<key> filters on. With an
     # overlay they filter the module. With none, compute refuses them.
@@ -1204,7 +1484,8 @@ async def aggregate(
     return await compute(
         entity, measure=measure, group_by=group_by, field=field,
         group_field=group_field, bucket=bucket, pairs=pairs, params=params, user=user,
-        fields=fields, long_read=long_read,
+        fields=fields, long_read=long_read, group_field2=group_field2,
+        group_page=group_page, group_page_size=group_page_size,
     )
 
 
@@ -1214,6 +1495,8 @@ async def compute(
     bucket: str | None = None, pairs: list[tuple[str, str]] | None = None,
     params: ListParams, user: UserContext | None = None,
     fields: str | None = None, long_read: bool = False,
+    group_field2: str | None = None, group_page: int | None = None,
+    group_page_size: int | None = None,
 ) -> AggregateResponse:
     """The ONE body of an aggregate. ``GET /crm/aggregate`` calls it, and so
     does the weekly digest of CRM-Q28 (``crm_sync/digest.py``), so a digest
@@ -1237,13 +1520,15 @@ async def compute(
                 entity, measure=measure, group_by=group_by, field=field,
                 group_field=group_field, bucket=bucket, pairs=pairs, params=params,
                 user=user, fields=fields, timeout_ms=int(left * 1000),
-                timed_out=LONG_TIMEOUT_DETAIL,
+                timed_out=LONG_TIMEOUT_DETAIL, group_field2=group_field2,
+                group_page=group_page, group_page_size=group_page_size,
             )
     return await _compute(
         entity, measure=measure, group_by=group_by, field=field, group_field=group_field,
         bucket=bucket, pairs=pairs, params=params, user=user, fields=fields,
         timeout_ms=None,
         timed_out={**TIMEOUT_DETAIL, "long_read": True} if allowed else TIMEOUT_DETAIL,
+        group_field2=group_field2, group_page=group_page, group_page_size=group_page_size,
     )
 
 
@@ -1252,6 +1537,8 @@ async def _compute(
     group_field: str | None, bucket: str | None, pairs: list[tuple[str, str]] | None,
     params: ListParams, user: UserContext | None, fields: str | None,
     timeout_ms: int | None, timed_out: dict[str, Any],
+    group_field2: str | None = None, group_page: int | None = None,
+    group_page_size: int | None = None,
 ) -> AggregateResponse:
     """The body of :func:`compute`, with the statement timeout of the read
     (None for the 10 s of :data:`STATEMENT_TIMEOUT_MS`) and the detail of
@@ -1265,6 +1552,14 @@ async def _compute(
     status_group = module is not None and group_by == "status"
     if status_group:
         group_by, group_field = None, STATUS_WORD
+    group_field2 = group_field2 or None
+    paging = _paging(module, group_field, fields, group_field2, group_page, group_page_size)
+    if paging is not None and module is not None and group_field is not None:
+        return await _compute_pages(
+            module, measure=measure, field=field, group_field=group_field,
+            group_field2=group_field2, bucket=bucket, pairs=pairs, params=params,
+            paging=paging, timeout_ms=timeout_ms, timed_out=timed_out,
+            status_group=status_group)
     try:
         async with _tenant_session() as db:
             # CRM-Q20-3a: a core entity whose slot has an approved overlay
