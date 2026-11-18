@@ -144,16 +144,33 @@ def _egress_held_answer(act: str) -> str:
     return "Nothing changed. " + egress_held_answer(act)
 
 
-async def _confirm_destructive(title: str, detail: str, context: str = "") -> bool:
+async def _confirm_destructive(title: str, detail: str, context: str = "") -> Any:
     """Fail-closed HITL gate for a destructive or outward-facing tool.
 
     Returns True only when the user explicitly approves. Declining — OR running
     with no interactive stream to deliver the card — returns False, so an
     automated/headless caller can never silently trash mail, unsubscribe, purge
     a mailbox, or email a digest. Mirrors the confirm-before-send pattern the two
-    send_* tools already use (HH-2)."""
+    send_* tools already use (HH-2).
+
+    Task 3814: with ``CHAT_CARD_REVISE_ORGS`` on (:func:`_card_revise_on`), a
+    chat message of the member closes the card (``close_on_steer``), and the
+    answer is ``ask_tools.REVISED``. It is falsy, so no caller acts on it.
+    Off, the call is the call of before, with no new argument."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
-    return await request_confirmation(title=title, detail=detail, context=context)
+    steer = {"close_on_steer": True} if _card_revise_on() else {}
+    return await request_confirmation(title=title, detail=detail, context=context, **steer)
+
+
+def _card_revise_on() -> bool:
+    """True when ``CHAT_CARD_REVISE_ORGS`` names the run's org (task 3814).
+    The one reader is ``acb_skills.card_revise.card_revise_on``. An older
+    platform with no reader reads as off."""
+    try:
+        from acb_skills.card_revise import card_revise_on
+    except ImportError:
+        return False
+    return card_revise_on()
 
 
 #: EM-G11c1 (§12.3.13.6): the answer of each tool of ``MAILBOX_WRITE_TOOLS``
@@ -192,6 +209,7 @@ def _wa_parked() -> str | None:
 
 async def _card_refusal(
     title: str, detail: str, act: str, context: str = "",
+    *, closed: str = "card", closed_note: str = "",
 ) -> str | None:
     """None when the member approves the card. Else the answer of the tool.
 
@@ -200,9 +218,17 @@ async def _card_refusal(
     A run with no card channel answers ``_NO_CARD_CHANNEL``.
     ``request_confirmation`` fails closed in both, so the tool writes nothing.
     A card that waits for the member's code on WhatsApp answers that it waits
-    (H-391)."""
-    if await _confirm_destructive(title=title, detail=detail, context=context):
+    (H-391).
+
+    Task 3814: a card that a chat message closed (``REVISED``, only with
+    ``CHAT_CARD_REVISE_ORGS`` on) answers :func:`_closed_by_message` of the
+    act *closed*, then *closed_note*. The text tells the model the three ways
+    to read the member's words."""
+    answer = await _confirm_destructive(title=title, detail=detail, context=context)
+    if answer:
         return None
+    if _revised(answer):
+        return _closed_by_message(closed) + (f" {closed_note}" if closed_note else "")
     return _unapproved_line() or _not_done(act)
 
 
@@ -2612,6 +2638,37 @@ _CLOSED_STEPS: dict[str, str] = {
         "come next, as their own chat message. If they change the senders, "
         "call unsubscribe_sender again, so a new card shows. If they ask about "
         "something else, answer that first."),
+    # Task 3814: the acts of the ``_card_refusal`` cards, with
+    # ``CHAT_CARD_REVISE_ORGS`` on. Each names the three ways to read the
+    # member's words: a change, an end of the act, or a new subject.
+    "new_draft": (
+        "This card was a new email to save in Drafts. Its tool is edit_draft. "
+        "No draft was saved. The member's words come next, "
+        "as their own chat message. Read them in one of three ways. If they "
+        "change this email, write it again. Keep every part that they did not "
+        "ask to change. Then call edit_draft again with no draft_id, so a new "
+        "card shows. That save updates the draft of this email that this chat "
+        "saved before, so Drafts keeps one copy. If they do not want the email "
+        "now, do nothing more, and tell them that no draft was saved. If they "
+        "ask about something else, answer that. Do not show the card again "
+        "until they ask for it."),
+    "edit_draft": (
+        "This card was a change to a draft in Drafts. Its tool is edit_draft. "
+        "The draft did not change. The member's words come next, as their own "
+        "chat message. Read them in one of three ways. If they change it, call "
+        "edit_draft again with the same draft_id, so a new card shows. Keep "
+        "every part that they did not ask to change. Do not save a new draft. "
+        "If they do not want the change now, do nothing more, and tell them "
+        "that the draft did not change. If they ask about something else, "
+        "answer that. Do not show the card again until they ask for it."),
+    "card": (
+        "This card was an act in the mailbox, and nothing changed. The member's "
+        "words come next, as their own chat message. Read them in one of three "
+        "ways. If they change this act, call the same tool again with the "
+        "change, so a new card shows. Keep every part that they did not ask to "
+        "change. If they do not want the act now, do nothing more, and tell "
+        "them that nothing changed. If they ask about something else, answer "
+        "that. Do not show the card again until they ask for it."),
 }
 
 
@@ -3612,8 +3669,11 @@ async def _outward_rule_refusal(
             "Not saved. These are too many rules to show on one card. Ask "
             "the user for fewer rules at a time."
         )
-    if await _confirm_destructive(title=title, detail=detail, context=context):
+    answer = await _confirm_destructive(title=title, detail=detail, context=context)
+    if answer:
         return None
+    if _revised(answer):  # task 3814: a chat message closed the card
+        return _closed_by_message("card")
     from acb_skills.ask_tools import confirmation_channel_open
     return _not_done(act) if confirmation_channel_open() else _NO_CARD_CHANNEL
 
@@ -7850,9 +7910,14 @@ async def send_draft(account_id: str, draft_id: str) -> str:
         return card
     detail, context, seal = card
     detail = await _with_recent_reply(draft_id, detail)
-    if not await request_confirmation(
-        title="Send this draft?", detail=detail, context=context,
-    ):
+    # Task 3814: with CHAT_CARD_REVISE_ORGS on, a chat message closes this card.
+    steer = {"close_on_steer": True} if _card_revise_on() else {}
+    approved = await request_confirmation(
+        title="Send this draft?", detail=detail, context=context, **steer,
+    )
+    if not approved:
+        if _revised(approved):
+            return _closed_by_message("send_draft")
         return _unapproved_line() or _not_done("The draft was not sent.")
     try:
         await _post(
@@ -8051,6 +8116,8 @@ async def edit_draft(
         detail + " · Nothing is sent.",
         "The draft did not change.",
         context,
+        closed="edit_draft",
+        closed_note=f"The draft_id of this draft is {draft_id}.",
     )
     if refusal:
         return refusal
@@ -8064,6 +8131,8 @@ async def edit_draft(
         }) or {}
     except GatewayError as exc:
         return _edit_save_refusal(exc)
+    await _note_edited_chat_draft(account_id, str(res.get("id") or draft_id), lists["to"],
+                                  new_subject, draft_id)
     lost = (" Its formatting and its images could not be kept, so it now "
             "holds the text only.") if res.get("html") == "lost" else ""
     now = "".join(f" {head}: {_addr_text(lists[key])}." for key, head, _ in _DRAFT_FIELDS
@@ -8072,6 +8141,25 @@ async def edit_draft(
     line = _draft_line(draft_id, new_subject)
     return (f"The draft is saved in {sender}.{now} Nothing was sent.{lost}{cancelled}"
             + (f"\n{line}" if line else ""))
+
+
+async def _note_edited_chat_draft(
+    account_id: str, saved_id: str, to: list[str], subject: str, draft_id: str,
+) -> None:
+    """Task 3814: after ``edit_draft`` changed a draft that this chat saved,
+    the chat's record takes its new people and subject. A draft that the
+    record does not hold never joins it, so a reply draft or the member's
+    own draft is never a target of the one-draft rule. With
+    ``CHAT_CARD_REVISE_ORGS`` off it writes nothing."""
+    if not _card_revise_on():
+        return
+    try:
+        from acb_skills.card_revise import note_draft
+    except ImportError:
+        return
+    await note_draft(thread=_run_thread(), account_id=account_id,
+                     member=_current_user_email(), draft_id=saved_id or draft_id, to=to,
+                     subject=subject, replaces=draft_id, only_if_known=True)
 
 
 def _edit_save_refusal(exc: Exception) -> str:
@@ -8139,21 +8227,49 @@ async def _new_draft(
         detail + " · Nothing is sent.",
         "No draft was saved.",
         _with_draft_text(context, body),
+        closed="new_draft",
     )
     if refusal:
         return refusal
+    payload = {
+        "account_id": account_id, "to": lists["to"], "cc": lists["cc"],
+        "bcc": lists["bcc"], "subject": subject or "", "body": body,
+        "from_chat": True,
+    }
     try:
-        res = await _put("/email/drafts", {
-            "account_id": account_id, "to": lists["to"], "cc": lists["cc"],
-            "bcc": lists["bcc"], "subject": subject or "", "body": body,
-            "from_chat": True,
-        }) or {}
+        res, updated = await _save_chat_draft(payload)
     except GatewayError as exc:
         return _edit_save_refusal(exc)
     line = _draft_line(res.get("id"), subject)
+    if updated:
+        # Task 3814: one draft for one email. The redraft went into the draft
+        # of this email that the chat saved before.
+        return (f"The draft is updated in Drafts of {sender} (draft_id {res.get('id', '')}). "
+                "It holds the new text, and no second copy was saved. Nothing was "
+                "sent. Send it with send_draft when the member asks."
+                + (f"\n{line}" if line else ""))
     return (f"The new draft is saved in Drafts of {sender} (draft_id {res.get('id', '')}). "
             "Nothing was sent. Send it with send_draft when the member asks."
             + (f"\n{line}" if line else ""))
+
+
+async def _save_chat_draft(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """``(saved draft, id of the earlier draft that it updated or "")``.
+
+    Task 3814: the one-draft rule of ``acb_skills.card_revise.save_one_draft``,
+    with the run's chat thread and member, never a value of the model. With
+    ``CHAT_CARD_REVISE_ORGS`` off, or on an older platform, it is the one
+    ``PUT /email/drafts`` of before."""
+    async def put(body: dict[str, Any]) -> Any:
+        return await _put("/email/drafts", body)
+
+    try:
+        from acb_skills.card_revise import save_one_draft
+    except ImportError:
+        return dict(await put(payload) or {}), ""
+    saved = await save_one_draft(put, payload, thread=_run_thread(),
+                                 member=_current_user_email())
+    return saved.result, saved.updated
 
 
 def _edit_text(body: str | None, subject: str | None) -> tuple[str, str | None, str | None]:
@@ -8829,12 +8945,15 @@ async def _unsubscribe_many(account_id: str, emails: list[str], name: str | None
     if len(context) > _CARD_CONTEXT_LIMIT:
         return ("Nothing changed. These senders do not fit on one card. Ask the user "
                 "for fewer senders at a time.")
-    if not await _confirm_destructive(
+    answer = await _confirm_destructive(
         title=f"Unsubscribe from {len(targets)} senders?",
         detail=(f"Unsubscribes from {len(targets)} senders. Each sender, and the host "
                 "or the address that its request goes to, is in the list below."),
         context=context,
-    ):
+    )
+    if not answer:
+        if _revised(answer):  # task 3814: a chat message closed the card
+            return _closed_by_message("unsubscribe")
         if _channel_open():
             return _not_done(f"No sender of the {len(targets)} was unsubscribed.")
         return _NO_CARD_CHANNEL
@@ -8944,9 +9063,12 @@ async def unsubscribe_sender(
         )
     # Outward-facing: it fires a real one-click request or SENDS an unsubscribe
     # email, and archives existing mail. Confirm, fail-closed.
-    if not await _confirm_destructive(
+    answer = await _confirm_destructive(
         title=f"Unsubscribe from {shown}?", detail=detail, context=context,
-    ):
+    )
+    if not answer:
+        if _revised(answer):  # task 3814: a chat message closed the card
+            return _closed_by_message("unsubscribe")
         if _channel_open():
             return _not_done(f"{shown} was not unsubscribed.")
         return _NO_CARD_CHANNEL

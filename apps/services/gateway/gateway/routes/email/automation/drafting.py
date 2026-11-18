@@ -3929,6 +3929,31 @@ async def upsert_draft(
         return await _fetch_message_dict(db, local_id)
 
 
+async def save_chat_draft(
+    fields: dict[str, Any], user: UserContext, *, thread: str, member: str, org: str,
+    upsert: Callable[[DraftUpsertRequest, UserContext], Awaitable[Any]] | None = None,
+) -> dict[str, Any]:
+    """Save a NEW draft of a chat card through :func:`upsert_draft`, under the
+    one-draft rule of ``acb_skills.card_revise.save_one_draft`` (task 3814).
+
+    *fields* are the fields of a :class:`DraftUpsertRequest` with no
+    ``draft_id``. *thread* is the chat thread that the card's record holds,
+    and *member* and *org* come from the session, never from a request field
+    (R5). With ``CHAT_CARD_REVISE_ORGS`` off, it is the one save of before.
+    On, an earlier draft of the same email of this chat takes the save, and a
+    404 for it saves a new draft. *upsert* lets a caller pass the
+    ``upsert_draft`` that it imported."""
+    from acb_skills.card_revise import save_one_draft
+
+    save = upsert or upsert_draft
+
+    async def put(body: dict[str, Any]) -> Any:
+        return await save(DraftUpsertRequest(**body), user)
+
+    saved = await save_one_draft(put, fields, thread=thread, member=member, org=org)
+    return saved.result
+
+
 class DraftExpect(BaseModel):
     """The recipients that the chat card showed (WS-17 EM-T13b-1), and the
     seal of its text (§21 fix round 1, P1-b).

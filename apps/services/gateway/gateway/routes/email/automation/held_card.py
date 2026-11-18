@@ -1656,15 +1656,20 @@ async def _save_new(
     rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str], user: UserContext,
 ) -> dict[str, Any]:
     """Save draft of a held new mail (§18.10): a NEW draft with the answered
-    text, the ticked people and the files of the record. It sends nothing."""
-    from gateway.routes.email.automation.drafting import DraftUpsertRequest
+    text, the ticked people and the files of the record. It sends nothing.
+
+    Task 3814: the one-draft rule (``drafting.save_chat_draft``). The thread
+    is the one that the record holds, and the member and the org are the
+    session's."""
+    from gateway.routes.email.automation.drafting import save_chat_draft
 
     attachments, count = await _new_attachments(rec, files, user)
-    saved = await upsert_draft(DraftUpsertRequest(
+    saved = await save_chat_draft(dict(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC],
         bcc=ticked[KIND_BCC], subject=rec.get("subject") or "", body=rec["body"],
         attachments=attachments, from_chat=True,
-    ), user)
+    ), user, thread=str(rec.get("thread") or ""), member=_owner(user), org=_org_of(user),
+        upsert=upsert_draft)
     return {"ok": True, "action": "save", "draft_id": str((saved or {}).get("id") or ""),
             "files": count, **ticked}
 

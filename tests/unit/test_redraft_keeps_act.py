@@ -75,6 +75,11 @@ ACTS: dict[str, tuple[str, frozenset[str]]] = {
     "scheduled_send": ("schedule_send", frozenset({"schedule_send"})),
     "send_draft": ("send_draft", frozenset({"send_draft"})),
     "unsubscribe": ("unsubscribe_sender", frozenset()),
+    # Task 3814: the acts of the ``_card_refusal`` cards. A generic card names
+    # no tool, and no send tool (``test_card_revise.py``).
+    "new_draft": ("edit_draft", frozenset()),
+    "edit_draft": ("edit_draft", frozenset()),
+    "card": ("", frozenset()),
 }
 
 
@@ -103,8 +108,9 @@ def test_each_act_has_one_text() -> None:
 def test_each_text_names_its_own_tool_and_no_other_send_tool(act: str) -> None:
     tool, allowed = ACTS[act]
     text = agents._closed_by_message(act)
-    assert f"Its tool is {tool}." in text, text
-    assert _names(tool, text)
+    if tool:
+        assert f"Its tool is {tool}." in text, text
+        assert _names(tool, text)
     for other in SEND_TOOLS:
         if other not in allowed:
             assert not _names(other, text), (act, other)

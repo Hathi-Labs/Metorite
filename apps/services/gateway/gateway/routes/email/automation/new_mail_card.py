@@ -272,7 +272,7 @@ async def new_mail_card_act(
     5. Send, or save a NEW draft, with exactly that text, the ticked people
        and the recorded files."""
     from acb_skills.reply_card import parse_new_mail_answer, take_reply_answer
-    from gateway.routes.email.automation.drafting import DraftUpsertRequest, upsert_draft
+    from gateway.routes.email.automation.drafting import save_chat_draft
     from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.send import (
         MetoriteFileRef,
@@ -337,10 +337,12 @@ async def new_mail_card_act(
                   refused=len(refused))
         return {**out, "action": "send", "id": (res or {}).get("id"),
                 **({"refused": refused} if refused else {})}
-    saved = await upsert_draft(DraftUpsertRequest(
+    # Task 3814: one draft for one email of a chat. The thread is the one that
+    # the card's record holds, and the member and the org are the session's.
+    saved = await save_chat_draft(dict(
         account_id=account_id, to=to, cc=cc, bcc=bcc, subject=subject, body=body,
         artifacts=artifacts, attachments=await _metorite_attachments(user, metorite),
         from_chat=True,
-    ), user)
+    ), user, thread=str(rec.get("thread") or ""), member=owner, org=org)
     _log.info("email.new_mail_card_saved", edited=edited, left_out=left_out)
     return {**out, "action": "save", "draft_id": str((saved or {}).get("id") or "")}

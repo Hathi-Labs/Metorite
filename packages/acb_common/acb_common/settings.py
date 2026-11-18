@@ -2384,6 +2384,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fences: tests/unit/test_late_approve_grant.py and
     # tests/unit/test_late_approve_grant_r8.py.
     chat_late_approve_orgs: str = ""
+    # ── A chat message closes a mailbox card, one draft per email (task 3814) ──
+    #
+    # CHAT_CARD_REVISE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each draft save is as
+    # before. On, a chat message closes each card of the email agent's
+    # `_confirm_destructive` gate (`close_on_steer`), and the tool answers
+    # with the closed text of its act. A new draft of a chat then updates the
+    # draft of the same email that the chat saved before. The one reader is
+    # `acb_skills.card_revise.card_revise_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fence: tests/unit/test_card_revise.py.
+    chat_card_revise_orgs: str = ""
     # ── A card stores its call (RESUME-1a, chat_run_continuity.md §4.12.4) ──
     #
     # CHAT_RESUME_ORGS: a comma list of organization ids, or `*`. Empty is
