@@ -248,6 +248,119 @@ async def test_find_tools_adds_one_to_the_base_only_with_the_flag_on(
     assert line and line[0]["tools"] == got["sent"], (line, got)
 
 
+# ── 1c. pin_chat counts in the base only with its flag on (CO-11b) ──────────
+
+
+@pytest.fixture(params=[False, True], ids=["pin-off", "pin-on"])
+def pin_flag(request, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """``CHAT_PIN_ORGS`` for the build of the orchestrator. The fixture
+    ``orchestrator`` builds with no org, so this sets the one decision of the
+    build, ``agents._chat_pin_enabled``. List it before ``orchestrator``."""
+    monkeypatch.setattr(_agents_mod(), "_chat_pin_enabled", lambda org=None: request.param)
+    return bool(request.param)
+
+
+async def test_the_pin_tool_adds_one_to_the_base_only_with_its_flag_on(
+    staging_shape, pin_flag, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """CO-11b (task 3563, ``chat_organization.md`` §18). ``pin_chat`` is a core
+    tool of the orchestrator, so it rides in each request of an org on
+    ``CHAT_PIN_ORGS``. With the flag off, the numbers of the staging shape do
+    not move: 59 sent and a base of 61. With it on, the estimate, the plan,
+    the sent count and the true-count log each grow by one: 60 sent. Mutation:
+    the build holds the tool with the flag off -> the off case is one high ->
+    red. Mutation: ``_pack_base_count`` skips a core tool -> plan and sent
+    differ -> red."""
+    on = pin_flag
+    assert ("pin_chat" in _names(orchestrator)) is on
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["packs"] == 0 and got["loader"] == 1
+    assert got["plan"] == got["sent"] == 59 + int(on), got
+    assert got["base"] + 1 == 62 + int(on), got
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ex._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    ex._log_pack_request_tools(orchestrator)
+    line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
+    assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+def test_at_the_cap_the_pin_tool_drops_studio_more_a_chosen_trade() -> None:
+    """CO-11b (task 3563): the trade that this slice chose, and that the owner
+    accepts before the flag flips (``chat_organization.md`` §18). It is the
+    trade of D222 decision 13, with ``pin_chat`` in the place of
+    ``find_tools``. A Studio turn with the email words fills the cap exactly
+    with production's base: 57 + email 31 + studio 10 + studio-more 13, less
+    the email specialist, is 110, ``MAX_REQUEST_TOOLS``. With ``pin_chat`` in
+    the base the count is 111, so ``choose`` drops studio-more, the last pack
+    that came by the surface alone. With the flag off nothing moves. With
+    both flags on, studio-more stays out, and the request holds
+    59 + 31 + 10 - 1 = 99 tools. Mutation: ``choose`` keeps a pack past the
+    cap -> red."""
+    from tests.unit.test_studio_split_matrix import (
+        BASE,
+        MEMBER,
+        SESSION,
+        SPECIALISTS,
+        TURN,
+        _allowed,
+    )
+    from tests.unit.test_studio_split_matrix import ORG as MATRIX_ORG
+
+    turn = tp.PackTurn(MATRIX_ORG, SESSION, tp._member_part(MEMBER), TURN, (),
+                       "check my emails", True, surface="studio")
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in ("email", "studio", "studio-more")}
+    assert BASE == 57 and size == {"email": 31, "studio": 10, "studio-more": 13}
+    off = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS)
+    assert off.slugs == ("email", "studio", "studio-more") and off.skipped == ()
+    pin = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 1, specialists=SPECIALISTS)
+    assert BASE + 1 + sum(size.values()) - 1 == 111 > tp.MAX_REQUEST_TOOLS == 110
+    assert pin.slugs == ("email", "studio") and pin.skipped == ("studio-more",)
+    both = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 2, specialists=SPECIALISTS)
+    assert both.slugs == ("email", "studio") and both.skipped == ("studio-more",)
+    assert BASE + 2 + size["email"] + size["studio"] - 1 == 99
+
+
+@pytest.mark.parametrize("held", ["", "*"], ids=["held-off", "held-on"])
+def test_with_both_flags_on_the_core_studio_pack_leaves_a_chosen_trade_of_a_worst_case(
+    monkeypatch: pytest.MonkeyPatch, held: str,
+) -> None:
+    """CO-11b (task 3563, ``chat_organization.md`` §18 item 3). A chosen trade
+    of a worst case, with the flags ON only. ``pin_chat`` (``CHAT_PIN_ORGS``)
+    and ``find_tools`` (``TOOL_SEARCH_ORGS``) each add one tool to the base.
+    The case ``studio_with_email_and_crm_records`` of the golden matrix runs
+    through the harness of the matrix (``_row``) at three bases:
+
+    * flags off (BASE): email, crm-records and studio, 57 + 31 + 13 + 10 less
+      the two specialists = 109 tools.
+    * pin_chat alone (BASE + 1): the same packs, 110 tools, at the cap.
+    * both flags (BASE + 2): 111 tools, so ``choose`` drops the core pack
+      ``studio`` by name. The request holds 59 + 31 + 13 - 2 = 101 tools.
+
+    With both flags off, nothing changes. Mutation: expect ``studio-more`` in
+    the place of ``studio``, or run at BASE + 1 -> red."""
+    from acb_common import get_settings
+
+    import tests.unit.test_studio_split_matrix as matrix
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", held, raising=False)
+    case = matrix.CASES["studio_with_email_and_crm_records"]
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"])
+            for slug in ("email", "crm-records", "studio")}
+    assert matrix.BASE == 57 and size == {"email": 31, "crm-records": 13, "studio": 10}
+    rows = {}
+    for extra in (0, 1, 2):
+        monkeypatch.setattr(matrix, "BASE", 57 + extra)
+        rows[extra] = matrix._row(case)
+    assert rows[0]["packs"] == rows[1]["packs"] == ["email", "crm-records", "studio"]
+    assert (rows[0]["tools"], rows[1]["tools"]) == (109, 110)
+    assert "studio" in rows[1]["packs"] and "studio" not in rows[2]["packs"]
+    assert rows[2]["packs"] == ["email", "crm-records"]
+    assert rows[2]["skipped"] == ["studio-more", "studio"]
+    assert 59 + sum(size.values()) - 2 == 111 > tp.MAX_REQUEST_TOOLS == 110
+    assert rows[2]["tools"] == 59 + size["email"] + size["crm-records"] - 2 == 101
+
+
 def test_at_the_cap_find_tools_drops_studio_more_the_trade_of_decision_13() -> None:
     """The trade that the owner accepted in D222 decision 13. A Studio turn
     with the email words fills the cap exactly with production's base (56 and
