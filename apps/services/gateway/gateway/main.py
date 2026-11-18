@@ -565,6 +565,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.graph_jobs_skipped", error=str(exc))
     try:
+        # The AI vendor alert kind and its seed hook register at import (AO-2,
+        # gateway/provider_alerts.py). Dark: the seed needs PROVIDER_ALERT_ORGS.
+        # Its own try, for the reason above.
+        from gateway import provider_alerts as _provider_alerts  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.provider_alert_jobs_skipped", error=type(exc).__name__)
+    try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
     except Exception as exc:

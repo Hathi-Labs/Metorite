@@ -739,6 +739,14 @@ class Settings(BaseSettings):
     # `gateway.reach.flags.due_push_allowed`. Spec:
     # calendar_events_reminders.md section 5.11.
     due_push_orgs: str = ""
+    # AO-2: PROVIDER_ALERT_ORGS lists the org ids whose admins hear when an AI
+    # vendor account runs out or runs low: one bell row and one phone push.
+    # Set it to the operator org (HathiLabs). Empty sends nothing, the
+    # default. `*` is refused, because a customer's admins must never get our
+    # vendor alerts. A SIGHUP reload applies a change. Reader:
+    # `gateway.provider_alerts.alert_orgs`. Spec: customer_console.md
+    # section 6A.17b. Fence: tests/unit/test_provider_alerts.py.
+    provider_alert_orgs: str = ""
     # STU-B1: STUDIO_ORGS lists the org ids that may read the AI Studio
     # action catalog (GET /studio/actions). `*` opens every org. Empty opens
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:

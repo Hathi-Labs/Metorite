@@ -65,6 +65,10 @@ GROUPS: tuple[str, ...] = ("now", "needs_you", "ready", "fyi", "later", "handled
 #: change here changes the order, and the seed must change with it.
 BASE: dict[str, int] = {
     # The needs kinds, in the needs feed's own order (KIND_ORDER).
+    # AO-2: the AI vendor alert of the operator org's admins. It gives no feed
+    # signal, so no card holds it today. The row keeps the needs order of
+    # KIND_ORDER, where it sits before `overdue`.
+    "provider_alert": 66,
     "overdue": 63,
     "approval": 59,
     "due_today": 55,

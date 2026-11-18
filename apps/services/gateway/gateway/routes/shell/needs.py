@@ -207,11 +207,16 @@ KIND_ORDER = {
     # as the bell draws it (`myDay.ts` `FIRED_FIRST`). The cut to `size` keeps
     # the first rows, so a fired reminder must not sit behind 30 other rows.
     "reminder_due": 0, "reminder_check": 1,
-    "overdue": 2, "approval": 3, "due_today": 4, "notification": 5,
-    "needs_reply": 6,
+    # AO-2 (customer_console.md §6A.17b): an AI vendor that runs out stops the
+    # chat for every member, so its alert comes before the admin's own work.
+    # The source gives one row for each vendor at most, so it cannot fill the
+    # cut. Only the admins of the operator org ever get it.
+    "provider_alert": 2,
+    "overdue": 3, "approval": 4, "due_today": 5, "notification": 6,
+    "needs_reply": 7,
     # WS-66 RM-2b (calendar_events_reminders.md §5.6): a reminder that Metorite
     # stopped checking is the last of the needs kinds.
-    "reminder_unconfirmed": 7}
+    "reminder_unconfirmed": 8}
 #: The kinds that take only the room the member's own rows leave inside the
 #: limit. An admin's approvals must never push out their own work.
 YIELDING_KINDS = frozenset({"approval"})
@@ -219,7 +224,7 @@ YIELDING_KINDS = frozenset({"approval"})
 NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
                 "notification": True, "needs_reply": False,
                 "reminder_due": False, "reminder_check": False,
-                "reminder_unconfirmed": False}
+                "reminder_unconfirmed": False, "provider_alert": True}
 
 Item = dict[str, Any]
 Act = dict[str, Any]
@@ -1026,6 +1031,36 @@ async def _reminders(user: UserContext) -> Found:
                  signals=lambda: signals[:PER_APP], next_edge=_iso(edge))
 
 
+# ── AI vendor alerts (AO-2, ``customer_console.md`` §6A.17b) ────────────────
+#
+# One row for each AI vendor that is out of credit or low, and one "serves
+# again" row for a day after it recovers. Only an admin of an org that
+# PROVIDER_ALERT_ORGS lists gets a row: `admin=True` applies the admin test,
+# and the flag lives inside (SourceAbsent). The rows come from the last alert
+# that `gateway.provider_alerts` sent, in the tenant Redis of the org. So the
+# provider writes no SQL and opens no session. Each row links to the provider
+# page of the Operator Console. It has no act and no feed signal: the bell and
+# the Needs you card show it, and no My Day card does.
+
+PROVIDER_ALERT_KINDS = frozenset({"provider_alert"})
+
+
+async def _provider_alerts(user: UserContext) -> Found:
+    from gateway import provider_alerts
+
+    org = str(user.organization_id or "")
+    if not provider_alerts.alert_allowed(org):
+        raise SourceAbsent("PROVIDER_ALERT_ORGS does not list the org")
+    items: list[Item] = []
+    for alert in await provider_alerts.bell_rows(org, _now()):
+        title, detail = provider_alerts.words(alert.state, alert.label, alert.days_left)
+        items.append(_item(id=f"providers:{alert.provider}", app="providers",
+                           kind="provider_alert", title=title, detail=detail,
+                           href=provider_alerts.PROVIDER_PAGE, at=alert.at))
+    shown = _sort(items)[:PER_APP]
+    return Found(shown, len(shown), capped=len(items) > PER_APP)
+
+
 # ── The one registry (``my_day_feed.md`` §4.4) ─────────────────────────────
 
 
@@ -1229,6 +1264,12 @@ register(Provider("email", ("email",), _email, frozenset({"needs_reply"}),
 # right `studio:publish` gates it (`permission`), and the flags live inside.
 register(Provider("studio", ("studio",), _studio_approvals, frozenset({"approval"}),
                   permission=STUDIO_APPROVAL_RIGHT, app="studio"))
+# AO-2: the AI vendor alerts of the operator org, for its admins only. It
+# registers before the reminders, so approvals stays last and the reminders
+# stay beside it. The gate is `feature:chat`: the alert says the chat fell
+# over. PROVIDER_ALERT_ORGS gates it inside (SourceAbsent).
+register(Provider("providers", ("chat",), _provider_alerts, PROVIDER_ALERT_KINDS,
+                  admin=True))
 # WS-66 RM-2b: the reminders register before approvals, which stays last. The
 # gate is `feature:projects`, the gate of the reminder routes. It has no
 # Handled read, and the flag lives inside the provider (SourceAbsent).
