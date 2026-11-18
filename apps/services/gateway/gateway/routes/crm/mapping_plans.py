@@ -96,9 +96,15 @@ from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.crm_sync.catalogue import (
     KIND_CATALOGUE,
+    KIND_JOIN,
+    KIND_MEASURE,
+    KIND_QUERY,
     is_catalogue,
+    is_semantic,
     item_problem,
     merge_item,
+    semantic_problem,
+    semantic_ref_problem,
     without_catalogue,
 )
 from gateway.routes.crm.core import (
@@ -375,13 +381,22 @@ def _kind_error(code: str, message: str, item: Mapping[str, Any]) -> HTTPExcepti
     })
 
 
-def kind_key(item: Mapping[str, Any]) -> tuple[Any, ...] | None:
+def kind_key(item: Mapping[str, Any], *, semantic: bool = False) -> tuple[Any, ...] | None:
     """The identity of an item of a CRM-Q20-1 kind, or ``None`` for another
     kind. One ``role`` for each slot, one ``target`` for each slot, module
     and target, and one ``stage`` for each slot and module. CRM-Q31-3:
     one ``catalogue`` item for each module, which :func:`check_kinds` checks
-    by its own rule 4."""
+    by its own rule 4.
+
+    SEM-7: with *semantic* (the org is on ``SEMANTIC_MODEL_ORGS``), one
+    ``measure`` and one ``query`` for each ``key``, and one ``join`` for
+    each module and field. Without it, an item of these kinds has no
+    identity, so it stays as an item of an unknown kind."""
     kind = item.get("kind")
+    if semantic and is_semantic(item):
+        if kind == KIND_JOIN:
+            return (KIND_JOIN, _hashable(item.get("module")), _hashable(item.get("field")))
+        return (kind, _hashable(item.get("key")))
     if kind == KIND_CATALOGUE:
         return (KIND_CATALOGUE, item.get("module"))
     if kind == KIND_ROLE:
@@ -391,6 +406,46 @@ def kind_key(item: Mapping[str, Any]) -> tuple[Any, ...] | None:
     if kind == KIND_STAGE:
         return (KIND_STAGE, item.get("slot"), item.get("module"))
     return None
+
+
+def _hashable(value: Any) -> Any:
+    """*value* when a set can hold it, else its JSON text."""
+    return value if isinstance(value, str | int | None) else json.dumps(value, sort_keys=True)
+
+
+def semantic_on(org: str | None) -> bool:
+    """True when the plan of *org* takes the kinds ``measure``, ``join``
+    and ``query`` (SEM-7). *org* comes from the session, never the request.
+    With no org, the bound tenant answers."""
+    from acb_common.db import current_tenant
+    from gateway.routes.crm.flags import semantic_model_allowed
+
+    return semantic_model_allowed(org or current_tenant())
+
+
+def _check_semantic(others: Sequence[Mapping[str, Any]]) -> None:
+    """Rule 5 of :func:`check_kinds`: the shape of each semantic item, and
+    each ``measure`` that a ``query`` names is a ``measure`` of the same
+    snapshot."""
+    measures: set[Any] = set()
+    for item in others:
+        if not is_semantic(item):
+            continue
+        problem = semantic_problem(item)
+        if problem is not None:
+            kind = str(item.get("kind"))
+            raise _kind_error(
+                f"bad_{kind}", f"The {kind} item is not legal ({problem}).", item)
+        if item.get("kind") == KIND_MEASURE:
+            measures.add(item["key"])
+    for item in others:
+        if item.get("kind") != KIND_QUERY:
+            continue
+        measure = (item.get("query") or {}).get("measure")
+        if measure is not None and measure not in measures:
+            raise _kind_error(
+                "measure_missing", "This query names a measure that the plan does not hold.",
+                item)
 
 
 def _roles(others: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -410,7 +465,7 @@ def _roles(others: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return roles
 
 
-def check_kinds(others: Sequence[Mapping[str, Any]]) -> None:
+def check_kinds(others: Sequence[Mapping[str, Any]], *, semantic: bool = False) -> None:
     """The three rules of the kinds of CRM-Q20-1, on the items of one
     snapshot. A 422 names the item.
 
@@ -426,22 +481,30 @@ def check_kinds(others: Sequence[Mapping[str, Any]]) -> None:
        part, and ``code``, ``ai`` or ``admin`` for each part in ``by``
        (``bad_catalogue``, CRM-Q31-3). It needs no ``role``.
 
+    5. SEM-7, with *semantic* only: a ``measure``, ``join`` or ``query``
+       item has the shape of ``catalogue.semantic_problem`` (``bad_measure``,
+       ``bad_join``, ``bad_query``). A ``query`` that names a measure needs
+       that ``measure`` in the same snapshot (``measure_missing``). Without
+       *semantic*, no rule runs on these kinds.
+
     Two items with one identity (:func:`kind_key`) are a 422 ``duplicate``.
     An item of another kind is not checked here.
     """
     from gateway.crm_sync import executor
 
+    if semantic:
+        _check_semantic(others)
     roles = _roles(others)
     seen: set[tuple[Any, ...]] = set()
     for item in others:
-        key = kind_key(item)
+        key = kind_key(item, semantic=semantic)
         if key is None:
             continue
         if key in seen:
             raise _kind_error("duplicate", "Two items of the plan say the same thing.", item)
         seen.add(key)
         kind = item.get("kind")
-        if kind == KIND_ROLE:
+        if kind == KIND_ROLE or is_semantic(item):
             continue
         if kind == KIND_CATALOGUE:
             problem = item_problem(item)
@@ -466,14 +529,17 @@ def check_kinds(others: Sequence[Mapping[str, Any]]) -> None:
 
 def merge_kinds(
     others: Sequence[Mapping[str, Any]], items: Sequence[Mapping[str, Any]],
+    *, semantic: bool = False,
 ) -> list[dict[str, Any]]:
     """*others* with *items* put in. An item replaces the item of its
     identity (:func:`kind_key`). A ``role`` that moves a slot to another
     module drops the ``target`` and ``stage`` items of the old module, so
-    the result keeps rule 1. An item of another kind stays as it is."""
+    the result keeps rule 1. An item of another kind stays as it is.
+    SEM-7: *semantic* gives the kinds ``measure``, ``join`` and ``query``
+    an identity, so they merge too."""
     merged = [dict(o) for o in others]
     for item in items:
-        key = kind_key(item)
+        key = kind_key(item, semantic=semantic)
         if key is None:
             continue
         if item.get("kind") == KIND_ROLE:
@@ -483,9 +549,36 @@ def merge_kinds(
                     o.get("kind") in (KIND_TARGET, KIND_STAGE)
                     and o.get("slot") == item.get("slot")
                     and o.get("module") == old.get("module"))]
-        merged = [o for o in merged if kind_key(o) != key]
+        merged = [o for o in merged if kind_key(o, semantic=semantic) != key]
         merged.append(dict(item))
     return merged
+
+
+async def _check_semantic_refs(
+    db: Any, org: str, others: Sequence[Mapping[str, Any]], in_use: Any | None,
+) -> None:
+    """SEM-7: each semantic item of *others* that the version in use
+    (*in_use*) does not hold as it is must fit the catalogue of today
+    (``catalogue.semantic_ref_problem``). A 422 ``stale_<kind>`` names the
+    item. An item that the version in use holds is not checked again, so a
+    field that left the source never blocks an unrelated change. The facts
+    leave such an item out (``facts.semantic_facts``)."""
+    kept = set(_canonical(split_rules(_rules_of(in_use))[1])) if in_use is not None else set()
+    fresh = [o for o in others if is_semantic(o) and _canonical([o])[0] not in kept]
+    if not fresh:
+        return
+    # Imported here: the catalogue route imports this module.
+    from gateway.routes.crm.catalogue import _load
+
+    sources = (await _load(db, org, count=False))[1]
+    by_module = {src.module: src for src in sources}
+    for item in fresh:
+        problem = semantic_ref_problem(item, by_module)
+        if problem is not None:
+            kind = str(item.get("kind"))
+            raise _kind_error(
+                f"stale_{kind}",
+                f"The {kind} item does not fit the fields of today ({problem}).", item)
 
 
 # ── The lock, version 1 and the live set ────────────────────────────────────
@@ -647,20 +740,30 @@ async def commit(
     :func:`check_kinds` first, so a draft approve, a restore and a per-rule
     change all keep the three rules of the kinds.
 
+    SEM-7: for an org on ``SEMANTIC_MODEL_ORGS``, :func:`check_kinds`
+    checks the kinds ``measure``, ``join`` and ``query`` too. Each such
+    item that the version in use does not hold as it is must fit the
+    catalogue of today (:func:`_check_semantic_refs`). Off the list, these
+    items pass through as items of an unknown kind.
+
     CRM-Q31-3: the catalogue rides the version in use. With *catalogue*
     ``None``, the ``catalogue`` items of *others* drop out, and those of the
     approved version in use go in. So a draft approve, a restore and a change
     of one rule never bring back an old catalogue. Only
     :func:`apply_catalogue` passes *catalogue*.
     """
+    in_use = await _approved(db) if catalogue is None else None
     if catalogue is None:
-        in_use = await _approved(db)
         catalogue = (
             [o for o in split_rules(_rules_of(in_use))[1] if is_catalogue(o)]
             if in_use is not None else []
         )
     others = [*without_catalogue(others), *(dict(c) for c in catalogue)]
-    check_kinds(others)
+    semantic = semantic_on(org)
+    check_kinds(others, semantic=semantic)
+    if semantic:
+        in_use = in_use if in_use is not None else await _approved(db)
+        await _check_semantic_refs(db, org, others, in_use)
     # The rule rows are locked first, so the profile and the checks read the
     # state that the writes below act on.
     rows = {
@@ -766,14 +869,17 @@ async def carry_draft(
     live_fields, live_others = split_rules(_rules_of(approved))
     # CRM-Q31-3: a draft holds no catalogue item, on either side of the compare.
     others, live_others = without_catalogue(others), without_catalogue(live_others)
-    kinds = [o for o in others if kind_key(o) is not None
+    # SEM-7: the semantic kinds carry only for an org on the list. The org is
+    # the bound tenant of the session.
+    semantic = semantic_on(None)
+    kinds = [o for o in others if kind_key(o, semantic=semantic) is not None
              and not (drop_slot is not None and o.get("slot") == drop_slot)]
-    merged = merge_kinds(live_others, kinds)
+    merged = merge_kinds(live_others, kinds, semantic=semantic)
     if (_identity(fields) == _identity(live_fields)
             and _canonical(merged) == _canonical(live_others)):
         return None
     try:
-        check_kinds(merged)
+        check_kinds(merged, semantic=semantic)
     except HTTPException:
         return None
     return (await db.execute(text(_INSERT_DRAFT_SQL), {
@@ -903,8 +1009,9 @@ async def write_draft(
     base = draft or approved
     fields, others = split_rules(_rules_of(base))
     others = without_catalogue(others)
-    merged = merge_kinds(others, items)
-    check_kinds(merged)
+    semantic = semantic_on(org)
+    merged = merge_kinds(others, items, semantic=semantic)
+    check_kinds(merged, semantic=semantic)
     if _canonical(merged) == _canonical(others):
         return None
     author = by
@@ -1498,6 +1605,7 @@ __all__ = [
     "open_draft",
     "preview_mapping_plan",
     "roles_of",
+    "semantic_on",
     "split_rules",
     "write_draft",
 ]

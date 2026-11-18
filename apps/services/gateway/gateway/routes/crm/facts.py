@@ -13,6 +13,15 @@ revenue. A part that the admin left as "none" is a fact too.
 stage value is an option of a picklist that the plan holds. ``set_by`` is a
 role, never an email.
 
+**The semantic kinds (SEM-7, ``semantic_model.md`` §3.4).** For an org on
+``SEMANTIC_MODEL_ORGS`` too, each approved ``measure``, ``join`` and
+``query`` item is a fact, with the subjects ``measure:``, ``join:`` and
+``query:``. An admin accepted each one, so it is the admin's text, with the
+source ``admin``, beside the other plan facts (§3.3 point 6). Only the
+approved version serves, never a draft (D-SEM-11). An item that no longer
+fits the catalogue serves nothing. A verified query shows its question words
+and its parameter names only.
+
 **Who reads.** The org must be on ``CRM_QUESTIONS_ORGS``
 (``flags.questions_allowed``), and the provider calls
 ``access.require_crm_access(user)`` first. A member that the CRM does not
@@ -28,7 +37,7 @@ from typing import Any
 from fastapi import HTTPException
 from gateway import org_facts
 from gateway.routes.crm.access import require_crm_access
-from gateway.routes.crm.flags import questions_allowed
+from gateway.routes.crm.flags import questions_allowed, semantic_model_allowed
 from sqlalchemy import text
 
 APP = "crm"
@@ -154,6 +163,99 @@ def plan_facts(others: Sequence[Mapping[str, Any]], labels: Mapping[str, str],
     return out
 
 
+def _field_names(src: Any, keys: Sequence[Any]) -> str:
+    return _names([(src.field(str(k)) or src).label for k in keys])
+
+
+def _filter_words(src: Any, filters: Sequence[Mapping[str, Any]]) -> str:
+    parts = []
+    for one in filters:
+        found = src.field(str(one.get("field")))
+        label = found.label if found is not None else str(one.get("field"))
+        options = [str(o) for o in one.get("options") or []]
+        parts.append(f"{label} is {' or '.join(options)}")
+    return f", where {' and '.join(parts)}" if parts else ""
+
+
+def measure_facts(items: Sequence[Mapping[str, Any]], sources: Mapping[str, Any],
+                  approved_at: Any) -> list[org_facts.Fact]:
+    """Each approved ``measure`` item that fits the catalogue, as subject
+    ``measure:<key>``. It names the aggregate, the fields, the fixed
+    filters and the unit. It holds no total."""
+    from gateway.crm_sync import catalogue as cat
+
+    out: list[org_facts.Fact] = []
+    for item in items:
+        if item.get("kind") != cat.KIND_MEASURE:
+            continue
+        src = sources[str(item["module"])]
+        fields = item.get("fields") or []
+        what = (f"the count of {src.label} records" if item["aggregate"] == "count"
+                else f"the {item['aggregate']} of {_field_names(src, fields)} of {src.label}")
+        out.append(org_facts.fact(
+            APP, f"measure:{item['key']}", "measure", str(item["key"]),
+            f'The measure "{item["label"]}" is {what}'
+            f"{_filter_words(src, item.get('filters') or [])}, in {item['unit']}.",
+            "admin", approved_at))
+    return out
+
+
+def join_facts(items: Sequence[Mapping[str, Any]], sources: Mapping[str, Any],
+               approved_at: Any) -> list[org_facts.Fact]:
+    """Each approved ``join`` item that fits the catalogue, as subject
+    ``join:<Module>.<field>``: the lookup that links two modules."""
+    from gateway.crm_sync import catalogue as cat
+
+    out: list[org_facts.Fact] = []
+    for item in items:
+        if item.get("kind") != cat.KIND_JOIN:
+            continue
+        src = sources[str(item["module"])]
+        field = src.field(str(item["field"]))
+        target = sources.get(str(item["target"]))
+        target_label = target.label if target is not None else str(item["target"])
+        out.append(org_facts.fact(
+            APP, f"join:{item['module']}.{item['field']}", "join", str(item["target"]),
+            f"{field.label} of {src.label} links each record to a {target_label} record.",
+            "admin", approved_at))
+    return out
+
+
+def query_facts(items: Sequence[Mapping[str, Any]], approved_at: Any,
+                ) -> list[org_facts.Fact]:
+    """Each approved ``query`` item that fits the catalogue, as subject
+    ``query:<key>``. It shows the question words and the parameter names
+    only: no query, no total and no value (§6.3)."""
+    from gateway.crm_sync import catalogue as cat
+
+    out: list[org_facts.Fact] = []
+    for item in items:
+        if item.get("kind") != cat.KIND_QUERY:
+            continue
+        names = [str(p["name"]) for p in item.get("params") or []]
+        tail = f" Its parameters: {', '.join(names)}." if names else ""
+        out.append(org_facts.fact(
+            APP, f"query:{item['key']}", "query", str(item["key"]),
+            f'A verified question: "{item["question"]}".{tail}', "admin", approved_at))
+    return out
+
+
+def semantic_facts(others: Sequence[Mapping[str, Any]], sources: Sequence[Any],
+                   approved_at: Any) -> list[org_facts.Fact]:
+    """The ``measure``, ``join`` and ``query`` facts of the approved items
+    *others* (SEM-7). An item that fails ``catalogue.semantic_problem`` or
+    no longer fits the catalogue (``semantic_ref_problem``) serves nothing.
+    The caller checks ``SEMANTIC_MODEL_ORGS``."""
+    from gateway.crm_sync import catalogue as cat
+
+    by_module = {src.module: src for src in sources}
+    kept = [o for o in others if cat.is_semantic(o) and cat.semantic_problem(o) is None
+            and cat.semantic_ref_problem(o, by_module) is None]
+    return [*measure_facts(kept, by_module, approved_at),
+            *join_facts(kept, by_module, approved_at),
+            *query_facts(kept, approved_at)]
+
+
 async def rule_facts(db: Any, org: str, user: Any) -> list[org_facts.Fact]:
     """The business rules of the org and of the caller (CRM-Q33 part 3), as
     subject ``rule:<slug>``. An org rule comes from an admin, and a member's
@@ -257,6 +359,10 @@ async def crm_facts(db: Any, user: Any) -> list[org_facts.Fact]:
     for entry in _ordered(entries):
         out.extend(entry_facts(entry, approved_at))
     out.extend(plan_facts(others, {e.module: e.label for e in entries}, approved_at))
+    # SEM-7: the admin's measures, joins and verified questions, beside the
+    # other plan facts. ``others`` holds the approved version only.
+    if semantic_model_allowed(org):
+        out.extend(semantic_facts(others, sources, approved_at))
     # WS-53 §18.16: the org's own words and its value aliases, last.
     from gateway.crm_sync import runs
     from gateway.crm_sync.questions import QUESTIONS_ROW
@@ -270,5 +376,5 @@ async def crm_facts(db: Any, user: Any) -> list[org_facts.Fact]:
 org_facts.register(APP, crm_facts)
 
 
-__all__ = ["APP", "crm_facts", "entry_facts", "plan_facts", "revenue_fact", "rule_facts",
-           "term_facts"]
+__all__ = ["APP", "crm_facts", "entry_facts", "join_facts", "measure_facts", "plan_facts",
+           "query_facts", "revenue_fact", "rule_facts", "semantic_facts", "term_facts"]

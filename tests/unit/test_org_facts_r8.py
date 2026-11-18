@@ -184,3 +184,119 @@ async def test_each_org_reads_only_its_own_facts_through_the_tool(
     assert "Net Value" in block_a
     assert "Net Value" not in block_b and "Invoices" not in block_b
     assert "The amount of Expense Ledger is Spent (Spent)." in block_b
+
+
+# ── SEM-7: the semantic kinds of the plan (task 3737) ─────────────────────────
+
+#: Org A's measures, join and verified question. They name only fields,
+#: lookups and option keys that ``seed_a`` defines.
+SEM_A = [
+    {"kind": "measure", "key": "billed", "label": "Billed amount", "module": "Invoices",
+     "aggregate": "sum", "fields": ["Net_Value"], "unit": "currency"},
+    {"kind": "measure", "key": "won_deals", "label": "Won commercials",
+     "module": "Commercials", "aggregate": "count",
+     "filters": [{"field": "Status", "options": ["Won"]}], "unit": "count"},
+    {"kind": "join", "module": "Invoices", "field": "Buyer", "target": "Buyer_Clients"},
+    {"kind": "query", "key": "billed_for_customer",
+     "question": "Billed amount for {customer}",
+     "params": [{"name": "customer", "kind": "record"}],
+     "query": {"module": "Invoices", "measure": "billed",
+               "where": [{"field": "Buyer", "op": "eq", "param": "customer"}]},
+     "model_version": 1},
+]
+#: Org B's one measure.
+SEM_B = [{"kind": "measure", "key": "spent", "label": "Money spent", "module": "Ledgers",
+          "aggregate": "sum", "fields": ["Spent"], "unit": "currency"}]
+#: A measure that only a draft of org A holds (D-SEM-11).
+SEM_DRAFT = {"kind": "measure", "key": "draft_only", "label": "Draft measure",
+             "module": "Invoices", "aggregate": "sum", "fields": ["Billed_Value"],
+             "unit": "currency"}
+
+
+def _add_items(p: Any, org: str, items: list[dict]) -> None:
+    """Append *items* to the approved version of *org*, and add a draft that
+    holds them and :data:`SEM_DRAFT`."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_mapping_plans SET rules = rules || CAST(:i AS jsonb) "
+            "WHERE organization_id = CAST(:o AS uuid) AND state = 'approved'"),
+            {"o": org, "i": json.dumps(items)})
+        c.execute(text(
+            "INSERT INTO crm_mapping_plans (organization_id, version, state, rules, "
+            "created_by, based_on) SELECT organization_id, 2, 'draft', "
+            "rules || CAST(:d AS jsonb), 'r8', 1 FROM crm_mapping_plans "
+            "WHERE organization_id = CAST(:o AS uuid) AND state = 'approved'"),
+            {"o": org, "d": json.dumps([SEM_DRAFT])})
+
+
+def _semantic(body: Any) -> dict[str, dict]:
+    return {f["subject"]: f for f in body.json()["facts"]
+            if f["subject"].split(":")[0] in ("measure", "join", "query")}
+
+
+async def test_sem7_each_org_reads_only_its_own_approved_semantic_items(
+    q_env, app_engine, monkeypatch,
+) -> None:
+    from acb_common import get_settings
+
+    p = q_env
+    seed_a(p)
+    seed_b(p)
+    plan_b(p)
+    _add_items(p, p.org_a, SEM_A)
+    _add_items(p, p.org_b, SEM_B)
+    member_a = _user(p.org_a, admin=False)
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", "*", raising=False)
+
+    a = await facts_of(p, member_a)
+    b = await facts_of(p, _org_b_member(p.org_b))
+    assert a.status_code == 200 and b.status_code == 200, (a.text, b.text)
+    got_a, got_b = _semantic(a), _semantic(b)
+    assert sorted(got_a) == ["join:Invoices.Buyer", "measure:billed", "measure:won_deals",
+                             "query:billed_for_customer"]
+    assert all(f["source"] == "admin" and f["set_by"] == "admin" for f in got_a.values())
+    assert got_a["measure:won_deals"]["meaning"] == (
+        'The measure "Won commercials" is the count of Commercials records, '
+        "where Status is Won, in count.")
+    assert got_a["query:billed_for_customer"]["meaning"] == (
+        'A verified question: "Billed amount for {customer}". Its parameters: customer.')
+    assert sorted(got_b) == ["measure:spent"]
+    # Never the other org's items, and never a draft item (D-SEM-11).
+    assert "spent" not in a.text and "Money spent" not in a.text
+    for word in ("billed", "Billed amount", "Buyer", "Won commercials"):
+        assert word not in b.text, word
+    assert "draft_only" not in a.text and "Draft measure" not in a.text
+    assert "draft_only" not in b.text
+    # No total and no record value reaches a fact.
+    assert "4242" not in a.text and "@" not in json.dumps(a.json())
+
+    # Org A alone on the list: org B reads none of its own.
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", p.org_a, raising=False)
+    assert _semantic(await facts_of(p, _org_b_member(p.org_b))) == {}
+    assert len(_semantic(await facts_of(p, member_a))) == 4
+
+    # The flag off: no org reads one, and the other facts stay.
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", "", raising=False)
+    off = await facts_of(p, member_a)
+    assert _semantic(off) == {} and off.json()["facts"]
+
+
+async def test_sem7_the_tool_reads_the_semantic_items_of_the_member_org(
+    q_env, app_engine, monkeypatch,
+) -> None:
+    from acb_common import get_settings
+    from acb_skills.org_facts_tools import org_facts
+
+    p = q_env
+    seed_a(p)
+    seed_b(p)
+    plan_b(p)
+    _add_items(p, p.org_a, SEM_A)
+    _add_items(p, p.org_b, SEM_B)
+    monkeypatch.setattr(get_settings(), "semantic_model_orgs", "*", raising=False)
+    a = await through_the_tool(p, _user(p.org_a, admin=False), monkeypatch,
+                               lambda: org_facts("crm", "measure"))
+    b = await through_the_tool(p, _org_b_member(p.org_b), monkeypatch,
+                               lambda: org_facts("crm", "measure"))
+    assert '"Billed amount"' in a and "Money spent" not in a and "Draft measure" not in a
+    assert '"Money spent"' in b and "Billed amount" not in b

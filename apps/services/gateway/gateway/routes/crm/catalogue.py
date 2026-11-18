@@ -258,9 +258,14 @@ async def _module_sources(
         )).fetchall():
             options = from_jsonb(r.options)
             target = options.get("lookup_module") if isinstance(options, dict) else None
+            # SEM-7: the option keys of a picklist. They are schema, not data.
+            keys = tuple(
+                str(o["value"]) for o in options
+                if isinstance(o, dict) and o.get("value") is not None
+            ) if isinstance(options, list) else ()
             defs.setdefault(str(r.entity), []).append(cat.Field(
                 key=str(r.key), label=str(r.label or r.key), type=str(r.type or "text"),
-                target=str(target) if target else None,
+                target=str(target) if target else None, options=keys,
             ))
         fills = await fills_of(db, org, entities)
     out = []

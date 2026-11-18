@@ -25,6 +25,7 @@ records gets no question (rule 5).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -193,6 +194,9 @@ class Field:
     type: str
     target: str | None = None
     parts: tuple[Field, ...] = ()
+    #: SEM-7: the option keys of a picklist (``crm_field_defs.options``).
+    #: They are schema, not data (``semantic_model.md`` §3.3 point 1).
+    options: tuple[str, ...] = ()
 
 
 def composite(fields: Sequence[Field]) -> Field:
@@ -866,19 +870,358 @@ def build(
     return entries
 
 
+# ── The semantic kinds (WS-SEM SEM-7, ``semantic_model.md`` §3.2 to §3.4) ────
+#
+# Three plan item kinds: ``measure``, ``join`` and ``query``. An admin accepts
+# each one, so it is the admin's text (§3.3 point 6). Each kind has a closed
+# key set. No item holds a total, a parameter value or a record value. A
+# number-like value where a name must be is refused (§3.3 points 3 and 5).
+# :func:`semantic_problem` checks the shape with no read. The check against
+# the catalogue (:func:`semantic_ref_problem`) reads the sources that the
+# caller gives. ``SEMANTIC_MODEL_ORGS`` gates both callers.
+
+KIND_MEASURE = "measure"
+KIND_JOIN = "join"
+KIND_QUERY = "query"
+SEMANTIC_KINDS: tuple[str, ...] = (KIND_MEASURE, KIND_JOIN, KIND_QUERY)
+
+#: The cap of a label and of an option key (§3.3, "A cap on a label").
+LABEL_MAX = 80
+#: The aggregates of a measure. ``count`` takes no field. ``sum`` takes 1 to
+#: :data:`SUM_MAX` fields. The others take one field.
+AGGREGATES: tuple[str, ...] = ("sum", "count", "avg", "min", "max")
+#: The units of a measure: fixed words, never a figure.
+UNITS: tuple[str, ...] = ("currency", "count", "number", "percent", "days")
+#: The field types that a ``sum``, ``avg``, ``min`` or ``max`` reads.
+NUMBER_TYPES: frozenset[str] = frozenset({"currency", "number", "decimal", "percent"})
+#: The fixed filters of one measure, and the option keys of one filter.
+FILTERS_MAX = 5
+OPTIONS_MAX = 10
+#: The kinds of a parameter of a verified query.
+PARAM_KINDS: tuple[str, ...] = (
+    "text", "record", "option", "date", "month", "quarter", "year", "number", "period",
+)
+#: The parameters, the conditions and the group fields of one query.
+PARAMS_MAX = 8
+WHERE_MAX = 8
+GROUP_MAX = 3
+#: The operators of a condition of a query. Each one compares a field with a
+#: named parameter, never with a literal.
+OPS: tuple[str, ...] = (
+    "eq", "ne", "in", "gt", "gte", "lt", "lte", "between", "contains", "on",
+)
+
+_MEASURE_KEYS = frozenset({"kind", "key", "label", "module", "aggregate", "fields",
+                           "filters", "unit"})
+_FILTER_KEYS = frozenset({"field", "options"})
+_JOIN_KEYS = frozenset({"kind", "module", "field", "target", "label"})
+_QUERY_KEYS = frozenset({"kind", "key", "question", "params", "query", "model_version"})
+_PARAM_KEYS = frozenset({"name", "kind"})
+_SHAPE_KEYS = frozenset({"module", "measure", "aggregate", "fields", "where", "group_by"})
+_WHERE_KEYS = frozenset({"field", "op", "param"})
+
+_SLUG = re.compile(r"[a-z][a-z0-9_]{0,39}")
+_PARAM_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+#: A value that reads as a number, a date or an amount: digits with signs,
+#: points, commas, colons, slashes, dashes or spaces.
+_NUMBER_LIKE = re.compile(r"[+\-]?[\d.,:/\- ]*\d[\d.,:/\- ]*")
+#: A digit that does not follow a letter or ``_`` is a literal in question
+#: words. "Q1" stays legal. "2024" and "top 5" are literals.
+_LITERAL_DIGIT = re.compile(r"(?<![A-Za-z_])\d")
+_PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]{0,31})\}")
+
+
+def is_semantic(item: Any) -> bool:
+    """True for an item of a semantic kind (SEM-7)."""
+    return isinstance(item, Mapping) and item.get("kind") in SEMANTIC_KINDS
+
+
+def number_like(value: Any) -> bool:
+    """True for a number, or for a string that reads as a number, a date or
+    an amount."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int | float):
+        return True
+    return isinstance(value, str) and _NUMBER_LIKE.fullmatch(value.strip()) is not None
+
+
+def _plain(value: Any, cap: int) -> bool:
+    """True for plain text of 1 to *cap* characters, in its clean form. The
+    one text rule is ``rules.clean_body``, the rule of ``crm_business_rules``."""
+    # Imported here: ``gateway.routes.crm`` imports this module.
+    from gateway.routes.crm.rules import clean_body
+
+    return isinstance(value, str) and len(value) <= cap and clean_body(value) == value
+
+
+def _field_key(value: Any) -> bool:
+    """True for a field API name, by the rule of a key of a sum (CRM-Q32-9)."""
+    return (isinstance(value, str) and 0 < len(value) <= SUM_KEY_MAX
+            and not value.startswith("@") and SUM_KEY_JOIN not in value)
+
+
+def _field_keys(value: Any, low: int, high: int) -> bool:
+    return (isinstance(value, list) and low <= len(value) <= high
+            and all(_field_key(k) for k in value) and len(set(value)) == len(value))
+
+
+def _module(value: Any) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= SUM_KEY_MAX and not value.startswith("@")
+
+
+def _aggregate_problem(aggregate: Any, fields: Any) -> str | None:
+    if aggregate not in AGGREGATES:
+        return "aggregate"
+    if aggregate == "count":
+        return None if fields in (None, []) else "fields"
+    high = SUM_MAX if aggregate == "sum" else 1
+    return None if _field_keys(fields, 1, high) else "fields"
+
+
+def _filters_problem(filters: Any) -> str | None:
+    if filters is None:
+        return None
+    if not isinstance(filters, list) or len(filters) > FILTERS_MAX:
+        return "filters"
+    for one in filters:
+        if not isinstance(one, Mapping) or set(one) != _FILTER_KEYS:
+            return "filters"
+        options = one.get("options")
+        if not _field_key(one.get("field")) or not isinstance(options, list):
+            return "filters"
+        if not 0 < len(options) <= OPTIONS_MAX or len(set(map(str, options))) != len(options):
+            return "filters"
+        if not all(_plain(o, LABEL_MAX) for o in options):
+            return "filters"
+    return None
+
+
+def _measure_problem(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _MEASURE_KEYS:
+        return "keys"
+    if not isinstance(item.get("key"), str) or not _SLUG.fullmatch(item["key"]):
+        return "key"
+    if not _plain(item.get("label"), LABEL_MAX):
+        return "label"
+    if not _module(item.get("module")):
+        return "module"
+    found = _aggregate_problem(item.get("aggregate"), item.get("fields"))
+    if found is None:
+        found = _filters_problem(item.get("filters"))
+    if found is not None:
+        return found
+    return None if item.get("unit") in UNITS else "unit"
+
+
+def _join_problem(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _JOIN_KEYS:
+        return "keys"
+    if not _module(item.get("module")):
+        return "module"
+    if not _field_key(item.get("field")):
+        return "field"
+    if not _module(item.get("target")):
+        return "target"
+    if "label" in item and not _plain(item["label"], LABEL_MAX):
+        return "label"
+    return None
+
+
+def _params_problem(params: Any) -> str | None:
+    if not isinstance(params, list) or len(params) > PARAMS_MAX:
+        return "params"
+    names: list[str] = []
+    for one in params:
+        if not isinstance(one, Mapping) or set(one) != _PARAM_KEYS:
+            return "params"
+        name = one.get("name")
+        if number_like(name):
+            return "param_value"
+        if not isinstance(name, str) or not _PARAM_NAME.fullmatch(name):
+            return "params"
+        if one.get("kind") not in PARAM_KINDS:
+            return "params"
+        names.append(name)
+    return None if len(set(names)) == len(names) else "params"
+
+
+def _where_problem(where: Any, names: frozenset[str]) -> str | None:
+    """The conditions of a query. Each one names a parameter of *names*, and
+    holds no value. Each parameter is used."""
+    if not isinstance(where, list) or len(where) > WHERE_MAX:
+        return "query"
+    used: set[str] = set()
+    for one in where:
+        if not isinstance(one, Mapping):
+            return "query"
+        if not set(one) <= _WHERE_KEYS or number_like(one.get("param")):
+            return "query_value"
+        param = one.get("param")
+        if (set(one) != _WHERE_KEYS or not _field_key(one.get("field"))
+                or one.get("op") not in OPS or not isinstance(param, str)
+                or param not in names):
+            return "query"
+        used.add(param)
+    return None if used == names else "query"
+
+
+def _shape_problem(shape: Any, names: frozenset[str]) -> str | None:
+    """The query of a verified query: a structure with no literal."""
+    if not isinstance(shape, Mapping) or not set(shape) <= _SHAPE_KEYS:
+        return "query"
+    if not _module(shape.get("module")):
+        return "query"
+    measure = shape.get("measure")
+    if measure is not None:
+        if "aggregate" in shape or "fields" in shape:
+            return "query"
+        if not isinstance(measure, str) or not _SLUG.fullmatch(measure):
+            return "query"
+    elif _aggregate_problem(shape.get("aggregate"), shape.get("fields")) is not None:
+        return "query"
+    found = _where_problem(shape.get("where", []), names)
+    if found is not None:
+        return found
+    return None if _field_keys(shape.get("group_by", []), 0, GROUP_MAX) else "query"
+
+
+def _query_problem(item: Mapping[str, Any]) -> str | None:
+    # Imported here: ``gateway.routes.crm`` imports this module.
+    from gateway.routes.crm.rules import BODY_MAX
+
+    if not set(item) <= _QUERY_KEYS:
+        return "keys"
+    if not isinstance(item.get("key"), str) or not _SLUG.fullmatch(item["key"]):
+        return "key"
+    question = item.get("question")
+    if not _plain(question, BODY_MAX):
+        return "question"
+    bare = _PLACEHOLDER.sub("", question)
+    if _LITERAL_DIGIT.search(bare):
+        return "question_value"
+    if "{" in bare or "}" in bare:
+        return "question"
+    found = _params_problem(item.get("params"))
+    if found is not None:
+        return found
+    names = frozenset(str(p["name"]) for p in item["params"])
+    if set(_PLACEHOLDER.findall(question)) != names:
+        return "params"
+    found = _shape_problem(item.get("query"), names)
+    if found is not None:
+        return found
+    version = item.get("model_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        return "model_version"
+    return None
+
+
+def semantic_problem(item: Mapping[str, Any]) -> str | None:
+    """Why an item of a semantic kind is not legal, or ``None``. It reads
+    nothing. Each word names one part:
+
+    * ``keys``: a key outside the closed set of the kind, such as ``total``.
+    * ``key``, ``label``, ``module``, ``aggregate``, ``fields``, ``filters``
+      and ``unit``: that part of a ``measure``.
+    * ``module``, ``field``, ``target`` and ``label``: that part of a ``join``.
+    * ``question``, ``question_value``, ``params``, ``param_value``,
+      ``query``, ``query_value`` and ``model_version``: that part of a
+      ``query``. A word that ends in ``_value`` means a literal where a name
+      must be.
+    """
+    kind = item.get("kind")
+    if kind == KIND_MEASURE:
+        return _measure_problem(item)
+    if kind == KIND_JOIN:
+        return _join_problem(item)
+    if kind == KIND_QUERY:
+        return _query_problem(item)
+    return "kind"
+
+
+def _has(src: Source, keys: Iterable[Any]) -> bool:
+    return all(src.field(str(k)) is not None for k in keys)
+
+
+def _numbers(src: Source, aggregate: Any, keys: Iterable[Any]) -> bool:
+    if aggregate == "count":
+        return True
+    found = [src.field(str(k)) for k in keys]
+    return all(f is not None and f.type in NUMBER_TYPES for f in found)
+
+
+def semantic_ref_problem(item: Mapping[str, Any], sources: Mapping[str, Source]) -> str | None:
+    """Why a legal semantic item (:func:`semantic_problem` gave ``None``)
+    does not fit the catalogue now, or ``None``. *sources* maps a module to
+    its catalogue source.
+
+    A ``measure`` names fields of its module, of a number type for each
+    aggregate but ``count``. Each fixed filter names option keys of a field.
+    A ``join`` names a lookup field whose target is the target of the item.
+    A ``query`` names fields of its module. The words are ``module``,
+    ``field``, ``type``, ``options``, ``target`` and ``kind``."""
+    kind = item.get("kind")
+    holder = (item.get("query") or {}) if kind == KIND_QUERY else item
+    src = sources.get(str(holder.get("module")))
+    if src is None:
+        return "module"
+    if kind == KIND_JOIN:
+        found = src.field(str(item.get("field")))
+        if found is None:
+            return "field"
+        return None if found.target and found.target == item.get("target") else "target"
+    if kind == KIND_MEASURE:
+        fields = item.get("fields") or []
+        if not _has(src, fields):
+            return "field"
+        if not _numbers(src, item.get("aggregate"), fields):
+            return "type"
+        for one in item.get("filters") or []:
+            found = src.field(str(one.get("field")))
+            if found is None:
+                return "field"
+            if not set(one.get("options") or []) <= set(found.options):
+                return "options"
+        return None
+    if kind == KIND_QUERY:
+        shape = item.get("query") or {}
+        keys = [*(shape.get("fields") or []), *(shape.get("group_by") or []),
+                *(w.get("field") for w in shape.get("where") or [])]
+        if not _has(src, keys):
+            return "field"
+        if "aggregate" in shape and not _numbers(src, shape.get("aggregate"),
+                                                  shape.get("fields") or []):
+            return "type"
+        return None
+    return "kind"
+
+
 __all__ = [
+    "AGGREGATES",
     "AMOUNT_NAMES",
     "BY_WORDS",
     "CORE_FITS",
     "CORE_KEY_COLUMNS",
     "CORE_PURPOSES",
     "DEFAULT_REVENUE",
+    "FILTERS_MAX",
+    "GROUP_MAX",
     "KEY_PARTS",
     "KIND_CATALOGUE",
+    "KIND_JOIN",
+    "KIND_MEASURE",
+    "KIND_QUERY",
+    "LABEL_MAX",
     "MODULE_PARTS",
     "MONEY_PURPOSES",
+    "NUMBER_TYPES",
+    "OPS",
+    "OPTIONS_MAX",
     "ORG_MODULE",
     "ORG_PARTS",
+    "PARAMS_MAX",
+    "PARAM_KINDS",
     "PART_MEANINGS",
     "PART_TYPES",
     "PURPOSES",
@@ -886,6 +1229,7 @@ __all__ = [
     "PURPOSE_WORDS",
     "RANK_LIMIT",
     "REVENUE_VALUES",
+    "SEMANTIC_KINDS",
     "SHADOW_KEYS",
     "SLOT_PURPOSES",
     "STANDARD_PURPOSES",
@@ -897,6 +1241,8 @@ __all__ = [
     "SUM_PART",
     "SUM_TYPES",
     "SYSTEM_TIMES",
+    "UNITS",
+    "WHERE_MAX",
     "Entry",
     "Field",
     "Source",
@@ -912,14 +1258,18 @@ __all__ = [
     "composite",
     "entry_of",
     "is_catalogue",
+    "is_semantic",
     "item_problem",
     "merge_item",
+    "number_like",
     "parts_of",
     "problem",
     "purposes_of",
     "resolve",
     "revenue_of",
     "role_purposes",
+    "semantic_problem",
+    "semantic_ref_problem",
     "singulars",
     "stored_items",
     "sum_shape_problem",
