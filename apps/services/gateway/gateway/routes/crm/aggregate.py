@@ -160,6 +160,8 @@ from gateway.routes.crm.field_sql import (
     ZONE_PARAM,
     FieldRef,
     FieldScope,
+    TextNumbers,
+    admit_text_numbers,
     check_group,
     check_groups,
     check_measure,
@@ -189,6 +191,7 @@ from gateway.routes.crm.field_sql import (
     split_sql,
     status_field,
     text_matches,
+    text_number_keys,
     used_keys,
     zoned,
 )
@@ -507,6 +510,13 @@ class AggregateResponse(BaseModel):
     #: CRM-Q25e part 2: the total of each field of ``fields``, in order. The
     #: first one is also ``field`` and ``total``. Absent with no split.
     split: list[SplitTotal] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-11: each text field of a module that the call read as
+    #: numbers → its counts over the whole module (``numbers``, ``no_value``
+    #: and ``not_numbers``) and the most common ``shapes`` of the values that
+    #: are not numbers (``field_sql.TextNumbers.wire``). Absent when the call
+    #: read no text field, so the wire is the one of before.
+    text_numbers: dict[str, dict[str, Any]] | None = Field(
+        default=None, exclude_if=lambda value: not value)
     #: CRM-Q25e part 4: what the reader must know before the total
     #: (``acb_common.number_sense``), for example one day that holds most
     #: records. Each has ``kind``, ``key``, ``records``, ``share`` and one
@@ -843,6 +853,9 @@ class _Read:
     #: ``(day, value, records)`` rows from the same statement.
     day: FieldRef | None = None
     days: list[tuple[Any, Any, int]] = dc_field(default_factory=list)
+    #: CRM-Q34-11: each text field that the read took as a number, with its
+    #: counts (``field_sql.admit_text_numbers``).
+    text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -939,10 +952,12 @@ async def _read(
     scope: FieldScope | None = None
     zone = ""
     field_measure = measure
+    text_numbers: dict[str, TextNumbers] = {}
     if module is not None:
-        scope, field_measure, field, zone, where, matched = await _module_filters(
+        (scope, field_measure, field, zone, where, matched,
+         text_numbers) = await _module_filters(
             db, module, measure=measure, field=field, pairs=pairs, params=params,
-            status_group=status_group)
+            status_group=status_group, fields=fields)
         table, where_sql, bound = MODULE_TABLE, where.sql, dict(where.params)
         source = where.source
     else:
@@ -1051,15 +1066,19 @@ async def _read(
         if module is not None and scope is not None else {}
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
-                 currency=currency, codes=codes, split=split, day=day, days=days)
+                 currency=currency, codes=codes, split=split, day=day, days=days,
+                 text_numbers=text_numbers)
 
 
 async def _module_filters(
     db: Any, module: str, *, measure: str, field: str | None,
     pairs: list[tuple[str, str]], params: ListParams, status_group: bool,
-) -> tuple[FieldScope, str, str | None, str, Any, dict[str, list[str]]]:
-    """The scope, the field measure, the field, the zone, the WHERE and the
-    matched text values of ONE module read. The one place that builds the
+    fields: str | None = None,
+) -> tuple[FieldScope, str, str | None, str, Any, dict[str, list[str]],
+           dict[str, TextNumbers]]:
+    """The scope, the field measure, the field, the zone, the WHERE, the
+    matched text values and the text fields read as numbers of ONE module
+    read. The one place that builds the
     filters of a module total, so :func:`_read` and :func:`_read_pages`
     count the same records (CRM-Q34-10)."""
     _require_module(await mirrored_modules(db), module)
@@ -1071,6 +1090,11 @@ async def _module_filters(
     if status_group:
         status_field(scope)
     field_measure, field = module_measure(measure, field)
+    # CRM-Q34-11: a measure or a range on a text field that holds
+    # numbers reads them. With no text field named, no statement runs.
+    scope, text_numbers = await admit_text_numbers(
+        db, scope, text_number_keys(field_measure, field, fields, pairs),
+        measured=text_number_keys(field_measure, field, fields, []))
     # CRM-Q25b: one zone for each bucket and each range of the answer.
     zone = await crm_zone(db, current_tenant())
     # §18.16 part 6: a text filter counts each case and short form.
@@ -1080,7 +1104,7 @@ async def _module_filters(
     where = module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
     matched = {pairs[i][0]: list(found) for i, found in matches.items()}
     await _seed_aliases(db, module, pairs, matches)
-    return scope, field_measure, field, zone, where, matched
+    return scope, field_measure, field, zone, where, matched, text_numbers
 
 
 # ── Two group fields, and pages of groups (CRM-Q34-10) ─────────────────────
@@ -1107,6 +1131,7 @@ class _Pages:
     zone: str
     keys: dict[str, str | list[str]]
     matched: dict[str, list[str]]
+    text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
 
 
 def paged_sql(inner: str, whole: str) -> str:
@@ -1140,7 +1165,8 @@ async def _read_pages(
     ms = STATEMENT_TIMEOUT_MS if timeout_ms is None else timeout_ms
     deadline = None if timeout_ms is None else time.monotonic() + timeout_ms / 1000
     await db.execute(text(_TIMEOUT_SQL), {"ms": str(ms)})
-    scope, field_measure, field, zone, where, matched = await _module_filters(
+    (scope, field_measure, field, zone, where, matched,
+     text_numbers) = await _module_filters(
         db, module, measure=measure, field=field, pairs=pairs, params=params,
         status_group=status_group)
     measured = check_measure(scope, field) if field else None
@@ -1184,7 +1210,8 @@ async def _read_pages(
     page_rows = sorted((r for r in rows if int(r.agf_pos) > 0), key=lambda r: int(r.agf_pos))
     keys = used_keys(scope, [field, group_field, group_field2,
                              *(name for name, _value in pairs)])
-    return _Pages(page_rows, head, measured, grouped, grouped2, zone, keys, matched)
+    return _Pages(page_rows, head, measured, grouped, grouped2, zone, keys, matched,
+                  text_numbers)
 
 
 def _paging(
@@ -1297,6 +1324,7 @@ def _paged_answer(
         group_field2_label=grouped2.label if grouped2 is not None else None,
         group_field2_type=grouped2.type if grouped2 is not None else None,
         group_count=count, group_page=page, group_pages=-(-count // size),
+        text_numbers={key: found.wire() for key, found in got.text_numbers.items()} or None,
     )
 
 
@@ -1682,6 +1710,7 @@ async def _compute(
         overlay=read.overlay,
         matched=read.matched or None,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
+        text_numbers={key: found.wire() for key, found in read.text_numbers.items()} or None,
         findings=_findings(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),
