@@ -1091,6 +1091,51 @@ def _new_mail_redraft(form: dict) -> dict:
                 or not 1 < draft <= _NEW_MAIL_DRAFT_MAX):
             raise ValueError("a new-mail form names the card it revises and its draft")
         out["revises"], out["draft"] = revises, draft
+    if "changed" in form:
+        if "revises" not in out:
+            raise ValueError("a new-mail form names what changed only with the card it revises")
+        out["changed"] = _new_mail_changed(form["changed"])
+    return out
+
+
+#: The act kinds that a link names (``redraft.ACT_OF_KIND``), and the parts of ``changed``.
+_CHANGED_ACTS = frozenset({"new", "forward", "reply"})
+_CHANGED_PEOPLE = ("to", "cc")
+
+
+def _new_mail_changed(value: Any) -> dict:
+    """What differs from the card that this card replaces (HRD-8b), checked.
+
+    The gateway sets it (``redraft.changed_since``), and the tool copies it. It
+    holds an ``act`` of ``{was, now}`` and the ``to`` and ``cc`` of
+    ``{added, removed}``, each a short list of text. Anything else raises
+    ``ValueError``, so no card draws a claim of a model."""
+    from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
+
+    if not isinstance(value, dict) or not value or set(value) - {"act", *_CHANGED_PEOPLE}:
+        raise ValueError("a new-mail form names what changed as act, to and cc")
+    out: dict = {}
+    if "act" in value:
+        act = value["act"]
+        if (not isinstance(act, dict) or set(act) != {"was", "now"}
+                or act["was"] not in _CHANGED_ACTS or act["now"] not in _CHANGED_ACTS):
+            raise ValueError("a new-mail form names a changed act as was and now")
+        out["act"] = {"was": act["was"], "now": act["now"]}
+    for name in _CHANGED_PEOPLE:
+        if name not in value:
+            continue
+        part = value[name]
+        if not isinstance(part, dict) or set(part) != {"added", "removed"}:
+            raise ValueError(f"a new-mail form names changed {name} as added and removed")
+        lists = {}
+        for side in ("added", "removed"):
+            items = part[side]
+            if (not isinstance(items, list) or len(items) > MAX_REPLY_RECIPIENTS
+                    or not all(isinstance(a, str) and 0 < len(a) <= 320 for a in items)):
+                raise ValueError(f"a new-mail form names {name} {side} as a list of addresses")
+            lists[side] = list(items)
+        if lists["added"] or lists["removed"]:
+            out[name] = lists
     return out
 
 

@@ -6841,6 +6841,10 @@ def _new_mail_form(prep: dict[str, Any], notices: list[str]) -> dict[str, Any]:
     # message revised. The tool copies the two fields, and sets neither.
     if prep.get("revises"):
         form["revises"], form["draft"] = prep["revises"], prep.get("draft")
+        # HRD-8b: what differs from that card (the act, the To, the Cc). The
+        # gateway computes it, and the tool copies it.
+        if prep.get("changed"):
+            form["changed"] = prep["changed"]
     # §18.11 rule 7: the gateway starts each person that the member unticked
     # on that card unticked, and names them. The tool copies the start and the
     # names, and sets neither. ``clean_reply_form`` checks that each name is a
