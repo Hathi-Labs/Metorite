@@ -319,6 +319,16 @@ one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
 gate ask it at each card, so a reload applies to the next card. A flip stays
 OWNER-GATE (`enforcement-flip`, EAC-7).
 
+`SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
+(`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
+kinds `measure`, `join` and `query`, and `org_facts` serves the approved
+ones. `*` lists every org, and the default is empty. Empty keeps each item of
+these kinds as an unknown kind, and serves none.
+
+Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and each
+plan write and each facts read ask it. A reload applies a change. The flip
+stays OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
 one `tool:<name>` row for each chat tool of the CRM, Email, Projects and
