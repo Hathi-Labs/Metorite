@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-from gateway.routes.crm import fields, modules
+from gateway.routes.crm import aggregate, fields, modules
 from gateway.routes.crm.modules import REFUSAL_MAX, resolve_module
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -207,6 +207,7 @@ _CALLERS = {
                    "get_module_record_timeline", "patch_module_record"),
     "fields.py": ("module_field_defs", "search_fields"),
     "terms.py": ("resolve_term",),
+    "aggregate.py": ("_compute",),
 }
 
 
@@ -254,3 +255,43 @@ async def test_a_tool_takes_a_label_and_names_the_api_name(monkeypatch: pytest.M
     assert tools._entity_slug("module:Sales Orders", allow_module=True) == "module:Sales Orders"
     with pytest.raises(Exception, match="Invalid module name"):
         tools._module_name("Sales/../Orders")
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("given", ["module:Sales Orders", "module:sales order",
+                                   "module:sales_orders", "module:Sales_Orders"])
+async def test_the_aggregate_path_reads_the_api_name(
+    given: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str | None] = []
+
+    async def mirrored(_db):
+        return ORG_A
+
+    async def read(_db, found, module, **_kw):
+        seen.append(module)
+        raise _Stop
+
+    monkeypatch.setattr(aggregate, "_tenant_session", _session)
+    monkeypatch.setattr(aggregate, "mirrored_modules", mirrored)
+    monkeypatch.setattr(aggregate, "_read", read)
+    with pytest.raises(_Stop):
+        await aggregate.compute(given, params=None)
+    assert seen == ["Sales_Orders"]
+
+
+async def test_the_aggregate_path_refuses_an_unknown_module_with_close_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def mirrored(_db):
+        return ORG_A
+
+    monkeypatch.setattr(aggregate, "_tenant_session", _session)
+    monkeypatch.setattr(aggregate, "mirrored_modules", mirrored)
+    with pytest.raises(HTTPException) as exc:
+        await aggregate.compute("module:Sale Ordrs", params=None)
+    assert exc.value.status_code == 404
+    assert "Sales_Orders (Sales Orders)" in exc.value.detail["message"]

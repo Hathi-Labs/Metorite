@@ -179,7 +179,11 @@ from gateway.routes.crm.field_sql import (
     zoned,
 )
 from gateway.routes.crm.flags import long_read_allowed
-from gateway.routes.crm.modules import _require_module, mirrored_modules
+from gateway.routes.crm.modules import (
+    _require_module,
+    mirrored_modules,
+    resolve_module,
+)
 from gateway.routes.crm.overlay import (
     SLOT_OF,
     UNSORTED,
@@ -1267,6 +1271,10 @@ async def _compute(
         group_by, group_field = None, STATUS_WORD
     try:
         async with _tenant_session() as db:
+            if module is not None:
+                # CRM-Q34-12: a label or a plural gives the API name, and a
+                # miss is the 404 that names the close modules.
+                module = resolve_module(await mirrored_modules(db), module)
             # CRM-Q20-3a: a core entity whose slot has an approved overlay
             # reads the module. With none, the read of today, unchanged.
             overlay = (
