@@ -1704,8 +1704,8 @@ async def query_inbox(
     limit: int = 25,
     offset: int = 0,
 ) -> str:
-    """Search and filter the inbox to answer a question over MANY emails,
-    such as "unread mail from Acme" or "sales emails of the last month".
+    """Search and filter the inbox to answer a question over MANY emails.
+    For example "unread mail from Acme" or "sales emails of the last month".
     Combine any of the filters:
       query: full-text over subject, body and sender
       days: only mail of the last N days (30 for "last month")
@@ -2022,10 +2022,10 @@ async def _important_one(account_id: str, days: int = 30, offset: int = 0) -> st
 
 @_annotate_risk(open_world=False)
 async def present_email_groups(groups_json: str) -> str:
-    """Show an interactive board of emails in groups in the chat. Use it each
-    time you show emails split into named groups (HR / Finance, Urgent / FYI,
-    or one group per project or sender). Each group is a titled section, and
-    each row can be opened, archived, marked read or categorized.
+    """Show an interactive board of emails, split into named groups, in the chat.
+    Use it each time you show emails in groups (HR / Finance, Urgent / FYI, or
+    one group per project or sender). Each group is a titled section, and each
+    row can be opened, archived, marked read or categorized.
 
     Pass ``groups_json``: a JSON array of groups, each an object with:
       • ``title``     (str, required) — the group name, e.g. "Finance"
@@ -2294,8 +2294,7 @@ async def manage_inbox(
 async def draft_reply(
     email_id: str, account_id: str, save: bool = True, instruction: str = "",
 ) -> str:
-    """Draft a reply to an email and save it in the member's Drafts. Nothing
-    is sent.
+    """Draft a reply to an email and save it in Drafts. Nothing is sent.
 
     A second chat draft of the same email updates the first. A draft that the
     member wrote or edited is never written over: the new text goes beside
@@ -2856,8 +2855,9 @@ async def compose_reply(
     and the member edits it: nothing leaves until the member presses Send.
     Where no card can show, the tool drafts, saves and sends nothing.
 
-    ``bcc`` holds each person to copy in secret, as full addresses from
-    find_contact. The card shows them as "Bcc (hidden from the others)".
+    ``bcc`` holds each person that the member asks to copy in secret, as
+    full addresses from find_contact. The card shows them as "Bcc (hidden
+    from the others)".
 
     The reply goes only to the people that the member leaves ticked, and the
     draft in Drafts names the same people. Never tell the member to open the
@@ -6413,11 +6413,12 @@ async def send_email(
     attachments: list[str] | None = None,
     reply_all: bool = False,
 ) -> str:
-    """Send an email now: a new message or a reply. The tool shows the member
-    a card with the recipients and the body, and sends only after Send, so do
-    not ask in text first. On a new message the member can edit the subject
-    and the text, untick a person, and press Send, Save draft or Discard. When
-    the answer says that the member changed the text, use that text from then on.
+    """Send an email now: a new message or a reply.
+    The tool shows the member a card with the recipients and the body, and
+    sends only after Send, so do not ask in text first. On a new message the
+    member can edit the subject and the text, untick a person, and press
+    Send, Save draft or Discard. When the answer says that the member changed
+    the text, use that text from then on.
 
     To reply, pass ``reply_to_email_id``: the tool takes the recipients and
     the 'Re:' subject from the original, and threads it. For a new message,
