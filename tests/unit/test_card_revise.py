@@ -124,13 +124,17 @@ class _Redis:
     def __init__(self) -> None:
         self.data: dict[str, Any] = {}
         self.fail = False
+        self.reads = 0
+        self.writes = 0
 
     async def get(self, k: Any) -> Any:
+        self.reads += 1
         if self.fail:
             raise ConnectionError("down")
         return self.data.get(k.value)
 
     async def set(self, k: Any, value: Any, **_kw: Any) -> Any:
+        self.writes += 1
         if self.fail:
             raise ConnectionError("down")
         self.data[k.value] = value
@@ -149,12 +153,13 @@ class _Mailbox:
         self.calls: list[dict[str, Any]] = []
         self.deleted: list[str] = []
         self.posts: list[str] = []
+        self.gets: list[str] = []
         self.scheduled: list[dict[str, Any]] = []
         self._n = 0
 
     def _row(self, did: str) -> dict[str, Any]:
         d = self.drafts[did]
-        return {"id": did, "account_id": BOX, "folder": "drafts",
+        return {"id": did, "account_id": BOX, "folder": d.get("folder", "drafts"),
                 "subject": d.get("subject", ""), "body_text": d.get("body", ""),
                 "to_addresses": [{"email": a} for a in d.get("to") or []],
                 "cc_addresses": [{"email": a} for a in d.get("cc") or []],
@@ -181,6 +186,7 @@ class _Mailbox:
         return self._row(new)
 
     async def get(self, path: str, params: Any = None) -> Any:
+        self.gets.append(path)
         if path == "/email/drafts/scheduled":
             return list(self.scheduled)
         did = path.rsplit("/", 1)[-1]
@@ -687,6 +693,9 @@ async def test_flag_off_each_save_is_a_new_draft(
     assert all("draft_id" not in c for c in tool.calls)
     assert redis.data == {}
     assert all(cr.REPLACES_LINE not in c["context"] for c in card)
+    # M8: the flag off reads no record and makes no extra GET.
+    assert redis.reads == 0 and redis.writes == 0
+    assert tool.gets == []
 
 
 async def test_a_redis_fault_saves_as_before(
@@ -1497,3 +1506,88 @@ async def test_a_5xx_of_the_sends_of_a_kept_draft_is_said(
     await _save(RAVI, "Rates", "Hi Ravi, the rates.")
     assert card[-1]["context"].startswith(
         "The earlier draft has files, so it stays.\n" + agents._SCHEDULE_UNREAD)
+
+
+# ── 12. The verifier's survivors (on 72ea8818e) ─────────────────────────────
+
+
+async def test_a_subject_changed_by_hand_is_an_edit(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """M5c: the digest holds the subject. A subject that the member changed
+    in the Email app keeps the draft, and the save makes a new one."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, True])
+    await _save(RAVI, "Rates", "Hi Ravi.")
+    tool.drafts["d0001"]["subject"] = "Rates, my words"
+    out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert len(tool.creates()) == 2
+    assert tool.drafts["d0001"]["subject"] == "Rates, my words"
+    assert tool.drafts["d0001"]["body"] == "Hi Ravi."
+    assert card[-1]["context"].startswith(agents._KEPT_EDITED_LINE)
+    assert "was changed after it was saved" in out
+
+
+async def test_edit_draft_of_a_reply_or_member_draft_joins_no_record(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards, redis: _Redis,
+) -> None:
+    """M18: ``edit_draft`` of a draft that this chat did not save (a reply
+    draft, or the member's own) never joins the record, so a later new draft
+    never writes over it."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, True])
+    tool.drafts["reply-1"] = {"account_id": BOX, "to": RAVI, "subject": "Rates",
+                              "body": "Hi."}
+    await agents.edit_draft(BOX, draft_id="reply-1", body="Hi Ravi, edited.")
+    assert redis.data == {}
+    await _save(RAVI, "Rates", "Hi Ravi, a new mail.")
+    assert len(tool.creates()) == 1
+    assert tool.drafts["reply-1"]["body"] == "Hi Ravi, edited."
+
+
+async def test_an_edit_between_card_and_approve_cancels_nothing(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, redis: _Redis,
+) -> None:
+    """M16 and M26: the member edits the draft while the card is open. The
+    save keeps it, cancels no send, says its send still goes, and the draft
+    leaves the record."""
+    _flag(monkeypatch, ORG)
+    monkeypatch.setattr(agents, "_card_channel_open", lambda: True)
+    monkeypatch.setattr(agents, "_wa_parked", lambda: None)
+
+    async def approve_after_a_hand_edit(*_a: Any, **_kw: Any) -> Any:
+        if "d0001" in tool.drafts:
+            tool.drafts["d0001"]["body"] = "Hi Ravi. My own words."
+        return at._noted(at.CARD_APPROVED, True)
+
+    async def plain_approve(*_a: Any, **_kw: Any) -> Any:
+        return at._noted(at.CARD_APPROVED, True)
+
+    monkeypatch.setattr(at, "request_confirmation", plain_approve)
+    await _save(RAVI, "Rates", "Hi Ravi.")
+    tool.scheduled = [{"id": "s1", "draft_id": "d0001", "status": "queued",
+                       "send_at": "2026-11-19T09:00:00+05:30"}]
+    monkeypatch.setattr(at, "request_confirmation", approve_after_a_hand_edit)
+    out = await _save(RAVI, "Rates", "Hi Ravi, the rates.")
+    assert tool.posts == []  # no cancel
+    assert tool.drafts["d0001"]["body"] == "Hi Ravi. My own words."
+    assert "Its send scheduled for 2026-11-19T09:00:00+05:30 still goes." in out
+    [raw] = redis.data.values()
+    assert [r["id"] for r in json.loads(raw)["drafts"]] == ["d0002"]
+
+
+async def test_a_draft_that_left_drafts_reads_gone(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """M30: a row whose folder is Sent is gone, even with the same digest."""
+    _flag(monkeypatch, ORG)
+    card.answers.extend([True, True])
+    await _save(RAVI, "Rates", "Hi Ravi.")
+    tool.drafts["d0001"]["folder"] = "sent"
+    await _save(RAVI, "Rates", "Hi Ravi, again.")
+    assert cr.REPLACES_LINE not in card[-1]["context"]
+    assert agents._KEPT_EDITED_LINE not in card[-1]["context"]
+    assert len(tool.creates()) == 2 and tool.drafts["d0001"]["body"] == "Hi Ravi."
+    row = tool._row("d0001")
+    target = cr.ChatDraft("d0001", tuple(RAVI), "rates", cr.draft_digest(row))
+    assert cr._state(row, target) == cr.GONE

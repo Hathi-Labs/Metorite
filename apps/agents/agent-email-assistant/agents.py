@@ -8298,7 +8298,7 @@ class _ChatPlan:
     failed. ``kept``: a draft of the same email that the member edited, which
     the save leaves as it is, with its schedule. ``to``: the To of the card."""
 
-    __slots__ = ("replaces", "pending", "unchecked", "kept", "kept_files", "to")
+    __slots__ = ("kept", "kept_files", "pending", "replaces", "to", "unchecked")
 
     def __init__(self, replaces: str = "", pending: list[dict[str, Any]] | None = None,
                  unchecked: bool = False, kept: str = "", to: list[str] | None = None,
@@ -8362,7 +8362,7 @@ def _replace_lines(plan: _ChatPlan, *, form: bool = False) -> list[str]:
         head = _KEPT_FILES_LINE if plan.kept_files else _KEPT_EDITED_LINE
         tail = ([_still_goes(plan.pending).strip()] if plan.pending
                 else [_SCHEDULE_UNREAD] if plan.unchecked else [])
-        return [head] + tail
+        return [head, *tail]
     if not plan.replaces:
         return []
     from acb_skills.card_revise import REPLACES_LINE
