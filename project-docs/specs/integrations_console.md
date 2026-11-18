@@ -903,7 +903,7 @@ The door writes the last poll time and the Tally state to a tenant Redis key on 
 | What the door saw | Stored status (`store.py:63-69`) | The read model | The state of `building_blocks.md` §4.4 | The admin sees |
 |---|---|---|---|---|
 | A poll in the last 60 seconds, and Tally up | `connected` | `connected` | connected | "Connected. Last call 2 minutes ago." |
-| A poll in the last 60 seconds, and Tally down | `connected` | `error`, with the code `link_source_down` | failing | "TallyPrime is closed on OFFICE-PC." |
+| A poll in the last 60 seconds, and Tally down | `connected` | `error`, with the code `link_source_down` | failing | "TallyPrime is closed on OFFICE-PC." With a local copy (§3.8.13): "Reads use the copy of 14:05." |
 | No poll for 60 seconds. A run then leaves the server out | `connected` | `error`, with the code `link_no_poll` | failing | "The program on OFFICE-PC has not called for 12 minutes." |
 | An admin approved, and the program has not polled the link yet | `needs_reconnect` | `needs_reconnect` | needs consent | "Waiting for OFFICE-PC. The customer confirms there." With no credential taken after 10 minutes: "Pair this machine again." |
 | The credential is revoked | `needs_reconnect` | `needs_reconnect` | needs consent | "Pair this machine again." |
@@ -957,6 +957,7 @@ The approval screen asks three things. The program cannot decide them.
 | 0 | None open | None | None |
 | 1 | Our office, through a tunnel. A member asks the chat for a ledger balance, and the answer equals the Tally screen. Demo task 3655 | TLY-1 (task 3656) | None. The program registers as a URL server |
 | 2 | Any customer, through the link. A second company installs the program and types its domain. Its admin approves the code, and its chat reads its own Tally. Demo task 3657 | LNK-0 (task 3653, this section), LNK-1 (task 3658), LNK-2 (task 3659), LNK-3 (task 3660), LNK-4 (task 3661), TLY-2 (task 3663). LNK-5 (task 3662) is off the demo path | Yes |
+| 2a | The program keeps working when TallyPrime closes. A member asks for a ledger balance after TallyPrime closes, and the answer comes from the local copy with its age (§3.8.13) | TLY-4, TLY-3 | No Metorite code, except the age in the console |
 | 3, Later | Writes. A member asks for a sales voucher, approves the card, and the voucher shows in Tally | Task 3664 | Yes |
 | Later | Other local systems, such as Busy or a local SQL database, reuse the link and the setup screen. A sync of Tally data into Metorite needs a spec of its own | None yet | Yes |
 
@@ -994,7 +995,54 @@ The local build brief of task 3655 (version 2) holds a draft contract in its §6
 | The queue primitive and the capacity ceiling | The LNK-2 audit | Pick by the measures of §3.8.5 |
 | Whether the frame and the session mark of rule d also bind a URL server | The board | A finding of its own. This section binds the link only |
 | Whether the exact-override candidate for "Only these people" works, and stays inside D12 | The LNK-3 audit, then the owner if it is a third axis | Keep the outcome of rule g. `decide()` already tells an override from a role grant. Use the candidate only if the shared session keeps that difference |
-| The questions LNK-Q1 to LNK-Q7 | The owner | §10 |
+| The questions LNK-Q1 to LNK-Q9 | The owner | §10 |
+
+#### 3.8.13 The program on the customer's machine (owner, 2026-11-18)
+
+The owner asked two things on 2026-11-18, in chat. The words are the owner's, so they sit in a block that the linter does not read.
+
+```text
+We need to have some sort of Electron app or some sort of persistent app,
+right, for the Tally connector?
+
+Maybe this particular Metorite connector can keep a local copy of the Tally
+backup even if Tally is off, and can specify the age of the Tally backups so
+that we can sync periodically.
+```
+
+**The shape: a Windows service, not a browser tab and not Electron.**
+
+- The installer of LNK-5 installs the program as a Windows service. The service starts with Windows, before anyone signs in, and restarts itself after a crash.
+- The program has no window. A closed browser or a signed-out user does not stop it.
+- The plan uses no Electron. Electron runs only while a user is signed in, and it carries a whole browser.
+- The program runs on the same machine as TallyPrime. Port 9000 of Tally has no password, so a firewall rule keeps it to that machine (build brief §5.2).
+- The program stores its link credential with Windows DPAPI at machine scope. No credential is in plain text on disk.
+- The program only calls out (§3.8.5). The office opens no port and changes no router.
+
+**The setup page.** The program serves it at `http://127.0.0.1:8765/setup`, and the installer opens it once. It has four steps: find Tally, choose the companies, pair (§3.8.4), and done.
+
+- The page binds to `127.0.0.1` only.
+- Each request carries a random secret that the installer made, and the `Origin` of the page. The page refuses every other request, because any web page in the browser can call `127.0.0.1`.
+- The page never shows a stored secret again.
+
+**Keep Tally reachable.** TallyPrime answers on port 9000 only while it runs with the company open. TallyPrime is a desktop program, and it cannot run as a service.
+
+1. The setup page offers two settings, and the customer turns each one on. The first starts TallyPrime at sign-in with the chosen companies loaded. The second keeps the machine awake.
+2. The program reports "Tally up" or "Tally down" on each poll (§3.8.6). The console then says "TallyPrime is closed on OFFICE-PC", and the chat says that Tally is closed. It never fails in silence.
+3. An office that runs TallyPrime on an always-on server, or a hosted Tally, installs the program there.
+
+**The tray icon (TLY-3).** A small icon in the Windows tray shows one of three states: Connected, Tally closed or Not connected. A click opens the setup page. The icon is a separate small program that reads the state of the service, and the service does not need it. The owner may drop this slice.
+
+**The local copy (TLY-4).** The program does not read the backup file of Tally, because only a running TallyPrime reads that file. The program keeps its own readable copy.
+
+1. **What it copies.** It copies the read data of the allowed companies only. That is the masters (groups, ledgers and stock items) and the vouchers of this financial year and the last one. It copies the fields that the read tools return, and no more.
+2. **When.** While TallyPrime is open, at the interval that the customer's admin sets (LNK-Q9). After the first full copy, it copies only the records that changed, by the change number of each record (`AlterID`).
+3. **How a read uses it.** With Tally up, a read goes to Tally. With Tally down, a read answers from the copy. Each answer from the copy names its age, for example "From the copy of 14:05 today. TallyPrime is closed." The chat repeats the age to the member.
+4. **The maximum age.** The admin sets it (LNK-Q9). A copy older than that answers nothing, and the chat says how old the copy is.
+5. **Writes.** A write never uses the copy. Writes are rung 3 (task 3664).
+6. **Protection.** The program encrypts the copy with DPAPI at machine scope. It deletes the copy of a company that leaves the allow-list. It deletes the whole copy at Disconnect and at uninstall.
+7. **Health.** Each poll also carries the time of the last good copy. The console then shows "TallyPrime is closed on OFFICE-PC. Reads use the copy of 14:05."
+8. **Where it stays.** The copy stays on the customer's machine, so nothing answers while that machine is off. A copy inside Metorite would answer with the machine off, but the books then leave the customer's machine. LNK-Q8 asks the owner.
 
 ---
 
@@ -1105,6 +1153,7 @@ LNK-0 ─► LNK-1 ─► LNK-2 ─┬─► LNK-3 ─┬─► TLY-2 ─► run
 LNK-Q2 (owner) ─► LNK-4
 TLY-1 (rung 1, no Metorite code)
 LNK-5 (gates the general release, not the rung 2 demo)
+TLY-2 ─► TLY-3 (the tray icon) and TLY-4 (the local copy, after LNK-Q8 and LNK-Q9)
 ```
 
 LNK-2 needs LNK-1, because it checks the credential that LNK-1 mints. TLY-2 needs LNK-3 and LNK-4.
@@ -1118,7 +1167,9 @@ LNK-2 needs LNK-1, because it checks the credential that LNK-1 mints. TLY-2 need
 | **LNK-4** | 3661 | The console (§3.8.6, §3.8.8): "Pair a local connector" in the Add menu, the code form, and the approval screen with the machine, the domain warning, who may use it and the data notice. The row states and Disconnect | Visual review passes in four contexts. The owner sees the preview and approves it | A vitest under `src/app/integrations` | STANDARD: UI, with an owner preview | LNK-2, which needs LNK-1. The owner's answer to LNK-Q2 |
 | **LNK-5** | 3662 | Distribution: the signed installer, the update file and its signature check, and the address where Metorite serves them | A clean Windows 11 machine installs the program with no SmartScreen block. The program refuses an update with a bad signature | The tests of the program | STANDARD. Owner gate: the code-signing certificate (LNK-Q3). It gates the general release, not the rung 2 demo | LNK-0, LNK-Q3, LNK-Q4 |
 | **TLY-1** | 3656 | Rung 1: the Tally program in address mode, through our tunnel, with read tools only. No Metorite code | The owner sees the demo of task 3655. The rung 1 tests of the build brief pass | The tests of the program | STANDARD | None |
-| **TLY-2** | 3663 | Rung 2: the Tally program in link mode | A second test org pairs, approves and reads its own Tally. The program serves no call before the customer confirms the company name (rule j). A cut link comes back with no manual step. Disconnect stops the tools | The tests of the program, with the test of rule j. Also `test_connector_link_contract.py`, if LNK-Q6 puts the program in this repo | STANDARD | LNK-3, LNK-4 |
+| **TLY-2** | 3663 | Rung 2: the Tally program in link mode, as a Windows service with the setup page and the Tally checks of §3.8.13 | A second test org pairs, approves and reads its own Tally. After a restart of Windows with no user signed in, the service serves again. The program serves no call before the customer confirms the company name (rule j). A cut link comes back with no manual step. Disconnect stops the tools | The tests of the program, with the test of rule j. Also `test_connector_link_contract.py`, if LNK-Q6 puts the program in this repo | STANDARD | LNK-3, LNK-4 |
+| **TLY-3** | to file | The tray icon (§3.8.13): three states, and a click that opens the setup page | The icon shows each state within 10 seconds of a change. With the user signed out, the service still serves | The tests of the program | LOW. The owner may drop it | TLY-2 |
+| **TLY-4** | to file | The local copy (§3.8.13): the first copy, the copy of changes by `AlterID`, the read from the copy with its age, the maximum age, the encryption and the deletes. The time of the last good copy on each poll | With TallyPrime closed, a read answers from the copy and names its age. A copy older than the maximum age answers nothing. The copy on disk is not plain text. Disconnect deletes it | The tests of the program, on a synthetic company with a known set of changes | STANDARD: book data on disk | TLY-2, LNK-Q8, LNK-Q9 |
 
 ---
 
@@ -1208,7 +1259,7 @@ today is where every hole of §2.2 lives.
 
 ### Local connector questions (WS-LNK, §3.8, 2026-11-17)
 
-The owner answers these on task 3653. LNK-Q1 and LNK-Q7 gate LNK-1 and LNK-3. LNK-Q2 gates LNK-4. LNK-Q3 gates the general release, not the rung 2 demo.
+The owner answers these on task 3653. LNK-Q1 and LNK-Q7 gate LNK-1 and LNK-3. LNK-Q2 gates LNK-4. LNK-Q3 gates the general release, not the rung 2 demo. LNK-Q8 and LNK-Q9 gate TLY-4.
 
 | Id | Question | Recommendation |
 |---|---|---|
@@ -1219,3 +1270,5 @@ The owner answers these on task 3653. LNK-Q1 and LNK-Q7 gate LNK-1 and LNK-3. LN
 | **LNK-Q5** | What product name does a customer see in the installer and in Metorite? | The owner picks it. The build uses a working name until then |
 | **LNK-Q6** | Which repository holds the program? | This repository, so CI tests both sides of the link contract in one run |
 | **LNK-Q7** | May a run with no member use a link tool? | No. Refuse it (rule c of §3.8.7). A batch, scheduled or webhook run gets no MCP server today. Rule c closes the rest: a run that reaches the injection with no member, such as a `system:` principal. A later slice can give such a run a named member |
+| **LNK-Q8** | Does a copy of the books also live in Metorite, so that reads work while the customer's machine is off? | No, not now. The copy stays on the customer's machine (§3.8.13). A copy in Metorite moves the books into our database, and the data notice of LNK-Q2 must then say so. Ask again if customers' machines are off too often |
+| **LNK-Q9** | The default interval of the local copy, and its default maximum age | Every 30 minutes while TallyPrime is open, and a maximum age of 7 days. The admin can change both. Each answer from the copy names its age, so the member judges it |
