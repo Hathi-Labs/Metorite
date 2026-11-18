@@ -990,6 +990,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **TOF-1b** | 🔨 BUILT, dark (2026-11-16, task 3411) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-1b.md) |
 | **TOF-1c** | 🔨 BUILT, dark (2026-11-16, task 3412) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-1c.md) |
 | **TOF-1d** | 🔨 BUILT, dark (2026-11-16, task 3413) | STD | AGENT-SAFE | [row](ai_studio_rows/TOF-1d.md) |
+| **TOF-5a** | open (row 2026-11-18, task 3423) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-5a.md) |
 
 ### Group C — Objects
 
