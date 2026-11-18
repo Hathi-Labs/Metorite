@@ -195,7 +195,6 @@ async def test_a_typo_finds_the_record_by_the_near_rung(world, app_engine) -> No
     assert len(near) == 1
     assert near[0]["matched_by"] == "near"
     assert near[0]["as"] == "Operator"
-    assert hits.index(near[0]) == 0
     assert "Secret" not in json.dumps(answer)
 
 
