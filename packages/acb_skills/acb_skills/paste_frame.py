@@ -31,15 +31,16 @@ behind its own flag. So this slice changes no chat.
 in ONE block of the label :data:`PASTE_LABEL`, and runs ``neutralise`` on
 the lead too. The marker lines come only from :class:`UntrustedFrame`.
 
-The lead rule is a positive ALLOWLIST (spec section 4.7b, round 6). Each
+The lead rule is a positive ALLOWLIST (spec section 4.7b, rounds 6 and 7). Each
 character of the lead must be a letter, a mark, a decimal digit, a plain
-space, or one of a few signs of punctuation. A sentence period or colon may
-stand only before a space or at the end. The lead holds at most
-:data:`_DIGITS_MAX` decimal digits, and it spells no address. So no list of
-domains, schemes, dots, slashes or phone forms is needed: a link, an address
-and a phone number each need a sign or a digit count that the allowlist
-refuses. The cost: any other sign, an emoji, a tab, a full-width form and
-``Done.In`` send the lead to the block, and the model asks once.
+space, or one of a few signs of punctuation, and no letter of
+:data:`_DOT_LETTERS`. A sentence period or colon may stand only before a
+space or at the end. The lead holds at most :data:`_DIGITS_MAX` decimal
+digits, and it spells no address. The rule is a fail-closed filter on SIGNS:
+it needs no list of domains, schemes, slashes or phone forms. It does not
+claim to catch every link, address or phone number, and the spec names the
+residual forms. The cost: any other sign, an emoji, a tab, a full-width sign
+and ``Done.In`` send the lead to the block, and the model asks once.
 
 The caller owns two cases. *text* must be a ``str``: the module reads any
 other value with ``str()``, so bytes give their ``repr``. A ``paths_exist``
@@ -155,11 +156,21 @@ _PUNCT = frozenset(",!?;'\"()-" + "".join(map(chr, (0x2018, 0x2019, 0x201C, 0x20
 #: that looks like a dot is on a list: U+FF0E, U+FF61 and U+2024 go to the
 #: block.
 _END_PUNCT = frozenset(".:" + "".join(map(chr, (0x0964, 0x0965, 0x3002))))
-#: Two letters (category Lo) that look like a dot: the Latin sinological dot
-#: (U+A78F) and the Canadian syllabics final middle dot (U+1427). A lead that
-#: holds one goes to the block. Other letters that look like a sign are a
-#: named residual of the spec.
-_DOT_LETTERS = frozenset(map(chr, (0xA78F, 0x1427)))
+#: The letters, marks and digits (categories L, M, Nd) that look like a dot
+#: or a colon. A lead that holds one goes to the block. The list is a lower
+#: bound, not a proof: another letter, mark or digit that looks like a dot or
+#: a colon is a named residual of the spec. It holds the Latin sinological
+#: dot, the Canadian syllabics final middle dot, the Arabic-Indic zeros, a few
+#: modifier and tone letters, the Hangul araea, the Arabic baseline round dot,
+#: a Duployan dot, the Devanagari high spacing dot, the Hangul single dot tone
+#: mark, the musical augmentation dot, and the visarga of the Indic scripts and
+#: of Myanmar.
+_DOT_LETTERS = frozenset(map(chr, (
+    0xA78F, 0x1427, 0x0660, 0x06F0, 0xA4F8, 0x318D, 0x18DF, 0x0887, 0x1BC94,
+    0x0971, 0x302E, 0x1D16D, 0xA718, 0x02D0, 0x02D1, 0xA4FD,
+    0x0903, 0x0983, 0x0A03, 0x0A83, 0x0B03, 0x0B83, 0x0C03, 0x0C83, 0x0D03,
+    0x0D83, 0x1038,
+)))
 #: A lead may hold at most this many decimal digits, of any script. A phone
 #: number, a long order number and a date have more, so they need no rule of
 #: their own.
@@ -167,14 +178,15 @@ _DIGITS_MAX = 7
 #: The longest scan copy that the spelled rule reads. NFKC can make a copy
 #: longer than its lead. A longer copy counts as a hit, which is the safe side.
 _SCAN_MAX = 2_000
-#: The spelled address of the spec: `` at `` and later `` dot `` and a word,
-#: on the scan copy with each run of white space as one space. Up to three
-#: words may stand between ``at`` and ``dot``. ``dotcom`` counts as
-#: `` dot com``. ``(at)``, ``(at `` and ``(dot)`` count as the words, and
-#: ``(dot)`` alone is a hit too: ``hdfc-verify(dot)com``.
+#: The spelled address of the spec: `` at ``, then one to three words, then
+#: `` dot `` and a word, or ``dotcom``. It reads the scan copy with each sign
+#: as a space and each run of white space as one space. So ``'at'``,
+#: ``-at-``, ``(at)`` and ``dot,`` read as the words. ``(dot)`` alone is a hit
+#: too: ``hdfc-verify(dot)com``.
 _SPELLED_RE = re.compile(r"(?:^|\s)at\s\S+(?:\s\S+){0,2}?\s(?:dot\s\w|dotcom\b)")
-_PAREN_WORD_RE = re.compile(r"\(\s*(at|dot)(?:\s*\)|\s)")
 _PAREN_DOT_RE = re.compile(r"\(\s*dot\s*\)")
+#: A sign: a character that is neither a word character nor white space.
+_SIGN_RE = re.compile(r"[^\w\s]")
 
 
 def _hidden(ch: str) -> bool:
@@ -215,12 +227,12 @@ def _scan(text: str) -> str | None:
 
 def _spelled(text: str) -> bool:
     """True when the scan copy of *text* spells an address: `` at `` and then
-    `` dot `` (:data:`_SPELLED_RE`), or ``(dot)``. A copy over the cap counts
-    as one."""
+    `` dot `` (:data:`_SPELLED_RE`), or ``(dot)``. Each sign of the copy
+    reads as a space first. A copy over the cap counts as one."""
     copy = _scan(text)
     if copy is None or _PAREN_DOT_RE.search(copy):
         return True
-    return _SPELLED_RE.search(" ".join(_PAREN_WORD_RE.sub(r" \1 ", copy).split())) is not None
+    return _SPELLED_RE.search(" ".join(_SIGN_RE.sub(" ", copy).split())) is not None
 
 
 # -- the split -------------------------------------------------------------------

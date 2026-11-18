@@ -48,7 +48,10 @@ Mutations checked by hand (each one turns a test here red):
 * M41 no ``dotcom`` in ``_SPELLED_RE``: ``test_the_spelled_address_forms``.
 * M48 ``int()`` on the count of the upload note: ``test_a_huge_upload_count``.
 * M53 no cap on the scan copy: ``test_the_rules_are_linear_and_safe_on_a_long_text``.
-* M55 no ``_PAREN_WORD_RE``: ``test_the_spelled_address_forms``.
+* M71 no sign-to-space step in ``_spelled``:
+  ``test_the_block_inputs_and_the_leaks_go_to_the_block`` (``-at-``, ``'dot'``).
+* M72 the visarga out of ``_DOT_LETTERS``:
+  ``test_the_block_inputs_and_the_leaks_go_to_the_block`` (U+0903).
 * M60 ``_note_body`` from the start of the user turn:
   ``test_each_token_takes_the_note_of_its_label`` (a lead with the stock sentence).
 * M62 the allowlist off (``_allowed`` gives True):
@@ -712,6 +715,19 @@ LEAKS = (
     "hdfc-verify[dot]com", "hdfc-verify(dot)com", "hdfc-verify\\.com", "hdfc-verify%2Ecom",
     "paypal" + chr(0xAE) + ".com",
     *("https:" + chr(c) * 2 + "host" for c in (0x2044, 0x2215, 0x29F8, 0x2236, 0xA789, 0x05C3)),
+    # Round 7: a spelled address with allowed signs around the words.
+    "ravi 'at' acme 'dot' com",
+    "ravi \u201cat\u201d acme \u201cdot\u201d com",
+    "ravi -at- acme -dot- com",
+    "ravi-at-acme-dot-com",
+    "ravi at acme dot, com",
+    "Mail ravi at acme dot. com",
+    "at acme -dot- test",
+    # Round 7: a letter, mark or digit that looks like a dot or a colon.
+    *("Mail ravi" + chr(c) + "acme" + chr(c) + "test"
+      for c in (0x0660, 0x06F0, 0xA4F8, 0x318D, 0x18DF, 0x0887, 0x1BC94, 0x0971, 0x302E,
+                0x1D16D, 0xA718, 0x02D0, 0x02D1, 0xA4FD, 0x0903, 0x0983, 0x0A03, 0x0A83,
+                0x0B03, 0x0B83, 0x0C03, 0x0C83, 0x0D03, 0x0D83, 0x1038)),
     # The follow-up of round 6: a sentence-end sign glued to a letter, and the
     # dot-like signs that stay off every list.
     "hdfc-verify" + chr(0x3002) + "com", "hdfc-verify" + chr(0x0964) + "com",
@@ -761,6 +777,24 @@ def test_the_block_inputs_and_the_leaks_go_to_the_block(line: str) -> None:
     "اقرأ هذا؛ ثم لخّص",
     # "。" before a space is a sentence end, so it stays.
     "evil。 com",
+    # Round 7: plain leads with the word "at" and no spelled address.
+    "Reply at once. Thanks",
+    "Look at Ravi's draft, then reply",
+    "Meet at noon - don't be late",
+    "Bhai, isko dekh lo at least ek baar",
+    "Yaar, kal office mein milte hain at 5",
+    "Check what's at stake here",
+    "Arrive at the station early!",
+    "At last, the vendor replied",
+    "Point at the issue, not the person",
+    "Good at maths, bad at spelling",
+    "We're at the client's site today",
+    "Aaj shaam ko call karna, at your convenience",
+    "Please look at this (urgent)",
+    "Let's start at the top - then go down",
+    "Is the deck at the final stage?",
+    "Thanks for the help at short notice",
+    "Mujhe batao, what's at the end of the mail",
 ])
 def test_a_plain_lead_stays(line: str) -> None:
     """A one-line request in letters, marks, a few digits and the allowed
@@ -781,6 +815,19 @@ def test_a_plain_lead_stays(line: str) -> None:
     "Thanks \U0001F469‍\U0001F4BB", "می‌خواهم",
     # The spelled rule reads these as an address.
     "Write (at least) three dot points",
+    "Look at the dot points below.",
+    # Round 7: more named costs of one ask.
+    "\u3053\u306e\u30e1\u30fc\u30eb\u3001\u8981\u7d04\u3057\u3066\u3002"
+    "\u304a\u9858\u3044\u3057\u307e\u3059\u3002",
+    "Please read this...", "Please read this..", "Thanks \U0001F64F", "Great \U0001F60A",
+    "Pay \u20b94,500 today", "Pay Rs. 4,500/- today", "Dear Sir/Madam",
+    "\u06cc\u06c1 \u067e\u0691\u06be\u06cc\u06ba\u06d4",
+    "\u0d05\u0d35\u0d28\u0d4d\u200d \u0d35\u0d28\u0d4d\u0d28\u0d41",
+    "\u0c07\u0c2e\u0c46\u0c2f\u0c3f\u0c32\u0c4d\u200c\u0c28\u0c41"
+    " \u0c1a\u0c26\u0c35\u0c02\u0c21\u0c3f",
+    "\u09b0\u200d\u09cd\u09af \u09aa\u09a1\u09bc\u09c1\u09a8",
+    "\u0905\u0924\u0903 \u092a\u0922\u093c\u0947\u0902",
+    "\u0631\u0642\u0645 \u0661\u0660\u0662",
 ])
 def test_the_named_costs_go_to_the_block(line: str) -> None:
     """The spec names each of these costs: the lead goes to the block, and
@@ -795,6 +842,16 @@ def test_the_named_costs_go_to_the_block(line: str) -> None:
     "ravi डॉट acme डॉट com",
     "ravi arroba acme punto com",
     "Open hdfcverifyсom now",
+    # Round 7: the named residuals of the spelled rule and of signs.
+    "Mail ravi d0t acme now",
+    "ravi at gmail com",
+    "ravi at one two three four dot com",
+    "hdfc-verify dot com",
+    "hdfc-verify dotcom",
+    "hdfc-verify. com",
+    "hdfc-verify . com",
+    "ravi at acme period com",
+    "Call 1234567 now",
 ])
 def test_the_named_residuals_keep_the_lead(line: str) -> None:
     """The spec names these as residuals: a spelled address in another
