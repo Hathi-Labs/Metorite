@@ -562,6 +562,10 @@ def test_p6_only_the_listed_sites_call_the_writer() -> None:
                 name = getattr(node.func, "attr", getattr(node.func, "id", ""))
                 if name == "record_tool_failure":
                     callers.add(rel)
+            # A rename (``import ... as rec``) would hide a caller from the name check.
+            if isinstance(node, ast.ImportFrom) and any(
+                    a.name == "record_tool_failure" and a.asname for a in node.names):
+                callers.add(rel + " (renamed import)")
     assert callers == CAPTURE_SITES
 
 
