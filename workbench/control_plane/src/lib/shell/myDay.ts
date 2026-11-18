@@ -133,6 +133,7 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   reminder_due: "Reminder due",
   reminder_check: "Reminder still open",
   reminder_unconfirmed: "Reminder not confirmed",
+  provider_alert: "AI providers",
 };
 
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
