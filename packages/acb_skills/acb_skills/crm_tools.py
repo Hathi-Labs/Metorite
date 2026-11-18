@@ -1811,6 +1811,30 @@ def _split_head(plural: str, measure: str, data: dict[str, Any], split: list[Any
     return f"{plural}, {measure} of each field: {_split_text(split, None, measure)}{tail}"
 
 
+def _text_number_lines(data: dict[str, Any], split: list[Any]) -> list[str]:
+    """CRM-Q34-11: one line for each measured text field that holds numbers
+    (``text_numbers`` of the route): how many matching records hold a plain
+    number, and how many count as no value. Empty with none."""
+    found = data.get("text_numbers")
+    records = data.get("records")
+    if not isinstance(found, dict) or not found or records is None:
+        return []
+    measured = {str(s.get("field")): s for s in split if isinstance(s, dict)}
+    if not split and data.get("field"):
+        measured = {str(data["field"]): {"label": data.get("field_label"),
+                                         "values": data.get("values")}}
+    out = []
+    for key in found:
+        one = measured.get(str(key))
+        if one is None or one.get("values") is None:
+            continue
+        values, total = int(one["values"]), int(records)
+        out.append(f"{one.get('label') or key} is a text field that holds numbers: "
+                   f"{values:,} of {total:,} matching records hold a plain number. "
+                   f"The other {total - values:,} count as no value.")
+    return out
+
+
 def _first_lines(data: dict[str, Any]) -> list[str]:
     """CRM-Q25e part 4: the findings of the route (``acb_common.number_sense``)
     as lines that the model says before the total. Empty with none."""
@@ -2026,7 +2050,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         lines = await _total_tail(head, slug, data, overlay)
         if display:
             lines.insert(1, display)
-        lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
+        lines.extend([*filters, *mine, *_text_number_lines(data, split),
+                      *await _revenue_lines(slug, measure, box)])
         return "\n".join([*first, *lines]) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
@@ -2060,7 +2085,8 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
     lines.extend(await _hint_lines(slug, data, overlay))
-    lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
+    lines.extend([*filters, *mine, *_text_number_lines(data, split),
+                  *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
 
 

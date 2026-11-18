@@ -147,6 +147,8 @@ from gateway.routes.crm.field_sql import (
     ZONE_PARAM,
     FieldRef,
     FieldScope,
+    TextNumbers,
+    admit_text_numbers,
     check_group,
     check_measure,
     check_split,
@@ -175,6 +177,7 @@ from gateway.routes.crm.field_sql import (
     split_sql,
     status_field,
     text_matches,
+    text_number_keys,
     used_keys,
     zoned,
 )
@@ -476,6 +479,12 @@ class AggregateResponse(BaseModel):
     #: CRM-Q25e part 2: the total of each field of ``fields``, in order. The
     #: first one is also ``field`` and ``total``. Absent with no split.
     split: list[SplitTotal] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-11: each text field of a module that the call read as a
+    #: number → ``{"filled": n, "plain": n}``, the counts over the whole
+    #: module. Absent when the call read no text field, so the wire is the
+    #: one of before.
+    text_numbers: dict[str, dict[str, int]] | None = Field(
+        default=None, exclude_if=lambda value: not value)
     #: CRM-Q25e part 4: what the reader must know before the total
     #: (``acb_common.number_sense``), for example one day that holds most
     #: records. Each has ``kind``, ``key``, ``records``, ``share`` and one
@@ -800,6 +809,9 @@ class _Read:
     #: ``(day, value, records)`` rows from the same statement.
     day: FieldRef | None = None
     days: list[tuple[Any, Any, int]] = dc_field(default_factory=list)
+    #: CRM-Q34-11: each text field that the read took as a number, with its
+    #: counts (``field_sql.admit_text_numbers``).
+    text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -896,6 +908,7 @@ async def _read(
     scope: FieldScope | None = None
     zone = ""
     field_measure = measure
+    text_numbers: dict[str, TextNumbers] = {}
     if module is not None:
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
@@ -906,6 +919,10 @@ async def _read(
         if status_group:
             status_field(scope)
         field_measure, field = module_measure(measure, field)
+        # CRM-Q34-11: a text field that holds plain numbers reads as a
+        # number. With no text field named, no statement runs.
+        scope, text_numbers = await admit_text_numbers(
+            db, scope, text_number_keys(field_measure, field, fields, pairs))
         # CRM-Q25b: one zone for each bucket and each range of the answer.
         zone = await crm_zone(db, current_tenant())
         # §18.16 part 6: a text filter counts each case and short form.
@@ -1023,7 +1040,8 @@ async def _read(
         if module is not None and scope is not None else {}
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
-                 currency=currency, codes=codes, split=split, day=day, days=days)
+                 currency=currency, codes=codes, split=split, day=day, days=days,
+                 text_numbers=text_numbers)
 
 
 async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
@@ -1387,6 +1405,10 @@ async def _compute(
         overlay=read.overlay,
         matched=read.matched or None,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
+        text_numbers={
+            key: {"filled": found.filled, "plain": found.plain}
+            for key, found in read.text_numbers.items()
+        } or None,
         findings=_findings(
             read, measure,
             (bucket or "month") if bucketed else ("month" if group_by in MONTH_GROUPS else None),

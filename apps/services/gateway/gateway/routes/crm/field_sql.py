@@ -60,7 +60,7 @@ from __future__ import annotations
 import difflib
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -112,6 +112,14 @@ _COLUMNS = (CORE_COLUMN, MODULE_COLUMN)
 #: A number that arrives as a string. Bound into no statement: it is a literal.
 #: The digits are bounded, so no string can overflow ``numeric``.
 _NUMBER_TEXT = r"'^\s*-?[0-9]{1,30}(\.[0-9]{1,30})?\s*$'"
+
+#: CRM-Q34-11: a number in a text field may group its thousands with commas,
+#: but only in the strict shape: 1 to 3 digits, then groups of exactly 3.
+#: So "1,200" and "1,200,000.50" are numbers, and "1,5" and "12,34" are not.
+#: The bounds keep the digits under 31, so no string can overflow ``numeric``.
+_NUMBER_GROUPED = (
+    r"'^\s*-?([0-9]{1,30}|[0-9]{1,3}(,[0-9]{3}){1,9})(\.[0-9]{1,30})?\s*$'"
+)
 
 #: A value that starts with the shape of a calendar date. A datetime starts
 #: with one too. The year starts at 1000, so ``make_date`` takes every year
@@ -193,6 +201,10 @@ class FieldRef:
     #: Task 3128: the module that a ``lookup`` field points at, from
     #: ``crm_field_defs.options.lookup_module``. None for every other type.
     lookup_module: str | None = None
+    #: CRM-Q34-11: True for a text field that holds plain numbers, which
+    #: :func:`admit_text_numbers` lets a measure read. Its number then takes
+    #: the thousands commas of :data:`_NUMBER_GROUPED`.
+    text_number: bool = False
 
 
 @dataclass(frozen=True)
@@ -700,9 +712,23 @@ def check_group(scope: FieldScope, key: str | None, bucket: str | None) -> Field
 # ── The expressions. Every key and value is a bound parameter. ──────────────
 
 
-def _number(column: str, p: str) -> str:
+def _number(column: str, p: str, grouped: bool = False) -> str:
     """The field as a number, or NULL. A JSON number casts. A string casts
-    only when it is a plain decimal, so no cast error can reach the route."""
+    only when it is a plain decimal, so no cast error can reach the route.
+
+    CRM-Q34-11: with *grouped*, a string may also group its thousands with
+    commas (:data:`_NUMBER_GROUPED`), and the cast drops the commas. Only a
+    text field that holds numbers reads it. Without *grouped* the SQL text
+    is the text of before, unchanged."""
+    if grouped:
+        v = f"{column} ->> :{p}"
+        return (
+            f"(CASE WHEN jsonb_typeof({column} -> :{p}) = 'number' "
+            f"THEN CAST({v} AS numeric) "
+            f"WHEN jsonb_typeof({column} -> :{p}) = 'string' "
+            f"AND {v} ~ " + _NUMBER_GROUPED + " "
+            f"THEN CAST(replace({v}, ',', '') AS numeric) END)"
+        )
     return (
         f"(CASE WHEN jsonb_typeof({column} -> :{p}) = 'number' "
         f"THEN CAST({column} ->> :{p} AS numeric) "
@@ -721,7 +747,7 @@ def _numbers(column: str, ref: FieldRef, prefix: str) -> list[tuple[str, dict[st
     out = []
     for i, part in enumerate(parts):
         p = f"{prefix}_{i}"
-        out.append((_number(column, p), {p: part.key}))
+        out.append((_number(column, p, part.text_number), {p: part.key}))
     return out
 
 
@@ -914,6 +940,129 @@ def split_sql(scope: FieldScope, refs: Sequence[FieldRef], measure: str) -> list
     statement reads every field of each row once."""
     return [measure_sql(scope, ref, measure, prefix=f"{_MEASURE_KEY}{i}")
             for i, ref in enumerate(refs, start=1)]
+
+
+# ── A text field that holds numbers (CRM-Q34-11) ────────────────────────────
+
+#: The share of the filled values of a text field that must be plain
+#: numbers before a measure or a range reads it as a number: 90%.
+TEXT_NUMBER_SHARE = 0.9
+#: The stored type that may hold numbers. Only this one, and only on a module.
+TEXT_NUMBER_TYPE = "text"
+#: The prefix of the bound keys of the count.
+_TEXT_KEY = "agf_n"
+#: The characters that a filled value trims, as :data:`_TRIMMED` trims them.
+_BLANKS = r"E' \t\r\n\f\x0b'"
+
+
+@dataclass(frozen=True)
+class TextNumbers:
+    """The count of records of the module with a filled value in one text
+    field, and the count of those that hold a plain number."""
+
+    filled: int
+    plain: int
+
+
+def text_number_keys(measure: str, field_key: str | None, fields: str | None,
+                     pairs: Sequence[tuple[str, str]]) -> list[str]:
+    """The keys that a module aggregate reads as a number: the field of a
+    ``sum``, ``avg``, ``min`` or ``max``, each key of a split, and the key of
+    each range filter (``.from`` or ``.to``). Each key comes once, in order.
+    Pure, so the hermetic tests call it."""
+    keys: list[str] = []
+    if field_key and measure in FIELD_MEASURES:
+        keys.append(field_key)
+    if fields:
+        keys.extend(k.strip() for k in str(fields).split(SPLIT_JOIN) if k.strip())
+    for name, _value in pairs:
+        for end in RANGE_ENDS:
+            if name.endswith(end) and name[: -len(end)]:
+                keys.append(name[: -len(end)])
+    return list(dict.fromkeys(keys))
+
+
+def text_numbers_sql(keys: Sequence[str]) -> tuple[str, dict[str, Any]]:
+    """ONE statement that counts, for each key, the records of the module
+    with a filled value, and the records whose value is a plain number. It
+    reads each record once (:data:`DETOAST_JOIN`). Each key is bound, and
+    the org and the module are bound too."""
+    columns = []
+    params: dict[str, Any] = {}
+    for i, key in enumerate(keys):
+        p = f"{_TEXT_KEY}{i}"
+        params[p] = key
+        value = f"{DETOAST_COLUMN} ->> :{p}"
+        columns.append(
+            f"count(*) FILTER (WHERE btrim(coalesce({value}, ''), {_BLANKS}) <> '') AS f{i}, "
+            f"count(*) FILTER (WHERE {_number(DETOAST_COLUMN, p, True)} IS NOT NULL) AS p{i}"
+        )
+    sql = (
+        f"SELECT {', '.join(columns)} FROM crm_module_records{DETOAST_JOIN} "
+        f"WHERE organization_id = CAST(:agf_org AS uuid) AND module = :{_MODULE}"
+    )
+    return sql, params
+
+
+def text_number_fits(counts: TextNumbers) -> bool:
+    """True when the plain numbers are at least :data:`TEXT_NUMBER_SHARE` of
+    the filled values, and at least one. Integers only, so no float rounds."""
+    share = round(TEXT_NUMBER_SHARE * 10)
+    return counts.plain >= 1 and counts.plain * 10 >= counts.filled * share
+
+
+async def admit_text_numbers(
+    db: Any, scope: FieldScope, keys: Sequence[str],
+) -> tuple[FieldScope, dict[str, TextNumbers]]:
+    """*scope* with each text field of *keys* that holds plain numbers read
+    as a number, and the counts of each such field (CRM-Q34-11).
+
+    Only a module scope, and only a field of type :data:`TEXT_NUMBER_TYPE`,
+    never a key word or a sum. An unknown key and every other type come back
+    unchanged, so the checks after this give their 422 of before. With no
+    text key, no statement runs.
+
+    ONE statement counts every key over the whole module, in the caller's
+    tenant session, with the org in the predicate and RLS under it. A field
+    whose plain numbers are :data:`TEXT_NUMBER_SHARE` of its filled values
+    becomes type ``number`` with ``text_number``. So each later check and
+    builder reads it as a number, and a value that is no plain number is
+    NULL. A field below the share is a 422 that gives the counts. A field
+    with no filled value stays as it is, so its 422 is the one of before."""
+    if scope.column != MODULE_COLUMN:
+        return scope, {}
+    texts = [
+        k for k in keys
+        if k not in KEY_WORDS and (ref := scope.fields.get(k)) is not None
+        and ref.type == TEXT_NUMBER_TYPE and not ref.parts
+    ]
+    if not texts:
+        return scope, {}
+    from gateway.routes.crm.core import current_tenant
+
+    sql, params = text_numbers_sql(texts)
+    module = scope.owner[len(MODULE_OWNER):]
+    row = (await db.execute(text(sql), {
+        **params, "agf_org": str(current_tenant()), _MODULE: module,
+    })).one()
+    fields = dict(scope.fields)
+    counts: dict[str, TextNumbers] = {}
+    for i, key in enumerate(texts):
+        found = TextNumbers(filled=int(row[2 * i] or 0), plain=int(row[2 * i + 1] or 0))
+        if found.filled == 0:
+            continue
+        if not text_number_fits(found):
+            raise _refuse(
+                f"'{key}' is a text field. Only {found.plain:,} of its {found.filled:,} "
+                "filled values are plain numbers, too few to total. A measure takes a "
+                f"field of type {_type_words(MEASURE_TYPES)}. The number fields of "
+                f"{scope.owner} are: {scope.choices(MEASURE_TYPES)}.",
+            )
+        fields[key] = replace(fields[key], type="number", text_number=True)
+        counts[key] = found
+    if not counts:
+        return scope, {}
+    return replace(scope, fields=fields), counts
 
 
 def group_sql(
@@ -1607,6 +1756,7 @@ __all__ = [
     "SPLIT_MAX",
     "SPLIT_MIN",
     "SUM_CHECK_ROWS",
+    "TEXT_NUMBER_SHARE",
     "VALUE_GROUP_TYPES",
     "ZONE_PARAM",
     "FieldRef",
@@ -1614,7 +1764,9 @@ __all__ = [
     "GroupSql",
     "MeasureSql",
     "SumCheck",
+    "TextNumbers",
     "WhereSql",
+    "admit_text_numbers",
     "check_group",
     "check_measure",
     "check_split",
@@ -1647,6 +1799,9 @@ __all__ = [
     "sum_check",
     "sum_check_sql",
     "text_matches",
+    "text_number_fits",
+    "text_number_keys",
+    "text_numbers_sql",
     "used_keys",
     "value_counts",
     "zoned",
