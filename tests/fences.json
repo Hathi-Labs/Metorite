@@ -18,6 +18,7 @@
       "tests/unit/test_caddy_auth_gate.py",
       "tests/unit/test_card_record.py",
       "tests/unit/test_chat_hardening.py",
+      "tests/unit/test_chat_packs_batch.py",
       "tests/unit/test_chat_parity.py",
       "tests/unit/test_chat_payload_identity_claims.py",
       "tests/unit/test_chat_pin.py",

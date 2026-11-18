@@ -1441,6 +1441,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_tool_search_off.py.
     tool_search_orgs: str = ""
 
+    # ── The read packs of a WhatsApp turn (chat_reach.md G2, task 3494) ─────
+    #
+    # `chat_packs_batch_orgs` lists the organization ids, or `*` for each one.
+    # Empty means off, and a WhatsApp run is then byte-identical to a run with
+    # no pack code. With the org named, the member's own WhatsApp turn of the
+    # orchestrator holds the READ tools of the packs that its words or its
+    # sticky packs choose. It holds no write tool, and the specialist stays.
+    # It acts only where the tool pack flags give a pack. The one reader is
+    # `acb_skills.tool_packs.packs_batch_on`, and it fails closed. A SIGHUP
+    # reload applies a change (docs/flag_reload.md).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4), as for the pack flags. Fence: tests/unit/test_chat_packs_batch.py.
+    chat_packs_batch_orgs: str = ""
+
     # ── The floor trim of the one assistant (WS-67 OA-8f) ──────────────────
     #
     # ON takes ten floor tools out of the orchestrator's request: the tools

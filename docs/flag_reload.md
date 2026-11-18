@@ -63,6 +63,15 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_PACKS_BATCH_ORGS` gives the member's own WhatsApp turn of each listed
+org the read tools of its packs (`chat_reach.md` G2, task 3494). The turn holds
+no write tool, and the specialist of each pack stays. It acts only where
+`TOOL_PACKS` gives a pack. `*` lists every org, and the default is empty.
+
+Its one reader is `acb_skills.tool_packs.packs_batch_on`. The batch run asks it
+at the start of each WhatsApp run, so a reload applies to the next run. Any
+value other than empty is OWNER-ONLY (`work_plan.md` §6 D4).
+
 `CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
 CO-11). For each listed org, a member may pin a chat, and the chat list shows a
 Pinned group. `*` lists every org, and the default is empty. Empty means the

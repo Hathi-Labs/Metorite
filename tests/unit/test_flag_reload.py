@@ -106,6 +106,21 @@ def test_tool_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert not tool_search_on("globex")
 
 
+def test_chat_packs_batch_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """chat_reach.md G2 (task 3494). The reload list holds the key, and the
+    one reader sees a change with no restart."""
+    from acb_skills.tool_packs import packs_batch_on
+
+    assert fr.reloadable("CHAT_PACKS_BATCH_ORGS")
+    monkeypatch.setenv("CHAT_PACKS_BATCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not packs_batch_on("acme")
+    env(**{**_START, "CHAT_PACKS_BATCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PACKS_BATCH_ORGS",)
+    assert packs_batch_on("acme")
+    assert not packs_batch_on("globex")
+
+
 def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
     the one reader sees a change with no restart."""
