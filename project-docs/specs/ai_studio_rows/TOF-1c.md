@@ -70,7 +70,7 @@ A flip in production is OWNER-GATE (`enforcement-flip`). Flag reload: `docs/flag
 
 ## Before the flip
 
-The items of "Before the flip" of TOF-1a and TOF-1b still block the flip of `STUDIO_CHAT_TOOLS_ORGS`. The owner answers two more questions:
+The items of "Before the flip" of TOF-1a and TOF-1b still block the flip of `STUDIO_CHAT_TOOLS_ORGS`, less the ones that TOF-1e (task 3793) closed. The owner answers two more questions:
 
 1. **The stemmer.** Accept the known limit, or let a later slice change `_stem` together with the TS-1 goldens.
 2. **The head text.** Accept that the match reads the head text of version 1. Or let a later slice write the head text with each version.
@@ -78,7 +78,7 @@ The items of "Before the flip" of TOF-1a and TOF-1b still block the flip of `STU
 The Opus review of 2026-11-16 (head `a10f1169f`) approved the merge. It adds two more items that block the flip, and one that blocks a share of a skill to an org:
 
 3. **A skill shared to the org can take the turns of other members.** This needs a writer of `visibility = 'org'`. No product path writes it today. A member can publish a head description of about 30 common work words. In the probe of the review, 4 of 6 ordinary turns then loaded that skill. A tie loads nothing. So a copy of a member's description also silences the member's own skill. The J2 review approves one version manifest. The match reads the head column, so a reviewer can miss the text that decides the reach. Before J2 shares a skill, do one of three things. Show the head text in the share review. Or make the head equal `body.description`. Or let the pass read only the member's own skills.
-4. **No trajectory eval.** Root `AGENTS.md` harness rule 3 asks for one when harness behaviour changes. `evals/trajectories/` holds none for a Studio skill load. F3 and TOF-1b shipped none either. Write one before the flip.
+4. **Closed by TOF-1e (task 3793). No trajectory eval.** `evals/trajectories/test_studio_skill_load_trajectory.py` covers a load by name, a load by description, a refusal with `pack_cap` and the flag off (`chat_tools_off`). Run it with `PYTHONPATH=. uv run pytest evals/trajectories/test_studio_skill_load_trajectory.py`.
 
 Two points sharpen the first two items. An edit of the description in the Studio editor writes only the version body. So the head keeps the text of version 1, and an edit cannot change which turns load the skill.
 
