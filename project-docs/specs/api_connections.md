@@ -481,16 +481,17 @@ Each rung ends in a demo on production (D211).
 | 4 | The chat writes through an API, on a card | API-9: writes, after D-API-4 |
 | 5 | A saved skill runs an API operation | With TOF-5a and TOF-5b |
 
-**Rung 1 slices.** Each ships dark behind `API_CONNECTIONS_ORGS`.
+**Rung 1 slices.** Each ships dark behind `API_CONNECTIONS_ORGS`. No slice builds
+until the owner answers D-API-2, D-API-4 and D-API-9.
 
 | Id | What | Tier |
 |---|---|---|
-| API-1 | The template grammar and its validator. The split of `build_call` into a builder over one `Route`, with query shapes and encoded path values. The Zoho Books template with read operations and the total mark | STANDARD |
-| API-2 | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant | HIGH (identity, a credential) |
-| API-3 | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) |
-| API-4 | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) |
-| API-5 | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD |
-| API-6 | Bug 3766: a custom row that the chat cannot use says so | LOW |
+| API-1 (task 3787) | The template grammar and its validator. The split of `build_call` into a builder over one `Route`, with query shapes and encoded path values. The Zoho Books template with read operations and the total mark | STANDARD |
+| API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant | HIGH (identity, a credential) |
+| API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) |
+| API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) |
+| API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD |
+| API-6 (task 3792) | Bug 3766: a custom row that the chat cannot use says so | LOW |
 
 ## 5. Fences (R7)
 
