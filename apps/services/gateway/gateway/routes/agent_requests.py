@@ -48,7 +48,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth import app_requests as store
@@ -200,7 +200,7 @@ async def list_app_requests(user: UserContext = Depends(get_current_user)) -> di
 @router.get("/requests/{request_id}")
 async def read_app_request(
     request_id: str = Path(..., pattern=_ID),
-    wait_s: int = Query(0, ge=0, le=agent_runs.MAX_WAIT_S),
+    wait_s: Annotated[int, Query(ge=0, le=agent_runs.MAX_WAIT_S)] = 0,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """One request of the member, or of the agent's own connection (rule 4).
@@ -208,7 +208,9 @@ async def read_app_request(
     With ``wait_s`` (MCP-P1b-2), the answer waits while the request is
     ``awaiting``, for at most that many seconds. The gateway reads again
     every ``agent_runs.POLL_S`` seconds, and NO session is open while it
-    sleeps (EA12-4).
+    sleeps (EA12-4). The default is a plain ``0`` in ``Annotated`` form, so
+    a direct call of this function with no ``wait_s`` does not wait
+    (``test_studio_action_door_r8.py`` calls it so).
     """
     binding = None
     if user.agent is not None:
