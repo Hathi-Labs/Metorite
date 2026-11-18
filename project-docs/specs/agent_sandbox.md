@@ -6,6 +6,7 @@
   and takes each recommendation. **D187** amends the spec on 2026-11-07
   (§0a): a user tool is an AI Studio package. **D224** sets the order of
   work on 2026-11-15 (§0b): chains of existing actions first, code last.
+  **D227** (2026-11-19, §0c) opens SBX-9 to every org.
   Nothing built. SBX-1 is the first slice of code.
 - **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
   of D187 were read on 2026-11-07 at `main` `f2671c706`. Re-verify every
@@ -24,7 +25,7 @@
 - **Owner tasks:** #234 to #242 in the Metorite project. §1 maps each one to
   a section.
 - **Reads:** D12, D15, D16, D56, D58, D64, D83, D85, D86, D90, D93, D97,
-  D99, D100, D126, D127, D139, D146, D147, D180, D187, R5 to R8.
+  D99, D100, D126, D127, D139, D146, D147, D180, D187, D227, R5 to R8.
 - **Owns:**
   - tool-gap detection, and the tool lifecycle on the one Studio library
     (D187),
@@ -207,6 +208,166 @@ records them.
   `find_tools` on 0 of 3 Studio chats, because it took the pack loader. So
   TOF-1c matches a skill on the server, and rung 1 does not wait for the
   model to search.
+
+---
+
+## 0c. Amendment, 2026-11-19 (D227)
+
+**The ask.** On 2026-11-19 the owner answered the question "Should I plan the
+sandbox build by milestones, including the HathiLabs-only pilot on our own
+machine?". The owner wrote:
+
+```text
+"Go ahead with your recommendations. Start with all of the accounts since all of our customers are pilots. All of them can test out. I hope you've taken proper consideration of the architecture to be the most robust possible when it comes down to this."
+```
+
+The recommendations were three. First, do not lift D85 on the production
+gateway box. Second, build the real sandbox of this spec. Third, run an
+optional pilot for the HathiLabs org on the home server. The owner chose
+every org in place of the pilot. `work_plan.md` §3 records it as D227.
+
+### What changes
+
+1. **SBX-9 and gate SBX-G1 cover every org.** The scope entry is `tools:*`
+   in place of `tools:<Fracktal>`. All orgs are beta customers (owner rule,
+   2026-11-18, chat). D179 holds the same rule for Studio.
+2. **The home-server pilot is withdrawn.** D187 decision 5 keeps member data
+   with the hosting provider that processes it today. The home server is a
+   residential PC. It also runs CI and the agent lanes. So no customer code
+   and no customer data runs there. The first production run is on the
+   dedicated gVisor box of §4.6.
+3. **D85 stands.** The gateway box still runs no shared-agent code on the
+   host. D227 lifts nothing and opens no owner gate. The owner still does
+   SBX-G1, SBX-G9, SBX-G10 and SBX-G11, and WS43-G1 to WS43-G5.
+4. **What SBX-9 must add for `*`.** The parser already takes `*`.
+   `parse_maf_coding_scope` in `sandbox_broker.py` accepts `<target>:*`, and
+   `maf_coding_scope_allows` checks `(target, "*")`. But `tools` is not in
+   `MAF_CODING_TARGETS` (`sandbox_broker.py:104`). The parser raises
+   `ValueError` on an unknown target, and the check then turns **every**
+   target off. So an early `tools:*` would stop `code_task`, `app_builder`
+   and `projects` on that box. SBX-4 adds `tools` to the set. SBX-9 sets
+   `tools:*` only on a build that holds the target. Fence SBX-F24 (below)
+   guards this order.
+5. **Other per-org flags that SBX-5 and SBX-6 need.** A stored tool is a
+   Studio package. So `PACKAGE_HOST_ORGS` and `STUDIO_ORGS` must hold the
+   org. `PACKAGE_HOST_ORGS` takes `*` (`package_host/flags.py`). D179 item 2
+   names `STUDIO_ORGS=*`, and this slice did not verify its parser. Each flip
+   is a separate `enforcement-flip` act. SBX-9 lists them in its checklist.
+   `tool_scope` is a key of an agent config file and not a flag.
+
+### How the design holds when code runs for every org
+
+Each layer below exists in this spec. D227 adds none, except the two gaps
+that follow the list.
+
+- **A separate box, with gVisor `runsc` only.** The box needs no KVM, and the
+  broker refuses `runc` in production mode (§4.6, SBX-F21).
+- **A private network only.** The daemon of the box has no public address
+  (§4.6, SBX-G10).
+- **No secret enters the sandbox** (§5.4, SBX-F4).
+- **The code acts as the member.** It uses one door, and the member's own
+  checks apply (§5.1, §5.2, SBX-F1, SBX-F6).
+- **A read runs, and a write waits for a card** (§5.3, SBX-F3).
+- **The network stays shut, except a profile** (§5.5, SBX-F5).
+- **Limits for each step, and caps** for each org and each box (§5.6). The
+  hard cap of D19.3 stops a step for an org with no credits (§10).
+- **A short-lived sandbox for each thread, and immutable versions** (D187
+  decision 1, §7.2, SBX-F10).
+- **Review before another member runs a tool** (§8.1, SBX-F13).
+- **Kill switches** (§8.3) and **audit** (§8.4, §9.1, §10).
+
+**Residual risk.** Two risks stay.
+
+1. **A gVisor escape.** No slice closes it. The layers above limit what an
+   escape reaches. The box holds no secret and no tenant data at rest. Only
+   a private network reaches it. Its egress passes the proxy of WS-43g. But
+   one box now serves more than one org. So the run data of two orgs can
+   share one host in the same minute. The broker key includes the org, and a
+   container serves one thread only.
+2. **The price.** SBX-7 meters each step before SBX-9, so a runaway org is
+   metered. D130 item 4 takes the recommendation of SBX-Q4. The credit price
+   itself is the owner's act (SBX-G6). With no price, no production run
+   starts (§14).
+
+**Two new gaps for "every org at once".** Both come from the text of §6.2
+and §8.3.
+
+- **Gap A. No switch turns off one org.** `MAF_CODING_SCOPE` without
+  `tools:` stops all orgs at once. With `tools:*`, a problem in one org
+  needs a flip of the whole target. SBX-6 takes it. It adds a setting
+  `user_tool_disabled_orgs`, a list that wins over the scope. A SIGHUP
+  reloads it, as `docs/flag_reload.md` says.
+- **Gap B. The box is first come.** `user_tool_max_total` defaults to 1, and
+  at the cap a step answers "the sandbox is busy" (§6.2). With every org on,
+  one slow run blocks every other org. SBX-15 takes it. It sets
+  `user_tool_max_total` from the measured size of the box. It adds a fair
+  share, so no org holds more than half the slots. SBX-8 measures the cost
+  of gVisor first, and SBX-15 reads that number.
+
+### The milestone ladder (D211)
+
+Each milestone ends in a demo that the owner sees and uses. The plan runs
+backward from SBX-9, as `orchestration_playbook.md` §6d says. SBX-5 depends
+on SBX-3 (§12), so SBX-3 sits in M3.
+
+| Milestone | The demo | Slices | Gate |
+|---|---|---|---|
+| **M1. The gap log on production** | The owner opens the gap view and sees real counts. No code runs | SBX-1 | None |
+| **M2. The door and a tool on the dev stack** | On the dev stack, the chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4 | None |
+| **M3. Keep and reuse, and a write behind a card** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first | SBX-3, SBX-5 | None |
+| **M4. Repair, review and metering** | A tool that failed gets one repair. A holder of `studio:publish` approves a version. The owner sees credits fall | SBX-12, SBX-6, SBX-7 | None |
+| **M5. gVisor and the remote backend on the dev stack** | A build, a smoke test and a run go to a second local daemon under `runsc` | SBX-8, SBX-15 | None |
+| **M6. Production on the dedicated box, every org** | The HathiLabs org runs a tool on the real box. The same day, `tools:*` opens it to every org | SBX-9 | SBX-G9 to SBX-G11, WS43-G1 to WS43-G5, SBX-G1 |
+
+- **The smoke in M6 is verification.** The HathiLabs run proves the real
+  box before the second SBX-G1 flip. It is not a narrower pilot. Both flips
+  are owner acts.
+- **Rung 6 of WS-TOF (§0b, D224) stays rung 6.** Chains of existing actions
+  still come first.
+- **M1 may run beside rungs 1 to 5.** SBX-1 needs no owner act.
+
+### The critical path to SBX-9
+
+Statuses were read from `origin/main` at `fe470c832` on 2026-11-19. A gate
+that lives on a box is "not verified", because this slice reads no box.
+
+| Needs | Status | Evidence |
+|---|---|---|
+| SBX-1 | Not built | `git grep tool_gaps` finds no code or SQL |
+| SBX-2 | Not built | `git grep SANDBOX_ROUTES` finds nothing |
+| SBX-3 | Not built | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
+| SBX-4 | Not built | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:104`) |
+| SBX-5 | Not built | Its input B7 is built. `git log --grep SBX-5` finds the spec commit only |
+| SBX-6 | Not built | Its inputs are partly built, see PKG-11 and J2 below |
+| SBX-7 | Not built | No `sandbox` row in `task_catalog` (`git grep` of the SQL) |
+| SBX-8 | Not built | `git grep runsc` finds no code |
+| SBX-12 | Not built | Needs SBX-5 |
+| SBX-13 | Not built | `git grep metorite_door` finds nothing |
+| SBX-15 | Not built | `git grep docker-remote` finds nothing |
+| WS43-G1 | Owner gate. State on the box not verified | `maf_coding_engine.md` lines 786 and 1691, BH-3 |
+| WS43-G2 | Owner gate. Image code built, box build not verified | WS-43b and WS-43y1a are on `main` |
+| WS43-G4 | Owner gate. Not verified | `maf_coding_engine.md` line 827 |
+| WS43-G5 | Owner gate. Not verified | `maf_coding_engine.md` line 1677 |
+| WS-43g, the egress proxy | Not built | `maf_coding_engine.md` line 2162 says `grant_egress()` is not built. `git grep grant_egress` finds no code |
+| `ai_studio.md` B7 | Built, dark (2026-11-13, task 1414) | `ai_studio.md` line 977 |
+| `package_host.md` PKG-11 | Partly built | 11a and 11b-2 built dark. 11b-1 is "not built for now" (path A) |
+| `ai_studio.md` J2 | Partly built | J2a, J2b-1, J2b-2, J2b-4a, J2b-5 built dark. J2, J2b, J2b-3, J2b-4, J2b-4b open (`ai_studio.md` lines 1277 to 1288) |
+| SBX-G9, buy the box | **Owner only, and it costs money.** Not done | §13. No agent buys, rents or picks a plan |
+| SBX-G10, the private network | Owner only. Not done | §13 |
+| SBX-G11, `sandbox_backend=docker-remote` | Owner only. Not done | §13 |
+| SBX-Q4, the credit price | D130 item 4 takes the recommendation. The price is not set | No `sandbox` row in `task_catalog`. SBX-G6 sets the price |
+
+### New items
+
+- **SBX-6 adds Gap A.** The setting `user_tool_disabled_orgs`, and a test
+  for it in SBX-F24.
+- **SBX-15 adds Gap B.** `user_tool_max_total` from the measured box, and a
+  fair share per org.
+- **SBX-9 adds** the order check of item 4 and the checklist of item 5.
+  **SBX-F24** (`tests/unit/test_sandbox_scope_all_orgs.py`) fails when
+  `tools:*` parses to an error, when a listed org in
+  `user_tool_disabled_orgs` still runs, or when `tools` is absent from
+  `MAF_CODING_TARGETS`. It is advisory until SBX-6 and SBX-9 build it.
 
 ---
 
@@ -1407,7 +1568,7 @@ order:
    (SBX-12). Then the review controls (SBX-6), metering (SBX-7), gVisor
    (SBX-8), the remote backend (SBX-15) and level (c) (SBX-14).
 3. **Phase 3, production.** The owner buys the box and sets up its network
-   (SBX-G9, SBX-G10). Then SBX-9 turns on `tools:<Fracktal>` on that box.
+   (SBX-G9, SBX-G10). Then SBX-9 turns on `tools:*` on that box, for every org (D227).
    SBX-16 and SBX-17 come after real use.
 
 SBX-5 also needs `ai_studio.md` B7, the `runtime` key of a logic module in
@@ -1417,6 +1578,7 @@ the A2 model.
 |---|---|---|---|
 | **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
 | **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
+| **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover every org | SBX-0b | AGENT-SAFE. Docs |
 | **SBX-1** | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
 | **SBX-2** | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
@@ -1425,7 +1587,7 @@ the A2 model.
 | **SBX-6** | (D187) The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** | Metering (§10) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
 | **SBX-8** | `sandbox_runtime=runsc` in the broker, and a measured cost of gVisor on a local stack | SBX-4 | AGENT-SAFE. The install on a box is WS43-G5, **OWNER-GATE** |
-| **SBX-9** | (D187) Turn it on: `tools:<Fracktal>` on production, on the dedicated box of §4.6. D144 retired staging, so the local staging gate of D145 comes first | SBX-1 to SBX-8, SBX-12, SBX-13, SBX-15, WS43-G1, WS43-G2, WS43-G4, WS43-G5, SBX-G9, SBX-G10, SBX-G11 | **OWNER-GATE** |
+| **SBX-9** | (D187) (D227) Turn it on: `tools:*` on production, every org and not Fracktal only, on the dedicated box of §4.6. D144 retired staging, so the local staging gate of D145 comes first | SBX-1 to SBX-8, SBX-12, SBX-13, SBX-15, WS43-G1, WS43-G2, WS43-G4, WS43-G5, SBX-G9, SBX-G10, SBX-G11 | **OWNER-GATE** |
 | **SBX-10** | The `e2b` backend (§4.4) and the public door name. (D187) The alternative to the box of §4.6 | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
 | **SBX-11** | The SPACE check through ECW (§4.5) | SBX-10, the three triggers of §4.5 | **OWNER-GATE**. A new host costs money |
 | **SBX-12** (task 3427) | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
@@ -1531,7 +1693,7 @@ dev-phase window does not open the WS-43 gates, and the same holds here.
 
 | # | Act |
 |---|---|
-| SBX-G1 | Add `tools:<org>` to `MAF_CODING_SCOPE` on production (it is WS43-G3 for this target). (D187) D144 retired staging |
+| SBX-G1 | Add `tools:<org>` to `MAF_CODING_SCOPE` on production (it is WS43-G3 for this target). (D187) D144 retired staging. (D227) The entry is `tools:*`, every org. A first flip for the HathiLabs org proves the real box, and a second flip opens every org. Each flip is an owner act |
 | SBX-G2 | Install `runsc` on a box (WS43-G5) |
 | SBX-G3 | Open an account with a sandbox vendor, or put its key on a box |
 | SBX-G4 | Create the DNS record `sandbox-api.metorite.com`, or its Caddy block |
@@ -1611,3 +1773,7 @@ here, and each needs its own check before anyone acts on it.
   fails gets one repair, at three levels. A tool reaches all of Metorite only
   as reviewed repo code. Production runs on a dedicated sandbox box. New
   slices SBX-12 to SBX-17. Nothing built.
+- 2026-11-19 — D227 (SBX-0d, task 3786). The owner chose every org for SBX-9 and
+  SBX-G1, and withdrew the HathiLabs pilot on the home server. D85 stands, and
+  no owner gate opens. §0c holds the ladder M1 to M6, the critical path and
+  two new gaps. Nothing built.

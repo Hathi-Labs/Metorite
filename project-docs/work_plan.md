@@ -6356,6 +6356,23 @@ The owner approved both merges of `agent_sandbox.md` §0b on task 3394, at 19:23
 
 Fence: none new, so this entry is advisory until SBX-1 and TOF-2a name their tests. `tests/unit/test_decision_ids.py` fails when two D225 entries merge. **Re-check this number at merge.** On 2026-11-16, main held D224 at most, and no open PR held D225.
 
+### D227 — The sandbox opens to every org, and the HathiLabs pilot on the home server is withdrawn. It amends D187 for SBX-9 and SBX-G1 (2026-11-19)
+
+The owner answered the question "Should I plan the sandbox build by milestones, including the HathiLabs-only pilot on our own machine?" on 2026-11-19, in Claude Code chat. Owner spec: `specs/agent_sandbox.md` §0c. Board: **WS-TO**, Metorite task 3786 (SBX-0d, epic 810).
+
+```text
+"Go ahead with your recommendations. Start with all of the accounts since all of our customers are pilots. All of them can test out. I hope you've taken proper consideration of the architecture to be the most robust possible when it comes down to this."
+```
+
+1. **Every org.** SBX-9 and gate SBX-G1 change from `tools:<Fracktal>` to `tools:*`. All orgs are beta customers (owner rule, 2026-11-18). D179 holds the same rule for Studio.
+2. **No home-server pilot.** D187 decision 5 keeps member data with the hosting provider that processes it today. The home server is a residential PC that also runs CI and the agent lanes. So no customer code and no customer data runs there. The first production run is on the dedicated gVisor box of `agent_sandbox.md` §4.6.
+3. **D85 stands.** This decision does not lift D85. It opens no owner gate. SBX-G1, SBX-G9, SBX-G10, SBX-G11 and WS43-G1 to WS43-G5 stay with the owner.
+4. **The order of work.** `agent_sandbox.md` §0c plans milestones M1 to M6 backward from SBX-9 (D211). M6 runs the HathiLabs org on the real box first. That run is verification. `tools:*` follows the same day. Rung 6 of D224 stays rung 6.
+5. **Two new gaps.** Gap A: no switch turns off one org under `tools:*`. SBX-6 adds `user_tool_disabled_orgs`. Gap B: `user_tool_max_total` of 1 lets one run block every org. SBX-15 sizes it from the box and adds a fair share.
+6. **`tools` is not yet a scope target.** `tools:*` parses only when `MAF_CODING_TARGETS` holds `tools`. An early entry turns every target off. SBX-4 adds the target, and fence SBX-F24 guards the order.
+
+Fence: SBX-F24 of `agent_sandbox.md` §0c, advisory until SBX-6 and SBX-9 build it. `tests/unit/test_decision_ids.py` fails when two D227 entries merge. **Re-check this number at merge.** On 2026-11-19, main held D225 at most, and open PR 2585 holds D226. The search read PR titles and bodies only, so a branch with D227 in a diff only was not seen.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
