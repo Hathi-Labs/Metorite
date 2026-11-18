@@ -421,6 +421,21 @@ def test_a_holder_who_declines_the_card_leaves_the_ask_waiting(world: World) -> 
     assert world.db.share["state"] == "pending" and world.wrote() == []
 
 
+def test_a_holder_with_no_card_gets_no_text_of_the_skill(world: World) -> None:
+    """The text on the card is another member's. With no card channel the
+    holder cannot decide, so the result holds no text of the skill. Mutation:
+    give ``_not_done`` the card for ``no_card`` -> the instructions reach the
+    result -> red."""
+    _pending(world, 2)
+    world.card.answer = None
+    world.card.open = False
+    out = world.act(ADA, act="approve")
+    assert out["ok"] is False and out["decision"] == "no_card"
+    assert _message(out) == st._SHARE_NO_CARD
+    assert world.db.bodies[2]["instructions"] not in json.dumps(out)
+    assert world.wrote() == [] and world.db.share["state"] == "pending"
+
+
 def test_an_ask_that_moved_while_the_card_was_open_writes_nothing(world: World) -> None:
     _pending(world, 2)
 

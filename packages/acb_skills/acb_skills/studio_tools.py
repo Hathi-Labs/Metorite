@@ -2382,6 +2382,8 @@ _SHARE_NONE_CUT = " The list holds the 20 oldest asks only, so this ask can be p
 _SHARE_WHOLE = ("The whole text of this skill does not fit on one card, so nothing was "
                 "approved. Ask the owner for a shorter version, or reject the ask.")
 _SHARE_MAYBE = "The {act} may have worked. Read the share again before you try again."
+_SHARE_NO_CARD = ("This chat shows no card, so the ask still waits. Approve or reject it in a "
+                  "chat that shows cards.")
 _SHARE_DONE = {
     "approve": "Shared. Each member of the organization loads version {v} from their next message.",
     "reject": "Rejected. The skill stays as it was. The owner may ask for a newer version.",
@@ -2585,6 +2587,10 @@ async def _share_decide(sid: str, version: int, act: str) -> dict[str, Any]:
     decision = await _decide(
         f"{verb} the share of {_title_name(ask.get('name', ''))}?",
         f"Version {number}, asked by {_shown(ask.get('requested_by'))}.", context)
+    if decision == "no_card":
+        # The text is another member's. With no card the holder cannot decide,
+        # so the result gives no text of the skill to the model.
+        return _refusal(_SHARE_NO_CARD, decision=decision)
     if decision != "approved":
         return _not_done("The ask still waits.", decision, context, rows)
     again = await _get(SHARES_PATH)

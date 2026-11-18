@@ -554,9 +554,10 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
         user=UserContext(email="admin@acme.test", role=UserRole.EXECUTIVE))
     by_slug = {f["slug"]: f for f in out["families"]}
     for slug in sf.pack_slugs():
-        # WS-STU J2d: the one tool of studio-share prices about 360 characters, so
-        # the margin is 300. The mutation (the rules block alone) prices 0 more.
-        assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + 300, slug
+        # WS-STU J2d: studio-share holds one tool of about 360 characters, so it
+        # has its own floor. The mutation (the rules block alone) prices 0 more.
+        floor = 300 if slug == "studio-share" else 1000
+        assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + floor, slug
 
 
 # ── 7. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
