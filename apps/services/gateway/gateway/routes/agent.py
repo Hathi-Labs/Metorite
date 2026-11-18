@@ -3959,6 +3959,16 @@ async def _resume_from_row(
         await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
     except HTTPException:
         return None
+    # HRD-22b (review, P1): the claim of the stored call reads Redis only
+    # (`claim_act`), and a stall of Redis leaves no SPENT mark. So Postgres is
+    # asked first: when a twin of this card was approved after it was asked,
+    # in any thread, or when nobody can say, the old path takes the answer and
+    # a card shows again (the safe side). No row has moved yet.
+    from acb_skills.late_approve import twin_ran
+
+    if await twin_ran(org, me, row):
+        _log.info("agent.resume_twin_ran", request_id=req.request_id[:12])
+        return None
     from orchestrator.run_cap import admit_member_run, release_member_slot
 
     admission = await admit_member_run(
