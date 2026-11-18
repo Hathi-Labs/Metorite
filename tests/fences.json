@@ -260,6 +260,7 @@
       "tests/unit/test_email_otp_token.py",
       "tests/unit/test_email_signature_images_r8.py",
       "tests/unit/test_email_signature_settings_r8.py",
+      "tests/unit/test_failure_store_r8.py",
       "tests/unit/test_goal_record_r8.py",
       "tests/unit/test_h3_rls_promotion_rehearsal.py",
       "tests/unit/test_h6_identity_shadow.py",

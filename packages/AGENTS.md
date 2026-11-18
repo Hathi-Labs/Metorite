@@ -100,6 +100,10 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
 - `no_person.py`: the ONE mark of a run with no person present (WS-AUTO AUTO-7a, `proactive_agent.md` §4.2). It imports the standard library only, because `action_broker` and `acb_skills` both read it and neither may depend on the other.
   - `no_person_scope` is the one setter, and only `gateway/jobs/worker.py` and `gateway/routes/workflows/service.py` call it. No tool reads or sets the mark. No function clears it. A task and `asyncio.to_thread` inherit it, and `carry_run_context` carries it onto the Copilot SDK thread.
   - ⚠️ An HTTP call does not carry the mark, and a tool acts as its member over HTTP. So no tool may name a route that approves or answers. A bare `run_in_executor` drops it too. Fences: `tests/unit/test_no_person_present.py`, `tests/unit/test_no_person_present_r8.py` (R8).
+- `failure_fingerprint.py` and `failure_log.py`: the ONE failure store of tool failures (WS-TOF TOF-2b, D225, `tool_failure_log.md` §3 and §6). Neither imports an `acb_skills` module.
+  - `failure_fingerprint` is pure. It makes the four platform fields (tool, failure code, exception type, code site) and the v1 hash. The message, the arguments, the tenant and the release never enter it. Do not add an input to the hash: a new rule is a new version.
+  - `failure_log.record_tool_failure` is the ONE writer of every `failure_*` table. It reads the tenant from `current_tenant()` only, never raises and never waits. A bounded queue, one drain for each loop and a sample cap in tenant Redis hold its cost. `failure_log_on` is the one reader of `TOOL_FAILURE_LOG_ORGS`. Do not add a second writer: `gateway.jobs.unattended.record_failure` stays the job ledger.
+  - Fences: `tests/unit/test_failure_fingerprint.py` (P2, the 12 golden rows), `tests/unit/test_failure_log_queue.py` (P7), `tests/unit/test_failure_store_r8.py` (R8: P3, P4, P5).
 
 ### acb_audit/
 Audit event recording.
