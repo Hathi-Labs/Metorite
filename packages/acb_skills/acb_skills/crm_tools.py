@@ -1893,9 +1893,9 @@ async def crm_aggregate(
     fields: list[str] | None = None,
 ) -> str:
     """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given, and quote the
-    Display value as written. To split a total over 2 to 5 number fields,
-    give fields with every key in ONE call. When the answer starts with FIRST, tell the member that line
+    server computes every number: report them as given. Quote the Display
+    value as written. To split a total over 2 to 5 number fields,
+    give fields with every key in ONE call, never one call for each field. When the answer starts with FIRST, tell the member that line
     before the total. entity is 'leads', 'deals', 'contacts',
     'organizations' or 'module:<api_name>' (crm_list_modules). measure is
     'count', 'sum_amount' or 'weighted' (deals: amount times the
@@ -1914,8 +1914,8 @@ async def crm_aggregate(
     the exact value, name or record id.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
-    '@parent' (crm_list_modules names the key fields). On a module, term is
-    the member's own word for the figure (for example 'service fees'): the
+    '@parent'. On a module, term is
+    the member's own word for the figure: the
     server maps it to one field. Give no field with it. When two
     fields give different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
