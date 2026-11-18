@@ -794,6 +794,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # Same clause as the line above, and the same place: before the chats.
     _PersonRows("chat_card_rows", "chat_card_record",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-4: the shadow rows of the join match of THIS organization. A
+    # row holds codes and ids of the member's own chats, and nobody else's,
+    # so it goes with the member. The clause names the bound org beside RLS,
+    # as `chat_member_rows` does. It runs before `private_chat_sessions`,
+    # whose cascade would take only the rows of her private chats. So the
+    # count is each row of the member.
+    _PersonRows("chat_join_rows", "chat_join_log",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
