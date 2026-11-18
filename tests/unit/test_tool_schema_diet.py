@@ -87,8 +87,13 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                               'required': ['module', 'record_id']},
     'crm_get_record': {'params': {'entity': 'string', 'record_id': 'string'},
                        'required': ['entity', 'record_id']},
-    'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer'},
-                        'required': ['entity']},
+    # WS-53 CRM-Q34-6 (task 3699, 2026-11-18): `query` finds a field by its
+    # words, in one module or in each mirrored module. So `entity` is no
+    # longer required. A new optional argument, so no call breaks. With
+    # CRM_MODULE_FIND_ORGS empty, the tool ignores `query`.
+    'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer',
+                                   'query': 'string'},
+                        'required': []},
     'crm_list_module_records': {'params': {'module': 'string', 'page': 'integer',
                                            'page_size': 'integer', 'q': 'string'},
                                 'required': ['module']},

@@ -166,6 +166,31 @@ _FIELD_USES: dict[str, str] = {
     **dict.fromkeys(("select", "boolean", "lookup"), "group by value"),
     **dict.fromkeys(("date", "datetime"), "group by month, quarter or year"),
 }
+#: CRM-Q34-11: the use of a text field of a MODULE. A core text field has
+#: none, because only a module reads its text as numbers.
+_TEXT_NUMBER_USE = "sums and ranges if it holds numbers, the answer counts the rest"
+
+
+def _field_use(ftype: str, module: bool) -> str | None:
+    """What crm_aggregate can do with a field of *ftype* (:data:`_FIELD_USES`),
+    and the text field of a module (:data:`_TEXT_NUMBER_USE`)."""
+    if module and ftype == "text":
+        return _TEXT_NUMBER_USE
+    return _FIELD_USES.get(ftype)
+
+#: CRM-Q34-6: the value that a module filter (``field_filters`` of
+#: ``crm_aggregate``) takes for a field of each type. The words follow the
+#: filter of the gateway (``field_sql._filter_value``). Any other type takes
+#: :data:`_TEXT_FILTER`.
+_FIELD_FILTERS: dict[str, str] = {
+    **dict.fromkeys(("number", "decimal", "currency", "percent"), "one exact number"),
+    **dict.fromkeys(("date", "datetime"),
+                    "a day YYYY-MM-DD, or a range as key.from and key.to"),
+    "boolean": "true or false",
+    "lookup": "the id or the name of the linked record",
+}
+#: The module filter of a picklist, a text and each other type.
+_TEXT_FILTER = "a value, in any case"
 
 
 class _Refused(Exception):
@@ -450,10 +475,13 @@ class RunReads:
         return None
 
     def spare(self, tool: str) -> None:
-        """Give back the ``crm_aggregate`` count of a call whose 10 s read ran
-        out of time, and that could take no long read (CRM-Q25e part 5). It
-        still counts in ``total``, so :data:`READ_BUDGET` still stops a run
-        that only times out. A call that ran a long read keeps its count."""
+        """Give back the ``crm_aggregate`` count of a call that read nothing:
+        its 10 s read ran out of time and it could take no long read
+        (CRM-Q25e part 5), or the gateway refused it with a 422 (CRM-Q34-3).
+        It still counts in ``total``, so :data:`READ_BUDGET` still stops a
+        run that only times out or is only refused. A call that ran a long
+        read, or whose total answered, keeps its count. A refusal of the
+        client keeps its count too."""
         if tool == "crm_aggregate" and self.aggregates > 0:
             self.aggregates -= 1
 
@@ -517,6 +545,10 @@ def _fields_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[str, int
     entity (the tool then gives its own refusal)."""
     entity = kwargs.get("entity", args[0] if args else "")
     page = kwargs.get("page", args[1] if len(args) > 1 else 1)
+    query = kwargs.get("query", args[2] if len(args) > 2 else None)
+    if str(query or "").strip():
+        # CRM-Q34-6: a search is never cached, and never reads the plain list.
+        return None
     try:
         return _entity_slug(str(entity), allow_module=True), _page(page)
     except Exception:
@@ -556,7 +588,9 @@ async def _spend(name: str, fn: Callable[..., Awaitable[str]], call: _ToolCall,
     out = await fn(*args, **kwargs)
     if call.spare and not call.answered and not call.long_used:
         # CRM-Q25e part 5: the 10 s read ran out of time and the call took
-        # no long read. It read nothing, so it spends no aggregate budget.
+        # no long read. CRM-Q34-3: or the gateway refused it with a 422. It
+        # read nothing, so it spends no aggregate budget. It still spent one
+        # read of READ_BUDGET above, so a run of refusals still stops.
         reads.spare(name)
     if key is not None and isinstance(out, str) and not out.startswith("Refused"):
         reads.fields[key] = out
@@ -629,8 +663,14 @@ async def _overlay_status(slug: str, status: str | None) -> str | None:
     if mod is None:
         return None
     return (f"{_from_module(slug, mod)} A total of them takes no status filter. "
-            f"Group by status, or call crm_aggregate with entity 'module:{mod}' "
-            "and field_filters {'@status': '<value>'}.")
+            f"Group by status, or {_status_step(mod)}")
+
+
+def _status_step(mod: str, value: str = "<value>") -> str:
+    """The step that filters a total of module *mod* by a status: the one
+    text of the overlay sentence and of the module refusal (CRM-Q34-3)."""
+    return (f"call crm_aggregate with entity 'module:{mod}' "
+            f"and field_filters {{'@status': '{value}'}}.")
 
 
 #: CRM-Q25e part 5 (task 2985 HRD-6): the httpx limit of the ONE long read of
@@ -683,6 +723,9 @@ async def _aggregate_read(params: dict[str, Any]) -> dict[str, Any]:
     try:
         answer = await _get("/crm/aggregate", params) or {}
     except _GatewayError as exc:
+        if exc.status == 422 and call is not None and not call.long_used and not call.answered:
+            # CRM-Q34-3: the route refused an argument and read nothing.
+            call.spare = True
         if exc.code not in _TIMED_OUT or not exc.long_read or params.get("long_read"):
             raise
         if call is None or not _long_read_open(call):
@@ -744,7 +787,7 @@ def _entity_slug(entity: str, *, allow_module: bool = False) -> str:
     :func:`_module_name`. Only the aggregate and the field list take one."""
     raw = (entity or "").strip()
     if allow_module and raw.lower().startswith(MODULE_PREFIX):
-        return MODULE_PREFIX + _module_name(raw[len(MODULE_PREFIX):])
+        return MODULE_PREFIX + _module_name(raw)
     key = raw.lower()
     slug = _ENTITY_ALIASES.get(key, key)
     if slug not in ENTITY_LABELS:
@@ -817,7 +860,14 @@ def _record_uuid(record_id: str) -> str:
 
 
 def _module_name(module: str) -> str:
+    """The api_name of a mirrored module, checked by :data:`_MODULE_NAME`.
+    CRM-Q34-3: it also takes ``module:<api_name>``, the form of
+    ``crm_aggregate`` and ``crm_list_fields`` (chat_failure_modes.md §7
+    rule 2). This is the one place that strips the prefix, and it strips it
+    once only, so ``module:module:X`` still fails the rule."""
     name = str(module or "").strip()
+    if name.lower().startswith(MODULE_PREFIX):
+        name = name[len(MODULE_PREFIX):].strip()
     if not _MODULE_NAME.match(name):
         raise GatewayRefusal(
             f"Invalid module name {module!r}. Use an api_name that "
@@ -914,8 +964,11 @@ def _option_label(defn: dict[str, Any], value: Any) -> str:
     return labels.get(str(value), str(value))
 
 
-def _custom_lines(custom: Any, defs: list[dict[str, Any]]) -> list[str]:
-    """Each custom value under its label, never its raw key."""
+def _custom_lines(custom: Any, defs: list[dict[str, Any]], *,
+                  keys: bool = False) -> list[str]:
+    """Each custom value under its label, never its raw key alone. With
+    *keys*, the key follows the label, so the chat can filter on the field
+    (a module record, CRM-Q34-6)."""
     if not isinstance(custom, dict):
         return []
     by_key = {str(d.get("key")): d for d in defs if isinstance(d, dict)}
@@ -925,6 +978,8 @@ def _custom_lines(custom: Any, defs: list[dict[str, Any]]) -> list[str]:
             continue
         defn = by_key.get(str(key), {})
         label = str(defn.get("label") or _humanize(str(key)))
+        if keys:
+            label = f"{label} (key {key})"
         lines.append(f"- {label}: {_option_label(defn, value)}")
     return lines
 
@@ -959,6 +1014,11 @@ async def _resolve_status(slug: str, params: dict[str, Any]) -> str | None:
         pass
     kind = _STATUS_KIND.get(slug)
     if kind is None:
+        if slug.startswith(MODULE_PREFIX):
+            # CRM-Q34-3: name the step that works, in the overlay's words.
+            raise GatewayRefusal(
+                f"{slug} takes no status argument. To filter by status, "
+                f"{_status_step(slug[len(MODULE_PREFIX):], str(status).strip())}")
         raise GatewayRefusal(f"{slug} have no status. Drop the status filter.")
     vocab = kind
     rows = await _get(f"/crm/statuses/{vocab}")
@@ -1084,12 +1144,18 @@ async def crm_get_record(entity: str, record_id: str) -> str:
 
 
 @_read_tool
-async def crm_list_fields(entity: str, page: int = 1) -> str:
+async def crm_list_fields(entity: str = "", page: int = 1, query: str | None = None) -> str:
     """The fields of one record type, or of a module as 'module:<api_name>':
     each label, its key, its type, what crm_aggregate can do with it, and its
     picklist options. The key goes in the custom filter of crm_list_records,
     and in field, group_field and field_filters of crm_aggregate. A retired
-    field is marked: records keep its values, and no filter takes its key."""
+    field is marked: records keep its values, and no filter takes its key.
+    query finds a field by words of its label or key: in the module of
+    entity, or in every mirrored module when entity is left out."""
+    if query is not None and str(query).strip():
+        found = await _field_search(entity, str(query).strip(), page)
+        if found is not None:
+            return found
     slug = _entity_slug(entity, allow_module=True)
     label = _entity_label(slug)
     # WS-53 CRM-C4a: a row with `is_system` overlays a fixed column, so it is
@@ -1113,7 +1179,7 @@ async def crm_list_fields(entity: str, page: int = 1) -> str:
             str(o.get("label")) for o in d.get("options") or []
             if isinstance(o, dict) and o.get("label") and not o.get("retired")
         ]
-        use = _FIELD_USES.get(str(d.get("type")))
+        use = _field_use(str(d.get("type")), slug.startswith(MODULE_PREFIX))
         lines.append(
             f"- {d.get('label')} (key {d.get('key')}, {d.get('type')})"
             + (" - retired" if d.get("retired") else "")
@@ -1124,6 +1190,82 @@ async def crm_list_fields(entity: str, page: int = 1) -> str:
         )
     if shown.line:
         lines.append(shown.line)
+    return "\n".join(lines)
+
+
+#: The route of the field search (CRM-Q34-6, ``routes/crm/fields.py``).
+FIELDS_SEARCH_PATH = "/crm/fields-search"
+#: The ``detail.code`` of the field search for an org outside
+#: ``CRM_MODULE_FIND_ORGS``. The tool then ignores ``query`` and answers as
+#: before, byte for byte.
+MODULE_FIND_OFF = "module_find_off"
+#: The last line of a search answer with a hit.
+FIELDS_SEARCH_HINT = (
+    "Give a key to crm_aggregate with entity 'module:<api_name>', in field, "
+    "group_field or field_filters."
+)
+
+
+async def _field_search(entity: str | None, query: str, page: int | None) -> str | None:
+    """The answer of a field search, or ``None`` when the search is off.
+
+    The gateway decides (``flags.module_find_allowed``), as for the
+    catalogue: a 404 ``module_find_off``, or a bare 404 of a gateway with no
+    such route yet, gives ``None``, and the caller answers as it did before
+    the search. A record type gives ``None`` too, because the search reads
+    the mirrored modules only. A bad entity refuses in the words of the
+    plain list."""
+    raw = str(entity or "").strip()
+    module = None
+    if raw:
+        slug = _entity_slug(raw, allow_module=True)
+        if not slug.startswith(MODULE_PREFIX):
+            return None
+        module = slug[len(MODULE_PREFIX):]
+    try:
+        body = await _get(FIELDS_SEARCH_PATH, {"q": query, "module": module})
+    except _GatewayError as exc:
+        if exc.code != MODULE_FIND_OFF:
+            raise
+        return None
+    except _Refused as refused:
+        if str(refused) != CRM_OFF:
+            raise
+        return None
+    return _field_hits(body, query, module, page)
+
+
+def _field_hits(body: Any, query: str, module: str | None, page: int | None) -> str:
+    """The text of a field search: one line for each hit, with its module,
+    label, key, type, use, filter and fill."""
+    hits = [h for h in (body.get("hits") if isinstance(body, dict) else None) or []
+            if isinstance(h, dict)]
+    total = int(body.get("total") or len(hits)) if isinstance(body, dict) else len(hits)
+    where = f"module:{module}" if module else "the mirrored modules"
+    if not hits:
+        return (
+            f"No field of {where} matches '{query}'. Try other words, or call "
+            "crm_list_fields with entity 'module:<api_name>' for each field."
+        )
+    shown = _page_of(hits, page, "fields")
+    if not shown.items:
+        return shown.line
+    lines = [f"Fields of {where} that match '{query}' ({total}):"]
+    for h in shown.items:
+        ftype = str(h.get("type"))
+        use = _field_use(ftype, True)
+        fill = h.get("fill")
+        lines.append(
+            f"- {h.get('module')}: {h.get('label')} (key {h.get('key')}, {ftype})"
+            + (f" [{use}]" if use else "")
+            + f" filter: {_FIELD_FILTERS.get(ftype, _TEXT_FILTER)}"
+            + (f"; fill {round(float(fill) * 100)}%" if isinstance(fill, int | float) else "")
+        )
+    if shown.line:
+        lines.append(shown.line)
+    if total > len(hits):
+        lines.append(f"Only {len(hits)} of {total} fields show. Give more words.")
+    lines.append(FIELDS_SEARCH_HINT)
     return "\n".join(lines)
 
 
@@ -1669,6 +1811,37 @@ def _measure_words(measure: str, field: str | None, data: dict[str, Any]) -> str
     return f"{word} of {name}" + (" (the amount)" if "@amount" in keys else "")
 
 
+#: CRM-Q34-3: what a total says when its filters matched no record. It never
+#: says "no values recorded" then, because the field is not the cause.
+NO_MATCH_LINE = "No record matches these filters."
+#: CRM-Q34-3: the line after it when a field filter matched one value. The
+#: answer of the route names no filter type, so the line claims none.
+EXACT_FILTER_LINE = (
+    "A text or lookup filter matches the exact stored value or name, or the record id. "
+    "Part of a name matches nothing."
+)
+#: The arguments that shape a total and filter no record.
+_SHAPE_KEYS = frozenset({
+    "entity", "group_by", "measure", "field", "group_field", "bucket", "fields", "long_read",
+})
+
+
+def _no_match(params: dict[str, Any], data: dict[str, Any], lead: str) -> str | None:
+    """CRM-Q34-3: the head of a total whose filters matched no record
+    (``records`` is 0), or None. A total with no filter keeps its old text:
+    then the entity holds no record, and no filter is the cause."""
+    records = data.get("records")
+    if records is None or int(records) != 0:
+        return None
+    if not any(value not in (None, "") for key, value in params.items()
+               if key not in _SHAPE_KEYS):
+        return None
+    head = f"{lead}: {NO_MATCH_LINE}"
+    plain = any(key.startswith("field.") and not key.endswith((".from", ".to"))
+                and value not in (None, "") for key, value in params.items())
+    return f"{head}\n{EXACT_FILTER_LINE}" if plain else head
+
+
 def _one_total(lead: str, data: dict[str, Any], measured: Any, measure: str,
                fmt: Callable[[Any], str]) -> str:
     """The line of a total with no group (PR #1126): the total, and the
@@ -1754,6 +1927,41 @@ def _split_head(plural: str, measure: str, data: dict[str, Any], split: list[Any
     return f"{plural}, {measure} of each field: {_split_text(split, None, measure)}{tail}"
 
 
+def _text_number_lines(data: dict[str, Any], split: list[Any]) -> list[str]:
+    """CRM-Q34-11: one line for each text field that the total read as
+    numbers (``text_numbers`` of the route): the three counts of the module,
+    the most common shapes of the values that are not numbers, and, for a
+    measured field, how many matching records gave a number. Empty with
+    none. The words of each shape come from the route."""
+    found = data.get("text_numbers")
+    if not isinstance(found, dict) or not found:
+        return []
+    measured = {str(s.get("field")): s for s in split if isinstance(s, dict)}
+    if not split and data.get("field"):
+        measured = {str(data["field"]): {"label": data.get("field_label"),
+                                         "values": data.get("values")}}
+    records = data.get("records")
+    out = []
+    for key, counts in found.items():
+        if not isinstance(counts, dict):
+            continue
+        one = measured.get(str(key)) or {}
+        numbers, empty = int(counts.get("numbers") or 0), int(counts.get("no_value") or 0)
+        other = int(counts.get("not_numbers") or 0)
+        line = (f"{one.get('label') or key} is a text field read as numbers. In this "
+                f"module: {numbers:,} {'number' if numbers == 1 else 'numbers'}, {empty:,} "
+                f"with no value, {other:,} not {'a number' if other == 1 else 'numbers'}.")
+        shapes = [f"{s.get('words')} ({int(s.get('count') or 0):,})"
+                  for s in counts.get("shapes") or [] if isinstance(s, dict)]
+        if shapes:
+            line += f" Left out, most common: {', '.join(shapes)}."
+        if one.get("values") is not None and records is not None:
+            line += (f" This total read {int(one['values']):,} numbers of "
+                     f"{int(records):,} matching records.")
+        out.append(line)
+    return out
+
+
 def _first_lines(data: dict[str, Any]) -> list[str]:
     """CRM-Q25e part 4: the findings of the route (``acb_common.number_sense``)
     as lines that the model says before the total. Empty with none."""
@@ -1836,33 +2044,31 @@ async def crm_aggregate(
     fields: list[str] | None = None,
 ) -> str:
     """Count, sum or average CRM records, as one total or by one group. The
-    server computes every number: report them as given. To split a total over
-    2 to 5 number fields (for example rent, IP and electricity), give fields
-    with every key in ONE call, never one call for each field. Quote the
-    Display value of a total as written. When the answer starts with FIRST,
-    tell the member that line before the total. entity is 'leads',
-    'deals', 'contacts', 'organizations' or 'module:<api_name>'
-    (crm_list_modules). measure is 'count', 'sum_amount' or 'weighted'
-    (deals: amount times the effective probability, open and ongoing stages
-    only), or 'sum', 'avg', 'min' or 'max' of the number field named by
-    field. The group is optional: give no group_by and no group_field for
-    one total over every record that the filters match (for example the sum
-    of an amount field for one month). Or give one of them. group_by is
-    'status', 'owner', 'pipeline', 'source', 'created_month',
-    'updated_month' or 'close_month' (a module: 'owner', 'created_month',
-    'updated_month'). group_field is a picklist, boolean, lookup or date
-    field; a date needs bucket 'month', 'quarter' or 'year'. A text field
-    cannot group: filter on it instead. Field keys and what each can do come
-    from crm_list_fields. A core entity takes the filters of
-    crm_list_records. A module takes field_filters: {key: value}, or
-    {'key.from': date, 'key.to': date} for a date field.
+    server computes every number: report them as given. Quote the Display
+    value as written. To split a total over 2 to 5 number fields,
+    give fields with every key in ONE call, never one call for each field. When the answer starts with FIRST, tell the member that line
+    before the total. entity is 'leads', 'deals', 'contacts',
+    'organizations' or 'module:<api_name>' (crm_list_modules). measure is
+    'count', 'sum_amount' or 'weighted' (deals: amount times the
+    effective probability, open and ongoing only), or 'sum', 'avg', 'min' or
+    'max' of the number field named by field. The group is optional: with no
+    group_by and no group_field you get one total over every record that
+    the filters match. Or give one of them. group_by is 'status', 'owner', 'pipeline', 'source',
+    'created_month', 'updated_month' or 'close_month' (a module: 'owner',
+    'created_month', 'updated_month'). group_field is a picklist, boolean,
+    lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
+    A text field cannot group. Field keys come from crm_list_fields. A core
+    entity takes the filters of crm_list_records. A module takes field_filters: {key: value}, or
+    {'key.from': date, 'key.to': date} for a date field, or
+    {'key.from': N, 'key.to': M} for a number field. Both ends count, and
+    text such as 'NA' counts as no value. A text or lookup filter matches
+    the exact value, name or record id.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
-    '@parent' (crm_list_modules names the key fields). On a module, term is
-    the member's own word for the figure (for example 'service fees'): the
-    server maps it to one field the same way each time, and give no field
-    with it. When two fields give different totals, the answer says to ask
-    the member first, with both totals."""
+    '@parent'. On a module, term is
+    the member's own word for the figure: the
+    server maps it to one field. Give no field with it. When two
+    fields give different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
         q=q, status=status, owner=owner, pipeline_id=pipeline_id,
@@ -1962,21 +2168,26 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     display = None if split else _display_line(data.get("total"), money=money, code=code,
                                                others=data.get("others"))
     if not group_by and not group_field:
-        # One total over every filtered record: one line.
-        head = _split_head(plural, measure, data, split) if split else _one_total(
-            f"{plural}, {what}", data, field or data.get("field"), measure,
-            lambda v: fmt_with(v, data.get("others"), "total"))
+        # One total over every filtered record: one line. CRM-Q34-3: a total
+        # whose filters matched no record says so, and not "no values".
+        head = _no_match(params, data, f"{plural}, {what}") or (
+            _split_head(plural, measure, data, split) if split else _one_total(
+                f"{plural}, {what}", data, field or data.get("field"), measure,
+                lambda v: fmt_with(v, data.get("others"), "total")))
         lines = await _total_tail(head, slug, data, overlay)
         if display:
             lines.insert(1, display)
-        lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
+        lines.extend([*filters, *mine, *_text_number_lines(data, split),
+                      *await _revenue_lines(slug, measure, box)])
         return "\n".join([*first, *lines]) + note
     grouped = data.get("group_field_label") or group_field
     by = group_by or f"{grouped}" + (f" ({bucket})" if bucket else "")
     shown = _page_of(groups, page, "groups")
-    if (field or data.get("field")) and data.get("values") == 0 and not split:
-        # CRM-Q25c item 3: an empty field has no total, and 0 would be false.
-        return f"{plural}, {what} by {by}: no values recorded for {field or data.get('field')}.{note}"
+    empty = await _empty_groups(slug, params, data, f"{plural}, {what} by {by}",
+                                (field or data.get("field"), split), first,
+                                [*filters, *mine], box)
+    if empty is not None:
+        return empty + note
     lines = [*first, f"{plural}, {measure} of each field by {by}:" if split
              else f"{plural}, {what} by {by}:"]
     if overlay and slug in ENTITY_LABELS:
@@ -2001,8 +2212,38 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         # A `date` bucket takes no zone, so the line would be false there.
         lines.append(f"Months count in the CRM time zone, {zone}.")
     lines.extend(await _hint_lines(slug, data, overlay))
-    lines.extend([*filters, *mine, *await _revenue_lines(slug, measure, box)])
+    lines.extend([*filters, *mine, *_text_number_lines(data, split),
+                  *await _revenue_lines(slug, measure, box)])
     return "\n".join(lines) + note
+
+
+async def _empty_groups(slug: str, params: dict[str, Any], data: dict[str, Any], lead: str,
+                        measured: tuple[Any, list[Any]], first: list[str], rest: list[str],
+                        box: dict[str, bool]) -> str | None:
+    """The answer of a grouped total with nothing to group, or None.
+    *measured* is the measured field and the split of the call.
+
+    * CRM-Q34-3: the filters matched no record. The answer says so, with
+      the filter line (*rest*), and never "no values recorded".
+    * CRM-Q25c item 3: records matched, and the measured field is empty in
+      each. An empty field has no total, and 0 would be false."""
+    field, split = measured
+    # CRM-Q34-11: a text field read as numbers keeps its three counts and
+    # its shapes here too, as the total with no group does.
+    numbers = _text_number_lines(data, split)
+    nothing = _no_match(params, data, lead)
+    if nothing:
+        overlay = data.get("overlay") if isinstance(data.get("overlay"), dict) else None
+        lines = [*first, nothing]
+        if overlay and slug in ENTITY_LABELS:
+            lines.append(_from_module(slug, str(overlay.get("module"))))
+        lines.extend(await _hint_lines(slug, data, overlay))
+        measure = str(params.get("measure") or "count")
+        return "\n".join([*lines, *rest, *numbers,
+                          *await _revenue_lines(slug, measure, box)])
+    if field and data.get("values") == 0 and not split:
+        return "\n".join([f"{lead}: no values recorded for {field}.", *numbers])
+    return None
 
 
 async def _hint_lines(slug: str, data: dict[str, Any],
@@ -3709,15 +3950,16 @@ async def crm_get_module_record(module: str, record_id: str, page: int = 1) -> s
 
 
 async def _module_record_answer(mod: str, record: str, page: int | None) -> str:
-    """One record of a module, each field under its label. *mod* and
-    *record* passed their validators."""
+    """One record of a module, each field under its label, with its key
+    beside the label (CRM-Q34-6): the chat filters and totals by the key.
+    *mod* and *record* passed their validators."""
     data = await _get(f"/crm/modules/{mod}/records/{record}") or {}
     row = data.get("record") or {}
     defs = data.get("field_defs") or []
     lines = [f"{mod}: {row.get('name') or '(unnamed)'} (id={row.get('id')})"]
     if row.get("owner_email"):
         lines.append(f"- Owner: {row['owner_email']}")
-    shown = _page_of(_custom_lines(row.get("fields"), defs), page, "fields")
+    shown = _page_of(_custom_lines(row.get("fields"), defs, keys=True), page, "fields")
     lines.extend(shown.items)
     if shown.line:
         lines.append(shown.line)
