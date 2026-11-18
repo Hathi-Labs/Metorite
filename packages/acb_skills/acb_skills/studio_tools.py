@@ -1103,6 +1103,8 @@ async def studio_list_actions(
         rows = await _read_catalog(app=aid)
     except _Refused as exc:
         return _result(False, _sentence(str(exc)), [])
+    # TOF-1e: a ``tool`` row is a chat tool for a skill. An app cannot use it.
+    rows = [r for r in rows if r.get("source") != "tool"]
     needle = (query or "").strip().lower()
     if needle:
         rows = [r for r in rows

@@ -41,12 +41,22 @@ second cache. Best effort: an owner that does not load gives class C rows for
 its tools, and a later read tries again. The set of rows comes from the scope
 alone, so a load fault never adds or drops a row. It only raises a class.
 
-Fences: ``tests/unit/test_studio_catalog.py`` (``TestTheChatToolSource``)
-and ``tests/unit/test_skill_packs.py``.
+**The cold build (TOF-1e).** The first build of the owners is slow (64 s on
+the PC, measured). So the request path never runs it: :func:`chat_tool_rows`
+with ``defer_cold=True`` gives class C rows until :func:`warm` has loaded the
+owners, and it starts that warm-up on a thread. The gateway starts the same
+warm-up at boot (``gateway.main.lifespan``). The loader keeps one lock for
+its cold paths (``_tool_injection._PACK_LOAD_LOCK``), so the thread and a run
+never import one owner twice. A class C row is the fail-closed answer of a
+load fault, so the set of rows is the same.
+
+Fences: ``tests/unit/test_studio_catalog.py`` (``TestTheChatToolSource``),
+``tests/unit/test_chat_tool_warm.py`` and ``tests/unit/test_skill_packs.py``.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from typing import Any
 
@@ -115,18 +125,71 @@ def _title(name: str) -> str:
     return words[:1].upper() + words[1:]
 
 
-def chat_tool_rows() -> list[dict[str, Any]]:
+_WARM = threading.Event()
+_WARM_LOCK = threading.Lock()
+_warm_thread: threading.Thread | None = None
+
+
+def _owner_packs() -> dict[str, str]:
+    """``{slug: owner}`` for each pack of the scope."""
+    from acb_skills import skill_families
+
+    return {slug: str(skill_families.SKILL_FAMILIES[slug]["owner"])
+            for slug in dict.fromkeys(chat_tools().values())}
+
+
+def is_warm() -> bool:
+    """True when :func:`warm` loaded every owner of the scope."""
+    return _WARM.is_set()
+
+
+def warm() -> bool:
+    """Load the owners of the scope now. Blocking: call it off the event loop.
+
+    Never raises. It returns True, and :func:`is_warm` holds, only when every
+    owner loaded. An owner that fails leaves it False, and the next catalog
+    read starts a new try (the loader keeps a failure for 60 s)."""
+    try:
+        packs = _owner_packs()
+        built = _owner_tools(packs)
+        from orchestrator._tool_injection import _pack_owner_module
+
+        ok = bool(built) and all(_pack_owner_module(o) is not None for o in set(packs.values()))
+    except Exception as exc:  # a fault leaves the catalog on class C
+        _log.warning("studio.chat_tools_warm_failed", error_type=type(exc).__name__)
+        return False
+    if ok:
+        _WARM.set()
+    return ok
+
+
+def start_warm() -> bool:
+    """Start :func:`warm` on a daemon thread, once at a time. True when it
+    started a thread. The event loop never waits for it."""
+    global _warm_thread
+    with _WARM_LOCK:
+        if _WARM.is_set() or (_warm_thread is not None and _warm_thread.is_alive()):
+            return False
+        _warm_thread = threading.Thread(target=warm, name="chat-tools-warm", daemon=True)
+        _warm_thread.start()
+        return True
+
+
+def chat_tool_rows(*, defer_cold: bool = False) -> list[dict[str, Any]]:
     """One row for each chat tool of :func:`acb_skills.skill_packs.chat_tools`.
+
+    With *defer_cold* (the request path) the call never loads an owner: when
+    :func:`warm` has not finished, it starts it and gives class C rows.
 
     The unfiltered builder: the caller checks ``STUDIO_CHAT_TOOLS_ORGS``
     first (``routes/studio/actions._chat_tool_rows``). The rows keep the order
     of the registry."""
-    from acb_skills import skill_families
-
     scope = chat_tools()
-    packs = {slug: str(skill_families.SKILL_FAMILIES[slug]["owner"])
-             for slug in dict.fromkeys(scope.values())}
-    built = _owner_tools(packs)
+    if defer_cold and not _WARM.is_set():
+        start_warm()
+        built: dict[str, Any] = {}
+    else:
+        built = _owner_tools(_owner_packs())
     rows: list[dict[str, Any]] = []
     for name in scope:
         action_id = f"{CHAT_TOOL_PREFIX}{name}"

@@ -23,6 +23,7 @@ import contextlib
 import dataclasses
 import functools
 import os
+import threading
 import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -3385,6 +3386,10 @@ PACK_CALL_REFUSED = (
 
 #: The module of each pack owner, imported once for this process.
 _PACK_OWNER_MODULES: dict[str, Any] = {}
+#: TOF-1e. ONE lock for the two cold paths of the loader below. The catalog
+#: warm-up (``gateway.studio.chat_tool_actions.warm``) runs on a thread, so
+#: it and a run on the event loop must not import one owner twice.
+_PACK_LOAD_LOCK = threading.RLock()
 
 #: How long the loader keeps a failed import of an owner, in seconds. A build
 #: in that time gets no module and imports nothing. After it, the next build
@@ -3431,16 +3436,19 @@ def _pack_owner_module(owner: str) -> Any | None:
     """
     if owner in _PACK_OWNER_MODULES:
         return _PACK_OWNER_MODULES[owner]
-    failed_at = _PACK_OWNER_FAILED.get(owner)
-    if failed_at is not None and _pack_clock() - failed_at < PACK_OWNER_RETRY_S:
-        return None
-    module = _import_pack_owner(owner)
-    if module is None:
-        _PACK_OWNER_FAILED[owner] = _pack_clock()
-    else:
-        _PACK_OWNER_MODULES[owner] = module
-        _PACK_OWNER_FAILED.pop(owner, None)
-    return module
+    with _PACK_LOAD_LOCK:
+        if owner in _PACK_OWNER_MODULES:
+            return _PACK_OWNER_MODULES[owner]
+        failed_at = _PACK_OWNER_FAILED.get(owner)
+        if failed_at is not None and _pack_clock() - failed_at < PACK_OWNER_RETRY_S:
+            return None
+        module = _import_pack_owner(owner)
+        if module is None:
+            _PACK_OWNER_FAILED[owner] = _pack_clock()
+        else:
+            _PACK_OWNER_MODULES[owner] = module
+            _PACK_OWNER_FAILED.pop(owner, None)
+        return module
 
 
 def _import_pack_owner(owner: str) -> Any | None:
@@ -3796,13 +3804,14 @@ def _owner_pack_tools(slug: str, owner: str, source: Any) -> list[Any]:
     if callable(getattr(source, "_narrow_tool", None)):
         return tool_packs.owner_tools(slug, source)
     builder = getattr(source, "_agent_tools", None)
-    entry = _PACK_OWNER_TOOLS.get(owner)
-    if entry is None or entry[0] is not source or entry[1] is not builder:
-        entry = (source, builder, {})
-        _PACK_OWNER_TOOLS[owner] = entry
-    if slug not in entry[2]:
-        entry[2][slug] = tool_packs.owner_tools(slug, source)
-    return list(entry[2][slug])
+    with _PACK_LOAD_LOCK:  # TOF-1e: the warm-up thread and a run share the dicts
+        entry = _PACK_OWNER_TOOLS.get(owner)
+        if entry is None or entry[0] is not source or entry[1] is not builder:
+            entry = (source, builder, {})
+            _PACK_OWNER_TOOLS[owner] = entry
+        if slug not in entry[2]:
+            entry[2][slug] = tool_packs.owner_tools(slug, source)
+        return list(entry[2][slug])
 
 
 def _pack_func(fn: Any) -> Any:
