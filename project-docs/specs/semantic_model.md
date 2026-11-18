@@ -327,7 +327,7 @@ This design cites that plan and does not depend on its details.
 | 1. A short brief | A fixed, capped text per stored version: the approved measures by name, the key parts, the rules. Same bytes for the same version (rule 3) | CRM: the CRM facts block (`crm_platform.md` §18.14.4 point 2). A connection: one input of `server_brief`, with its own header and cap (rule 1) | CRM: at most 3 more lines in a block of 13 lines today. A connection: at most 300 characters. The admin's 400 and the server's 600 already fill the 1,000 of `chat_connected_systems.md` §5. The WS-CSY planner decides whether the cap rises or the parts share it |
 | 2. The full model on demand | The model asks `org_facts` for an entity, a measure or a verified query | The `org_facts` tool. It loads with the CRM family today. It also loads when a server with an approved model attaches. It is not a core tool, so the core ceiling (`test_tool_schema_diet.py`, 7,040) does not move | One tool call |
 | 3. Link on the server | A field, a measure or an entity named by a word, not a key, resolves on the server by label, synonym and term, before any 422. Two close candidates follow the confidence rule of §18.16.4: ask first when the totals differ by more than 5% | `field_sql.FieldScope.ref`, `crm_sync/terms.py` | 0 tokens |
-| 4. Resolve values | A filter by name finds the value that the member means, as the member. In rung 1 it is the old `field.@parent=<words>`. After SEM-1b it is the clause `{"field": "@parent", "op": "matches", "value": "<words>"}`. One match binds. Several follow the confidence rule. None gives an honest zero with the near spellings | `field_sql.text_matches`, `terms.value_matches`, `name_match` | 0 tokens |
+| 4. Resolve values | A filter by name finds the value that the member means, as the member. In rung 1 it is the old `field.@parent=<words>`. After SEM-1b-1 it is the clause `{"field": "@parent", "op": "matches", "value": "<words>"}`. One match binds. Several follow the confidence rule. None gives an honest zero with the near spellings | `field_sql.text_matches`, `terms.value_matches`, `name_match` | 0 tokens |
 | 5. Verified query first | When the member's words match a verified question, the server fills its parameters and runs it. The answer says "a verified question" | New, §6.2 | 0 tokens |
 | 6. One typed query | Else the model sends one query in the one grammar (§5.1), or the source's own read tool for a connection | `routes/crm/aggregate.py`, MCP tools | One tool call |
 | 7. Validate | The parser refuses an unknown field, an operator that the type does not take, or a bad value. The refusal lists the legal fields and operators. An MCP call checks its arguments against the tool's input schema first | `acb_common/studio_query.py`, `tool_refusals.py` | 0 tokens |
@@ -341,7 +341,7 @@ This design cites that plan and does not depend on its details.
 A number field takes `field.<key>.from` and `.to`. A module total takes `q`,
 which matches the record name, as the module list does. No grammar changes.
 
-**Rung 2 unifies the grammar (SEM-1b).** Three spellings exist: the CRM
+**Rung 2 unifies the grammar (SEM-1b-1 and SEM-1b-2).** Three spellings exist: the CRM
 parameters, `acb_common/studio_query.py`, and the filter set of
 the CRM UI research draft (§4.1, not on `main`). Two options:
 
@@ -611,7 +611,7 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 - (i) The Studio tests and the Studio schema bytes do not change.
 - (j) The `crm_aggregate` schema token count does not change.
 
-**The token budget of SEM-1b-2.** The per-tool cap test `test_crm_aggregate_costs_no_more_tokens_than_when_main_was_green` allows 687, and `main` is 675. The Studio chat budget `SCHEMA_TOKEN_BUDGET = 30_000` in `evals/one_assistant_measure/checks.py` has about 2 tokens of room. One CRM tool token costs about 3 tokens of that budget.
+**The token budget of SEM-1b-2.** The per-tool cap test `test_crm_aggregate_costs_no_more_tokens_than_when_main_was_green` allows 687. The count on `main` was 675 on 2026-11-17 by one measure and 665 by the test's own counter on 2026-11-18. Measure it again on the merge result. The Studio chat budget `SCHEMA_TOKEN_BUDGET = 30_000` in `evals/one_assistant_measure/checks.py` has about 2 tokens of room. One CRM tool token costs about 3 tokens of that budget.
 
 **Flags.** `SEMANTIC_MODEL_ORGS` (the CRM rungs) and `CONNECTION_MODEL_ORGS`
 (the connection rung). Both are `*_ORGS` flags, default empty, and both reload
@@ -633,7 +633,7 @@ spec adds no second slice for the same work. The map:
 | Here | CRM slice | Task | Rule |
 |---|---|---|---|
 | SEM-1a | CRM-Q34-1: a number range on a module field, and a lookup by the Metorite id of a core record | 3693 | Same work. Merged (PR 2573) |
-| SEM-4 | CRM-Q34-2 (the refusals name a working field, module or filter) and CRM-Q34-3 (the tool text) | 3694, 3695 | SEM-4 includes both. Build them once |
+| SEM-4 | CRM-Q34-2 (the refusals name a working field, module or filter) and CRM-Q34-3 (the tool text) | 3694, 3695 | Both are merged (PR 2573 and PR 2574 are in `main`). SEM-4 builds on them and adds the counter |
 | SEM-3 | CRM-Q34-7: `q` finds across a module | 3700 | The two overlap. The one that starts first owns the code, and the other cites it |
 | SEM-1b-1 | CRM-Q34-4 and CRM-Q34-4b: one filter builder | 3697, 3711 | Q34-4 (PR 2584) is the builder that SEM-1b-1 lowers into |
 | SEM-6 | The scripted replay of the four refusal classes | 3723 | PR 2576 is open |
