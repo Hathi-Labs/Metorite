@@ -449,6 +449,7 @@ class TestTheFlag:
         ((args, kwargs),) = enqueued
         assert args[0].org == OPERATOR and args[1] == pa.KIND
         assert kwargs["dedupe_key"] == "provider_alerts:2026-11-18T09:00"
+        assert kwargs["max_attempts"] == 1  # a job that sends runs once
 
     def test_a_star_is_refused(self, monkeypatch):
         monkeypatch.setattr(get_settings(), "provider_alert_orgs", "*")
@@ -668,12 +669,58 @@ class TestTheRecipients:
         assert asyncio.run(pa.recipients(OPERATOR)) == [ANA, BO]
         assert asyncio.run(pa.recipients(CUSTOMER)) == [OLA]
 
-    def test_a_member_whose_access_read_fails_is_left_out(self, people, monkeypatch):
+    def test_a_member_with_no_access_is_left_out(self, people, monkeypatch):
         async def refused(email: str, org: str, **_: Any) -> EffectiveAccess:
             return EffectiveAccess(is_active=False)
 
         monkeypatch.setattr(access_mod, "resolve_access_in_org", refused)
         assert asyncio.run(pa.recipients(OPERATOR)) == []
+
+    def test_the_access_read_is_strict(self, people, monkeypatch):
+        asked: list[bool] = []
+
+        async def strict(email: str, org: str, *, strict: bool = False) -> EffectiveAccess:
+            asked.append(strict)
+            return EffectiveAccess(is_active=False)
+
+        monkeypatch.setattr(access_mod, "resolve_access_in_org", strict)
+        asyncio.run(pa.recipients(OPERATOR))
+        assert asked and all(asked)
+
+    def test_a_read_fault_moves_no_state_and_the_next_pass_sends(self, world, monkeypatch):
+        """A fault must never read as "no admin": the state would move and the
+        alert would reach nobody for the whole outage."""
+        real = access_mod.resolve_access_in_org
+
+        async def fault(email: str, org: str, **_: Any) -> EffectiveAccess:
+            raise access_mod.IdentityUnavailable("access_in_org")
+
+        monkeypatch.setattr(access_mod, "resolve_access_in_org", fault)
+        with pytest.raises(access_mod.IdentityUnavailable):
+            judge(world, row("out"))
+        assert world.pushes == [] and world.redis.store == {}
+        monkeypatch.setattr(access_mod, "resolve_access_in_org", real)
+        fired = judge(world, row("out"), at=T0 + timedelta(minutes=15))
+        assert [a.state for a in fired] == ["out"] and len(world.pushes) == 2
+
+    def test_the_job_logs_a_read_fault_and_settles(self, world, monkeypatch):
+        settled: list[str] = []
+
+        async def fault(email: str, org: str, **_: Any) -> EffectiveAccess:
+            raise access_mod.IdentityUnavailable("access_in_org")
+
+        async def console() -> list[dict[str, Any]]:
+            return [row("out")]
+
+        async def settle(org: str, claim: Any, now: datetime) -> None:
+            settled.append(org)
+
+        monkeypatch.setattr(access_mod, "resolve_access_in_org", fault)
+        monkeypatch.setattr(console_resolve, "provider_health_on_console", console)
+        monkeypatch.setattr(pa, "_settle", settle)
+        asyncio.run(pa.check(OPERATOR, {}, SimpleNamespace()))
+        assert settled == [OPERATOR] and world.pushes == []
+        assert "provider_alerts.pass_failed" in world.log.events()
 
     def test_the_job_is_detached_and_states_its_effect(self):
         from gateway.jobs import worker

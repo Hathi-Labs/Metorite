@@ -211,20 +211,27 @@ async def read_sent(org: str) -> dict[str, dict[str, Any]]:
 async def run_pass(org: str, rows: list[dict[str, Any]], now: datetime) -> list[Alert]:
     """Judge one Console answer for *org*, and send what changed.
 
-    Returns the alerts sent. Each alert claims its hourly slot first. Then
-    the remembered map is written, and only then is anything delivered. So a
-    crash during a send never sends that alert twice.
+    Returns the alerts sent. The order is the point:
+
+    1. Read the remembered map, and find the vendors whose signal changed.
+    2. Read the admins, strictly. A read fault raises here, before any state
+       moves, so the next bucket tries the whole pass again.
+    3. Claim the hourly slot of each alert, then write the map.
+    4. Deliver. A crash here never sends that alert twice.
     """
     at = now.astimezone(UTC).isoformat()
+    with organization_scope(org):
+        sent = _parse_sent(await tenant_redis.get_tenant_redis().get(_sent_key()))
+    due = [(row, state) for row in rows
+           if (state := decide(sent.get(str(row["provider"])), str(row["signal"]))) is not None]
+    if not due:
+        return []
+    admins = await recipients(org)
     fired: list[Alert] = []
     with organization_scope(org):
         redis = tenant_redis.get_tenant_redis()
-        sent = _parse_sent(await redis.get(_sent_key()))
-        for row in rows:
+        for row, state in due:
             provider = str(row["provider"])
-            state = decide(sent.get(provider), str(row["signal"]))
-            if state is None:
-                continue
             claimed = await redis.set(_slot_key(provider, state), at, nx=True, ex=RATE_LIMIT_S)
             if not claimed:
                 _log.info("provider_alerts.held", provider=provider, state=state)
@@ -236,7 +243,7 @@ async def run_pass(org: str, rows: list[dict[str, Any]], now: datetime) -> list[
         if fired:
             await redis.set(_sent_key(), json.dumps(sent, sort_keys=True))
     if fired:
-        await _deliver(org, fired)
+        await _deliver(org, fired, admins)
     return fired
 
 
@@ -250,8 +257,11 @@ async def recipients(org: str) -> list[str]:
     The member list is one read in ``tenant_session(org)``, the R8-tested
     ``kb_access.resolve.load_members``. Each grant comes from
     ``resolve_access_in_org``, which opens its own session. So the list
-    session closes first, and no session is held twice. A member whose
-    access read fails is left out (it fails closed).
+    session closes first, and no session is held twice.
+
+    🔴 **Strict.** A read fault raises (``IdentityUnavailable``, or the error
+    of the member read). It never reads as "not an admin": an empty list
+    after a fault would move the state and send the alert to nobody.
     """
     from acb_auth.access import resolve_access_in_org
 
@@ -262,7 +272,7 @@ async def recipients(org: str) -> list[str]:
         members = sorted(await load_members(db, org))
     admins: list[str] = []
     for email in members:
-        access = await resolve_access_in_org(email, org)
+        access = await resolve_access_in_org(email, org, strict=True)
         if access.is_active and access.has(ADMIN_PERMISSION):
             admins.append(email)
     return admins
@@ -302,16 +312,11 @@ async def _push(org: str, alerts: list[Alert], admins: list[str]) -> int:
     return taken
 
 
-async def _deliver(org: str, alerts: list[Alert]) -> None:
+async def _deliver(org: str, alerts: list[Alert], admins: list[str]) -> None:
     """Tell the admins. The bell reads the remembered map, so this moves the
     feed's org version and sends the push."""
     from gateway.routes.shell import cache
 
-    try:
-        admins = await recipients(org)
-    except Exception as exc:
-        _log.warning("provider_alerts.recipients_failed", error=type(exc).__name__)
-        admins = []
     await cache.bump_org_safe(org)
     pushed = await _push(org, alerts, admins)
     for alert in alerts:
@@ -349,7 +354,8 @@ async def seed(org: str, now: datetime) -> None:
     if not alert_allowed(org):
         return
     async with tenant_session(org) as db:
-        await queue.enqueue(db, KIND, {},
+        # One try (docs/job_queue.md §9.7): a job that sends runs at most once.
+        await queue.enqueue(db, KIND, {}, max_attempts=1,
                             dedupe_key=f"provider_alerts:{worker.seed_bucket(now)}", now=now)
 
 
@@ -379,7 +385,10 @@ async def check(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
             # Our own words: an HTTP status, "unwired", or a transport class.
             _log.warning("provider_alerts.console_unavailable", reason=str(exc)[:60])
         else:
-            await run_pass(org, rows, now)
+            try:
+                await run_pass(org, rows, now)
+            except Exception as exc:  # the admins read failed: no state moved
+                _log.warning("provider_alerts.pass_failed", error=type(exc).__name__)
     await _settle(org, claim, _now())
 
 
