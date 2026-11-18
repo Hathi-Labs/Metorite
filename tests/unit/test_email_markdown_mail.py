@@ -12,22 +12,25 @@ What this file fences (R7). Each test names the mutation that turns it red.
 2. Nothing that loads or runs goes out: a script, a ``javascript:`` or a
    ``data:`` link, an event attribute, remote CSS, a frame, a form, an image,
    a style with ``url(``, a bidi control. The final pass alone drops them
-   too. A link whose words name another address is text, in every chat.
+   too. A link whose words LOOK LIKE an address never points to another
+   address, in every chat. A link with plain words stays a link.
    ``test_*_never_*``, ``test_the_final_pass_*``, ``test_a_link_*``.
 3. The text part is the body as written, and never loses a character. A
-   body with no real structure, or deeper than the parser limit, gets no
+   body with no real structure, or as deep as the parser limit, gets no
    HTML. A fault of the converter sends the text. ``test_the_text_part_*``,
-   ``test_a_body_deeper_*``, ``test_a_fault_*``.
+   ``test_a_body_as_deep_*``, ``test_a_fault_*``.
 4. A fixed sample gives a fixed HTML, and that HTML is a fixed point of the
    sanitizer. ``test_the_golden_*``. A plain body sends as before: its own
    text, no HTML. ``test_plain_*``.
-5. The signature joins once, in each part, below the text.
-   ``test_the_signature_*``.
+5. The signature joins once, in each part. A Markdown send puts it at the
+   end of both parts, below a quote. ``test_the_signature_*``,
+   ``test_a_reply_that_quotes_*``.
 6. The send route, the card acts and the draft saves pass the Markdown on.
    A held run (a ``no_egress`` run, H-236) and a draft keep the text only.
    ``test_the_send_*``, ``test_the_*_act_*``, ``test_a_draft_*``.
-7. The tool marks its payload as Markdown and tells the member on the card.
-   ``test_the_tool_*``.
+7. The tool marks its payload as Markdown. Its card line agrees with the
+   converter on a list of bodies. ``test_the_tool_*``,
+   ``test_the_card_line_and_the_converter_agree``.
 
 The database, Redis and the provider are fakes. No test sends a mail.
 """
@@ -243,12 +246,24 @@ def test_the_final_pass_alone_drops_what_loads_or_runs() -> None:
     ("b" + chr(0x430) + "nk.test/pay", "https://evil.test/pay"),  # a Cyrillic look-alike
     ("".join(map(chr, (0x43F, 0x440, 0x438, 0x43C, 0x435, 0x440))) + ".xn/pay",
      "https://evil.test/pay"),                            # a host with no Latin letter
+    # Review round 2: a look-alike dot, an IPv4 address, and a format
+    # character inside the address.
+    ("acme" + chr(0x2024) + "com", "https://evil.com"),  # one dot leader
+    ("acme" + chr(0xFF0E) + "com", "https://evil.com"),  # a full-width full stop
+    ("acme" + chr(0xFE52) + "com", "https://evil.com"),  # a small full stop
+    ("acme" + chr(0x3002) + "com", "https://evil.com"),  # an ideographic full stop
+    ("acme" + chr(0xFF61) + "com", "https://evil.com"),  # its half-width form
+    ("10.0.0.1", "https://evil.com"),
+    ("acme" + chr(0x200B) + ".com", "https://evil.com"),  # a zero-width space
+    ("acme." + chr(0x2060) + "com", "https://evil.com"),  # a word joiner
+    ("ac" + chr(0xAD) + "me.com/pay", "https://evil.com/pay"),  # a soft hyphen
 ])
 def test_a_link_whose_words_name_another_address_is_text(label_href: tuple[str, str]) -> None:
     """The review of task 3605, P1. A top-level chat that read a stranger's
-    mail is not a held run, so it sends HTML. A link whose words look like an
-    address must go there, or both show as text. Mutation: drop
-    ``_label_misleads`` from ``_inline_html`` → red."""
+    mail is not a held run, so it sends HTML. A link whose words LOOK LIKE an
+    address never points to another address: both show as text. Mutation:
+    drop ``_link_misleads`` from ``_inline_html``, drop ``_fold``, or drop
+    the IPv4 form → red."""
     label, href = label_href
     out = mm.mail_bodies(f"- [{label}]({href})")
     assert out.html is not None and "<a" not in out.html
@@ -264,13 +279,36 @@ def test_a_link_whose_words_name_another_address_is_text(label_href: tuple[str, 
     ("the plan", "https://evil.test/plan"),               # plain words: a normal link
     ("jane@acme.test", "mailto:jane@acme.test"),
     ("Jane", "mailto:jane@acme.test"),
+    ("acme.com", "https://acme.com"),
+    ("10.0.0.1", "https://10.0.0.1"),
 ])
 def test_a_link_whose_words_match_or_name_no_address_stays_a_link(
     label_href: tuple[str, str],
 ) -> None:
+    """Plain words stay a link: the rule binds only words that look like an
+    address. Their address shows where the mail client shows one."""
     label, href = label_href
     out = mm.mail_bodies(f"- [{label}]({href})")
     assert out.html is not None and f'<a href="{href}">{label}</a>' in out.html
+
+
+@pytest.mark.parametrize(("body", "linked"), [
+    ("- [acme](https://evil.example).com/pay", False),   # reads as acme.com/pay
+    ("- www.[acme](https://evil.example)", False),        # reads as www.acme
+    ("- [Acme](https://acme.com).com", True),             # reads as its own address
+    ("- See [the plan](https://e.test/p).", True),        # a full stop after it
+    ("- [Acme](https://acme.test)'s site", True),
+    ("- ([Acme](https://e.test))", True),
+])
+def test_a_link_and_the_text_that_touches_it_read_as_one_address(
+    body: str, linked: bool,
+) -> None:
+    """The review of task 3605, round 2: ``[acme](https://evil.example)
+    .com/pay`` shows ``acme.com/pay``, with only ``acme`` as a link. The
+    check reads the words with the text that touches them on each side.
+    Mutation: check the words alone → red."""
+    out = mm.mail_bodies(body)
+    assert out.html is not None and ("<a href" in out.html) is linked
 
 
 @pytest.mark.parametrize("body", [
@@ -303,24 +341,43 @@ def test_real_structure_sends_html_and_its_text_as_written(body: str) -> None:
     assert out.html is not None and out.text == body
 
 
+def _deep_list(depth: int) -> str:
+    return "\n".join("  " * i + f"- w{i}" for i in range(depth))
+
+
 @pytest.mark.parametrize("body", [
-    "\n".join("  " * i + f"- w{i}" for i in range(25)),
+    _deep_list(25),
     "".join("> " * (i + 1) + f"q{i}\n" for i in range(25)),
-    # Four autolinks before it: their words count once, so they hide no cut.
-    # (The parser drops all that follows a cut, so they go first.)
-    " ".join(f"<https://a{i}.test/p/q/r/s>" for i in range(4)) + "\n\n"
-    + "\n".join("  " * i + f"- w{i}" for i in range(25)),
+    _deep_list(9),                                        # the first depth at the limit
+    # A link address with non-ASCII letters grows when the parser encodes it.
+    # A count of words would then hide the cut. The depth check does not.
+    "See [the café menu](https://e.test/café/menü/été)\n\n"
+    + _deep_list(25),
 ])
-def test_a_body_deeper_than_the_parser_limit_gets_no_html(body: str) -> None:
-    """markdown-it drops content past 20 levels. That body sends as text,
-    whole. Mutation: drop the word count in ``_convert`` → red."""
+def test_a_body_as_deep_as_the_parser_limit_gets_no_html(body: str) -> None:
+    """markdown-it stops a block at 20 levels and drops the rest of it. A
+    body that reaches one level below the limit sends as text, whole.
+    Mutation: drop ``_too_deep`` from ``_convert`` → red."""
     assert mm.mail_bodies(body) == (body, None)
+
+
+@pytest.mark.parametrize("body", [
+    _deep_list(8),
+    "## Files\n\nThe file is my\\_file.txt.",               # an escape is no cut
+    "## Links\n\nSee [the report](https://e.test/r \"The report\").",  # a link title
+    "## Links\n\nSee [the report](https://e.test/r?a=1&amp;b=2).",  # an entity in an address
+])
+def test_a_body_below_the_parser_limit_keeps_its_html(body: str) -> None:
+    """The word count of round 1 sent these as text with no cut. Mutation:
+    a depth limit of 8 levels → red."""
+    out = mm.mail_bodies(body)
+    assert out.html is not None and out.text == body
 
 
 def test_a_bidi_control_goes_from_both_parts() -> None:
     """U+202A to U+202E and U+2066 to U+2069 can turn the text that a reader
-    sees around. A zero-width space stays: the card refuses hidden text.
-    Mutation: drop ``_BIDI`` → red."""
+    sees around. This module removes only them: a zero-width space stays in
+    both parts. Mutation: drop ``_BIDI`` → red."""
     controls = "".join(chr(c) for c in (*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
     out = mm.mail_bodies(f"- pay{controls} now\u200b")
     assert out.html is not None
@@ -418,15 +475,29 @@ def test_plain_prose_keeps_its_own_text_and_no_html(plain: str) -> None:
     assert mm.draft_text(plain) == (plain, False)
 
 
-def test_a_formatted_body_that_quoting_would_cut_gets_no_html() -> None:
-    """``split_quoted_text`` cuts at "On ... wrote:", and the HTML has no such
-    cut. With no HTML, the signature has one place. Mutation: drop the check
-    in ``mail_bodies`` → red."""
-    out = mm.mail_bodies("- yes\n\nOn Mon, Priya wrote:\n> old")
-    assert out.html is None
-    assert out.text == "- yes\n\nOn Mon, Priya wrote:\n> old"
-    # A Markdown quote after the first line is a quoted thread for the cut too.
-    assert mm.mail_bodies("- one\n\n> a quote\n\nEnd.").html is None
+REPLY_WITH_QUOTE = "Hi Sam,\n\n**Yes**, Friday works.\n\n> Can we meet on Friday?"
+
+
+def test_a_reply_that_quotes_the_sender_keeps_its_html_and_one_signature_at_the_end() -> None:
+    """Review round 2: each reply opens with a greeting, so a quote of the
+    sender is never on the first line. It gets HTML, and the signature goes
+    at the end of both parts (``quoted_thread=False``). Mutation: cut the
+    body at the quote again, or split it in ``build_signed_bodies`` → red."""
+    parts = mm.mail_bodies(REPLY_WITH_QUOTE)
+    assert parts.html is not None and "<strong>Yes</strong>" in parts.html
+    assert "border-left: 3px solid #cccccc" in parts.html
+    text, html = build_signed_bodies(SIG, *parts, quoted_thread=False)
+    assert text == f"{REPLY_WITH_QUOTE}\n\n{SIG_TEXT}"
+    assert html is not None and html.endswith(f"<br><br>{SIG}") and html.count(SIG) == 1
+
+
+def test_the_signature_join_of_a_text_send_did_not_change() -> None:
+    """The default (``quoted_thread=True``) is the join of before: a text
+    body puts the signature above its quoted thread."""
+    body = "Hi Sam,\n\nYes.\n\n> Can we meet?"
+    text, html = build_signed_bodies(SIG, body, None)
+    assert text == f"Hi Sam,\n\nYes.\n\n{SIG_TEXT}\n\n> Can we meet?"
+    assert html is not None and html.index(SIG) < html.index("&gt; Can we meet?")
 
 
 # ── 5. The signature joins once ─────────────────────────────────────────────
@@ -518,6 +589,15 @@ async def test_the_send_route_sends_both_parts_of_a_markdown_body(monkeypatch) -
     sent = await _route_send(monkeypatch, body_text=GOLDEN_MD, body_markdown=True)
     assert sent["body_text"] == f"{GOLDEN_TEXT}\n\n{SIG_TEXT}"
     assert sent["body_html"] == f"{GOLDEN_HTML}<br><br>{SIG}"
+
+
+async def test_the_send_route_signs_a_markdown_reply_with_a_quote_at_the_end(monkeypatch) -> None:
+    """The route passes ``quoted_thread=False`` for a Markdown body. Mutation:
+    drop it → the text part signs above the quote → red."""
+    sent = await _route_send(monkeypatch, body_text=REPLY_WITH_QUOTE, body_markdown=True)
+    assert sent["body_text"] == f"{REPLY_WITH_QUOTE}\n\n{SIG_TEXT}"
+    assert sent["body_html"].endswith(f"<br><br>{SIG}")
+    assert "<strong>Yes</strong>" in sent["body_html"]
 
 
 async def test_the_send_route_sends_a_plain_body_as_before(monkeypatch) -> None:
@@ -856,24 +936,41 @@ def test_the_tool_text_says_the_body_is_markdown_in_the_same_words() -> None:
     assert "plain-text body" not in (agents.send_email.__doc__ or "")
 
 
-@pytest.mark.parametrize(("body", "shown"), [
+#: Each body with its answer: does the gateway send HTML, and so does the card
+#: show its line? The agent cannot import the gateway, so this list holds the
+#: two to one answer (review round 2, P2).
+CARD_LINE_BODIES = [
     (TEXT_MD, True), ("## Plan\nText", True), ("1. one\n2. two", True),
-    ("See [x](https://e.test)", True), ("Please *note* this", True),
-    ("_note_ well", True), ("~~gone~~ now", True), ("Use `x`", True),
+    ("Intro\n1. one", True), ("Intro\n3. three", False),         # only 1 cuts a paragraph
+    ("See [x](https://e.test)", True), ("[x](javascript:alert(1))", False),
+    ("[x](https://e.test", False), ("![logo](https://e.test/l.png)", False),
+    ("Please *note* this", True), ("_note_ well", True), ("~~gone~~ now", True),
+    ("***bold italic***", True), ("**Yes,\nFriday** works", True),  # bold over a line break
+    ("Hi **Kim**!", True), ("(**Yes**)", True), ("**a\n\nb**", False),
+    ("Use `x`", True), ("don`t", False),
     ("Hi Kim,\n\nThanks.\n\nJane", False), ("2*3*4 and a*b*c", False),
-    ("__init__ and snake_case", False),
-    # An autolink alone gets no HTML from the gateway, so no card line.
-    ("Jane <jane@x.test> or <https://x.test>", False),
-    # A quote after the first line gets no HTML, and a pipe is no table.
-    ("Hi,\n\n> quote\n\nBye", False), ("| a | b |", False), ("don`t", False),
-    ("| a | b |\n|---|---|\n| 1 | 2 |", True),
-])
-def test_the_tool_marks_a_card_of_a_markdown_body(body: str, shown: bool) -> None:
-    """The card line shows where the gateway makes HTML. Mutation: drop the
-    italics or strikethrough branch of ``_MARKDOWN_MARK`` → red."""
-    assert bool(agents._formatted_notice(body)) is shown
+    ("5 * 3 = 15", False), ("a * b * c", False), ("\\*not em\\*", False),
+    ("__init__ and snake_case", False), ("my\\_file.txt", False),
+    ("Jane <jane@x.test> or <https://x.test>", False),       # an autolink alone
+    ("Re: [JIRA-1] x", False), ("#hashtag here", False), ("Regards,\n--\nName", False),
+    ("> quote on line 1", True), ("Hi,\n\n> quote\n\nBye", True),
+    (REPLY_WITH_QUOTE, True),
+    ("Text\n\n---\n\nMore", True), ("***", True), ("a | b\n---", True),  # a rule
+    ("```\ncode\n```", True), ("~~~\nx\n~~~", True),
+    ("| a | b |", False), ("| a | b |\n|---|---|\n| 1 | 2 |", True),
+    ("    - indented four", True), ("    # indented heading", True),
+    ("- ", True), ("Intro\n-", False), ("Total:\n- 5 units", True),
+]
+
+
+@pytest.mark.parametrize(("body", "shown"), CARD_LINE_BODIES)
+def test_the_card_line_and_the_converter_agree(body: str, shown: bool) -> None:
+    """The card line shows if and only if the gateway sends HTML. Mutation:
+    drop a branch of ``_MARKDOWN_MARK`` (the rule, the fence, the quote, or
+    italics over a line break), or of ``_has_structure`` → red."""
     gateway_html = mm.mail_bodies(body).html is not None
-    assert gateway_html is shown, body
+    assert gateway_html is shown, ("the converter", body)
+    assert bool(agents._formatted_notice(body)) is shown, ("the card line", body)
 
 
 def test_the_tool_says_when_a_draft_lost_the_formatting(monkeypatch) -> None:

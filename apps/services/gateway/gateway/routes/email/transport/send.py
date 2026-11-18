@@ -261,8 +261,11 @@ async def send_email(
             signature = await resolve_signature_for_send(
                 db, req.account_id, "reply" if req.reply_to_message_id else "new",
                 body_text)
+            # Task 3605: a Markdown body holds no quoted thread, so the
+            # signature goes at the end of both parts.
             send_text, send_html = build_signed_bodies(
-                signature, body_text, body_html)
+                signature, body_text, body_html,
+                quoted_thread=not req.body_markdown)
 
             # ``_reply_target`` resolved the conversation id of the message
             # being replied to, so the provider threads the reply. Gmail needs

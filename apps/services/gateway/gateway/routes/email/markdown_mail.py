@@ -25,25 +25,32 @@ converter. It gives the plain text part and the HTML part of the mail.
 * The HTML then goes through ``signature.clean_signature_html``, the server
   allowlist of mail HTML (D-EM-70). It is the one sanitizer: it keeps an
   ``https:``, ``mailto:`` or ``tel:`` link and drops a ``style`` that loads a
-  resource. Each link asks it first. A link that it refuses, and a link whose
-  words name another address (:func:`_label_misleads`), show the words and
-  the address as text, with no link.
-* A body that the parser cuts (more than 20 levels deep), and a body that
-  ``quoting.split_quoted_text`` would cut, get no HTML. A fault of the
-  converter gives no HTML too, and the mail goes as text.
+  resource. Each link asks it first. A link that it refuses shows its words
+  and its address as text, with no link.
+* A link whose words LOOK LIKE an address never points to another address
+  (:func:`_label_misleads`). It shows its words and its address as text. A
+  link whose words are plain words (``[Pay the invoice](…)``) stays a link,
+  and its address shows only where the mail client shows a link address.
+* A body nested to one level below the parser's limit gets no HTML
+  (:func:`_too_deep`), because the parser drops content past that limit. A
+  fault of the converter gives no HTML too, and the mail goes as text.
 
 The signature is not added here. ``signature.build_signed_bodies`` adds it
-once to each part, at the send. Fence: ``tests/unit/test_email_markdown_mail.py``.
+once to each part, at the send. A Markdown send has no quoted thread: the
+model writes the new text, and the provider adds the thread. So the send
+joins the signature at the end of both parts (``quoted_thread=False``), and a
+Markdown quote stays above it. Fence: ``tests/unit/test_email_markdown_mail.py``.
 """
 from __future__ import annotations
 
 import html as _html
 import re
+import unicodedata
 from functools import lru_cache
 from typing import Any, NamedTuple
+from urllib.parse import unquote
 
 from acb_common import get_logger
-from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import clean_signature_html
 
 _log = get_logger("gateway.email.markdown")
@@ -79,13 +86,19 @@ _STRUCTURE_BLOCKS = frozenset({
 #: The bidi controls U+202A to U+202E and U+2066 to U+2069. They go from both
 #: parts, because they can turn around the text that a reader sees.
 _BIDI = re.compile(r"[\u202a-\u202e\u2066-\u2069]")
-#: A word, for the count that finds content the parser cut.
-_WORD = re.compile(r"\w+")
-#: Words that look like an address: a scheme, ``www.``, an ``@``, or a dotted
-#: host such as ``bank.test/pay``. A host can hold any letter, so a label
-#: with a Cyrillic look-alike letter is an address too.
-_ADDRESS_FORM = re.compile(r"://|www\.|@|[\w-]+\.[^\W\d_]{2,}", re.IGNORECASE)
+#: Words that look like an address: a scheme, ``www.``, an ``@``, a dotted
+#: host such as ``bank.test/pay``, or an IPv4 address. A host can hold any
+#: letter, so a label with a Cyrillic look-alike letter is an address too.
+#: The words are folded first (:func:`_fold`).
+_ADDRESS_FORM = re.compile(
+    r"://|www\.|@|[\w-]+\.[^\W\d_]{2,}|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.IGNORECASE)
 _SCHEME = re.compile(r"^(?:https?://|mailto:|tel:)", re.IGNORECASE)
+#: The text that touches a link and continues an address: a run with no
+#: space that ends in ``.``, ``/`` or ``@`` before it, and a run that starts
+#: with ``.`` and a letter or digit, ``/`` or ``@`` after it. A full stop at
+#: the end of a sentence does not continue an address.
+_TAIL = re.compile(r"\S*[./@]$")
+_HEAD = re.compile(r"^(?:\.[^\W_]|[/@])\S*")
 
 
 class MailBodies(NamedTuple):
@@ -155,24 +168,16 @@ def _has_structure(root: Any) -> bool:
     return False
 
 
-def _kept_words(tokens: list[Any]) -> int:
-    """The words that the parse kept: text, code, the info of a code block,
-    and each link and image address. The parser drops content past its
-    nesting limit (20), and the count then falls below the source."""
-    words = 0
-    for token in tokens:
-        # The info of a code block, and the number of a list item.
-        words += len(_WORD.findall(token.info or ""))
-        if token.type == "fence":
-            words += len(_WORD.findall(token.content))
-        for child in token.children or ():
-            if child.type in ("text", "code_inline", "image"):
-                words += len(_WORD.findall(child.content))
-            if child.markup == "autolink":
-                continue  # its text is its address, so the source holds it once
-            for name in ("href", "src"):
-                words += len(_WORD.findall(str(child.attrs.get(name) or "")))
-    return words
+def _too_deep(tokens: list[Any]) -> bool:
+    """True when a block token reaches one level below the parser's limit.
+
+    The parser (``maxNesting``, 20) stops a block that it enters at the
+    limit, and it drops the rest of that block. It enters such a block only
+    after it opens a token at the limit less one. So no token at that level
+    means that the parse dropped nothing. A list nested 9 deep, or a quote
+    nested 18 deep, reaches it."""
+    limit = int(_parser().options["maxNesting"])
+    return any(token.level >= limit - 1 for token in tokens)
 
 
 # ── The HTML part ───────────────────────────────────────────────────────────
@@ -190,9 +195,19 @@ def _link_kept(href: str) -> bool:
     return ' href="' in _sanitize(f'<a href="{href}">.</a>')
 
 
+def _fold(words: str) -> str:
+    """The words as a reader sees them: NFKC folds a look-alike dot (U+2024,
+    U+FE52, U+FF0E, U+FF61) and a wide letter, U+3002 becomes ``.``, and
+    each format character (zero-width space, word joiner, soft hyphen, bidi
+    control) goes."""
+    folded = unicodedata.normalize("NFKC", words).replace("\u3002", ".")
+    return "".join(c for c in folded if unicodedata.category(c) != "Cf")
+
+
 def _address_key(value: str) -> str:
-    """An address for a compare: no scheme, no ``www.``, no end slash, lower case."""
-    key = _SCHEME.sub("", value.strip().lower())
+    """An address for a compare: no scheme, no ``www.``, no end slash, lower
+    case, with each percent escape read."""
+    key = _SCHEME.sub("", unquote(value).strip().lower())
     key = key[len("www."):] if key.startswith("www.") else key
     return key.rstrip("/")
 
@@ -200,8 +215,29 @@ def _address_key(value: str) -> str:
 def _label_misleads(words: str, href: str) -> bool:
     """True when the words of a link look like an address and are not the
     address of the link. ``[https://acme.test/pay](https://evil.test/pay)``
-    would show one address and go to another, so it shows both as text."""
-    return bool(_ADDRESS_FORM.search(words)) and _address_key(words) != _address_key(href)
+    would show one address and go to another, so it shows both as text. A
+    link whose words are plain words is not this case."""
+    folded = _fold(words)
+    return bool(_ADDRESS_FORM.search(folded)) and _address_key(folded) != _address_key(href)
+
+
+def _text_at(node: Any, pattern: re.Pattern[str]) -> str:
+    """The run with no space that ``pattern`` takes from a text node, or ""."""
+    if node is None or node.type != "text":
+        return ""
+    found = pattern.search(node.content)
+    return found.group() if found else ""
+
+
+def _link_misleads(node: Any, words: str, href: str) -> bool:
+    """:func:`_label_misleads` for the words of a link, and for its words
+    with the text that touches them on each side. ``[acme](https://evil.test)
+    .com/pay`` reads as ``acme.com/pay``, with only ``acme`` as a link."""
+    if _label_misleads(words, href):
+        return True
+    before = _text_at(node.previous_sibling, _TAIL)
+    after = _text_at(node.next_sibling, _HEAD)
+    return bool(before or after) and _label_misleads(f"{before}{words}{after}", href)
 
 
 def _esc(value: str) -> str:
@@ -231,7 +267,7 @@ def _inline_html(node: Any) -> str:
         elif kind == "link":
             raw = str(child.attrs.get("href") or "")
             href = _html.escape(raw, quote=True)
-            if _link_kept(href) and not _label_misleads(_inline_text(child), raw):
+            if _link_kept(href) and not _link_misleads(child, _inline_text(child), raw):
                 out.append(f'<a href="{href}">{_inline_html(child)}</a>')
             else:
                 out.append(_esc(_link_text(child)))
@@ -326,13 +362,11 @@ def _blocks_html(nodes: Any, depth: int = 0) -> str:
 def _convert(text: str) -> str | None:
     """The HTML part of ``text``, or None when it gets no HTML."""
     tokens = _parser().parse(text)
+    if _too_deep(tokens):
+        return None  # the parser can drop content at this depth
     root = _tree(tokens)
     if not _has_structure(root):
         return None
-    if _kept_words(tokens) < len(_WORD.findall(text)):
-        return None  # the parser cut content past its nesting limit
-    if split_quoted_text(text)[1]:
-        return None  # the signature keeps one place in both parts
     return _sanitize(_blocks_html(root.children))
 
 
@@ -340,8 +374,8 @@ def mail_bodies(source: str) -> MailBodies:
     """The text part and the HTML part of a mail whose body is Markdown.
 
     The text part is the body as written, less the bidi controls. The HTML
-    part is None for a body with no real structure, a body that the parser
-    or ``quoting.split_quoted_text`` would cut, and a fault of the converter.
+    part is None for a body with no real structure, a body nested as deep as
+    the parser's limit, and a fault of the converter.
     """
     text = _BIDI.sub("", source or "")
     try:

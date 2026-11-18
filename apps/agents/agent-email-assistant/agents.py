@@ -152,19 +152,40 @@ _DRAFT_TEXT_ONLY = (" The draft holds the Markdown text as typed, because a draf
 #: The same line in a held run, which sends text only.
 _DRAFT_TEXT_ONLY_HELD = (" The draft holds the Markdown text as typed, because a draft "
                          "holds text only. A send of it sends that text with its marks.")
-#: A Markdown mark: a heading, a list item or a table rule at a line start, or
-#: code, a link, bold, italics or strikethrough at word edges. It only decides
-#: the card line, so it follows where the gateway makes HTML. An autolink
-#: (``<https://…>``) and a quote (``> ``) are not marks: an autolink alone gets
-#: no HTML, and a quote after the first line gets none either.
+#: One line of a paragraph: a line break that is not a blank line.
+_SAME_PARAGRAPH = r"(?:[^\n]|\n(?![ \t]*\n))"
+#: The real structure of ``markdown_mail._has_structure``, in the source. It
+#: decides only the card line. The agent cannot import the gateway, so a test
+#: holds the two to the same answer on a list of bodies
+#: (``test_email_markdown_mail.test_the_card_line_and_the_converter_agree``).
+#: Blocks: a heading, a rule, a list item, a quote, a code fence, a table.
+#: Inline: code, a ``[words](address)`` link that the parser takes, and bold,
+#: italics or strikethrough with its marks at word edges. An autolink, an
+#: image, ``__x__`` and a mark inside a word are not structure.
+#: The gateway turns indented code off, so a block starts at any indent.
 _MARKDOWN_MARK = re.compile(
-    r"(?m)^ {0,3}(?:#{1,6} |[-*+] |\d{1,9}[.)] |\|? *:?-{3,}:? *\|)|`[^`\n]+`|\]\("
-    r"|(?<![\w*])\*\*?[^\s*][^*\n]*(?<!\s)\*\*?(?![\w*])"
-    r"|(?<!\w)_[^\s_][^_\n]*(?<!\s)_(?!\w)|~~[^~\n]+~~")
+    r"(?m)^[ \t]*#{1,6}(?:[ \t]|$)"
+    r"|^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$"
+    r"|^[ \t]*[-*+][ \t]+\S|^[ \t]*1[.)][ \t]+\S"
+    r"|(?:\A|\n[ \t]*\n)[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)"
+    r"|^[ \t]*>|^[ \t]*(?:`{3,}|~{3,})"
+    r"|^[^\n]*\|[^\n]*\n[ \t]*(?=[^\n]*\|)\|?[ \t]*:?-+:?[ \t]*"
+    r"(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"
+    r"|(?<![`\\])(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)\1(?!`)"
+    r"|(?<![!\\])\[" + _SAME_PARAGRAPH.replace("[^\\n]", "[^\\[\\]\\n]") + r"*\]\([ \t]*"
+    r"(?!(?i:javascript|vbscript|file):|(?i:data):(?!(?i:image/(?:gif|png|jpeg|webp));))"
+    r"[^\s()]*(?:\([^\s()]*\)[^\s()]*)*(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'))?[ \t]*\)"
+    r"|(?<![\w*\\])\*{1,3}(?=[^\s*])" + _SAME_PARAGRAPH.replace("[^\\n]", "[^*\\n]")
+    + r"*?(?<=[^\s*\\])\*{1,3}(?![\w*])"
+    r"|(?<![\w_\\])_(?=[^\s_])" + _SAME_PARAGRAPH.replace("[^\\n]", "[^_\\n]")
+    + r"*?(?<=[^\s_\\])_(?![\w_])"
+    r"|(?<![\w~\\])~~(?=[^\s~])" + _SAME_PARAGRAPH.replace("[^\\n]", "[^~\\n]")
+    + r"*?(?<=[^\s~\\])~~(?![\w~])")
 
 
 def _formatted_notice(body: str) -> str:
-    """:data:`_FORMATTED_NOTICE` for a body with a Markdown mark, else ""."""
+    """:data:`_FORMATTED_NOTICE` for a body that the gateway sends with HTML
+    (:data:`_MARKDOWN_MARK`), else ""."""
     return _FORMATTED_NOTICE if _MARKDOWN_MARK.search(body or "") else ""
 
 

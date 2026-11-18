@@ -21620,10 +21620,20 @@ text part and the HTML part of the mail.
   Each link asks it first. An `https:`, `mailto:` or `tel:` link stays a link. Any other link
   shows its words and its address as text. A Markdown image shows its alt text and loads
   nothing.
-- A link whose words look like an address must go to that address. The words look like an
-  address when they hold `://`, `www.`, `@` or a dotted host such as `bank.test/pay`. The
-  compare drops the scheme, `www.`, an end slash and the case. When the two differ, the words
-  and the address show as text, with no link. This rule binds every chat.
+- **The link rule.** A link whose words LOOK LIKE an address never points to another address.
+  When the two differ, the words and the address show as text, with no link. This rule binds
+  every chat. The rule does not bind plain words: `[Pay the invoice](…)` stays a link, and its
+  address shows only where the mail client shows a link address.
+  - The check folds the words first, as a reader sees them. NFKC folds a look-alike dot (U+2024,
+    U+FE52, U+FF0E, U+FF61) and U+3002 becomes a dot. Each format character goes, such as a
+    zero-width space, a word joiner, a soft hyphen or a bidi control.
+  - The folded words look like an address when they hold `://`, `www.`, `@`, a dotted host
+    such as `bank.test/pay` (any letters), or an IPv4 address.
+  - The check also reads the words with the text that touches them and continues an address.
+    So `[acme](https://evil.test).com/pay` shows as text.
+  - The compare drops the scheme, `www.`, an end slash and the case, and it reads each
+    percent escape. A file name such as `[Q3_report.pdf](https://drive…)` looks like an
+    address, so it shows as text with its long address. That is accepted.
 - **The text part rule.** The text part is the Markdown as written, and it never loses a
   character. Only the bidi controls U+202A to U+202E and U+2066 to U+2069 go, from both
   parts. A held run and a draft send or hold this same text.
@@ -21634,12 +21644,15 @@ text part and the HTML part of the mail.
   as text alone: `2*3*4`, `a*b*c`, `__init__`, `snake_case`, `Jane <jane@x.test>`,
   `<https://x.test>`, `a | b`, `Re: [JIRA-1] x` and `[1]`. Beside real structure, a mark
   inside a word and `__` show as typed in the HTML.
-- A body also gets no HTML when the parser cuts it. The parser stops at 20 levels, and the
-  count of kept words then falls below the source. A body gets no HTML when
-  `quoting.split_quoted_text` would cut its text part, too. So a Markdown quote after the
-  first line sends text alone. A fault of
-  the converter also sends the text alone, and `POST /email/send` never answers 500 for it.
-- `signature.build_signed_bodies` adds the signature once to each part, below the text.
+- **The depth rule.** The parser stops a block at 20 levels, and it drops the rest of that
+  block. So a body with a block token at level 19 or deeper gets no HTML. A list nested 9
+  deep, or a quote nested 18 deep, reaches that level.
+- A fault of the converter sends the text alone, and `POST /email/send` never answers 500
+  for it.
+- `signature.build_signed_bodies` adds the signature once to each part. A Markdown send holds
+  no quoted thread: the model writes the new text, and the provider adds the thread. So the
+  send passes `quoted_thread=False`, and the signature goes at the end of both parts. A
+  Markdown quote, such as a reply that quotes the sender, stays above it.
 
 **Where the HTML goes.**
 
@@ -21656,7 +21669,9 @@ text part and the HTML part of the mail.
   A send of the draft (`send_draft`, send later, the Email app) sends the Markdown as typed,
   with its marks. In a held run, the answer names no send that keeps the formatting.
 - The card shows the Markdown, and the member edits the Markdown. So an edit on the card keeps
-  the formatting. The card of a body with a Markdown mark says so in one line.
+  the formatting. The card says so in one line when the gateway sends HTML for the body. The
+  agent cannot import the gateway, so its own pattern decides the line. A test holds the
+  pattern and the converter to one answer on a list of bodies.
 
 **Not done.**
 
@@ -21664,6 +21679,7 @@ text part and the HTML part of the mail.
   mail is off on the dev stack. A golden test holds the HTML of a fixed sample instead.
 - A formatted preview on the card, and a toolbar. Epic 2640 owns both.
 - A draft that keeps its formatting. A draft holds text only until the composer holds HTML.
+  The composer shows no note about it. Only the answer of the tool says it.
 - The tool text of `edit_draft` and of `draft_reply` does not change. `draft_reply` has no
   body, because the server drafter writes the text.
 - The server drafter and the rewriter still ask for plain text, with Markdown links only
