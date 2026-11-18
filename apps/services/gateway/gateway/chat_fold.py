@@ -30,6 +30,13 @@ _log = get_logger("gateway.chat_fold")
 
 _PROGRESS_MAX = 20  # mirror route.ts progressLines cap
 
+#: CUSTOM events that only label a turn. A row of labels alone is no answer
+#: (AO-3), so the fold saves none. ``ai.route`` is
+#: ``acb_skills.tier_policy.ROUTE_EVENT``. The browser's twin is
+#: ``checkpointIsEmpty`` in ``lib/assistantCheckpoint.ts``. Fence:
+#: ``tests/unit/test_chat_ai_unavailable.py``.
+LABEL_EVENTS = frozenset({"ai.route"})
+
 
 # ── Fold helpers (ports of lib/chatStream.ts) ────────────────────────────────
 
@@ -375,9 +382,14 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     for _seg in segments:
         _seg["text"] = strip_placeholder_lines(_seg["text"])
 
+    # AO-3 (incident 2026-11-17): a label is no answer. A turn whose model
+    # call failed still sent its `ai.route` label, and the fold saved a row
+    # with no text. The read then showed it, and the member saw an empty
+    # reply. The label stays on a row that holds an answer.
     if not (
         content.strip() or tool_events or reasoning_blocks
-        or latest_todos or custom_events
+        or latest_todos
+        or any(e["name"] not in LABEL_EVENTS for e in custom_events)
     ):
         return None
 
