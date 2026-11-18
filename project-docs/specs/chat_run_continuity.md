@@ -13,10 +13,11 @@ release keeps the work.
 |---|---|
 | S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
 | S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
-| S2 item 8 — a late approve acts once (HRD-22, task 3231) | **BUILT** 2026-11-14, branch `mt-1740009c-late-approve`, dark behind `CHAT_LATE_APPROVE_ORGS`. The production flip is OWNER-GATE (`enforcement-flip`) |
+| S2 item 8 — a late approve acts once (HRD-22, task 3231, HRD-22b, task 3294) | **BUILT** 2026-11-14, branch `mt-1740009c-late-approve`. HRD-22b closes the gaps of its second review (across chats, a Redis fault, the grant race). Dark behind `CHAT_LATE_APPROVE_ORGS`. The production flip is OWNER-GATE (`enforcement-flip`), and waits on D-HRD-7 |
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
+| S5 — the amber dot on a waiting chat (task 3600, rung 0, STANDARD, AGENT-SAFE) | **BUILT** 2026-11-17, branch `stu-needs-dot`, no flag. The dot on a chat row in `/chat` and the chat picker says "Needs your answer" in amber when the server marks the thread `needs_input`. It wins over the green and the blue dot. Done when a card opens in chat A, the member opens chat B, and the row of chat A shows the amber dot. The dot goes when the row closes. The side rails keep the old dot. The text of §8 that says `CHAT_DURABLE_ASKS` is off is stale: production has it on |
 | S6 — the activity of the other signed-in accounts | Spec only |
 | S7 — browser push for "needs your answer" and "finished" | The transport is BUILT and dark (WS-66 PN-1, 2026-10-25). The two chat events are not built (H-289). D-2 is decided: opt-in per member |
 | The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
@@ -327,14 +328,28 @@ default. OFF writes no row, parks no run, and reports every run as
      the member and the thread come from the run, never from input. A miss, a
      mismatch and a Redis fault each show the normal card.
    - **An act runs once.** Each approve of a plain card marks the act SPENT
-     on its offer key, and removes its grant. That covers a live approve and
-     a used grant. The mark lasts 30 minutes, and longer than the park
-     window. So, while the mark lives, a stale twin card in the same thread
-     writes nothing on a late tap, and a twin that parks later records no
-     offer. ⚠️ Three gaps stay open, and task 3294 (HRD-22b) closes them
-     before `CHAT_LATE_APPROVE_ORGS` flips. The mark covers one thread only.
-     The mark is best effort, so a Redis stall leaves the stale offer valid.
-     After the mark expires, a new twin's offer can serve a stale tap.
+     on its offer key, and in a member-level key (`chat-late-spent`, with no
+     thread), and removes its grant. That covers a live approve and a used
+     grant. The marks last as long as a row (7 days by default). The rule
+     after HRD-22b (task 3294):
+     1. **Across chats.** A twin card in chat A takes no grant after the
+        member approved its twin in chat B, because the member-level mark
+        reads SPENT. A use marks the member-level key with ONE `SET … GET`,
+        which alone decides, so a live approve that lands between the grant
+        and its use makes the use refuse, and of two uses at the same moment
+        one writes.
+     2. **A fault of Redis.** The grant also asks Postgres. A confirmation
+        row of the same member, in any thread, with the same title, detail
+        and context, answered `APPROVE` after this row was asked, means that
+        the act ran. An `APPROVE` with edits counts. The grant refuses then,
+        and when the read fails or the row cannot be compared. The RESUME path
+        (`_resume_from_row`) asks the same read before it claims the stored
+        call, and a twin that ran takes the old path, so a card shows.
+     3. **A mark that expired.** The Postgres read also stops a stale card
+        that finds the offer of a new twin.
+     Each refusal shows the normal card (the safe side). The cost: when the
+     member repeats an identical act within the life of the marks, its late
+     approve shows one more card.
    - **The new message.** When the gateway writes a grant, the late answer
      gets one more paragraph after `My answer: APPROVE`. It says that the
      member approved after the chat stopped waiting. It tells the model not
@@ -2445,7 +2460,7 @@ HELD_R8_REDIS_URL=redis://127.0.0.1:16406/0 uv run pytest tests/unit/test_resume
 
 **What exists, dark.**
 - `chat_pending_ask` (migration 237, `orchestrator/pending_ask.py`) keeps a waiting card. The flag is `CHAT_DURABLE_ASKS`, off. With it on, the run parks after 600 s, and the row stays answerable for 168 h.
-- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`, which is empty in production. Its title says only "{agent} asked you a question".
+- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`. In production that list holds `reminders,agent_questions` (read 2026-11-16, deployed `1f482db9e`). The card shows only when `chat` is on the list. Its title says only "{agent} asked you a question".
 - The "AI waiting on you" group of My Day (`lib/shell/AiWaitingCard.tsx`) reads chats in the state `needs_input`. That state exists only with the flag on.
 - A late answer goes to `POST /agent/respond-input`, and it starts a new run. For an approval, that run asks again on a new card. With `CHAT_LATE_APPROVE_ORGS` on (S2 item 8, HRD-22), the late tap is the member's own consent instead. It approves the same card once, in the same thread, within 30 minutes.
 
