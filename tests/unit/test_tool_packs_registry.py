@@ -183,8 +183,8 @@ def test_the_setup_rules_read_the_mailboxes_from_the_per_turn_context() -> None:
 
 def test_the_email_rules_name_the_orchestrators_files_for_a_send() -> None:
     """OA-7b fix round 1, item 8: in a pack turn the file comes from the
-    orchestrator's workspace, and a bare path names a file of the email
-    assistant. Mutation: drop the line → red."""
+    orchestrator's workspace. Task 3598: the send tools also write a bare
+    chat path as its artifact ref. Mutation: drop the line → red."""
     rules = tp.rules_for("email")
     assert "artifact:orchestrator:<path>" in rules
     assert "write_artifact" in rules and len(rules) < 3000
