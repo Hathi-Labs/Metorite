@@ -77,6 +77,13 @@ gateway reads them.
   before, and the chat tool makes no second call. :func:`long_read_allowed`
   is the one check. A name in the list spends nothing, so its flip is gate
   ``enforcement-flip``.
+* ``SEMANTIC_MODEL_ORGS`` — the organization ids whose module total takes
+  ``query``, the one query grammar (WS-SEM SEM-1b-1, ``semantic_model.md``
+  §5.1). The grammar is the one of ``CRM_ORGS``. An empty list allows no
+  organization: a ``query`` is a 422 that names ``field_filters``, and each
+  other answer stays as before. :func:`semantic_model_allowed` is the one
+  check. A name in the list spends nothing, so its flip is gate
+  ``enforcement-flip``.
 * ``CRM_DIGEST_ORGS`` — the organization ids that get the weekly CRM digest
   on the powerful tier (WS-53 CRM-Q28, ``crm_platform.md`` §18.11.2). The
   grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
@@ -353,6 +360,27 @@ def long_read_allowed(organization_id: str | None) -> bool:
         return False
     org = str(organization_id).strip().lower()
     orgs = crm_long_read_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def semantic_model_orgs() -> frozenset[str]:
+    """The organization ids whose module total takes ``query`` (SEM-1b-1).
+    Empty means none."""
+    return _parse_orgs(str(get_settings().semantic_model_orgs or ""))
+
+
+def semantic_model_allowed(organization_id: str | None) -> bool:
+    """True when a module total of this org takes ``query``, the one query
+    grammar (WS-SEM SEM-1b-1, ``semantic_model.md`` §5.1).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND
+    a place on ``SEMANTIC_MODEL_ORGS``, or ``*`` there. It reads the settings
+    and nothing else, and no module reads it at import, so a SIGHUP reload
+    applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = semantic_model_orgs()
     return ALL_ORGS in orgs or org in orgs
 
 

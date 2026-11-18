@@ -253,6 +253,20 @@ def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not crm_flags.module_find_allowed("globex")
 
 
+def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-SEM SEM-1b-1, semantic_model.md §5.1. The reload list holds the key,
+    and the one reader of `query` on a module total sees a change with no
+    restart."""
+    assert fr.reloadable("SEMANTIC_MODEL_ORGS")
+    monkeypatch.setenv("SEMANTIC_MODEL_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.semantic_model_allowed("acme")
+    env(**{**_START, "SEMANTIC_MODEL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("SEMANTIC_MODEL_ORGS",)
+    assert crm_flags.semantic_model_allowed("acme")
+    assert not crm_flags.semantic_model_allowed("globex")
+
+
 def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-STU C5a, ai_studio.md §14 C5a. The reload list holds the key, and
     the one reader of the search switch sees a change with no restart."""

@@ -77,6 +77,12 @@ FIELD_PREFIX = "field."
 #: The two ends of a range filter. Each end is inclusive.
 RANGE_ENDS: dict[str, str] = {".from": ">=", ".to": "<="}
 
+#: The operator of each end that :func:`_filter` takes: the two ends of
+#: :data:`RANGE_ENDS`, and the two strict ends of a query leaf (``gt`` and
+#: ``lt``, SEM-1b-1). No old parameter takes a strict end: only
+#: :data:`RANGE_ENDS` splits a ``field.<key>`` name.
+_OPERATORS: dict[str, str] = {**RANGE_ENDS, ".gt": ">", ".lt": "<"}
+
 #: The types a field measure takes.
 MEASURE_TYPES: tuple[str, ...] = ("number", "decimal", "currency", "percent")
 
@@ -1036,7 +1042,7 @@ def _filter(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: str,
         # Task 3690: a range compares the same guarded number as `=`. A value
         # that is no number is NULL, so no end of a range takes it.
         number, keys, source = _amount(scope.column, ref, k)
-        operator = "=" if end is None else RANGE_ENDS[end]
+        operator = "=" if end is None else _OPERATORS[end]
         return f"{number} {operator} {clause}", bound, keys, source
     keys = {k: ref.key}
     if x is not None and ext is not None:
@@ -1082,7 +1088,7 @@ def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: 
             )
         # CRM-Q25b: a datetime takes its day in the CRM zone, as its bucket.
         return (
-            f"{_calendar_day(column, ref, k)} {RANGE_ENDS[end]} CAST(:{v} AS date)",
+            f"{_calendar_day(column, ref, k)} {_OPERATORS[end]} CAST(:{v} AS date)",
             _iso_date(ref.key + end, value),
         )
     if ref.type in DATE_TYPES:
@@ -1272,6 +1278,260 @@ async def module_field_where(
     matches = await text_matches(db, org, scope, module, pairs)
     ids = await lookup_ids(db, org, scope, pairs)
     return module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+
+
+# ── One query (WS-SEM SEM-1b-1, semantic_model.md §5.1) ─────────────────────
+#
+# For an org on SEMANTIC_MODEL_ORGS, a module total takes ``query``: a JSON
+# list of nodes joined by AND. A node is a leaf ``{"field", "op", "value"}``
+# or a group ``{"any": [leaf, ...]}`` of 2 to 8 leaves (OR), one level deep.
+# The shape check is the shared one of ``acb_common.studio_query``
+# (:func:`check_store_shape`). The CRM keeps its own value rules, and this is
+# its compiler. Fences: ``tests/unit/test_crm_query_grammar.py`` and its
+# ``_r8`` file.
+#
+# * **One builder.** Each leaf is ONE call of :func:`_filter`, the builder of
+#   each old ``field.<key>`` filter. So a leaf of ``eq``, ``gte`` or ``lte``
+#   builds the clause of ``field.<key>``, ``.from`` or ``.to`` (:data:`LOWERED`),
+#   and the lowering changes no total.
+# * **ZONE.** A range on a datetime compares its day in the CRM zone
+#   (:func:`_calendar_day`), as the old range does.
+# * **MONEY.** A number type compares the guarded :func:`_amount` with the
+#   value of :func:`_decimal`. A JSON number and a numeric string give the
+#   same bound text. A bool is refused. A stored "NA" is no value.
+# * **SPELLING.** ``eq`` on a text or a select counts each stored variant
+#   (:func:`text_matches`), and a lookup by a Metorite id also matches its
+#   Zoho id (:func:`lookup_ids`), as the old filter does.
+# * **KEY SPELLING.** A key resolves through :meth:`FieldScope.ref`, with the
+#   key words and the near-field hint. No Studio key pattern applies.
+# * Every key and every value is a bound parameter.
+
+#: The ops of a CRM query in this slice. ``in`` expands to an ``any`` group
+#: of ``eq`` leaves. The order is the order that a refusal names them in.
+QUERY_OPS: tuple[str, ...] = ("eq", "in", "gte", "lte", "gt", "lt")
+#: The ops of the grammar that wait for SEM-1b-2. Each is a 422
+#: ``query_op_not_allowed`` that names :data:`QUERY_OPS`.
+DEFERRED_OPS: tuple[str, ...] = ("ne", "is_empty", "contains", "matches")
+#: The most characters of the ``query`` text.
+QUERY_CHARS_MAX = 4000
+#: The most leaves of one query, after each ``in`` expands. The lowered
+#: ``field.<key>`` pairs do not count, so an old request never fails.
+QUERY_LEAVES_MAX = 8
+#: The lowering of the old pair forms: the range end of ``field.<key>`` →
+#: the op of a leaf.
+LOWERED: dict[str | None, str] = {None: "eq", ".from": "gte", ".to": "lte"}
+#: The op of a leaf → the range end that :func:`_filter` takes. ``gt`` and
+#: ``lt`` have ends of their own, which no old parameter takes.
+_QUERY_ENDS: dict[str, str | None] = {
+    **{op: end for end, op in LOWERED.items()}, "gt": ".gt", "lt": ".lt"}
+#: The bound names of a query leaf: node ``n``, leaf ``j``.
+_QUERY_KEY = "agf_qk"
+_QUERY_VALUE = "agf_qv"
+_QUERY_EXT = "agf_qx"
+
+
+@dataclass(frozen=True)
+class QueryLeaf:
+    """One leaf of a checked query: the key as the caller wrote it, the op
+    (never ``in``, which expands), and the JSON value."""
+
+    key: str
+    op: str
+    value: Any
+
+
+#: A node of a checked query: its leaves, joined by OR. The nodes of a
+#: query join by AND.
+QueryNode = tuple[QueryLeaf, ...]
+
+
+def query_refusal(code: str, message: str) -> HTTPException:
+    """A 422 of the query grammar, with a code of ``studio_query``."""
+    return HTTPException(status_code=422, detail={"code": code, "message": message})
+
+
+def query_off_refusal() -> HTTPException:
+    """The 422 of ``query`` from an org off ``SEMANTIC_MODEL_ORGS``. The
+    route never drops a query in silence: a dropped filter reads as a total
+    of the right records."""
+    return query_refusal(
+        "query_off",
+        "This CRM takes no query yet. Give the filters as field_filters of "
+        "crm_aggregate: field.<key>=<value>, field.<key>.from and field.<key>.to.")
+
+
+def query_core_refusal() -> HTTPException:
+    """The 422 of ``query`` on a core entity (SEM-1b-2 adds ``custom.<key>``)."""
+    return query_refusal(
+        "query_needs_module",
+        "A query takes a module entity. For leads, deals, contacts or organizations, "
+        "give the filters of crm_list_records.")
+
+
+def _no_constant(name: str) -> Any:
+    """``NaN``, ``Infinity`` and ``-Infinity`` are no JSON value here."""
+    raise ValueError(name)
+
+
+def _leaf_of(item: Mapping[str, Any]) -> list[QueryLeaf]:
+    """The leaves of one checked leaf: one, or one ``eq`` for each value of
+    an ``in``. Each value is a JSON string or number, or a bool. A value
+    with a NUL is refused here, before it reaches Postgres."""
+    from acb_common.studio_query import VALUE_INVALID
+
+    key, op = str(item["field"]), str(item["op"])
+    if "\x00" in key:
+        raise query_refusal(VALUE_INVALID, "A field name holds no NUL character.")
+    if "value" not in item:
+        raise query_refusal(VALUE_INVALID, f"Field `{_shown(key)}`: give a value.")
+    values = list(item["value"]) if op == "in" else [item["value"]]
+    out = []
+    for value in values:
+        if isinstance(value, bool | int | float):
+            pass
+        elif isinstance(value, str):
+            if "\x00" in value:
+                raise query_refusal(VALUE_INVALID,
+                                    f"Field `{_shown(key)}`: a value holds no NUL character.")
+        else:
+            raise query_refusal(
+                VALUE_INVALID,
+                f"Field `{_shown(key)}`: a value is text, a number, true or false.")
+        out.append(QueryLeaf(key, "eq" if op == "in" else op, value))
+    return out
+
+
+def _shown(key: str) -> str:
+    """The key that a refusal of this module names."""
+    from acb_common.studio_query import store_named
+
+    return store_named(key)
+
+
+def parse_query(raw: str) -> tuple[QueryNode, ...]:
+    """The nodes of the ``query`` text of a module total, or a 422. Pure.
+
+    The text holds at most :data:`QUERY_CHARS_MAX` characters of JSON. The
+    shared shape check (:func:`acb_common.studio_query.check_store_shape`)
+    takes the ops of :data:`QUERY_OPS`. Each ``in`` then expands to its
+    ``eq`` leaves, inside the node, and the query holds at most
+    :data:`QUERY_LEAVES_MAX` leaves. No key is checked here: the compiler
+    checks each key against the scope (:func:`query_sql`)."""
+    import json
+
+    from acb_common.studio_query import TOO_BIG, VALUE_INVALID, QueryError, check_store_shape
+
+    if len(raw) > QUERY_CHARS_MAX:
+        raise query_refusal(TOO_BIG, f"A query holds at most {QUERY_CHARS_MAX} characters.")
+    try:
+        data = json.loads(raw, parse_constant=_no_constant)
+    except (ValueError, RecursionError):
+        raise query_refusal(
+            VALUE_INVALID,
+            'The query is not valid JSON. Give a list of conditions {"field": <key>, '
+            '"op": <op>, "value": <value>} and groups {"any": [condition, ...]}.') from None
+    try:
+        checked = check_store_shape(data, QUERY_OPS, max_leaves=QUERY_LEAVES_MAX,
+                                    max_in=QUERY_LEAVES_MAX)
+    except QueryError as exc:
+        raise query_refusal(exc.code, exc.message) from None
+    nodes = tuple(tuple(leaf for item in node for leaf in _leaf_of(item)) for node in checked)
+    if sum(len(node) for node in nodes) > QUERY_LEAVES_MAX:
+        raise query_refusal(
+            TOO_BIG, f"A query holds at most {QUERY_LEAVES_MAX} conditions, and each "
+                     "value of an `in` is one condition.")
+    return nodes
+
+
+def _leaf_text(ref: FieldRef, leaf: QueryLeaf) -> str:
+    """The value of *leaf* as the text that :func:`_filter` takes. A JSON
+    number is its decimal text, so ``100`` and ``"100"`` bind the same
+    value. A bool is ``true`` or ``false`` on a boolean field, and a 422 on
+    each other field, so a bool never reads as the number 1."""
+    from acb_common.studio_query import VALUE_INVALID
+
+    value = leaf.value
+    if isinstance(value, bool):
+        if ref.type != "boolean":
+            raise query_refusal(
+                VALUE_INVALID, f"Field `{_shown(leaf.key)}`: true or false takes a boolean "
+                               f"field, and '{ref.key}' is a {ref.type} field.")
+        return "true" if value else "false"
+    return str(value)
+
+
+def _query_leaves(scope: FieldScope, nodes: Sequence[QueryNode],
+                  ) -> list[list[tuple[QueryLeaf, FieldRef, str | None, str]]]:
+    """Each leaf of *nodes* with its field, its range end and its value
+    text. An unknown key is the 422 of :meth:`FieldScope.ref`, which names
+    the legal fields and the near ones."""
+    return [
+        [(leaf, ref, _QUERY_ENDS[leaf.op], _leaf_text(ref, leaf))
+         for leaf in node for ref in (scope.ref(leaf.key),)]
+        for node in nodes
+    ]
+
+
+def _probe(resolved: list[list[tuple[QueryLeaf, FieldRef, str | None, str]]],
+           ) -> list[tuple[str, str]]:
+    """``(key, value)`` of each leaf, in order, in the pair form that
+    :func:`text_matches` and :func:`lookup_ids` read. A range leaf gives an
+    empty key, so neither reads it, as neither reads an old range."""
+    return [(leaf.key if end is None else "", value)
+            for node in resolved for leaf, _ref, end, value in node]
+
+
+def query_sql(
+    scope: FieldScope, nodes: Sequence[QueryNode], *, zone: str,
+    matches: Mapping[int, Sequence[str]] | None = None,
+    ids: Mapping[int, str] | None = None,
+) -> WhereSql:
+    """The clause of *nodes*, with no ``WHERE``: each node in parentheses
+    when it holds two or more leaves, joined by AND. Pure.
+
+    Each leaf is ONE call of :func:`_filter`, the builder of each old
+    filter. *matches* and *ids* are keyed by the index of the leaf in the
+    whole query, as :func:`_probe` lists them. Each bound name is
+    ``agf_qk<n>_<j>``, ``agf_qv<n>_<j>`` and ``agf_qx<n>_<j>``, so no name
+    meets a name of :func:`module_where`."""
+    clauses: list[str] = []
+    params: dict[str, Any] = {ZONE_PARAM: zone}
+    sources: list[str] = []
+    index = 0
+    for n, node in enumerate(_query_leaves(scope, nodes)):
+        ors: list[str] = []
+        for j, (_leaf, ref, end, value) in enumerate(node):
+            k, v = f"{_QUERY_KEY}{n}_{j}", f"{_QUERY_VALUE}{n}_{j}"
+            ext = (f"{_QUERY_EXT}{n}_{j}", ids[index]) if ids and index in ids else None
+            clause, bound, keys, source = _filter(scope, ref, end, k, v, value,
+                                                  (matches or {}).get(index, ()), ext)
+            ors.append(clause)
+            params.update(keys)
+            params[v] = bound
+            sources.append(source)
+            index += 1
+        clauses.append(ors[0] if len(ors) == 1 else
+                       "(" + " OR ".join(f"({clause})" for clause in ors) + ")")
+    return WhereSql(sql=" AND ".join(clauses), params=params, source=from_source(*sources))
+
+
+async def query_where(
+    db: Any, org: str, scope: FieldScope, module: str, nodes: Sequence[QueryNode], *,
+    zone: str,
+) -> tuple[WhereSql, dict[str, list[str]]]:
+    """The clause of *nodes* on a module total, and the stored values that
+    each text leaf counts, by key (the ``matched`` of the answer).
+
+    The same calls as the old filters (``aggregate._read`` and
+    :func:`module_field_where`): the text matches, the lookup ids, then
+    :func:`query_sql`. Each read runs in the caller's tenant session, so RLS
+    holds it (R5). The caller names the module from the mirrored set."""
+    resolved = _query_leaves(scope, nodes)
+    probe = _probe(resolved)
+    matches = await text_matches(db, org, scope, module, probe)
+    ids = await lookup_ids(db, org, scope, probe)
+    matched = {probe[i][0]: list(found) for i, found in matches.items()}
+    return query_sql(scope, nodes, zone=zone, matches=matches, ids=ids), matched
 
 
 # ── q across a module (CRM-Q34-7, crm_platform.md §18.17) ───────────────────
@@ -1923,14 +2183,19 @@ __all__ = [
     "DATE_TYPES",
     "DATE_WORD",
     "DEFAULT_ZONE",
+    "DEFERRED_OPS",
     "DETOAST_COLUMN",
     "DETOAST_JOIN",
     "FIELD_MEASURES",
     "FIELD_PREFIX",
     "KEY_WORDS",
+    "LOWERED",
     "MEASURE_TYPES",
     "MODULE_MEASURES",
     "OVERLAY_REFUSED",
+    "QUERY_CHARS_MAX",
+    "QUERY_LEAVES_MAX",
+    "QUERY_OPS",
     "SPLIT_JOIN",
     "SPLIT_MAX",
     "SPLIT_MIN",
@@ -1941,6 +2206,8 @@ __all__ = [
     "FieldScope",
     "GroupSql",
     "MeasureSql",
+    "QueryLeaf",
+    "QueryNode",
     "SumCheck",
     "WhereSql",
     "check_group",
@@ -1977,6 +2244,12 @@ __all__ = [
     "overlay_stage",
     "overlay_weighted",
     "overlay_where",
+    "parse_query",
+    "query_core_refusal",
+    "query_off_refusal",
+    "query_refusal",
+    "query_sql",
+    "query_where",
     "split_sql",
     "sum_check",
     "sum_check_sql",

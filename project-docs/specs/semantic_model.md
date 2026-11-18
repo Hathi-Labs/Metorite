@@ -1,6 +1,9 @@
 # The semantic model: one way for the chat to read any large data source
 
-**Status: PROPOSED (2026-11-17, owner ask). Nothing is built.** The owner
+**Status: PROPOSED (2026-11-17, owner ask). SEM-1b-1 is BUILT dark
+(2026-11-18, task 3736, flag `SEMANTIC_MODEL_ORGS`, fences
+`test_crm_query_grammar.py` and `test_crm_query_grammar_r8.py`). No other
+slice is built.** The owner
 must answer D-SEM-1 first (`building_blocks.md` §6.1 step 4). No code slice of
 rung 3 starts before that answer. Verified against `origin/main` at `a4cfeedc7`
 (2026-11-17).

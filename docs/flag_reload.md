@@ -299,6 +299,16 @@ one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
 gate ask it at each card, so a reload applies to the next card. A flip stays
 OWNER-GATE (`enforcement-flip`, EAC-7).
 
+`SEMANTIC_MODEL_ORGS` turns on `query` on a module total of the CRM
+(`semantic_model.md` §5.1, SEM-1b-1). For each listed org, `GET
+/crm/aggregate` on a module takes one JSON query of conditions and `any`
+groups. `*` lists every org, and the default is empty. Empty makes a `query`
+a 422 that names `field_filters`, and each other answer stays byte for byte.
+
+Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and
+each module total asks it. A reload applies a change. A name in the list
+spends nothing, so the flip is `enforcement-flip`.
+
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
 one `tool:<name>` row for each chat tool of the CRM, Email, Projects and

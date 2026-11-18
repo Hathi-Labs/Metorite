@@ -375,6 +375,16 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_large_reads.py.
     crm_long_read_orgs: str = ""
+    # `semantic_model_orgs` (WS-SEM SEM-1b-1, 2026-11-18) lists the
+    # organization ids whose module total takes `query`, the one query
+    # grammar (`semantic_model.md` §5.1), in the grammar of `crm_orgs`.
+    # Default empty means NO organization (fail closed): a `query` is a 422
+    # that names `field_filters`, and each other answer stays as before. The
+    # one reader is `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP
+    # reload applies it (`docs/flag_reload.md`). A name in the list spends
+    # nothing, so a flip on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_crm_query_grammar.py, test_crm_query_grammar_r8.py.
+    semantic_model_orgs: str = ""
     # `crm_digest_orgs` (WS-53 CRM-Q28, 2026-10-17) lists the organization
     # ids that get the weekly CRM digest on the powerful tier
     # (`crm_platform.md` §18.11.2), in the grammar of `crm_orgs`. Default
