@@ -150,6 +150,12 @@
 > setup" each clear the names and the two stamps. The admin renames the record
 > types in Fields, "Record names". A list name alone is enough.
 
+> **Built: CRM-Q34-1 and CRM-Q34-2 (tasks 3693 and 3694, 2026-11-17).** A
+> number range and a lookup by the id of a core record answer. The refusals
+> of a module total name a step that works. Built on
+> `crm-rung0-mt-c18dfcf9`, not merged. No migration and no flag. §18.17 holds
+> the slices and their status.
+
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
 > the sync design (§7.1) that this plan reuses. Do not re-derive them here.
@@ -8402,6 +8408,77 @@ incident's shape with synthetic values, in
   direction. HANDOFF lists the hardening.
 
 ---
+
+### 18.17 The chat reads every module (CRM-Q34, 2026-11-17)
+
+The production log of 2026-11-17 holds 61 `crm_aggregate` calls of one
+member. Nine got 422, although the fields existed. The typed total refused
+four common query shapes, and it answered one more shape with a silent zero.
+No refusal named a step that works. So the model guessed again, spent its
+budget, and gave up or answered with another figure.
+
+**Flags on rung 0.** None. Each change turns a refusal or a silent zero into
+an answer or better words, and no answer that was right changes. This is the
+precedent of CRM-Q25e parts 1 to 4.
+
+#### 18.17.1 Rung 0: one CRM builder, three slices
+
+**CRM-Q34-1 · A number range, and a lookup by the id of a core record.**
+Status: built 2026-11-17 on `crm-rung0-mt-c18dfcf9` (task 3693), not merged.
+
+- **Outcome.** A range on a number field of a module answers. A lookup filter
+  that carries the Metorite id of a core record counts that record's rows.
+- **Scope.**
+  - `field.<key>.from` and `.to` on a field of `MEASURE_TYPES` compare the
+    guarded number of `_amount` with `>=` and `<=`. Each end is inclusive.
+  - A value that is no plain number reads as NULL and matches nothing. A JSON
+    number and a plain decimal string are values. `Rs. 0.00`, `NA`, `-`, an
+    empty string, null, an object, an array, `1e999` and `12,50` are not.
+  - The bound value takes the guard of the equality filter (`_decimal`). A
+    `from` past its `to` gives no record, as a date range does.
+  - `lookup_targets` and `lookup_ids` also resolve an id whose lookup target
+    is a core entity. The table comes from `modules.KNOWN_TARGETS`, the one
+    map that `resolve_links` reads, never from the caller. The read names the
+    org, and RLS holds the session. It reads `ext_id` by `id`, one read for
+    each such filter.
+- **Limit.** A Native record has no Zoho id, so its id still matches nothing.
+- **Fences.** `tests/unit/test_crm_rung0_r8.py` (dirty values, a core
+  contact, an org B contact) and `tests/unit/test_crm_large_reads.py` (the
+  core target reads its core table).
+
+**CRM-Q34-2 · The route's refusals name a working field, module or filter.**
+Status: built 2026-11-17 on `crm-rung0-mt-c18dfcf9` (task 3694), not merged.
+
+1. `q` on a module total: the route checks it after `module_scope`. Its 422
+   names the step `field.<lookup>=<the exact name>` first. Then it names the
+   lookup fields of the module, each with its target module, and the text
+   fields. Rung 1 makes `q` work.
+2. `group_by=status` on a module reads `group_field=@status` when the
+   catalogue names a status field. Else its 422 names the select fields.
+3. `unknown_field` names the key without `.from` or `.to`. It names at most 3
+   close fields of the module, by key or label (`difflib`, cutoff 0.5). When
+   the key or label is on another mirrored module of the org, it names at
+   most 3 such modules. One read of `crm_field_defs` over the mirrored set,
+   on the 422 path only, in `field_sql.py`. Each name is cut to 60
+   characters and quoted.
+4. A range on a text field is a 422. It names the date and number fields of
+   the module, and the filter `field.<key>=<value>`.
+
+- **Fences.** `tests/unit/test_crm_rung0.py` (each refusal, and an AST fence
+  on the steps of `aggregate._read`) and `tests/unit/test_crm_rung0_r8.py`
+  (the field-home read never names a field of org B).
+
+**CRM-Q34-3 · The tool's text: a zero says it, and a refusal costs no total.**
+Status: a second builder takes it, in `crm_tools.py` only.
+
+- A total whose filters matched no record says "No record matches these
+  filters". A 422 spends no `AGGREGATE_BUDGET` count. `status=` on a module
+  names `field_filters {'@status': <value>}`.
+
+#### 18.17.2 Rung 1
+
+`q` on a module (CRM-Q34-7) is Rung 1, dark behind a new flag. One filter
+builder for a module list and a module total (CRM-Q34-4) is Rung 1 too.
 
 ## 19. The daily-use UX (2026-10-12)
 
