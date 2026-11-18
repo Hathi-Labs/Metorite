@@ -177,10 +177,10 @@ class TestTheFlag:
 class TestTheRefs:
     async def test_an_own_ref_runs_with_its_text_by_reference(self, box) -> None:
         ref = box["keep"](ROWS)
-        out = await cr.compute_run("print(sum(1 for _ in open('inputs/%s.txt')))" % ref, [ref], 30)
+        out = await cr.compute_run(f"print(sum(1 for _ in open('inputs/{ref}.txt')))", [ref], 30)
         assert out["ok"] is True
         files, timeout = box["calls"][0]
-        assert files["inputs/%s.txt" % ref] == ROWS.encode()
+        assert files[f"inputs/{ref}.txt"] == ROWS.encode()
         assert files["main.py"].startswith(b"print(")
         assert timeout == 30
 
