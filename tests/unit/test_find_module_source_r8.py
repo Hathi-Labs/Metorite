@@ -190,9 +190,12 @@ async def test_a_typo_finds_the_record_by_the_near_rung(world, app_engine) -> No
     answer = await _as(world, user, lambda: company.company_search(
         q="Operater Associates", apps="crm", k=5, user=user))
     hits = [h for h in answer["hits"] if h["kind"] == "module_record"]
-    assert [h["title"] for h in hits] == ["Operator Associates Pvt Ltd"]
-    assert hits[0]["matched_by"] == "near"
-    assert hits[0]["as"] == "Operator"
+    # "Operater Kim" holds one word of two, by the word rung. The near hit holds both.
+    near = [h for h in hits if h["title"] == "Operator Associates Pvt Ltd"]
+    assert len(near) == 1
+    assert near[0]["matched_by"] == "near"
+    assert near[0]["as"] == "Operator"
+    assert hits.index(near[0]) == 0
     assert "Secret" not in json.dumps(answer)
 
 
