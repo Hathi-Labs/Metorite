@@ -1352,6 +1352,46 @@ async def _prepare_if_new_thread(
     await prepare_new_session(thread_id, organization_id)
 
 
+def _shadow_join_first_message(
+    room: Any, thread_id: str | None, agent_name: str, user: Any,
+    organization_id: str | None, turn_id: str, sent: str, *, member_turn: bool,
+) -> None:
+    """WS-CO CO-4 (``chat_organization.md`` §7): start the shadow join match
+    of a new chat, and return at once. Never raises.
+
+    The stream door calls it once, after the mint made the chat row and saved
+    the turn. It starts a task only for a turn that the member sent
+    (*member_turn*: no Continue, no steer follow-up, no resume), in a chat
+    with Mira that is the member's own (solo, or a chat with no row yet), and
+    only while ``CHAT_JOIN_SHADOW_ORGS`` holds the org. The org and the member
+    come from the verified session, never from the body (R5, R11). The words
+    become a fingerprint HERE, so the task never holds them. The task itself
+    checks that this turn is the first message of the chat, and the member
+    sees nothing.
+    """
+    try:
+        from gateway.chat_join_shadow import (
+            fingerprint,
+            schedule_first_message,
+            shadow_allowed,
+        )
+        from gateway.rooms import room_is_solo
+
+        if not (member_turn and thread_id and agent_name == "orchestrator"
+                and shadow_allowed(organization_id)):
+            return
+        if room is None or getattr(room, "resolve_failed", False):
+            return
+        if not (getattr(room, "unknown_session", False) or room_is_solo(room)):
+            return
+        schedule_first_message(
+            organization_id, getattr(user, "email", "") or "", thread_id, turn_id,
+            fingerprint(sent),
+        )
+    except Exception as exc:  # A shadow never stops a run.
+        _log.warning("chat_join_shadow.not_started", error=type(exc).__name__)
+
+
 async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
     """The room check and the new-chat step of the two run doors with no stream.
 
@@ -3483,6 +3523,11 @@ async def run_agent_stream_endpoint(
         member=_mem_user, agent_name=agent_name,
         organization_id=_room_org, prompt=_prompt,
     )
+    _shadow_join_first_message(
+        room, req.thread_id, agent_name, user, _room_org, _new_user_id,
+        _sent_text,
+        member_turn=(_resume_launch is None and not _resume and not _followup),
+    )
 
     _think_mode = _resolve_think_mode(req)
 
@@ -3913,6 +3958,16 @@ async def _resume_from_row(
     try:
         await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
     except HTTPException:
+        return None
+    # HRD-22b (review, P1): the claim of the stored call reads Redis only
+    # (`claim_act`), and a stall of Redis leaves no SPENT mark. So Postgres is
+    # asked first: when a twin of this card was approved after it was asked,
+    # in any thread, or when nobody can say, the old path takes the answer and
+    # a card shows again (the safe side). No row has moved yet.
+    from acb_skills.late_approve import twin_ran
+
+    if await twin_ran(org, me, row):
+        _log.info("agent.resume_twin_ran", request_id=req.request_id[:12])
         return None
     from orchestrator.run_cap import admit_member_run, release_member_slot
 
