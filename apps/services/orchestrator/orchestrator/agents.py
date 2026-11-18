@@ -799,25 +799,15 @@ async def spawn_copilot_agent(    task: str,
 ) -> str:
     """Spawn a GitHub Copilot SDK agent to create or modify code, skills, or scripts.
 
-    Use this tool when the user asks to:
-    - Create a new skill or script in an agent repo
-    - Add a new capability / automation to an existing agent
-    - Fix a bug or improve an existing script
-    - Write tests, add documentation, or refactor code
-    - Self-improve any part of the system
-
-    The Copilot SDK agent runs in an isolated container with full access to the
-    agent's repository, executes the task autonomously (write code, run tests,
-    commit, push), and returns a summary of what was done.
+    Use it when the user asks to add a skill, script or capability to an
+    agent, fix a bug, write tests or docs, refactor code, or improve any part
+    of the system. The agent works in an isolated container on the agent's
+    repository (code, tests, commit, push) and returns a summary.
 
     Args:
-        task: Natural language description of what to build or fix.
-              Be specific: include file paths, function names, inputs/outputs.
+        task: What to build or fix. Name file paths, functions, inputs and outputs.
         agent_name: Which agent repo to work in (default: current agent).
         agent_dir: Absolute path to the local clone (auto-resolved if omitted).
-
-    Returns:
-        Summary of actions taken and files changed.
     """
     import uuid as _uuid  # noqa: PLC0415
 
@@ -877,9 +867,8 @@ async def spawn_copilot_agent(    task: str,
 async def delegate_to_agent(agent_name: str, message: str) -> str:
     """Delegate a task to a specialist agent and return its response.
 
-    Use this tool when the user's request is clearly in the domain of a specialist agent.
-    The specialist agent loads its own system prompt, skills, and tools from its GitHub repo
-    and handles the request fully — its response is returned here verbatim.
+    Use it when the request is clearly in the domain of a specialist agent.
+    The agent handles the request fully, and its response comes back verbatim.
 
     When to delegate (examples):
     - CRM records, pipeline and deal questions → "crm-assistant"
@@ -895,8 +884,6 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
         agent_name: Exact registered name, e.g. "crm-assistant", "projects-assistant".
         message:    The user's full request, reworded if needed to be self-contained.
 
-    Returns:
-        The specialist agent's full response text.
     """
     import uuid as _uuid  # noqa: PLC0415
 

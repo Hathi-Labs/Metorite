@@ -44,6 +44,12 @@ Its one reader is `orchestrator.card_record.record_allowed`. The card gate asks
 it on each approved card, so a reload applies at once. The flip stays
 OWNER-GATE (`enforcement-flip`).
 
+The same flag turns on the sent-mail record (task 3594). A send tool sets the
+provider id, the approved addresses and the time on the row of its card. Each
+later turn of the chat then gets one line for each of the last 5 sent mails,
+in its run context. The run asks the flag at the start of each turn, so a
+reload applies at the next turn.
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The
@@ -54,6 +60,17 @@ empty. Empty gives each prompt of before, byte for byte.
 Its one reader is `acb_skills.chat_focus.focus_on`. The executor asks it at
 the start of each turn, and each write and each block ask it again. So a
 reload applies to the next turn. A flip stays OWNER-GATE (`enforcement-flip`).
+
+`CHAT_JOIN_SHADOW_ORGS` turns on the shadow join log
+(`chat_organization.md` §7, CO-4). For each listed org, the first message of
+a new web chat with Mira writes one row of `chat_join_log`. The row holds the
+outcome that §7.1 would take, as codes and ids only. The member sees nothing.
+`*` lists every org, and the default is empty. Empty means the run route
+schedules no match.
+
+Its one reader is `gateway.chat_join_shadow.shadow_allowed`. The run route
+asks it at each first message, so a reload applies to the next new chat. A
+flip is the gate `enforcement-flip`.
 
 `CHAT_LATE_APPROVE_ORGS` turns on the late-approve grant
 (`chat_run_continuity.md` S2 item 8, HRD-22). For each listed org, a late
