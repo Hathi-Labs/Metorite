@@ -1998,7 +1998,7 @@ async def crm_aggregate(
     page: int = 1,
     fields: list[str] | None = None,
 ) -> str:
-    """Count, sum or average CRM records, as one total or by one group. The
+    """Count, sum or average CRM records, as one total or by group. The
     server computes every number: report them as given. Quote the Display
     value as written. To split a total over 2 to 5 number fields,
     give fields with every key in ONE call, never one call for each field. When the answer starts with FIRST, tell the member that line
@@ -2007,11 +2007,11 @@ async def crm_aggregate(
     'count', 'sum_amount' or 'weighted' (deals: amount times the
     effective probability, open and ongoing only), or 'sum', 'avg', 'min' or
     'max' of the number field named by field. With no group_by and no
-    group_field you get one total over every matching record. group_by is 'status', 'owner', 'pipeline', 'source',
+    group_field you get one total of every matching record. group_by is 'status', 'owner', 'pipeline', 'source',
     'created_month', 'updated_month' or 'close_month' (a module: 'owner',
     'created_month', 'updated_month'). group_field is a picklist, boolean,
     lookup or date field; a date needs bucket 'month', 'quarter' or 'year'.
-    On a module, group_field2 adds a second one, at most one a date. Field keys come from crm_list_fields. A core
+    group_field2 adds a second one on a module, at most one a date. Field keys come from crm_list_fields. A core
     entity takes the filters of crm_list_records. A module takes field_filters: {key: value}, or
     {'key.from': date, 'key.to': date} for a date field, or
     {'key.from': N, 'key.to': M} for a number field. Both ends count, and
@@ -2019,9 +2019,8 @@ async def crm_aggregate(
     the exact value, name or record id.
     On a module, 'sum_amount' sums its amount, and field, group_field and
     field_filters also take the key words '@amount', '@date', '@status' and
-    '@parent'. On a module, term is
-    the member's own word for the figure: the
-    server maps it to one field. Give no field with it. When two
+    '@parent'. term is the member's own word for
+    a module figure: the server maps it to one field. Give no field with it. When two
     fields give different totals, ask the member first, with both totals."""
     slug = _entity_slug(entity, allow_module=True)
     params = _filters(
