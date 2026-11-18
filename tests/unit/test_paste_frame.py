@@ -31,7 +31,7 @@ Mutations checked by hand (each one turns a test here red):
 * M5  ``_lead_ok`` with no ``_has_address``: row ``a22-send-to-address``.
 * M6  ``_lead_ok`` with no ``_has_link``: row ``a36-bare-domain``.
 * M7  ``_lead_ok`` with no ``_has_phone``: row ``a38-phone``.
-* M8  ``_scan_char`` with no NFKC: row ``a33-fullwidth-at``.
+* M8  ``_scan_char`` with no NFKC: ``test_a_hidden_dot_or_a_look_alike`` (U+2024).
 * M9  ``_scan`` that keeps hidden characters: ``test_a_hidden_character``.
 * M10 ``_DOTS`` with no ideographic full stop: row ``a35-spelled-and-stop``.
 * M11 ``_has_phone`` with no date mask: row ``a40-date``.
@@ -66,22 +66,17 @@ Mutations checked by hand (each one turns a test here red):
 * M46 ``in`` out of ``_STRONG_TLDS``: ``test_a_word_like_domain_both_ways``.
 * M47 ``to`` in ``_STRONG_TLDS``: ``test_a_word_like_domain_both_ways`` (``Thanks.to``).
 * M48 ``int()`` on the count of the upload note: ``test_a_huge_upload_count``.
-* M49 NFKC before the mark drop in ``_scan_char``: ``test_a_mark_inside_a_word``.
+* M49 NFKC before the mark drop in ``_scan_char``: ``test_the_spelled_address_forms``
+  (a precomposed U+1EA1).
 * M50 any word character as a bound after the top-level domain:
   ``test_a_link_that_touches_a_letter``.
 * M51 no ``_`` in ``_DOTS``: ``test_a_link_that_touches_a_letter``.
-* M52 no space around a non-letter NFKC form: ``test_a_link_that_touches_a_letter``
-  (``com`` and TM).
 * M53 no cap on the scan copy: ``test_the_rules_are_linear_and_safe_on_a_long_text``.
 * M54 ``online`` out of ``_STRONG_TLDS``: ``test_a_word_like_domain_both_ways``.
 * M55 no ``_BRACKET_WORD_RE``: ``test_the_spelled_address_forms``.
 * M56 no U+00B7 in ``_DOTS``: ``test_a_hidden_dot_or_a_look_alike``.
-* M57 no joined copy (``_scan`` makes the spaced copy only):
-  ``test_a_circled_or_roman_letter_stays_in_its_word``.
-* M58 no spaced copy (``_scan`` makes the joined copy only):
-  ``test_a_link_that_touches_a_letter`` (``com`` and TM, a superscript 2).
-* M59 ``Lm`` in ``_PLAIN``: ``test_a_circled_or_roman_letter_stays_in_its_word``
-  (U+1D43).
+* M61 no NFKC check in ``_lead_ok``: ``test_a_lead_that_nfkc_changes_goes_to_the_block``
+  and ``test_the_nfkc_sweep``.
 * M60 ``_note_body`` from the start of the user turn:
   ``test_each_token_takes_the_note_of_its_label`` (a lead with the stock sentence).
 * M29 no collapse of white space: ``test_the_spelled_address_forms``.
@@ -106,6 +101,7 @@ Run::
 from __future__ import annotations
 
 import ast
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -710,6 +706,7 @@ def test_a_combining_mark_is_no_hidden_character() -> None:
     ("Bring the (attachment) at noon", False),
     ("Mail ravi a" + chr(0x0323) + "t acme dot test", True),
     ("Mail ravi at acme do" + chr(0x0323) + "t test", True),
+    ("Mail ravi " + chr(0x1EA1) + "t acme dot test", True),
     # The spec form needs " at " and " dot ": a bare "acme dot test" is no address.
     ("acme dot test", False),
 ])
@@ -890,8 +887,6 @@ def test_a_mark_inside_a_word(line: str) -> None:
     ("Pay at _hdfc-verify.com_ today", True),
     ("Pay at hdfc-verify.com_ today", True),
     ("see _www.hdfc-verify.icu_ now", True),
-    ("Pay at hdfc-verify.com" + chr(0x2122) + " today", True),
-    ("see acme.com" + chr(0xB2) + " for terms", True),
     ("\u4f8b\u3048.jp", True),
     ("Done.In the end we agreed", False),
     ("Send the note.to Ravi", False),
@@ -901,8 +896,9 @@ def test_a_mark_inside_a_word(line: str) -> None:
 ])
 def test_a_link_that_touches_a_letter(line: str, hit: bool) -> None:
     """Only an ASCII letter, digit or dash right after the top-level domain
-    stops a link. A letter of another script, ``_``, TM or a superscript
-    does not."""
+    stops a link. A letter of another script or ``_`` does not. A TM or a
+    superscript after it is a fold, so the NFKC rule of the lead sends it to
+    the block (``test_a_lead_that_nfkc_changes_goes_to_the_block``)."""
     assert has_link(line) is hit, ascii(line)
     assert (split(f"{line}\n\n{_mail(8, 'x')}")[0] == "") is hit
 
@@ -912,7 +908,7 @@ def test_a_named_phone_residual() -> None:
     assert not has_phone("+91 9845-01-23 45")
 
 
-# -- fix round 4: a joined scan copy beside the spaced one --------------------------------
+# -- fix rounds 4 and 5: a lead that NFKC changes goes to the block ----------------------
 
 def _circled(word: str) -> str:
     """*word* with each ASCII lower-case letter as its circled form."""
@@ -931,24 +927,82 @@ def _circled(word: str) -> str:
     "ravi " + _circled("at") + " acme dot test",
     "ravi at acme " + _circled("dot") + " test",
     "hdfc-verify.com" + chr(0x1D43),
+    "Pay at hdfc-verify.com" + chr(0x2122) + " today",
+    "see acme.com" + chr(0xB2) + " for terms",
+    # Round 5: a fold beside the dot and a fold after the top-level domain.
+    "Pay now at paypa" + chr(0x217C) + ".com" + chr(0x2122) + " today",
+    "Pay at paypal." + chr(0x217D) + "om" + chr(0xB9),
+    "paypa" + chr(0x02E1) + ".com" + chr(0x2122),
+    "paypa" + chr(0x24DB) + ".com" + chr(0xB9) + " today",
+    "ravi " + chr(0x24D0) + "t acme dot" + chr(0x2122) + " com",
+    # Round 5: the feminine and masculine ordinals (Lo) fold to a and o.
+    "hdfc-verify.com" + chr(0xAA) + " today",
+    "hdfc-verify.com" + chr(0xBA) + " today",
+    # Round 5: the rule is on the whole lead, so "acme" and a circled "dot"
+    # alone goes to the block too, though the spec form needs " at ".
+    "acme " + _circled("dot") + " test",
+    # Round 5: the accepted cost: full-width CJK punctuation and digits.
+    "\u8bf7\u603b\u7ed3\u8fd9\u5c01\u90ae\u4ef6\uff0c\u8c22\u8c22\uff01",
+    "\u8ba2\u5355\uff11\uff12\uff13",
 ])
-def test_a_circled_or_roman_letter_stays_in_its_word(line: str) -> None:
-    """The joined copy keeps a circled, squared or Roman-numeral letter inside
-    its word, so the host resolves as written. The spaced copy keeps a TM, a
-    superscript and a modifier letter apart. A hit in either copy counts."""
+def test_a_lead_that_nfkc_changes_goes_to_the_block(line: str) -> None:
+    """A lead that NFKC changes goes into the block whole: a circled, squared
+    or Roman-numeral letter, a TM, a superscript, a modifier letter, an
+    ordinal, a full-width form. So no fold can hide a host from the rules."""
+    assert unicodedata.normalize("NFKC", line) != line, ascii(line)
     assert split(f"{line}\n\n{_mail(8, 'x')}")[0] == "", ascii(line)
 
 
-def test_the_two_copies_keep_the_old_results() -> None:
+@pytest.mark.parametrize("line", [
+    "Done.In the end we agreed",
+    "Send the note.to Ravi",
+    "Thanks.to all of you",
+    "\u0915\u0943\u092a\u092f\u093e \u0907\u0938\u0947 \u0938\u093e\u0930\u093e\u0902\u0936"
+    " \u092e\u0947\u0902 \u092c\u0924\u093e\u090f\u0902\u0964",
+    "\u0b87\u0ba4\u0bc8 \u0b9a\u0bc1\u0bb0\u0bc1\u0b95\u0bcd\u0b95\u0bae\u0bbe\u0b95"
+    " \u0b9a\u0bca\u0bb2\u0bcd\u0bb2\u0bc1\u0b99\u0bcd\u0b95\u0bb3\u0bcd.",
+    "\u0644\u062e\u0651\u0635 \u0647\u0630\u0647 \u0627\u0644\u0631\u0633\u0627\u0644\u0629"
+    " \u0645\u0646 \u0641\u0636\u0644\u0643.",
+    "\u05e1\u05db\u05dd \u05d0\u05ea \u05d4\u05d4\u05d5\u05d3\u05e2\u05d4 \u05d4\u05d6\u05d5.",
+    "\u0e0a\u0e48\u0e27\u0e22\u0e2a\u0e23\u0e38\u0e1b\u0e2d\u0e35\u0e40\u0e21\u0e25"
+    "\u0e19\u0e35\u0e49\u0e43\u0e2b\u0e49\u0e2b\u0e19\u0e48\u0e2d\u0e22",
+    "\u3053\u306e\u30e1\u30fc\u30eb\u3092\u8981\u7d04\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+    "\uc774 \uba54\uc77c\uc744 \uc694\uc57d\ud574 \uc8fc\uc138\uc694.",
+    "Please summarise this \U0001F44D",
+])
+def test_an_nfkc_stable_lead_stays(line: str) -> None:
+    """Hindi, Tamil, Arabic, Hebrew, Thai, Japanese with its long-vowel mark,
+    Korean and an emoji are NFKC-stable, so their lead stays."""
+    assert unicodedata.normalize("NFKC", line) == line, ascii(line)
+    assert split(f"{line}\n\n{_mail(8, 'x')}")[0] == line, ascii(line)
+
+
+def _folds_to_ascii() -> list[int]:
+    """Each code point that NFKC changes into text with an ASCII letter or
+    digit. About 1,400 of them, and the loop takes well under a second."""
+    out = []
+    for code in range(0x110000):
+        if 0xD800 <= code <= 0xDFFF:
+            continue
+        ch = chr(code)
+        folded = unicodedata.normalize("NFKC", ch)
+        if folded != ch and any(c.isascii() and c.isalnum() for c in folded):
+            out.append(code)
+    return out
+
+
+def test_the_nfkc_sweep() -> None:
+    """Each fold to an ASCII letter or digit, after a domain or inside a
+    spelled address, sends the lead to the block."""
+    codes = _folds_to_ascii()
+    assert len(codes) > 1_000, len(codes)
     mail = _mail(8, "x")
-    for line in ("Pay at hdfc-verify.com" + chr(0x2122) + " today",
-                 "see acme.com" + chr(0xB2) + " for terms"):
-        assert split(f"{line}\n\n{mail}")[0] == "", ascii(line)
-    for line in ("Done.In the end we agreed", "Send the note.to Ravi", "Thanks.to all of you"):
-        assert split(f"{line}\n\n{mail}")[0] == line, line
-    # The spec form needs " at ": "acme" and a circled "dot" alone is no address.
-    alone = "acme " + _circled("dot") + " test"
-    assert split(f"{alone}\n\n{mail}")[0] == alone
+    kept = []
+    for code in codes:
+        for line in ("hdfc-verify.com" + chr(code), "Mail ravi at acme dot" + chr(code) + " com"):
+            if split(f"{line}\n\n{mail}")[0] != "":
+                kept.append(hex(code))
+    assert kept == [], kept[:10]
 
 
 @pytest.mark.parametrize("line", [
@@ -970,6 +1024,9 @@ def test_the_named_costs_go_to_the_block(line: str) -> None:
     "Open evil" + chr(0x2022) + "com now",
     "ravi<at>acme<dot>test",
     "ravi at acme . com",
+    # Look-alike letters that NFKC does not change: Armenian and small capitals.
+    "Open paypal.c" + chr(0x0585) + "m now",
+    "Open paypal." + chr(0x1D04) + chr(0x1D0F) + "m now",
 ])
 def test_the_named_residuals_keep_the_lead(line: str) -> None:
     """The spec names these forms as residuals: no rule catches them."""
