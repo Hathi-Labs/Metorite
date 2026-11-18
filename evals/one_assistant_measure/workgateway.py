@@ -206,6 +206,10 @@ NODES = {NODE_SPACE: _node(NODE_SPACE, _SPACE_NAME),
 PROFILE_PREFIX = "/auth/me/assistant-profile/"
 PROFILE_RESOLVE_ROUTE = "/auth/me/assistant-profile/resolve-person"
 
+#: The People directory of the synthetic org, for ``resolve_person``: the members that
+#: the owners list of the fake names (``Member`` is the caller, so it is left out).
+DIRECTORY: tuple[tuple[str, str], ...] = (("Kiran", KIRAN),)
+
 
 #: The reads that the run makes for the context of a turn when the production flags are on
 #: (``--mirror-prod``): the Knowledge index (``knowledge_tools.index_block``) and the CRM facts
@@ -278,21 +282,31 @@ class WorkGateway:
         if path.startswith("/studio/"):
             return self._studio(method, path, params)
         if path.startswith(PROFILE_PREFIX):
-            return self._profile(method, path)
+            return self._profile(method, path, params)
         if method == "GET" and path in TURN_READS:
             return TURN_READS[path]
         return self._projects(method, path, params, body)
 
     @staticmethod
-    def _profile(method: str, path: str) -> Any:
-        """``GET /auth/me/assistant-profile/resolve-person`` (task 2874, case 6). The People
-        directory and the mail hold no person of the exact name, so the tool says nobody. The
-        gateway's answer for a name that matches no row has this shape
-        (``profile_tools.format_answer``)."""
-        if method == "GET" and path == PROFILE_RESOLVE_ROUTE:
-            return {"matches": [], "total": 0, "directory": True, "mail_searched": True,
-                    "truncated": False}
-        return None
+    def _profile(method: str, path: str, params: dict[str, Any] | None = None) -> Any:
+        """``GET /auth/me/assistant-profile/resolve-person`` (task 2874, cases 1 and 6).
+
+        The People directory of the synthetic org holds :data:`DIRECTORY`. A name that
+        equals a person's first name or full name (any case) matches that member, as the
+        gateway's member arm does. Any other name, such as "Vineeta" of case 6, matches
+        nobody. The shapes are the gateway's (``profile_tools.format_answer``). Before the
+        pilot of 2026-11-18 the fake said nobody for EVERY name, so the forward of case 1
+        asked who Kiran is: a harness fault, not a product fault."""
+        if method != "GET" or path != PROFILE_RESOLVE_ROUTE:
+            return None
+        asked = str((params or {}).get("name") or "").strip().lower()
+        hits = [{"name": name, "email": email} for name, email in DIRECTORY
+                if asked and asked in (name.lower(), name.split()[0].lower())]
+        if len(hits) == 1:
+            return {"matches": hits, "total": 1, "source": "member", "directory": True,
+                    "mail_searched": True, "truncated": False}
+        return {"matches": [], "total": 0, "directory": True, "mail_searched": True,
+                "truncated": False}
 
     @staticmethod
     def _studio(method: str, path: str, params: dict[str, Any]) -> Any:

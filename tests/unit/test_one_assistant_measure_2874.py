@@ -271,6 +271,53 @@ async def _fake_gateway() -> None:
     assert (await box.get("/email/reply-card/draft-state", {"draft_id": "d"}))["in_drafts"] is False
 
 
+# ── the harness faults of the pilot of 2026-11-18 ────────────────────────────
+
+
+def test_states_discard_takes_the_two_right_answers_of_the_pilot() -> None:
+    first = ("The reply card to Anil closed without sending anything, and the draft is no "
+             "longer in Drafts. Do you want me to write it again?")
+    second = ("No. Nothing is waiting: there is no Anil draft in your Work Drafts folder and "
+              "no scheduled send. Nothing went out either.")
+    assert run_check("states_discard", obs(first)) is True
+    assert run_check("states_discard", obs(second)) is True
+    # the wrong answers still fail: silent on the Discard, or the card still waits
+    assert run_check("states_discard", obs("Nothing was sent.")) is False
+    assert run_check("states_discard", obs("Nothing is waiting, but the reply is ready for "
+                                           "you to approve.")) is False
+
+
+def test_resolve_person_finds_a_member_and_still_misses_vineeta() -> None:
+    from evals.one_assistant_measure import workgateway as wg
+
+    route = wg.PROFILE_RESOLVE_ROUTE
+    kiran = wg.WorkGateway._profile("GET", route, {"name": "Kiran"})
+    assert kiran["matches"] == [{"name": "Kiran", "email": wg.KIRAN}] and kiran["total"] == 1
+    assert wg.WorkGateway._profile("GET", route, {"name": "kiran"})["total"] == 1
+    # case 6 stays a miss, so the chat must try find_contact with the same name
+    assert wg.WorkGateway._profile("GET", route, {"name": "Vineeta"})["matches"] == []
+    assert wg.WorkGateway._profile("GET", route, {})["matches"] == []
+    assert wg.WorkGateway._profile("POST", route, {"name": "Kiran"}) is None
+
+
+def test_a_sent_reply_shows_in_sent_and_in_its_thread() -> None:
+    asyncio.run(_sent_reply())
+
+
+async def _sent_reply() -> None:
+    box = mb.Mailbox(SCENARIOS_2874[0].mails)
+    before = await box.get("/email/messages", {"folder": "sent", "query": "Priya"})
+    assert before["total"] == 0
+    await box.post("/email/reply-card", {"message_id": PRIYA_ID, "draft": "Yes, 250 is fine."})
+    await box.post("/email/reply-card/act", {
+        "message_id": PRIYA_ID, "answer": 'APPROVE {"reply": {"action": "send"}}'})
+    sent = await box.get("/email/messages", {"folder": "sent", "query": "Priya"})
+    assert sent["total"] == 1 and sent["emails"][0]["folder"] == "sent"
+    priya = box.by_id[PRIYA_ID]
+    thread = await box.get("/email/messages", {"thread_id": priya.thread_id or priya.id})
+    assert any(row["folder"] == "sent" for row in thread["emails"])
+
+
 # ── --mirror-prod ────────────────────────────────────────────────────────────
 
 NINE = ("email", "email-setup", "crm-records", "projects", "projects-plan",

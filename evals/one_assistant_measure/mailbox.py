@@ -204,7 +204,10 @@ class Mailbox(Gateway):
                 return False
         query = _terms(str(p.get("query") or ""))
         if query:
-            text = f"{m.subject} {m.body} {m.sender} {m.address}".lower()
+            # A sent mail is found by its recipients too, as the Sent folder of a mail
+            # client is (the pilot of 2026-11-18 searched Sent for "Priya").
+            sent_to = " ".join(m.to) if m.folder == "sent" else ""
+            text = f"{m.subject} {m.body} {m.sender} {m.address} {sent_to}".lower()
             return any(all(_has(w, text) for w in alt) for alt in query)
         return True
 
@@ -332,8 +335,24 @@ class Mailbox(Gateway):
         if action == "send":
             self.sent_replies.append({"message_id": mid, "to": list(to), "cc": cc,
                                       "body": str(choice.get("body") or prep["body"])})
+            self._file_sent(mid, prep["subject"], str(choice.get("body") or prep["body"]), to)
         return {"action": action, "draft_id": prep["draft_id"], "to": to, "cc": cc,
                 "subject": prep["subject"], "mailbox": prep["mailbox"]}
+
+    def _file_sent(self, message_id: str, subject: str, body: str, to: Any) -> None:
+        """Put a sent reply in the Sent folder and in its thread, so a later turn finds it.
+
+        Before the pilot of 2026-11-18 a send stayed only in ``sent_replies``. So turn 2 of
+        case 3 searched Sent, found nothing, and doubted the send: a harness fault."""
+        original = self.by_id.get(message_id)
+        mail = Mail(
+            id=f"sent-{len(self.mails) + 1}", sender="VJ", address=ME, subject=subject,
+            body=body, days_ago=0.0, account_id=original.account_id if original else WORK,
+            is_read=True, folder="sent",
+            thread_id=(original.thread_id or original.id) if original else "",
+            to=tuple(str(a) for a in (to or ())))
+        self.mails = (*self.mails, mail)
+        self.by_id[mail.id] = mail
 
     def trash_draft(self, draft_id: str) -> None:
         """The member's Discard on a reply card: the browser trashes the card's draft."""
@@ -412,10 +431,13 @@ class Mailbox(Gateway):
             self.calls.append(("POST", path, body))
             saved = self.drafts[self.held_for]
             self.sent_drafts.append(saved["id"])
+            self._file_sent(saved["message_id"], saved["subject"], saved["body"], saved["to"])
             return {"to": saved["to"], "cc": saved["cc"]}
         if path == "/email/drafts/send" and draft in self.drafts:
             self.calls.append(("POST", path, body))
             self.sent_drafts.append(draft)
+            saved = self.drafts[draft]
+            self._file_sent(saved["message_id"], saved["subject"], saved["body"], saved["to"])
             return {}
         return await super().post(path, body)
 

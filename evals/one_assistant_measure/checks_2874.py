@@ -45,8 +45,13 @@ _STILL_OPEN = re.compile(
     r"\b(?:up for your decision|until you press|still (?:open|waiting|pending)|waiting for you|"
     r"awaiting your|treat it as declined|has not been sent yet|not yet sent|ready for you|"
     r"to approve|awaiting your approval)\b", re.IGNORECASE)
+#: The pilot of 2026-11-18 added three forms. Each one states the end state of the card,
+#: and a real answer used each: "closed without sending", "no longer in Drafts" and
+#: "Nothing is waiting". "Nothing was sent" alone still fails: it is silent on the Discard.
 _DISCARD = re.compile(
-    r"\bdiscard(?:ed)?\b|\byou (?:cancelled|canceled|declined)\b|\bwon['\u2019]t send\b",
+    r"\bdiscard(?:ed)?\b|\byou (?:cancelled|canceled|declined)\b|\bwon['\u2019]t send\b|"
+    r"\bclosed without sending\b|\bno longer in (?:your )?(?:\w+ )?drafts\b|"
+    r"\bnothing is (?:waiting|pending)\b",
     re.IGNORECASE)
 
 
