@@ -15,6 +15,10 @@ at its import. ``acb_skills/__init__.py`` imports it, so each process that
 imports a module of ``acb_skills`` has the set before a tool runs. It edits no
 ``tool_packs`` code. ``skill_families`` imports the standard library only, and
 ``failure_log`` imports no ``acb_skills`` module, so no cycle can form.
+
+TOF-2c: the module also gives ``failure_log.set_channel_reader`` the reader of
+the run's ``channel`` key, so a capture site in ``acb_common`` (C4) reads the
+surface of the run with no import of ``acb_skills``.
 """
 
 from __future__ import annotations
@@ -33,4 +37,15 @@ def builtin_tool_names() -> frozenset[str]:
     return frozenset(n for n in all_registered_tool_names() if TOOL_RE.match(n))
 
 
+def run_channel() -> object:
+    """The ``channel`` key of the run on this frame, or None (TOF-2c).
+
+    The executor binds it in the run context of ``write_artifact``. The
+    import is late, so this module adds no import cycle."""
+    from acb_skills.write_artifact import artifact_context
+
+    return artifact_context().get("channel")
+
+
 failure_log.set_builtin_names(builtin_tool_names())
+failure_log.set_channel_reader(run_channel)

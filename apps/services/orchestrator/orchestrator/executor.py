@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator
 
 from acb_audit import AuditEvent, record
-from acb_common import get_logger, get_settings
+from acb_common import failure_log, get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
 from acb_llm.run_errors import run_error_event
@@ -6435,6 +6435,12 @@ async def _run_agent_inner(
                 # The run's platform tools after every narrowing, for
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
+                # TOF-2c: the surface that a failure record of this run takes.
+                # A delegated run keeps the channel of the run that asked.
+                channel=failure_log.run_channel(
+                    _parent_ctx.get("channel"), _batch_source,
+                    agent=agent_name, batch=True,
+                ),
                 # WS-67 OA-9b hardening: a run with a parent is a sub-run.
                 **({"sub_run": True} if _parent_ctx.get("run_id") else {}),
                 # WS-67 OA-9c: a spawn child's own pack tools act in this run,
@@ -7451,6 +7457,11 @@ async def run_agent_stream(
     _member_turns = _member_turns_for_run(artifact_context(), event_payload)
     # WS-67 OA-4: a delegated run inherits its parent's kept corrections.
     _inherited_constraints = _inherited_chat_constraints(artifact_context())
+    # TOF-2c: the surface of this run for the failure log. A delegated run
+    # keeps the channel of the run that asked (tool_failure_log.md §4.2).
+    _run_channel = failure_log.run_channel(
+        artifact_context().get("channel"), _corr_source, agent=agent_name,
+    )
     _artifact_token = enter_artifact_context()
     # H-236: decide this run's no_egress ONCE, before anything can fail, and
     # bind it. A covered agent's run is a covered run, whatever its parent.
@@ -7821,6 +7832,8 @@ async def run_agent_stream(
                 # The run's platform tools after every narrowing, for
                 # ``write_artifact.run_holds_tool`` (§14.10).
                 run_tools=_run_tools,
+                # TOF-2c: the surface that a failure record of this run takes.
+                channel=_run_channel,
             )
             if _pack_apply is not None:
                 # WS-67 OA-7c: the bind above replaced the context, so the
