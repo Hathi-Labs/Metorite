@@ -769,6 +769,38 @@ async def test_a_redis_py_timeout_counts_as_a_stall(world) -> None:
     assert len(sets) == 2 and out.kind == send_once.BUSY
 
 
+async def test_a_redis_py_timeout_from_get_after_a_key_was_found_is_busy(world) -> None:
+    """The GET of a found key times out in redis-py. ``_begin`` re-raises it
+    as a stall, and ``begin`` gives BUSY. A catch of the builtin class only
+    gives OPEN (in ``_begin``) or raises (in ``begin``)."""
+    from redis.exceptions import TimeoutError as RedisTimeout
+
+    first = await _begin()
+    assert first.kind == send_once.NEW
+
+    async def _get_times_out(k):
+        raise RedisTimeout("socket timeout")
+
+    world.raw.get = _get_times_out
+    out = await asyncio.wait_for(_begin(), 2)
+    assert out.kind == send_once.BUSY
+
+
+async def test_a_redis_py_timeout_from_the_stream_head_is_busy(world, monkeypatch) -> None:
+    """A later step: the read of the stream head for a stored run times out
+    in redis-py. ``begin`` gives BUSY, never OPEN and never a raise."""
+    from redis.exceptions import TimeoutError as RedisTimeout
+
+    await _first_run(world)
+
+    async def _head_times_out(thread_id, count=5):
+        raise RedisTimeout("socket timeout")
+
+    monkeypatch.setattr(stream_relay, "stream_head", _head_times_out)
+    out = await asyncio.wait_for(_begin(), 2)
+    assert out.kind == send_once.BUSY
+
+
 async def test_a_start_into_an_empty_key_starts_nothing(world) -> None:
     """F-E: the key is gone at the start. It ran out, or a taker ran and a
     Stop released it. The move never writes into an empty key."""
