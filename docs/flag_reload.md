@@ -280,6 +280,14 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
+edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
+`create_task` carries a form of its values, and the write takes the values
+that the member approved. `*` lists every org, and the default is empty. Its
+one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
+gate ask it at each card, so a reload applies to the next card. A flip stays
+OWNER-GATE (`enforcement-flip`, EAC-7).
+
 `PROVIDER_ALERT_ORGS` names the org whose admins hear when an AI vendor runs
 out of credit or runs low (`customer_console.md` §6A.17b, AO-2). They get one
 bell row and one phone push. Set it to the operator org id. The default is
@@ -289,14 +297,6 @@ admins must never get our vendor alerts. Its one reader is
 source ask it on each call, so a reload applies at the next 15-minute bucket.
 It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
 OWNER-GATE (`enforcement-flip`).
-
-`PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
-edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
-`create_task` carries a form of its values, and the write takes the values
-that the member approved. `*` lists every org, and the default is empty. Its
-one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
-gate ask it at each card, so a reload applies to the next card. A flip stays
-OWNER-GATE (`enforcement-flip`, EAC-7).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
