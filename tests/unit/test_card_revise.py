@@ -1206,3 +1206,126 @@ def test_the_new_draft_text_claims_no_earlier_draft() -> None:
     text = agents._closed_by_message("new_draft")
     assert "That save updates" not in text
     assert "If this chat saved this email before" in text
+
+
+# ── 9. Fix round 3: the gateway records and the held form card ──────────────
+#
+# These drive the real card routes with the fakes of
+# ``test_email_new_mail_card.py``. Each assert reads the stored save, so a
+# lost record line, a lost thread or a wrong member turns it red.
+
+from tests.unit import _held_card_fakes as F  # noqa: E402
+from tests.unit import test_email_new_mail_card as NM  # noqa: E402
+
+world = NM.world  # the fixture of the card routes
+
+D9 = "0d0d0d0d-0000-4000-8000-0000000000d9"
+CHAT = "chat-thread-1"
+
+
+@pytest.fixture()
+def gw_drafts(monkeypatch: pytest.MonkeyPatch, world: dict[str, Any], redis: _Redis) -> Any:
+    """The draft store of the gateway: ``upsert_draft`` and the read of
+    ``_fetch_message_dict``. D9 is a draft of Kim that this chat saved."""
+    from contextlib import asynccontextmanager
+
+    from gateway.routes.email.automation import drafting
+    from gateway.routes.email.automation import held_card as hc
+
+    _flag(monkeypatch, "*")
+    rows: dict[str, dict[str, Any]] = {}
+    saves: list[Any] = []
+
+    def row(did: str, req: Any) -> dict[str, Any]:
+        return {"id": did, "account_id": F.BOX, "folder": "drafts",
+                "subject": req.subject, "body_text": req.body,
+                "to_addresses": [{"email": a} for a in req.to or []],
+                "cc_addresses": [{"email": a} for a in req.cc or []],
+                "bcc_addresses": [{"email": a} for a in req.bcc or []]}
+
+    async def upsert(req: Any, _user: Any) -> dict[str, Any]:
+        saves.append(req)
+        did = req.draft_id or f"0d0d0d0d-0000-4000-8000-{len(saves):012d}"
+        rows[did] = row(did, req)
+        return dict(rows[did])
+
+    @asynccontextmanager
+    async def session() -> Any:
+        yield object()
+
+    async def fetch(_db: Any, did: str) -> dict[str, Any]:
+        return dict(rows.get(did) or {})
+
+    monkeypatch.setattr(drafting, "upsert_draft", upsert)
+    monkeypatch.setattr(hc, "upsert_draft", upsert)
+    monkeypatch.setattr(drafting, "_tenant_session", session)
+    monkeypatch.setattr(drafting, "_fetch_message_dict", fetch)
+
+    async def seed(to: list[str], subject: str, body: str) -> None:
+        req = drafting.DraftUpsertRequest(account_id=F.BOX, to=to, subject=subject, body=body)
+        rows[D9] = row(D9, req)
+        await cr.note_draft(thread=CHAT, account_id=F.BOX, member=F.MEMBER, draft_id=D9,
+                            to=to, subject=subject, digest=cr.draft_digest(rows[D9]),
+                            org=F.ORG)
+
+    return type("G", (), {"rows": rows, "saves": saves, "seed": staticmethod(seed)})
+
+
+async def test_the_new_mail_card_save_updates_the_draft_that_the_card_named(
+    gw_drafts: Any,
+) -> None:
+    """(a) the record keeps ``replaces``, (d) the act passes the session's
+    member. Mutation: drop either -> the save is a create, red."""
+    await gw_drafts.seed([F.KNOWN], "Rates", "Old text.")
+    card = await NM._card(card_thread_id=CHAT, replaces=D9, cc=[])
+    out = await NM._act(card["card_id"], NM._answer(action="save", body="New text.", cc=()))
+    [saved] = gw_drafts.saves
+    assert saved.draft_id == D9 and saved.body == "New text."
+    assert out["replace_outcome"] == "updated" and out["replaced"] == D9
+    assert len(gw_drafts.rows) == 1
+
+
+async def test_a_new_mail_card_that_named_no_draft_saves_a_new_one(gw_drafts: Any) -> None:
+    await gw_drafts.seed([F.KNOWN], "Rates", "Old text.")
+    card = await NM._card(card_thread_id=CHAT, cc=[])
+    out = await NM._act(card["card_id"], NM._answer(action="save", body="New text.", cc=()))
+    [saved] = gw_drafts.saves
+    assert saved.draft_id is None and "replace_outcome" not in out
+    assert gw_drafts.rows[D9]["body_text"] == "Old text."
+
+
+async def test_the_held_form_save_updates_the_draft_that_the_card_named(
+    gw_drafts: Any,
+) -> None:
+    """(b) the held record keeps ``replaces``, (c) ``_save_new`` passes the
+    thread of the record. Mutation: drop either -> a create, red."""
+    await gw_drafts.seed([F.KNOWN], "Rates", "Old text.")
+    card = await NM._held(card_thread_id=CHAT, replaces=D9)
+    out = await NM._held_act(card["card_id"], NM._answer(action="save", cc=()))
+    [saved] = gw_drafts.saves
+    assert saved.draft_id == D9 and saved.body == NM.TEXT
+    assert out["replace_outcome"] == "updated" and out["replaced"] == D9
+
+
+async def test_the_held_form_card_shows_the_replace_and_cancel_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(e) ``_held_form_card`` puts each line of the plan on the form, as the
+    member sees it. Mutation: drop the loop -> red."""
+    forms: list[dict[str, Any]] = []
+
+    async def ask(form: dict[str, Any], *_a: Any) -> Any:
+        forms.append(form)
+        return None, "REVISED", False
+
+    monkeypatch.setattr(agents, "_ask_until_revised", ask)
+    plan = agents._ChatPlan(D9, [{"id": "s1", "draft_id": D9, "status": "queued",
+                                  "send_at": "2026-11-19T09:00:00+05:30"}])
+    lines = agents._replace_lines(plan, form=True)
+    prep = {"card_id": "c" * 32, "form": {"kind": "new", "notices": [], "classes": {}}}
+    out = await agents._held_form_card(prep, "Not sent", "act", CHAT, closed="x", lines=lines)
+    assert out == "REVISED"
+    assert forms[0]["notices"] == [
+        "If you press Save draft, this replaces the draft saved earlier in this chat.",
+        "If you press Save draft, this cancels the send scheduled for "
+        "2026-11-19T09:00:00+05:30."]
