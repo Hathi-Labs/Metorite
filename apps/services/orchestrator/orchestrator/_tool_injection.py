@@ -2435,8 +2435,13 @@ def _inject_agent_tools(
     tool_scope: list[str] | None = None, agent_name: str | None = None,
     agent_config: dict[str, Any] | None = None,
     no_egress: bool = False,
+    paste_frame: bool = False,
 ) -> frozenset[str]:
     """Inject cross-agent delegation tools into every loaded agent.
+
+    ``paste_frame`` (HRD-14b) is True only for a top-level streamed run, which
+    the chat route can bind. A delegated run, a sub-agent and a batch run
+    pass nothing, so they get no paste middleware (:func:`_apply_paste_frame`).
 
     Returns the names of the platform tools this run holds after every
     narrowing (scope, skill toggles, D85, H-236, the floor opt-out and
@@ -2994,6 +2999,10 @@ def _inject_agent_tools(
         _apply_chat_hold(agents, agent_name)
     # Task 2494: a member's steer reaches each native agent as a user turn.
     _apply_steer_turns(agents)
+    # HRD-14b: a paste is framed as data, in a copy of each model request.
+    # Right after the steer turns, so its middleware sees them. Off for the
+    # org, or a run that the route cannot bind, it attaches nothing.
+    _apply_paste_frame(agents, attach=paste_frame)
     # RESUME-1a: the MAF call id of each tool call, for the stored call of a
     # card. Off for the org, it attaches nothing.
     _apply_resume_call_id(agents)
@@ -3121,6 +3130,42 @@ def _apply_steer_turns(agents: list[Any]) -> None:
     for i, agent in enumerate(agents):
         if isinstance(agent, Agent):
             agents[i] = agent_with_providers(agent, [SteerTurnsProvider()])
+
+
+def _apply_paste_frame(agents: list[Any], *, attach: bool) -> None:
+    """A paste is framed as data on ONE run (HRD-14b, task 3667).
+
+    Spec: ``chat_failure_modes.md`` §4.7b, "The seam". It replaces each
+    native MAF ``Agent`` in *agents* with a per-run view that carries
+    ``orchestrator.paste_turns.PasteFrameProvider``, as
+    :func:`_apply_progress_notice` does. It runs right after
+    :func:`_apply_steer_turns`, so the middleware sees each request after the
+    steer turns. With ``CHAT_PASTE_FRAME_ORGS`` off for the run's org it
+    attaches nothing, so the provider list, the first model request, the
+    stored session and each golden stay byte-identical. The org is the run
+    binding's (:func:`_run_org`), never request input. *attach* is False for
+    a delegated run, a sub-agent and a batch run: they get no middleware. A
+    Copilot SDK agent and a plain object stay as they are. Fence:
+    ``tests/unit/test_paste_frame_seam.py``.
+    """
+    if not attach:
+        return
+    from acb_skills.paste_frame import paste_frame_on
+
+    if not paste_frame_on(_run_org()):
+        return
+    try:
+        from agent_framework import Agent
+
+        from orchestrator.paste_turns import PasteFrameProvider
+    except ImportError as exc:  # pragma: no cover — both ship with the platform
+        _log.warning("executor.paste_frame_unavailable", error=str(exc)[:200])
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if isinstance(agent, Agent):
+            agents[i] = agent_with_providers(agent, [PasteFrameProvider()])
 
 
 def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
