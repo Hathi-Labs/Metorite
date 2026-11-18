@@ -294,10 +294,6 @@ async def recall_timeline(entity_name: str, query: str) -> str:
         "2026-05-12: Deal Acme-ABC moved to Awaiting PO [source: agent-sales]"
         "2026-05-28: Follow-up sent by Vijay after 16 days stale"
         Returns "(no timeline facts found)" if Graphiti is disabled or nothing matches.
-
-    Examples:
-        history = await recall_timeline("ABC Corp", "all deal stage changes")
-        history = await recall_timeline("Rahul Kumar", "meetings and follow-ups")
     """
     _close_profile_writes()
     try:
@@ -341,14 +337,10 @@ async def save_memory(fact: str) -> str:
 
     Returns:
         "Memory saved." on success. MEMORY_OFF when Mem0 is off, because then
-        nothing is kept (personalization.md §2.1, WS-63 PZ-1). Otherwise an
-        error description. The tool never says "Memory saved." when Mem0 is
-        off. Fence: ``tests/unit/test_memory_tools_dark.py``.
-
-    Examples:
-        await save_memory("Vijay wants all financial figures in INR lakhs, not crores")
-        await save_memory("ABC Corp prefers communication via WhatsApp, not email")
+        nothing is kept. Otherwise an error description. The tool never says
+        "Memory saved." when Mem0 is off.
     """
+    # personalization.md §2.1, WS-63 PZ-1. Fence: tests/unit/test_memory_tools_dark.py.
     try:
         from acb_memory import add_memories_background  # noqa: PLC0415
 
@@ -404,18 +396,6 @@ async def save_episode(
 
     Returns:
         "Episode recorded." on success, or an error description on failure.
-
-    Examples:
-        await save_episode(
-            "Deal closed",
-            "ABC Corp signed the PO worth ₹50L for 10 printers. Contact: Rahul Kumar.",
-            source="agent-sales",
-        )
-        await save_episode(
-            "Meeting follow-up",
-            "Meeting with Delhi NCR prospects on June 14. Action items: send quotes to 3 companies.",
-            source="agent-meeting-notes",
-        )
     """
     try:
         from acb_memory import add_episode  # noqa: PLC0415
