@@ -1220,21 +1220,36 @@ async def _decisions(user: UserContext) -> Found:
 STUDIO_HREF = "/studio"
 STUDIO_APPROVAL_RIGHT = "studio:publish"
 
+# WS-STU J2d (TOF-4b, ``ai_studio_rows/J2d.md``): the same source gives one
+# row for each pending ask to share a SKILL with the org. The provider calls
+# the route's own list (``skills.list_skill_shares``), so it writes no SQL. It
+# drops each ask of the member, because the store refuses that approve. The
+# row holds no body and no hash. A skill share needs no install (J2c), so
+# ``PACKAGE_HOST_ORGS`` gates the app rows only. The row has no act: the
+# holder reads the whole text on a card in the chat, and decides there. It
+# opens a new chat with a drafted message (``skill_share_href``). The member
+# reads the words, then sends them. The words hold ids only, no member text.
+
+
+def skill_share_href(skill_id: str, version: Any) -> str:
+    """The link of a skill share row: a new chat, with the ask in the box.
+
+    ``q`` puts words in the message box with no typed mark, and nothing
+    sends by itself (``app/chat/page.tsx``). The words load the pack
+    ``studio-share`` by its words ("skill share"), and they name the skill
+    id and the version only."""
+    words = f"Show me the skill share that waits for me: skill {skill_id}, version {version}."
+    return f"/chat?{urlencode({'do': 'new-chat', 'q': words})}"
+
 
 def _same_person(a: Any, b: Any) -> bool:
     return str(a or "").strip().lower() == str(b or "").strip().lower() != ""
 
 
-async def _studio_approvals(user: UserContext) -> Found:
-    from gateway.package_host import flags as host_flags
-    from gateway.routes.studio import flags as studio_flags
+async def _studio_app_rows(user: UserContext) -> tuple[list[Item], bool]:
+    """The app rows of J2b-4a, and whether the route cut its list."""
     from gateway.routes.studio import packages
 
-    org = getattr(user, "organization_id", None)
-    if not studio_flags.studio_allowed(org):
-        raise SourceAbsent("STUDIO_ORGS does not hold the org")
-    if not host_flags.package_host_allowed(org):
-        raise SourceAbsent("PACKAGE_HOST_ORGS does not hold the org")
     answer = await packages.list_approvals(user=user, state=None)
     me = user.email
     out = []
@@ -1249,8 +1264,47 @@ async def _studio_approvals(user: UserContext) -> Found:
             detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
             href=STUDIO_HREF, at=row.get("requested_at"),
         ))
+    return out, bool(answer.get("truncated"))
+
+
+async def _studio_skill_rows(user: UserContext) -> tuple[list[Item], bool]:
+    """The skill share rows of J2d, and whether the route cut its list."""
+    from gateway.routes.studio import skills
+
+    answer = await skills.list_skill_shares(user=user, state=None)
+    me = user.email
+    out = []
+    for row in answer.get("shares") or []:
+        if _same_person(row.get("owner_email"), me):
+            continue
+        sid = str(row.get("skill_id") or "")
+        name = str(row.get("name") or "").strip() or "A skill"
+        version = row.get("version")
+        out.append(_item(
+            id=f"studio-skill-share:{sid}:{version}", app="studio",
+            kind="approval", title="A skill share waits for your approval",
+            detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
+            href=skill_share_href(sid, version), at=row.get("requested_at"),
+        ))
+    return out, bool(answer.get("truncated"))
+
+
+async def _studio_approvals(user: UserContext) -> Found:
+    from gateway.package_host import flags as host_flags
+    from gateway.routes.studio import flags as studio_flags
+
+    org = getattr(user, "organization_id", None)
+    if not studio_flags.studio_allowed(org):
+        raise SourceAbsent("STUDIO_ORGS does not hold the org")
+    out: list[Item] = []
+    cut = False
+    if host_flags.package_host_allowed(org):
+        rows, cut = await _studio_app_rows(user)
+        out += rows
+    rows, skills_cut = await _studio_skill_rows(user)
+    out += rows
     shown = _sort(out)[:PER_APP]
-    return Found(shown, len(shown), capped=bool(answer.get("truncated")) or len(out) > PER_APP)
+    return Found(shown, len(shown), capped=cut or skills_cut or len(out) > PER_APP)
 
 
 # Approvals runs LAST of the needs providers (the module note). Three of them
