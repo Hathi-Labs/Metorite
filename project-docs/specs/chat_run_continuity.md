@@ -2065,6 +2065,21 @@ the same reply. It needs no migration and no new flag.
   gap was there before RESUME-2b. Do not flip `CHAT_RESUME_ORGS` before a
   slice makes the reconnect replay obey the waterline and the label. The
   slice RESUME-2d (§4.12.7) owns it.
+- **Known P3 gap: a Stop in the start window (verifier of 2026-11-18, F2).**
+  A Stop (`stream_relay.cancel_run`) can come after `parked_end_of` and
+  before the XDEL of `start_detached`. With no live run, it pushes a
+  `RUN_FINISHED` with `cancelled` after the parked end. The XDEL still deletes
+  the parked end, so case A goes on with a terminal event in the middle of
+  the stream. A tab that attaches from `0-0` while the run works stops at
+  that event. The run ignores the Stop, because `start_detached` calls
+  `clear_stopped`. The row still gets both parts. RESUME-3b owns it: the
+  attach loop reads on past a terminal event in the middle of a stream.
+- **Known P3 gap: the 24 h map is in one process (verifier, F5).** The map
+  `stream_relay._PARKED_STREAMS` lives in the process that parked the run.
+  The next run of the same thread, in another process, does not clear that
+  entry. When the first process then calls `mark_inactive` for the thread (a
+  Stop that it serves), the stream of the next run lives 24 hours. The cost is the
+  Redis memory of one stream only. Production runs ONE gateway worker today.
 - **Not in this slice.** The chat side of case A is RESUME-3b (task 3475).
   The continuation sends a second `RUN_STARTED` with the same run id, and a
   replay of the chat must keep one bubble. The park's fold sealed the row, so
