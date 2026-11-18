@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -557,19 +558,36 @@ def compute_enabled(org: str | None) -> bool:
         return False
     if not maf_coding_scope_allows(COMPUTE_TARGET, who):
         return False
-    raw = str(getattr(get_settings(), "compute_run_orgs", "") or "")
+    settings = get_settings()
+    raw = str(getattr(settings, "compute_run_orgs", "") or "")
     items = {item for item in re.split(r"[,\s]+", raw) if item}
+    if str(getattr(settings, "self_serve_signup_enabled", "") or "").strip().lower() == "true":
+        # Anyone can sign up, so a wildcard would give compute to a stranger.
+        try:
+            scope = parse_maf_coding_scope(str(getattr(settings, "maf_coding_scope", "") or ""))
+        except ValueError:
+            return False
+        if "*" in items or (COMPUTE_TARGET, "*") in scope:
+            return False
     return "*" in items or who in items
 
 
+def _production_mode(settings: Any) -> bool:
+    """True outside dev: staging counts as production (as SBX-15 and acb_llm do)."""
+    return str(getattr(settings, "acb_env", "prod")) != "dev"
+
+
 def _compute_production_guard(settings: Any) -> None:
-    """Refuse in production unless the backend is remote and the runtime is gVisor.
+    """Refuse in production unless the settings name a remote gVisor backend.
+
+    This is the early check. The real one is in ``_compute_start``, which
+    checks the argv it is about to run and the org admit of that start.
 
     TODO(task 3430, SBX-15): ``sandbox_backend`` and ``sandbox_runtime`` do not
-    exist on main. Re-point these two reads at the real names when that branch
+    exist on main. Re-point these reads at the real names when that branch
     merges. Until then ``getattr`` gives no backend, so production fails closed.
     """
-    if str(getattr(settings, "acb_env", "prod")) != "prod":
+    if not _production_mode(settings):
         return
     backend = str(getattr(settings, "sandbox_backend", "docker") or "docker")
     runtime = str(getattr(settings, "sandbox_runtime", "") or "")
@@ -2548,7 +2566,7 @@ class SandboxBroker:
         """Reserve a compute slot, or raise :class:`SandboxBusy`. No await inside."""
         settings = self._settings()
         per_org = int(getattr(settings, "compute_max_per_org", 1))
-        total = int(getattr(settings, "compute_max_total", 2))
+        total = int(getattr(settings, "compute_max_total", 1))
         async with self._registry_lock:
             mine = [h for h in self._compute_live.values() if h.org == binding.org]
             if binding.name in self._compute_live or len(mine) >= per_org:
@@ -2572,15 +2590,43 @@ class SandboxBroker:
         limits = Limits.from_settings(settings)
         uid, gid = _process_ids()
         handle.start_id, handle.container_id = uuid.uuid4().hex, ""
+        kwargs: dict[str, Any] = {}
+        runtime = str(getattr(settings, "sandbox_runtime", "") or "")
+        # TODO(task 3430, SBX-15): `build_run_argv(runtime=...)` and
+        # `SandboxBroker._remote_org_admit(org)` come with that branch. Both
+        # are read by name, so this start picks them up when it merges.
+        if runtime and "runtime" in inspect.signature(build_run_argv).parameters:
+            kwargs["runtime"] = runtime
         argv = build_run_argv(
             binding=handle.binding, mounts=[], uid=uid, gid=gid,
-            image=image, limits=limits, start_id=handle.start_id,
+            image=image, limits=limits, start_id=handle.start_id, **kwargs,
         )
+        admit = getattr(self, "_remote_org_admit", None)
+        admitted = False
+        if admit is not None:
+            result = admit(handle.org)
+            if inspect.isawaitable(result):
+                result = await result
+            admitted = result is True
+        if _production_mode(settings) and (
+            "--runtime=runsc" not in argv or not admitted
+        ):
+            raise SandboxRefused(
+                "Compute starts in production only under runsc, after the org admit."
+            )
         await self._run_container(handle, argv)
+        if not compute_enabled(handle.org):
+            raise SandboxRefused("Compute was switched off for this organization.")
         handle.started_at = handle.last_used = self._clock()
         handle.starting = False
         handle.ready.set()
         _log.info("sandbox_broker.compute_started", name=handle.name, org=handle.org)
+
+    @staticmethod
+    def _compute_alive(handle: SandboxHandle) -> None:
+        """Refuse when the reaper or the kill switch dropped this container."""
+        if handle.removed:
+            raise SandboxRefused("This compute run was stopped.")
 
     async def run_compute(
         self, files: dict[str, bytes], *, timeout_s: int,
@@ -2609,6 +2655,7 @@ class SandboxBroker:
         began = self._clock()
         try:
             await self._compute_start(handle)
+            self._compute_alive(handle)
             put = await self._docker.run(
                 ["exec", "-i", handle.name, "tar", "-x", "-C", WORKSPACE_TARGET],
                 timeout=_SMALL_TIMEOUT_SECONDS, stdin=tar_in,
@@ -2617,16 +2664,19 @@ class SandboxBroker:
                 _log.warning("sandbox_broker.compute_put_failed", name=handle.name,
                              error=put.stderr[-300:])
                 raise SandboxUnavailable("The compute container did not take its inputs.")
+            self._compute_alive(handle)
+            exec_began = self._clock()
             ran = await self._docker.collect(
                 ["exec", "--workdir", WORKSPACE_TARGET, handle.name,
                  "timeout", "-s", "KILL", str(seconds), "python", "main.py"],
                 timeout=seconds + _HOST_GRACE_SECONDS, cap=COMPUTE_STREAM_CAP,
             )
-            elapsed = self._clock() - began
+            elapsed = self._clock() - exec_began
             killed = ran.rc == 137
             timed_out = ran.timed_out or (killed and elapsed >= seconds)
             out_files: dict[str, bytes] = {}
             if not ran.timed_out:
+                self._compute_alive(handle)
                 got = await self._docker.collect(
                     ["exec", handle.name, "tar", "-c", "-C", COMPUTE_OUT_TARGET, "."],
                     timeout=_SMALL_TIMEOUT_SECONDS,
@@ -2675,9 +2725,11 @@ class SandboxBroker:
             # when it outlives the longest run plus the grace (a crashed run).
             stale = [
                 h for h in self._compute_live.values()
-                if not compute_enabled(h.org)
-                or (not h.starting and now - h.started_at
-                    > COMPUTE_MAX_TIMEOUT_S + 2 * _HOST_GRACE_SECONDS + _SMALL_TIMEOUT_SECONDS)
+                if not h.starting and (
+                    not compute_enabled(h.org)
+                    or now - h.started_at
+                    > COMPUTE_MAX_TIMEOUT_S + 2 * _HOST_GRACE_SECONDS + _SMALL_TIMEOUT_SECONDS
+                )
             ]
             for victim in stale:
                 self._compute_drop(victim)

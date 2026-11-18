@@ -534,16 +534,147 @@ async def test_production_refuses_without_a_remote_gvisor_backend(
     assert docker.calls == []
 
 
-async def test_production_allows_a_remote_gvisor_backend(
-    broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
-) -> None:
+def _remote_runsc(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, *, runtime_arg: bool) -> None:
+    """Production with the SBX-15 settings. *runtime_arg* adds ``--runtime=runsc`` to the argv."""
     s = env["settings"]
     s.acb_env = "prod"
     s.sandbox_backend = "docker-remote"
     s.sandbox_runtime = "runsc"
+    if runtime_arg:
+        real = sb.build_run_argv
+
+        def with_runtime(*, runtime: str = "runc", **kw: Any) -> list[str]:
+            argv = real(**kw)
+            return [argv[0], f"--runtime={runtime}", *argv[1:]]
+
+        monkeypatch.setattr(sb, "build_run_argv", with_runtime)
+
+
+async def test_production_refuses_an_argv_without_runsc_even_with_the_settings(
+    broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _remote_runsc(env, monkeypatch, runtime_arg=False)
+
+    async def admit(org: str) -> bool:
+        return True
+
+    monkeypatch.setattr(broker, "_remote_org_admit", admit, raising=False)
+    with bound_run(ORG), pytest.raises(sb.SandboxRefused):
+        await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+    assert docker.runs() == []
+
+
+async def test_production_refuses_a_start_that_skips_the_org_lock(
+    broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SBX-F26: a start with --runtime=runsc but no org admit is refused."""
+    _remote_runsc(env, monkeypatch, runtime_arg=True)
+    with bound_run(ORG), pytest.raises(sb.SandboxRefused):  # no _remote_org_admit
+        await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+    for answer in (False, None):
+        async def admit(org: str, answer: Any = answer) -> Any:
+            return answer
+
+        monkeypatch.setattr(broker, "_remote_org_admit", admit, raising=False)
+        with bound_run(ORG), pytest.raises(sb.SandboxRefused):
+            await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+    assert docker.runs() == []
+
+
+async def test_production_runs_with_runsc_and_an_admit(
+    broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _remote_runsc(env, monkeypatch, runtime_arg=True)
+    seen: list[str] = []
+
+    def admit(org: str) -> bool:
+        seen.append(org)
+        return True
+
+    monkeypatch.setattr(broker, "_remote_org_admit", admit, raising=False)
     with bound_run(ORG):
         result = await broker.run_compute({"main.py": MAIN}, timeout_s=5)
-    assert result.exit_code == 0
+    assert result.exit_code == 0 and seen == [ORG]
+    assert "--runtime=runsc" in docker.runs()[0]
+
+
+async def test_staging_counts_as_production(
+    broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
+) -> None:
+    env["settings"].acb_env = "staging"
+    with bound_run(ORG), pytest.raises(sb.SandboxRefused):
+        await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+    assert docker.calls == []
+
+
+# ── a switch-off during a run ────────────────────────────────────────────────
+
+
+async def test_the_reaper_skips_a_starting_container_and_the_start_rechecks(
+    broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
+) -> None:
+    import asyncio
+
+    docker.block_run = asyncio.Event()
+
+    async def go() -> None:
+        with bound_run(ORG):
+            await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+
+    task = asyncio.get_running_loop().create_task(go())
+    await until(lambda: bool(docker.runs()), "the start must be in flight")
+    env["settings"].compute_run_orgs = OTHER
+    assert await broker.reap_once() == 0  # a starting container is not the reaper's
+    assert len(broker._compute_live) == 1
+    docker.block_run.set()
+    with pytest.raises(sb.SandboxRefused):
+        await task
+    await broker.settle()
+    assert docker.execs_of("python") == [] and docker.removals() == ["cid-1"]
+    assert broker._compute_live == {}
+
+
+async def test_a_dropped_container_runs_no_further_exec(
+    broker: sb.SandboxBroker, docker: ComputeDocker, env: dict[str, Any],
+) -> None:
+    original = docker.run
+
+    async def flip(args: Sequence[str], *, timeout: float, stdin: bytes | None = None) -> Any:
+        result = await original(args, timeout=timeout, stdin=stdin)
+        if list(args)[:2] == ["exec", "-i"]:  # the tar-in just ended
+            env["settings"].compute_run_orgs = OTHER
+            assert await broker.reap_once() == 1
+        return result
+
+    docker.run = flip  # type: ignore[method-assign]
+    with bound_run(ORG), pytest.raises(sb.SandboxRefused):
+        await broker.run_compute({"main.py": MAIN}, timeout_s=5)
+    await broker.settle()
+    assert docker.execs_of("python") == [] and docker.execs_of("-c") == []
+    assert "cid-1" in docker.removals() and broker._compute_live == {}
+
+
+# ── no wildcard while anyone can sign up ─────────────────────────────────────
+
+
+def test_a_wildcard_is_refused_while_self_serve_signup_is_on(env: dict[str, Any]) -> None:
+    s = env["settings"]
+    s.self_serve_signup_enabled = "true"
+    s.maf_coding_scope = f"compute:{ORG}"
+    s.compute_run_orgs = "*"
+    assert not sb.compute_enabled(ORG)  # the flag wildcard
+    s.maf_coding_scope = "compute:*"
+    s.compute_run_orgs = ORG
+    assert not sb.compute_enabled(ORG)  # the scope wildcard
+    s.maf_coding_scope = f"compute:{ORG}"
+    assert sb.compute_enabled(ORG)  # named org, named scope: allowed
+    s.self_serve_signup_enabled = ""
+    s.maf_coding_scope = "compute:*"
+    s.compute_run_orgs = "*"
+    assert sb.compute_enabled(ORG)
 
 
 # ── the caps ─────────────────────────────────────────────────────────────────
@@ -633,7 +764,8 @@ async def test_the_reaper_stops_a_compute_container_whose_org_left_the_flag(
     assert broker._compute_live == {}
     assert "cid-1" in docker.removals()
     gate.set()
-    await task
+    with pytest.raises(sb.SandboxRefused):  # the next step sees the drop
+        await task
 
 
 async def test_the_reaper_stops_a_compute_container_past_the_longest_run(
@@ -645,7 +777,8 @@ async def test_the_reaper_stops_a_compute_container_past_the_longest_run(
     now[0] = 10_000.0
     assert await broker.reap_once() == 1
     gate.set()
-    await task
+    with pytest.raises(sb.SandboxRefused):  # the next step sees the drop
+        await task
 
 
 async def test_the_startup_sweep_clears_the_compute_registry(
@@ -656,7 +789,8 @@ async def test_the_startup_sweep_clears_the_compute_registry(
     await broker.sweep()
     assert broker._compute_live == {}
     gate.set()
-    await task
+    with pytest.raises(sb.SandboxRefused):  # the next step sees the drop
+        await task
 
 
 # ── the real container ───────────────────────────────────────────────────────
