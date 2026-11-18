@@ -6488,9 +6488,7 @@ async def send_email(
             ``"knowledge:<page id>"`` (a Knowledge page, as its Markdown), or
             ``"task-file:<attachment id>"`` (a file on a task). The server
             checks that the member can see each one, and the card names each
-            file with its size. To attach a file that this chat made, name it
-            as ``"artifact:orchestrator:<path>"``. Use the exact path that
-            make_document or write_artifact gave.
+            file with its size.
     """
     if _held_card_mode():
         return await _held_new_mail(account_id, body=body, to=to, subject=subject, cc=cc,
