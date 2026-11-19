@@ -531,6 +531,21 @@ def test_a_resume_launch_frames_a_replayed_pasted_steer():
     assert out.count(OPEN) == 1 and _inside(out, "CANARYB")
 
 
+def test_a_continue_note_that_quotes_a_steer_does_not_take_its_frame():
+    """Fix round 2 (4): in a server Continue, ENGAGE puts the replayed steers
+    BEFORE the note, and the note can quote a steer word for word. A long
+    part frames each copy, so the real steer sits in a block, and the quote
+    in the note does too (the safe failure). Mutation: only the last copy
+    (``rfind``) -> red (the real steer stays outside)."""
+    replayed = steer.format_replayed([{"author": MEMBER, "text": PASTE9}])
+    note = f"[Note from the platform] Continue the reply that a restart cut:\n{PASTE9}"
+    turn = Message("user", [f"{replayed}\n\n{note}"])
+    out = _users(_request(_middleware((PASTE9,), current=turn), [turn]))[0]
+    assert out.startswith(f"[steer from {MEMBER}] {_frame().paste_note()}"), out[:120]
+    assert out.count(OPEN) == 2 and _inside(out, "CANARYB")
+    assert "[Note from the platform] Continue the reply that a restart cut:" in out
+
+
 def test_an_empty_tuple_still_frames_the_earlier_turns():
     """Done-when (8): a bound run with no parts frames each earlier turn."""
     earlier, current = Message("user", [PASTE9]), Message("user", ["Continue note"])
