@@ -42,7 +42,7 @@ Fences (R7):
 - WS43-F4 ``tests/unit/test_sandbox_exec_hygiene.py`` — pipefail, the kill of
   every stray process, the restart, the timeout, the cap and the disk checks.
 - SBX-F21 ``tests/unit/test_sandbox_remote_backend.py`` — the runtime
-  (SBX-8), the ``docker-remote`` backend (SBX-15) and the fair share of D227.
+  (SBX-8), the ``docker-remote`` backend and one org per remote box (SBX-15).
 
 **The runtime and the backend (SBX-8, SBX-15, ``agent_sandbox.md`` §4.3 and
 §4.6).** ``sandbox_runtime`` is ``runc`` (the default) or ``runsc`` (gVisor).
@@ -155,8 +155,12 @@ PUSH_SCRIPT = (
 )
 #: Copies ``/workspace`` OUT of a remote container, as a tar on stdout. A hard
 #: link goes as a file, and a ``.git`` at any depth stays behind.
+#:
+#: Both directions use the GNU format, which keeps each name as its raw bytes.
+#: So no locale of the container can translate a name on the way. The host
+#: then reads a byte that is not UTF-8 as a surrogate, and refuses the name.
 PULL_SCRIPT = (
-    "cd /workspace && exec tar -c -f - --format=pax --hard-dereference "
+    "cd /workspace && exec tar -c -f - --format=gnu --hard-dereference "
     "--exclude=.git ."
 )
 REMOTE_COPY_FAILED = (
@@ -361,14 +365,57 @@ def remote_docker_host(settings: Any) -> str:
     except ValueError:
         raise SandboxUnavailable("The sandbox_docker_host is not a valid address.") from None
     scheme = parts.scheme.lower()
+    production = production_mode(settings)
     if scheme in REMOTE_SCHEMES and host:
+        if production and _is_loopback(host):
+            raise SandboxUnavailable(
+                f"The sandbox_docker_host {shown} is this box. Outside dev the "
+                "daemon must be on the sandbox box."
+            )
+        if production and scheme == "tcp":
+            remote_cert_dir(settings, required=True)
         return raw
-    if scheme in LOCAL_SCHEMES and not production_mode(settings):
+    if scheme in LOCAL_SCHEMES and not production:
         return raw
     raise SandboxUnavailable(
         f"The sandbox_docker_host {shown} is not a remote daemon. Use ssh:// or "
         "tcp:// with a host. A local socket is for dev only."
     )
+
+
+def _is_loopback(host: str) -> bool:
+    """True for ``localhost``, 127.0.0.0/8, ``::1``, a mapped one, or 0.0.0.0."""
+    import ipaddress
+
+    name = host.strip().strip("[]").rstrip(".").lower()
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        address = mapped
+    return address.is_loopback or address.is_unspecified
+
+
+def remote_cert_dir(settings: Any, *, required: bool) -> str | None:
+    """``sandbox_docker_cert_path`` as an existing dir, or ``None`` when unset.
+
+    With *required* (``tcp://`` outside dev), an unset or missing dir raises
+    :class:`SandboxUnavailable`: a plain ``tcp://`` daemon has no TLS and no
+    client certificate.
+    """
+    raw = str(getattr(settings, "sandbox_docker_cert_path", "") or "").strip()
+    if raw and Path(raw).is_dir():
+        return raw
+    if required:
+        raise SandboxUnavailable(
+            "A tcp:// sandbox daemon needs TLS with a client certificate outside "
+            "dev. Set sandbox_docker_cert_path to the dir of that certificate."
+        )
+    return None
 
 
 def sandbox_runtime(settings: Any, backend: str) -> str:
@@ -392,40 +439,52 @@ def sandbox_runtime(settings: Any, backend: str) -> str:
     return runtime
 
 
-def fair_share(per_org: int, total: int) -> int:
-    """The most containers one org may hold: ``per_org``, and never more than
-    half of ``total``, with a floor of 1 (D227 gap B)."""
-    return max(1, min(per_org, total // 2))
-
-
 def _daemon_names() -> dict[str, str | None]:
     """The daemon names of the ``docker`` child. Empty on the local backend.
 
     On ``docker-remote`` it is the checked ``DOCKER_HOST``, with
-    ``DOCKER_CONTEXT`` left out, so a context of this box cannot win. Only
-    :class:`DockerCLI` passes it, so no other child ever gets the value.
+    ``DOCKER_CONTEXT`` left out, so a context of this box cannot win. A
+    ``tcp://`` daemon with a certificate dir gets ``DOCKER_TLS_VERIFY=1`` and
+    ``DOCKER_CERT_PATH``. Any other remote daemon gets neither, so a TLS value
+    of this box never mixes in. Only :class:`DockerCLI` passes it, so no other
+    child ever gets the values.
     """
     settings = get_settings()
     if sandbox_backend(settings) != BACKEND_REMOTE:
         return {}
-    return {"DOCKER_HOST": remote_docker_host(settings), "DOCKER_CONTEXT": None}
+    host = remote_docker_host(settings)
+    cert = None
+    if urlsplit(host).scheme.lower() == "tcp":
+        cert = remote_cert_dir(settings, required=production_mode(settings))
+    return {
+        "DOCKER_HOST": host,
+        "DOCKER_CONTEXT": None,
+        "DOCKER_TLS_VERIFY": "1" if cert else None,
+        "DOCKER_CERT_PATH": cert,
+    }
 
 
 def _scrub(text: str) -> str:
     """*text* with the daemon address cut to its scheme and host.
 
-    An ssh error names ``user@host``, and the broker logs Docker's stderr.
+    An ssh error names ``user@host``, or ``ssh -l <user> -p <port>``, and the
+    broker logs Docker's stderr. The user and the port go.
     """
     raw = str(getattr(get_settings(), "sandbox_docker_host", "") or "").strip()
     if not raw or not text:
         return text
     out = text.replace(raw, redact_docker_host(raw))
     try:
-        user = urlsplit(raw).username
+        parts = urlsplit(raw)
+        user, port = parts.username, parts.port
     except ValueError:
-        user = None
+        user, port = None, None
     if user:
         out = out.replace(f"{user}@", "")
+        out = re.sub(rf"(-l\s+){re.escape(user)}(?=\s|$)", r"\1(user)", out)
+    if port:
+        out = re.sub(rf"(-p\s+){port}(?=\s|$)", r"\1(port)", out)
+        out = out.replace(f":{port}", "")
     return out
 
 
@@ -1437,6 +1496,8 @@ class SandboxHandle:
     #: with ``/``. The copy out deletes on the host only a file of this set
     #: that the container removed.
     pushed: frozenset[str] = frozenset()
+    #: The names that the last copy in did not send (:func:`unsent_note`).
+    unsent: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -1495,15 +1556,30 @@ class PullResult:
     skipped: int
 
 
-def _host_tree(workspace: Path, *, max_entries: int) -> tuple[list[str], list[str]]:
-    """``(dirs, files)`` of the working dir, relative with ``/``, sorted.
+@dataclass(frozen=True)
+class HostTree:
+    """The entries of a working dir that the copy in may send, and the rest."""
+
+    dirs: list[str]
+    files: list[str]
+    #: Names that the copy in does not send, because :func:`_pulled_name`
+    #: cannot read them back the same: a backslash, or bytes that are not
+    #: UTF-8. A dir here takes its whole subtree with it.
+    unsent: list[str]
+
+
+def _host_tree(workspace: Path, *, max_entries: int) -> HostTree:
+    """The dirs and files of the working dir, relative with ``/``, sorted.
 
     No link is followed or listed, and a ``.git`` at any depth stays out: no
-    cover hides it on this backend, and it can hold a token. More than
-    *max_entries* raises :class:`SandboxRefused`.
+    cover hides it on this backend, and it can hold a token. A name that the
+    copy out would not read back as itself is not sent (review P1). Else
+    ``a\\b`` reads the bytes of ``a/b``, and the copy out deletes ``a/b``.
+    More than *max_entries* raises :class:`SandboxRefused`.
     """
     dirs: list[str] = []
     files: list[str] = []
+    unsent: list[str] = []
     for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
         here = Path(dirpath)
         keep: list[str] = []
@@ -1511,31 +1587,66 @@ def _host_tree(workspace: Path, *, max_entries: int) -> tuple[list[str], list[st
             path = here / name
             if name == ".git" or _is_link(path):
                 continue
+            rel = path.relative_to(workspace).as_posix()
+            if _pulled_name(rel) != rel:
+                unsent.append(rel)
+                continue
             keep.append(name)
-            dirs.append(path.relative_to(workspace).as_posix())
+            dirs.append(rel)
         dirnames[:] = sorted(keep)
         for name in filenames:
             if name == ".git":
                 continue
             path = here / name
+            rel = path.relative_to(workspace).as_posix()
+            if _pulled_name(rel) != rel:
+                unsent.append(rel)
+                continue
             try:
                 mode = os.lstat(path).st_mode
             except OSError:
                 continue
             if stat.S_ISREG(mode):
-                files.append(path.relative_to(workspace).as_posix())
+                files.append(rel)
         if len(dirs) + len(files) > max_entries:
             raise SandboxRefused(
                 f"The working dir holds more than {max_entries} entries, so the "
                 "remote sandbox cannot take it."
             )
-    return sorted(dirs), sorted(files)
+    return HostTree(sorted(dirs), sorted(files), sorted(unsent))
+
+
+def shown_name(rel: str) -> str:
+    """*rel* as printable text: a byte that is not UTF-8 shows as ``\\xNN``."""
+    raw = rel.encode("utf-8", errors="surrogateescape")
+    return raw.decode("utf-8", errors="backslashreplace")[:120]
+
+
+def unsent_note(unsent: Sequence[str]) -> str:
+    """The line that tells the model which names the copy in did not send."""
+    if not unsent:
+        return ""
+    names = ", ".join(shown_name(rel) for rel in unsent[:5])
+    more = f" and {len(unsent) - 5} more" if len(unsent) > 5 else ""
+    return (
+        f"{len(unsent)} name(s) of the working dir did not go into the sandbox, "
+        "because each holds a backslash or a byte that is not UTF-8. Rename "
+        f"them to use them: {names}{more}."
+    )
+
+
+@dataclass(frozen=True)
+class PushResult:
+    """What one copy in sent, and what it did not send."""
+
+    sent: frozenset[str]
+    unsent: tuple[str, ...]
 
 
 def write_push_archive(
     workspace: Path, sink: BinaryIO, *, max_bytes: int, max_entries: int,
-) -> frozenset[str]:
-    """Write the tar of the copy in to *sink*. Returns the files that it holds.
+) -> PushResult:
+    """Write the tar of the copy in to *sink*. Returns what it holds.
 
     Each file is read with the safe opener. A file over the size cap of the
     remote workspace raises :class:`SandboxRefused`, so no command runs on a
@@ -1543,10 +1654,12 @@ def write_push_archive(
     """
     from acb_skills import safe_open
 
-    dirs, files = _host_tree(workspace, max_entries=max_entries)
+    tree = _host_tree(workspace, max_entries=max_entries)
+    dirs, files = tree.dirs, tree.files
     sent: set[str] = set()
     total = 0
-    with tarfile.open(fileobj=sink, mode="w", format=tarfile.PAX_FORMAT, encoding="utf-8") as tar:
+    # GNU format: each name goes as its raw UTF-8 bytes (see PULL_SCRIPT).
+    with tarfile.open(fileobj=sink, mode="w", format=tarfile.GNU_FORMAT, encoding="utf-8") as tar:
         for rel in dirs:
             info = tarfile.TarInfo(rel)
             info.type = tarfile.DIRTYPE
@@ -1574,7 +1687,7 @@ def write_push_archive(
                 info.mode = 0o755 if st.st_mode & stat.S_IXUSR else 0o644
                 tar.addfile(info, fh)
             sent.add(rel)
-    return frozenset(sent)
+    return PushResult(frozenset(sent), tuple(tree.unsent))
 
 
 def _pulled_name(name: str) -> str | None:
@@ -1620,10 +1733,47 @@ def _put_dir(workspace: Path, rel: str, pushed: frozenset[str]) -> None:
     safe_open.ensure_dir(workspace, rel)
 
 
+def _member_chunks(tar: tarfile.TarFile, member: tarfile.TarInfo) -> Iterable[bytes]:
+    """The bytes of *member* in chunks. A short member raises :class:`SandboxRefused`."""
+    fh = tar.extractfile(member)
+    left = member.size
+    while left > 0:
+        chunk = fh.read(min(_READ_CHUNK, left)) if fh is not None else b""
+        if not chunk:
+            raise SandboxRefused("A file of the sandbox came back short.")
+        left -= len(chunk)
+        yield chunk
+
+
+def _host_digest(workspace: Path, rel: str) -> tuple[int, str] | None:
+    """``(size, sha256)`` of the host file *rel*, read in chunks, or ``None``."""
+    from acb_skills import safe_open
+
+    try:
+        fh = safe_open.open_read(workspace, rel)
+    except (safe_open.UnsafePath, OSError):
+        return None
+    if fh is None:
+        return None
+    digest = hashlib.sha256()
+    size = 0
+    with fh:
+        while chunk := fh.read(_READ_CHUNK):
+            size += len(chunk)
+            digest.update(chunk)
+    return size, digest.hexdigest()
+
+
 def _put_file(
-    workspace: Path, rel: str, data: bytes, executable: bool, pushed: frozenset[str],
+    workspace: Path, rel: str, tar: tarfile.TarFile, member: tarfile.TarInfo,
+    pushed: frozenset[str],
 ) -> bool:
-    """Write *data* at *rel* through the safe opener. ``False`` when it was the same.
+    """Write *member* at *rel* through the safe opener. ``False`` when it was the same.
+
+    No file sits in memory whole (review P2). A first pass hashes the member
+    in chunks, and a file with the same size and hash is left alone, so its
+    mtime stays. A changed file streams into a temp file in its own dir, and
+    a rename puts it in place (``safe_open.replace_stream``).
 
     A host dir at *rel* raises ``FileExistsError``: the copy out never
     removes a dir, so it deletes nothing that the copy in did not send.
@@ -1636,14 +1786,18 @@ def _put_file(
     path = workspace / rel
     if path.is_dir() and not _is_link(path):
         raise FileExistsError(rel)
-    else:
-        try:
-            old = safe_open.read_bytes(workspace, rel, limit=len(data))
-        except safe_open.UnsafePath:
-            old = None  # larger than the new bytes, so different
-    changed = old != data
+    digest = hashlib.sha256()
+    for chunk in _member_chunks(tar, member):
+        digest.update(chunk)
+    changed = _host_digest(workspace, rel) != (member.size, digest.hexdigest())
     if changed:
-        safe_open.replace_bytes(workspace, rel, data)
+
+        def fill(fh: BinaryIO) -> None:
+            for chunk in _member_chunks(tar, member):
+                fh.write(chunk)
+
+        safe_open.replace_stream(workspace, rel, fill)
+    executable = bool(member.mode & 0o100)
     if os.name != "nt":
         fh = safe_open.open_read(workspace, rel)
         if fh is not None:
@@ -1720,12 +1874,8 @@ def apply_pull_archive(
             except (safe_open.UnsafePath, OSError):
                 skipped += 1
         for rel, member in files:
-            fh = tar.extractfile(member)
-            data = fh.read(member.size) if fh is not None else b""
-            if len(data) != member.size:
-                raise SandboxRefused("A file of the sandbox came back short.")
             try:
-                if _put_file(workspace, rel, data, bool(member.mode & 0o100), pushed):
+                if _put_file(workspace, rel, tar, member, pushed):
                     written += 1
             except (safe_open.UnsafePath, OSError):
                 skipped += 1
@@ -1733,6 +1883,11 @@ def apply_pull_archive(
     # A sent file that is a dir in the container now went in `_put_dir`.
     present = {rel for rel, _member in files} | set(dirs)
     for rel in sorted(pushed - present):
+        if _pulled_name(rel) != rel:
+            # The second guard of review P1: a name that the copy out cannot
+            # read back is never "removed by the container".
+            skipped += 1
+            continue
         try:
             if safe_open.unlink(workspace, rel):
                 deleted += 1
@@ -1880,6 +2035,12 @@ class SandboxBroker:
         self._docker_ok: bool | None = None
         self._docker_checked = 0.0
         self._probe: asyncio.Task[None] | None = None
+        #: SBX-15: every remote start holds it from the one-org admit until
+        #: `docker run` returns (:meth:`_start_gate`).
+        self._remote_start_lock = asyncio.Lock()
+        #: SBX-15: remote containers whose `docker rm -f` failed. The reaper
+        #: runs while this holds an entry, and removes each orphan.
+        self._remote_orphans: set[str] = set()
 
     # ── settings and state ──────────────────────────────────────────────────
 
@@ -2379,6 +2540,13 @@ class SandboxBroker:
         uid, gid = _process_ids()
         if uid == 0 or gid == 0:
             raise SandboxRefused("The sandbox never runs as uid 0 or gid 0.")
+        if int(getattr(settings, "sandbox_max_per_org", 2)) > int(
+            getattr(settings, "sandbox_max_total", 4)
+        ):
+            raise SandboxRefused(
+                "sandbox_max_per_org is above sandbox_max_total, so one organization "
+                "could take every slot. No sandbox starts until the settings agree."
+            )
         backend = sandbox_backend(settings)
         self._check_target(binding, backend)
         sandbox_runtime(settings, backend)
@@ -2391,9 +2559,8 @@ class SandboxBroker:
 
     def _check_remote_fits(self, workspace: Path, max_bytes: int) -> None:
         """Refuse a working dir that the remote workspace cannot hold."""
-        _dirs, files = _host_tree(workspace, max_entries=self._remote_entries())
         total = 0
-        for rel in files:
+        for rel in _host_tree(workspace, max_entries=self._remote_entries()).files:
             with contextlib.suppress(OSError):
                 total += os.lstat(workspace / rel).st_size
         if total > max_bytes:
@@ -2472,14 +2639,10 @@ class SandboxBroker:
         stops its OWN oldest idle container. At the box cap, the oldest idle
         container of ANY organization stops. If no allowed container is idle,
         raises :class:`SandboxBusy`.
-
-        D227 gap B (SBX-15): the share is ``sandbox_max_per_org``, and never
-        more than half of ``sandbox_max_total`` (:func:`fair_share`). So one
-        org cannot take every slot of the shared box, whatever the settings.
         """
         settings = self._settings()
+        per_org = int(getattr(settings, "sandbox_max_per_org", 2))
         total = int(getattr(settings, "sandbox_max_total", 4))
-        per_org = fair_share(int(getattr(settings, "sandbox_max_per_org", 2)), total)
         victims: list[SandboxHandle] = []
         mine = [h for h in self._live.values() if h.org == org]
         if len(mine) >= per_org:
@@ -2767,17 +2930,20 @@ class SandboxBroker:
         )
         handle.remote, handle.pushed = remote, frozenset()
         await asyncio.to_thread(self._record_dir, handle.workspace)
-        await self._remote_org_admit(handle.org)
-        try:
-            await self._run_container(handle, argv)
-            handle.keepalive_pid = await self._probe_keepalive(handle.name)
-        except BaseException as exc:
-            cleanup = self._spawn_background(
-                self._remove_container(handle.container_id, handle.start_id)
-            )
-            if not isinstance(exc, asyncio.CancelledError):
-                await asyncio.shield(cleanup)
-            raise
+        # SBX-15 review P2: the admit and `docker run` hold ONE lock, so two
+        # starts of two orgs never both pass the admit.
+        async with self._start_gate(remote):
+            await self._remote_org_admit(handle.org)
+            try:
+                await self._run_container(handle, argv)
+                handle.keepalive_pid = await self._probe_keepalive(handle.name)
+            except BaseException as exc:
+                cleanup = self._spawn_background(
+                    self._remove_container(handle.container_id, handle.start_id)
+                )
+                if not isinstance(exc, asyncio.CancelledError):
+                    await asyncio.shield(cleanup)
+                raise
         handle.init_pid = 1
         handle.started_at = handle.last_used = self._clock()
         handle.network = "none"
@@ -2787,24 +2953,50 @@ class SandboxBroker:
             backend=backend, runtime=runtime,
         )
 
+    def _start_gate(self, remote: bool) -> Any:
+        """The ONE lock of every remote start, or no lock on the local backend.
+
+        Hold it from :meth:`_remote_org_admit` until ``docker run`` returns,
+        on every start path. The admit alone reads a state that a second start
+        can change between its read and its ``docker run``.
+        """
+        return self._remote_start_lock if remote else contextlib.nullcontext()
+
+    def _registered_handles(self) -> list[Any]:
+        """The handles of every registry of this broker, for the one-org rule.
+
+        A later target keeps its own registry (SBX-18, ``_compute_live``), so
+        it is read by name when it exists.
+        """
+        handles: list[Any] = list(self._live.values())
+        other = getattr(self, "_compute_live", None)
+        if isinstance(other, dict):
+            handles += list(other.values())
+        return handles
+
     async def _remote_org_admit(self, org: str) -> None:
         """One organization per remote box (SBX-15). Raises :class:`SandboxBusy`.
 
-        Call it right before ``docker run`` of ANY container start. ``_start``
-        calls it (a first start and a restart), and so must every other start
-        path of this broker. On the local backend it does nothing.
+        Call it inside ``async with self._start_gate(remote)``, right before
+        ``docker run`` of ANY container start, and hold the gate until that
+        run returns. ``_start`` does it (a first start and a restart), and so
+        must every other start path of this broker. On the local backend it
+        does nothing.
 
-        It refuses when this registry holds a remote container of another
-        org. It also reads the org label of each sandbox container on the
-        remote daemon, so a container that this registry does not know (a
-        race, a crash before the sweep) still counts. A container with no org
-        label counts as another org. A read that fails refuses the start.
-        This is the control against a gVisor escape that reads the data of
-        another org in flight.
+        It refuses when a registry of this broker holds a remote container of
+        another org. It also reads the org label of each sandbox container on
+        the remote daemon, so a container that no registry knows (a race, a
+        failed removal, a crash before the sweep) still counts. A container
+        with no org label counts as another org. A read that fails refuses
+        the start. This is the control against a gVisor escape that reads the
+        data of another org in flight.
         """
         if sandbox_backend(self._settings()) != BACKEND_REMOTE:
             return
-        if any(h.remote and h.org != org for h in self._live.values()):
+        if any(
+            getattr(h, "remote", True) and getattr(h, "org", None) != org
+            for h in self._registered_handles()
+        ):
             raise SandboxBusy(ONE_ORG_BUSY)
         found = await self._docker.run(
             ["ps", "-a", "--filter", f"label={LABEL_SANDBOX}=1",
@@ -2896,11 +3088,78 @@ class SandboxBroker:
                 timeout=_SMALL_TIMEOUT_SECONDS,
             )
             ids = [line.strip() for line in found.stdout.splitlines() if line.strip()]
+            if found.rc != 0:
+                self._note_orphans([f"start:{start_id}"])
         if not ids:
             return
         result = await self._docker.run(["rm", "-f", *ids], timeout=_SMALL_TIMEOUT_SECONDS)
         if result.rc != 0 and "No such container" not in result.stderr:
             _log.warning("sandbox_broker.remove_failed", ids=ids, error=result.stderr[-300:])
+            self._note_orphans(ids)
+
+    def _is_remote(self) -> bool:
+        try:
+            return self._backend() == BACKEND_REMOTE
+        except SandboxError:
+            return False
+
+    def _note_orphans(self, ids: Iterable[str]) -> None:
+        """SBX-15 review P2: keep a failed remote removal for the reaper.
+
+        A container left on the remote box holds the data of its org, and
+        the one-org admit refuses every other org while it stays. So the
+        reaper runs until :meth:`_reap_remote_orphans` removes it.
+        """
+        if not self._is_remote():
+            return
+        self._remote_orphans.update(ids)
+        with contextlib.suppress(RuntimeError):  # no running loop
+            self._ensure_reaper()
+
+    async def _reap_remote_orphans(self) -> int:
+        """Remove each sandbox container on the remote daemon that no registry holds.
+
+        It holds the start gate, so no start runs between its read and its
+        removal. A container counts as live when a registered handle names
+        its start label or its id. Never raises.
+        """
+        try:
+            async with self._remote_start_lock:
+                found = await self._docker.run(
+                    ["ps", "-a", "--filter", f"label={LABEL_SANDBOX}=1",
+                     "--format", '{{.ID}}|{{.Label "' + LABEL_START + '"}}'],
+                    timeout=_SMALL_TIMEOUT_SECONDS,
+                )
+                if found.rc != 0:
+                    _log.warning("sandbox_broker.orphan_read_failed", error=found.stderr[-300:])
+                    return 0
+                handles = self._registered_handles()
+                starts = {str(getattr(h, "start_id", "") or "") for h in handles} - {""}
+                cids = {str(getattr(h, "container_id", "") or "") for h in handles} - {""}
+                orphans = []
+                for line in found.stdout.splitlines():
+                    cid, _sep, start = line.strip().partition("|")
+                    if not cid or start.strip() in starts:
+                        continue
+                    if any(full.startswith(cid) for full in cids):
+                        continue
+                    orphans.append(cid)
+                if orphans:
+                    result = await self._docker.run(
+                        ["rm", "-f", *orphans], timeout=_RUN_TIMEOUT_SECONDS,
+                    )
+                    if result.rc != 0 and "No such container" not in result.stderr:
+                        _log.warning(
+                            "sandbox_broker.orphan_remove_failed", count=len(orphans),
+                            error=result.stderr[-300:],
+                        )
+                        return 0
+                    _log.info("sandbox_broker.orphans_removed", count=len(orphans))
+                self._remote_orphans.clear()
+                return len(orphans)
+        except (SandboxError, OSError) as exc:
+            _log.warning("sandbox_broker.orphan_reap_failed", error=str(exc)[:300])
+            return 0
 
     async def _remove(self, handle: SandboxHandle) -> None:
         await self._remove_container(handle.container_id, handle.start_id)
@@ -3016,7 +3275,10 @@ class SandboxBroker:
         await self.measure_workspace(handle)
         handle.last_used = self._clock()
         timed_out = result.host_timed_out or (result.rc == 137 and elapsed >= timeout - 0.5)
-        notes = [note for note in (SURVIVOR_MESSAGE if restarted else "", copy_note) if note]
+        unsent = unsent_note(handle.unsent) if handle.remote else ""
+        notes = [
+            note for note in (SURVIVOR_MESSAGE if restarted else "", copy_note, unsent) if note
+        ]
         return ExecResult(
             exit_code=137 if result.host_timed_out else result.rc,
             output=result.output,
@@ -3046,7 +3308,7 @@ class SandboxBroker:
         size = self._remote_size_mb() * _MIB
         with self._spool() as spool:
             try:
-                pushed = await asyncio.to_thread(
+                done = await asyncio.to_thread(
                     write_push_archive, handle.workspace, spool,
                     max_bytes=size, max_entries=self._remote_entries(),
                 )
@@ -3068,7 +3330,7 @@ class SandboxBroker:
                 "The files of the working dir could not be copied into the sandbox, "
                 "so nothing ran."
             )
-        handle.pushed = pushed
+        handle.pushed, handle.unsent = done.sent, done.unsent
 
     async def _pull(self, handle: SandboxHandle) -> str:
         """Copy ``/workspace`` back to the working dir. Returns a note, or ``""``.
@@ -3132,6 +3394,10 @@ class SandboxBroker:
         when a run still holds it, so a lease that a crashed run never
         released cannot hold a slot for ever. No container stops while an
         exec or a host file call holds its lock.
+
+        On ``docker-remote`` it then removes each orphan of the remote box
+        (:meth:`_reap_remote_orphans`), such as a container whose removal
+        failed when the ssh link dropped (SBX-15 review P2).
         """
         settings = self._settings()
         ttl = float(getattr(settings, "sandbox_idle_ttl_seconds", 600))
@@ -3151,6 +3417,8 @@ class SandboxBroker:
         await self._remove_all(victims)
         if victims:
             _log.info("sandbox_broker.reaped", count=len(victims))
+        if self._is_remote():
+            await self._reap_remote_orphans()
         return len(victims)
 
     def _reaper_interval(self) -> float:
@@ -3164,7 +3432,7 @@ class SandboxBroker:
 
     async def _reap_loop(self) -> None:
         interval = self._reaper_interval()
-        while self._live:
+        while self._live or self._remote_orphans:
             await asyncio.sleep(interval)
             try:
                 await self.reap_once()
@@ -3172,7 +3440,7 @@ class SandboxBroker:
                 _log.warning("sandbox_broker.reap_failed", error=str(exc)[:300])
 
     def _ensure_reaper(self) -> None:
-        """Run the reaper while any container lives."""
+        """Run the reaper while any container lives, or a remote orphan stays."""
         if self._reaper is None or self._reaper.done():
             self._reaper = asyncio.get_running_loop().create_task(self._reap_loop())
 

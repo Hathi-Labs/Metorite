@@ -8,7 +8,7 @@ What breaks this fence: the organization comes from input, a run with no
 tenant starts a container, a container of org A serves org B, a mount lies
 outside the allowed roots, or the eviction breaks the fair share. A full org
 stops its own oldest idle container. A full box stops the oldest idle
-container of any org. An org holds more than half the box (D227 gap B), or a
+container of any org. A start runs with a per-org cap above the box cap, or a
 remote box serves two orgs at once (SBX-15).
 """
 from __future__ import annotations
@@ -357,30 +357,20 @@ async def test_the_caps_come_from_settings(
     assert docker.removals() == [a1.container_id]
 
 
-def test_the_fair_share_is_never_more_than_half_the_box() -> None:
-    """D227 gap B (SBX-15). The defaults keep the share of before: 2 of 4."""
-    assert sb.fair_share(2, 4) == 2
-    assert sb.fair_share(2, 2) == 1
-    assert sb.fair_share(5, 4) == 2
-    assert sb.fair_share(1, 1) == 1
-    assert sb.fair_share(0, 4) == 1
-
-
-async def test_one_org_cannot_take_every_slot_of_the_box(
-    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any], clock: Clock,
+async def test_a_per_org_cap_above_the_box_cap_refuses_a_start(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D227 gap B. With 2 slots and a share of 2, org A still holds 1 only."""
-    monkeypatch.setattr(env["settings"], "sandbox_max_total", 2)
-    a1 = await _idle(broker, clock, ORG_A, "a1")
-    with bound_run(ORG_A, thread="a2"):
+    """``sandbox_max_per_org`` is the one per-org cap. Above the box cap it
+    refuses a start, and no value changes in silence."""
+    monkeypatch.setattr(env["settings"], "sandbox_max_per_org", 5)
+    with bound_run(ORG_A, thread="a1"), pytest.raises(sb.SandboxRefused, match="sandbox_max_total"):
         await broker.acquire()
-    assert docker.removals() == [a1.container_id], "org A stops its own, at half the box"
-    with bound_run(ORG_A, thread="a3"), pytest.raises(sb.SandboxBusy, match="share"):
+    assert docker.runs() == []
+    monkeypatch.setattr(env["settings"], "sandbox_max_per_org", 4)
+    with bound_run(ORG_A, thread="a1"):
         await broker.acquire()
-    with bound_run(ORG_B, thread="b1"):
-        b1 = await broker.acquire()
-    assert b1.org == ORG_B, "the other half of the box stays open to another org"
+    assert len(docker.runs()) == 1
 
 
 async def test_the_remote_box_serves_one_org_at_a_time(

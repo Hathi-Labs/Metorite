@@ -99,22 +99,37 @@ class RemoteFakeDocker(FakeDocker):
         self.pull_override: bytes | None = None
         #: container id -> its org label, as the daemon holds them.
         self.box: dict[str, str] = {}
+        #: container id -> its start label.
+        self.starts: dict[str, str] = {}
         #: org labels of containers that the broker's registry does not know.
         self.unknown_orgs: list[str] = []
+        #: The next this-many ``rm -f`` calls fail, as a dropped ssh link does.
+        self.fail_rm = 0
 
     async def run(self, args: Sequence[str], *, timeout: float) -> sb.DockerResult:
         argv = list(args)
         if argv[:1] == ["ps"] and "--format" in argv:
             self.calls.append(argv)
+            if sb.LABEL_START in argv[-1]:
+                lines = [f"{cid[:12]}|{self.starts.get(cid, '')}" for cid in self.box]
+                return sb.DockerResult(0, "".join(f"{line}\n" for line in lines), "")
             orgs = [*self.box.values(), *self.unknown_orgs]
             return sb.DockerResult(0, "".join(f"{org}\n" for org in orgs), "")
+        if argv[:2] == ["rm", "-f"] and self.fail_rm:
+            self.calls.append(argv)
+            self.fail_rm -= 1
+            return sb.DockerResult(1, "", "error during connect: ssh: connection reset")
         result = await super().run(args, timeout=timeout)
         if argv[0] == "run" and result.rc == 0:
             labels = dict(v.split("=", 1) for v in flag_values(argv, "--label"))
-            self.box[result.stdout.strip()] = labels["metorite.org"]
+            cid = result.stdout.strip()
+            self.box[cid] = labels["metorite.org"]
+            self.starts[cid] = labels["metorite.start"]
         if argv[:2] == ["rm", "-f"]:
             for cid in argv[2:]:
-                self.box.pop(cid, None)
+                for full in [c for c in self.box if c.startswith(cid)]:
+                    self.box.pop(full, None)
+                    self.starts.pop(full, None)
         return result
 
     async def transfer(
@@ -320,7 +335,10 @@ async def test_a_bad_address_never_falls_back_to_the_local_daemon(
 def test_a_local_socket_is_for_dev_only(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(env["settings"], "sandbox_docker_host", "unix:///var/run/docker.sock")
     monkeypatch.setattr(env["settings"], "acb_env", "dev")
-    assert sb._daemon_names() == {"DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONTEXT": None}
+    assert sb._daemon_names() == {
+        "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONTEXT": None,
+        "DOCKER_TLS_VERIFY": None, "DOCKER_CERT_PATH": None,
+    }
 
 
 async def test_an_unknown_backend_fails_closed(
@@ -669,6 +687,215 @@ async def test_a_failed_copy_in_runs_no_command(
     assert docker.command_execs() == []
 
 
+# ── review P1: a name that cannot come back is never sent and never deleted ─
+
+
+def test_a_name_that_cannot_come_back_is_not_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name with a byte that is not UTF-8 (a surrogate in Python) is not
+    sent, and the model hears which names stayed behind. Any OS."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "ok.txt").write_bytes(b"ok")
+    bad = "lat\udce9.txt"
+
+    def walk(top: Any, followlinks: bool = False) -> Any:
+        yield str(ws), [], ["ok.txt", bad]
+
+    monkeypatch.setattr(sb.os, "walk", walk)
+    tree = sb._host_tree(ws, max_entries=100)
+    assert tree.files == ["ok.txt"]
+    assert tree.unsent == [bad]
+    note = sb.unsent_note(tree.unsent)
+    assert "lat\\xe9.txt" in note and note.startswith("1 name(s)")
+
+
+def test_the_copy_out_never_deletes_a_name_it_cannot_read_back(tmp_path: Path) -> None:
+    """The second guard. ``a\\b`` reads as ``a/b`` through the safe opener,
+    so a delete of ``a\\b`` would remove the real ``a/b``."""
+    ws = tmp_path / "ws"
+    (ws / "a").mkdir(parents=True)
+    (ws / "a" / "b").write_bytes(b"real")
+    archive = io.BytesIO(_tar([("dir", ".", b"")]))
+    done = sb.apply_pull_archive(
+        ws, archive, pushed=frozenset({"a\\b", "lat\udce9.txt"}),
+        max_bytes=1 << 20, max_entries=100,
+    )
+    assert (ws / "a" / "b").read_bytes() == b"real"
+    assert done.deleted == 0 and done.skipped == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot name a file with a backslash or a non-UTF-8 byte")
+async def test_a_round_trip_keeps_each_file_that_the_container_never_touched(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    """The reviewer's case on a real file system: ``lat\\xe9.txt``, and
+    ``a\\b`` beside a real ``a/b``. Nothing of them is sent or deleted."""
+    with bound_run(ORG, thread="t-names") as ws:
+        (ws / "a").mkdir()
+        (ws / "a" / "b").write_bytes(b"real")
+        (ws / "a\\b").write_bytes(b"backslash")
+        latin = ws / os.fsdecode(b"lat\xe9.txt")
+        latin.write_bytes(b"latin")
+        handle = await broker.acquire()
+        result = await broker.exec(handle, "true", 5)
+    assert (ws / "a" / "b").read_bytes() == b"real"
+    assert (ws / "a\\b").read_bytes() == b"backslash"
+    assert latin.read_bytes() == b"latin"
+    assert not any("\\" in n or "lat" in n for n in docker.pushed_names[-1])
+    assert "2 name(s)" in result.message and "a\\b" in result.message
+
+
+# ── review P2: the copy out streams each file ───────────────────────────────
+
+
+async def test_the_copy_out_streams_each_file_and_never_holds_it_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file larger than one chunk comes back whole, through
+    ``replace_stream``, and never through the in-memory ``replace_bytes``."""
+    from acb_skills import safe_open
+
+    def whole(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("the copy out held a file in memory whole")
+
+    monkeypatch.setattr(safe_open, "replace_bytes", whole)
+    reads: list[int] = []
+    original = tarfile.ExFileObject.read
+
+    def counted(self: Any, size: int = -1) -> bytes:
+        reads.append(size)
+        return original(self, size)
+
+    monkeypatch.setattr(tarfile.ExFileObject, "read", counted)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    body = os.urandom(3 * sb._READ_CHUNK + 17)
+    archive = io.BytesIO(_tar([("file", "./outputs/big.bin", body)]))
+    done = sb.apply_pull_archive(
+        ws, archive, pushed=frozenset(), max_bytes=1 << 22, max_entries=10,
+    )
+    assert (ws / "outputs" / "big.bin").read_bytes() == body
+    assert done.written == 1
+    assert reads and all(0 < size <= sb._READ_CHUNK for size in reads), reads
+
+
+# ── review P2: an address outside dev ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("value", [
+    "ssh://sandbox@127.0.0.1",
+    "ssh://sandbox@localhost",
+    "ssh://sandbox@[::1]",
+    "ssh://sandbox@0.0.0.0",
+    "ssh://sandbox@[::ffff:127.0.0.1]",
+    "tcp://127.9.9.9:2376",
+])
+def test_a_loopback_daemon_refuses_outside_dev(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str,
+) -> None:
+    monkeypatch.setattr(env["settings"], "sandbox_docker_cert_path", str(tmp_path))
+    monkeypatch.setattr(env["settings"], "sandbox_docker_host", value)
+    with pytest.raises(sb.SandboxUnavailable, match="this box"):
+        sb._daemon_names()
+    monkeypatch.setattr(env["settings"], "acb_env", "dev")
+    assert sb._daemon_names()["DOCKER_HOST"] == value, "dev may test against itself"
+
+
+def test_tcp_outside_dev_needs_tls_with_a_client_certificate(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    s = env["settings"]
+    monkeypatch.setattr(s, "sandbox_docker_host", "tcp://10.20.30.40:2376")
+    for missing in ("", str(tmp_path / "no-such-dir")):
+        monkeypatch.setattr(s, "sandbox_docker_cert_path", missing)
+        with pytest.raises(sb.SandboxUnavailable, match="certificate"):
+            sb._daemon_names()
+    monkeypatch.setattr(s, "sandbox_docker_cert_path", str(tmp_path))
+    names = sb._daemon_names()
+    assert names["DOCKER_TLS_VERIFY"] == "1"
+    assert names["DOCKER_CERT_PATH"] == str(tmp_path)
+    monkeypatch.setattr(s, "sandbox_docker_host", HOST)
+    names = sb._daemon_names()
+    assert names["DOCKER_TLS_VERIFY"] is None and names["DOCKER_CERT_PATH"] is None
+
+
+async def test_the_docker_child_of_a_tcp_daemon_gets_the_tls_names(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    s = env["settings"]
+    monkeypatch.setattr(s, "sandbox_docker_host", "tcp://10.20.30.40:2376")
+    monkeypatch.setattr(s, "sandbox_docker_cert_path", str(tmp_path))
+    monkeypatch.setenv("DOCKER_TLS_VERIFY", "")
+    seen = _record_spawns(monkeypatch)
+    cli = sb.DockerCLI()
+    cli._binary = lambda: "/usr/bin/docker"  # type: ignore[method-assign]
+    await cli.run(["ps"], timeout=5)
+    child = seen[0]["env"]
+    assert child["DOCKER_TLS_VERIFY"] == "1" and child["DOCKER_CERT_PATH"] == str(tmp_path)
+    monkeypatch.setattr(s, "sandbox_docker_host", HOST)
+    monkeypatch.setenv("DOCKER_TLS_VERIFY", "1")
+    monkeypatch.setenv("DOCKER_CERT_PATH", "/etc/docker/certs")
+    await cli.run(["ps"], timeout=5)
+    child = seen[1]["env"]
+    assert "DOCKER_TLS_VERIFY" not in child and "DOCKER_CERT_PATH" not in child
+
+
+async def test_the_ssh_command_line_loses_its_user_and_port(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real shape of a docker CLI ssh error (review P3)."""
+    _record_spawns(monkeypatch, stderr=(
+        b"error during connect: Get \"http://docker.example.com/v1.47/containers/json\": "
+        b"command [ssh -o ConnectTimeout=30 -T -l sandbox -p 2222 -- 10.20.30.40 docker "
+        b"system dial-stdio] has exited with exit status 255"
+    ))
+    cli = sb.DockerCLI()
+    cli._binary = lambda: "/usr/bin/docker"  # type: ignore[method-assign]
+    result = await cli.run(["ps"], timeout=5)
+    assert "sandbox" not in result.stderr
+    assert "2222" not in result.stderr
+    assert "-l (user)" in result.stderr and "-p (port)" in result.stderr
+
+
+# ── review P2: a failed remote removal never locks the box ──────────────────
+
+
+async def test_a_failed_removal_is_reaped_and_frees_the_box(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    """The ssh link drops during the ``rm -f`` of org A's container. The
+    reaper removes the orphan, and org B then starts."""
+    org_b = "22222222-0000-0000-0000-000000000002"
+    with bound_run(ORG, thread="t-orphan"):
+        handle = await broker.acquire()
+        await broker.release(handle)
+        docker.fail_rm = 1
+        assert await broker.end_run() is True
+        await broker.settle()
+    assert set(docker.box.values()) == {ORG}, "the failed removal left the container"
+    assert broker._remote_orphans
+    with bound_run(org_b, thread="t-b"), pytest.raises(sb.SandboxBusy):
+        await broker.acquire()
+    await broker.reap_once()
+    assert docker.box == {} and not broker._remote_orphans
+    with bound_run(org_b, thread="t-b"):
+        b = await broker.acquire()
+    assert b.org == org_b
+    await broker.stop()
+
+
+async def test_the_orphan_reap_keeps_each_live_container(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    with bound_run(ORG, thread="t-live"):
+        handle = await broker.acquire()
+    removed = await broker._reap_remote_orphans()
+    assert removed == 0 and handle.container_id in docker.box
+    await broker.stop()
+
+
 # ── SBX-15: one org per remote box ──────────────────────────────────────────
 
 
@@ -708,23 +935,148 @@ async def test_a_failed_read_of_the_box_refuses_the_start(
     assert docker.runs() == []
 
 
-def test_every_start_in_the_broker_passes_the_admit() -> None:
-    """A new start path must call ``_remote_org_admit`` before ``docker run``."""
+def _call_name(func: Any) -> str:
     import ast
+
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
+
+
+def _is_start(call: Any) -> bool:
+    """A call that starts a container: ``_run_container``, ``build_run_argv``,
+    or a docker call whose argv is ``["run", ...]`` or ``build_run_argv(...)``."""
+    import ast
+
+    name = _call_name(call.func)
+    if name in {"_run_container", "build_run_argv"}:
+        return True
+    if name in {"run", "stream", "transfer"} and call.args:
+        first = call.args[0]
+        if isinstance(first, ast.List | ast.Tuple) and first.elts:
+            head = first.elts[0]
+            return isinstance(head, ast.Constant) and head.value == "run"
+        if isinstance(first, ast.Call):
+            return _call_name(first.func) == "build_run_argv"
+    return False
+
+
+def starts_without_admit(source: str) -> tuple[list[str], list[str]]:
+    """``(starters, offenders)`` of *source*.
+
+    A starter is a function that starts a container. It is an offender
+    unless it awaits ``_remote_org_admit`` inside
+    ``async with self._start_gate(...)``, the lock that holds the admit and
+    the run together.
+    """
+    import ast
+
+    starters: list[str] = []
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
+            continue
+        calls = [c for c in ast.walk(node) if isinstance(c, ast.Call)]
+        if not any(_is_start(c) for c in calls):
+            continue
+        starters.append(node.name)
+        gated = False
+        for item in ast.walk(node):
+            if not isinstance(item, ast.AsyncWith):
+                continue
+            if not any(
+                isinstance(w.context_expr, ast.Call)
+                and _call_name(w.context_expr.func) == "_start_gate"
+                for w in item.items
+            ):
+                continue
+            if any(
+                isinstance(c, ast.Call) and _call_name(c.func) == "_remote_org_admit"
+                for b in item.body for c in ast.walk(b)
+            ):
+                gated = True
+        if not gated:
+            offenders.append(node.name)
+    return starters, offenders
+
+
+def test_every_start_in_the_broker_passes_the_admit_under_the_gate() -> None:
+    """A start path must await ``_remote_org_admit`` inside the start gate.
+
+    The gate holds the admit and ``docker run`` together (review P2), so two
+    starts of two orgs never both pass the admit.
+    """
     import inspect
 
-    tree = ast.parse(inspect.getsource(sb))
-    starters = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
-            calls = {
-                c.func.attr for c in ast.walk(node)
-                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
-            }
-            if "_run_container" in calls:
-                starters.append(node.name)
-                assert "_remote_org_admit" in calls, f"{node.name} starts a container with no admit"
+    starters, offenders = starts_without_admit(inspect.getsource(sb))
     assert "_start" in starters, "the detector cannot see the one start path it guards"
+    assert offenders == [], f"these start a container with no gated admit: {offenders}"
+
+
+def test_the_admit_detector_sees_each_shape_of_a_start() -> None:
+    bad = [
+        "async def a(self):\n    await self._docker.run(build_run_argv(binding=b))\n",
+        "async def b(self):\n    await self._docker.run(['run', '-d', 'img'], timeout=1)\n",
+        "async def c(self, h, argv):\n    await self._remote_org_admit(h.org)\n"
+        "    await self._run_container(h, argv)\n",
+        "async def d(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        pass\n    await self._remote_org_admit(h.org)\n"
+        "    await self._run_container(h, argv)\n",
+    ]
+    for source in bad:
+        assert starts_without_admit(source)[1], source
+    good = (
+        "async def e(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        await self._remote_org_admit(h.org)\n"
+        "        await self._run_container(h, argv)\n"
+    )
+    assert starts_without_admit(good) == (["e"], [])
+    ps_only = "async def f(self):\n    await self._docker.run(['ps'])\n"
+    assert starts_without_admit(ps_only) == ([], [])
+
+
+async def test_two_starts_of_two_orgs_never_both_pass_the_admit(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    """Review P2. Two start paths that no registry joins (as a second target
+    would be) still meet the gate: the second admit reads the daemon after
+    the first ``docker run`` returned, and is busy."""
+    org_b = "22222222-0000-0000-0000-000000000002"
+    with bound_run(ORG, thread="t-a"):
+        binding_a = sb.read_run_binding()
+    with bound_run(org_b, thread="t-b"):
+        binding_b = sb.read_run_binding()
+    handle_a = sb.SandboxHandle(binding=binding_a, lock=asyncio.Lock())
+    handle_b = sb.SandboxHandle(binding=binding_b, lock=asyncio.Lock())
+    gate = asyncio.Event()
+    docker.block_run = gate
+    first = asyncio.create_task(broker._start(handle_a))
+    await until(lambda: docker.runs(), "the first docker run must be in flight")
+    second = asyncio.create_task(broker._start(handle_b))
+    await asyncio.sleep(0.05)
+    assert len(docker.runs()) == 1, "the second start must wait on the gate"
+    gate.set()
+    await first
+    with pytest.raises(sb.SandboxBusy, match="one organization"):
+        await second
+    assert len(docker.runs()) == 1
+    assert set(docker.box.values()) == {ORG}
+
+
+async def test_the_admit_reads_a_second_registry_by_name(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    """A later target keeps its own registry (SBX-18). The admit reads it."""
+    from types import SimpleNamespace
+
+    other = SimpleNamespace(org="22222222-0000-0000-0000-000000000002")
+    broker._compute_live = {"c1": other}  # type: ignore[attr-defined]
+    with pytest.raises(sb.SandboxBusy):
+        await broker._remote_org_admit(ORG)
+    broker._compute_live = {"c1": SimpleNamespace(org=ORG)}  # type: ignore[attr-defined]
+    await broker._remote_org_admit(ORG)
 
 
 # ── SBX-15: no tenant data outlives its run on the box ──────────────────────
@@ -874,3 +1226,43 @@ async def test_docker_the_remote_path_moves_files_through_the_daemon(remote: dic
         await broker.settle()
     gone = _docker("ps", "-aq", "--filter", f"label=metorite.start={handle.start_id}", host=host)
     assert gone.stdout.strip() == "", "the remote container outlived its run"
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_a_name_that_cannot_come_back_never_touches_the_host(
+    remote: dict[str, Any],
+) -> None:
+    r"""Review P1 with real GNU tar. The container writes ``a\b`` beside the
+    host's real ``a/b``, and a name with the byte 0xE9. Neither reaches the
+    host, and the real ``a/b`` keeps its bytes. A UTF-8 name goes in and
+    comes back as itself."""
+    broker, host = remote["broker"], remote["host"]
+    with bound_run(DOCKER_ORG, thread="t-names") as ws:
+        (ws / "a").mkdir()
+        (ws / "a" / "b").write_bytes(b"real")
+        (ws / "café.txt").write_bytes(b"cafe")
+        handle = await broker.acquire()
+        # Raw strings: `\b` and `\351` must reach bash as text, so that
+        # bash makes the backslash name and the byte 0xE9.
+        result = await broker.exec(
+            handle,
+            r"printf x > 'a\b'; printf y > " + r'"$(printf ' + r"'lat\351.txt')" + '"; '
+            "printf z > a/new.txt; printf n > naïve.txt; cat café.txt; "
+            r"ls -b",
+            30,
+        )
+        assert result.exit_code == 0, result.output
+        assert "lat\\351.txt" in result.output and "a\\\\b" in result.output, result.output
+        assert result.message == "", result.message
+        assert "cafe" in result.output, "a UTF-8 name goes in as itself"
+        assert (ws / "a" / "b").read_bytes() == b"real"
+        assert (ws / "a" / "new.txt").read_bytes() == b"z"
+        assert (ws / "naïve.txt").read_bytes() == b"n", "a UTF-8 name comes back as itself"
+        assert not [p for p in ws.rglob("*") if "lat" in p.name or "\\" in p.name]
+        second = await broker.exec(handle, "cat a/b", 30)
+        assert second.output.strip() == "real", "the real a/b still goes in whole"
+        await broker.release(handle)
+        assert await broker.end_run() is True
+        await broker.settle()
+    gone = _docker("ps", "-aq", "--filter", f"label=metorite.start={handle.start_id}", host=host)
+    assert gone.stdout.strip() == ""

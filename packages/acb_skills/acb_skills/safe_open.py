@@ -57,6 +57,7 @@ __all__ = [
     "remove_nested_git",
     "remove_tree",
     "replace_bytes",
+    "replace_stream",
     "split_rel",
     "stat_file",
     "unlink",
@@ -429,6 +430,16 @@ def replace_bytes(root: Path, rel: str, data: bytes) -> None:
     write leaves the old file as it was. The rename replaces a link at the
     target, and never follows it. The temp file is removed on any failure.
     """
+    replace_stream(root, rel, lambda fh: fh.write(data))
+
+
+def replace_stream(root: Path, rel: str, write: Callable[[BinaryIO], object]) -> None:
+    """:func:`replace_bytes`, with the bytes from *write* and never all in memory.
+
+    *write* fills the temp file through a binary file, in chunks. An error
+    from *write* propagates, and the old file stays as it was. The sandbox
+    broker writes each file of a remote copy with it (SBX-15).
+    """
     import secrets
 
     parts = split_rel(rel)
@@ -437,7 +448,12 @@ def replace_bytes(root: Path, rel: str, data: bytes) -> None:
     tmp_name = f".{parts[-1]}.tmp-{secrets.token_hex(8)}"
     tmp_rel = "/".join([*parts[:-1], tmp_name])
     try:
-        write_bytes(root, tmp_rel, data, exclusive=True, make_parents=False)
+        fd = _open_for_write(
+            root, [*parts[:-1], tmp_name], exclusive=True, make_parents=False,
+        )
+        with os.fdopen(fd, "wb") as fh:
+            write(fh)
+            fh.flush()
         if _FD_WALK:
             with _dir_fd(root, parts[:-1]) as fd:
                 os.replace(tmp_name, parts[-1], src_dir_fd=fd, dst_dir_fd=fd)

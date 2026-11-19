@@ -2264,8 +2264,7 @@ class Settings(BaseSettings):
     sandbox_exec_max_timeout_seconds: int = 300
     sandbox_output_cap_bytes: int = 12288
     # Caps of §7.1 rule 8: the per-organization fair share, and the box cap.
-    # D227 gap B (SBX-15): an org never holds more than half of
-    # `sandbox_max_total` (at least 1), whatever `sandbox_max_per_org` says.
+    # A start refuses when `sandbox_max_per_org` is above `sandbox_max_total`.
     sandbox_max_per_org: int = 2
     sandbox_max_total: int = 4
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
@@ -2299,6 +2298,11 @@ class Settings(BaseSettings):
     # production is the owner gate SBX-G11.
     sandbox_backend: str = "docker"
     sandbox_docker_host: str = ""
+    # Outside dev, `ssh://` and `tcp://` refuse a loopback host, and
+    # `tcp://` needs TLS with a client certificate. This is the dir of that
+    # certificate (ca.pem, cert.pem, key.pem). Only the broker's `docker`
+    # child gets it, as DOCKER_CERT_PATH with DOCKER_TLS_VERIFY=1.
+    sandbox_docker_cert_path: str = ""
     # The size of the `/workspace` tmpfs of a remote container. The broker
     # copies the working dir in before each command and copies it back
     # after, so a working dir above this size refuses. Keep it below
