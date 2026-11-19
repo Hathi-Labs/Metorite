@@ -733,11 +733,12 @@ with a clear message when `shape_only` finds a problem.
   from the bound tenant session and from the column DEFAULT (R5).
 
 **The cross-tenant write.** Postgres checks a foreign key with the rights of the table
-owner. So the check skips row-level security. This is a known behaviour of
-Postgres. No migration header states it. So org B could name the `connection_id` of org A,
-and the insert would pass. Each write function so selects the connection
-under the bound tenant FIRST. When that select returns no row, the function
-refuses.
+owner, so the check skips row-level security. This is a known behaviour of
+Postgres, and no migration header states it. Org B could name the `connection_id` of org A,
+and the insert would pass.
+
+Each write function selects the connection under the bound tenant FIRST. When
+that select returns no row, the function refuses.
 
 The refusal is the same for a missing connection and for a connection of
 another org. So it leaks nothing. In the R8 case, org B writes a draft for a
