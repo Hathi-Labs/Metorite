@@ -65,6 +65,15 @@ writes its events to that stream. The fold, the mint and the rows are real.
 * ``test_a_true_twin_takes_the_old_path_and_never_case_a`` — the REAL
   HRD-22b witness. Drop the ``twin_ran`` check, and case A runs.
 
+RESUME-5 (task 3265, §4.12.5), the park at the stop:
+
+* ``test_a_card_parked_at_the_stop_goes_on_in_the_same_reply`` — a real
+  detached run waits on a real card. ``pending_ask.park_at_stop`` parks it
+  in its own task, and its drain folds the reply and forgets the record. The
+  next process sweeps no ``run_interrupted`` mark, the stream lives past one
+  hour, and the Approve goes on in the ONE reply row. Drop the park, and the
+  card never parks. Drop the forget, and the sweep can mark the stream.
+
 The relay tests stub ``late_approve.twin_ran`` to "no twin", as ``scene``
 does, and each card has a title of its own thread (``_title_of``). Only
 the twin test puts the real witness back.
@@ -1906,6 +1915,99 @@ def test_a_real_park_keeps_the_stream_24h(both, relay_scene, monkeypatch):
                 assert stream_relay.STREAM_TTL_SECONDS < ttl <= stream_relay.PARKED_STREAM_TTL_SECONDS
             else:
                 assert 0 < ttl <= stream_relay.STREAM_TTL_SECONDS, ttl
+        finally:
+            await _quiet()
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+def test_a_card_parked_at_the_stop_goes_on_in_the_same_reply(relay_scene, monkeypatch):
+    """RESUME-5 on the real stream, the real rows and the real fold. A real
+    detached run asks the Neuropeak card and waits. The stop parks it in its
+    own task. The next process sweeps nothing onto it, and a late Approve
+    goes on in the same reply row, with the parked run's id."""
+    import time
+
+    from gateway.chat_fold import persist_final_assistant_message
+    from gateway.routes import agent as agent_routes
+    from orchestrator import run_liveness
+
+    w = relay_scene
+    monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 30.0)
+    DEALS.clear()
+    DEALS.update({"d-neuro": "Neuropeak", "d-orbit": "Orbit"})
+
+    async def go() -> None:
+        client = await _client()
+        _real_relay(monkeypatch, client)
+        try:
+            tid = _new_chat(w, w.org_a)
+            run_id, mid = f"run-{uuid.uuid4().hex[:8]}", f"m-{uuid.uuid4().hex[:8]}"
+            _chat_row(w, tid, w.org_a, f"u-{uuid.uuid4().hex[:8]}", role="user",
+                      content="Move Neuropeak to Payment Complete.",
+                      ts=int(time.time() * 1000) - 60_000, kind="human")
+            agent_routes._mint_run_row(tid, mid, member=_ALICE, agent_name="orchestrator",
+                                       organization_id=w.org_a)
+
+            async def _fold() -> None:
+                await persist_final_assistant_message(
+                    tid, mid, user_id=_ALICE, agent_name="orchestrator", run_id=run_id,
+                    organization_id=w.org_a, expect_run_id=run_id, holds_mail=False)
+
+            async def _the_run():
+                _bind_run(tid, w.org_a, _ALICE)
+                await stream_relay.push_event(
+                    tid, {"type": "RUN_STARTED", "runId": run_id, "threadId": tid})
+                await stream_relay.push_event(tid, {
+                    "type": "TEXT_MESSAGE_CONTENT", "messageId": "seg-1",
+                    "delta": "Let me move it."})
+                await _wrapped(update_deal_status)(deal_id="d-neuro", stage="Payment Complete")
+                yield ""  # never reached: the park ends the run
+
+            await stream_relay.start_detached(
+                tid, _the_run(), actor=_ALICE, organization_id=w.org_a, on_complete=_fold,
+                record={"runId": run_id, "messageId": mid, "agent": "orchestrator"})
+            for _ in range(1000):
+                waits = list(pending_ask._STOP_WAITS)
+                if waits:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("the card never waited")
+            (rid,) = waits
+            await pending_ask._insert_org(rid, pop=False)
+            assert await pending_ask.park_at_stop() == {"tried": 1, "parked": 1}
+            await _run_ends(tid)
+            assert _row(w, w.org_a, rid) == ("parked", None, False), "parked, call kept"
+            old = run_liveness.INSTANCE_ID
+            assert not await client.hexists(run_liveness.instance_runs_key(old), tid)
+            assert not await client.exists(f"cc:active:{tid}")
+
+            # The next process: a new instance id, and no heartbeat for the old.
+            await client.sadd(run_liveness.INSTANCES_KEY, old)
+            await client.delete(run_liveness.instance_key(old))
+            monkeypatch.setattr(run_liveness, "INSTANCE_ID", f"next:{uuid.uuid4().hex[:8]}")
+            monkeypatch.setattr(stream_relay, "_PARKED_STREAMS", {})
+            assert await run_liveness.sweep_dead_instances() == []
+            events = await _stream(client, tid)
+            assert not [e for e in events if e.get("name") == run_liveness.INTERRUPTED_EVENT]
+            assert events[-1] == {"type": "RUN_FINISHED", "threadId": tid, "parked": True}
+            assert await client.ttl(f"cc:stream:{tid}") > stream_relay.STREAM_TTL_SECONDS
+            (before,) = _assistant_rows(w, tid)
+            assert before[0] == mid and "Let me move it." in before[1]
+
+            res = await _answer(tid, rid, _ALICE, w.org_a)
+            assert isinstance(res, dict), res
+            assert res["resumed"] is True and res["sameReply"] is True, res
+            assert res["runId"] == run_id and res["messageId"] == mid
+            await _run_ends(tid)
+            rows = _assistant_rows(w, tid)
+            assert [r[0] for r in rows] == [mid], "ONE reply row"
+            assert "Let me move it." in rows[0][1] and "The deal moved." in rows[0][1]
+            assert _user_rows(w, tid) == 1, "no member turn"
+            assert _row(w, w.org_a, rid) == ("answered", "APPROVE", True)
         finally:
             await _quiet()
             await client.flushdb()

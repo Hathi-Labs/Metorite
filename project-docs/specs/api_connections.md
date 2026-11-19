@@ -6,7 +6,7 @@ D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`).**
 - **API-1 is built (task 3787).** The template grammar, the validator, the
   one builder and the Zoho Books template. It declares the flag
   `API_CONNECTIONS_ORGS`, and the flag is empty.
-- **API-2 is built dark (task 3788).** The connect flow of Zoho Books.
+- **API-2 is built dark (task 3788).** The connect flow of Zoho Books (§2.11).
 - **API-3 is built dark (task 3789).** The four gateway routes of §2.3 in
   `routes/api_connections.py`, behind `API_CONNECTIONS_ORGS`. The write route
   refuses every call. §2.3a holds its decisions. No live call ran with a real
@@ -91,10 +91,10 @@ month?" The chat answers from Zoho Books and names the source.
 | 9 | A gateway reader loads a credential in the tenant session, with no environment read | `connections/github.py` `token_for_org`. `connections/shared_token.py` `fresh_credential` |
 | 10 | The CRM holds one Zoho OAuth client for eight data centres: consent, code exchange and refresh. The caller passes the scopes | `crm_sources/zoho/auth.py` `ZOHO_DATA_CENTRES`, `consent_url` |
 | 11 | The app door has a row grammar for an operation: method, path, path shapes, class A, B or C, and paging. `build_call` makes a request from a row of an `App` | `acb_common/app_manifests/base.py` `Route`, `build_call` |
-| 12 | For a GET, `build_call` sends each argument that is not a path key as a query key. `Route` refuses `query` on a GET row, so the door cannot close the query keys of a GET. A path value goes into the path with no encoding | `app_manifests/base.py` `build_call` (line 414), `Route._check_door` (line 182) |
+| 12 | For a GET, `build_call` sends each argument that is not a path key as a query key. `Route` refuses `query` on a GET row, so the door cannot close the query keys of a GET. A path value goes into the path with no encoding. API-1 changed both: `query_shapes` closes the query keys of an API op, and the one builder encodes each path value | `app_manifests/base.py` `build_call` (line 414 before API-1, line 550 after it), `Route._check_door` (line 154 before API-1, line 199 after it) |
 | 13 | Packs are a static registry. A pack cannot hold tools for one org | `acb_skills/tool_packs.py` `PACKS`, `Pack` |
 | 14 | The Studio grammar already has `integration:<name>.<name>` and `mcp:<server>.<tool>`. `action_tool` answers None for both today | `acb_common/studio_manifest.py`. `acb_skills/skill_packs.py` `action_tool` |
-| 15 | The grant of a service is `integrations:use:<service>`. The admin, manager and member roles hold `integrations:use:*`. Only the admin role holds `integrations:manage`. The member role does not hold `feature:integrations` | `acb_auth/permissions.py`. Migrations 131, 179 and 200 |
+| 15 | The grant of a service is `integrations:use:<service>`. The admin, manager and member roles each hold `integrations:use:*`, so that grant alone keeps no member out. Only the admin role holds `integrations:manage`. The member role does not hold `feature:integrations` | `acb_auth/permissions.py`. Migrations 131, 179 and 200 |
 | 16 | The Studio live read limits calls: 10 for each member and 60 for each org, each minute. Over the limit is a 429 with `Retry-After` | `connections/mcp_tools.py` `MEMBER_CALLS_PER_WINDOW`, `ORG_CALLS_PER_WINDOW`, `_spend` |
 
 ## 2. The shape
@@ -172,8 +172,9 @@ call.
 - `provider` is `api:<template id>`. `owning_app` is `integrations`.
   `scope_kind` is `org`. A member connection is a later slice.
 - `provider_meta` holds only public facts: the region, the API host, the
-  context values, the template version and the hash of the approved
-  operations.
+  context values, the template version, the hash of the approved operations
+  and the `grant`. For Zoho it also holds the accounts server, which the
+  refresh and the revoke need. `connect.PUBLIC_META_KEYS` is the list (API-2).
 - `credentials_encrypted` holds the token blob or the header map, as
   `connections/store.py` seals them today.
 - A template change that adds or changes an operation asks the admin again.
@@ -551,8 +552,10 @@ Task 3749 owns the books connectors (D-SEM-8). This section only names what
 the mechanism must carry for Zoho Books.
 
 - **Sign-in.** The CRM's Zoho client, with the Books read scopes. One click,
-  and every Zoho data centre. Check at API-2 that the client may ask for the
-  Books scopes.
+  and every Zoho data centre. The client can ask for the Books scopes: each
+  consent request names its scopes, and the console holds none
+  (`docs/ZOHO_OAUTH_SETUP.md`, line 31). So the client needs no new
+  registration (API-2, §2.11).
 - **Hosts.** `ZOHO_DATA_CENTRES` gives them. The template lists no Zoho host
   of its own.
 - **Context.** The connect step reads `GET /organizations` and keeps the
@@ -573,6 +576,123 @@ the mechanism must carry for Zoho Books.
   amount field of the invoice list op for it. API-1 also checks whether Zoho
   Books has a report operation, such as profit and loss. A report op is one
   more class A read, and its answer already holds the totals.
+
+### 2.11 The connect flow (API-2)
+
+An admin connects Zoho Books in four steps. They are the start, the consent
+at Zoho, the callback, and a pick when Zoho names several organizations.
+API-2 builds the gateway half, dark behind `API_CONNECTIONS_ORGS`. API-5 builds
+the console rows and the pick sheet.
+
+**The routes.** `routes/integrations_api_connect.py` holds four routes under
+`/integrations`. The pure helpers are in `connections/api/connect.py`.
+
+| Route | What it does |
+|---|---|
+| `POST /integrations/api/zoho_books/start` | Gives the consent URL, with the Books scopes and a marked, signed state |
+| `GET /integrations/api/zoho/callback` | Finishes the consent. The CRM BFF callback sends it each marked state |
+| `POST /integrations/api/zoho_books/pick` | Finishes a consent that found several organizations, with one of them |
+| `GET /integrations/api/zoho_books` | Gives the status, and the choices of the admin's own pending pick. It gives no token |
+
+Each route needs `integrations:manage`. For an org that the flag does not
+hold, each route answers 404 before the feature gate and the permission.
+
+**The order of the callback.** It follows `routes/crm/connection.py::zoho_callback`.
+
+1. Check the state: the MAC of `api.zoho_books.connect`, then the org and the
+   member of the session. Then take the one-use mark of the state from Redis
+   with GETDEL. Each refusal is the same 400, and Zoho gets no call.
+2. A provider `error`, or no code, ends in a redirect with that code.
+3. Check the accounts server and the location against `ZOHO_DATA_CENTRES`. A
+   bad value is 400, and Zoho gets no call.
+4. Exchange the code for tokens with the CRM's Zoho client. An API domain that
+   is not a host of the template is 400, and the gateway revokes the new token.
+5. Read `GET /books/v3/organizations` through `outbound_guard.request_https`.
+   With no organization, revoke and fail. With one, go on. With several, seal
+   the credential with `store.seal_value`. Keep it in `TenantRedis` for 600
+   seconds under the state nonce, and send the admin to the pick.
+6. Run the test read: `list_invoices` with `per_page=1` and the picked
+   `organization_id`. A failure writes no row, keeps an older row as it is,
+   and revokes the new token. `store.save_credential` always writes
+   `connected`, so the test read runs before the save.
+7. Save under the advisory lock `api.connect:<org>:api:zoho_books`. Revoke the
+   old refresh token after the commit.
+
+**Three choices, made at API-2.** The owner may change each one.
+
+1. **One redirect URI (option A).** Zoho holds one redirect URI for the
+   client, the CRM's `/api/crm/oauth/zoho/callback`. A Books state starts with
+   the public mark `zb.`. The CRM BFF callback sends a marked state to the
+   Books route, and every other state to the CRM. The mark proves nothing. The
+   purpose is only in the MAC, so a forged mark changes only where the state
+   goes. Option B is a second URI in the Zoho console. That is an owner act
+   (OWNER-GATE), and nothing here depends on it.
+2. **The admin-only grant.** The admin, manager and member roles each hold
+   `integrations:use:*` (§1, row 15). So the grant `integrations:use:api-zoho_books`
+   alone keeps no member out. The connect writes `grant = admin` in
+   `provider_meta`. While the grant is `admin`, API-3 and API-4 ask for
+   `integrations:use:api-zoho_books` AND `integrations:manage`. Only the admin
+   role holds `integrations:manage`, and the owner holds `*`. API-2 writes no
+   role permission and no member override. Those writes are owner acts.
+3. **The scopes.** `connect.ZOHO_BOOKS_SCOPES` holds `ZohoBooks.settings.READ`
+   for the organizations and `ZohoBooks.invoices.READ` for the invoices. Zoho
+   refuses a whole consent for one unknown scope. The first real consent
+   confirms the two names, and that consent is an owner act.
+
+**The console disconnect.** The row id of an API connection is
+`api:zoho_books:<uuid>`. The console splits an `api:` id at its last colon
+(`routes/integrations_connections.py::_split_id`). The disconnect revokes the
+refresh token at Zoho, then drops the blob (`disconnect_books`).
+
+**Done when.** Each line names its kind and its fence.
+
+| # | Done when | Kind | Fence |
+|---|---|---|---|
+| AC1 | With the flag off for the org, each route answers 404, before the feature gate and the permission | AGENT-SAFE | `test_api_connect_zoho_books.py::test_ac1_flag_off_every_route_is_404_before_the_permission` |
+| AC2 | A member with no `integrations:manage` gets 403 on each route | AGENT-SAFE | `test_ac2_no_manage_permission_is_403` |
+| AC3 | A forged, expired, unmarked or other-purpose state, a state of another org or member, or a used state gets 400. Zoho gets no call | AGENT-SAFE | The `test_ac3_*` cases |
+| AC4 | An accounts server, a location or an API domain off the list gets 400. An API domain off the template also revokes the new token | AGENT-SAFE | The `test_ac4_*` cases |
+| AC5 | One organization gives one `connected` row: provider `api:zoho_books`, owning app `integrations`, scope `org`, public facts only, `grant = admin`. No code, token or secret reaches a response, a redirect, `provider_meta` or a log line | AGENT-SAFE | `test_ac5_one_organization_saves_a_connected_admin_row`, the sentinel case |
+| AC6 | Several organizations write no row and one pending entry. A pick of an id outside the list gets 400. The state and the pick each work once | AGENT-SAFE | The `test_ac6_*` cases |
+| AC7 | A failed test read writes no row, keeps an older row as it is, and revokes the new token | AGENT-SAFE | The `test_ac7_*` cases, `test_api_connect_r8.py` |
+| AC8 | On a real database under FORCE RLS, org B cannot see or pick org A's row or pending entry. A reconnect updates the one row | AGENT-SAFE (R8) | `test_api_connect_r8.py` |
+
+**The owner acts.** These are not part of the done-when list. The first real
+consent against Zoho confirms the scopes and the paths. A value in
+`API_CONNECTIONS_ORGS` on a box is an `enforcement-flip`. Option B is a change
+in the Zoho console.
+
+**Verification.**
+
+```text
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest -p no:xdist -rs tests/unit/test_api_connect_zoho_books.py tests/unit/test_api_connect_r8.py tests/unit/test_api_no_env_credentials.py tests/unit/test_api_templates.py
+cd workbench/control_plane && npx vitest run src/app/api/crm/oauth
+```
+
+The R8 file must show no skip.
+
+**Known gaps, found by the review of API-2 (2026-11-19). API-5 owns them.**
+
+- **A stranded pending token.** When the account has several Books
+  organizations, the sealed credential waits in Redis for 600 seconds. If the
+  admin leaves, Redis drops it, and nothing revokes the refresh token at Zoho.
+  Zoho keeps 20 tokens for each user and client, so a stranded token can push
+  out the CRM mirror's token. No browser route reaches `start` or `pick` before
+  API-5, so the case is latent. API-5 adds a "start again" path that revokes
+  the old pending entry, or a revoke when the entry expires.
+- **A dark org and `/pick`.** A malformed JSON body to `/pick` answers 422, not
+  404, because FastAPI reads the body before the dependencies. The route shows
+  that it exists. This is a low leak.
+- **`pick` takes the nonce first.** `pick_zoho_books` reads and deletes the
+  pending entry before it checks the member. Another admin of the same org who
+  holds the nonce can use it up. This is a denial only.
+- **The Studio fence.** `test_studio_connect_in_place.py` has an exemption,
+  `_NOT_LISTED_YET`, for `api:zoho_books`. API-5 lists the connector and
+  removes the exemption.
+- **A large `/organizations` answer.** An account with about 40 or more Books
+  organizations can pass the 64 KiB guard cap. The flow then fails closed with
+  `context_unreadable`.
 
 ## 3. Options not taken
 
@@ -606,7 +726,7 @@ until the owner answers D-API-2, D-API-4 and D-API-9.
 | Id | What | Tier | Label |
 |---|---|---|---|
 | API-1 (task 3787) | The template grammar and its validator. The split of `build_call` into a builder over one `Route`, with query shapes and encoded path values. The Zoho Books template with read operations and the total mark | STANDARD | AGENT-SAFE. Built |
-| API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant | HIGH (identity, a credential) | AGENT-SAFE to build dark. The first real consent is OWNER-GATE. Built dark |
+| API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant. §2.11 | HIGH (identity, a credential) | AGENT-SAFE to build dark. The first real consent is OWNER-GATE. Built dark |
 | API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) | AGENT-SAFE to build dark, with sentinel tokens and a fake `send`. A live call with a real credential is OWNER-GATE. Built dark |
 | API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) | AGENT-SAFE to build dark |
 | API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10) | STANDARD | AGENT-SAFE |
@@ -645,6 +765,9 @@ The R8 suite skips with no `TENANT_LADDER_DATABASE_URL`. A skip is not a pass.
 | A run in org A cannot call a connection of org B. A member of another org is refused. A name that the grant refuses answers "not found" | The R8 suite |
 | No answer, no error text and no log line holds a credential, also when the API echoes it or the transport fails | Sentinel cases in the R8 suite |
 | No API module imports `acb_skills.integrations` or reads `os.environ` | `tests/unit/test_api_no_env_credentials.py` (new, AST) |
+| The connect flow: the flag, the permission, the state, the hosts, the test read before the save, the pick from the server list (§2.11, AC1 to AC7) | `tests/unit/test_api_connect_zoho_books.py` |
+| Org B cannot see or pick the connection of org A. A reconnect updates the one row. A failed test read keeps the older row (AC8) | `tests/unit/test_api_connect_r8.py` (R8) |
+| The BFF callback sends a marked state to the Books route, and passes only its three Location shapes | `workbench/control_plane/src/app/api/crm/oauth/zoho/callback/route.test.ts` |
 | The limiter and the daily budget stop a loop. A cut answer is refused | `tests/unit/test_api_call_limits.py` (new) |
 | The gate refuses a write op with no member and in WhatsApp | `tests/unit/test_maf_mcp_confirm.py` (extended) |
 | Find and describe carry no MCP marker and ask no card. Their T2 and T3 text is framed | `tests/unit/test_api_chat_tools.py` (new) |
