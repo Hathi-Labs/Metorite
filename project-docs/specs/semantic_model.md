@@ -729,6 +729,10 @@ draft. The body has no place for the raw source name yet. A map from the
 normalised key back to the source field is a later slice. This slice is dark,
 so the refusal costs nothing today.
 
+The field type follows the same rule on digits. A source type such as `int64` or
+`float64` fails, because it holds two digits in a row. `int8` and `float8`
+pass. SEM-13 must map such a type to a plain word before it saves a draft.
+
 **Filter options.** An option of a fixed filter must be an option that the
 `code` section declares. The declared option must be on the field with the
 same entity and key. So an admin draft with an empty `code` section refuses a
