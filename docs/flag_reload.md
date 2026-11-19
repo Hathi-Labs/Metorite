@@ -33,6 +33,18 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_CARD_PRECONDITION_ORGS` turns on the version check of a card
+(`chat_failure_modes.md` §6 row HRD-10a). For each listed org, `update_task`
+sends the `updated_at` of the read that the card shows as `If-Match`. A task
+that changed while the card waited gets a 412, and the tool writes nothing. The
+tool then answers "Changed since the card", with the old and new values of the
+fields on the card. `*` lists every org, and the default is empty.
+
+Empty gives the PATCH of before, with no `If-Match`. Its one reader is
+`acb_skills.ask_tools.card_precondition_on`. It reads the org from the run
+binding, and a fault reads as off. The tool asks it at each call, so a reload
+applies to the next call. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_CARD_RECORD_ORGS` turns on the card record (`chat_organization.md`
 §16.3, CO-17). For each listed org, a write card that a member approves leaves
 one row in `chat_card_record`: the chat, the member, the card id, the outcome
@@ -146,6 +158,19 @@ model then says that nothing was done. This part is server only: no client
 sends that request until RESUME-7. `*` lists every org, and the default is
 empty. A flip stays OWNER-GATE (`enforcement-flip`).
 
+RESUME-2b: when the parked turn is the last turn, the call goes on in the
+same reply. For an org on both lists, a park keeps the stream of the run 24
+hours (D-RES-7). The same flag turns on this case A, so it has two more
+preconditions.
+
+⚠️ Do not add an org to `CHAT_RESUME_ORGS` before both of these merge:
+
+1. RESUME-3b (task 3475), the chat side of the same reply.
+2. RESUME-2d, the reconnect replay that obeys the history waterline and the
+   label (`chat_run_continuity.md` §4.12.7). Before it,
+   `GET /agent/run/{thread_id}/reconnect` replays a parked stream from `0-0`
+   for 24 hours. It checks no waterline and no caps of the reader.
+
 ⚠️ RESUME-2a needs `CHAT_LATE_APPROVE_ORGS` for the same org too. Without it,
 a late Approve takes the path of before. The SPENT mark stops the stored call
 of a twin card from writing twice. Since task 3467, either flag writes that
@@ -162,8 +187,9 @@ write its act a second time.
 
 Its one reader is `acb_skills.stored_call.chat_resume_on`. The card gate asks
 it at each card, and the injection asks it at the start of each run. The late
-answer route asks it at each late Approve. So a reload applies to the next
-card and the next Approve, and the call id applies from the next run.
+answer route asks it at each late Approve, and the park asks it at each park.
+So a reload applies to the next card, park and Approve. The call id applies
+from the next run.
 
 `CHAT_RUN_PHASE_ORGS` turns on the phase of a streamed run
 (`chat_failure_modes.md` §6 row CS-3, CS-3a). For each listed org, a
@@ -226,6 +252,16 @@ The one reader is `orchestrator.sandbox_broker.compute_enabled`.
 The reaper asks it too, so a flip to off stops a running compute container at
 the next tick. In production the broker also needs a remote gVisor backend. A
 reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`CONNECTED_SYSTEMS_ORGS` turns on the "Connected systems" block of the chat
+(`chat_connected_systems.md` §3.2, CSY-1). For each listed org, a chat that
+attached an MCP server gets one block at the end of the per-turn context: the
+brief of each attached server and the standing rule. `*` lists every org, and
+the default is empty. Empty means the context keeps its bytes. Its one reader
+is `orchestrator._maf_mcp.connected_systems_org_allowed`, which
+`executor._connected_systems_block` asks on each turn, on the run's org. A
+reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`), after
+the owner preview.
 
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one

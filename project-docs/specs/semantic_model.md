@@ -263,10 +263,13 @@ balance, personal data or free-text value. This design meets both:
     parts of §3.2), `shape_hash` (the hash of the tool list and of the
     discovered shape), `made_by` (`code`, `ai` or `admin`), `approved_role`,
     `approved_at`, and `untrusted_origin` (true for a local link, rule 10).
-  - Unique on `(organization_id, connection_id, version)`. Expand only (R6).
+  - Unique on `(organization_id, connection_id, version)`, and a partial
+    unique index on `(organization_id, connection_id)` where the state is
+    `approved`. Expand only (R6).
     The migration number is taken at build time and checked at merge (R1).
   - One module, `connections/semantic_model.py`, holds every statement on
     the table (a one-writer fence, as `connections/attention.py` does).
+    The body keys, the writer and the migration shape are in §10.4.
 - **Why not `provider_meta`.** It has no version, no draft and no approval,
   and many paths read it.
 - **Why not a Studio skill.** A skill belongs to a member, starts private, and
@@ -604,7 +607,7 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS` and `SEMANTIC_MODEL_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` | SEM-7 |
 | **SEM-10** | 2 | Measures and Verified questions in "Your answers", with Undo | CRM settings UI | STANDARD UI · captures before merge | `SEMANTIC_MODEL_ORGS` | Vitest of the section (new) | SEM-8, SEM-9 |
 | **SEM-11** | 2 | The weekly counts of refusal codes go to the failure store | a job on the queue | STANDARD · AGENT-SAFE | none | `test_semantic_refusal_feed.py` (new) | SEM-4, TOF-2a (task 3416) |
-| **SEM-12** | 3 | The connection model table, its one writer and `shape_only`, and a partial unique index, so one connection has at most one approved version (review) | a migration (number at build time), `connections/semantic_model.py` | HIGH (migration, tenancy) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_semantic_model_r8.py` (new: org B cannot read org A, cascade on delete), `test_semantic_shape_only.py` (new), `test_tenancy_boundary.py` | D-SEM-2 |
+| **SEM-12** | 3 | The connection model table, its one writer and `shape_only`, and a partial unique index, so one connection has at most one approved version (review) | a migration (number at build time), `connections/semantic_model.py`, and the one `shape_only` function in `crm_sync/catalogue.py`. The body, the writer, the flag, the migration shape and the file list are in §10.4 | HIGH (migration, tenancy) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_semantic_model_r8.py` (new: org B cannot read org A, org B cannot name the connection of org A, cascade on delete, one approved version), `test_semantic_shape_only.py` (new), `test_flag_reload.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`. The mutation of each is in §14 | D-SEM-2, SEM-7 (PR 2599, task 3737) |
 | **SEM-13** | 3 | The profiler of §4.2: discover, shape reads with no member, decide, draft | `connections/`, `decide_features.py` | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (new, with a fake MCP server): no class B or C tool is called, a tool that says destructive or not idempotent is refused, the caps hold, no value is stored. **Review gap 5:** a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline (`evals/semantic/profiler/`, new). It reuses `splits.py` and `compare.py` of task 3649 after they merge. Those files are on an unpushed branch today, so no text cites them as on `main` | SEM-12 |
 | **SEM-14** | 3 | The model's summary is one input of `server_brief`, with its own header and cap, stable for a version | `acb_skills/server_brief.py` | HIGH (untrusted text) · AGENT-SAFE dark | `CONNECTED_SYSTEMS_ORGS` | `test_server_brief.py` (extended). **Review Q1:** this PR moves the pin test of CSY §3.1 and the figure in CSY §5 to 1,300 characters (the WS-CSY planner agrees to that edit) | CSY-1 (task 3400), D-CSY-1 |
 | **SEM-15** | 3 | An `org_facts` provider for connections. The `org_facts` tool loads with an approved model. **Review gap 3:** the provider runs the same grant check as the attach (`is_authorized`), and returns nothing in a run that holds an untrusted pack (CSY §3.6: a member never learns of a server they cannot use) | `gateway/org_facts.py`, a provider module, `_tool_injection.py` | HIGH (grant) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_org_facts.py`, `test_org_facts_r8.py` (extended). Two fence cases: a member without the grant reads nothing, and a run with the email pack reads nothing | SEM-12 |
@@ -638,6 +641,149 @@ spec adds no second slice for the same work. The map:
 
 The tasks of the slices are made under the WS-SEM epic. D-SEM-1 and D-SEM-2 are answered, so SEM-12, SEM-13, SEM-15, SEM-16 and
 SEM-17 may get tasks. SEM-14 waits for D-CSY-1.
+
+### 10.4 SEM-12 in detail: the store of a connection's model
+
+An audit of 2026-11-19 found gaps in the SEM-12 row. This section closes them.
+It adds no D-number. The row of §10.2 and §14 point here.
+
+**Fit to `building_blocks.md` (D205).** The table is the store of the block
+"Data meaning" (§3.1). It adds no registry, manifest, queue or engine. The one
+read seam stays `org_facts` (SEM-15). One module runs every statement on the
+table. A new source adds a provider, and no table.
+
+**The body.** The body is one jsonb object with four keys: `v` (the integer 1),
+`code`, `ai` and `admin`. Each of the last three is a section. The name of the
+section is the writer kind of every part in it. So the body carries the header
+split of review note 1. The `made_by` column does not decide a header.
+
+A part sits in the one section that may write it. `shape_only` refuses a part
+in the wrong section, and refuses a key that is not in the table.
+
+| Section | Part (§3.2) | Body key | Keys of one item | Header (§3.3 point 6) |
+|---|---|---|---|---|
+| `code` | Entity | `entities` | `key`, `label`, `records`, `first_date`, `last_date` | "Metorite's notes" |
+| `code` | Field, dimension, options, value lookup, tax mark (evidence) | `fields` | `entity`, `key`, `label`, `type`, `fill`, `grain`, `options`, `lookup`, `tax` | "Metorite's notes" |
+| `code` | Join | `joins` | the keys of `_JOIN_KEYS` in `crm_sync/catalogue.py` | "Metorite's notes" |
+| `ai` | Purpose of an entity, meaning and unit of a field, tax mark | `entities`, `fields` | `entity`, `key`, one closed word for each choice, and `text` that code built from those words | "Metorite's notes" |
+| `admin` | Measure | `measures` | the keys of `_MEASURE_KEYS` | the admin's header |
+| `admin` | Join, tax mark (a change) | `joins`, `tax_marks` | the keys of `_JOIN_KEYS`. For a tax mark: `entity`, `field`, `tax` | the admin's header |
+| `admin` | Synonym | `synonyms` | `word`, `target` (a key of the model) | the admin's header |
+| `admin` | Sample question | `samples` | `question` | the admin's header |
+| `admin` | Verified query | `queries` | the keys of `_QUERY_KEYS` | the admin's header |
+| `admin` | Instruction (org scope only) | `instructions` | `text` | the admin's header |
+
+The source notes of §3.2 are not in the body. They stay in
+`integration_connections` and in the brief inputs. At read time, an item of the
+`admin` section wins over an item with the same key in `code` or `ai`. An item of
+`ai` wins over an item with the same key in `code`. The profiler reads the live
+system, and `code` only holds the closed starting set.
+
+**`made_by`.** The `made_by` column is the highest writer kind in the body, in
+the order `code`, `ai`, `admin`. The writer sets it from the body, and never
+from the caller. A `code` row has an empty `ai` section and an empty `admin`
+section.
+
+**`shape_only`: one module.** The closed key sets, `LABEL_MAX` (80),
+`number_like` and `_has_literal` live in `crm_sync/catalogue.py` on the branch
+of SEM-7 (PR 2599, task 3737). Main has them after that PR merges. The 300-character cap is `BODY_MAX` of
+`routes/crm/rules.py`, the cap of `crm_business_rules` (migration 283).
+
+SEM-12 reuses that module. It adds one public function there, `shape_only(body)`,
+which calls the item checks of SEM-7. A second copy would drift, and a move
+would edit the open PR of SEM-7, so SEM-12 adds neither a copy nor a package.
+
+The function is pure and reads no database. It returns the first problem as a
+short code, or `None`.
+
+| Case | `shape_only` |
+|---|---|
+| A key, a label of at most 80 characters, an option of at most 80, a count, a fill share, a date or a closed word | Allows, in the `code` and `ai` sections |
+| A description in the `ai` section | Allows only text that code built from closed words, of at most 300 characters |
+| Text in the `admin` section | Allows 1 to 300 characters that pass `clean_body`, with no digit that `_has_literal` finds |
+| A parameter name | Allows a name that matches the name pattern. Refuses a name that does not match the pattern, such as `Acme Ltd`, `2024` or `5.5`. The pattern is `_PARAM_NAME` of the catalogue. The `number_like` call is a second guard for a number-like name |
+| A verified query | Allows named parameters. Refuses a key such as `value`, and any literal in a condition |
+| An amount, a total, a balance or a figure of money | Refuses, in every section |
+| Free text that the source or the model wrote, outside the cases above | Refuses |
+| A key outside the closed set, or a part in the wrong section | Refuses |
+| A key that names a secret: header, token, url, path or host (§8) | Refuses |
+
+**The writer.** `gateway/connections/semantic_model.py` is the only module that
+runs SQL on the table. Each write function calls `shape_only` first. It refuses
+with a clear message when `shape_only` finds a problem.
+
+| Function | Caller | What it does |
+|---|---|---|
+| `save_draft(connection_id, body, shape_hash, untrusted_origin)` | SEM-13 (the profiler) and SEM-16 (an admin's edit) | Checks the flag and the connection, locks the connection row, sets `version` to the highest version plus 1, and inserts a row in state `draft` |
+| `accept_part(connection_id, version, section, key, change)` | SEM-16 (the panel) | Changes one part of a draft, runs `shape_only` on the new body, and writes the row again. It refuses a row that is not a draft |
+| `approve(connection_id, version, role)` | SEM-16 (the panel, behind `integrations:manage`, D-SEM-4) | In one transaction, archives the approved row and approves the draft |
+| `read_approved(connection_id)` | SEM-15 (the `org_facts` provider) | Returns the approved version, or `None`. It never returns a draft or an archived row (D-SEM-11) |
+
+- **The version.** The writer sets `version`, and the caller never passes it.
+  The writer locks the connection row with `SELECT ... FOR UPDATE`, and then
+  reads the highest version of that connection. So two drafts of one
+  connection cannot take the same number.
+- **Approve.** The function locks the connection row. It sets the old
+  approved row to `archived`, and then it sets the draft to `approved`. Both
+  steps run in the SAME transaction and in that order, so the partial unique
+  index never trips. The function refuses a version that is not a draft. A
+  draft that nobody approves stays a draft, and no reader returns it.
+- **`approved_role` and `approved_at`.** Both are NULL, or both are set. A
+  draft has both NULL. Only `approve` sets them. An archived row keeps the two
+  values. Three CHECK constraints hold this rule (see the migration shape).
+- **The org.** No write function takes an organization argument. The org comes
+  from the bound tenant session and from the column DEFAULT (R5).
+
+**The cross-tenant write.** Postgres checks a foreign key with the rights of the table
+owner, so the check skips row-level security. This is a known behaviour of
+Postgres, and no migration header states it. Org B could name the `connection_id` of org A,
+and the insert would pass.
+
+Each write function selects the connection under the bound tenant FIRST. When
+that select returns no row, the function refuses.
+
+The refusal is the same for a missing connection and for a connection of
+another org. So it leaks nothing. In the R8 case, org B writes a draft for a
+connection of org A and the writer refuses it. No row exists in either org.
+
+**The flag.** `CONNECTION_MODEL_ORGS` is the name in the row and in §10.2. It is
+not `SEMANTIC_MODEL_ORGS`. It is a `*_ORGS` flag with an empty default.
+
+No caller exists when SEM-12 merges. With the flag off for the org, nothing
+writes or reads the table. A write function refuses with the clear message
+"off", and `read_approved` returns `None`. The flag reloads with no restart.
+The fence is a new case in `tests/unit/test_flag_reload.py`, with a row in
+`docs/flag_reload.md`.
+
+**The migration shape.** The builder books the number with
+`~/lanes/reserve_migration.sh`, and the merge checks it again (R1). This text
+names no number. The file is expand only (R6): one new table, and no change to
+an old object. It sets `SET LOCAL lock_timeout` first, as 451 does.
+
+- **Columns.** `id` (UUID, default `gen_random_uuid()`). `organization_id`
+  (`REFERENCES organization`, then `DEFAULT app.tenant_id`, with no comma
+  between the two). `connection_id` (`REFERENCES integration_connections(id)
+  ON DELETE CASCADE`). `version` (integer, CHECK greater than 0). `state`
+  (CHECK `draft`, `approved` or `archived`). `body` (jsonb). `shape_hash`.
+  `made_by` (CHECK `code`, `ai` or `admin`). `approved_role` and
+  `approved_at`. `untrusted_origin` (boolean, default false).
+- **Constraints.** One CHECK says that `approved_role` and `approved_at` are
+  both NULL or both set. One CHECK says that a `draft` has both NULL. One
+  CHECK says that an `approved` row has both set. `UNIQUE (organization_id,
+  connection_id, version)`. Partial `UNIQUE (organization_id, connection_id)
+  WHERE state = 'approved'`.
+- **Row level security.** `ENABLE` and `FORCE`, in a DO block guarded on
+  `relforcerowsecurity`, with one policy that has `USING` and `WITH CHECK`.
+
+**The files.** New: the migration, `gateway/connections/semantic_model.py`,
+`tests/unit/test_connection_semantic_model_r8.py` and
+`tests/unit/test_semantic_shape_only.py`. Edits: the four generated phases
+`generated/01` to `04` (through `scripts/gen_tenant_migration.py`),
+`crm_sync/catalogue.py` (the one `shape_only` function), `settings.py`,
+`docs/flag_reload.md`, `tests/unit/test_flag_reload.py`,
+`tests/unit/test_tenant_coverage.py`, `tests/fences.json`, `.env.example` and
+`infra/AGENTS.md`. SEM-12 does not touch `aggregate.py`, `org_facts.py`,
+`connections/store.py` or `members.py`.
 
 ---
 
@@ -757,4 +903,34 @@ uv run pytest tests/unit/test_crm_aggregate.py tests/unit/test_tool_schema_diet.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_studio_query_r8.py tests/unit/test_org_facts_r8.py \
   tests/unit/test_crm_answer_consistency_r8.py -q
+
+# SEM-12 (the R8 suite needs the database of the line above)
+uv run pytest tests/unit/test_semantic_shape_only.py tests/unit/test_flag_reload.py \
+  tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py -q
+uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
 ```
+
+**The SEM-12 fences (R7).** Each test names the mutation that must turn it red.
+
+- `test_connection_semantic_model_r8.py` (new, R8). Org B cannot read a row of
+  org A. Org B writes a draft for a connection of org A, and the writer
+  refuses it. No row exists in either org. A delete of the connection removes
+  its versions. A second `approved` row for one connection fails. `approve`
+  leaves exactly one approved row, and archives the old one in the same
+  transaction. Two concurrent drafts get two numbers. A draft with `approved_at`
+  set fails the CHECK. A write with the flag off refuses with "off".
+  **Mutations:** drop the partial unique index, and the second-approved case
+  fails. Drop the connection select before the insert, and the cross-tenant case
+  fails. Drop `FORCE`, and the org B read case fails.
+- `test_semantic_shape_only.py` (new). One case for each row of the
+  `shape_only` table in §10.4, and a source check that `connections/semantic_model.py`
+  defines no second `LABEL_MAX`, `number_like` or `_has_literal`. **Mutations:**
+  drop the `_PARAM_NAME` full match on a parameter name, and the name `Acme Ltd`
+  passes and the case fails. Drop both the `number_like` call and the `_PARAM_NAME`
+  full match, and the name `2024` passes and the case fails. Drop the section check, and the part in the wrong section
+  passes and the case fails.
+- `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
+  restart. **Mutation:** leave the flag out of the reload list.
+- `test_tenant_coverage.py` and `test_tenancy_boundary.py`. The table is in the
+  generated phases, and `REFERENCES` comes before `DEFAULT`. **Mutation:** remove
+  the table from `generated/01`.

@@ -219,6 +219,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # CSY-1: the orgs whose chat gets the "Connected systems" block. It adds
+    # the admin's text about each server to the context, so only the operator
+    # writes it.
+    "CONNECTED_SYSTEMS_ORGS",
     # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.
