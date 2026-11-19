@@ -41,12 +41,17 @@ credential. :func:`validate` is a pure function. It raises
 * ``open_path_shape``: a path shape can match ``/``, ``?``, ``#``, ``%``,
   ``..``, an empty value, or a character outside the closed shape grammar.
 * ``query_no_shape``: a query key has no shape, or a key is named twice.
+* ``query_open_shape``: a query shape does not fit the closed shape grammar,
+  or it can match ``&``, ``=``, ``#``, a line end, a NUL or a look-alike.
+* ``private_host``: a template with no client names a host with a private
+  last label (:data:`PRIVATE_SUFFIXES`) or an ``xn--`` label.
 * ``context_arg``: an op names a context key or the sign-in key as an
   argument. The gateway sets those keys itself.
 * ``write_no_confirm``: a class B or C op does not carry ``always_confirm``.
 * ``over_cap``: an answer cap, a page size, a page count or a limit is not in
   its range.
-* ``page``: the paging of an op does not name query keys of the op.
+* ``page``: the paging of an op does not name query keys of the op, or the
+  shape of the size key allows a number above the page size.
 * ``total``: a total mark is on an op that is not a paged class A read.
 * ``shape_read``: a shape read is not a class A read with no required
   argument.
@@ -66,11 +71,14 @@ from acb_common.app_manifests.base import (
     ARG_KEY_PATTERN,
     METHODS,
     OP_PATTERN,
+    PATH_PROBES,
+    QUERY_PROBES,
     BadCall,
     Call,
     Route,
     build_route_call,
     path_params,
+    shape_is_closed,
 )
 
 #: The shape of a template id. The connection row's ``provider`` is
@@ -117,22 +125,25 @@ _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 #: A path is plain segments and whole placeholders, and nothing else.
 _SEGMENT = re.compile(r"[A-Za-z0-9_-]{1,64}|\{[a-z_][a-z0-9_]{0,63}\}")
 
-#: The closed grammar of a path shape. A shape is a run of tokens. A token is
-#: one character class of ASCII ranges, ``_`` or ``\-``, with a count, or one
-#: literal ``A-Za-z0-9_-`` character. No ``.``, no ``\w``, no flag, no group.
-_RANGE = r"(?:a-z|A-Z|0-9|[a-z]-[a-z]|[A-Z]-[A-Z]|[0-9]-[0-9]|_|\\-|[A-Za-z0-9])"
-_PATH_SHAPE_GRAMMAR = re.compile(
-    rf"(?:\[{_RANGE}+\]\{{\d{{1,3}}(?:,\d{{1,3}})?\}}|[A-Za-z0-9_]|\\-|-)+"
-)
+#: The rate limit of an API is at most this many calls a minute. No public API
+#: that a T1 template names allows more for one org. A larger number is a
+#: typing error.
+MAX_PER_MINUTE = 6000
 
-#: Text that a path shape must never match. The grammar above refuses each
-#: one already. These probes check the grammar itself.
-PATH_PROBES: tuple[str, ...] = (
-    "", "/","a/b", "?", "a?b", "#", "a#b", "%", "%2f", "%2e%2e", "..", "a..b",
-    ".", "\\", "\x00", "a\x00b", " ", "\n",
-    "\uff0f", "\u2215", "\u2044", "\uff1f", "\uff03", "\uff05", "\uff0e\uff0e",
-    "\u2024\u2024",
-)
+#: The daily cap of an API is at most this many calls. A larger number is a
+#: typing error, and half of it is the daily budget (\u00a72.3).
+MAX_PER_DAY = 1_000_000
+
+#: The scheme and header names that hold a credential word but are fixed
+#: names, not values. :func:`_check_sign_in` does not search these for a
+#: secret. Each other name passes the secret search.
+KNOWN_SCHEMES: frozenset[str] = frozenset({"Zoho-oauthtoken", "Bearer"})
+KNOWN_HEADERS: frozenset[str] = frozenset({"Authorization", "X-API-Key", "Api-Key"})
+
+#: A host with one of these last labels is a private or local name. A
+#: template with no client may not name one (\u00a72.7).
+PRIVATE_SUFFIXES: frozenset[str] = frozenset(
+    {"local", "internal", "localhost", "lan", "home", "corp"})
 
 #: Signs of a URL, a host, a header or a secret in a stored text field.
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://|\bwww\.", re.IGNORECASE)
@@ -315,23 +326,31 @@ def _check_origin(where: str, origin: str) -> None:
 def path_shape_is_closed(pattern: str) -> bool:
     """True when *pattern* keeps a path value in its place.
 
-    The pattern must fit the closed shape grammar, and it must match none of
-    :data:`PATH_PROBES`. So it cannot match ``/``, ``?``, ``#``, ``%``,
-    ``..``, a NUL or a look-alike of these.
+    The pattern must fit the closed shape grammar of ``base``, and it must
+    match none of :data:`PATH_PROBES`. So it cannot match ``/``, ``?``,
+    ``#``, ``%``, ``..``, a NUL or a look-alike of these.
     """
-    if not isinstance(pattern, str) or not _PATH_SHAPE_GRAMMAR.fullmatch(pattern):
-        return False
-    try:
-        compiled = re.compile(pattern)
-    except re.error:
-        return False
-    return not any(compiled.fullmatch(p) for p in PATH_PROBES)
+    return shape_is_closed(pattern, PATH_PROBES)
+
+
+def query_shape_is_closed(pattern: str) -> bool:
+    """True when *pattern* keeps a query value to one value of one key.
+
+    The pattern must fit the closed shape grammar of ``base``, and it must
+    match none of :data:`QUERY_PROBES`. So it cannot match ``&``, ``=``,
+    ``#``, a line end, a NUL or a look-alike of these.
+    """
+    return shape_is_closed(pattern, QUERY_PROBES)
 
 
 def _check_sign_in(where: str, sign_in: SignIn, client_hosts: ClientHosts) -> None:
     kind = sign_in.kind
     if kind not in SIGN_INS:
         raise TemplateError("sign_in", where, f"the kind is not one of {SIGN_INS}")
+    if sign_in.scheme and sign_in.scheme not in KNOWN_SCHEMES:
+        _check_plain(f"{where}.scheme", sign_in.scheme)
+    if sign_in.header and sign_in.header not in KNOWN_HEADERS:
+        _check_plain(f"{where}.header", sign_in.header)
     if sign_in.scheme and not _SCHEME.fullmatch(sign_in.scheme):
         raise TemplateError("secret_in_field", where, "the scheme is a name, not a value")
     if sign_in.header and not _HEADER.fullmatch(sign_in.header):
@@ -366,9 +385,15 @@ def _check_hosts(template: Template, client_hosts: ClientHosts) -> None:
         if not isinstance(origin, str):
             raise TemplateError("http_host", where, "a host is text")
         _check_origin(f"{where}.{region}", origin)
-        if allowed is not None and origin not in allowed:
-            raise TemplateError("foreign_host", f"{where}.{region}",
-                                "the host is not on the client's own list")
+        if allowed is not None:
+            if origin not in allowed:
+                raise TemplateError("foreign_host", f"{where}.{region}",
+                                    "the host is not on the client's own list")
+            continue
+        labels = origin.removeprefix("https://").split(".")
+        if labels[-1] in PRIVATE_SUFFIXES or any(label.startswith("xn--") for label in labels):
+            raise TemplateError("private_host", f"{where}.{region}",
+                                "a host is a public name in plain ASCII")
 
 
 def _check_path(where: str, op: Operation) -> None:
@@ -404,19 +429,20 @@ def _check_query(where: str, op: Operation) -> None:
             raise TemplateError("query_no_shape", where, "a query key is not a key")
         if not isinstance(pattern, str) or not pattern:
             raise TemplateError("query_no_shape", where, f"the query key {key!r} has no shape")
-        try:
-            re.compile(pattern)
-        except re.error:
-            raise TemplateError("query_no_shape", where, f"the shape of {key!r} is not valid") from None
+        if not query_shape_is_closed(pattern):
+            raise TemplateError("query_open_shape", where,
+                                f"the shape of {key!r} can let a second value or key through")
 
 
 def _check_limits(template: Template) -> None:
     where = f"{template.id}.limits"
     limits = template.limits
-    if not _positive(limits.per_minute):
-        raise TemplateError("over_cap", where, "the rate limit is a positive number")
-    if limits.per_day is not None and not _positive(limits.per_day):
-        raise TemplateError("over_cap", where, "the daily cap is a positive number")
+    if not _positive(limits.per_minute) or limits.per_minute > MAX_PER_MINUTE:
+        raise TemplateError("over_cap", where, f"the rate limit is 1 to {MAX_PER_MINUTE}")
+    if limits.per_day is not None and (
+        not _positive(limits.per_day) or limits.per_day > MAX_PER_DAY
+    ):
+        raise TemplateError("over_cap", where, f"the daily cap is 1 to {MAX_PER_DAY}")
 
 
 def _positive(value: Any) -> bool:
@@ -457,6 +483,20 @@ def _check_op(template: Template, op: Operation) -> None:
         raise TemplateError("route", where, str(exc)) from None
 
 
+def _size_shape_exceeds(pattern: str, size: int) -> bool:
+    """True when *pattern* matches a number above *size*.
+
+    The closed grammar has no number bound, so the validator probes it: each
+    number from ``size + 1`` to 9999, the same with leading zeros, and runs
+    of ``9`` up to 24 digits.
+    """
+    compiled = re.compile(pattern)
+    probes = [str(n) for n in range(size + 1, 10_000)]
+    probes += ["0" * pad + str(size + 1) for pad in range(1, 6)]
+    probes += ["9" * width for width in range(1, 25)]
+    return any(compiled.fullmatch(p) and int(p) > size for p in probes)
+
+
 def _check_paging_and_total(where: str, op: Operation) -> None:
     query_keys = {k for k, _ in op.query}
     if op.paging is not None:
@@ -467,6 +507,9 @@ def _check_paging_and_total(where: str, op: Operation) -> None:
             raise TemplateError("page", where, "the paging names query keys of the op")
         if paging.page_key == paging.size_key:
             raise TemplateError("page", where, "the page key and the size key differ")
+        if _size_shape_exceeds(dict(op.query)[paging.size_key], paging.size):
+            raise TemplateError("page", where,
+                                f"the shape of {paging.size_key!r} allows a page above {paging.size}")
     if op.total is not None:
         if op.cls != "A" or op.paging is None:
             raise TemplateError("total", where, "a total is on a paged class A read")
@@ -526,7 +569,24 @@ def build(template: Template, op_name: str, args: Mapping[str, Any]) -> Call:
         for key in args:
             if key in template.reserved_keys():
                 raise BadCall(str(key), "context")
+        _check_size(op, args)
     return build_route_call(op.route, args)
+
+
+def _check_size(op: Operation, args: Mapping[str, Any]) -> None:
+    """Refuse a page size above the op's page size, as ``size``.
+
+    The validator already refuses a size shape that allows a larger number.
+    This check holds the cap again at each call.
+    """
+    if op.paging is None:
+        return
+    value = args.get(op.paging.size_key)
+    if isinstance(value, bool) or value is None:
+        return
+    text = str(value) if isinstance(value, int) else value
+    if isinstance(text, str) and text.isascii() and text.isdigit() and int(text) > op.paging.size:
+        raise BadCall(op.paging.size_key, "size")
 
 
 __all__ = [

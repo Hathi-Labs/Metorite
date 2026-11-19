@@ -36,17 +36,23 @@ from gateway.connections.api.template import (
 )
 from gateway.crm_sources.zoho.auth import ZOHO_DATA_CENTRES
 
-#: The shapes of the query values.
+#: The shapes of the query values. Each one fits the closed shape grammar, so
+#: it has no alternation. A status or a sort column is a short word of lower
+#: case letters and ``_``, such as ``partially_paid`` or ``due_date``. Zoho
+#: refuses a word that it does not know.
 _DATE = r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
 _NUMBER_ID = r"[0-9]{1,20}"
 _PAGE = r"[0-9]{1,4}"
-_PER_PAGE = r"[0-9]{1,3}"
-_STATUS = r"sent|draft|overdue|paid|void|unpaid|partially_paid|viewed"
-_SORT_COLUMN = r"date|due_date|total|balance|customer_name|invoice_number"
-_SORT_ORDER = r"A|D"
+_WORD = r"[a-z_]{1,24}"
+_SORT_ORDER = r"[AD]{1}"
 
 #: Fifty invoices fit well inside the answer cap of 64 KiB.
 _PAGE_SIZE = 50
+
+#: The size shape takes 0 to 49. The closed grammar cannot say "1 to 50", and
+#: the validator refuses a size shape that allows a number above the page
+#: size. ``build`` also refuses a size above the page size at each call.
+_PER_PAGE = r"[1-4]{0,1}[0-9]{1}"
 
 ZOHO_BOOKS = Template(
     id="zoho_books",
@@ -66,11 +72,11 @@ ZOHO_BOOKS = Template(
             query=(
                 ("page", _PAGE),
                 ("per_page", _PER_PAGE),
-                ("status", _STATUS),
+                ("status", _WORD),
                 ("date_start", _DATE),
                 ("date_end", _DATE),
                 ("customer_id", _NUMBER_ID),
-                ("sort_column", _SORT_COLUMN),
+                ("sort_column", _WORD),
                 ("sort_order", _SORT_ORDER),
             ),
             paging=Paging(page_key="page", size_key="per_page", size=_PAGE_SIZE),

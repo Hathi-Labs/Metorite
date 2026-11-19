@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -38,6 +39,8 @@ from gateway.connections.api import CLIENT_HOSTS, TEMPLATES, template
 from gateway.connections.api.template import (
     MAX_ANSWER_CAP,
     MAX_PAGE_SIZE,
+    MAX_PER_DAY,
+    MAX_PER_MINUTE,
     MAX_TOTAL_PAGES,
     PATH_PROBES,
     Limits,
@@ -48,6 +51,7 @@ from gateway.connections.api.template import (
     Total,
     build,
     path_shape_is_closed,
+    query_shape_is_closed,
     validate,
 )
 from gateway.connections.api.zoho_books import ZOHO_BOOKS
@@ -167,9 +171,9 @@ def test_an_argument_that_names_a_context_key_is_refused():
 
 
 def test_the_query_keys_of_an_op_are_a_closed_list():
-    call = build(ZOHO_BOOKS, "list_invoices", {"status": "unpaid", "page": 2, "per_page": 50})
+    call = build(ZOHO_BOOKS, "list_invoices", {"status": "unpaid", "page": 2, "per_page": 40})
     assert call.path == "/books/v3/invoices"
-    assert call.query == (("page", "2"), ("per_page", "50"), ("status", "unpaid"))
+    assert call.query == (("page", "2"), ("per_page", "40"), ("status", "unpaid"))
     with pytest.raises(BadCall) as caught:
         build(ZOHO_BOOKS, "list_invoices", {"filter_by": "Status.All"})
     assert (caught.value.name, caught.value.why) == ("filter_by", "unknown")
@@ -230,6 +234,30 @@ def test_the_builder_refuses_a_breaker_in_a_path_value(value):
     with pytest.raises(BadCall) as caught:
         build_route_call(_loose_route(r".+"), {"name": value})
     assert (caught.value.name, caught.value.why) == ("name", "shape")
+
+
+@pytest.mark.parametrize("value", [".", "...", "...."])
+def test_the_builder_refuses_a_dot_segment(value):
+    with pytest.raises(BadCall) as caught:
+        build_route_call(_loose_route(r".+"), {"name": value})
+    assert (caught.value.name, caught.value.why) == ("name", "shape")
+
+
+def test_no_door_shape_takes_a_dot():
+    from acb_common.app_manifests import APPS
+
+    for app in APPS:
+        for row in app.routes:
+            for name in row.path.split("{")[1:]:
+                key = name.split("}")[0]
+                shape = dict(row.path_shapes).get(key, UUID_PATTERN)
+                assert not re.fullmatch(shape, "."), (app.id, row.path, key)
+
+
+@pytest.mark.parametrize("pattern", ["[a-z]{\u0661}", "[0-9]{1,\u0669}"])
+def test_a_shape_with_a_unicode_digit_count_fails(pattern):
+    assert not path_shape_is_closed(pattern)
+    assert not query_shape_is_closed(pattern)
 
 
 @pytest.mark.parametrize(("value", "encoded"), [
@@ -349,7 +377,7 @@ def test_a_read_that_is_not_a_get_fails_by_name():
     {"answer_cap": 0},
     {"query": (("page", r"[0-9]{1,4}"), ("per_page", r"[0-9]{1,3}")),
      "paging": Paging("page", "per_page", MAX_PAGE_SIZE + 1)},
-    {"query": (("page", r"[0-9]{1,4}"), ("per_page", r"[0-9]{1,3}")),
+    {"query": (("page", r"[0-9]{1,4}"), ("per_page", r"[1-4]{0,1}[0-9]{1}")),
      "paging": Paging("page", "per_page", 50),
      "total": Total("items", "amount", max_pages=MAX_TOTAL_PAGES + 1)},
 ])
@@ -357,10 +385,88 @@ def test_an_op_over_a_cap_fails_by_name(changes):
     assert _rule(_with_op(_op(**changes))) == "over_cap"
 
 
-@pytest.mark.parametrize("limits", [Limits(per_minute=0), Limits(per_minute=10, per_day=0),
-                                    Limits(per_minute=True)])
+@pytest.mark.parametrize("limits", [
+    Limits(per_minute=0), Limits(per_minute=10, per_day=0), Limits(per_minute=True),
+    Limits(per_minute=MAX_PER_MINUTE + 1), Limits(per_minute=100, per_day=MAX_PER_DAY + 1),
+])
 def test_a_limit_out_of_range_fails_by_name(limits):
     assert _rule(_with(limits=limits)) == "over_cap"
+
+
+def test_a_limit_at_its_cap_passes():
+    validate(_with(limits=Limits(per_minute=MAX_PER_MINUTE, per_day=MAX_PER_DAY)), CLIENT_HOSTS)
+    assert ZOHO_BOOKS.limits.per_minute == 100
+
+
+# ── Query shapes (review P2) ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("shape", [
+    r".*", r"[^x]+", "[a-z&=#\n]+", r"(?s).+", r"\d+", r"\d{1,9}", r"\w{1,9}", r"[a-z]+",
+    r"[a-z]*", r"(a|b)", r"a|b", r"[a-z.]{1,9}", r"[a-z,]{1,9}", r"[a-z:]{1,9}",
+    r"[a-z+]{1,9}", r"[a-z@]{1,9}", r"[a-z ]{1,9}", r"[a-z]{0,9}", r"(?i)[a-z]{1,9}",
+    "[a-z]{\u0661}", "[a-z]{1,\u0669}",
+])
+def test_an_open_query_shape_fails_by_name(shape):
+    assert not query_shape_is_closed(shape)
+    assert _rule(_with_op(_op(query=(("q", shape),)))) == "query_open_shape"
+
+
+@pytest.mark.parametrize("shape", [
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}", r"[a-z_]{1,24}", r"[AD]{1}", r"[0-9]{1,20}",
+    r"[1-4]{0,1}[0-9]{1}",
+])
+def test_a_closed_query_shape_passes(shape):
+    assert query_shape_is_closed(shape)
+
+
+def test_each_zoho_query_shape_is_closed_and_takes_its_real_values():
+    op = ZOHO_BOOKS.op("list_invoices")
+    shapes = dict(op.query)
+    for shape in shapes.values():
+        assert query_shape_is_closed(shape)
+    for key, value in (("date_start", "2026-01-31"), ("status", "partially_paid"),
+                       ("sort_column", "due_date"), ("sort_order", "D"),
+                       ("customer_id", "4600000000012345"), ("page", "12"), ("per_page", "49")):
+        assert build(ZOHO_BOOKS, "list_invoices", {key: value}).query == ((key, value),)
+
+
+@pytest.mark.parametrize("value", ["a&b=c", "x\n", "a#b", "a b", "\uff06", "a.b", "a,b"])
+def test_a_query_value_with_a_breaker_is_refused(value):
+    with pytest.raises(BadCall) as caught:
+        build(ZOHO_BOOKS, "list_invoices", {"status": value})
+    assert caught.value.why == "shape"
+
+
+def test_a_door_row_with_an_open_query_shape_cannot_load():
+    with pytest.raises(ValueError, match="not closed"):
+        Route("GET", "/v1/files", tool="", cls="A", op="list_files", title="List.",
+              query_shapes=(("q", r".*"),), api=True)
+
+
+# ── The page size (review P3) ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("shape", [r"[0-9]{1,2}", r"[0-9]{1,3}", r"[1-5]{0,1}[0-9]{1}",
+                                   r"[0-9]{3}"])
+def test_a_size_shape_above_the_page_size_fails_by_name(shape):
+    op = _op(query=(("page", r"[0-9]{1,4}"), ("per_page", shape)),
+             paging=Paging("page", "per_page", 50))
+    assert _rule(_with_op(op)) == "page"
+
+
+def test_build_refuses_a_size_above_the_page_size():
+    loose = _op(name="list_loose", query=(("page", r"[0-9]{1,4}"), ("per_page", r"[0-9]{1,3}")),
+                paging=Paging("page", "per_page", 50))
+    tpl = dataclasses.replace(ZOHO_BOOKS, operations=(loose,))
+    for value in (51, "51", "999"):
+        with pytest.raises(BadCall) as caught:
+            build(tpl, "list_loose", {"per_page": value})
+        assert (caught.value.name, caught.value.why) == ("per_page", "size")
+    assert build(tpl, "list_loose", {"per_page": 50}).query == (("per_page", "50"),)
+    with pytest.raises(BadCall) as caught:
+        build(ZOHO_BOOKS, "list_invoices", {"per_page": 51})
+    assert caught.value.why == "size"
 
 
 @pytest.mark.parametrize(("field", "value"), [
@@ -386,6 +492,44 @@ def test_a_secret_url_host_or_header_in_a_stored_field_fails_by_name(field, valu
 ])
 def test_a_value_in_a_sign_in_name_fails_by_name(sign_in):
     assert _rule(_with(sign_in=sign_in)) == "secret_in_field"
+
+
+@pytest.mark.parametrize("sign_in", [
+    SignIn(kind="oauth_code", header="Authorization", scheme="A" * 32, client="zoho"),
+    SignIn(kind="oauth_code", header="X" * 44, scheme="Zoho-oauthtoken", client="zoho"),
+    SignIn(kind="key_header", header="X-Refresh-Token-Abcdef0123456789abcdef0123456789"),
+    SignIn(kind="oauth_code", header="Authorization", scheme="Oauthtoken", client="zoho"),
+])
+def test_a_secret_in_the_scheme_or_the_header_fails_by_name(sign_in):
+    assert _rule(_with(sign_in=sign_in)) == "secret_in_field"
+
+
+def test_the_real_zoho_scheme_and_header_pass():
+    assert ZOHO_BOOKS.sign_in.scheme == "Zoho-oauthtoken"
+    assert ZOHO_BOOKS.sign_in.header == "Authorization"
+    validate(ZOHO_BOOKS, CLIENT_HOSTS)
+    for header in ("X-API-Key", "Api-Key", "X-Key"):
+        tpl = _with(sign_in=SignIn(kind="key_header", header=header),
+                    hosts=(("us", "https://api.example.com"),))
+        validate(tpl, CLIENT_HOSTS)
+
+
+# ── Private hosts (review P3, advisory) ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("host", [
+    "https://books.local", "https://api.internal", "https://a.localhost", "https://nas.lan",
+    "https://router.home", "https://erp.corp", "https://xn--bcher-kva.example",
+    "https://api.xn--p1ai",
+])
+def test_a_private_or_idn_host_with_no_client_fails_by_name(host):
+    tpl = _with(sign_in=SignIn(kind="key_header", header="X-Key"), hosts=(("us", host),))
+    assert _rule(tpl) == "private_host"
+
+
+def test_a_client_host_list_still_rules_a_client_template():
+    tpl = _with(hosts=(("us", "https://books.local"),))
+    assert _rule(tpl) == "foreign_host"
 
 
 def test_a_title_with_a_url_fails_by_name():
