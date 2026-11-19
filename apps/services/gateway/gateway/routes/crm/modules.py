@@ -690,6 +690,85 @@ async def _find_rows(
                               nearest=nearest)
 
 
+# ── The company search reads the mirrored modules (FIND-11) ─────────────────
+#
+# ``find_engine.md`` §4.4 and §9.2. The CRM source of ``retrieval/sources.py``
+# calls these two functions, as the member, in the bound tenant. They are no
+# route: the source checks ``feature:crm``, the kill switch, the access rule
+# and the flags first. The modules are the mirrored ones of the profile
+# (:func:`mirrored_modules`), so a module that the profile does not mirror
+# gives no record and no name. Each read runs in ONE ``_tenant_session()``, so
+# FORCE row level security keeps it in the org.
+
+#: The most modules that one company search reads, as one 404 names at most
+#: :data:`MODULE_CHOICES_MAX`.
+FIND_MODULES_MAX = MODULE_CHOICES_MAX
+#: The time one company search of the modules may run in the database. It is
+#: shorter than the engine's own limit, so the search gives what it found.
+FIND_STATEMENT_MS = 2_000
+
+async def find_module_names(user: UserContext, q: str, limit: int) -> list[dict[str, Any]]:
+    """The mirrored records that hold *q*, as the module list holds them: the
+    SAME predicate, ``field_sql.find_where`` (``find_engine.md`` §4.4 rule 1).
+
+    Exact only: every word of *q* is in the record name or a text or lookup
+    value, in any case. The near spelling is the job of :func:`near_module_names`
+    and the engine, so an exact hit never hides a near one. The newest record
+    first. At most *limit* in all, and the newest modules' records first when
+    the cap cuts. Each row is ``{id, module, name, label, modified}``.
+    """
+    from gateway.routes.crm.aggregate import _TIMEOUT_SQL, _is_timeout
+    from gateway.routes.crm.core import clip_query
+    from gateway.routes.crm.field_sql import DETOAST_JOIN, find_where, find_words, module_scope
+
+    refuse_nul([("q", q or "")])
+    words = find_words(clip_query(q))
+    if not words or limit <= 0:
+        return []
+    found: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        await db.execute(text(_TIMEOUT_SQL), {"ms": str(FIND_STATEMENT_MS)})
+        for module, row in list(mirrored.items())[:FIND_MODULES_MAX]:
+            scope = await module_scope(db, module)
+            where = find_where(scope, words)
+            try:
+                rows = (await db.execute(
+                    text(
+                        "SELECT id, module, name, ext_modified_at "
+                        f"FROM crm_module_records{DETOAST_JOIN} "
+                        f"WHERE module = :module AND {where.sql} "
+                        "ORDER BY ext_modified_at DESC NULLS LAST, id LIMIT :limit"
+                    ),
+                    {**where.params, "module": module, "limit": limit},
+                )).fetchall()
+            except DBAPIError as exc:
+                if _is_timeout(exc):
+                    break
+                raise
+            label = str(row.get("singular_label") or row.get("label") or module)
+            found += [{"id": str(r.id), "module": str(r.module), "name": r.name,
+                       "label": label, "modified": r.ext_modified_at} for r in rows]
+    found.sort(key=lambda r: (r["modified"] is None, -(r["modified"].timestamp()
+                                                         if r["modified"] else 0), r["id"]))
+    return found[:limit]
+
+
+async def near_module_names(user: UserContext, words: list[str], k: int) -> dict[str, list[Any]]:
+    """The record names of the mirrored modules that are near each of *words*
+    (``find_engine.md`` §4.3 ``near``). ``field_sql.near_record_names`` reads
+    the newest names and scores them with ``acb_common.name_match``: the one
+    matcher, with its own floor and its own deadline (rule 3)."""
+    from gateway.routes.crm.field_sql import near_record_names
+
+    refuse_nul([("q", " ".join(words))])
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        if not mirrored:
+            return {}
+        return await near_record_names(db, list(mirrored)[:FIND_MODULES_MAX], words, k)
+
+
 @router.get("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)
 async def get_module_record(
     module: str,
