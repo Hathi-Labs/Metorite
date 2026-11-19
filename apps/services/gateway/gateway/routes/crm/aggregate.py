@@ -1784,10 +1784,7 @@ async def _compute(
         for key, acc in read.values.items()
     ]
     # The 50 largest groups stay. The rest fold into `other`.
-    # CRM-Q34-10: the key breaks a tie of value and label, as
-    # `field_sql.one_group_order` does, so page 2 continues this cut.
-    groups.sort(key=lambda g: (g[0].value is None, -(g[0].value or 0.0), g[0].label,
-                               g[0].key is None, g[0].key or ""))
+    groups.sort(key=lambda g: cut_key(g[0]))
     kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     # With no group, the one row IS the total, so no group is shown.
     shown = [] if overall else [g for g, _acc in kept]
@@ -1844,6 +1841,15 @@ async def _compute(
         next_group_page=_next_page(module, group_field, fields, rest, bucketed,
                                    status_group, params.q),
     )
+
+
+def cut_key(group: AggregateGroup) -> tuple[Any, ...]:
+    """The order in which an answer of one page keeps its 50 largest groups:
+    the value down (None last), then the label. CRM-Q34-10: then the key by
+    code point, None last, so a tie of value and label has one order. It is
+    the order of ``field_sql.one_group_order``, so page 2 continues this cut."""
+    return (group.value is None, -(group.value or 0.0), group.label,
+            group.key is None, group.key or "")
 
 
 def _next_page(module: str | None, group_field: str | None, fields: str | None,

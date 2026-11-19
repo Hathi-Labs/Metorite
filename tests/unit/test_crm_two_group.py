@@ -133,14 +133,14 @@ def test_a_core_entity_refuses_a_second_field(agg, monkeypatch, on) -> None:
 def test_on_the_list_the_page_and_its_size(agg, monkeypatch) -> None:
     _flag(agg, monkeypatch, True)
     assert agg._paging("Invoices", "Site", None, "Status", None, None) == (1, agg.MAX_GROUPS)
-    assert agg._paging("Invoices", "Site", None, None, 3, 200) == (3, 200)
-    assert "200" in _detail(lambda: agg._paging("Invoices", "Site", None, None, 2, 201))
-    assert _detail(lambda: agg._paging("Invoices", "Site", None, None, 2, 0))
+    assert agg._paging("Invoices", "Site", None, "Day", 3, 200) == (3, 200)
+    assert "200" in _detail(lambda: agg._paging("Invoices", "Site", None, "Day", 2, 201))
+    assert _detail(lambda: agg._paging("Invoices", "Site", None, "Day", 2, 0))
     assert "1 to 1,000,000" in _detail(lambda: agg._paging("Invoices", "Site", None, "Day", 0,
                                                             None))
     # Fix round item 2: a page past the bound is a 422, never an int8 overflow.
     assert agg.GROUP_PAGES_MAX == 1_000_000
-    assert agg._paging("Invoices", "Site", None, None, 1_000_000, 200) == (1_000_000, 200)
+    assert agg._paging("Invoices", "Site", None, None, 1_000_000, None) == (1_000_000, 50)
     for page in (1_000_001, 10**20):
         assert "1 to 1,000,000" in _detail(
             lambda page=page: agg._paging("Invoices", "Site", None, None, page, None))
@@ -175,7 +175,8 @@ def test_the_order_of_one_field_is_the_cut_of_the_old_answer() -> None:
     order, params = fs.one_group_order(scope.ref("Site"))
     assert order.startswith("round(CAST(value AS numeric), 2) DESC NULLS LAST, COALESCE(")
     assert 'NULLIF(label, \'\')' in order and "'(none)') COLLATE \"C\" ASC" in order
-    assert order.endswith("key ASC NULLS LAST")
+    # Round 3: the key ends the order by code point, a NULL key last.
+    assert order.endswith('key COLLATE "C" ASC NULLS LAST')
     assert order.index("NULLIF(label") < order.index("->> key") < order.index("NULLIF(key")
     status = fs.FieldRef(key="Status", type="select", label="Status", options={"P": "Paid"})
     assert json.loads(fs.one_group_order(status)[1]["agf_opts"]) == {"P": "Paid"}
@@ -354,6 +355,43 @@ async def test_page_1_says_that_page_2_continues_it(monkeypatch) -> None:
     monkeypatch.setattr(tools, "_get", _get)
     plain = await tools.crm_aggregate("module:Invoices", group_field="Site")
     assert "Ask for page 2" not in plain and "Other (2 smaller groups)" in plain
+    assert "Narrow the filter to see them." in plain
     body["next_group_page"] = 2
     more = await tools.crm_aggregate("module:Invoices", group_field="Site")
-    assert "Ask for page 2 for the next groups." in more.splitlines()
+    # Round 3: ONE step in the Other line, page 2 in place of the narrowing.
+    other = next(line for line in more.splitlines() if line.startswith("Other ("))
+    assert other.endswith("The total counts them. Ask for page 2 for the next groups.")
+    assert "Narrow the filter" not in more
+
+
+def test_one_field_pages_by_the_cut_of_page_1(agg, monkeypatch) -> None:
+    """Round 3: page 1 of one field always cuts MAX_GROUPS, so each later
+    page holds that many, or page 2 would skip or repeat a group. Two
+    fields take any size from 1 to 200. The tool shows MAX_ROWS groups on
+    a page, so it must equal MAX_GROUPS."""
+    import acb_skills.crm_tools as tools
+
+    assert tools.MAX_ROWS == agg.MAX_GROUPS
+    _flag(agg, monkeypatch, True)
+    assert agg._paging("Invoices", "Site", None, None, 2, agg.MAX_GROUPS) == (2, 50)
+    for size in (1, 49, 51, 200):
+        detail = _detail(lambda size=size: agg._paging("Invoices", "Site", None, None, 2, size))
+        assert "One group field pages by 50 groups" in detail
+    assert agg._paging("Invoices", "Site", None, "Day", 2, 200) == (2, 200)
+
+
+def test_a_tie_of_value_and_label_breaks_by_the_key(agg) -> None:
+    """Round 3: two groups equal on the value and the label sort by the key,
+    by code point, None last, whatever their order in. The SQL of a later
+    page breaks the tie the same way (``one_group_order``)."""
+    from gateway.routes.crm.aggregate import AggregateGroup
+
+    def group(key: str | None, label: str, value: float = 2.0) -> AggregateGroup:
+        return AggregateGroup(key=key, label=label, value=value)
+
+    rows = [group(None, "(none)"), group("ka", "Acme Ltd"), group("", "(none)"),
+            group("k-b", "Acme Ltd"), group("z", "Big", 3.0)]
+    ordered = [(g.key, g.label) for g in sorted(rows, key=agg.cut_key)]
+    assert ordered == [("z", "Big"), ("", "(none)"), (None, "(none)"),
+                       ("k-b", "Acme Ltd"), ("ka", "Acme Ltd")]
+    assert [(g.key, g.label) for g in sorted(reversed(rows), key=agg.cut_key)] == ordered

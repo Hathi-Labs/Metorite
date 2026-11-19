@@ -114,7 +114,8 @@ def invoices(ns, monkeypatch):
     and one with no date. Org B: one invoice of its own site."""
     a, b = ns.org_a, ns.org_b
     # Org A also mirrors Works, the module of item 9.
-    _mirror_org(ns, a, [_module("Invoices"), _module("Works"), _module("Places")])
+    _mirror_org(ns, a, [_module("Invoices"), _module("Works"), _module("Places"),
+                        _module("Twins")])
     _mirror_org(ns, b, [_module("Invoices")])
     for org in (a, b):
         _defs(ns, org, "module:Invoices", _INVOICE_DEFS)
@@ -524,7 +525,8 @@ async def test_the_tool_walks_one_field_with_ties_by_the_name(
     assert (-last[1], last[0]) < (-first[1], first[0])
     page1 = await _tool_text(places, a, monkeypatch, entity="module:Places",
                              group_field="Site")
-    assert "Ask for page 2 for the next groups." in page1.splitlines()
+    assert "Ask for page 2 for the next groups." in page1
+    assert "Narrow the filter" not in page1
 
 
 async def _sent_and_text(p: Any, org: str, monkeypatch: Any,
@@ -615,3 +617,75 @@ async def test_the_order_among_ties_is_the_keys(invoices, app_engine) -> None:
     assert any(len(k2) > 1 for k2 in ties.values())  # key2 decides somewhere
     again = await _ok(invoices, a, **query, group_page=2)
     assert again["groups"] == groups[50:100]
+
+
+# ── 11. Ties of value AND label at the border of page 1 (round 3) ────────────
+
+_TWIN_DEFS = [
+    ("Site", "lookup", {"lookup_module": "Sites"}, False, False),
+    ("Set", "select", [{"label": "A", "value": "A"}, {"label": "B", "value": "B"}],
+     False, False),
+]
+
+
+@pytest.fixture
+def twins(invoices):
+    """Module Twins of org A, in two sets. Each set has 49 sites of 3
+    records (ranks 1 to 49), then two groups of 2 records that tie on the
+    value AND the label (ranks 50 and 51), then 5 sites of 1 record.
+
+    * Set A: two lookups named "Acme Ltd", ids ``k-b`` and ``ka``. By code
+      point ``k-b`` comes first, by the en_US collation of the database
+      ``ka`` does. So an order of the key by the database collation, or by
+      the order of the rows, splits the tie the other way from page 1.
+    * Set B: a record with no site (key NULL) and one whose site is "" (key
+      ""). Both are named "(none)"."""
+    a = invoices.org_a
+    _defs(invoices, a, "module:Twins", _TWIN_DEFS)
+    rows: list[tuple[str, dict]] = []
+    for kind in ("A", "B"):
+        for n in range(49):
+            for copy in range(3):
+                rows.append((f"{kind}{n:02d}{copy}", {
+                    "Set": kind, "Site": {"id": f"{kind}s{n:02d}", "name": f"B{n:02d}"}}))
+        for n in range(5):
+            rows.append((f"{kind}t{n}", {
+                "Set": kind, "Site": {"id": f"{kind}t{n}", "name": f"C{n}"}}))
+        for copy in range(2):
+            if kind == "A":
+                rows.append((f"Aka{copy}", {"Set": "A",
+                                             "Site": {"id": "ka", "name": "Acme Ltd"}}))
+                rows.append((f"Akb{copy}", {"Set": "A",
+                                             "Site": {"id": "k-b", "name": "Acme Ltd"}}))
+            else:
+                rows.append((f"Bnull{copy}", {"Set": "B"}))
+                rows.append((f"Bblank{copy}", {"Set": "B", "Site": ""}))
+    with invoices.admin_engine.begin() as c:
+        for ext, fields in rows:
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), 'Twins', 'zoho', :e, "
+                ":e, CAST(:f AS jsonb))"), {"o": a, "e": ext, "f": json.dumps(fields)})
+    return invoices
+
+
+@pytest.mark.parametrize(("kind", "pair"), [
+    ("A", ["k-b", "ka"]),
+    ("B", ["", None]),
+])
+async def test_a_tie_at_the_border_shows_each_group_once(
+        twins, app_engine, monkeypatch, kind: str, pair: list) -> None:
+    """Round 3: page 1 (the answer of before, through the tool) and page 2
+    (the paged read) split the tie of ranks 50 and 51 the same way: by the
+    key, by code point, None last. Each group shows once."""
+    a = twins.org_a
+    keys: list[Any] = []
+    for page in (1, 2):
+        calls, _out = await _sent_and_text(
+            twins, a, monkeypatch, entity="module:Twins", group_field="Site",
+            field_filters={"Set": kind}, page=page)
+        keys.append([g.get("key") for g in calls[-1][1]["groups"]])
+    assert len(keys[0]) == 50 and len(keys[1]) == 6
+    assert keys[0][-1] == pair[0] and keys[1][0] == pair[1]
+    every = [*keys[0], *keys[1]]
+    assert len(every) == 56 and len({repr(k) for k in every}) == 56
