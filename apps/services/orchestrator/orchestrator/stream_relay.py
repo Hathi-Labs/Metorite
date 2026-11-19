@@ -638,6 +638,26 @@ def part_one_at_head(events: list[dict[str, Any]], run_id: str) -> bool:
     return False
 
 
+async def stream_head_ms(thread_id: str) -> int | None:
+    """The start of the run in *thread_id*'s stream, in epoch ms, or None.
+
+    RESUME-2d (D-RES-10, ``chat_run_continuity.md`` §4.12.7). Each run
+    resets the stream (``mark_active(reset=True)``), and a continuation of
+    case A keeps the run id and the stream. So one stream holds one run, and
+    the id of its first entry (``<ms>-<seq>``) gives the start of the run.
+    The clock is the clock of the Redis server. ``None`` means no stream, or
+    an entry id of another shape. ⚠️ ``STREAM_MAXLEN`` trims the oldest
+    entries of a very long run. The first entry that stays is then later than
+    the true start. One read, O(1). A Redis fault raises.
+    """
+    r = await _get_client()
+    head = await r.xrange(_stream_key(thread_id), count=1)
+    if not head:
+        return None
+    ms, _, _seq = str(head[0][0]).partition("-")
+    return int(ms) if ms.isdigit() else None
+
+
 async def is_active(thread_id: str) -> bool:
     """Check whether an agent is still running for *thread_id*."""
     r = await _get_client()

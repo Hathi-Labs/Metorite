@@ -71,6 +71,7 @@ __all__ = [
     "ModelRefused",
     "accept_part",
     "approve",
+    "body_bytes",
     "connection_model_allowed",
     "made_by",
     "read_approved",
@@ -81,8 +82,8 @@ TABLE = "connection_semantic_models"
 STATE_DRAFT = "draft"
 STATE_APPROVED = "approved"
 STATE_ARCHIVED = "archived"
-#: The largest body, in bytes of its JSON text. The migration holds the same
-#: cap in a CHECK.
+#: The largest body, in bytes of its jsonb text (:func:`body_bytes`). The
+#: migration holds the same cap in a CHECK on ``octet_length(body::text)``.
 BODY_BYTES_MAX = 262144
 
 #: The refusal when the org is off the list, or no tenant is bound.
@@ -235,11 +236,23 @@ def _version(value: Any) -> int:
     return value
 
 
+def body_bytes(body: Mapping[str, Any]) -> int:
+    """The size of *body* in bytes, as the CHECK of the migration measures
+    it: ``octet_length(body::text)``. The text form of jsonb puts a space
+    after each comma and each colon, so this counts that form and not the
+    compact JSON. Postgres sorts the keys in another order, and the order
+    does not change the count."""
+    spaced = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(", ", ": "))
+    return len(spaced.encode("utf-8"))
+
+
 def _json(body: Mapping[str, Any]) -> str:
-    out = json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    if len(out.encode("utf-8")) > BODY_BYTES_MAX:
+    """The compact JSON text of *body* to write. It refuses with ``too_big``
+    when the jsonb text form is over :data:`BODY_BYTES_MAX`, so the CHECK of
+    the migration never trips first."""
+    if body_bytes(body) > BODY_BYTES_MAX:
         raise ModelRefused("too_big")
-    return out
+    return json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def _shape(body: Any) -> None:
