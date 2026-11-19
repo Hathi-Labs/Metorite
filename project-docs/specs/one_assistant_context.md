@@ -50,6 +50,11 @@ guarded builder its live caller.
 OA-7c is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7c"
 below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 
+G2 is BUILT, dark behind `CHAT_PACKS_BATCH_ORGS` (2026-11-18, task 3494,
+`chat_reach.md` §3.2, "G2" in §4.2.7). The member's own WhatsApp turn holds
+the read tools of its packs and no write tool. The specialist of each owner
+stays. No pack of mail loads there. The flag flip is OWNER-GATE.
+
 RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A held chat keeps the writes that a card shows, and a load makes room. It ships dark behind `HELD_CARD_WRITES_ORGS`, which is empty by default, and a merge changes no held chat until a person names an org. `TOOL_PACKS` must name `projects-reminders`, or no run loads that pack.
 
 Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that this turn named, and a pack that the last member turn used, never step aside. A load by the model is sticky. The reach of the Projects owner counts a spare pack as free. A load moves out a pack that came in only by the words (D169 item 8, as amended on 2026-11-06). A turn that a sticky pack left at its start says so.
@@ -744,7 +749,8 @@ dropped names and the skipped names. A slug that is no pack gives None.
   form. It names no other assistant. It does not say that the web is off,
   because the orchestrator's own web tools stay on behind the card.
   The `email` rules name `artifact:orchestrator:<path>` for a file of the
-  chat, because a bare path names a file of the email assistant.
+  chat. `send_email` also writes a bare path of a chat folder as its
+  `artifact:` ref (task 3598). A held run takes no such file.
 - **The marks.** Each pack tool carries `__cc_gated__`, so
   `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the
   owner. `_inject_mcp_servers` gives no registry MCP server to a run that
@@ -1336,6 +1342,13 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
   - **One reader**, `tool_packs.tool_search_on`, in the pattern of `packs_on`. It fails closed. The name ends in `_ORGS`, so a SIGHUP reloads it with no deploy (`docs/flag_reload.md`).
   - **The flip is owner-only.** It moves which tools a run holds, and it spends model tokens. TS-2a PR 3 added the flag to `work_plan.md` §6 D4, beside `TOOL_PACKS`.
   - **Off leaves each item of the list below byte-identical**, and the run reads and writes no state of a found tool. The fence is `tests/unit/test_tool_search_off.py`, in the pattern of `test_tool_packs_off.py`.
+- **G2: `CHAT_PACKS_BATCH_ORGS`** (BUILT, dark, task 3494, `chat_reach.md` §3.2) lists the organization ids, or `*`. Empty means off. With the org named, the member's own WhatsApp turn holds the read tools of its packs. The words or the sticky packs of the turn choose them.
+  - **One reader**, `tool_packs.packs_batch_on`. It fails closed. Two callers ask it, `executor._start_pack_turn` and `executor._whatsapp_pack_turn_due`. The first runs with `whatsapp=True`. The second reads the channel. A SIGHUP reloads it (`docs/flag_reload.md`).
+  - **The gates** are the channel `whatsapp` that `bot_run` binds, a solo room, a chat thread, the verified member and no delegation. A workflow run, a shared room and a sender with no verified member get no pack.
+  - **Read only.** `tool_packs.batch_read_tools` keeps a tool only when the risk registry marks it read-only, so a tool with no mark leaves. A mail pack never loads (`batch_allowed`), so the run keeps its MCP servers. The record refuses no hand-off, so the specialist still does the writes. A write tool that reaches a pack call answers `tool_packs.BATCH_WRITE_REFUSED`.
+  - **The subset.** The WhatsApp subset holds the READ tools of the Projects packs, the Studio read packs, CRM and calendar-day, but never a display tool (`subagent_contract.DISPLAY_TOOLS`). **Owner question (task 3494):** may a WhatsApp turn read CRM, calendar and Projects data? The recommendation is yes.
+  - **No loader.** The turn holds no `load_skill_tools`, no `find_tools` and no published skill. Its sticky state lives in `tool_packs.BATCH_NAMESPACE`, so a WhatsApp turn never changes the sticky packs of the web chat.
+  - **Off leaves the batch run byte-identical**, and the run never calls the pack turn. The fence is `tests/unit/test_chat_packs_batch.py`.
 
 **Off leaves these byte-identical:**
 - the tool names of the orchestrator, their order and each specialist tool

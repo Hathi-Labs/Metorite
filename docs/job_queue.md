@@ -312,6 +312,12 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   `graph_sweep:<day>`. It runs only for an org that `GRAPH_SWEEP_ORGS`
   names. The job writes the structural edges of `knowledge_graph.md` §4.1,
   with no model.
+- **The fifth consumer (AO-2, built dark).** `provider_alerts.seed` seeds
+  the detached kind `provider_alerts.check` once in each bucket, with the
+  dedupe key `provider_alerts:<bucket>`. It runs only for an org that
+  `PROVIDER_ALERT_ORGS` names. The job reads the AI vendor alerts of the
+  Console and tells the admins of that org (`customer_console.md` §6A.17b).
+  Its effect is `send`, and it gets one try.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 
