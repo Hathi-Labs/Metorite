@@ -52,8 +52,8 @@ Fences: `tests/unit/test_studio_catalog.py` (`TestTheChatToolSource`), `tests/un
 
 The Opus review of 2026-11-16 approved the dark merge. These items block the flip of `STUDIO_CHAT_TOOLS_ORGS` or TOF-1b:
 
-1. **Cold build on the event loop.** A cold read took 20 s on the PC review. Warm the owners at start, or give `invoke._catalog_class` and the publish check a catalog with no `tool` source. A thread is not a drop-in repair, because the loader changes process dicts.
+1. **Closed by TOF-1e (task 3793). Cold build on the event loop.** A cold read took 20 s on the PC review, and 64 s on a fresh process in TOF-1e. The catalog read now never builds an owner. `chat_tool_rows(defer_cold=True)` gives class C rows until `warm()` has loaded the owners on a daemon thread. The gateway starts that thread at boot when `STUDIO_CHAT_TOOLS_ORGS` has a value, and the first read starts it after a later flip. The loader keeps one lock (`_PACK_LOAD_LOCK`) for its two cold paths, so the thread and a run never import one owner twice. Fence: `tests/unit/test_chat_tool_warm.py`.
 2. **Core CRM reads have no row.** The core `crm` family has no owner, so 15 reads (`crm_list_records` and the like) are out of scope. The owner must decide whether they join. TOF-1d needs the answer.
-3. **The builder lists the rows.** Filter `source == "tool"` out of `studio_list_actions` for apps.
+3. **Closed by TOF-1e (task 3793). The builder lists the rows.** `studio_list_actions` now leaves out each `source == "tool"` row. Fence: `test_list_actions_leaves_out_the_chat_tool_rows` in `tests/unit/test_studio_builder_tools.py`.
 4. **Closed by TOF-1b. The flag is no kill switch for the load.** `action_tool` reads no flag. `_turn_with_skills` reads the flag and passes it to `build`. With the flag off, a `tool:` action fails with `chat_tools_off`.
-5. **Fence gaps.** No test covers a name that two packs hold. The route floor check covers Projects only.
+5. **Fence gaps.** TOF-1e (task 3793) closes the first gap: `test_a_name_that_two_packs_hold_gets_no_row` in `tests/unit/test_chat_tool_warm.py` pins that the scope drops a name that two packs hold. The route floor check covers Projects only, and that gap stays open.

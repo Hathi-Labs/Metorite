@@ -529,7 +529,7 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # an org, so a tenant that set it could open it for every org.
     "PACKAGE_HOST_",
     # Agent runtime, sandbox and models.
-    "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
+    "MUTATION_", "SANDBOX_", "COMPUTE_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
     "AWS_", "AZURE_", "VERTEX_",
     # Speech, meetings and media providers of the deployment.
