@@ -6398,6 +6398,22 @@ Fence: SBX-F24 to SBX-F26 of `agent_sandbox.md` §11, advisory until their slice
 
 **Re-check this number at merge.** On 2026-11-19, main held D225 at most. Open PRs 2585 and 2599 hold D226. A scan of all 168 open PRs found, in the `work_plan.md` diff of each, no D227 to D229. Main holds no D226 to D229.
 
+### D228 — API connections: the owner accepts D-API-1 to D-API-9, and Zoho Books is the first template and an owner priority (DECIDED, 2026-11-19)
+
+The owner answered in chat on 2026-11-19, on task 3562 (answer `97b5d6ce`). `specs/api_connections.md` §8 holds each question and its answer.
+
+1. **D-API-1.** Reviewed templates (T1) and APIs by their OpenAPI address (T2) first. An API with no OpenAPI (T3) comes later, with admin approval of each operation.
+2. **D-API-2.** The operation list is closed. `api_connections.md` replaces TOF-5c and does not wait for IN-3.
+3. **D-API-3.** The admin role and each group that the admin grants may use a connection. For books, the admin role only.
+4. **D-API-4.** Read-only first. Then each write asks a card, also in a member's own run. The gateway refuses writes until then.
+5. **D-API-5.** Zoho Books comes first, with no wait for IN-3, as D122.1 decided. `semantic_model.md` rung 4 and D-SEM-8 follow.
+6. **D-API-6.** The discovery call of "Add API" and the plugin store retire when T2 lands.
+7. **D-API-7.** An API's data reaches the chat's model vendor under the same notice as MCP and LNK-Q2.
+8. **D-API-8.** The flag is `API_CONNECTIONS_ORGS`. It goes to all orgs after the rung 1 demo.
+9. **D-API-9.** An API answer does not mark the chat as untrusted, the same as an MCP answer today. The open risk of `api_connections.md` §2.5 stays: text in an answer can try to steer another tool of the chat.
+
+Fence: none new, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D228 entries merge. **Re-check this number at merge.** On 2026-11-19, main held D227 at most.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
