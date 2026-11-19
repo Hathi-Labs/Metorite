@@ -3735,7 +3735,8 @@ async def _refuse_changed_draft(db: Any, req: DraftUpsertRequest) -> None:
     call. ``current`` holds the subject, the three address lists and the
     first :data:`PRECONDITION_TEXT_MAX` characters of the text."""
     row = await _fetch_message_dict(db, str(req.draft_id))
-    if (not row or str(row.get("account_id") or "") != str(req.account_id)
+    same_box = str(row.get("account_id") or "").lower() == str(req.account_id).strip().lower()
+    if (not row or not same_box
             or str(row.get("folder") or "").lower() not in ("drafts", "draft")):
         raise HTTPException(status_code=404, detail="Draft not found")
     if draft_digest(row) == req.expect_digest:
