@@ -418,7 +418,7 @@ def test_a_generator_of_fields_is_read_once_for_every_step() -> None:
 
 #: Each module that terms.py may import. The catalogue is pure too.
 ALLOWED_IMPORTS = frozenset({
-    "__future__", "re", "collections.abc", "dataclasses", "typing",
+    "__future__", "re", "unicodedata", "collections.abc", "dataclasses", "typing",
     "gateway.crm_sync.catalogue",
 })
 #: The names of a log call or a print. terms.py holds none of them.
