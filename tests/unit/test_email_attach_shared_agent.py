@@ -1127,3 +1127,35 @@ async def test_a_refused_artifact_ref_on_the_new_mail_card_gets_the_next_step(
     assert "/email/new-card/act" not in tool["posts"] and tool["sent"] == []
     assert agents._refused_text("The email has no text, so nothing was sent.") == (
         "Not sent. The email has no text, so nothing was sent.")
+
+
+# ── Task 3812: the text and the files agree ────────────────────────────────
+
+
+def test_promises_file_reads_the_words() -> None:
+    """A text that says a file is attached or enclosed makes the promise.
+    Mutation: drop ``_promises_file`` → every case below is red."""
+    for text in ("Please find attached the deck.", "See the attachment.", "Enclosed is the PDF"):
+        assert agents._promises_file(text), text
+    for text in ("Thanks, talk soon.", "", None):
+        assert not agents._promises_file(text), text
+
+
+async def test_a_text_that_says_attached_with_no_file_warns_on_the_card(
+    monkeypatch, tool,
+) -> None:
+    """The card of a mail with no file, whose text says "attached", shows the
+    warning line. A mail with no such words shows none.
+    Mutation: drop the notice in ``send_email`` → the first assert is red."""
+    seen: list[str] = []
+
+    async def approve(**kw: Any) -> bool:
+        seen.append(str(kw.get("context") or ""))
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", approve)
+    await agents.send_email(F.BOX, body="Please find attached the deck.", to=[F.KNOWN],
+                            subject="Deck")
+    await agents.send_email(F.BOX, body="Thanks, talk soon.", to=[F.KNOWN], subject="Hi")
+    assert agents._PROMISE_NO_FILE in seen[0]
+    assert agents._PROMISE_NO_FILE not in seen[1]

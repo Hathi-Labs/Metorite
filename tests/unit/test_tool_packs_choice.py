@@ -880,10 +880,40 @@ def _callers_of(name: str) -> set[str]:
 
 def test_only_the_stream_run_starts_and_applies_packs() -> None:
     """The WhatsApp path (D115) and every batch run go through ``run_agent``,
-    and a delegated run through ``_run_sub_agent_streaming``. Mutation: call
-    the read or the apply on another path → red."""
-    assert _callers_of("_start_pack_turn") == {"run_agent_stream"}
-    assert _callers_of("_apply_pack_turn") == {"run_agent_stream"}
+    and a delegated run through ``_run_sub_agent_streaming``. G2 (task 3494):
+    the batch run reaches the read and the apply only through
+    ``_apply_batch_packs``, with ``whatsapp=True`` and ``read_only=True``
+    (``test_chat_packs_batch.py``). Mutation: call the read or the apply on
+    another path, or drop either keyword → red."""
+    assert _callers_of("_start_pack_turn") == {"run_agent_stream", "_apply_batch_packs"}
+    assert _callers_of("_apply_pack_turn") == {"run_agent_stream", "_apply_batch_packs"}
+    tree = ast.parse((REPO / "apps/services/orchestrator/orchestrator/executor.py")
+                     .read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_apply_batch_packs")
+    keys = {(node.func.id, kw.arg, ast.unparse(kw.value)) for node in ast.walk(fn)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            for kw in node.keywords}
+    assert ("_start_pack_turn", "whatsapp", "True") in keys
+    assert ("_apply_pack_turn", "read_only", "True") in keys
+
+
+def test_the_read_only_pack_apply_offers_no_loader() -> None:
+    """G2 (task 3494): the read-only branch of ``_apply_pack_turn`` calls
+    ``_apply_tool_packs`` with ``read_only=True`` and ``offer_loader=False``.
+    Mutation: pass ``offer_loader=True`` there -> red."""
+    tree = ast.parse((REPO / "apps/services/orchestrator/orchestrator/executor.py")
+                     .read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_apply_pack_turn")
+    seen = []
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_apply_tool_packs"):
+            kw = {k.arg: ast.unparse(k.value) for k in node.keywords}
+            if kw.get("read_only") == "True":
+                seen.append(kw.get("offer_loader"))
+    assert seen == ["False"], seen
 
 
 def _main_try_of_run_agent_stream() -> ast.Try:

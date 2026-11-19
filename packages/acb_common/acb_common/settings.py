@@ -394,6 +394,26 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_fields_search.py.
     crm_module_find_orgs: str = ""
+    # `semantic_model_orgs` (WS-SEM SEM-7, task 3737, 2026-11-18) lists the
+    # organization ids whose CRM plan takes the semantic kinds `measure`,
+    # `join` and `query`, in the grammar of `crm_orgs`. Default empty means
+    # NO organization: a plan keeps an item of these kinds as an unknown
+    # kind, no check runs on it, and `org_facts` serves none. The one reader
+    # is `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload
+    # applies it (`docs/flag_reload.md`). A name in the list spends nothing,
+    # so a flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_plan_kinds_semantic.py.
+    semantic_model_orgs: str = ""
+    # `api_connections_orgs` (WS-API API-1, task 3787, D228, 2026-11-19)
+    # lists the organization ids that may use an API connection in the chat
+    # (`api_connections.md` §4, D-API-8), in the grammar of `crm_orgs`.
+    # Default empty means NO organization. API-1 declares it, and the later
+    # rung 1 slices read it. The one reader is
+    # `acb_common.api_connections_flag.api_connections_allowed`. A `*_ORGS`
+    # key, so a SIGHUP reload applies it (`docs/flag_reload.md`). The flip
+    # waits for the rung 1 demo, and it is gate `enforcement-flip`. Fence:
+    # tests/unit/test_api_templates.py.
+    api_connections_orgs: str = ""
     # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
     # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
     # `off` (the default), `shadow` (check at the end of the answer and log
@@ -739,6 +759,14 @@ class Settings(BaseSettings):
     # `gateway.reach.flags.due_push_allowed`. Spec:
     # calendar_events_reminders.md section 5.11.
     due_push_orgs: str = ""
+    # AO-2: PROVIDER_ALERT_ORGS lists the org ids whose admins hear when an AI
+    # vendor account runs out or runs low: one bell row and one phone push.
+    # Set it to the operator org (HathiLabs). Empty sends nothing, the
+    # default. `*` is refused, because a customer's admins must never get our
+    # vendor alerts. A SIGHUP reload applies a change. Reader:
+    # `gateway.provider_alerts.alert_orgs`. Spec: customer_console.md
+    # section 6A.17b. Fence: tests/unit/test_provider_alerts.py.
+    provider_alert_orgs: str = ""
     # STU-B1: STUDIO_ORGS lists the org ids that may read the AI Studio
     # action catalog (GET /studio/actions). `*` opens every org. Empty opens
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
@@ -1152,6 +1180,40 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_run_phase_event.py.
     chat_run_phase_orgs: str = ""
 
+    # ── No shrink before the seal (HRD-17e-1, chat_failure_modes.md §6) ─────
+    #
+    # Two comma lists of organization ids, or `*`. Each is empty by default,
+    # and then each chat save runs the upsert of before, byte for byte.
+    # CHAT_NO_SHRINK_SHADOW_ORGS only logs: the save is the save of before,
+    # and a client write that makes an agent row shorter before the fold
+    # seals it logs one `chat_no_shrink_shadow` line, with lengths and no
+    # text. CHAT_NO_SHRINK_ORGS enforces: such a write keeps the stored text,
+    # and logs `chat_no_shrink_refused`. An org in both lists enforces. The
+    # one reader is `gateway.chat_no_shrink.no_shrink_mode`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`, and the enforce flip waits for the shadow counts.
+    # Fences: tests/unit/test_chat_upsert_no_shrink.py and
+    # tests/unit/test_chat_upsert_no_shrink_r8.py.
+    chat_no_shrink_orgs: str = ""
+    chat_no_shrink_shadow_orgs: str = ""
+
+    # ── A card checks that its object did not change (HRD-10a) ──────────────
+    #
+    # CHAT_CARD_PRECONDITION_ORGS: a comma list of organization ids, or `*`.
+    # Empty: off, the default, and `update_task` sends the PATCH of before,
+    # with no `If-Match`. On, `update_task` sends the `updated_at` that it
+    # read before the card as `If-Match`. A task that changed while the card
+    # waited gets a 412, the tool writes nothing, and the tool answers with
+    # the HRD-7 text "Changed since the card" and the old and new values
+    # (owner decision A, 2026-11-16). HRD-10c: the CRM `crm_update_record`
+    # does the same for a deal. The one reader is
+    # `acb_skills.ask_tools.card_precondition_on`. It reads the org from the
+    # run binding and fails closed. A SIGHUP reload applies a change
+    # (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_card_precondition.py,
+    # tests/unit/test_crm_card_precondition.py.
+    chat_card_precondition_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1452,6 +1514,21 @@ class Settings(BaseSettings):
     # what the chat can do and spends model tokens.
     # Fence: tests/unit/test_tool_search_off.py.
     tool_search_orgs: str = ""
+
+    # ── The read packs of a WhatsApp turn (chat_reach.md G2, task 3494) ─────
+    #
+    # `chat_packs_batch_orgs` lists the organization ids, or `*` for each one.
+    # Empty means off, and a WhatsApp run is then byte-identical to a run with
+    # no pack code. With the org named, the member's own WhatsApp turn of the
+    # orchestrator holds the READ tools of the packs that its words or its
+    # sticky packs choose. It holds no write tool, and the specialist stays.
+    # It acts only where the tool pack flags give a pack. The one reader is
+    # `acb_skills.tool_packs.packs_batch_on`, and it fails closed. A SIGHUP
+    # reload applies a change (docs/flag_reload.md).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4), as for the pack flags. Fence: tests/unit/test_chat_packs_batch.py.
+    chat_packs_batch_orgs: str = ""
 
     # ── The floor trim of the one assistant (WS-67 OA-8f) ──────────────────
     #
@@ -2264,8 +2341,20 @@ class Settings(BaseSettings):
     sandbox_exec_max_timeout_seconds: int = 300
     sandbox_output_cap_bytes: int = 12288
     # Caps of §7.1 rule 8: the per-organization fair share, and the box cap.
+    # A start refuses when `sandbox_max_per_org` is above `sandbox_max_total`.
     sandbox_max_per_org: int = 2
     sandbox_max_total: int = 4
+    # SBX-18 (agent_sandbox.md 0c, rung 6a'): the `compute` target runs Python
+    # over data the chat holds, with no network, secret, mount or write. It
+    # needs `compute:<org>` in MAF_CODING_SCOPE (sealed, restart) AND the org
+    # here. This is the hot kill switch: a `*_orgs` list ("" off, "*" all, else
+    # org ids), so SIGHUP reloads it (docs/flag_reload.md). Its caps count apart from the
+    # `sandbox_max_*` caps. A flip on production is the gate `enforcement-flip`.
+    # Production also needs a remote gVisor backend. Fence SBX-F26:
+    # tests/unit/test_sandbox_broker_compute.py.
+    compute_run_orgs: str = ""
+    compute_max_per_org: int = 1
+    compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
     # system that holds state_root(). The owner sizes it at WS43-G3.
     sandbox_min_free_disk_mb: int = 5120
@@ -2282,6 +2371,31 @@ class Settings(BaseSettings):
     # It must lie outside every mount root. "" resolves to
     # {agents_clone_dir}/sandbox-broker, a sibling of state/ and repos/.
     sandbox_state_dir: str = ""
+    # SBX-8 (agent_sandbox.md §4.3). The container runtime: `runc` (the
+    # default, Docker's own) or `runsc` (gVisor). Any other value refuses
+    # each start. Plain `str`, so a bad value refuses a start and never
+    # stops the boot. To install `runsc` on a box is the owner gate WS43-G5.
+    sandbox_runtime: str = "runc"
+    # SBX-15 (agent_sandbox.md §4.6, D187). `docker` (the default) runs the
+    # containers on the local daemon. `docker-remote` runs them on the
+    # daemon of the dedicated sandbox box, at `sandbox_docker_host`
+    # (`ssh://user@10.x.x.x` or `tcp://`). Only the broker's own `docker`
+    # child gets that value, as DOCKER_HOST. On `docker-remote` a start
+    # outside dev (ACB_ENV) refuses `runc`, so production runs `runsc` only.
+    # The remote backend runs the `code_task` target only. To set it on
+    # production is the owner gate SBX-G11.
+    sandbox_backend: str = "docker"
+    sandbox_docker_host: str = ""
+    # Outside dev, `ssh://` and `tcp://` refuse a loopback host, and
+    # `tcp://` needs TLS with a client certificate. This is the dir of that
+    # certificate (ca.pem, cert.pem, key.pem). Only the broker's `docker`
+    # child gets it, as DOCKER_CERT_PATH with DOCKER_TLS_VERIFY=1.
+    sandbox_docker_cert_path: str = ""
+    # The size of the `/workspace` tmpfs of a remote container. The broker
+    # copies the working dir in before each command and copies it back
+    # after, so a working dir above this size refuses. Keep it below
+    # `sandbox_memory`, because a tmpfs uses the memory of the container.
+    sandbox_remote_workspace_mb: int = 512
 
     # Agent dependency installs (packages/acb_skills/acb_skills/loader.py
     # _install_agent_deps) — RCE guard (BO-7 fast pass). Agent repos'
@@ -2330,6 +2444,17 @@ class Settings(BaseSettings):
     # 🔴 A flip on a box is gate `enforcement-flip`. Name the org and the box.
     # Fence: tests/unit/test_maf_mcp_injection.py.
     maf_mcp_orgs: str = ""
+
+    # ── Connected systems in chat (WS-CSY, chat_connected_systems.md §3.2) ──
+    #
+    # `CONNECTED_SYSTEMS_ORGS` lists the organization ids whose chat gets the
+    # "Connected systems" block: the brief of each attached MCP server and the
+    # standing rule. Comma list, `*` for all, empty (default) for none. With no
+    # server attached, or the flag off, the context keeps its bytes. The reader
+    # is `orchestrator._maf_mcp.connected_systems_org_allowed`, per call, on the
+    # run's org. A reload of the gateway applies a change. Flip: `enforcement-flip`.
+    # Fence: tests/unit/test_connected_systems_block.py.
+    connected_systems_orgs: str = ""
 
     # ── MCP OAuth for an org connection (WS-54 IN-8a, D98) ──────────────────
     #
@@ -2384,6 +2509,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fences: tests/unit/test_late_approve_grant.py and
     # tests/unit/test_late_approve_grant_r8.py.
     chat_late_approve_orgs: str = ""
+    # ── A chat message closes a mailbox card, one draft per email (task 3814) ──
+    #
+    # CHAT_CARD_REVISE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each draft save is as
+    # before. On, a chat message closes each card of the email agent's
+    # `_confirm_destructive` gate (`close_on_steer`), and the tool answers
+    # with the closed text of its act. A new draft of a chat then updates the
+    # draft of the same email that the chat saved before. The one reader is
+    # `acb_skills.card_revise.card_revise_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fence: tests/unit/test_card_revise.py.
+    chat_card_revise_orgs: str = ""
     # ── A card stores its call (RESUME-1a, chat_run_continuity.md §4.12.4) ──
     #
     # CHAT_RESUME_ORGS: a comma list of organization ids, or `*`. Empty is
