@@ -738,6 +738,7 @@ async def register_live_run(
     token: str,
     run_id: str | None = None,
     keep_run_facts: bool = False,
+    message_id: str | None = None,
 ) -> None:
     """Record a starting run in its organization's live-run index.
 
@@ -756,6 +757,12 @@ async def register_live_run(
     register wrote them. A ``startedAt`` that moved mid-run read as a NEW run
     in the browser (re-review of #1171). An entry of ANOTHER run (its
     ``runId`` differs) is never kept.
+
+    *message_id* (RESUME-3d): the reply row of a continuation run. Only the
+    continuation start of RESUME-2a gives it (``start_detached``). The entry
+    carries it as ``messageId``, so a tab that did not get the 200 replays
+    the run into that row. A plain run gives none, and its entry stays as
+    before. A re-register of the same run keeps it.
     """
     if not organization_id or not thread_id:
         return
@@ -772,6 +779,7 @@ async def register_live_run(
             k = _live_runs_key(organization_id)
             started = datetime.now(UTC).isoformat()
             rid = (run_id or "").strip() or None
+            mid = (message_id or "").strip() or None
             if keep_run_facts:
                 held: dict = {}
                 with contextlib.suppress(Exception):
@@ -783,6 +791,9 @@ async def register_live_run(
                 if held and (held_rid is None or rid is None or held_rid == rid):
                     started = str(held.get("startedAt") or started)
                     rid = held_rid or rid
+                    held_mid = held.get("messageId")
+                    if mid is None and isinstance(held_mid, str) and held_mid:
+                        mid = held_mid
             fields: dict = {
                 "actor": (actor or "").strip().lower(),
                 "startedAt": started,
@@ -790,6 +801,8 @@ async def register_live_run(
             }
             if rid:
                 fields["runId"] = rid
+            if mid:
+                fields["messageId"] = mid
             await r.hset(k, thread_id, json.dumps(fields))
             await r.expire(k, LIVE_RUNS_TTL_SECONDS)
             # The run cap's reservation for this thread is done: the entry
@@ -861,6 +874,10 @@ async def refresh_live_runs(organization_id: str | None) -> None:
 async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
     """The live runs of ONE organization: ``threadId``, ``actor``, ``startedAt``, ``runId``.
 
+    An entry of a continuation run also gives ``messageId``, its reply row
+    (RESUME-3d). Every other entry has no such key. The caller decides who
+    may read it (``routes/chat.py`` ``list_active_sessions``).
+
     Reads one hash. It never scans the keyspace. A field whose ``cc:active``
     flag is gone is pruned and left out. Raises on a Redis error, so the caller
     can tell "no runs" from "could not ask".
@@ -886,12 +903,16 @@ async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
                     meta = {}
             except (json.JSONDecodeError, TypeError):
                 meta = {}
-            out.append({
+            entry = {
                 "threadId": tid,
                 "actor": str(meta.get("actor") or ""),
                 "startedAt": str(meta.get("startedAt") or ""),
                 "runId": str(meta.get("runId") or ""),
-            })
+            }
+            mid = meta.get("messageId")
+            if isinstance(mid, str) and mid:
+                entry["messageId"] = mid
+            out.append(entry)
         if dead:
             with contextlib.suppress(Exception):
                 await r.hdel(k, *dead)
@@ -1463,6 +1484,7 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
     record: dict[str, Any] | None = None,
     exclusive: bool = False,
     keep_stream: bool = False,
+    continuation: bool = False,
 ) -> asyncio.Task[None]:
     """Start *gen* (an SSE-line async generator) in a DETACHED background
     task, and return the task. It needs no HTTP reader.
@@ -1522,6 +1544,11 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
                    in it. It implies *exclusive*. It writes the id of the
                    deleted end into *record* (``parkedEndId``), so the fold
                    can cut the stream there.
+        continuation: RESUME-3d. True for a continuation run (RESUME-2a).
+                   Its live-run entry then names its reply row, the
+                   ``messageId`` of *record*. In case A that is the parked
+                   reply, and in case B the new one. A plain run's entry
+                   names no reply row.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
@@ -1633,6 +1660,9 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
         # The run's own id, written once here. The executor's re-register
         # keeps it and startedAt (`keep_run_facts`, chat_run_continuity §4.10).
         run_id=str((record or {}).get("runId") or "") or None,
+        # RESUME-3d: a continuation's live entry names its reply row, from
+        # the run record. A plain run's entry stays as before.
+        message_id=(str((record or {}).get("messageId") or "") or None) if continuation else None,
     )
     # What a later process needs to close this run if THIS process dies
     # (orchestrator.run_liveness, incident 2026-10-09). The executor

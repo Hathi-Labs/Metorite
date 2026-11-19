@@ -3697,6 +3697,9 @@ async def run_agent_stream_endpoint(
                 await start_detached(
                     thread_id, agent_gen, exclusive=True,
                     keep_stream=_resume_launch.same_reply,
+                    # RESUME-3d: the live entry names the reply row, so a
+                    # tab that did not get the 200 replays into it.
+                    continuation=True,
                     organization_id=_organization_id, **_detached,
                 )
             except ParkedStreamGone:
