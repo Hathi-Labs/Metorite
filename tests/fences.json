@@ -19,6 +19,7 @@
       "tests/unit/test_api_call_limits.py",
       "tests/unit/test_api_connections_r8.py",
       "tests/unit/test_api_no_env_credentials.py",
+      "tests/unit/test_api_routes_mounted.py",
       "tests/unit/test_api_templates.py",
       "tests/unit/test_byok_disabled.py",
       "tests/unit/test_caddy_auth_gate.py",
