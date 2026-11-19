@@ -69,6 +69,14 @@ run's ``run_liveness`` record. :func:`park` keeps the stream of the parked run
 for 24 hours (D-RES-7, ``stream_relay.keep_parked_stream``) when both resume
 flags name the org. So a late Approve can go on in the same reply.
 
+**Park at the stop** (RESUME-5, §4.12.5). The gateway's stop step calls
+:func:`park_at_stop` once, through ``POST /internal/drain/park``. Each wait
+that took an entry (:func:`stop_wait`) parks in its own task, with
+:func:`park_for_stop`. Only where ``CHAT_DURABLE_ASKS`` is on and both resume
+flags name the org. A card that opens after the call does not park. Fences:
+``tests/unit/test_pending_ask_flow.py``, ``tests/unit/test_gateway_drain.py``
+and ``tests/unit/test_resume_continuation.py``.
+
 **Retention** (task 3435, ``chat_run_continuity.md`` §4.12.4 item 1). No
 reader takes a row past ``expires_at``, and no move changes one. So
 :func:`prune` is the one end of an old row. It runs as a hook of the daily
@@ -1177,11 +1185,148 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
     return True
 
 
+# ── RESUME-5: park at the stop (chat_run_continuity.md §4.12.5) ─────────────
+#
+# The gateway's stop step calls ``POST /internal/drain/park`` once, before its
+# first count (``gateway.routes.drain``). That route calls :func:`park_at_stop`.
+# It wakes each wait that took an entry here, and each wait then parks IN ITS
+# OWN TASK (``executor.wait_user_future``). The park must run there, because
+# it reads two ContextVars of the run: the HRD-22 offer reads the card of the
+# wait (``ask_tools.waiting_card``), and the "Not done" line reads the closed
+# cards of the run (``ask_tools.take_closed_card_line``). A call from the route
+# task would lose both.
+#
+# Only a wait whose org both resume flags name takes an entry, and the park
+# checks the flags again with the org of the row (:func:`park_for_stop`). With
+# a flag off, no entry exists and each wait is the wait of before.
+#
+# The stop wakes only the entries that exist when it runs. A card that opens
+# after that does not park: it takes the restart path of before (the owner's
+# decision of 2026-11-19).
+
+#: The waits that can park at the stop, by request id: ``(wake, outcome,
+#: thread id)``. The stop sets ``wake`` once. The wait sets ``outcome`` to
+#: True when its run parked, and to False when it did not.
+_STOP_WAITS: dict[str, tuple[asyncio.Future[None], asyncio.Future[bool], str]] = {}
+
+#: How long :func:`park_at_stop` waits for the parks that it woke. A park is
+#: one UPDATE and a few Redis writes. The stop script waits longer for the
+#: answer (``GATEWAY_DRAIN_PARK_SECONDS`` in ``gateway-drain.sh``).
+STOP_PARK_SECONDS = 5.0
+
+
+def resume_flags_on(org: str | None) -> bool:
+    """True when ``CHAT_RESUME_ORGS`` and ``CHAT_LATE_APPROVE_ORGS`` both name
+    *org*. A missing org reads False, also for ``*``. Never raises."""
+    if not org:
+        return False
+    try:
+        from acb_skills.late_approve import late_approve_on
+        from acb_skills.stored_call import chat_resume_on
+
+        return bool(chat_resume_on(org) and late_approve_on(org))
+    except Exception:
+        return False
+
+
+def stop_wait(request_id: str, thread_id: str) -> asyncio.Future[None] | None:
+    """The Future that the stop sets for the wait on *request_id* (RESUME-5),
+    or None for no park at the stop.
+
+    ``executor.wait_user_future`` is the one caller, once, at the start of a
+    durable wait, in the run's own task. The org is the tenant that the run
+    bound, never an event field. None unless both resume flags name that org,
+    and None for a second wait on one request id. Sync, and never raises.
+    """
+    if not request_id or not thread_id or request_id in _STOP_WAITS:
+        return None
+    try:
+        from acb_common.db import current_tenant
+
+        if not resume_flags_on(current_tenant()):
+            return None
+        loop = asyncio.get_running_loop()
+    except Exception:
+        return None
+    wake: asyncio.Future[None] = loop.create_future()
+    _STOP_WAITS[request_id] = (wake, loop.create_future(), thread_id)
+    return wake
+
+
+def end_stop_wait(request_id: str) -> None:
+    """Drop the entry of *request_id*, and give the stop its outcome: True
+    when this process parked the request. The wait calls it on each way out,
+    and after a park at the stop that did not park. Sync, and never raises."""
+    entry = _STOP_WAITS.pop(str(request_id or ""), None)
+    if entry is None:
+        return
+    wake, outcome, _thread = entry
+    with contextlib.suppress(Exception):
+        if not wake.done():
+            wake.cancel()
+    with contextlib.suppress(Exception):
+        if not outcome.done():
+            outcome.set_result(request_id in _PARKED)
+
+
+def parking_threads() -> set[str]:
+    """The threads whose wait the stop woke, and whose park has not ended.
+
+    ``GET /internal/drain`` counts each of them as a running run, and not as
+    a run that waits on a person. Until its park pops the Future, the thread
+    reads as waiting (``executor.threads_waiting_on_a_person``). Without
+    this, a first count of 0 lets the stop cut a park in the middle, before
+    the drain of the run saves the reply."""
+    return {
+        thread for wake, outcome, thread in list(_STOP_WAITS.values())
+        if wake.done() and not wake.cancelled() and not outcome.done()
+    }
+
+
+async def park_for_stop(request_id: str, thread_id: str, fut: Any = None) -> bool:
+    """Park the run that waits on *request_id*, at the stop (RESUME-5). True
+    when parked.
+
+    The org is the org of the card's row (the insert), as :func:`park` reads
+    it. Both resume flags must name it, else nothing changes. Then it is
+    :func:`park`, unchanged: the row goes to ``parked``, the stream ends with
+    the parked ``RUN_FINISHED``, the stream lives 24 hours (D-RES-7), and the
+    run ends. The drain of the run saves the reply and forgets its record, so
+    the next process writes no ``run_interrupted`` mark."""
+    org = await _insert_org(request_id, pop=False)
+    if not resume_flags_on(org):
+        return False
+    return await park(request_id, thread_id, fut)
+
+
+async def park_at_stop(bound: float = STOP_PARK_SECONDS) -> dict[str, int]:
+    """Wake each wait that can park at the stop, and wait at most *bound*
+    seconds for their outcomes (RESUME-5). ``{"tried", "parked"}``.
+
+    ``gateway.routes.drain`` is the one caller. It wakes only the entries that
+    exist now: a card that opens later does not park. Never raises.
+    """
+    entries = list(_STOP_WAITS.values())
+    for wake, _outcome, _thread in entries:
+        if not wake.done():
+            wake.set_result(None)
+    outcomes = [outcome for _wake, outcome, _thread in entries]
+    if outcomes:
+        with contextlib.suppress(Exception):
+            await asyncio.wait(outcomes, timeout=max(0.0, float(bound)))
+    parked = sum(
+        1 for o in outcomes if o.done() and not o.cancelled() and o.result() is True
+    )
+    _log.info("pending_ask.parked_at_stop", tried=len(entries), parked=parked)
+    return {"tried": len(entries), "parked": parked}
+
+
 def _reset_for_tests() -> None:
     _INSERTS.clear()
     _THREAD_OF.clear()
     _PARKED.clear()
     _STORED.clear()
+    _STOP_WAITS.clear()
 
 
 register_prune()

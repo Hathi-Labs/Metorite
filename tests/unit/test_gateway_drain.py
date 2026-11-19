@@ -13,6 +13,23 @@ The fix has two halves, and this file fences both:
    answers and Projects agent runs, read from ``GET /internal/drain``.
 2. ``--timeout-graceful-shutdown`` bounds the drain after the signal, so the
    gap is that bound plus the start.
+
+RESUME-5 (``chat_run_continuity.md`` §4.12.5, task 3265) adds a step before
+the first count. The script calls ``POST /internal/drain/park`` once, with its
+own bound, inside the bound of the wait. A failed call lets the drain go on.
+While a park runs, the count reads it as a running run. Each with the mutation
+that turns it red:
+
+* ``test_it_parks_once_before_the_first_count``: call the park after the
+  count, or twice.
+* ``test_a_gateway_with_no_park_route_still_drains``: ``exit 0`` on a failed
+  park, and the first release skips the wait for working runs.
+* ``test_a_park_that_hangs_cannot_hold_the_stop``: drop the ``-m`` bound.
+* ``test_nothing_to_park_logs_as_before``: log a line for ``parked 0``.
+* ``test_the_park_fits_inside_the_bound``: take ``start`` after the park.
+* ``test_a_park_in_flight_counts_as_a_running_run``: drop
+  ``parking_threads`` from ``_chat_runs``, and the stop cuts a park before
+  its drain saves the reply.
 """
 from __future__ import annotations
 
@@ -94,6 +111,12 @@ def _script_wait_s() -> int:
     return int(m.group(1))
 
 
+def _script_park_s() -> int:
+    m = re.search(r'GATEWAY_DRAIN_PARK_SECONDS:-(\d+)', SCRIPT.read_text(encoding="utf-8"))
+    assert m, "the park call has no bound of its own"
+    return int(m.group(1))
+
+
 class TestTheRestartGapFitsTheHolds:
     def test_the_drain_has_a_bound(self) -> None:
         assert 1 <= _drain_bound_s()
@@ -141,6 +164,25 @@ class TestTheRestartGapFitsTheHolds:
         (timeout,) = _unit()["TimeoutStopSec"]
         assert int(timeout) >= _drain_bound_s() + 20
 
+    def test_the_park_fits_inside_the_bound(self) -> None:
+        """RESUME-5. The bound starts before the park call, so the park time
+        is inside the wait and ``test_systemd_outwaits_the_script`` still
+        holds. The route answers before curl gives up on it."""
+        from orchestrator import pending_ask
+
+        code = [
+            ln.strip() for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        start = code.index("start=$(now_ms)")
+        park = next(i for i, ln in enumerate(code) if "call POST" in ln)
+        first_count = next(i for i, ln in enumerate(code) if ln == 'runs="$(runs_now)"')
+        assert start < park < first_count
+        assert sum("call POST" in ln for ln in code) == 1, "one park call only"
+        assert pending_ask.STOP_PARK_SECONDS < _script_park_s() < _script_wait_s()
+        (timeout,) = _unit()["TimeoutStopSec"]
+        assert int(timeout) >= _script_wait_s() + 1 + 2 + 5
+
     def test_the_apply_installs_the_unit_before_it_restarts_the_gateway(self) -> None:
         apply = (ROOT / "scripts/vps_apply.sh").read_text(encoding="utf-8")
         cp = apply.index('deploy/hostinger/acb-gateway.service" /etc/systemd/system/')
@@ -165,16 +207,26 @@ needs_bash = pytest.mark.skipif(BASH is None, reason="no bash with curl on this 
 
 
 class _Counts:
-    """A fake gateway: answers each GET with the next status and count."""
+    """A fake gateway: answers each GET with the next status and count.
 
-    def __init__(self, answers: list[tuple[int, str]]) -> None:
+    RESUME-5: *park* is the answer of ``POST .../park``, and *park_delay*
+    holds that answer back. With no *park*, a POST gets the 501 of a server
+    with no such route. ``calls`` and ``seen_auth`` count the GETs only, and
+    ``order`` holds each method in the order it came."""
+
+    def __init__(self, answers: list[tuple[int, str]], *,
+                 park: tuple[int, str] | None = None, park_delay: float = 0.0) -> None:
         self.answers = answers
         self.seen_auth: list[str | None] = []
         self.calls = 0
+        self.park_auth: list[str | None] = []
+        self.park_paths: list[str] = []
+        self.order: list[str] = []
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                outer.order.append("GET")
                 outer.seen_auth.append(self.headers.get("Authorization"))
                 i = min(outer.calls, len(outer.answers) - 1)
                 outer.calls += 1
@@ -183,6 +235,24 @@ class _Counts:
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(body.encode())
+
+            def do_POST(self) -> None:
+                outer.order.append("POST")
+                outer.park_auth.append(self.headers.get("Authorization"))
+                outer.park_paths.append(self.path)
+                if park is None:
+                    self.send_error(501)
+                    return
+                if park_delay:
+                    time.sleep(park_delay)
+                status, body = park
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(body.encode())
+                except OSError:
+                    return  # curl gave up first
 
             def log_message(self, *_a: object) -> None:
                 return
@@ -200,7 +270,8 @@ def _runs(n: int) -> tuple[int, str]:
     return 200, f'{{"runs":{n},"chat":{n},"projects":0}}'
 
 
-def _run_script(url: str, wait_s: int = 5) -> tuple[subprocess.CompletedProcess[str], float]:
+def _run_script(url: str, wait_s: int = 5,
+                park_s: int | None = None) -> tuple[subprocess.CompletedProcess[str], float]:
     env = {
         **os.environ,
         "GATEWAY_DRAIN_URL": url,
@@ -208,6 +279,10 @@ def _run_script(url: str, wait_s: int = 5) -> tuple[subprocess.CompletedProcess[
         "GATEWAY_DRAIN_POLL_SECONDS": "0.2",
         "GATEWAY_INTERNAL_TOKEN": "tok-123",
     }
+    env.pop("GATEWAY_DRAIN_PARK_URL", None)
+    env.pop("GATEWAY_DRAIN_PARK_SECONDS", None)
+    if park_s is not None:
+        env["GATEWAY_DRAIN_PARK_SECONDS"] = str(park_s)
     t0 = time.monotonic()
     proc = subprocess.Popen(
         [BASH, str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -337,6 +412,63 @@ class TestTheDrainScript:
         assert out.returncode == 0 and took < 10
         assert "stopped answering" in out.stdout
 
+    # ── RESUME-5: the park before the first count ───────────────────────────
+
+    def test_it_parks_once_before_the_first_count(self) -> None:
+        fake = _Counts([_runs(1), _runs(0)], park=(200, '{"tried": 2, "parked": 2}'))
+        try:
+            out, _ = _run_script(fake.url)
+        finally:
+            fake.close()
+        assert out.returncode == 0
+        assert fake.order[:2] == ["POST", "GET"] and fake.order.count("POST") == 1
+        assert fake.park_paths == ["/internal/drain/park"]
+        assert fake.park_auth == ["Bearer tok-123"], "the park sends the internal token"
+        assert "gateway-drain: parked 2 run(s) that wait on a person" in out.stdout
+        assert "every run ended" in out.stdout
+
+    def test_a_gateway_with_no_park_route_still_drains(self) -> None:
+        """The first release runs the NEW script against the OLD process, which
+        answers 404. The drain still waits for the working runs."""
+        fake = _Counts([_runs(2), _runs(1), _runs(0)], park=(404, '{"detail":"Not Found"}'))
+        try:
+            out, _ = _run_script(fake.url, wait_s=30)
+        finally:
+            fake.close()
+        assert out.returncode == 0
+        assert fake.calls == 3, "a failed park must not end the drain"
+        assert "no park answer" in out.stdout and "every run ended" in out.stdout
+
+    def test_a_server_with_no_post_and_a_crashed_gateway_go_on(self) -> None:
+        fake = _Counts([_runs(0)])  # no park: the POST gets 501
+        try:
+            out, took = _run_script(fake.url, wait_s=30)
+        finally:
+            fake.close()
+        assert out.returncode == 0 and took < 10 and fake.calls == 1
+        assert "no park answer" in out.stdout
+
+    def test_a_park_that_hangs_cannot_hold_the_stop(self) -> None:
+        # The park answers after 20 s, and its bound is 1 s. A bash on Windows
+        # spends some seconds to start its processes, so the margin is wide.
+        fake = _Counts([_runs(0)], park=(200, '{"tried": 1, "parked": 1}'), park_delay=20)
+        try:
+            out, took = _run_script(fake.url, wait_s=30, park_s=1)
+        finally:
+            fake.close()
+        assert out.returncode == 0
+        assert took < 12, f"the park held the stop {took:.1f}s, past its 1 s bound"
+        assert fake.calls == 1 and "no park answer" in out.stdout
+
+    def test_nothing_to_park_logs_as_before(self) -> None:
+        fake = _Counts([_runs(0)], park=(200, '{"tried": 0, "parked": 0}'))
+        try:
+            out, _ = _run_script(fake.url, wait_s=30)
+        finally:
+            fake.close()
+        assert out.returncode == 0
+        assert out.stdout == "gateway-drain: 0 runs, so the stop goes ahead now\n"
+
 
 # ── The route ────────────────────────────────────────────────────────────────
 
@@ -356,11 +488,12 @@ AUTH = {"Authorization": "Bearer tok-123"}
 def idle(monkeypatch: pytest.MonkeyPatch):
     """No chat run, no Projects run, no parked question."""
     from gateway.routes.projects import agent_dispatch
-    from orchestrator import executor, stream_relay
+    from orchestrator import executor, pending_ask, stream_relay
 
     monkeypatch.setattr(stream_relay, "_DETACHED_TASKS", {})
     monkeypatch.setattr(agent_dispatch, "_RUNS", set())
     monkeypatch.setattr(executor, "_pending_user_input", executor._PendingUserInput())
+    monkeypatch.setattr(pending_ask, "_STOP_WAITS", {})
 
 
 @pytest.fixture
@@ -474,6 +607,48 @@ class TestTheDrainRoute:
         assert "two" in client.get("/stream").text
         (during,) = app.state.seen
         assert during["after_response"] == 0 and during["runs"] == 0
+
+    # ── RESUME-5: the park route ────────────────────────────────────────────
+
+    def test_the_park_route_refuses_a_caller_without_the_internal_token(self, client) -> None:
+        assert client.post("/internal/drain/park").status_code == 401
+        bad = client.post("/internal/drain/park", headers={"Authorization": "Bearer nope"})
+        assert bad.status_code == 401
+
+    def test_with_nothing_to_park_the_route_answers_zero(self, client) -> None:
+        r = client.post("/internal/drain/park", headers=AUTH)
+        assert r.status_code == 200
+        assert r.json() == {"tried": 0, "parked": 0}
+
+    def test_a_park_in_flight_counts_as_a_running_run(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Until its park pops the Future, the thread reads as waiting on a
+        person. The count must read it as running, or a first count of 0 lets
+        the stop cut the park before the drain of the run saves the reply."""
+        import asyncio
+
+        from orchestrator import executor, pending_ask, stream_relay
+
+        monkeypatch.setattr(stream_relay, "_DETACHED_TASKS", {"asks": _Task(False)})
+        waits = executor._PendingUserInput()
+        waits.park("req-1", _Task(False), "asks")
+        monkeypatch.setattr(executor, "_pending_user_input", waits)
+        loop = asyncio.new_event_loop()
+        try:
+            wake, outcome = loop.create_future(), loop.create_future()
+            monkeypatch.setattr(pending_ask, "_STOP_WAITS", {"req-1": (wake, outcome, "asks")})
+            body = client.get("/internal/drain", headers=AUTH).json()
+            assert body["chat"] == 0 and body["waiting_on_a_person"] == 1, "not woken yet"
+            wake.set_result(None)
+            body = client.get("/internal/drain", headers=AUTH).json()
+            assert body["chat"] == 1 and body["runs"] == 1, "a park in flight is counted"
+            assert body["waiting_on_a_person"] == 0
+            outcome.set_result(False)  # the park refused: the run waits again
+            body = client.get("/internal/drain", headers=AUTH).json()
+            assert body["chat"] == 0 and body["waiting_on_a_person"] == 1
+        finally:
+            loop.close()
 
     def test_the_gateway_mounts_the_route_outside_a_try(self) -> None:
         # A mount inside `try: ... except: pass` fails silently, and the stop
