@@ -127,7 +127,24 @@ describe("readFeed", () => {
   });
 
   it("puts approvals right after the overdue rows", () => {
-    expect(KIND_ORDER.slice(2, 7)).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+    expect(KIND_ORDER.slice(3, 8)).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+  });
+
+  // AO-2. Mutation: take `provider_alert` out of KIND_ORDER, and `isItem`
+  // drops the row, so the operator's admin sees no vendor alert in the bell.
+  it("keeps an AI vendor alert row, right after the fired reminders", () => {
+    expect(KIND_ORDER[2]).toBe("provider_alert");
+    const alert = item({
+      id: "providers:anthropic",
+      app: "providers" as NeedsItem["app"],
+      kind: "provider_alert",
+      title: "Anthropic is out of credit.",
+      href: "https://operator.metorite.com/providers",
+      act: null,
+      act_ref: null,
+    });
+    const feed = readFeed({ count: 1, items: [alert], sources: { providers: "ok" } as NeedsFeed["sources"] });
+    expect(feed.items).toEqual([alert]);
   });
 
   // WS-66 RM-2b. Mutation: take a reminder kind out of KIND_ORDER and the bell

@@ -156,6 +156,11 @@
 > `crm-rung0-mt-c18dfcf9`, not merged. No migration and no flag. §18.17 holds
 > the slices and their status.
 
+> **Built dark: CRM-Q34-7 (task 3700, 2026-11-17).** `q` on a module list and
+> a module total finds across the module, behind `CRM_MODULE_FIND_ORGS`
+> (empty). Built on `crm-q34-7-mt-66a5c0f2`, not merged. No migration.
+> §18.17.2 holds the slice.
+
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
 > the sync design (§7.1) that this plan reuses. Do not re-derive them here.
@@ -8475,10 +8480,138 @@ Status: a second builder takes it, in `crm_tools.py` only.
   filters". A 422 spends no `AGGREGATE_BUDGET` count. `status=` on a module
   names `field_filters {'@status': <value>}`.
 
+**CRM-Q34-11 · A text field that holds numbers gives a total.**
+Status: built 2026-11-18 on `crm-q34-11-mt-37c6f980` (task 3728), no flag.
+
+- **Why.** A member's module `Invoices` keeps a fiber length and a battery
+  fee in TEXT fields. The chat said "the field is free text" and gave no
+  month totals.
+- **The rule: strict, never a guess.** A wrong total that looks right is
+  worse than a refusal. A text value is a number only when its whole shape
+  is clearly a number. The route counts each other value and names it.
+- **Scope.** Module fields of type `text` only. The core custom fields of
+  contacts, leads, deals and companies are out of this slice. Nothing
+  changes the type in `crm_field_defs`, because the sync owns it.
+- **A number** (`field_sql.TEXT_NUMBER_PATTERN`):
+  - ASCII digits only. No leading zero, so `0` and `0.5` are numbers and
+    `007` is a code.
+  - An optional minus, only as the first character and before any
+    currency mark. `-₹500` and `-Rs 500` are -500. `Rs-5`, `RS-485`,
+    `₹-500` and `- 5` are not numbers, because a code such as `RS-232`
+    has that shape.
+  - Commas only in a Western (`1,234,567`) or an Indian (`12,34,567`)
+    grouping. `1,5`, `12,34` and `1,2,3` are not numbers.
+  - An optional `.` and 1 to 30 digits. At most 30 digits before it.
+  - One currency mark before or after it (`₹`, `Rs`, `Rs.`, `INR`, in any
+    case), or a `%` after it. Outer white space and U+00A0 are trimmed.
+  - At most 32 characters. A JSON number stays a number.
+- **Not a number.** Ranges, dates, any slash, exponents, `NaN` and
+  `Infinity` are not numbers. A unit word (`500 m`), two numbers, brackets
+  and a trailing minus are not numbers either. Nor is a digit of another
+  script, or a JSON list, object or boolean.
+- **No value.** A blank value, `-`, `—`, `NA`, `N/A`, `nil`, `none`,
+  `null` in any case, a JSON null and a missing key. Zero is a number.
+- **The gate** (`admit_text_numbers`). ONE statement reads three counts
+  over the whole module. It counts the numbers, the values with no value,
+  and the values that are not numbers. With no number, the read is a 422
+  with the three counts. Below half of the filled values, the field is a
+  code or free text. Then the 422 also names the most common shapes.
+- **The shapes.** The same statement reads the 2 most common shapes of
+  the values that are not numbers. A shape keeps the structure only: a
+  digit run is `9` and a letter run is `a`. So no stored value leaves the
+  database.
+- **One scan for every key** (`text_numbers_sql`). The statement reads
+  the module once, for all the text keys of the call. A LATERAL VALUES
+  list gives one row for each record and key. So a split of three text
+  keys detoasts the module once, and not three times.
+- **Three places read it.** A measure (`sum`, `avg`, `min`, `max`), a
+  split of `fields=` and a `.from` or `.to` range. They use the one
+  builder, `_amount`. A text equality filter stays a text filter, in a
+  call that also sums the field.
+- **What the model reads.** The answer names the three counts and the
+  shapes. The answer of a grouped total names them as well, also when no
+  matched value is a number. `crm_list_fields` names the use of a text field of a module.
+  No tool docstring changed.
+- **No flag.** Each call that this changes was a 422 before. A call that
+  names no text field sends the same statements, and its answer is the
+  same to the byte.
+- **Limit.** The count reads each record of the module once more, on each
+  call that names a text field. This is one scan, for any number of text
+  keys. The statement timeout of the read holds it. Nobody measured it
+  yet on a large module.
+- **Next (CRM-Q34-11b, planned).** A number with one unit word, then
+  negatives in brackets and lakh or crore words, when the data shows them.
+- **Fences.** `tests/unit/test_crm_text_numbers.py` is hermetic. It pins
+  the SQL of every other field to the byte, the pattern, the gate, the
+  equality filter, the wire and the tool text.
+  `tests/unit/test_crm_text_numbers_r8.py` runs on Postgres. Its matrix
+  reads each raw value back through the route. It also proves a month
+  sum against an independent SQL sum, the gate, org B, and a number field
+  as before.
+
 #### 18.17.2 Rung 1
 
 `q` on a module (CRM-Q34-7) is Rung 1, dark behind a new flag. One filter
 builder for a module list and a module total (CRM-Q34-4) is Rung 1 too.
+
+**CRM-Q34-7 · `q` finds across a module.**
+Status: built dark 2026-11-17 on `crm-q34-7-mt-66a5c0f2` (task 3700), not
+merged. Flag `CRM_MODULE_FIND_ORGS`, empty. A flip is `enforcement-flip`.
+
+- **Outcome.** `q` works on `GET /crm/modules/{module}/records`, and on
+  `GET /crm/aggregate` with `entity=module:<Name>`. It finds the records
+  that hold each word of `q` in the name, a lookup name or a text value.
+  Case does not matter.
+  The total counts exactly the rows that the list shows for the same `q`.
+- **The one predicate.** `field_sql.find_where`. The total (`aggregate._read`)
+  and the list (`modules._find_page`) both call it. Each row builds ONE text,
+  `concat_ws` of the name and each value, over the detoasted copy
+  (`DETOAST_JOIN`). Then `ILIKE ALL` takes one pattern for each word.
+- **The fields.** The fields of type `text`, `textarea`, `email`, `phone`,
+  `url` and `lookup` in the field definitions of the module, by position. A
+  lookup gives the name of an object or a string. A text field gives a
+  string, a number or the name of an object. An array and each other value
+  give nothing, so the JSON text of a value never matches. At most 40
+  fields (`FIND_KEYS_MAX`), because Postgres takes at most 100 arguments in
+  one call. A field past the cap is not searched, and the tool text says so.
+- **The words.** The words are the ones of `core.search_words`, the splitter
+  of the core lists. A word holds a letter or a digit, so `&`, `/` or `-`
+  between two words is no word. A `q` with no letter and no digit is no
+  `q`. A `q` of more than 8 words is one phrase. A `q` of more than 200
+  characters is the 422 of `search_words`, and a NUL is the 422 of
+  `refuse_nul`. `%`, `_` and `\` in `q` are literal: `like_pattern` escapes
+  them. The core lists do not escape them (`core.search_where`), and this
+  slice does not change them.
+- **The near pass.** Only when the exact pass counts no row. ONE read takes
+  at most 2,000 stored names (`NEAR_NAMES_SCAN`) under the same filters. A
+  stored name is the record name or a lookup name. The most frequent come
+  first, then the order is by name.
+  `acb_common.name_match` scores them in a thread, with the deadline of
+  HRD-18b. The words are the ones of `core.near_words`: a `q` of at most 3
+  words gets the pass, and each word of 4 letters or more. Such a word also
+  matches a row that holds one of its 10 nearest names (`NEAR_SCORE`). A
+  name that holds the word itself is no near name. The answer then carries
+  `near`: the names it counted. Each list row of the near pass carries `near: true` and its name
+  in `matched`.
+- **A zero.** When no row matches, the answer carries `nearest`: at most 3
+  stored names whose `name_score` against `q` reaches
+  `NEAR_CANDIDATE_SIMILARITY`. Each name is one line of at most 60
+  characters. The chat tools put each name between double quotes and keep
+  an apostrophe, so the next `q` with that name finds the record.
+- **Timeout.** The list reads run under the LOCAL statement timeout of the
+  total, 10 s, and a cancel is the same 503 `aggregate_timeout`.
+- **Visibility.** The reads run in the member's tenant session, so RLS keeps
+  them in the org. A module record has no visibility of its own: the CRM
+  access rule admits the member to every record of the org, or to none.
+- **Flag off.** `q` on a module total is the 422 of CRM-Q34-2, and the list
+  matches the record name only, byte for byte.
+- **Not in this slice.** `field.<key>` on the module list (CRM-Q34-4), and an
+  index of the row text (no migration).
+- **Fences.** `tests/unit/test_crm_module_find.py` holds the AST fence on
+  the one builder, the flag, the caps, the escape and the near bounds.
+  `tests/unit/test_crm_module_find_r8.py` proves that the list and the total
+  agree and that org B stays out. It also proves that 30,000 rows of 3 KB
+  answer inside the 10 s timeout.
 
 ## 19. The daily-use UX (2026-10-12)
 

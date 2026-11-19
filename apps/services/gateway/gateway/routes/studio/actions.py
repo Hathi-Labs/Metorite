@@ -212,7 +212,7 @@ def _chat_tool_rows() -> list[dict[str, Any]]:
     The org is the bound tenant. A dark org gives no row and loads no tool."""
     if not flags.chat_tools_allowed(current_tenant()):
         return []
-    return chat_tool_actions.chat_tool_rows()
+    return chat_tool_actions.chat_tool_rows(defer_cold=True)  # TOF-1e: never a cold build here
 
 
 async def _mcp_rows() -> tuple[list[dict[str, Any]], bool]:
