@@ -198,6 +198,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # semantic_model.md SEM-7: the orgs where the CRM plan checks the kinds
+    # measure, join and query, and org_facts serves them. It changes what the
+    # chat reads for the org, so only the operator writes it.
+    "SEMANTIC_MODEL_ORGS",
     # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.
