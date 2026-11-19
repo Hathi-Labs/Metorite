@@ -8630,12 +8630,16 @@ Dark behind `CRM_MODULE_FIND_ORGS`. No migration.
   - A page of two fields is in the order of the value, largest first, then
     each key. A key ends the order, so two pages never share a group.
   - Page 1 of one field is the answer of today, byte for byte. When it
-    leaves groups out on the list, it carries `next_group_page: 2`, and the
-    tool adds "Ask for page 2 for the next groups."
+    leaves groups out on the list, it carries `next_group_page: 2`. The tool
+    then ends its "Other" line with "Ask for page 2 for the next groups." in
+    place of "Narrow the filter to see them."
   - Page 2 on of one field takes the order in which page 1 cut its 50
     groups: the value rounded to 2 places, largest first, then the label of
-    the group by code point, then the key (`field_sql.one_group_order`). So
-    page 2 starts where page 1 stops.
+    the group by code point, then the key by code point with a NULL key last
+    (`field_sql.one_group_order`). Page 1 breaks a tie the same way
+    (`aggregate.cut_key`). So page 2 starts where page 1 stops.
+  - A later page of one field holds 50 groups, as page 1 does. Another
+    `group_page_size` gives a 422. Two fields take 1 to 200.
   - `total` and `records` stay the answer over every group. A group with no
     value in a field is its own group, with the label "(none)".
   - The filters are the ones of the module total of today, through one
