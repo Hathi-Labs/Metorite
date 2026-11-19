@@ -36,7 +36,9 @@ Rules that bind:
 6. **Fails closed.** Each part that fails frames whole. A proof of an upload
    note that raises frames its part whole. A binding that ``before_run``
    cannot read, a turn that fails and a request that fails frame each user
-   turn whole, with its other parts and its properties kept. Only when even
+   turn whole, with its other parts and its properties kept. Rule 5 still
+   binds: a string run, or a run with no known shape, is never framed. A
+   prover that cannot load proves no note. Only when even
    that fails does the request go as it came: the seam never fails a model
    request, so the chat turn goes on.
 
@@ -134,9 +136,12 @@ class PasteFrame(ChatMiddleware):
 
     @property
     def active(self) -> bool:
-        """True when the run is bound and its shape is framed (rule 5), or
-        when the seam frames each turn whole (rule 6)."""
-        return self._whole or (self._parts is not None and self._shape in FRAMED_SHAPES)
+        """True when the shape of the run is framed (rule 5) and the run is
+        bound, or the seam frames each turn whole (rule 6). Rule 5 binds whole
+        mode too: a string run is never framed."""
+        if self._shape not in FRAMED_SHAPES:
+            return False
+        return self._whole or self._parts is not None
 
     # -- the proof of an upload note ------------------------------------------
 
@@ -334,13 +339,20 @@ class PasteFrameProvider(ContextProvider):
     ) -> None:
         """Read the binding of the run ONCE. It fails closed (rule 6): when the
         read raises, the run gets a middleware that frames each user turn
-        whole, and the seam logs once. It never fails the run."""
-        try:
-            prove = self._prove
-            if prove is None:
+        whole, and the seam logs once. Rule 5 still binds in whole mode: a
+        run whose shape is not ``session`` or ``list`` gets no frame. A
+        prover that cannot load proves no note (the safe default), and the
+        seam goes on. It never fails the run."""
+        prove = self._prove
+        if prove is None:
+            try:
                 from acb_skills.attachment_tools import upload_paths_exist
 
                 prove = upload_paths_exist
+            except Exception as exc:  # no proof: each upload note stays inside the block
+                _log.warning("paste_frame.prover_unavailable", error=type(exc).__name__)
+                prove = None
+        try:
             from acb_skills.write_artifact import artifact_context
 
             run_id = str(artifact_context().get("run_id") or "")
@@ -354,8 +366,24 @@ class PasteFrameProvider(ContextProvider):
             )
         except Exception as exc:
             _log.warning("paste_frame.bind_failed", error=type(exc).__name__)
-            middleware = PasteFrame(parts=(), shape="list", whole=True)
+            try:
+                middleware = PasteFrame(parts=(), shape=_shape_or_none(), whole=True)
+            except Exception as again:  # the run goes on with no seam
+                _log.warning("paste_frame.attach_failed", error=type(again).__name__)
+                return
         try:
             context.extend_middleware(self.source_id, [middleware])
         except Exception as exc:  # the run goes on with no seam
             _log.warning("paste_frame.attach_failed", error=type(exc).__name__)
+
+
+def _shape_or_none() -> str | None:
+    """The recorded shape of the run on this frame, or None when it cannot be
+    read. None frames nothing (rule 5): an unknown run may be a string run,
+    which must reach the model byte-identical."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        return pf.shape_of(str(artifact_context().get("run_id") or ""))
+    except Exception:
+        return None

@@ -672,27 +672,88 @@ def test_the_seam_fails_closed():
     assert out2.startswith(_frame().paste_note()) and _inside(out2, "Hello")
 
 
+def _attach(provider: Any, run_id: str, shape: str | None) -> list[Any]:
+    """The middleware that *provider* attaches for a run of *shape*."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    attached: list[Any] = []
+    ctx = SimpleNamespace(input_messages=[], metadata={},
+                          extend_middleware=lambda _sid, mws: attached.extend(mws))
+    with artifact_context_scope():
+        bind_artifact_context(run_id=run_id, session_id=THREAD)
+        if shape is not None:
+            pf.record_shape(run_id, shape)
+        asyncio.run(provider.before_run(agent=None, session=None, context=ctx, state={}))
+    return attached
+
+
+async def _no_proof(paths: tuple[str, ...]) -> bool:
+    return False
+
+
 def test_a_binding_that_cannot_be_read_frames_each_turn_whole(monkeypatch):
-    """Fix round 1 (c): ``before_run`` that cannot read the binding attaches a
-    middleware that frames each user turn whole, and it never fails the run.
-    Mutation: a ``before_run`` with no ``try`` -> red (it raises)."""
+    """Fix round 1 (c) and round 2 (1): ``before_run`` that cannot read the
+    binding attaches a middleware that frames each LIST-shape user turn
+    whole, and it never fails the run. Rule 5 binds whole mode too: a string
+    run and a run with no known shape reach the model byte-identical.
+    Mutations: a ``before_run`` with no ``try`` -> red (it raises). Whole
+    mode that ignores the shape -> red (the string run gets a frame)."""
     def boom() -> Any:
         raise RuntimeError("no binding")
 
     monkeypatch.setattr(pf, "raw_parts", boom)
-    attached: list[Any] = []
-    ctx = SimpleNamespace(input_messages=[], metadata={},
-                          extend_middleware=lambda _sid, mws: attached.extend(mws))
-
-    async def prove(paths: tuple[str, ...]) -> bool:
-        return False
-
-    asyncio.run(paste_turns.PasteFrameProvider(prove=prove).before_run(
-        agent=None, session=None, context=ctx, state={}))
-    assert len(attached) == 1 and attached[0].active
     short = Message("user", ["Create a task for Ravi"])
-    out = _users(_request(attached[0], [short]))[0]
+    listed = _attach(paste_turns.PasteFrameProvider(prove=_no_proof), "r-whole-list", "list")
+    assert len(listed) == 1 and listed[0].active
+    out = _users(_request(listed[0], [short]))[0]
     assert out.count("<<<PASTED TEXT ") == 1 and "Create a task for Ravi" in out
+    for run_id, shape in (("r-whole-string", "string"), ("r-whole-none", None)):
+        attached = _attach(paste_turns.PasteFrameProvider(prove=_no_proof), run_id, shape)
+        assert len(attached) == 1 and not attached[0].active
+        sent = _request(attached[0], [short])
+        assert sent[0] is short, f"{shape}: byte-identical"
+
+
+def test_a_prover_that_cannot_load_keeps_the_seam(monkeypatch):
+    """Round 2 (1): when ``acb_skills.attachment_tools`` cannot load, the seam
+    proves no note (the safe default) and goes on. A string run stays
+    byte-identical, and a list run still frames. Mutation: the import inside
+    the binding ``try`` -> red (the string run is framed whole)."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "acb_skills.attachment_tools", None)
+    current = Message("user", [PART])
+    with pf.bind_raw_parts((PART,)):
+        string_run = _attach(paste_turns.PasteFrameProvider(), "r-noprove-string", "string")
+        list_run = _attach(paste_turns.PasteFrameProvider(), "r-noprove-list", "list")
+    assert len(string_run) == 1 and not string_run[0].active
+    assert _request(string_run[0], [current])[0] is current
+    assert len(list_run) == 1 and list_run[0].active
+    framed = _users(_request(list_run[0], [current]))[0]
+    assert framed.startswith(f"{WORDS}\n\n") and framed.count("<<<PASTED TEXT ") == 1
+
+
+def test_a_fallback_that_cannot_build_leaves_the_run_alone(monkeypatch):
+    """Round 2 (2): when even the whole-mode middleware cannot be built,
+    ``before_run`` logs ``attach_failed`` once and attaches nothing. The run
+    goes on. Mutation: the fallback constructor outside a ``try`` -> red."""
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("no token")
+
+    logs: list[str] = []
+
+    class _Spy:
+        def warning(self, event: str, **_kw: Any) -> None:
+            logs.append(event)
+
+        info = warning
+
+    monkeypatch.setattr(pf, "raw_parts", boom)
+    monkeypatch.setattr(paste_turns, "UntrustedFrame", SimpleNamespace(new=boom))
+    monkeypatch.setattr(paste_turns, "_log", _Spy())
+    attached = _attach(paste_turns.PasteFrameProvider(prove=_no_proof), "r-nofallback", "list")
+    assert attached == []
+    assert logs.count("paste_frame.attach_failed") == 1
 
 
 def test_a_failed_turn_keeps_its_other_parts_and_properties(monkeypatch):
