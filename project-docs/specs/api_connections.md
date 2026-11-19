@@ -561,6 +561,28 @@ cd workbench/control_plane && npx vitest run src/app/api/crm/oauth
 
 The R8 file must show no skip.
 
+**Known gaps, found by the review of API-2 (2026-11-19). API-5 owns them.**
+
+- **A stranded pending token.** When the account has several Books
+  organizations, the sealed credential waits in Redis for 600 seconds. If the
+  admin leaves, Redis drops it, and nothing revokes the refresh token at Zoho.
+  Zoho keeps 20 tokens for each user and client, so a stranded token can push
+  out the CRM mirror's token. No browser route reaches `start` or `pick` before
+  API-5, so the case is latent. API-5 adds a "start again" path that revokes
+  the old pending entry, or a revoke when the entry expires.
+- **A dark org and `/pick`.** A malformed JSON body to `/pick` answers 422, not
+  404, because FastAPI reads the body before the dependencies. The route shows
+  that it exists. This is a low leak.
+- **`pick` takes the nonce first.** `pick_zoho_books` reads and deletes the
+  pending entry before it checks the member. Another admin of the same org who
+  holds the nonce can use it up. This is a denial only.
+- **The Studio fence.** `test_studio_connect_in_place.py` has an exemption,
+  `_NOT_LISTED_YET`, for `api:zoho_books`. API-5 lists the connector and
+  removes the exemption.
+- **A large `/organizations` answer.** An account with about 40 or more Books
+  organizations can pass the 64 KiB guard cap. The flow then fails closed with
+  `context_unreadable`.
+
 ## 3. Options not taken
 
 | Option | Why not |
