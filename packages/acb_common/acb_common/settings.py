@@ -394,6 +394,16 @@ class Settings(BaseSettings):
     # flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_fields_search.py.
     crm_module_find_orgs: str = ""
+    # `semantic_model_orgs` (WS-SEM SEM-7, task 3737, 2026-11-18) lists the
+    # organization ids whose CRM plan takes the semantic kinds `measure`,
+    # `join` and `query`, in the grammar of `crm_orgs`. Default empty means
+    # NO organization: a plan keeps an item of these kinds as an unknown
+    # kind, no check runs on it, and `org_facts` serves none. The one reader
+    # is `gateway.routes.crm.flags`. A `*_ORGS` key, so a SIGHUP reload
+    # applies it (`docs/flag_reload.md`). A name in the list spends nothing,
+    # so a flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_crm_plan_kinds_semantic.py.
+    semantic_model_orgs: str = ""
     # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
     # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
     # `off` (the default), `shadow` (check at the end of the answer and log
@@ -1168,11 +1178,13 @@ class Settings(BaseSettings):
     # read before the card as `If-Match`. A task that changed while the card
     # waited gets a 412, the tool writes nothing, and the tool answers with
     # the HRD-7 text "Changed since the card" and the old and new values
-    # (owner decision A, 2026-11-16). The one reader is
+    # (owner decision A, 2026-11-16). HRD-10c: the CRM `crm_update_record`
+    # does the same for a deal. The one reader is
     # `acb_skills.ask_tools.card_precondition_on`. It reads the org from the
     # run binding and fails closed. A SIGHUP reload applies a change
     # (`gateway/flag_reload.py`). It calls no model.
-    # Fence: tests/unit/test_card_precondition.py.
+    # Fences: tests/unit/test_card_precondition.py,
+    # tests/unit/test_crm_card_precondition.py.
     chat_card_precondition_orgs: str = ""
 
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
@@ -2405,6 +2417,17 @@ class Settings(BaseSettings):
     # 🔴 A flip on a box is gate `enforcement-flip`. Name the org and the box.
     # Fence: tests/unit/test_maf_mcp_injection.py.
     maf_mcp_orgs: str = ""
+
+    # ── Connected systems in chat (WS-CSY, chat_connected_systems.md §3.2) ──
+    #
+    # `CONNECTED_SYSTEMS_ORGS` lists the organization ids whose chat gets the
+    # "Connected systems" block: the brief of each attached MCP server and the
+    # standing rule. Comma list, `*` for all, empty (default) for none. With no
+    # server attached, or the flag off, the context keeps its bytes. The reader
+    # is `orchestrator._maf_mcp.connected_systems_org_allowed`, per call, on the
+    # run's org. A reload of the gateway applies a change. Flip: `enforcement-flip`.
+    # Fence: tests/unit/test_connected_systems_block.py.
+    connected_systems_orgs: str = ""
 
     # ── MCP OAuth for an org connection (WS-54 IN-8a, D98) ──────────────────
     #
