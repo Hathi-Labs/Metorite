@@ -837,8 +837,14 @@ async def attach_mcp_tools(
     agent: Any, servers: list[McpServer], opened: Opened,
     *, member_present: bool = False,
     on_unauthorized: Callable[[McpServer], Awaitable[Any]] | None = None,
+    failures: dict[str, str] | None = None,
 ) -> list[str]:
     """Connect each server and add its tool to ``agent.mcp_tools``.
+
+    CSY-5: a caller may pass *failures*, an empty dict. The call writes
+    ``{server name: "unreachable" | "reconnect"}`` for each server that did not
+    attach for that reason (a refusal, a failed or timed out connect, an OAuth 401).
+    The return value is unchanged: the names that attached.
 
     Returns the names of the servers that the agent got. Each one goes into
     *opened*, and the run closes it. A server that fails is left out.
@@ -891,9 +897,13 @@ async def attach_mcp_tools(
             client = await outbound_guard.mcp_client(server.url)
         except outbound_guard.OutboundRefused as exc:
             _log.warning("mcp.refused", name=server.name, host=exc.host, reason=exc.reason)
+            if failures is not None:
+                failures[server.name] = "unreachable"
             continue
         except Exception as exc:  # a lookup fault is a refusal too
             _log.warning("mcp.refused", name=server.name, host=host, reason=_reason(exc))
+            if failures is not None:
+                failures[server.name] = "unreachable"
             continue
         # IN-8b, rule 9: the answers of an OAuth server, so a 401 is seen.
         codes = _watch_status(client) if server.oauth else []
@@ -931,11 +941,15 @@ async def attach_mcp_tools(
             if server.oauth and 401 in codes:
                 # Rule 9. The name only: no host, no reason, no header.
                 _log.warning("mcp.oauth_unauthorized", name=server.name)
+                if failures is not None:
+                    failures[server.name] = "reconnect"
                 await _close_one(tool, client, client_first=True)
                 if on_unauthorized is not None:
                     await _report_unauthorized(on_unauthorized, server)
                 continue
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
+            if failures is not None:
+                failures[server.name] = "unreachable"
             await _close_one(tool, client, client_first=True)
             continue
         _choose_disclosure(tool)
