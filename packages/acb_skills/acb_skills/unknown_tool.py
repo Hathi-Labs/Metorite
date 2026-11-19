@@ -47,9 +47,12 @@ asks it, and shows :data:`MEMBER_LINE` on the step in its place.
 
 HRD-1b (task 3230): a batch run gets the same answer, with no flag. One hook
 of the executor, ``_unknown_tool_view``, puts the provider on the stream run
-of the orchestrator and on each batch run (``_assemble_batch_agents``). So a
-WhatsApp run, a delegated agent, a worker and a self-anneal retry are in
-scope. A batch run has no loader, so it never loads.
+and on each batch run (``_assemble_batch_agents``). So a WhatsApp run, a
+delegated agent, a worker and a self-anneal retry are in scope. A batch run
+has no loader, so it never loads. HRD-1c (task 3679): the stream run of each
+agent gets it, not only the orchestrator's. An agent that is not the
+orchestrator has no loader either, so its answer names only a tool of its
+own request. Fence: ``tests/unit/test_unknown_tool_non_orchestrator_stream.py``.
 A delegated run answers another model, and a run with no chat answers no
 member. Each of those runs is a *step* (``step=True``). Its answer names only
 a tool of the request, or it is :data:`NOT_IN_STEP`. A step never reads the
