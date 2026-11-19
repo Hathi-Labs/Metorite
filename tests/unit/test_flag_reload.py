@@ -209,6 +209,23 @@ def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not pin_allowed(None)
 
 
+def test_compute_run_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """SBX-18, agent_sandbox.md 0c. The reload list holds the key, and the one
+    reader of the compute switch sees a change with no restart."""
+    from orchestrator.sandbox_broker import compute_enabled
+
+    assert fr.reloadable("COMPUTE_RUN_ORGS")
+    monkeypatch.setenv("COMPUTE_RUN_ORGS", "")
+    monkeypatch.setenv("MAF_CODING_SCOPE", "compute:*")
+    get_settings.cache_clear()
+    assert not compute_enabled("acme")
+    env(**{**_START, "COMPUTE_RUN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("COMPUTE_RUN_ORGS",)
+    assert compute_enabled("acme")
+    assert not compute_enabled("globex")
+    assert not compute_enabled(None)
+
+
 def test_chat_card_record_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-CO CO-17, chat_organization.md §16.3. The reload list holds the key,
     and the one reader of the card record switch sees a change with no restart."""
