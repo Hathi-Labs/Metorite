@@ -287,6 +287,7 @@
       "tests/unit/test_customer_console_try_voice.py",
       "tests/unit/test_deployment_resolve_cache.py",
       "tests/unit/test_email_attach_shared_agent_r8.py",
+      "tests/unit/test_email_card_precondition.py",
       "tests/unit/test_email_otp_token.py",
       "tests/unit/test_email_signature_images_r8.py",
       "tests/unit/test_email_signature_settings_r8.py",
