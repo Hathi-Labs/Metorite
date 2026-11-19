@@ -220,7 +220,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-OTW | **One-time workflows**: ask someone, wait for the one answer, run once to propose the record updates, then retire (D214) | 🟢 active · M2 | `specs/workflows_app.md` §14 | Metorite: epic 3010 (AI Studio), OTW-0 to OTW-10 = tasks 3011 to 3021, demos 3022 to 3024 · flag `ONE_TIME_WORKFLOWS_ORGS`, default empty |
 | WS-FIND | **Find anything**: one search engine with near names, related records, past chats and an honest zero, as the chat's find tools (owner ask, 2026-11-14) | 🟢 active · M1 | `specs/find_engine.md` · `specs/knowledge_base.md` §20 | Metorite: epic 3232 (AI Chat Interface), FIND-0 = task 3233, rung 1 demo = task 3234 · in flight: KR-ZERO (2974), HRD-18a (2997) · next FIND-1, HRD-4 (2983), FIND-2, then HRD-18b (3226) and FIND-3 · D-FIND-1 to D-FIND-8 wait for the owner |
 | WS-CSY | **Connected systems in chat**: the chat knows what each connected MCP server holds, keeps it in reach beside mail, and reads it with no card (owner ask, 2026-11-15) | 🟢 active · M1 | `specs/chat_connected_systems.md` · `specs/agent_architecture.md` §12.2 WS-8c | Metorite: epic 3390 (AI Chat Interface), CSY-0 = task 3391, rung 0 = task 3399 (owner act), rung 1 demo = task 3396 · next CSY-1 (3400) and CSY-2 (3401) after PR 2369 merges · D-CSY-1 to D-CSY-6 wait for the owner |
-| WS-SEM | **The semantic model**: one way for the chat to read any large data source, the CRM first, then a connection profiled at connect time (owner ask, 2026-11-17) | 🟡 proposed · M2 | `specs/semantic_model.md` · `specs/crm_platform.md` §18.13 to §18.16 · `specs/chat_connected_systems.md` | Metorite: epic 3689 (CRM), SEM-0 = task 3721 · rung 1 maps to CRM-Q34 (§10.3) · D-SEM-1 to D-SEM-11 wait for the owner · no rung 3 code before D-SEM-1 |
+| WS-SEM | **The semantic model**: one way for the chat to read any large data source, the CRM first, then a connection profiled at connect time (owner ask, 2026-11-17) | 🟢 active (accepted parts) · M2 | `specs/semantic_model.md` · `specs/crm_platform.md` §18.13 to §18.16 · `specs/chat_connected_systems.md` | Metorite: epic 3689 (CRM), SEM-0 = task 3721 · rung 1 maps to CRM-Q34 (§10.3) · D-SEM answered by the owner (D226) · SEM-14 waits for D-CSY-1 |
 | WS-CT | **Contacts from mail**: the chat finds the people a member writes to by name, a People view in Email, then a Contacts app (owner ask, 2026-11-17) | 🟢 active · M1 | `specs/contacts.md` | Metorite: epic 3591 (My Email) · in build: CT-1 (3602) · next CT-2 (3607), then CT-3 (3608) and CT-4 (3609, rung 2 demo) · Q1 to Q3 wait for the owner |
 | WS-TKT | **Tickets and queues**: a support queue on the one task store, fed by chat, a shared mailbox, a workflow and a Studio app, with a round-robin rule over a team (owner ask, 2026-11-16) | 🟢 active · M2 | `specs/ticket_queues.md` · `specs/project_management_app.md` §9.1 | Metorite: epic 2202 (Projects/Tasks App), TKT-0 = task 3492, TKT-1 to TKT-14 = tasks 3518 to 3531, demos 3532 to 3535 · next TKT-4 (3521), then TKT-1 to TKT-3 after D-TKT-1 · D-TKT-1 to D-TKT-6 wait for the owner (task 3536) · flag `TICKET_QUEUES_ORGS`, default empty |
 | WS-SND | **Sound cues**: a few tasteful sounds for an email sent or arrived, the agent needs me, new in My Day, and a reminder (D210) | 🟢 active · M2 | `workbench/control_plane/DESIGN_SYSTEM.md` §4c and `specs/proactive_reach.md` §8.4, planned (SND-0, task 2864) | Metorite: epic 2862 (My Day), SND-P to SND-7 = tasks 2863 to 2872 · flag `NEXT_PUBLIC_SOUND_CUES`, default OFF |
@@ -6355,6 +6355,19 @@ The owner approved both merges of `agent_sandbox.md` §0b on task 3394, at 19:23
 5. **The consent rules stay.** D126 and SBX-Q8 bind the store. Error text and a chat reach the Metorite team only with the member's consent, one report at a time. Without that consent, a report holds the counts, the tool name and the error class only.
 
 Fence: none new, so this entry is advisory until SBX-1 and TOF-2a name their tests. `tests/unit/test_decision_ids.py` fails when two D225 entries merge. **Re-check this number at merge.** On 2026-11-16, main held D224 at most, and no open PR held D225.
+
+### D226 — The semantic model: the owner accepts D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11, picks Option A for the grammar, and sends the books connectors to a new spec (DECIDED, 2026-11-18)
+
+The owner decided in chat on 2026-11-18, about 05:00 UTC. `specs/semantic_model.md` §12 holds each question and its answer.
+
+1. **D-SEM-1.** A new block "Data meaning" joins `building_blocks.md` §2. Its one seam is `org_facts`, with one provider for each source.
+2. **D-SEM-2.** One new table holds the model of a connection, keyed by the connection id, with versions.
+3. **D-SEM-3.** Option A. `studio_query` is the one query shape for every store.
+4. **D-SEM-4, 5, 6, 7, 9, 10, 11.** Accepted as recommended. The model stores no value index. Verified queries hold parameters only. Suggestions from use show counts and query shapes only. Nothing is learned across orgs. The body stays close to Apache Ossie. Before an admin approves a draft, the chat gets nothing new from it.
+5. **D-SEM-8.** A new connector spec owns the books connectors. `ai_studio.md` non-goal 8 stays.
+6. **Still open.** D-CSY-1, D-CSY-3 and D-CSY-4. SEM-14 waits for D-CSY-1.
+
+Fence: none new, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D226 entries merge. **Re-check this number at merge.** On 2026-11-18, main held D225 at most.
 
 ### D227 — The sandbox opens to the beta orgs, and the HathiLabs pilot on the home server is withdrawn. It amends D187 for SBX-9 and SBX-G1 (2026-11-19)
 
