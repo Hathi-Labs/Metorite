@@ -91,6 +91,15 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_PACKS_BATCH_ORGS` gives the member's own WhatsApp turn of each listed
+org the read tools of its packs (`chat_reach.md` G2, task 3494). The turn holds
+no write tool, and the specialist of each pack stays. It acts only where
+`TOOL_PACKS` gives a pack. `*` lists every org, and the default is empty.
+
+Its one reader is `acb_skills.tool_packs.packs_batch_on`. The batch run asks it
+at the start of each WhatsApp run, so a reload applies to the next run. Any
+value other than empty is OWNER-ONLY (`work_plan.md` §6 D4).
+
 `CHAT_PASTE_FRAME_ORGS` turns on the paste frame (`chat_failure_modes.md`
 §4.7b, HRD-14b). For each listed org, a native chat run puts each pasted block
 of 8 or more lines in ONE `PASTED TEXT` block, in a copy of each model
@@ -193,6 +202,26 @@ moves a chat, and answers 404 with the org off. The chat list sends
 `topicId` and `topicName` only with the org on. `GET /auth/me/shell` gives
 the answer to the client as `chat_topics`, so a tab shows a change at its
 next shell read.
+
+`COMPUTE_RUN_ORGS` is the kill switch of the `compute` target of the sandbox
+broker (`agent_sandbox.md` §0c rung 6a', SBX-18). It does not turn compute on.
+Compute needs `compute:<org>` in `MAF_CODING_SCOPE`. That is a sealed owner
+gate, and a change needs a restart. Never put `compute:*` there while
+`SELF_SERVE_SIGNUP_ENABLED` is true. It is true on production today.
+
+While it is true, a `compute:*` scope entry or a `*` in `COMPUTE_RUN_ORGS`
+refuses compute for every org, also an org that the list names. This is
+intended, and it is not a fault.
+
+For each org in both lists, the broker runs Python over data that the chat
+holds. The container has no network, no secret and no mount. `*` in this flag
+lists every org, and the default is empty. Empty means the broker refuses
+every compute run.
+
+The one reader is `orchestrator.sandbox_broker.compute_enabled`.
+The reaper asks it too, so a flip to off stops a running compute container at
+the next tick. In production the broker also needs a remote gVisor backend. A
+reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`).
 
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
