@@ -675,7 +675,9 @@ in the wrong section, and refuses a key that is not in the table.
 
 The source notes of §3.2 are not in the body. They stay in
 `integration_connections` and in the brief inputs. At read time, an item of the
-`admin` section wins over an item with the same key in `code` or `ai`.
+`admin` section wins over an item with the same key in `code` or `ai`. An item of
+`ai` wins over an item with the same key in `code`. The profiler reads the live
+system, and `code` only holds the closed starting set.
 
 **`made_by`.** The `made_by` column is the highest writer kind in the body, in
 the order `code`, `ai`, `admin`. The writer sets it from the body, and never
@@ -699,7 +701,7 @@ short code, or `None`.
 | A key, a label of at most 80 characters, an option of at most 80, a count, a fill share, a date or a closed word | Allows, in the `code` and `ai` sections |
 | A description in the `ai` section | Allows only text that code built from closed words, of at most 300 characters |
 | Text in the `admin` section | Allows 1 to 300 characters that pass `clean_body`, with no digit that `_has_literal` finds |
-| A parameter name | Allows a name that matches the name pattern. Refuses a name that `number_like` finds, such as `2024` or `5.5` |
+| A parameter name | Allows a name that matches the name pattern. Refuses a name that does not match the name pattern, such as `2024` or `5.5`. The pattern is `_PARAM_NAME` of the catalogue |
 | A verified query | Allows named parameters. Refuses a key such as `value`, and any literal in a condition |
 | An amount, a total, a balance or a figure of money | Refuses, in every section |
 | Free text that the source or the model wrote, outside the cases above | Refuses |
@@ -923,7 +925,7 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
 - `test_semantic_shape_only.py` (new). One case for each row of the
   `shape_only` table in §10.4, and a source check that `connections/semantic_model.py`
   defines no second `LABEL_MAX`, `number_like` or `_has_literal`. **Mutations:**
-  drop the `number_like` call on a parameter name, and the name `2024` passes
+  drop the `_PARAM_NAME` full match on a parameter name, and the name `2024` passes
   and the case fails. Drop the section check, and the part in the wrong section
   passes and the case fails.
 - `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
