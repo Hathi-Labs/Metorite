@@ -105,6 +105,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/skills/{skill_id}/versions"),
     ("POST", "/studio/skills/{skill_id}/undo"),
     ("PATCH", "/studio/skills/{skill_id}/state"),
+    # TOF-3b F4b, the test run of a skill.
+    ("POST", "/studio/skills/{skill_id}/tests/run"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
     # K1a, the template list and the one-step create from a template.

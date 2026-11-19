@@ -279,11 +279,13 @@ def _six(c: TestClient, sid: str) -> list[Any]:
 
 
 def _eight(c: TestClient, sid: str) -> list[Any]:
-    """The six routes, and the history and the undo of F7a."""
+    """The six routes, the history and the undo of F7a, and the test run of
+    F4b (``test_studio_skill_tests_route.py`` holds the rest of its cases)."""
     return [
         *_six(c, sid),
         c.get(f"/studio/skills/{sid}/versions"),
         c.post(f"/studio/skills/{sid}/undo", json={"expected_version": 1}),
+        c.post(f"/studio/skills/{sid}/tests/run", json={}),
     ]
 
 
@@ -297,7 +299,7 @@ class TestTheSwitch:
         world.store_calls.clear()
         _open(monkeypatch, OTHER)
         answers = _eight(_client(world), sid)
-        assert [r.status_code for r in answers] == [404] * 8
+        assert [r.status_code for r in answers] == [404] * 9
         assert all(r.json() == NOT_FOUND for r in answers)
         # The switch runs first: no session, no catalog read.
         assert world.log == [] and world.store_calls == []
@@ -324,7 +326,8 @@ class TestTheSwitch:
                 ("POST", "/studio/skills/{skill_id}/versions"),
                 ("PATCH", "/studio/skills/{skill_id}/state"),
                 ("GET", "/studio/skills/{skill_id}/versions"),
-                ("POST", "/studio/skills/{skill_id}/undo")} <= paths
+                ("POST", "/studio/skills/{skill_id}/undo"),
+                ("POST", "/studio/skills/{skill_id}/tests/run")} <= paths
         assert skills.router is actions.router
         from pathlib import Path
 
@@ -929,7 +932,8 @@ class TestTheTestsCarryForward:
         the same 422 text as for any body that is too large, and no version
         is written."""
         c = _client(world)
-        fat = [{"id": f"t{i}", "input": "x" * 10_000, "expect": []} for i in range(20)]
+        # F4b caps an input at 2000 characters.
+        fat = [{"id": f"t{i}", "input": "x" * 2_000, "expect": []} for i in range(20)]
         sid = _create(c, body=_body([A1], tests=fat))["skill"]["id"]
         room = store.MAX_BODY_BYTES - len(json.dumps(_body([A2]))) - 100
         body = _body([A2], instructions="x" * room)

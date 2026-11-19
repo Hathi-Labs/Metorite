@@ -431,11 +431,15 @@ async def carry_tests(db: Any, member: str, skill_id: str,
     The route of a new version calls it, because the editor form sends no
     ``tests``. The undo route does not, because it copies an older body
     exactly, and ``add_version`` carries nothing. ``"tests": []`` in *body*
-    clears the tests, and a list replaces them. The read takes no lock. A
-    second save at the same moment can carry the older list, and only a
-    save with an explicit ``tests`` changes the list, so the window is narrow.
+    clears the tests, and a list replaces them.
+
+    F4b: the first read takes the row lock, as the undo route does
+    (``get_skill(..., for_update=True)``). The lock holds until the commit.
+    So a second save waits, then reads the version that this save wrote, and
+    no save can carry a list that a save at the same moment replaced.
     """
-    if "tests" in body:
+    skill = await get_skill(db, member, skill_id, for_update=True)
+    if "tests" in body or skill is None:
         return body
     newest = await get_version(db, member, skill_id)
     kept = newest.body.get("tests") if newest is not None else None

@@ -406,6 +406,18 @@ org on `STUDIO_CHAT_TOOLS_ORGS`. A reload applies a change, and a tab shows it
 at its next shell read. The flip stays OWNER-GATE (`enforcement-flip`), after
 the owner preview.
 
+`STUDIO_SKILL_TESTS_ORGS` opens the test run of a skill
+(`ai_studio_rows/F4.md`, TOF-3b F4b). For each listed org, a member may call
+`POST /studio/skills/{id}/tests/run`. Each test is a real model turn in a dry
+run, so a run SPENDS CREDITS. `*` lists every org, and the default is empty.
+Empty means the route answers 404 and runs nothing. Its one reader is
+`gateway.routes.studio.flags.skill_tests_allowed`, and each request asks it.
+
+The route also needs `STUDIO_ORGS`, and it refuses each run until the owner
+sets `STUDIO_SKILL_TESTS_CAP_CREDITS`. That cap has no default, and it needs a
+restart, because it is no `*_ORGS` key. A reload applies a change to this
+flag. Any value other than empty is OWNER-ONLY, because it spends credits.
+
 `TOOL_SEARCH_ORGS` gives the chat of each listed org the tool `find_tools`
 (`one_assistant_context.md` §4.2.9, TS-2a). It acts only where `TOOL_PACKS`
 gives a pack. `*` lists every org, and the default is empty. Its one reader is
