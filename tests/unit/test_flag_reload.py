@@ -451,6 +451,22 @@ def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert not topics_allowed(None)
 
 
+def test_chat_card_precondition_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """HRD-10a, chat_failure_modes.md section 6. The reload list holds the key,
+    and the one reader of the version check of a card sees a change with no
+    restart."""
+    from acb_skills.ask_tools import card_precondition_on
+
+    assert fr.reloadable("CHAT_CARD_PRECONDITION_ORGS")
+    monkeypatch.setenv("CHAT_CARD_PRECONDITION_ORGS", "")
+    get_settings.cache_clear()
+    assert not card_precondition_on("acme")
+    env(**{**_START, "CHAT_CARD_PRECONDITION_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_CARD_PRECONDITION_ORGS",)
+    assert card_precondition_on("ACME ")
+    assert not card_precondition_on("globex")
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""

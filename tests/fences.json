@@ -243,6 +243,7 @@
       "tests/unit/test_auto_park.py",
       "tests/unit/test_billing_proxy_route.py",
       "tests/unit/test_billing_purchase_capability.py",
+      "tests/unit/test_card_precondition.py",
       "tests/unit/test_card_record_r8.py",
       "tests/unit/test_catalog_health_r8.py",
       "tests/unit/test_chat_join_shadow_r8.py",

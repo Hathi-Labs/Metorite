@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
@@ -673,6 +674,127 @@ def _move_session(
         return chat_pins.set_topic(s, session_id, viewer=user_id, topic_id=topic_id)
 
 
+#: The rows that a reader sees (S14, §20): every row but the empty agent row
+#: that the gateway mints before the first checkpoint. The names are bare, so
+#: they bind to the nearest ``chat_message`` of the statement. ONE predicate:
+#: :func:`_get_messages` and :data:`_LAST_TURN_SQL` both use it.
+_SHOWN_ROW_SQL = (
+    "NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
+    "THEN 'agent' ELSE 'other' END) = 'agent' "
+    "AND content = '' "
+    "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
+    "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
+    "AND COALESCE(reasoning, '') = '')"
+)
+
+#: RESUME-2b (``chat_run_continuity.md`` §4.12.4 item 2, case A): the reply
+#: row *mid*, and whether it is the last turn of its chat. One row back means
+#: it exists. Its first column is True when no row that a reader sees comes
+#: after it. "After" is the order of :func:`_get_messages`: a larger
+#: ``(timestamp_ms, id)``. So a row with the same ``timestamp_ms`` and a
+#: larger ``id`` shows after the reply, and it counts (review of 2026-11-17,
+#: P2-2). The second column is the ``authority`` label of the reply, which the
+#: fold at the park wrote. The third column is True when a participant joined
+#: after the reply row: its ``join_message_ts`` (the history waterline) is
+#: later than the row's ``timestamp_ms`` (review round 2, P2-b). The org
+#: stands beside RLS (R5).
+_LAST_TURN_SQL = (
+    "SELECT NOT EXISTS ("
+    "  SELECT 1 FROM chat_message "
+    "  WHERE session_id = r.session_id AND organization_id = r.organization_id "
+    "    AND (timestamp_ms, id) > (r.timestamp_ms, r.id) AND " + _SHOWN_ROW_SQL
+    + "), r.authority, EXISTS ("
+    "  SELECT 1 FROM chat_session_participant p "
+    "  WHERE p.session_id = r.session_id AND p.organization_id = r.organization_id "
+    "    AND p.join_message_ts > r.timestamp_ms"
+    ") FROM chat_message r "
+    "WHERE r.organization_id = CAST(:org AS uuid) AND r.session_id = :sid "
+    "  AND r.id = :mid"
+)
+
+#: A label: the sorted members and the sorted caps of an ``authority`` value.
+Label = tuple[tuple[str, ...], tuple[str, ...]]
+
+#: The label of an ``authority`` value of another shape. It never equals a
+#: real label, which names two members or more (fail closed).
+_BAD_LABEL: Label = ((), ())
+
+
+@dataclass(frozen=True)
+class ReplyTurn:
+    """The reply row of a parked turn, as RESUME-2b reads it (:func:`reply_turn`).
+
+    *last* is True when no row that a reader sees comes after it. *label* is
+    the ``authority`` label of the row (:func:`label_of`): the members and
+    the caps of a shared room when the fold at the park wrote the row. It is
+    None when the row has no label, which is a solo run at the park.
+    *late_join* is True when a participant's history waterline is later than
+    the row (review round 2, P2-b)."""
+
+    last: bool
+    label: Label | None
+    late_join: bool = False
+
+
+def label_of(authority: Any) -> Label | None:
+    """The label of an ``authority`` value (``chat_fold._run_authority``):
+    ``(members, caps)``, each sorted, the members in lower case. None for no
+    label. A value of another shape gives :data:`_BAD_LABEL`. RESUME-2b reads
+    the label of a row and the label of now through this one function."""
+    if authority is None:
+        return None
+    if isinstance(authority, str):
+        try:
+            authority = json.loads(authority)
+        except ValueError:
+            return _BAD_LABEL
+    if not isinstance(authority, dict):
+        return _BAD_LABEL
+    members, caps = authority.get("members"), authority.get("caps", [])
+    if (not isinstance(members, list) or not all(isinstance(m, str) for m in members)
+            or not isinstance(caps, list) or not all(isinstance(c, str) for c in caps)):
+        return _BAD_LABEL
+    return (tuple(sorted({m.strip().lower() for m in members if m.strip()})),
+            tuple(sorted(set(caps))))
+
+
+def reply_turn(
+    session_id: str, message_id: str, *, organization_id: str | None,
+) -> ReplyTurn | None:
+    """The reply row *message_id* of the chat *session_id* (RESUME-2b, case A),
+    or None when it is not there.
+
+    ``gateway.routes.agent._same_reply_of`` and the final fold of a
+    same-reply run (``chat_fold``) call it. A late Approve goes on in the same
+    reply only when nothing shows after the row, no member joined after it,
+    and the label of the room did not change since the park. The org is the
+    session's: the read opens ``tenant_session(organization_id)``, and the SQL
+    names the org beside RLS. A missing row, another org and no org give
+    None. Sync: call it through ``asyncio.to_thread``. Fence:
+    ``tests/unit/test_resume_continuation_r8.py`` (R8)."""
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    if not organization_id or not session_id or not message_id:
+        return None
+    with tenant_session(organization_id) as s:
+        row = s.execute(
+            text(_LAST_TURN_SQL),
+            {"org": organization_id, "sid": session_id, "mid": message_id},
+        ).first()
+    if row is None:
+        return None
+    return ReplyTurn(last=bool(row[0]), label=label_of(row[1]), late_join=bool(row[2]))
+
+
+def reply_is_last_turn(
+    session_id: str, message_id: str, *, organization_id: str | None,
+) -> bool:
+    """True when :func:`reply_turn` finds the row and it is the last turn."""
+    turn = reply_turn(session_id, message_id, organization_id=organization_id)
+    return turn is not None and turn.last
+
+
 def _get_messages(
     session_id: str,
     user_id: str,
@@ -727,12 +849,7 @@ def _get_messages(
             # content before the first checkpoint. A reader does not see it
             # until it holds content, a tool event, a custom event or
             # reasoning. SQL, not Python, so a LIMIT does not count it.
-            " AND NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
-            "THEN 'agent' ELSE 'other' END) = 'agent' "
-            "AND content = '' "
-            "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
-            "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
-            "AND COALESCE(reasoning, '') = '')"
+            " AND " + _SHOWN_ROW_SQL
         )
         params: dict = {"sid": session_id}
         if before is not None:
