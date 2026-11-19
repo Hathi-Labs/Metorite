@@ -758,7 +758,8 @@ _LONG = {
                          ("kb", "A", ["10.12"])], ("kb", "ka")),
     "sum_neg_long": ("sum", [("ka", "A", ["-10.0", "-0.12499999999999999"]),
                              ("kb", "Z", ["-10.12"])], ("ka", "kb")),
-    "avg_long": ("avg", [("ka", "Z", ["10.12", "10.12999999999999999"]),
+    # AVG keeps 17 places here: 10.12499999999999999, which rounds to 10.12.
+    "avg_long": ("avg", [("ka", "Z", ["10.0", "10.24999999999999998"]),
                          ("kb", "A", ["10.12"])], ("kb", "ka")),
 }
 
@@ -790,7 +791,7 @@ async def test_long_digits_at_the_border_show_each_group_once(
         kept = c.execute(text(
             "SELECT fields ->> 'Amt' FROM crm_module_records WHERE organization_id = "
             "CAST(:o AS uuid) AND module = 'Halves' AND ext_id = 'ka1'"), {"o": a}).scalar()
-    assert kept in ("0.12499999999999999", "-0.12499999999999999", "10.12999999999999999")
+    assert kept in ("0.12499999999999999", "-0.12499999999999999", "10.24999999999999998")
     keys: list[list[Any]] = []
     for page in (1, 2):
         calls, _out = await _sent_and_text(invoices, a, monkeypatch, entity="module:Halves",
