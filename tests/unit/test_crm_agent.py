@@ -1341,6 +1341,85 @@ def test_a_request_with_no_query_keeps_its_filters_line(params: dict) -> None:
         assert _T.filters_line(params, data) == _old_filters_line(params, data)
 
 
+def _variants(value: Any) -> list[str]:
+    """The counted values of one asked value, as a stored set would give."""
+    return [str(value), str(value).upper(), str(value)[:2].upper()]
+
+
+def _route_matched(pairs: dict, query: list) -> dict[str, list[str]]:
+    """``matched`` as the route builds it: each pair first, then each equal
+    leaf of the query in order, the last leaf of a field winning
+    (``field_sql.query_where``), and a pair kept (``_with_query``)."""
+    out = {name[len("field."):]: _variants(v) for name, v in pairs.items()
+           if name.startswith("field.") and not name.endswith((".from", ".to"))}
+    by_query: dict[str, list[str]] = {}
+    for node in query:
+        for leaf in node.get("any", [node]):
+            values = leaf["value"] if leaf["op"] == "in" else [leaf["value"]]
+            if leaf["op"] in ("eq", "in"):
+                for value in values:
+                    by_query[leaf["field"]] = _variants(value)
+    for key, values in by_query.items():
+        out.setdefault(key, values)
+    return out
+
+
+@pytest.mark.parametrize(("pairs", "query", "line"), [
+    ({}, [{"any": [{"field": "Region", "op": "eq", "value": "North"},
+                   {"field": "Region", "op": "eq", "value": "South"}]}],
+     "Filters: any of: Region is North or Region is South."),
+    ({"field.Region": "North"}, [{"field": "Region", "op": "eq", "value": "East"}],
+     "Filters: Region is North (counted North, NORTH and NO); Region is East."),
+    ({}, [{"field": "Date", "op": "gte", "value": "2026-03-01"},
+          {"field": "Date", "op": "gte", "value": "2026-01-01"}],
+     "Filters: Date from 2026-03-01; Date from 2026-01-01."),
+    ({"field.Date.from": "2026-03-01"},
+     [{"field": "Date", "op": "gte", "value": "2026-01-01"},
+      {"field": "Date", "op": "lte", "value": "2026-03-31"}],
+     "Filters: Date from 2026-03-01 to 2026-03-31; Date from 2026-01-01."),
+    ({}, [{"field": "Region", "op": "eq", "value": "North"}],
+     "Filters: Region is North (counted North, NORTH and NO)."),
+])
+def test_the_filters_line_of_an_overlap_names_only_what_holds(
+        pairs: dict, query: list, line: str) -> None:
+    """The delta review: one field with two equal leaves, a pair and a leaf
+    on one field, and two ends of one side. The words never name the
+    variants of another leaf, and they name each end that the SQL ANDs."""
+    params = {**pairs, "query": json.dumps(query)}
+    assert _T.filters_line(params, {"matched": _route_matched(pairs, query)}) == line
+
+
+_LEAVES: list[Any] = [
+    {"field": "Region", "op": "eq", "value": "North"},
+    {"field": "Region", "op": "eq", "value": "South"},
+    {"field": "Region", "op": "in", "value": ["West", "East"]},
+    {"any": [{"field": "Region", "op": "eq", "value": "Hill"},
+             {"field": "Region", "op": "eq", "value": "Coast"}]},
+    {"any": [{"field": "Region", "op": "eq", "value": "Lake"},
+             {"field": "Amount", "op": "gt", "value": 5}]},
+    {"field": "Amount", "op": "gte", "value": 1},
+    {"field": "Amount", "op": "lte", "value": 9},
+    {"field": "Amount", "op": "lt", "value": 8},
+]
+_COUNTED = re.compile(r"(\w+) is ([^;()]+?) \(counted ([^)]*)\)")
+
+
+@pytest.mark.parametrize("pair", [None, "Moon"])
+@pytest.mark.parametrize("picked", [
+    (a,) for a in range(len(_LEAVES))] + [
+    (a, b) for a in range(len(_LEAVES)) for b in range(len(_LEAVES)) if a < b] + [
+    (0, 1, 3), (0, 2, 4), (1, 3, 5, 6)])
+def test_the_counted_words_always_belong_to_their_own_leaf(picked: tuple, pair: Any) -> None:
+    """A property over a matrix of leaves: each "(counted ...)" lists the
+    variants of the value that it follows, never of another leaf."""
+    query = [_LEAVES[i] for i in picked]
+    pairs = {"field.Region": pair} if pair else {}
+    params = {**pairs, "query": json.dumps(query)}
+    line = _T.filters_line(params, {"matched": _route_matched(pairs, query)})
+    for value, counted in ((m.group(2), m.group(3)) for m in _COUNTED.finditer(line)):
+        assert counted == _T._names(_variants(value)), (query, pair, line)
+
+
 def test_the_read_line_names_the_query_leaves() -> None:
     from acb_skills.answer_check import read_line
 

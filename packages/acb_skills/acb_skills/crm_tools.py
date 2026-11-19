@@ -89,7 +89,7 @@ import functools
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from datetime import date
 from typing import Any
 from uuid import UUID
@@ -3290,6 +3290,7 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
     matched = matched if isinstance(matched, dict) else {}
     plain: list[str] = []
     ranges: dict[str, dict[str, str]] = {}
+    pair_eq: set[str] = set()
     for name, value in params.items():
         if not name.startswith("field.") or value is None:
             continue
@@ -3298,10 +3299,11 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
         if end is not None:
             ranges.setdefault(key[: -len(end)], {})[end] = str(value)
             continue
+        pair_eq.add(key)
         plain.append(_eq_words(key, value, matched))
     # SEM-1b-2: the leaves of `query` read as the pairs read.
-    _query_words(params.get("query"), matched, plain, ranges)
-    parts = plain + [_range_words(k, ends) for k, ends in ranges.items()]
+    extra = _query_words(params.get("query"), matched, plain, ranges, pair_eq)
+    parts = plain + [_range_words(k, ends) for k, ends in ranges.items()] + extra
     return f"Filters: {'; '.join(parts)}." if parts else ""
 
 
@@ -3361,27 +3363,63 @@ def query_nodes(query: Any) -> list[Any]:
     return list(query) if isinstance(query, list) else []
 
 
+def _eq_leaves(nodes: list[Any]) -> dict[str, int]:
+    """The count of equal leaves of each field in *nodes*: one for an
+    ``eq``, and one for each value of an ``in``, also inside a group."""
+    counts: dict[str, int] = {}
+    leaves = [x for node in nodes for x in (
+        node["any"] if isinstance(node, dict) and isinstance(node.get("any"), list)
+        else [node])]
+    for leaf in leaves:
+        if not isinstance(leaf, dict) or not isinstance(leaf.get("field"), str):
+            continue
+        key, value = _query_text_value(leaf["field"]), leaf.get("value")
+        if leaf.get("op") == "eq":
+            counts[key] = counts.get(key, 0) + 1
+        elif leaf.get("op") == "in" and isinstance(value, list):
+            counts[key] = counts.get(key, 0) + len(value)
+    return counts
+
+
 def _query_words(query: Any, matched: dict[str, Any], plain: list[str],
-                 ranges: dict[str, dict[str, str]]) -> None:
+                 ranges: dict[str, dict[str, str]],
+                 pair_eq: Collection[str] = ()) -> list[str]:
     """Add the words of each node of *query* to *plain* and *ranges*, in
     the shape of the pairs: an ``eq``, ``in``, ``gt`` or ``lt`` leaf to
     *plain*, a ``gte`` or ``lte`` leaf to the range of its field, and an
-    ``any`` group as "any of: A or B"."""
-    for node in query_nodes(query):
+    ``any`` group as "any of: A or B". Returns the words of each range end
+    whose side the field already has: the SQL ANDs both ends, so the words
+    name both.
+
+    ``matched`` holds ONE list for each field, not for each leaf. So an
+    ``eq`` leaf names its counted values only when it is the one equal
+    filter of its field: no other ``eq`` or ``in`` value in the query, and
+    no ``field.<key>=`` pair (*pair_eq*). Else the words name no variant,
+    because the list may be the one of another leaf."""
+    nodes = query_nodes(query)
+    eqs = _eq_leaves(nodes)
+    mine = {k: v for k, v in matched.items() if eqs.get(k) == 1 and k not in pair_eq}
+    extra: list[str] = []
+    for node in nodes:
         if isinstance(node, dict) and isinstance(node.get("any"), list):
-            inner = [w for w in (_query_leaf_words(x, matched) for x in node["any"]) if w]
+            inner = [w for w in (_query_leaf_words(x, mine) for x in node["any"]) if w]
             if inner:
                 plain.append(f"any of: {' or '.join(inner)}")
             continue
         if (isinstance(node, dict) and node.get("op") in _QUERY_ENDS
                 and isinstance(node.get("field"), str)):
             key = _query_text_value(node["field"])
-            ranges.setdefault(key, {})[_QUERY_ENDS[str(node["op"])]] = _query_text_value(
-                node.get("value"))
+            side = _QUERY_ENDS[str(node["op"])]
+            value = _query_text_value(node.get("value"))
+            if side in ranges.get(key, {}):
+                extra.append(_range_words(key, {side: value}))
+            else:
+                ranges.setdefault(key, {})[side] = value
             continue
-        words = _query_leaf_words(node, matched)
+        words = _query_leaf_words(node, mine)
         if words:
             plain.append(words)
+    return extra
 
 
 def query_filter_words(query: Any) -> str:
@@ -3389,8 +3427,8 @@ def query_filter_words(query: Any) -> str:
     the read line of ``answer_check`` (no counted values there)."""
     plain: list[str] = []
     ranges: dict[str, dict[str, str]] = {}
-    _query_words(query, {}, plain, ranges)
-    return "; ".join(plain + [_range_words(k, ends) for k, ends in ranges.items()])
+    extra = _query_words(query, {}, plain, ranges)
+    return "; ".join(plain + [_range_words(k, ends) for k, ends in ranges.items()] + extra)
 
 
 async def _term_read(params: dict[str, Any], key: str) -> dict[str, Any]:
