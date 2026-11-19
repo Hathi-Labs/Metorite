@@ -2209,8 +2209,7 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
         rest = (_split_text(split, None, measure, key="other") if split
                 else fmt_with(data.get("other"), data.get("others"), "other"))
         lines.append(f"Other ({omitted} smaller groups): {rest}. "
-                     "The total counts them. Narrow the filter to see them.")
-        lines.extend(_next_page_line(data))
+                     f"The total counts them. {_other_step(data)}")
     zone = data.get("zone")
     if zone and (group_by in _ZONED_GROUPS or "datetime" in (
             data.get("group_field_type"), data.get("group_field2_type"))):
@@ -2223,10 +2222,13 @@ async def _aggregate_text(slug: str, params: dict[str, Any], page: int | None,
     return "\n".join(lines) + note
 
 
-def _next_page_line(data: dict[str, Any]) -> list[str]:
-    """CRM-Q34-10: one line when the route says that page 2 continues this
-    answer (``next_group_page``), else none."""
-    return ["Ask for page 2 for the next groups."] if data.get("next_group_page") else []
+def _other_step(data: dict[str, Any]) -> str:
+    """What the member can do about the groups past 50. CRM-Q34-10: when the
+    route says that page 2 continues this answer (``next_group_page``), ask
+    for it. Else narrow the filter, as before."""
+    if data.get("next_group_page"):
+        return "Ask for page 2 for the next groups."
+    return "Narrow the filter to see them."
 
 
 def _group_words(data: dict[str, Any], group_field: str | None, bucket: str | None) -> str:

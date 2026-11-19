@@ -1351,6 +1351,10 @@ def _paging(
     if not 1 <= page <= GROUP_PAGES_MAX:
         raise _refuse(f"group_page is 1 to {GROUP_PAGES_MAX:,}.")
     size = MAX_GROUPS if group_page_size is None else group_page_size
+    if group_field2 is None and size != MAX_GROUPS:
+        # Page 1 of one field cuts 50 groups, so each later page holds 50.
+        raise _refuse(f"One group field pages by {MAX_GROUPS} groups. Give no "
+                      "group_page_size, or give group_field2.")
     if not 1 <= size <= GROUP_PAGE_MAX:
         raise _refuse(f"group_page_size is 1 to {GROUP_PAGE_MAX}.")
     return page, size
@@ -1780,7 +1784,10 @@ async def _compute(
         for key, acc in read.values.items()
     ]
     # The 50 largest groups stay. The rest fold into `other`.
-    groups.sort(key=lambda g: (g[0].value is None, -(g[0].value or 0.0), g[0].label))
+    # CRM-Q34-10: the key breaks a tie of value and label, as
+    # `field_sql.one_group_order` does, so page 2 continues this cut.
+    groups.sort(key=lambda g: (g[0].value is None, -(g[0].value or 0.0), g[0].label,
+                               g[0].key is None, g[0].key or ""))
     kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     # With no group, the one row IS the total, so no group is shown.
     shown = [] if overall else [g for g, _acc in kept]

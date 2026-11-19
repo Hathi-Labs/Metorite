@@ -785,13 +785,15 @@ def one_group_order(ref: FieldRef) -> tuple[str, dict[str, Any]]:
     The label is the lookup name, else the option label, else the key, else
     "(none)". An empty text falls through, as Python's ``or`` does.
     ``COLLATE "C"`` orders it by code point, as Python sorts a ``str``. The
-    key ends the order, so it is total. The options are one bound value."""
+    key ends the order by code point, a NULL key last, as Python breaks a tie
+    of value and label. So the order is total. The options are one bound
+    value."""
     label = (
         f"COALESCE(NULLIF(label, ''), NULLIF(CAST(:{_OPTIONS_KEY} AS jsonb) ->> key, ''), "
         f"NULLIF(key, ''), '{NO_VALUE_LABEL}') COLLATE \"C\""
     )
     order = (f"round(CAST(value AS numeric), 2) DESC NULLS LAST, {label} ASC, "
-             "key ASC NULLS LAST")
+             'key COLLATE "C" ASC NULLS LAST')
     return order, {_OPTIONS_KEY: json.dumps(ref.options or {})}
 
 
