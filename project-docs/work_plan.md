@@ -199,7 +199,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-PRE | **Preview apps**: Notes, Meetings, Dashboard | ⏸ after Phase 2 · M4 | `specs/note_taker_app.md` · `specs/meeting_bot_platform_plan.md` | Metorite: epic 494 · next E-28, E-25 |
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (ACTIVE) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a, BR-5 slices 1 and 2a built (dark where a flag exists) · next BR-2b, BR-5 slice 2b, BR-7b-1 (task 2171) |
-| WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
+| WS-IR | **Issue Reporting** | 🟢 active · M0 | The store and the fingerprint: `specs/tool_failure_log.md` (D225). The rest: none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
 | WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · The buddy (the hello, then Reach's chat channel, mark, pop and pause): D177, epic 1693, `specs/onboarding.md` §13 and `specs/proactive_reach.md` §19, next BUD-1 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 | WS-BB | **Building blocks**: the product shape, the seams and the rule that a vertical is a preset over core blocks | 🟢 active · M1 | `specs/building_blocks.md` (D205) | Read it before a new table, registry, manifest, queue or engine · D205 points 5 to 10 decided 2026-11-11 (task 2816) |
 | WS-LL | **Learning loop**: each week Metorite reviews the agent sessions and the plan, learns, and changes the harness | 🟢 active · M2 | `specs/orchestration_playbook.md` §6c, §7a | Metorite: epic 2624 (MCP & External Agents), LL-0 to LL-13 = tasks 2625 to 2639 · until LL-3 ships a person runs the review each Monday |
@@ -220,6 +220,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-OTW | **One-time workflows**: ask someone, wait for the one answer, run once to propose the record updates, then retire (D214) | 🟢 active · M2 | `specs/workflows_app.md` §14 | Metorite: epic 3010 (AI Studio), OTW-0 to OTW-10 = tasks 3011 to 3021, demos 3022 to 3024 · flag `ONE_TIME_WORKFLOWS_ORGS`, default empty |
 | WS-FIND | **Find anything**: one search engine with near names, related records, past chats and an honest zero, as the chat's find tools (owner ask, 2026-11-14) | 🟢 active · M1 | `specs/find_engine.md` · `specs/knowledge_base.md` §20 | Metorite: epic 3232 (AI Chat Interface), FIND-0 = task 3233, rung 1 demo = task 3234 · in flight: KR-ZERO (2974), HRD-18a (2997) · next FIND-1, HRD-4 (2983), FIND-2, then HRD-18b (3226) and FIND-3 · D-FIND-1 to D-FIND-8 wait for the owner |
 | WS-CSY | **Connected systems in chat**: the chat knows what each connected MCP server holds, keeps it in reach beside mail, and reads it with no card (owner ask, 2026-11-15) | 🟢 active · M1 | `specs/chat_connected_systems.md` · `specs/agent_architecture.md` §12.2 WS-8c | Metorite: epic 3390 (AI Chat Interface), CSY-0 = task 3391, rung 0 = task 3399 (owner act), rung 1 demo = task 3396 · next CSY-1 (3400) and CSY-2 (3401) after PR 2369 merges · D-CSY-1 to D-CSY-6 wait for the owner |
+| WS-TOF | **Tools on the fly**: the chat saves, finds, repairs and shares chains of existing actions, and a tool failure becomes one task (D224, D225) | 🟢 active · M1 | `specs/agent_sandbox.md` §0b · `specs/tool_failure_log.md` (ACTIVE 2026-11-18) | Metorite: epic 3393 (AI Chat Interface), TOF-2a = task 3416, rung 2 demo = task 3417 · TOF-Q1 to TOF-Q4 answered 2026-11-18 · next TOF-2b to TOF-2e |
 | WS-SEM | **The semantic model**: one way for the chat to read any large data source, the CRM first, then a connection profiled at connect time (owner ask, 2026-11-17) | 🟢 active (accepted parts) · M2 | `specs/semantic_model.md` · `specs/crm_platform.md` §18.13 to §18.16 · `specs/chat_connected_systems.md` | Metorite: epic 3689 (CRM), SEM-0 = task 3721 · rung 1 maps to CRM-Q34 (§10.3) · D-SEM answered by the owner (D226) · SEM-14 waits for D-CSY-1 |
 | WS-CT | **Contacts from mail**: the chat finds the people a member writes to by name, a People view in Email, then a Contacts app (owner ask, 2026-11-17) | 🟢 active · M1 | `specs/contacts.md` | Metorite: epic 3591 (My Email) · in build: CT-1 (3602) · next CT-2 (3607), then CT-3 (3608) and CT-4 (3609, rung 2 demo) · Q1 to Q3 wait for the owner |
 | WS-TKT | **Tickets and queues**: a support queue on the one task store, fed by chat, a shared mailbox, a workflow and a Studio app, with a round-robin rule over a team (owner ask, 2026-11-16) | 🟢 active · M2 | `specs/ticket_queues.md` · `specs/project_management_app.md` §9.1 | Metorite: epic 2202 (Projects/Tasks App), TKT-0 = task 3492, TKT-1 to TKT-14 = tasks 3518 to 3531, demos 3532 to 3535 · next TKT-4 (3521), then TKT-1 to TKT-3 after D-TKT-1 · D-TKT-1 to D-TKT-6 wait for the owner (task 3536) · flag `TICKET_QUEUES_ORGS`, default empty |
@@ -6396,6 +6397,57 @@ Later the same day, in the same chat, the owner wrote:
 Fence: SBX-F24 to SBX-F26 of `agent_sandbox.md` §11, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D227 entries merge. 
 
 **Re-check this number at merge.** On 2026-11-19, main held D225 at most. Open PRs 2585 and 2599 hold D226. A scan of all 168 open PRs found, in the `work_plan.md` diff of each, no D227 to D229. Main holds no D226 to D229.
+
+### D228 — API connections: the owner accepts D-API-1 to D-API-9, and Zoho Books is the first template and an owner priority (DECIDED, 2026-11-19)
+
+The owner answered in chat on 2026-11-19, on task 3562 (answer `97b5d6ce`). `specs/api_connections.md` §8 holds each question and its answer.
+
+1. **D-API-1.** Reviewed templates (T1) and APIs by their OpenAPI address (T2) first. An API with no OpenAPI (T3) comes later, with admin approval of each operation.
+2. **D-API-2.** The operation list is closed. `api_connections.md` replaces TOF-5c and does not wait for IN-3.
+3. **D-API-3.** The admin role and each group that the admin grants may use a connection. For books, the admin role only.
+4. **D-API-4.** Read-only first. Then each write asks a card, also in a member's own run. The gateway refuses writes until then.
+5. **D-API-5.** Zoho Books comes first, with no wait for IN-3, as D122.1 decided. `semantic_model.md` rung 4 and D-SEM-8 follow.
+6. **D-API-6.** The discovery call of "Add API" and the plugin store retire when T2 lands.
+7. **D-API-7.** An API's data reaches the chat's model vendor under the same notice as MCP and LNK-Q2.
+8. **D-API-8.** The flag is `API_CONNECTIONS_ORGS`. It goes to all orgs after the rung 1 demo.
+9. **D-API-9.** An API answer does not mark the chat as untrusted, the same as an MCP answer today. The open risk of `api_connections.md` §2.5 stays: text in an answer can try to steer another tool of the chat.
+
+Fence: none new, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D228 entries merge. **Re-check this number at merge.** On 2026-11-19, main held D227 at most.
+
+### D229 — Google Cloud resources take the name aroh, not Metorite (DECIDED, 2026-11-19)
+
+Ishaan Pilar runs the Google Cloud setup for the owner. He wrote in chat on 2026-11-19:
+
+```text
+"There is another company that wants to have this on their own system, and instead of Metorite, we're going to call it aroh. From now onwards, Metorite is replaced with aroh everywhere if we are setting up something with GCP."
+```
+
+1. Every Google Cloud resource takes the name `aroh`. This covers networks, firewall rules, VMs, disks and service accounts. It also covers snapshot policies, labels, host names and Tailscale names.
+2. Google never changes a project ID, so `metorite-513907` stays.
+3. The rule covers Google Cloud only. It renames no code, no repo and no product text.
+4. The agent rebuilt the first dev box under the rule on the same day. `docs/gcp_aroh.md` §1 holds the rule, and §3 and §4 hold the result.
+
+Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D229 entries merge. **Re-check this number at merge.**
+
+### D230 — The first Google Cloud machine is the dev box `aroh-dev-1`, sized from measured load (DECIDED, 2026-11-19)
+
+Vijay Varada and Ishaan Pilar wrote in chat on 2026-11-19:
+
+```text
+Vijay: "get the VPSs sorted out also in the meanwhile to run the dev swarm"
+Ishaan: "Dev box approved"
+```
+
+1. **The machine.** `n2d-standard-16` (16 vCPU, 64 GB) in `asia-south1-a`, with Ubuntu 24.04 LTS. It has a 300 GB balanced disk and daily snapshots for 7 days. Shielded VM and deletion protection are on.
+2. **The size comes from `docs/dev_capacity.md` §3.** One full local CI run, one browser suite, one preview stack and eight lanes need about 54 GB together. Eight vCPU slowed the unit shards to 36 minutes on the home server.
+3. **The network.** `aroh-vpc`, subnet `aroh-dev` at `10.40.0.0/20`. Inbound SSH comes from Google IAP only. A temporary rule for the office IP lives until Tailscale works.
+4. **The service account.** `sa-aroh-dev`, attached to the VM. It holds no role until the admin grants the log and metric writer roles. It never holds a key file, because the org policy blocks key files.
+5. **The box holds no customer data, no production keys and no release timer.** The home server keeps the release timer.
+6. **The list price is about USD 365 a month**, and a stopped VM pays for its disk only.
+
+`docs/gcp_aroh.md` §4 to §6 hold the details and the traps. `project-docs/HANDOFF.md` H-445 to H-449 hold the open work.
+
+Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D230 entries merge. **Re-check this number at merge.**
 
 ## 4. Single-owner registry (who owns duplicated work)
 

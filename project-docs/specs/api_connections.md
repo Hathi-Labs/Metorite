@@ -1,9 +1,14 @@
 # API connections: any outside API that a company connects, usable in the chat
 
-**Status: PROPOSED, 2026-11-18. Nothing is built.** Task 3562 (CHAT-REACH-5).
-Verified against the code on 2026-11-18 (`origin/main` at `7ec269e82`). The
-owner decides D-API-1 to D-API-9 (§8). The defaults hold until the owner
-answers.
+**Status: ACTIVE (owner in chat, 2026-11-19, D228). The owner accepted
+D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`). API-1
+is built (task 3787): the template grammar, the validator, the one builder and
+the Zoho Books template. No route, no table and no call exists yet. API-1
+declares the flag `API_CONNECTIONS_ORGS`, and it is empty.**
+
+Zoho Books is an owner priority and the first template. Verified
+against the code on 2026-11-18 (`origin/main` at `7ec269e82`). §8 records each
+answer.
 
 Review round 1 (metorite-f8 and metorite-7d, 2026-11-18) changed four
 things. One shared tool set, reads and writes split, the session mark
@@ -540,6 +545,10 @@ until the owner answers D-API-2, D-API-4 and D-API-9.
 
 ## 8. Owner decisions
 
+**Decided 2026-11-19, owner in chat (D228).** The owner accepted all nine
+recommendations. The table keeps each question and its recommendation. The
+list after it holds the answers.
+
 | Id | Question | Recommendation |
 |---|---|---|
 | **D-API-1** | Which APIs: first-party templates only, or also an API by its OpenAPI address (T2), or also an API with no OpenAPI (T3)? | T1 and T2. T3 later, with admin approval of each operation |
@@ -551,3 +560,15 @@ until the owner answers D-API-2, D-API-4 and D-API-9.
 | **D-API-7** | The data notice: an API's data reaches the chat's model vendor | The same notice as MCP and LNK-Q2 |
 | **D-API-8** | The flag | `API_CONNECTIONS_ORGS`, to all orgs after the rung 1 demo |
 | **D-API-9** | Does an API answer mark the chat as untrusted? A security trade-off (§2.5) | No, the same as an MCP answer today. Decide both kinds together. **Cost of a mark:** each later MCP or API read in that chat asks a card (task 3714). **Open risk with no mark:** text in an answer, such as an invoice note, can try to steer another tool of the chat. Rung 1 builds dark either way, and the flag flip waits for this answer |
+
+**The answers (2026-11-19, owner in chat, task 3562, answer `97b5d6ce`).**
+
+1. **D-API-1.** Accepted. T1 and T2 first. T3 later, with admin approval of each operation.
+2. **D-API-2.** Accepted. The operation list is closed. This spec replaces TOF-5c and does not wait for IN-3.
+3. **D-API-3.** Accepted. The admin role and each group that the admin grants. For books, the admin role only.
+4. **D-API-4.** Accepted. Read-only first. Then each write asks a card, also in a member's own run. The gateway refuses writes until then.
+5. **D-API-5.** Accepted. Zoho Books is first, with no wait for IN-3. It is an owner priority.
+6. **D-API-6.** Accepted. The discovery call of "Add API" and the plugin store retire when T2 lands.
+7. **D-API-7.** Accepted. The data notice is the same as for MCP and LNK-Q2.
+8. **D-API-8.** Accepted. The flag is `API_CONNECTIONS_ORGS`.
+9. **D-API-9.** Accepted. An API answer does not mark the chat as untrusted, the same as an MCP answer today. The open risk of §2.5 stays: text in an answer can try to steer another tool of the chat.
