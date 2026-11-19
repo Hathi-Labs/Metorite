@@ -682,7 +682,7 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 - A publish runs the catalog check again on the newest version. An action that the catalog no longer serves is 422.
 - **A new version of a published skill returns it to `draft`**, in the same transaction. So a published skill always runs a version that its owner published.
 - **Two moves at once.** A move reads the skill row `FOR UPDATE`. So a second move waits for the first one, reads the new state, and the table decides on that state. A move that the new state does not allow is 409.
-- No move changes the visibility. J2 adds the share, and until then a skill is private.
+- No move changes the visibility. The share of J2c (§14) changes it: the owner asks for one version, and a holder of `studio:publish` approves it. Other members then load that pinned version. Until an approval, a skill is private.
 
 **Format.** A skill exports as an Agent Skills folder (`SKILL.md`, its resources). So an outside agent such as Claude Code can load a company's skill over the MCP (F8). A `SKILL.md` can also be imported, and the importer keeps only actions that the catalog serves.
 
@@ -1285,6 +1285,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **J2b-4b** | open | STD | see row | [row](ai_studio_rows/J2b-4b.md) |
 | **J2b-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4.md) |
 | **J2b-5** | 🔨 BUILT, dark (2026-11-13, task 3103) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
+| **J2c** | 🔨 BUILT, dark (2026-11-18, task 3421) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2c.md) |
 | **J3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3.md) |
 | **J3a** | 🔨 BUILT, dark (2026-11-11, task 1201) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3a.md) |
 | **J3b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3b.md) |

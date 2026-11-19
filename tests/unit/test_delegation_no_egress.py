@@ -570,8 +570,11 @@ def _egress_in(body: dict[str, Any]) -> list[str]:
 
 def _blocked(result: str) -> bool:
     """A call that ran nothing: refused by the H-236 middleware, or not found
-    because the run does not hold the tool."""
-    return "off in this run" in result or "not found" in result
+    because the run does not hold the tool. HRD-1b (task 3230): a delegated
+    run answers a name that it does not hold with the HRD-1 text, which
+    starts "Not run". Its model never reads MAF's own "not found" text."""
+    return ("off in this run" in result or "not found" in result
+            or result.startswith("Not run"))
 
 
 def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # noqa: F811

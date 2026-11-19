@@ -44,6 +44,20 @@ The member never reads MAF's text either (task 3599). MAF puts the
 result, and the trail of the chat showed it. :func:`unknown_call_name` finds
 MAF's result in each of its three fields. ``orchestrator.event_translator``
 asks it, and shows :data:`MEMBER_LINE` on the step in its place.
+
+HRD-1b (task 3230): a batch run gets the same answer, with no flag. One hook
+of the executor, ``_unknown_tool_view``, puts the provider on the stream run
+and on each batch run (``_assemble_batch_agents``). So a WhatsApp run, a
+delegated agent, a worker and a self-anneal retry are in scope. A batch run
+has no loader, so it never loads. HRD-1c (task 3679): the stream run of each
+agent gets it, not only the orchestrator's. An agent that is not the
+orchestrator has no loader either, so its answer names only a tool of its
+own request. Fence: ``tests/unit/test_unknown_tool_non_orchestrator_stream.py``.
+A delegated run answers another model, and a run with no chat answers no
+member. Each of those runs is a *step* (``step=True``). Its answer names only
+a tool of the request, or it is :data:`NOT_IN_STEP`. A step never reads the
+record of the packs and never asks a loader, so its text names no pack and
+offers no load. Fence: ``tests/unit/test_unknown_tool_batch_paths.py``.
 """
 from __future__ import annotations
 
@@ -56,8 +70,8 @@ from acb_common import get_logger
 from agent_framework import ChatMiddleware, Content, ContextProvider, FunctionInvocationContext
 
 __all__ = [
-    "MEMBER_LINE", "UnknownToolAnswer", "UnknownToolProvider", "answer_for", "autoload_enabled",
-    "is_raw", "unknown_call_name",
+    "MEMBER_LINE", "NOT_IN_STEP", "UnknownToolAnswer", "UnknownToolProvider", "answer_for",
+    "autoload_enabled", "is_raw", "unknown_call_name",
 ]
 
 _log = get_logger("acb_skills.unknown_tool")
@@ -103,10 +117,13 @@ NOT_HERE = (
     "Not run: no tool is named {name} in this chat. Use only the tools that you "
     "hold, or tell the member which part you cannot do."
 )
+#: HRD-1b: the answer of a step (a delegated run, or a run with no chat) when
+#: no tool of the request is close. It names no pack and offers no load.
+NOT_IN_STEP = "Not run: {name} is not available in this step. Use only the tools that you hold."
 #: Every answer text, for the fence.
 TEXTS = (
     SUGGEST_LOAD, SUGGEST_LOAD_NEAR, LOADED_NOW, LOADED_NOW_NEAR, LOAD_FAILED,
-    LIVE_NOW, SUGGEST_LIVE, NEEDS_PACK, NOT_HERE,
+    LIVE_NOW, SUGGEST_LIVE, NEEDS_PACK, NOT_HERE, NOT_IN_STEP,
 )
 #: What the member reads on the step of the trail in place of MAF's text
 #: (task 3599). It names no tool, no pack and no framework. The model never
@@ -189,6 +206,7 @@ def _owners(offered: Iterable[str]) -> dict[str, str]:
 def answer_for(
     name: str, *, live: Iterable[str], offered: Iterable[str], held: Iterable[str] = (),
     gone: Iterable[str] = (), loaded: str = "", tried: str = "", load_answer: str = "",
+    step: bool = False,
 ) -> str:
     """The answer to a call of the unknown tool *name*. Pure: no I/O.
 
@@ -198,9 +216,20 @@ def answer_for(
     turn has just loaded for this call, and *tried* a pack whose load
     refused. *load_answer* is the loader's own text, which goes after the
     first line: the rules of the pack, or the refusal with its next step.
+
+    HRD-1b: *step* is True for a delegated run or a run with no chat. It
+    reads *live* only, so the answer names a tool of the request or none.
     """
     shown = _clean(name)
     live_names = set(live)
+    if step:
+        # A step reads no pack: no pack name and no load, whatever the caller passed.
+        if name in live_names:
+            return LIVE_NOW.format(name=shown)
+        near = _closest(name, live_names)
+        if near:
+            return SUGGEST_LIVE.format(name=shown, near=_clean(near))
+        return NOT_IN_STEP.format(name=shown)
     tail = f"\n\n{load_answer.strip()}" if load_answer.strip() else ""
     if loaded:
         tools = _pack_tools(loaded)
@@ -279,10 +308,14 @@ class UnknownToolAnswer(ChatMiddleware):
     ``before_run``). It keeps the keys of the raw results of the first
     request, which came from the history of the chat, and the tool list of
     the request before, which tells it whether a request holds the run's
-    live list."""
+    live list.
 
-    def __init__(self, loader: Any = None) -> None:
-        self._loader = loader
+    HRD-1b: with *step*, it keeps no loader, reads no record of the packs
+    and answers with ``answer_for(step=True)``."""
+
+    def __init__(self, loader: Any = None, *, step: bool = False) -> None:
+        self._step = step
+        self._loader = None if step else loader
         #: The raw results that the first request held. The key is the call
         #: id, so a copy of a result keeps it. The list keeps each object
         #: alive, so the id of an object with no call id is not used twice.
@@ -318,6 +351,13 @@ class UnknownToolAnswer(ChatMiddleware):
             self._history = [content for content, _name in hits]
             self._history_keys = frozenset(_result_key(c) for c in self._history)
         if not hits:
+            return
+        if self._step:
+            # HRD-1b: a step reads only the tools of the request.
+            live = _live_names(options.get("tools") if isinstance(options, Mapping) else None)
+            for content, name in hits:
+                _set_text(content, answer_for(name, live=live, offered=(), step=True))
+                _log.info("unknown_tool.answered", tool=_clean(name), step=True)
             return
         from acb_skills import tool_packs as tp
 
@@ -400,16 +440,23 @@ def _without_load_line(answer: str) -> str:
 
 
 class UnknownToolProvider(ContextProvider):
-    """Adds :class:`UnknownToolAnswer` to ONE run of a native MAF agent."""
+    """Adds :class:`UnknownToolAnswer` to ONE run of a native MAF agent.
+
+    HRD-1b: *step* is True for a delegated run or a run with no chat. Then
+    it looks for no loader on the agent, so the answer never loads a pack."""
 
     SOURCE_ID = "unknown_tool_answer"
 
-    def __init__(self) -> None:
+    def __init__(self, *, step: bool = False) -> None:
         super().__init__(self.SOURCE_ID)
+        self.step = step
 
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
     ) -> None:
+        if self.step:
+            context.extend_middleware(self.SOURCE_ID, [UnknownToolAnswer(step=True)])
+            return
         from acb_skills.tool_packs import LoadSkillToolsProvider
 
         loader = None
