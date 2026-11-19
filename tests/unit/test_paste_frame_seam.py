@@ -737,14 +737,27 @@ def test_no_frame_code_reads_member_sent():
         (ROOT / "packages/acb_skills/acb_skills/paste_frame.py").read_text(encoding="utf-8"),
         inspect.getsource(_paste_raw_parts),
     ]
+    banned = {"MEMBER_SENT", "sent_words", "typed_words"}
     for source in sources:
-        names = {getattr(n, "id", None) or getattr(n, "attr", None)
-                 for n in ast.walk(ast.parse(source))
-                 if isinstance(n, (ast.Name, ast.Attribute, ast.alias))}
-        names |= {n.name for n in ast.walk(ast.parse(source)) if isinstance(n, ast.alias)}
-        assert not names & {"MEMBER_SENT", "sent_words", "typed_words"}, names & {
-            "MEMBER_SENT", "sent_words", "typed_words"}
-
+        tree = ast.parse(source)
+        reads: set[str] = set()
+        for n in ast.walk(tree):
+            # ``MEMBER_SENT`` read as a name or an attribute, or imported.
+            if isinstance(n, ast.Name) and n.id == "MEMBER_SENT":
+                reads.add(n.id)
+            elif isinstance(n, ast.Attribute) and n.attr == "MEMBER_SENT":
+                reads.add(n.attr)
+            elif isinstance(n, ast.alias) and n.name.split(".")[-1] in banned:
+                reads.add(n.name)
+            # ``sent_words()`` or ``typed_words()`` CALLED. A parameter that is
+            # named ``sent_words`` is the RAW sent text that the route hands in,
+            # and it is not a call, so it does not count.
+            elif isinstance(n, ast.Call):
+                f = n.func
+                called = getattr(f, "id", None) or getattr(f, "attr", None)
+                if called in {"sent_words", "typed_words"}:
+                    reads.add(called)
+        assert not reads, reads
 
 #: Done-when (18): a late approve with a card question of this many lines or
 #: more already reaches 8 lines, so it becomes a block and the model asks
