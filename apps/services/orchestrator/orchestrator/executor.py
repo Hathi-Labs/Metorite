@@ -10875,10 +10875,19 @@ def _note_paste_shape(
     (``paste_frame.record_shape``), which the paste middleware reads for THIS
     run id only. The line writes with ``CHAT_PASTE_FRAME_ORGS`` off too, so
     the owner reads the coverage before the flip: the shape, ``bound`` (False
-    is a door that binds nothing), the room, and a delegated run. A run that
-    composes twice (a Tier 1 fall back) writes one line. Never raises."""
+    is a door that binds nothing), the room, a delegated run and the door. A
+    run that composes twice (a Tier 1 fall back) writes one line. Never
+    raises.
+
+    The batch door (``record=False``, ``_run_with_maf_agent``) never gets the
+    middleware, so its line says ``bound=False`` and ``door="batch"``, also
+    when it inherits the raw parts of a parent run. A *delegated* of None
+    reads the run binding: a sub-run (``sub_run``) is delegated. So a
+    delegated run never counts as covered. A self-anneal retry of a batch run
+    writes a second line."""
     try:
         from acb_skills import paste_frame
+        from acb_skills.write_artifact import artifact_context
 
         if isinstance(run_input, str):
             shape = "string"
@@ -10889,12 +10898,15 @@ def _note_paste_shape(
         first = paste_frame.record_shape(run_id, shape) if record else True
         if not first:
             return
+        if delegated is None:
+            delegated = artifact_context().get("sub_run") is True
         room = "solo" if solo_room is True else "shared" if solo_room is False else "unknown"
         _log.info(
             "paste_frame.shape", agent=agent_name, run_id=run_id,
             thread_id=str(thread_id or "")[:40], shape=shape,
-            bound=paste_frame.raw_parts() is not None, room=room,
-            delegated=delegated, flag=paste_frame.paste_frame_on(_current_run_org()),
+            bound=record and not delegated and paste_frame.raw_parts() is not None,
+            room=room, delegated=delegated, door="stream" if record else "batch",
+            flag=paste_frame.paste_frame_on(_current_run_org()),
         )
     except Exception as exc:  # a log line never fails a run
         with contextlib.suppress(Exception):

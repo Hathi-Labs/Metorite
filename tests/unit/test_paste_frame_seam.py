@@ -515,6 +515,31 @@ def test_a_run_with_no_binding_frames_nothing(monkeypatch):
     assert pf.shape_of("r-log") == "string", "the second compose records its own shape"
 
 
+def test_a_batch_line_never_counts_as_covered(monkeypatch):
+    """Fix round 1 (a): a delegated batch run inherits the raw parts of its
+    parent, but it gets no middleware. Its line says ``door="batch"``,
+    ``delegated=True`` and ``bound=False``, so the coverage of the owner is
+    not inflated. Mutation: ``bound`` from ``RAW_PARTS`` alone -> red."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    logs: list[dict[str, Any]] = []
+
+    class _Spy:
+        def info(self, event: str, **kw: Any) -> None:
+            logs.append({"event": event, **kw})
+
+        warning = info
+
+    monkeypatch.setattr(executor, "_log", _Spy())
+    with artifact_context_scope(), pf.bind_raw_parts((PART,)):
+        bind_artifact_context(run_id="r-batch", sub_run=True)
+        executor._note_paste_shape([Message("user", [PART])], None, agent_name="crm",
+                                   run_id="r-batch", thread_id=THREAD, solo_room=None,
+                                   delegated=None, record=False)
+    line = next(e for e in logs if e["event"] == "paste_frame.shape")
+    assert line["door"] == "batch" and line["delegated"] is True and line["bound"] is False
+
+
 def test_a_delegated_run_gets_no_middleware(monkeypatch):
     """Done-when (12): only the top-level stream call passes ``paste_frame``,
     and it passes ``not _delegated_run``. The default is False."""
