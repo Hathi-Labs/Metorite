@@ -158,6 +158,9 @@ from gateway.routes.crm.field_sql import (
     day_sql,
     field_hint,
     field_pairs,
+    find_near,
+    find_where,
+    find_words,
     from_source,
     group_sql,
     lookup_ids,
@@ -181,7 +184,7 @@ from gateway.routes.crm.field_sql import (
     used_keys,
     zoned,
 )
-from gateway.routes.crm.flags import long_read_allowed
+from gateway.routes.crm.flags import long_read_allowed, module_find_allowed
 from gateway.routes.crm.modules import _require_module, mirrored_modules
 from gateway.routes.crm.overlay import (
     SLOT_OF,
@@ -492,6 +495,13 @@ class AggregateResponse(BaseModel):
     #: ``sentence``. Absent with none.
     findings: list[dict[str, Any]] = Field(
         default_factory=list, exclude_if=lambda value: not value)
+    #: CRM-Q34-7: no record holds each word of ``q``, so the total counts
+    #: the records that hold one of these stored names, near spellings of a
+    #: word. Absent when the exact words matched.
+    near: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-7: ``q`` counted no record. At most 3 stored names nearest to
+    #: ``q``, for the next call. Absent otherwise.
+    nearest: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StageDwell(BaseModel):
@@ -810,6 +820,10 @@ class _Read:
     #: ``(day, value, records)`` rows from the same statement.
     day: FieldRef | None = None
     days: list[tuple[Any, Any, int]] = dc_field(default_factory=list)
+    #: CRM-Q34-7: the stored names that the near pass of ``q`` counted, and
+    #: the nearest stored names of a ``q`` that counted no record.
+    near: list[str] | None = None
+    nearest: list[str] | None = None
     #: CRM-Q34-11: each text field that the read took as a number, with its
     #: counts (``field_sql.admit_text_numbers``).
     text_numbers: dict[str, TextNumbers] = dc_field(default_factory=dict)
@@ -914,8 +928,11 @@ async def _read(
         _require_module(await mirrored_modules(db), module)
         scope = await module_scope(db, module)
         # CRM-Q34-2: `q` on a module is a 422 that names the fields to use.
-        if params.q is not None:
+        # CRM-Q34-7: an org on CRM_MODULE_FIND_ORGS finds `q` across the module.
+        finding = module_find_allowed(current_tenant())
+        if params.q is not None and not finding:
             raise q_refusal(scope)
+        words = find_words(params.q if finding else None)
         # CRM-Q34-2: `group_by=status` reads `@status`, or names the selects.
         if status_group:
             status_field(scope)
@@ -936,9 +953,12 @@ async def _read(
         source = where.source
         matched = {pairs[i][0]: list(found) for i, found in matches.items()}
         await _seed_aliases(db, module, pairs, matches)
+        # CRM-Q34-7: the near pass reads under the filters of the call, with no q.
+        plain = (where_sql, dict(bound))
+        where_sql, source = _with_words(scope, words, where_sql, bound, source)
     else:
         assert found is not None
-        matched = {}
+        matched, words, plain = {}, [], ("", {})
         if group_by == "created_month" and await is_mirror_mode(db, current_tenant()):
             # The created date of a mirrored row is the import time (Q8).
             raise HTTPException(status_code=422, detail={
@@ -1032,6 +1052,11 @@ async def _read(
                                  deadline=deadline)
     else:
         values = await fetch(where_sql, bound)
+    near: list[str] | None = None
+    nearest: list[str] | None = None
+    if words and scope is not None and not sum(acc.rows for acc in values.values()):
+        values, near, nearest = await _near_pass(db, scope, words, plain, bound, fetch,
+                                                  values)
     labels = await _labels(db, found, group_by) if found and group_by else {}
     order = (
         await _status_order(db, found) if found and group_by == "status" else {}
@@ -1043,7 +1068,38 @@ async def _read(
     )
     return _Read(values, labels, order, measured, grouped, zone, keys, matched=matched,
                  currency=currency, codes=codes, split=split, day=day, days=days,
-                 text_numbers=text_numbers)
+                 near=near, nearest=nearest, text_numbers=text_numbers)
+
+
+def _with_words(scope: FieldScope, words: list[str], where_sql: str,
+                bound: dict[str, Any], source: str) -> tuple[str, str]:
+    """CRM-Q34-7: *where_sql* AND the predicate of ``q`` across the module
+    (``field_sql.find_where``), with its keys in *bound*, and the FROM text.
+    With no word, both stay as they are."""
+    if not words:
+        return where_sql, source
+    found = find_where(scope, words)
+    bound.update(found.params)
+    return f"{where_sql} AND {found.sql}", from_source(source, found.source)
+
+
+async def _near_pass(
+    db: Any, scope: FieldScope, words: list[str], plain: tuple[str, dict[str, Any]],
+    bound: dict[str, Any], fetch: Any, exact: dict[str | None, _Acc],
+) -> tuple[dict[str | None, _Acc], list[str] | None, list[str] | None]:
+    """CRM-Q34-7: no row holds each word of ``q``, so the near pass of
+    ``name_match`` (``field_sql.find_near``) reads under *plain*, the filters
+    with no ``q``. With near names, ONE more read of the same statement
+    counts their rows. The groups, the near names counted, and the nearest
+    names when still no row matches. *exact* is the answer of the exact
+    pass, which counted no row."""
+    hit = await find_near(db, scope, words, *plain)
+    if hit.near:
+        again = find_where(scope, words, hit.near)
+        values = await fetch(f"{plain[0]} AND {again.sql}", {**bound, **again.params})
+        if sum(acc.rows for acc in values.values()):
+            return values, hit.names(), None
+    return exact, None, list(hit.nearest)
 
 
 async def _seed_aliases(db: Any, module: str, pairs: list[tuple[str, str]],
@@ -1406,6 +1462,8 @@ async def _compute(
         ),
         overlay=read.overlay,
         matched=read.matched or None,
+        near=read.near,
+        nearest=read.nearest,
         split=_split_totals(read, measure, total, values, empty, [acc for _g, acc in rest]),
         text_numbers={key: found.wire() for key, found in read.text_numbers.items()} or None,
         findings=_findings(

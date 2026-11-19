@@ -3848,8 +3848,11 @@ async def _late_answer_from_row(
             pending_ask.move_ask, org, req.request_id,
             to="answered", from_states=pending_ask.WAITING, answer=req.answer,
         )
-    except Exception:  # noqa: BLE001
-        _log.warning("agent.pending_ask_answer_failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        # Never ``exc_info``: a database fault can echo the statement parameters, and
+        # one of them is the member's answer (a card edit or typed text). Class and id only.
+        _log.warning("agent.pending_ask_answer_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         return None, True
     if moved is None:
         return None, True
@@ -4076,8 +4079,10 @@ async def _resume_from_row(
                 pending_ask.claim_stored_call, org, req.request_id,
                 member=me, thread_id=req.thread_id, answer=req.answer,
             )
-    except Exception:
-        _log.warning("agent.resume_claim_failed", exc_info=True)
+    except Exception as exc:
+        # Class and id only: the claim carries the member's answer as a parameter.
+        _log.warning("agent.resume_claim_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         claimed = None
     if claimed is None:
         await release_member_slot(organization_id=org, thread_id=req.thread_id)
@@ -4161,8 +4166,10 @@ async def _give_back_claim(
             pending_ask.restore_stored_call, org, req.request_id,
             member=me, thread_id=req.thread_id or "", stored=claimed,
         )
-    except BaseException:  # never mask the refusal of the route
-        _log.warning("agent.resume_claim_restore_failed", exc_info=True)
+    except BaseException as exc:  # never mask the refusal of the route
+        # Class and id only: the stored call holds the answer and the call arguments.
+        _log.warning("agent.resume_claim_restore_failed", error=type(exc).__name__,
+                     request_id=req.request_id[:12])
         return
     _log.info("agent.resume_claim_restored", request_id=req.request_id[:12], restored=back)
 

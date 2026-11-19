@@ -202,6 +202,17 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`CRM_MODULE_FIND_ORGS` turns on `q` across a module of the CRM
+(`crm_platform.md` §18.17, CRM-Q34-7). For each listed org, `q` works on a
+module list and on a module total. It finds each word in the record name, a
+lookup name or a text value, and it marks a near spelling. `*` lists every org, and the
+default is empty. Empty keeps the 422 of `q` on a module total, and the list
+matches the record name only, byte for byte.
+
+Its one reader is `gateway.routes.crm.flags.module_find_allowed`, and each
+module read asks it. A reload applies a change. A name in the list spends
+nothing, so the flip is `enforcement-flip`.
+
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
 the default is `off`. The flag is global, but the check acts only for an org
