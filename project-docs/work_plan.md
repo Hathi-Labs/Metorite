@@ -6739,6 +6739,11 @@ and one thing that cannot be written until a second person exists.
 > is an open owner question (`specs/crm_platform.md` §18.11.2, CRM-Q27). No
 > plan-guard rule names this flag either.
 >
+> **WS-53 — the CRM module search.** *(Registered 2026-11-17 with CRM-Q34-7,
+> task 3700.)* To build CRM-Q34-7 is AGENT-SAFE, and it ships dark. A name in
+> `CRM_MODULE_FIND_ORGS` spends nothing, so it is the grant
+> `enforcement-flip`. The flag reloads with no restart (`docs/flag_reload.md`).
+>
 > **WS-53 — the CRM weekly digest.** *(Registered 2026-10-17 with CRM-Q28.)* To
 > build CRM-Q28 is AGENT-SAFE, and it ships dark. A name in `CRM_DIGEST_ORGS`
 > is an owner flip, because each digest spends the org's credits on
