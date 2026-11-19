@@ -2086,7 +2086,8 @@ the same reply. It needs no migration and no new flag.
   window in which a late joiner can read part one in the stream is wider. The
   gap was there before RESUME-2b. Do not flip `CHAT_RESUME_ORGS` before a
   slice makes the reconnect replay obey the waterline and the label. The
-  slice RESUME-2d (§4.12.7) owns it.
+  slice RESUME-2d (§4.12.7) owns it. The rule is decided: a reader gets the
+  whole run or none of it (D-RES-10, 2026-11-19).
 - **Known P3 gap: a Stop in the start window (verifier of 2026-11-18, F2).**
   A Stop (`stream_relay.cancel_run`) can come after `parked_end_of` and
   before the XDEL of `start_detached`. With no live run, it pushes a
@@ -2439,7 +2440,7 @@ Each slice is one PR. A foundation rides with the first rung that needs it
 | RESUME-2a (task 3261) | 1 | A late Approve of a plain card claims its row once and runs the stored call once, in a NEW reply (case B): the claim, the 200 `resumed`, the stored-call yes, the prologue and the note path. **BUILT** 2026-11-16, dark. The follow-ups P2-1 to P2-3 (task 3467) are built: an atomic drop of the offer, the mark under either flag, and a claim of three answers | The sequence of 2026-11-14 on a real Postgres and a private Redis gives one card, one write, no 409 and no member turn. A changed record writes nothing and shows the new card. Another member, thread or org runs nothing. A second answer runs nothing. Flag off, the bytes are as before | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py`, `tests/unit/test_late_approve_grant.py`, `tests/unit/test_late_approve_grant_r8.py` | HIGH (consent, the run loop). AGENT-SAFE to build. The flag flip is OWNER-GATE (`enforcement-flip`) | RESUME-1 |
 | RESUME-2b (task 3460) | 1 | Case A: the same reply. The same run id, no stream reset, the XDEL of the parked `RUN_FINISHED`, the fold into the same row, and D-RES-7. **BUILT** 2026-11-17, branch `stu-resume2b`, dark | A thread whose last turn is the parked turn goes on in the same reply | `tests/unit/test_resume_continuation.py`, `tests/unit/test_resume_continuation_r8.py` | HIGH (the run loop) | RESUME-2a |
 | RESUME-2c (task 3461) | 1 | Case C: a live run on the thread. The stored call runs at once, and its result goes into the live run as a steer note | An Approve during a live run acts once, and the live reply knows it | `tests/unit/test_resume_continuation.py` | HIGH (consent, the run loop) | RESUME-2a |
-| RESUME-2d (task 3724) | 1 | The reconnect replay obeys the waterline and the label. `GET /agent/run/{thread_id}/reconnect` replays only the entries after the reader's history waterline (`join_message_ts`, `join_stream_id`). It leaves out a run whose label (`authority`) the reader does not clear, as `_get_messages` does for a row. It closes the gap of round 2, P2-c, which D-RES-7 makes 24 h wide | A late joiner reads no part of a parked or live run from before the join through the reconnect. A reader who lacks a cap of the run's label reads none of its events. A solo chat replays as before, byte for byte | `tests/unit/test_reconnect_waterline_r8.py` (R8, to be written) | HIGH (who reads what: the waterline and the clearance of a room) | RESUME-2b |
+| RESUME-2d (task 3724) | 1 | The reconnect replay gives a reader the WHOLE run or none of it (D-RES-10, option B, owner 2026-11-19). `GET /agent/run/{thread_id}/reconnect` replays the run only when the chat is solo for the reader, or the reader matches a participant row (`join_message_ts`) whose join time is at or before the start of the run, with a margin of 2 s. Any other reader gets no event of the run, and then the normal end. One rule covers a live, a parked and an ended run. It closes the gap of round 2, P2-c, which D-RES-7 makes 24 h wide. It needs no migration, no new state and no flag | A late joiner reads no event of a run that started before the join, through the reconnect. A passer-by of an org-visible room reads none either. A solo chat replays as before, byte for byte. The saved reply stays readable by the saved-message view | `tests/unit/test_reconnect_waterline_r8.py` (R8, to be written) | HIGH (who reads what: the waterline of a room). No flag: the fix leaves solo bytes unchanged | RESUME-2b |
 | RESUME-3a (task 3262) | 1 | The chat takes the resume of case B: no envelope, no notice, the BFF keeps `parked`, the `resumed` run event (C1), the replay target (C2), the 429 reason, the stale card, the Approve of another device, and the words of §4.12.4 item 5 that need no server code. **BUILT** 2026-11-16 | A parked card approved after a reload turns to "Approved", and ONE new reply goes on at the end. No "restarted" shows, before or after a reload. A park shows no "Done". Visual review of the card and the row | `src/lib/chatResume.test.ts`, `e2e/chat-card-restart.spec.ts` | HIGH (the attach loop) | RESUME-2a |
 | RESUME-3b (task 3475) | 1 | The chat side of case A: the same bubble, and a replay that reads on after a parked `RUN_FINISHED` keeps the reply open | An Approve of a parked turn that is the last turn goes on in the same reply | `src/lib/chatResume.test.ts` | HIGH (the attach loop) | RESUME-2b, RESUME-3a |
 | RESUME-3c (task 3476) | 1 | The words of §4.12.4 item 5 that need a server code: the changed record, the expired card, and another tab or device first | Each moment shows its words from the server's code | `src/lib/chatResume.test.ts` | STANDARD | RESUME-3a, and the server codes |
@@ -2499,6 +2500,25 @@ chose option 1: "Start a continuation: the model says nothing was done." A
 late decline of a parked card starts a short continuation. The other option
 was to record the answer only. RESUME-4a-2 builds the decision (§4.12.4,
 "What RESUME-4a-2 built").
+
+**D-RES-10, DECIDED 2026-11-19 (task 3724, answer `a078f5dc`).** The owner
+chose option B, with no flag. A reader gets the whole run or none of it.
+
+A reader gets the run in two cases. The first case is a solo chat. The second
+case is a match with a participant row. Its join time is at or before the
+start of the run (a margin of 2 s). Any other reader gets no event of the run, and then the normal end.
+
+One rule covers a live, a parked and an ended run. It needs no migration and
+no new state, because the run has no label to read today.
+
+The rule is stricter than the saved-message view. A late joiner of a
+full-history room loses the live view of that one run. So does a passer-by of
+an org-visible room. That reader still reads the saved reply.
+
+The other options were two. Option B behind a dark flag
+`CHAT_REPLAY_GUARD_ORGS` was the first. Option A was the second. It keeps
+parity with the saved-message view, and it needs new state for the label of a
+live run. RESUME-2d builds the decision (§4.12.7).
 
 #### 4.12.9 Anchors, and where the evidence and the code differ
 
