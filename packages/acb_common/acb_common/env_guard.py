@@ -521,6 +521,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",
+    # AO-2: PROVIDER_ALERT_ORGS names the org whose admins hear our AI vendor
+    # alerts. A tenant that set it could send them to its own admins.
+    "PROVIDER_ALERT_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
     # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
@@ -533,7 +536,7 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # an org, so a tenant that set it could open it for every org.
     "PACKAGE_HOST_",
     # Agent runtime, sandbox and models.
-    "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
+    "MUTATION_", "SANDBOX_", "COMPUTE_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
     "AWS_", "AZURE_", "VERTEX_",
     # Speech, meetings and media providers of the deployment.

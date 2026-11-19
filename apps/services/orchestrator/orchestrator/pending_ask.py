@@ -57,6 +57,7 @@ tool's context. :func:`note_event` takes the entry, and :func:`insert_ask`
 writes it in the column ``stored_call`` (migration 448). ``_COLUMNS`` leaves
 the column out, so no browser read returns it. :func:`read_stored_call` is the
 one reader, and :func:`claim_stored_call` the one claim (RESUME-2a).
+:func:`claim_declined_call` is the claim of a late decline (RESUME-4a-2).
 :func:`restore_stored_call` gives a claim back when its run never started. A move to
 ``answered`` or ``closed`` sets it to NULL, and a park keeps it. Dark behind
 ``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
@@ -499,7 +500,7 @@ def read_stored_call(organization_id: str, request_id: str) -> dict[str, Any] | 
 #: RETURNING, so the CTE is the one way to read the old value in the move.
 #: The org predicate stands beside RLS (R5). A row of another member, another
 #: thread, a row that expired, and a row with no stored call never move.
-_CLAIM_SQL = (
+_CLAIM_OLD = (
     "WITH old AS ("
     "  SELECT organization_id, request_id, stored_call FROM chat_pending_ask "
     "  WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
@@ -508,8 +509,25 @@ _CLAIM_SQL = (
     "    AND stored_call IS NOT NULL "
     "  FOR UPDATE"
     ") "
+)
+_CLAIM_SQL = _CLAIM_OLD + (
     "UPDATE chat_pending_ask AS p SET state = 'answered', answered_at = now(), "
     "  answer = :answer, stored_call = NULL "
+    "FROM old "
+    "WHERE p.organization_id = old.organization_id "
+    "  AND p.request_id = old.request_id "
+    "RETURNING old.stored_call"
+)
+
+#: RESUME-4a-2 (task 3478, D-RES-9): the claim of a late decline, in ONE
+#: statement. The same CTE as :data:`_CLAIM_SQL` locks the row and keeps its
+#: stored call, under the same predicates. The UPDATE moves the row to
+#: ``closed`` (a decline is no answer, as ``move_ask(to="closed")``), sets
+#: the column to NULL, and gives back the old stored call. No tool runs it:
+#: the continuation only tells the model that nothing was done.
+_CLAIM_DECLINED_SQL = _CLAIM_OLD + (
+    "UPDATE chat_pending_ask AS p SET state = 'closed', "
+    "  answered_at = COALESCE(p.answered_at, now()), stored_call = NULL "
     "FROM old "
     "WHERE p.organization_id = old.organization_id "
     "  AND p.request_id = old.request_id "
@@ -552,6 +570,36 @@ def claim_stored_call(
     timeout give None: no claim. It adds no state: ``answered`` is one of the
     four states of ``chat_pending_ask_state_known``.
     """
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_SQL, extra={"answer": (answer or "")[:_ANSWER_CHARS]})
+
+
+def claim_declined_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+) -> dict[str, Any] | None:
+    """Claim the stored call of one waiting row for a late DECLINE, ONCE.
+
+    RESUME-4a-2 (task 3478, D-RES-9). ``gateway.routes.agent._resume_from_row``
+    is the one caller. One statement (:data:`_CLAIM_DECLINED_SQL`) moves the
+    row from ``parked`` or ``open`` to ``closed`` and gives back the stored
+    call that it held. Nothing runs the call: the continuation only tells
+    the model that nothing was done. The predicates are those of
+    :func:`claim_stored_call`, and so are the "no claim" codes. It adds no
+    state: ``closed`` is one of the four states."""
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_DECLINED_SQL, extra={})
+
+
+def _claim(
+    organization_id: str, request_id: str, *, member: str, thread_id: str,
+    sql: str, extra: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Run ONE claim statement (:data:`_CLAIM_SQL` or
+    :data:`_CLAIM_DECLINED_SQL`), and give back the old stored call."""
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
     from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
@@ -564,11 +612,11 @@ def claim_stored_call(
         with tenant_session(organization_id) as s:
             s.execute(text(f"SET LOCAL lock_timeout = '{_CLAIM_LOCK_TIMEOUT}'"))
             r = s.execute(
-                text(_CLAIM_SQL),
+                text(sql),
                 {
                     "org": organization_id, "rid": request_id,
                     "waiting": list(WAITING), "member": who, "tid": thread_id,
-                    "answer": (answer or "")[:_ANSWER_CHARS],
+                    **extra,
                 },
             ).first()
     except DBAPIError as exc:
@@ -591,7 +639,9 @@ def claim_stored_call(
 #: stored call that the claim took. The WHERE is the claim's own: the org
 #: beside RLS, the request id, the member, the thread, a row that has not
 #: expired, and a column that the claim set to NULL. No run waits on the card
-#: (the thread was at rest), so ``parked`` is its true state.
+#: (the thread was at rest), so ``parked`` is its true state. A declined
+#: claim (:func:`claim_declined_call`) is never given back: its ``closed``
+#: row never matches (review of RESUME-4a-2, P2-1).
 _RESTORE_SQL = (
     "UPDATE chat_pending_ask SET state = 'parked', answer = NULL, "
     "  answered_at = NULL, parked_at = COALESCE(parked_at, now()), "
@@ -961,8 +1011,10 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
-    except Exception:
-        _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+    except Exception as exc:
+        # Class and id only (task 3538): the answer is a statement parameter.
+        _log.warning("pending_ask.settle_failed", request_id=request_id[:12],
+                     error=type(exc).__name__)
         return
     if row:
         # The question no longer waits, so it leaves My Day at once.
