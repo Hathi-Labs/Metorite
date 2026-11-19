@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import dataclasses
 import functools
 import os
@@ -2023,6 +2024,36 @@ def _image_withheld() -> frozenset[str]:
     return frozenset({"analyze_image"})
 
 
+#: SBX-19 fix round. Whether ``compute_run`` fits in the request of THIS turn.
+#: The tool has the LOWEST priority for a place: the pack step
+#: (:func:`_apply_tool_packs`) sets it after it counts the base and the packs,
+#: and it does not count the tool itself. A turn with two big packs then
+#: keeps both packs and drops the tool, and never the reverse. The base was at
+#: the 110-tool cap (``tool_packs.MAX_REQUEST_TOOLS``), so a place in the
+#: always-on base would push a mixed turn over it. Default True: with packs
+#: off no cap logic runs. Fence: ``tests/unit/test_compute_run.py``.
+_COMPUTE_ROOM: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "compute_room", default=True)
+
+
+def _compute_withheld() -> frozenset[str]:
+    """``compute_run`` when the compute target is off for the run's org (SBX-19).
+
+    The org is the run's own (:func:`_run_org_or_none`), never request input.
+    The answer is per org and not per thread, so the tool list holds from turn
+    to turn. The tool checks the flag again on each call, so a flip between
+    the list and the call refuses the late call. Fence:
+    ``tests/unit/test_compute_run.py``.
+    """
+    try:
+        from acb_skills.compute_run import compute_enabled_for
+    except ImportError:
+        return frozenset({"compute_run"})
+    if compute_enabled_for(_run_org_or_none()) and _COMPUTE_ROOM.get():
+        return frozenset()
+    return frozenset({"compute_run"})
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -2251,6 +2282,15 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     try:
         from acb_skills.documents import make_document
         _all_tools = [*_all_tools, make_document]
+    except ImportError:
+        pass
+
+    # SBX-19: Python over the tool results of this chat, in the sealed `compute`
+    # target. It is no finder and no shell tool (D85, D225). It is dark per org:
+    # `_compute_withheld` takes it out of the scope and the final list.
+    try:
+        from acb_skills.compute_run import compute_run
+        _all_tools = [*_all_tools, compute_run]
     except ImportError:
         pass
 
@@ -2571,7 +2611,7 @@ def _inject_agent_tools(
     # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
     # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
     # so no prompt names them for another org.
-    _facts_off = _facts_withheld() | _image_withheld()
+    _facts_off = _facts_withheld() | _image_withheld() | _compute_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
         withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
@@ -2991,6 +3031,9 @@ def _inject_agent_tools(
     # CTX-1: a large tool result as a preview and a handle. It goes FIRST, so
     # its middleware is the outermost and the number check below still reads
     # the full result.
+    # SBX-19: it goes BEFORE the spill, so it wraps the spill and reads the
+    # preview. It keeps a result for `compute_run` and never a second copy.
+    _apply_keep_for_compute(agents, agent_name)
     _apply_tool_result_spill(agents, agent_name)
     # H-236: the agent's OWN egress tools and MCP servers leave as well, and
     # a native MAF agent gets the call-time refusal, as a per-run view.
@@ -3280,6 +3323,39 @@ def _apply_answer_check(agents: list[Any], agent_name: str | None) -> None:
         agents[i] = agent_with_providers(agent, [AnswerCheckProvider(numbers, claim_mode=claims)])
         extra = {"claim_mode": claims} if claims != "off" else {}
         _log.info("executor.answer_check_on", agent=agent_name, mode=numbers, **extra)
+
+
+def _apply_keep_for_compute(agents: list[Any], agent_name: str | None) -> None:
+    """The ``compute_run`` input marker on ONE run (SBX-19).
+
+    It replaces each native MAF ``Agent`` that holds ``compute_run`` with a
+    per-run view that carries ``KeepForComputeProvider``, as
+    :func:`_apply_tool_result_spill` does. Nothing is attached for an org with
+    the compute target off, and a run with no org attaches nothing. Call it
+    BEFORE the spill step, so its middleware wraps the spill's.
+    """
+    org = _run_org_or_none()
+    if not org:
+        return
+    try:
+        from acb_skills.compute_run import compute_enabled_for
+        from acb_skills.tool_result_spill import KeepForComputeProvider
+        from agent_framework import Agent
+    except ImportError as exc:
+        _log.warning("executor.keep_for_compute_unavailable", error=str(exc)[:200])
+        return
+    if not compute_enabled_for(org):
+        return
+    from orchestrator._native_run_context import agent_with_providers
+
+    for i, agent in enumerate(agents):
+        if not isinstance(agent, Agent):
+            continue
+        held = {_tool_name(t) for _label, pool in _own_tool_pools(agent) for t in pool}
+        if "compute_run" not in held:
+            continue
+        agents[i] = agent_with_providers(agent, [KeepForComputeProvider()])
+        _log.info("executor.keep_for_compute_on", agent=agent_name)
 
 
 def _apply_tool_result_spill(agents: list[Any], agent_name: str | None) -> None:
@@ -4220,7 +4296,10 @@ def _pack_base_names(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | _image_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | gone
+                # SBX-19: never in the base. It takes a place only after the
+                # packs (`_COMPUTE_ROOM`), so it cannot cost a pack its place.
+                | frozenset({"compute_run"}))
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}
@@ -4367,6 +4446,7 @@ async def _apply_tool_packs(
     turn = turn if read_only else await _turn_with_skills(turn)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
+    _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
     # WS-67 TS-2a (D222 decision 13): ``find_tools`` rides in each request of
     # a run where the search is on, so the cap counts it before the first
     # choice. The org is the bound tenant, never a request field (R5). At the
@@ -4489,6 +4569,17 @@ async def _apply_tool_packs(
     # reaches). The inject step after this one adds nothing to the count.
     planned_tools = (base - int(loader_counted) + int(bool(plan.offered))
                   + len(added) - sum(_specialist_counts(pool, replaced).values()))
+    # SBX-19: ``compute_run`` takes the place that is left, and no other. It
+    # leaves room for the largest pack that the loader OFFERS and that fits
+    # without it, so a load never misses by the one place of the tool.
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    cap = tool_packs.MAX_REQUEST_TOOLS
+    reserve = max(
+        (n for n in (len(SKILL_FAMILIES[slug]["tools"]) for slug in plan.offered
+                     if slug in SKILL_FAMILIES) if planned_tools + n <= cap),
+        default=0)
+    _COMPUTE_ROOM.set(planned_tools + reserve + 1 <= cap)
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)

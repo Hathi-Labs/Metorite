@@ -383,6 +383,16 @@ one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
 gate ask it at each card, so a reload applies to the next card. A flip stays
 OWNER-GATE (`enforcement-flip`, EAC-7).
 
+`PROVIDER_ALERT_ORGS` names the org whose admins hear when an AI vendor runs
+out of credit or runs low (`customer_console.md` §6A.17b, AO-2). They get one
+bell row and one phone push. Set it to the operator org id. The default is
+empty, and empty sends nothing. The reader refuses `*`, because a customer's
+admins must never get our vendor alerts. Its one reader is
+`gateway.provider_alerts.alert_orgs`. The seed hook, the job and the bell
+source ask it on each call, so a reload applies at the next 15-minute bucket.
+It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
 one `tool:<name>` row for each chat tool of the CRM, Email, Projects and
