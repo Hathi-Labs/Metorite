@@ -1,7 +1,7 @@
 # The semantic model: one way for the chat to read any large data source
 
 **Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
-D226). The rest stays PROPOSED. Nothing is built.**
+D226). The rest stays PROPOSED. SEM-7 is built, dark (task 3737). Nothing else is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
 owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.
@@ -602,7 +602,7 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-5** | 1 | The text of `crm_aggregate` says that a word is fine and the server finds the field, and that a module takes `q` | `crm_tools.py` | STANDARD · AGENT-SAFE | none: text only | `test_tool_schema_diet.py` | SEM-1a, SEM-2 |
 | **SEM-6** | 1 | A scripted replay of the four refusal classes, and a fixed set of 20 questions with synthetic data | `evals/semantic/` (new) | LOW · AGENT-SAFE | none | `test_semantic_eval_scripted.py` (new) | SEM-1a to SEM-5 |
 | **SEM-1b** | 2 | The one grammar of §5.1, by the option that the owner picks in D-SEM-3. The CRM aggregate takes `query`, and the old parameters lower into it. `crm_aggregate` takes `query` beside its old arguments | Option A: `acb_common/studio_query.py`, `field_sql.py`, `aggregate.py`, `records.py`, a shared fixture | HIGH (SQL) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_query_grammar.py` and `_r8` (new), `test_studio_query_r8.py`, `test_tool_schema_diet.py` | D-SEM-3, SEM-6 |
-| **SEM-7** | 2 | The CRM model reader. The plan learns `measure`, `join` and `query`. `org_facts` serves them | `crm_sync/catalogue.py`, `routes/crm/mapping_plans.py`, `routes/crm/facts.py` | HIGH (plan) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_plan_kinds_semantic.py` (new), `test_org_facts_r8.py` | SEM-R0 |
+| **SEM-7** | 2 | The CRM model reader. The plan learns `measure`, `join` and `query`. `org_facts` serves them | `crm_sync/catalogue.py`, `routes/crm/mapping_plans.py`, `routes/crm/facts.py` | HIGH (plan) · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` (built, dark, task 3737) | `test_crm_plan_kinds_semantic.py` (new), `test_org_facts_r8.py` | SEM-R0 |
 | **SEM-8** | 2 | Verified queries: save with parameters, match, run, the "verified" mark, stale on a shape change, one repair | `routes/crm/` (a new module), `crm_tools.py` | HIGH · AGENT-SAFE dark | `SEMANTIC_MODEL_ORGS` | `test_crm_verified_queries.py` and `_r8` (new) | SEM-7 |
 | **SEM-9** | 2 | Proposals from chat: synonym, measure and verified query join the CRM-Q32 store and one "Needs you" kind | `routes/crm/questions.py`, `crm_sync/questions.py`, `routes/shell/waiting.py` | HIGH (fact writes) · AGENT-SAFE dark | `CRM_QUESTIONS_ORGS` and `SEMANTIC_MODEL_ORGS` | `test_crm_questions_chat_r8.py`, `test_waiting_seam_r8.py` | SEM-7 |
 | **SEM-10** | 2 | Measures and Verified questions in "Your answers", with Undo | CRM settings UI | STANDARD UI · captures before merge | `SEMANTIC_MODEL_ORGS` | Vitest of the section (new) | SEM-8, SEM-9 |
