@@ -1328,7 +1328,7 @@ def _admin_text_problem(value: Any) -> str | None:
     return "text_value" if _has_literal(value) else None
 
 
-def ai_text(part: str, item: Mapping[str, Any]) -> str | None:
+def ai_description(part: str, item: Mapping[str, Any]) -> str | None:
     """The text of an item of the ``ai`` section, built by code from its
     closed words (§4.2 step 4), or ``None`` when a word is not in its closed
     set. The profiler writes this text, and :func:`shape_only` builds it
@@ -1420,7 +1420,7 @@ def _ai_item(part: str, item: Mapping[str, Any]) -> str | None:
     # Imported here: ``gateway.routes.crm`` imports this module.
     from gateway.routes.crm.rules import BODY_MAX
 
-    built = ai_text(part, item)
+    built = ai_description(part, item)
     if built is None:
         return "words"
     text_ = item.get("text")
@@ -1658,7 +1658,7 @@ __all__ = [
     "Entry",
     "Field",
     "Source",
-    "ai_text",
+    "ai_description",
     "build",
     "clear_parts",
     "code_amount",
