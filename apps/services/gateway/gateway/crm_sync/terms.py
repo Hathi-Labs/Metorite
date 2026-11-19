@@ -51,6 +51,7 @@ into the result.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -394,17 +395,21 @@ def _fold(text: Any) -> str:
     ``routes/crm/modules.py`` (CRM-Q34-12). This module imports no route, so
     it keeps its own copy."""
     text = str(text or "").replace("%", f" {PERCENT_WORD} ")
-    return "".join(ch for ch in text.lower() if ch.isalnum())
+    return "".join(ch for ch in text.lower()
+                   if ch.isalnum() or unicodedata.category(ch).startswith("M"))
 
 
 def _own_term(word: str) -> bool:
     """True when the term question of *word* belongs to *word* alone. Its
     slug must be shorter than :data:`SLUG_MAX`, because the slug is cut there,
-    and two long words can share one cut slug. :func:`words` must keep each
+    and two long words can share one cut slug. A word with ``%`` or a mark of
+    punctuation that the fold keeps apart from the slug is refused, because
+    "gst %" must not read the answer of "gst". :func:`words` must keep each
     letter and digit of it, because it drops a letter that is not ASCII, and
     then "<other script> fee" reads the answer of "fee"."""
     return (len("-".join(words(word))) < SLUG_MAX
-            and not any(ch.isalnum() and not ch.isascii() for ch in word))
+            and not any(ch.isalnum() and not ch.isascii() for ch in word)
+            and _fold(word) == "".join(words(word)))
 
 
 def _stored(fields: Iterable[Any]) -> list[tuple[str, str, str]]:
@@ -481,10 +486,14 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
             return _link(found, "term")
     case = trimmed.casefold()
     found = [f for f in pool if f[0].casefold() == case]
-    if found:
-        return _link(found, "case")
     folded = _fold(trimmed)
-    found = [f for f in pool if folded and _fold(f[1]) == folded]
+    by_label = [f for f in pool if folded and _fold(f[1]) == folded]
+    if found:
+        # A label that names another field with the same certainty makes
+        # the word ambiguous: the function must not pick one in silence.
+        found = found + [f for f in by_label if f not in found]
+        return _link(found, "case")
+    found = by_label
     if found:
         return _link(found, "label")
     wanted = [w for w in dict.fromkeys(words(trimmed)) if len(w) >= NEAR_MIN]

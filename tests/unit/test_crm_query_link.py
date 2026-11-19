@@ -104,8 +104,9 @@ def test_the_exact_key_of_another_field_beats_its_label() -> None:
     # "Stage" is the label of one field and the key of another.
     fields = [F("Status", "Stage", "select"), F("Stage", "Pipeline", "select")]
     assert link_field(fields, "Stage") == link("Stage", step="exact")
-    # The key in another case beats the label too.
-    assert link_field(fields, "stage") == link("Stage", step="case")
+    # The key in another case does NOT beat a label of equal certainty: two
+    # fields name the word, so the function picks none.
+    assert link_field(fields, "stage") == hint("Stage", "Status", step="ambiguous")
 
 
 def test_a_near_fit_runs_only_when_no_label_fits_and_never_links() -> None:
@@ -243,6 +244,26 @@ def test_a_word_with_a_letter_of_another_script_reads_no_answer() -> None:
     assert terms.term_id("Invoices", word) == terms.term_id("Invoices", "fee")
     found = link_field(TWO_FEES, word, module="Invoices", answers=answers)
     assert found.step != "term" and found.linked is False
+
+
+def test_a_percent_word_reads_no_answer_of_its_bare_word() -> None:
+    fields = [F("GST_Pct", "GST %", "percent"), F("GST_Amount", "GST Amount", "currency")]
+    answers = _answers("Invoices", "gst", "GST_Amount")
+    assert terms.term_id("Invoices", "GST %") == terms.term_id("Invoices", "gst")
+    found = link_field(fields, "GST %", module="Invoices", answers=answers)
+    assert found.step == "label" and found.keys == ("GST_Pct",)
+
+
+@pytest.mark.parametrize("label, word", [("दान", "दिन"), ("மூல", "மல"), ("कुल", "काल")])
+def test_two_words_of_an_indic_script_never_fold_to_one(label: str, word: str) -> None:
+    found = link_field([F("Donation", label, "currency")], word)
+    assert found.linked is False and found.step != "label"
+
+
+def test_the_case_step_sees_the_label_of_a_second_field() -> None:
+    fields = [F("Amount", "Advance", "currency"), F("Amount1", "Amount", "currency")]
+    assert link_field(fields, "amount") == hint("Amount", "Amount1", step="ambiguous",
+                                                money=True)
 
 
 # ── 2. A close pair never picks ─────────────────────────────────────────────
