@@ -37,7 +37,7 @@ from those files into this page.
 
 | Topic | The owner file |
 |---|---|
-| The rules of every session | `CLAUDE.md` (read §7 below first: it tells you how to read it as a contributor) |
+| The rules of every session | `CLAUDE.md` (read §8 below first: it tells you how to read it as a contributor) |
 | Which specs you may build from | `project-docs/INDEX.md` |
 | The product shape and the seams | `project-docs/specs/building_blocks.md` |
 | The spec contract, the R rules, the decisions, the owner gates | `project-docs/work_plan.md` §1, §3 and §6 |
@@ -95,9 +95,10 @@ task 3833. Do not take a task from another stream because it is free.
 
 1. Follow `docs/dev_capacity.md` §5.1, steps 2 to 5, on Ubuntu 24.04 LTS.
    Skip step 1 (the owner's tailnet) and step 6 (an alias on the owner's PC).
-2. Sign in to the Metorite MCP as yourself:
-   `claude mcp login metorite --no-browser`, in a terminal. `docs/home_box.md`
-   §5.2 shows the steps. Check with `claude mcp list`.
+2. Sign in to the Metorite MCP as yourself. In a terminal on your machine,
+   run `claude mcp login metorite --no-browser`. Open the link and approve it.
+   Then open the callback address on the same machine, before it expires.
+   `docs/home_box.md` §5.2 explains the traps. Check with `claude mcp list`.
 3. Sign in to GitHub with `gh auth login`, as yourself.
 4. Put the block of §10 in `~/.claude/CLAUDE.md` for the user that runs your
    sessions.
@@ -127,12 +128,13 @@ its facts **(owner to confirm which machine)**.
   `claude --bg --remote-control <name> -n <name> --model sonnet "<start note>"`.
   Start each lane in its own worktree: `bash scripts/worktree.sh new <slug>`.
   End each start note with the text of `scripts/home_server/lanes/lane-rules.md`.
-  Read "the home box" in those rules as your machine.
+  Read "the home box" in those rules as your machine. Rule 14 and every
+  hand-over to lane-merge or the merge bot do not apply to you. §6 replaces them.
 - **Size.** You are one integrator, so keep three or four branches in flight
   (`engineering_practice.md` §5). Each lane has at most four open PRs.
   `docs/dev_capacity.md` §4 sizes lanes to your memory and account limits.
-- **Models.** Sonnet does the work. Opus does HIGH slices, reviews and a
-  second try. Haiku does lookups. `next-ticket.md` step 1c holds the table.
+- **Models.** `next-ticket.md` step 1c holds the model and the effort for
+  each job (D218). Use that table, not a rule from memory.
 - **One slice at a time.** Each lane runs the `/next-ticket` cycle. The
   verifier is never the implementer. The review depth follows the risk tier.
 - **The board is the truth.** Each lane follows CLAUDE.md §4 "Work under a
@@ -158,8 +160,10 @@ the full loop:
 4. Run `gh pr merge <number> --squash`. Never pass `--admin` or `--auto`.
 5. Move the task to done, with the merge SHA in a comment.
 
-**Freeze windows.** Merge nothing from 04:20, 12:20 and 20:20 UTC until the
-release run of that slot starts.
+**Freeze windows (owner to confirm).** Merge nothing from 04:20, 12:20 and
+20:20 UTC until the release run of that slot starts. The owner's merger keeps
+this rule, so that each release picks a green `main`. No file in the
+repo states it yet.
 
 **A HIGH slice waits for the owner (owner to confirm).** HIGH means tenancy,
 RLS, auth, identity, a migration, money, credits, secrets, a member or role
@@ -174,8 +178,8 @@ rule: the repo has no `CODEOWNERS` file, and branch protection asks for no
 review.
 
 **A flag flip is the owner's (D218).** Post the captures on the task, and ask
-"Approve the flag flip" or "Change it". Only the owner flips a flag on
-production.
+"Approve the flag flip" or "Change it". Your fleet never flips a flag on
+production (§8).
 
 **A preview.** A slice behind a flag that is off merges on green. A new page,
 screen or flow with no flag waits for the owner's approval of its preview
@@ -274,3 +278,4 @@ Each default above binds until the owner answers.
 | 6 | Seam review | Ask the owner first (advisory). A `CODEOWNERS` file can make it a fence. |
 | 7 | Previews and flag flips | The owner approves both. |
 | 8 | Runners and the machine | No `metorite-box` runner. The machine: owner to name. |
+| 9 | The merge freeze windows | 04:20, 12:20 and 20:20 UTC, until the release run starts. The owner's merger keeps them, and no repo file states them. |
