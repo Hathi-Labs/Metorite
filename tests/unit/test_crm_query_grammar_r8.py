@@ -501,3 +501,22 @@ async def test_l_a_bad_number_in_a_query_leaf_names_the_leaf(sem, app_engine) ->
     old = await _refusal(sem, a, entity="module:Invoices",
                          **{"field.Grand_Total.from": "1" * 61})
     assert old["message"].startswith("'field.Grand_Total.from' must be a number")
+
+
+async def test_i_a_query_range_alone_admits_its_text_field(sem, app_engine) -> None:
+    """A count names no measure field, so only the range of the query can
+    admit the text field (``query_ranges`` → ``text_number_keys``). The
+    old pair and the query count the same records, with the same counts."""
+    a = sem.org_a
+    _seed_bills(sem, a, [{"Ref_Amount": v} for v in _TEXT_VALUES])
+    res = await _call(sem, _admin(a), "GET", _path(
+        entity="module:Bills", **{"field.Ref_Amount.from": "10"}))
+    assert res.status_code == 200, res.text
+    old = res.json()
+    sem.flag(a)
+    res = await _call(sem, _admin(a), "GET", _path(
+        entity="module:Bills", query=json.dumps([_leaf("Ref_Amount", "gte", 10)])))
+    assert res.status_code == 200, res.text
+    new = res.json()
+    assert (new["total"], new["records"]) == (old["total"], old["records"]) == (3, 3)
+    assert new["text_numbers"] == old["text_numbers"]

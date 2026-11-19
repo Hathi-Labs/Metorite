@@ -716,3 +716,66 @@ def test_a_native_datetime_eq_is_a_range_for_the_day_field() -> None:
     assert query_ranges(_SCOPE, nodes) == [("Paid_On.from", "2026-11-01"),
                                            ("Paid_On.to", "2026-11-01")]
     assert query_ranges(_SCOPE, ((lower_pair("Paid_On", "2026-11-01"),),)) == []
+
+
+# ── 8. SEM-1b-2 review fixes ─────────────────────────────────────────────────
+
+
+def test_a_native_range_on_a_text_field_names_the_eq_leaf() -> None:
+    """P3: a native leaf's range 422 names the ``eq`` leaf. The old
+    parameter keeps ``field.<key>=<value>``."""
+    with pytest.raises(HTTPException) as caught:
+        query_sql(_SCOPE, ((QueryLeaf("Subject", "gte", "a"),),), zone=_ZONE)
+    message = caught.value.detail["message"]
+    assert message.endswith(
+        'To match one value, give {"field": "Subject", "op": "eq", "value": <value>}.')
+    assert "field.Subject" not in message
+    with pytest.raises(HTTPException) as caught:
+        module_where(_SCOPE, "Invoices", [("Subject.from", "a")], zone=_ZONE)
+    assert caught.value.detail["message"].endswith(
+        "To match one value, give field.Subject=<value>.")
+
+
+def test_the_admission_refusal_names_the_eq_leaf_of_a_query_key() -> None:
+    found = field_sql.TextNumbers(numbers=0, no_value=1, not_numbers=2)
+    native = field_sql._text_refusal(_SCOPE, "Subject", found, False, True)
+    old = field_sql._text_refusal(_SCOPE, "Subject", found, False)
+    assert native.detail["message"].endswith(
+        'give {"field": "Subject", "op": "eq", "value": <value>}.')
+    assert old.detail["message"].endswith("give field.Subject=<value>.")
+    tree = ast.parse((_CRM / "aggregate.py").read_text(encoding="utf-8"))
+    admit = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id == "admit_text_numbers"]
+    assert [k.arg for k in admit[0].keywords] == ["measured", "queried"]
+
+
+def test_query_ranges_resolve_a_key_as_the_sql_does() -> None:
+    """The ranges resolve each key through ``FieldScope.ref``, the call of
+    ``query_sql``: a summed key (``A+B``) that ``fields.get`` does not hold
+    still gives its range, and an unknown key gives no 422 here."""
+    money = {"Net": FieldRef("Net", "currency", "Net"),
+             "Tax": FieldRef("Tax", "currency", "Tax")}
+    scope = FieldScope(column=field_sql.MODULE_COLUMN, owner="module:Invoices",
+                       fields={**_FIELDS, **money})
+    assert "Net+Tax" not in scope.fields
+    nodes = ((QueryLeaf("Net+Tax", "gte", 5),),)
+    assert query_ranges(scope, nodes) == [("Net+Tax.from", "5")]
+    assert " >= CAST(:agf_qv0_0 AS numeric)" in query_sql(scope, nodes, zone=_ZONE).sql
+    assert query_ranges(scope, ((QueryLeaf("Nope", "gte", 5),),)) == [("Nope.from", "5")]
+    tree = ast.parse((_CRM / "field_sql.py").read_text(encoding="utf-8"))
+    assert "_leaf_ref" in _calls(tree, "query_ranges")
+    assert "fields" not in {n.attr for n in ast.walk(next(
+        f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "query_ranges"))
+        if isinstance(n, ast.Attribute)}
+
+
+def test_a_request_cannot_set_lowered() -> None:
+    """``lowered`` is never read from the request: a leaf with that key is
+    refused by the shape check, and a parsed leaf is never lowered."""
+    detail = _refused(_q({"field": "Paid_On", "op": "eq", "value": "2026-11-01",
+                          "lowered": True}))
+    assert detail["code"] == VALUE_INVALID
+    nodes = parse_query(_q(_leaf("Paid_On", "eq", "2026-11-01"),
+                           {"any": [_leaf("Paid_On", "eq", "2026-11-01"),
+                                    _leaf("Paid_On", "in", ["2026-11-02"])]}))
+    assert all(not leaf.lowered for node in nodes for leaf in node)

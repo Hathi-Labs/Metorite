@@ -3298,13 +3298,99 @@ def filters_line(params: dict[str, Any], data: dict[str, Any] | None) -> str:
         if end is not None:
             ranges.setdefault(key[: -len(end)], {})[end] = str(value)
             continue
-        counted = [str(v) for v in matched.get(key) or []]
-        line = f"{key} is {value}"
-        if len(counted) > 1 or (counted and counted != [str(value)]):
-            line += f" (counted {_names(counted)})"
-        plain.append(line)
+        plain.append(_eq_words(key, value, matched))
+    # SEM-1b-2: the leaves of `query` read as the pairs read.
+    _query_words(params.get("query"), matched, plain, ranges)
     parts = plain + [_range_words(k, ends) for k, ends in ranges.items()]
     return f"Filters: {'; '.join(parts)}." if parts else ""
+
+
+def _eq_words(key: str, value: Any, matched: dict[str, Any]) -> str:
+    """"Region is North (counted North, NORTH and NTH)": one equal filter,
+    with the stored values that the total counted for it."""
+    counted = [str(v) for v in matched.get(key) or []]
+    line = f"{key} is {value}"
+    if len(counted) > 1 or (counted and counted != [str(value)]):
+        line += f" (counted {_names(counted)})"
+    return line
+
+
+#: SEM-1b-2: the words of a strict end of a query leaf.
+_STRICT_WORDS = {"gt": "after", "lt": "before"}
+#: The ends of a query leaf that read as the ends of a pair range.
+_QUERY_ENDS = {"gte": ".from", "lte": ".to"}
+
+
+def _query_text_value(value: Any) -> str:
+    """A value of a query leaf as words: data of the member, on one line,
+    with no control character. ``true`` and ``false`` as JSON writes them."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value))
+    return " ".join(text.split())
+
+
+def _query_leaf_words(leaf: Any, matched: dict[str, Any]) -> str | None:
+    """One leaf ``{field, op, value}`` in words, or None when it has no such
+    shape. The route checked the query, so this only words it."""
+    if not isinstance(leaf, dict) or not isinstance(leaf.get("field"), str):
+        return None
+    key, op = _query_text_value(leaf["field"]), leaf.get("op")
+    value = leaf.get("value")
+    if op == "in" and isinstance(value, list):
+        return f"{key} is one of {', '.join(_query_text_value(v) for v in value)}"
+    if op == "eq":
+        return _eq_words(key, _query_text_value(value), matched)
+    if op in _QUERY_ENDS:
+        return _range_words(key, {_QUERY_ENDS[str(op)]: _query_text_value(value)})
+    if op in _STRICT_WORDS:
+        return f"{key} {_STRICT_WORDS[str(op)]} {_query_text_value(value)}"
+    return None
+
+
+def query_nodes(query: Any) -> list[Any]:
+    """The nodes of a ``query`` argument: the list itself, or the list of
+    its JSON text. Anything else gives no node."""
+    if isinstance(query, str):
+        import json
+
+        try:
+            query = json.loads(query)
+        except (ValueError, RecursionError):
+            return []
+    return list(query) if isinstance(query, list) else []
+
+
+def _query_words(query: Any, matched: dict[str, Any], plain: list[str],
+                 ranges: dict[str, dict[str, str]]) -> None:
+    """Add the words of each node of *query* to *plain* and *ranges*, in
+    the shape of the pairs: an ``eq``, ``in``, ``gt`` or ``lt`` leaf to
+    *plain*, a ``gte`` or ``lte`` leaf to the range of its field, and an
+    ``any`` group as "any of: A or B"."""
+    for node in query_nodes(query):
+        if isinstance(node, dict) and isinstance(node.get("any"), list):
+            inner = [w for w in (_query_leaf_words(x, matched) for x in node["any"]) if w]
+            if inner:
+                plain.append(f"any of: {' or '.join(inner)}")
+            continue
+        if (isinstance(node, dict) and node.get("op") in _QUERY_ENDS
+                and isinstance(node.get("field"), str)):
+            key = _query_text_value(node["field"])
+            ranges.setdefault(key, {})[_QUERY_ENDS[str(node["op"])]] = _query_text_value(
+                node.get("value"))
+            continue
+        words = _query_leaf_words(node, matched)
+        if words:
+            plain.append(words)
+
+
+def query_filter_words(query: Any) -> str:
+    """The words of the leaves of a ``query`` argument, joined by "; ", for
+    the read line of ``answer_check`` (no counted values there)."""
+    plain: list[str] = []
+    ranges: dict[str, dict[str, str]] = {}
+    _query_words(query, {}, plain, ranges)
+    return "; ".join(plain + [_range_words(k, ends) for k, ends in ranges.items()])
 
 
 async def _term_read(params: dict[str, Any], key: str) -> dict[str, Any]:

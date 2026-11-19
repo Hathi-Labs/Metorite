@@ -1126,6 +1126,13 @@ def _filter_words(arguments: Any) -> str:
         return ""
     parts = [f"{words} {data[key]}" for key, words in _FILTER_WORDS.items()
              if data.get(key) not in (None, "")]
+    if data.get("query"):
+        # SEM-1b-2: a total filtered by `query` names its leaves.
+        from acb_skills.crm_tools import query_filter_words
+
+        words = query_filter_words(data.get("query"))
+        if words:
+            parts.append(words)
     return "; ".join(parts)
 
 

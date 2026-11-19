@@ -1198,7 +1198,7 @@ def text_counts_words(found: TextNumbers) -> str:
 
 
 def _text_refusal(scope: FieldScope, key: str, found: TextNumbers,
-                  measured: bool) -> HTTPException:
+                  measured: bool, native: bool = False) -> HTTPException:
     """The 422 of a text field that does not hold numbers, with its counts.
     A measure names the number fields. A range keeps the words of the range
     422 of before (CRM-Q34-2 item 4): the date and number fields, and the
@@ -1216,13 +1216,22 @@ def _text_refusal(scope: FieldScope, key: str, found: TextNumbers,
     return _refuse(
         f"{head} A range takes a date or a number field. The date and number fields of "
         f"{scope.owner} are: {scope.choices(DATE_TYPES + MEASURE_TYPES)}. "
-        f"To match one value, give {scope.filter_word(key)}=<value>.",
+        f"{_one_value_words(scope, key, native)}",
     )
+
+
+def _one_value_words(scope: FieldScope, key: str, native: bool = False) -> str:
+    """The step of a range 422 that matches one value. A native query leaf
+    (SEM-1b-2) gets the ``eq`` leaf. An old parameter keeps its words."""
+    if native:
+        return f'To match one value, give {{"field": "{key}", "op": "eq", "value": <value>}}.'
+    return f"To match one value, give {scope.filter_word(key)}=<value>."
 
 
 async def admit_text_numbers(
     db: Any, scope: FieldScope, keys: Sequence[str],
     measured: Collection[str] | None = None,
+    queried: Collection[str] = (),
 ) -> tuple[FieldScope, dict[str, TextNumbers]]:
     """*scope* with each text field of *keys* that holds numbers marked
     ``text_number``, and the counts of each such field (CRM-Q34-11).
@@ -1241,7 +1250,9 @@ async def admit_text_numbers(
     read it as a number, and a text filter stays a text filter. A field that
     does not fit is a 422 with its counts and its shapes. *measured* holds
     the keys of a measure or a split, and None means every key. The 422 of
-    any other key, a range, keeps the words of a range."""
+    any other key, a range, keeps the words of a range. *queried* holds the
+    keys that only a native query leaf names (SEM-1b-2): their 422 names
+    the ``eq`` leaf, not ``field.<key>``."""
     if scope.column != MODULE_COLUMN:
         return scope, {}
     texts = [
@@ -1267,7 +1278,7 @@ async def admit_text_numbers(
     for key in texts:
         if not text_number_fits(counts[key]):
             raise _text_refusal(scope, key, counts[key],
-                                measured is None or key in measured)
+                                measured is None or key in measured, key in queried)
     fields = {**scope.fields, **{
         k: replace(scope.fields[k], text_number=True) for k in texts}}
     return replace(scope, fields=fields), counts
@@ -1449,7 +1460,7 @@ def _filter_value(scope: FieldScope, ref: FieldRef, end: str | None, k: str, v: 
                 f"'{ref.key}' is a {ref.type} field. A range takes a date or a number "
                 f"field. The date and number fields of {scope.owner} are: "
                 f"{scope.choices(DATE_TYPES + MEASURE_TYPES)}. "
-                f"To match one value, give {scope.filter_word(ref.key)}=<value>.",
+                f"{_one_value_words(scope, ref.key, said is not None)}",
             )
         # CRM-Q25b: a datetime takes its day in the CRM zone, as its bucket.
         return (
@@ -1891,6 +1902,19 @@ def _query_leaves(scope: FieldScope, nodes: Sequence[QueryNode],
     ]
 
 
+def _leaf_ref(scope: FieldScope | None, key: str) -> FieldRef | None:
+    """The field of a leaf key through :meth:`FieldScope.ref`, the SAME
+    call as :func:`_query_leaves`, so the ranges, the day field and the
+    text numbers see each field that the SQL builds. A key that ``ref``
+    refuses gives None here: :func:`query_sql` raises its 422 later."""
+    if scope is None:
+        return None
+    try:
+        return scope.ref(key)
+    except HTTPException:
+        return None
+
+
 def query_ranges(scope: FieldScope | None,
                  nodes: Sequence[QueryNode] | None) -> list[tuple[str, str]]:
     """Each range of *nodes* in the pair form ``(<key>.from or <key>.to,
@@ -1903,7 +1927,7 @@ def query_ranges(scope: FieldScope | None,
     out: list[tuple[str, str]] = []
     for node in nodes or ():
         for leaf in node:
-            ref = scope.fields.get(leaf.key) if scope is not None else None
+            ref = _leaf_ref(scope, leaf.key)
             for end in _leaf_ends(ref, leaf):
                 if end is not None:
                     side = ".from" if end in (".from", ".gt") else ".to"
