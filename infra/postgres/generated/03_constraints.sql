@@ -2989,3 +2989,15 @@ ALTER TABLE pm_epic_contracts ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_epic_contracts ADD CONSTRAINT pm_epic_contracts_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_epic_contracts_org_idx ON pm_epic_contracts (organization_id);
+
+-- member_action
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM member_action WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: member_action still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE member_action ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE member_action ADD CONSTRAINT member_action_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS member_action_org_idx ON member_action (organization_id);

@@ -514,6 +514,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # for an org, and each call draws credits. A tenant that set it could
     # open it for every org on the box.
     "IMAGE_ANALYSIS_",
+    # WS-PZ MM-1: the act record. MEMBER_ACTIONS_ORGS opens it for an org, so a
+    # tenant that set it could record the acts of every org on the box.
+    "MEMBER_ACTIONS_",
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",

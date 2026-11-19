@@ -752,6 +752,12 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # MM-1: MEMBER_ACTIONS_ORGS lists the org ids where the act record
+    # (`member_action`) takes rows. `*` opens every org. Empty opens none, and
+    # the writer then records nothing. A `*_ORGS` key, so a flag reload applies
+    # it. Reader: `acb_common.member_actions.enabled_for`. Spec:
+    # personalization.md section 19.4. Fence: tests/unit/test_member_action_writer.py.
+    member_actions_orgs: str = ""
     # STU-B2b-2b: STUDIO_DOOR_OPS_ORGS lists the org ids where the Studio
     # action door runs a class A door op (`<app>.<op>`) of another app, as the
     # caller. `*` opens every org. Empty opens none. Reader:

@@ -1761,3 +1761,10 @@ DROP POLICY IF EXISTS pm_epic_contracts_tenant_isolation ON pm_epic_contracts;
 CREATE POLICY pm_epic_contracts_tenant_isolation ON pm_epic_contracts
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE member_action ENABLE ROW LEVEL SECURITY;
+ALTER TABLE member_action FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS member_action_tenant_isolation ON member_action;
+CREATE POLICY member_action_tenant_isolation ON member_action
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

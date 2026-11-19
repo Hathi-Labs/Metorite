@@ -4376,7 +4376,9 @@ Only the member reads the page (D-PZ-3). An admin sees nothing of it.
 | Slice | Task | What | Gate · tier |
 |---|---|---|---|
 | **MM-0** | 2877 | This section and the INDEX row | AGENT-SAFE · LOW |
-| **MM-1** | 2878 | The act record of §19.4 | AGENT-SAFE, dark · HIGH |
+| **MM-1** | 2878 | The act record of §19.4: the table, the one writer, the purge, the prune, and the email seams (send, reply, forward, mark done, archive, snooze, label) | AGENT-SAFE, dark · HIGH |
+| **MM-1b** | 3614 | The chat card answer calls the writer | AGENT-SAFE, dark · HIGH |
+| **MM-1c** | 3615 | My Day acts, reach ratings, `draft_sent` and `delegate` call the writer | AGENT-SAFE, dark · STANDARD |
 | **MM-2** | 2879 | Habits, §19.5 | AGENT-SAFE · STANDARD |
 | **MM-3** | 2880 | Suggestions in the chat and in Email | AGENT-SAFE, dark · STANDARD |
 | **MM-4** | 2881 | Suggestions on My Day | AGENT-SAFE, dark · STANDARD |
