@@ -1651,11 +1651,6 @@ async def module_field_where(
 
     org = str(current_tenant())
     scope = await module_scope(db, module)
-    # CRM-Q34-11 with CRM-Q34-4: a range on a text field that holds numbers
-    # reads the strict number here too, so the list and the total of the
-    # same filters hold the same records. No statement runs with no range.
-    scope, _counts = await admit_text_numbers(
-        db, scope, text_number_keys("count", None, None, pairs), measured=())
     zone = await crm_zone(db, current_tenant())
     matches = await text_matches(db, org, scope, module, pairs)
     ids = await lookup_ids(db, org, scope, pairs)

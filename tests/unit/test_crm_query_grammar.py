@@ -604,8 +604,9 @@ def test_there_is_one_strict_number_expression() -> None:
     # The total admits the text fields of the query ranges.
     agg = trees["aggregate.py"]
     assert {"query_ranges", "text_number_keys", "admit_text_numbers"} <= _calls_any(agg, "_read")
-    # The list and the total admit text numbers the same way (CRM-Q34-4).
-    assert {"admit_text_numbers", "text_number_keys"} <= _calls_any(fs, "module_field_where")
+    # The module LIST builder of CRM-Q34-4 is NOT changed here: a list range on
+    # a text number stays a follow-up row of CRM-Q34-4 (it needs its own R8).
+    assert "admit_text_numbers" not in _calls_any(fs, "module_field_where")
 
 
 def test_a_range_leaf_picks_the_day_field_as_a_range_pair_does() -> None:

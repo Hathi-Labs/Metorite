@@ -6,7 +6,7 @@ built in part, dark (task 3736). Nothing else is built.**
 
 **SEM-1b status (2026-11-19, task 3736).** The route side is BUILT dark behind
 `SEMANTIC_MODEL_ORGS`. `GET /crm/aggregate` on a module takes `query`, and the
-old `field.<key>` pairs lower into the same compiler. A range leaf on a text
+old `field.<key>` pairs reach the same filter builder (`_filter`), so the two spellings give equal totals. A range leaf on a text
 field reads the strict number of CRM-Q34-11. A query range picks the day field
 of the findings. A refused leaf value names the leaf.
 
