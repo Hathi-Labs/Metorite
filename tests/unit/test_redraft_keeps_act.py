@@ -75,6 +75,11 @@ ACTS: dict[str, tuple[str, frozenset[str]]] = {
     "scheduled_send": ("schedule_send", frozenset({"schedule_send"})),
     "send_draft": ("send_draft", frozenset({"send_draft"})),
     "unsubscribe": ("unsubscribe_sender", frozenset()),
+    # Task 3814: the acts of the ``_card_refusal`` cards. A generic card names
+    # no tool, and no send tool (``test_card_revise.py``).
+    "new_draft": ("edit_draft", frozenset()),
+    "edit_draft": ("edit_draft", frozenset()),
+    "card": ("", frozenset()),
 }
 
 
@@ -103,8 +108,9 @@ def test_each_act_has_one_text() -> None:
 def test_each_text_names_its_own_tool_and_no_other_send_tool(act: str) -> None:
     tool, allowed = ACTS[act]
     text = agents._closed_by_message(act)
-    assert f"Its tool is {tool}." in text, text
-    assert _names(tool, text)
+    if tool:
+        assert f"Its tool is {tool}." in text, text
+        assert _names(tool, text)
     for other in SEND_TOOLS:
         if other not in allowed:
             assert not _names(other, text), (act, other)
@@ -337,8 +343,11 @@ def test_the_chat_draws_each_text_as_a_draft_being_changed(act: str) -> None:
       the member line alone, and no step for the model reaches the member."""
     row = at.CARD_OUTCOMES[at.CLOSED_BY_YOUR_MESSAGE]
     text = agents._closed_by_message(act)
-    assert text.startswith(f"{row.lead}: {row.happened} Nothing was sent. ")
-    assert text.startswith(at.card_outcome_head(at.CLOSED_BY_YOUR_MESSAGE, "Nothing was sent."))
+    # Task 3814: an act that is not a send says so, and never "Nothing was sent."
+    head = ("Nothing was changed by this card." if act in ("new_draft", "edit_draft", "card")
+            else "Nothing was sent.")
+    assert text.startswith(f"{row.lead}: {row.happened} {head} ")
+    assert text.startswith(at.card_outcome_head(at.CLOSED_BY_YOUR_MESSAGE, head))
     assert row.next not in text
     cards = EMAIL_CARDS.read_text(encoding="utf-8")
     assert 'if (outcome === "closed by your message") return "revised";' in cards
