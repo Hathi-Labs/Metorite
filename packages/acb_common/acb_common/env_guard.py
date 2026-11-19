@@ -202,6 +202,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # measure, join and query, and org_facts serves them. It changes what the
     # chat reads for the org, so only the operator writes it.
     "SEMANTIC_MODEL_ORGS",
+    # api_connections.md API-1 (D-API-8): the orgs whose chat may call an
+    # outside API through a connection. It opens an egress path for the org,
+    # so only the operator writes it.
+    "API_CONNECTIONS_ORGS",
     # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.

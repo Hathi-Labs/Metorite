@@ -33,6 +33,14 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`API_CONNECTIONS_ORGS` turns on the API connections of the chat
+(`api_connections.md` §4, D-API-8). API-1 declares it, and the rung 1 slices
+read it. `*` lists every org, and the default is empty. Empty gives no org an
+API connection in the chat. Its one reader is
+`acb_common.api_connections_flag.api_connections_allowed`. A reload applies a
+change. The flip waits for the rung 1 demo, and it stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_CARD_PRECONDITION_ORGS` turns on the version check of a card
 (`chat_failure_modes.md` §6 row HRD-10a). For each listed org, `update_task`
 sends the `updated_at` of the read that the card shows as `If-Match`. A task

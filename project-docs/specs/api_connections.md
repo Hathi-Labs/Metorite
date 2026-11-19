@@ -1,8 +1,10 @@
 # API connections: any outside API that a company connects, usable in the chat
 
 **Status: ACTIVE (owner in chat, 2026-11-19, D228). The owner accepted
-D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`). Nothing
-is built.** Zoho Books is an owner priority and the first template. Verified
+D-API-1 to D-API-9 as recommended, on task 3562 (answer `97b5d6ce`). API-1
+is built (task 3787): the template grammar, the validator, the one builder and
+the Zoho Books template. No route, no table and no call exists yet. API-1
+declares the flag `API_CONNECTIONS_ORGS`, and it is empty.** Zoho Books is an owner priority and the first template. Verified
 against the code on 2026-11-18 (`origin/main` at `7ec269e82`). §8 records each
 answer.
 
