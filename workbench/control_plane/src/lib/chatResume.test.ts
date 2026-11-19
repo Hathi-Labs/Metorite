@@ -412,12 +412,13 @@ describe("the hook: a park keeps the card and ends the slot (C3)", () => {
   });
 
   it("the attach loop's `run_resumed` makes the reply stream again (RESUME-3b)", () => {
-    const at = hook.indexOf("case RUN_RESUMED_FRAME: {");
+    const at = hook.indexOf("case RUN_RESUMED_FRAME:");
     expect(at).toBeGreaterThan(0);
     const block = hook.slice(at, hook.indexOf("break;", at));
     expect(block).toContain("updLast((m) => ({ ...m, streaming: true, isThinkingActive: true }));");
-    // A replay cut before part one starts from the reply that shows.
-    expect(block).toContain("if (shadow && !hasBody(shadow)) {");
+    // No seed of a replay that starts at the second start: RESUME-2d owns
+    // that replay (review of 2026-11-19, P2-3, the seed was deleted).
+    expect(block).not.toContain("shadow");
   });
 
   it("the BFF keeps `parked` on the done frame", () => {
@@ -553,6 +554,23 @@ describe("case A: the list names the parked run, and the same run goes on", () =
     expect(s.staleTail).toBe(false);
     expect(goesOnInParkedReply(s)).toBe(true);
     expect(replayTarget(s, caseAShown)).toBe("reply-1");
+  });
+
+  it("the run key alone, with no parkedRunId, marks the parked run too, so the line draws under its reply (P2-1)", () => {
+    // A room member's tab has no waiting ask, so its list sends no
+    // `parkedRunId`. And another device can approve within DONE_HOLD_MS of
+    // the park, before any parked list lands. The chat knew r1 from a list.
+    expect(parkedLive().runKey).toBe(runKeyOf({ runId: "r1" }));
+    expect(parkedLive().parkedRunKey).toBeNull();
+    const afterRest = run(parkedLive(), server(T0 + 605_000, null), server(T0 + 606_000, R1_AGAIN));
+    const afterHold = run(parkedLive(), server(T0 + 611_000, R1_AGAIN));
+    for (const s of [afterRest, afterHold]) {
+      expect(s.phase).toBe("working");
+      expect(s.staleTail).toBe(false);
+      expect(s.parkedRunKey).toBe(runKeyOf({ runId: "r1" }));
+      expect(goesOnInParkedReply(s)).toBe(true);
+      expect(receiptAnchorBeforeRun(caseAShown, s.messageId, goesOnInParkedReply(s))).toBe("reply-1");
+    }
   });
 
   it("case B stays new: a parked row that names r1, then a listed r2", () => {

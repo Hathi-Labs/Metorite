@@ -517,8 +517,8 @@ test.describe("A late Approve resumes the parked card (RESUME-3a)", () => {
 // parts: a Stop in the window of the start, or the synthetic end of a
 // reconnect.
 
-async function installCaseA(page: Page, opts: { midDone: boolean }) {
-  await page.addInitScript(({ RID, TITLE, PARKED, RESUMED, midDone }) => {
+async function installCaseA(page: Page, opts: { midDone: boolean; cut?: boolean }) {
+  await page.addInitScript(({ RID, TITLE, PARKED, RESUMED, midDone, cut }) => {
     if (!sessionStorage.getItem("__inited")) {
       window.localStorage.clear();
       sessionStorage.setItem("__inited", "1");
@@ -532,12 +532,18 @@ async function installCaseA(page: Page, opts: { midDone: boolean }) {
     const calls: string[] = [];
     w.__calls = calls;
     // Did a "Done" draw on this page load, and did it draw before part two?
-    const seen = { done: 0, doneBeforePartTwo: 0 };
+    // `firstEnd`: the first rest tone of the row after part two shows.
+    const seen = { done: 0, doneBeforePartTwo: 0, firstEnd: "" };
     w.__seen = seen;
     new MutationObserver(() => {
+      const partTwo = (document.body?.textContent ?? "").includes(RESUMED);
+      if (partTwo && !seen.firstEnd) {
+        if (document.querySelector('[data-run-tone="finishing"]')) seen.firstEnd = "finishing";
+        else if (document.querySelector('[data-run-tone="done"]')) seen.firstEnd = "done";
+      }
       if (!document.querySelector('[data-run-tone="done"]')) return;
       seen.done++;
-      if (!document.body.innerText.includes(RESUMED)) seen.doneBeforePartTwo++;
+      if (!partTwo) seen.doneBeforePartTwo++;
     }).observe(document, { subtree: true, childList: true, attributes: true });
 
     const card = { title: TITLE, detail: "", context: "", request_id: RID };
@@ -617,7 +623,9 @@ async function installCaseA(page: Page, opts: { midDone: boolean }) {
               c.enqueue(frame({ type: "message_end", messageId: "m-2" }));
               await new Promise((r) => setTimeout(r, 1_500));
               write({ phase: "ended" });
-              c.enqueue(frame({ type: "done", run_id: "r1" }));
+              // `cut`: the stream ends with no final `done` (a proxy cut, a
+              // restart). The `done` before the second start must not count.
+              if (!cut) c.enqueue(frame({ type: "done", run_id: "r1" }));
               c.close();
             },
           }), { status: 200, headers: { "content-type": "text/event-stream" } });
@@ -640,7 +648,7 @@ async function installCaseA(page: Page, opts: { midDone: boolean }) {
       }
       return orig(input, init);
     };
-  }, { RID: RESUME_RID, TITLE: RESUME_TITLE, PARKED: PARKED_TEXT, RESUMED: RESUMED_TEXT, midDone: opts.midDone });
+  }, { RID: RESUME_RID, TITLE: RESUME_TITLE, PARKED: PARKED_TEXT, RESUMED: RESUMED_TEXT, midDone: opts.midDone, cut: !!opts.cut });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -725,5 +733,25 @@ test.describe("A late Approve goes on in the same reply (RESUME-3b, case A)", ()
     });
     await expectSameReply(page);
     expect((await resumeCalls(page)).filter((c) => c === "respond")).toEqual([]);
+  });
+
+  test("a replay cut after the second start reads as not finished, never \"Done\" first (review P2-3)", async ({ page }) => {
+    // The replay holds a `done` before the second start, then part two, and
+    // then the stream is CUT with no final `done`. The end is the last `done`
+    // after the last `run_resumed`, so the cut reads as "Checking the run".
+    // A terminal flag that never resets would read the cut as "Done".
+    await installCaseA(page, { midDone: true, cut: true });
+    await parkCaseA(page, true);
+    await page.evaluate(() => {
+      (window as unknown as { __srv: { write: (p: Record<string, unknown>) => void } }).__srv
+        .write({ phase: "goes-on", goesOnAt: Date.now() });
+    });
+    await expect(page.getByText(RESUMED_TEXT).first()).toBeVisible({ timeout: 30_000 });
+    await expect.poll(async () => page.evaluate(() =>
+      (window as unknown as { __seen: { firstEnd: string } }).__seen.firstEnd), { timeout: 30_000 }).not.toBe("");
+    expect(await page.evaluate(() => (window as unknown as { __seen: { firstEnd: string } }).__seen.firstEnd))
+      .toBe("finishing");
+    // Still one bubble, with "Approved" under it.
+    await expectSameReply(page);
   });
 });

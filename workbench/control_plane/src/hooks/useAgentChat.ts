@@ -1434,29 +1434,11 @@ export function useAgentChat({
                 // a slot of a redraft ends (C3).
                 if (end.parked) emitAgentEvent("onRunRested", { threadId });
                 break;
-              case RUN_RESUMED_FRAME: {
-                // RESUME-3b, case A: the parked run goes on in this reply. A
-                // replay that the server cut before it (RESUME-2d) brought no
-                // part one, so the shadow starts from the body of the reply
-                // that shows. The shadow keeps its own flags (CS-1, CS-3b).
-                if (shadow && !hasBody(shadow)) {
-                  const cur = getSessionState(threadId).messages.find((m) => m.id === lastId);
-                  if (cur && hasBody(cur)) {
-                    shadow = {
-                      ...shadow,
-                      content: cur.content,
-                      toolEvents: cur.toolEvents ?? [],
-                      reasoningBlocks: cur.reasoningBlocks ?? [],
-                      segments: cur.segments ?? [],
-                      progressLines: cur.progressLines ?? [],
-                      customEvents: cur.customEvents ?? [],
-                    };
-                  }
-                }
-                // The reply streams again after the `done` of its park.
+              case RUN_RESUMED_FRAME:
+                // RESUME-3b, case A: the parked run goes on in this reply, so
+                // the reply streams again after a `done` in the middle.
                 updLast((m) => ({ ...m, streaming: true, isThinkingActive: true }));
                 break;
-              }
               case "error":
                 // The agent emitted an error during its run (e.g. Copilot
                 // SDK "Load failed" during model warmup).  Don't abort the

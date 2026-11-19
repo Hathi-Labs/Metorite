@@ -632,8 +632,11 @@ function reduceServer(
         doneMessageId: s.messageId && s.doneMessageId !== s.messageId ? s.doneMessageId : null,
       }
       : {};
-    // A parked row names its run. A new run forgets the old one's key.
-    const parked = { parkedRunKey: parkedKey ?? (isNew ? null : s.parkedRunKey) };
+    // A parked row names its run. A new run forgets the old one's key. A run
+    // that goes on after its park keeps its key as the parked key, also when
+    // only the run key found it (no `parkedRunId`), so the line of case A
+    // draws under its reply (review of 2026-11-19, P2-1).
+    const parked = { parkedRunKey: parkedKey ?? (continued ? key : isNew ? null : s.parkedRunKey) };
     const startedAt = isNew ? fresh.startedAt! : continued ? goOn.startedAt! : s.startedAt ?? parseTime(run.startedAt) ?? at;
     const since = isNew || continued ? 0 : s.attachedAt;
     const canAttach = !streamOpen && at - since >= attachGapMs(isNew || continued ? 0 : s.attachFails);
