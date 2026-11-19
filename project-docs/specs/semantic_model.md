@@ -709,6 +709,8 @@ short code, or `None`.
 | Free text that the source or the model wrote, outside the cases above | Refuses |
 | A key outside the closed set, or a part in the wrong section | Refuses |
 | A key that names a secret: header, token, url, path or host (§8) | Refuses |
+| The value of a key: an entity, a field, a module, a target or a measure | Allows an identifier of ASCII letters, digits and `_`, at most 64 characters, that starts with a letter. Refuses a number, an amount, a date, two digits in a row, a space and any mark |
+| An option of a fixed filter of a measure | Allows only an option that the `code` section declares for that field |
 
 **The writer.** `gateway/connections/semantic_model.py` is the only module that
 runs SQL on the table. Each write function calls `shape_only` first. It refuses
@@ -722,8 +724,9 @@ with a clear message when `shape_only` finds a problem.
 | `read_approved(connection_id)` | SEM-15 (the `org_facts` provider) | Returns the approved version, or `None`. It never returns a draft or an archived row (D-SEM-11) |
 
 - **The version.** The writer sets `version`, and the caller never passes it.
-  The writer locks the connection row with `SELECT ... FOR UPDATE`, and then
-  reads the highest version of that connection. So two drafts of one
+  The writer locks the connection row with `SELECT ... FOR NO KEY UPDATE`.
+  Then it reads the highest version of that connection. This lock does not
+  block an insert in another table that references the connection. So two drafts of one
   connection cannot take the same number.
 - **Approve.** The function locks the connection row. It sets the old
   approved row to `archived`, and then it sets the draft to `approved`. Both
@@ -922,15 +925,21 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
   transaction. Two concurrent drafts get two numbers. A draft with `approved_at`
   set fails the CHECK. A write with the flag off refuses with "off".
   **Mutations:** drop the partial unique index, and the second-approved case
-  fails. Drop the connection select before the insert, and the cross-tenant case
-  fails. Drop `FORCE`, and the org B read case fails.
+  fails. The cross-tenant case has two guards: the lock select, and the select
+  in the INSERT. Each guard covers the other. So a drop of one guard keeps the
+  case green. A drop of both turns it red.
+  `FORCE` has a hermetic fence. Drop it, and
+  `test_semantic_shape_only.py::test_the_migration_holds_the_shape_of_section_10_4`
+  fails. The R8 template applies `generated/04`, and that file forces RLS again.
 - `test_semantic_shape_only.py` (new). One case for each row of the
   `shape_only` table in §10.4, and a source check that `connections/semantic_model.py`
   defines no second `LABEL_MAX`, `number_like` or `_has_literal`. **Mutations:**
   drop the `_PARAM_NAME` full match on a parameter name, and the name `Acme Ltd`
   passes and the case fails. Drop both the `number_like` call and the `_PARAM_NAME`
   full match, and the name `2024` passes and the case fails. Drop the section check, and the part in the wrong section
-  passes and the case fails.
+  passes and the case fails. Drop the key grammar, and a key that holds an
+  amount, a date or an instruction passes. Drop the check of a filter option,
+  and an amount in a fixed filter passes.
 - `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
   restart. **Mutation:** leave the flag out of the reload list.
 - `test_tenant_coverage.py` and `test_tenancy_boundary.py`. The table is in the

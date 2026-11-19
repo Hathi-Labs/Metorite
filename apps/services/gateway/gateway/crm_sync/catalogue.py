@@ -1276,6 +1276,11 @@ _FIGURE_WORDS = frozenset({"amount", "total", "balance", "figure", "sum"})
 _MONEY = re.compile(r"[₹$€£¥]\s*\d|\d\s*[₹$€£¥]|\b(?:rs|inr|usd|eur|gbp)\.?\s*\d",
                     re.IGNORECASE)
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+#: The grammar of a key of a connection model: an identifier of ASCII
+#: letters, digits and ``_``, that starts with a letter. No space, no mark,
+#: no control or format character. The label carries the words.
+CONNECTION_KEY_MAX = 64
+_CONNECTION_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
 
 def _tax_words() -> Mapping[str, str]:
@@ -1306,6 +1311,21 @@ def _iso_date(value: Any) -> bool:
     except ValueError:
         return False
     return True
+
+
+def connection_key_problem(value: Any) -> str | None:
+    """Why *value* is not a key of a connection model, or ``None``. A key
+    names an entity, a field or a measure, and SEM-15 puts it in the prompt
+    of the chat. So it is an identifier of at most
+    :data:`CONNECTION_KEY_MAX` characters, and never a number, an amount, a
+    date or a literal (``_has_literal``: a digit after a digit)."""
+    if not isinstance(value, str) or not 0 < len(value) <= CONNECTION_KEY_MAX:
+        return "key_value"
+    if not _CONNECTION_KEY.fullmatch(value):
+        return "key_value"
+    if number_like(value) or _MONEY.search(value) or _DATE.search(value):
+        return "key_value"
+    return "key_value" if _has_literal(value) else None
 
 
 def _label_problem(value: Any) -> str | None:
@@ -1511,9 +1531,56 @@ def _key_problem(body: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _key_values(part: str, item: Mapping[str, Any]) -> Iterable[Any]:
+    """Each value of *item* that names a key of the model: an entity, a
+    field, a module, a target or a measure."""
+    names = {"entities": ("key",), "fields": ("entity", "key"),
+             "joins": ("module", "field", "target"), "tax_marks": ("entity", "field"),
+             "measures": ("key", "module"), "queries": ("key",),
+             "synonyms": ("target",)}.get(part, ())
+    for name in names:
+        if name in item:
+            yield item[name]
+    if part == "measures":
+        yield from item.get("fields") or []
+        yield from (f.get("field") for f in item.get("filters") or [])
+    if part == "queries":
+        shape = item.get("query") or {}
+        yield from (shape[k] for k in ("module", "measure") if k in shape)
+        yield from shape.get("fields") or []
+        yield from shape.get("group_by") or []
+        yield from (w.get("field") for w in shape.get("where") or [])
+
+
+def _declared_options(body: Mapping[str, Any]) -> dict[tuple[Any, Any], frozenset[Any]]:
+    """The options of each field of the ``code`` section, by entity and key."""
+    parts = body.get(SECTION_CODE)
+    fields = parts.get("fields") if isinstance(parts, Mapping) else None
+    found: dict[tuple[Any, Any], frozenset[Any]] = {}
+    for f in fields if isinstance(fields, list) else ():
+        if isinstance(f, Mapping) and isinstance(f.get("options"), list):
+            found[(f.get("entity"), f.get("key"))] = frozenset(
+                o for o in f["options"] if isinstance(o, str))
+    return found
+
+
+def _filter_option_problem(item: Mapping[str, Any],
+                           options: Mapping[tuple[Any, Any], frozenset[Any]]) -> str | None:
+    """A fixed filter of a measure names options that the ``code`` section
+    declares for that field. The SEM-7 check allows any plain text there, and
+    on the CRM path ``semantic_ref_problem`` checks it against the catalogue.
+    ``shape_only`` reads no catalogue, so it checks the body itself."""
+    for one in item.get("filters") or []:
+        declared = options.get((item.get("module"), one.get("field")), frozenset())
+        for option in one.get("options") or []:
+            if _label_problem(option) is not None or option not in declared:
+                return "filter_option"
+    return None
+
+
 def _targets(body: Mapping[str, Any]) -> frozenset[str]:
     """The keys that a synonym may name: the key of an entity, a field or a
-    measure of the body."""
+    measure of the body, when it holds the grammar of a key."""
     found: set[str] = set()
     for section in MODEL_SECTIONS:
         parts = body.get(section)
@@ -1522,12 +1589,25 @@ def _targets(body: Mapping[str, Any]) -> frozenset[str]:
         for part in ("entities", "fields", "measures"):
             items = parts.get(part)
             for item in items if isinstance(items, list) else ():
-                if isinstance(item, Mapping) and isinstance(item.get("key"), str):
+                if (isinstance(item, Mapping)
+                        and connection_key_problem(item.get("key")) is None):
                     found.add(item["key"])
     return frozenset(found)
 
 
-def _part_problem(section: str, part: str, items: Any, targets: frozenset[str]) -> str | None:
+def _connection_item_problem(part: str, item: Mapping[str, Any],
+                             options: Mapping[tuple[Any, Any], frozenset[Any]]) -> str | None:
+    """The checks of a connection model that run after the item check: the
+    value of each key, and the options of each fixed filter of a measure."""
+    for value in _key_values(part, item):
+        found = connection_key_problem(value)
+        if found is not None:
+            return found
+    return _filter_option_problem(item, options) if part == "measures" else None
+
+
+def _part_problem(section: str, part: str, items: Any, targets: frozenset[str],
+                  options: Mapping[tuple[Any, Any], frozenset[Any]]) -> str | None:
     if not isinstance(items, list) or len(items) > PART_ITEMS_MAX:
         return "items"
     if section == SECTION_CODE and part == "entities":
@@ -1549,6 +1629,9 @@ def _part_problem(section: str, part: str, items: Any, targets: frozenset[str]) 
         if not isinstance(item, Mapping):
             return "item"
         found = check(item)
+        if found is not None:
+            return found
+        found = _connection_item_problem(part, item, options)
         if found is not None:
             return found
         if identity is not None:
@@ -1573,7 +1656,9 @@ def shape_only(body: Any) -> str | None:
     * ``<section>.<part>:<word>``: a part of a section. ``section`` is a
       part in the wrong section. ``part`` is a key outside the closed set.
       Each other word is the first problem of an item, such as ``keys``,
-      ``label_value``, ``ai_text``, ``text_value``, ``param_value`` or
+      ``key_value`` (a key that is not an identifier, see
+      :func:`connection_key_problem`), ``filter_option``, ``label_value``,
+      ``ai_text``, ``text_value``, ``param_value`` or
       ``query_value`` (the words of :func:`semantic_problem`).
     """
     if not isinstance(body, Mapping) or set(body) != {"v", *MODEL_SECTIONS}:
@@ -1584,6 +1669,7 @@ def shape_only(body: Any) -> str | None:
     if found is not None:
         return found
     targets = _targets(body)
+    options = _declared_options(body)
     for section in MODEL_SECTIONS:
         parts = body[section]
         if not isinstance(parts, Mapping):
@@ -1593,7 +1679,7 @@ def shape_only(body: Any) -> str | None:
             if part not in SECTION_PARTS[section]:
                 known = any(part in s for s in SECTION_PARTS.values())
                 return f"{where}:{'section' if known else 'part'}"
-            found = _part_problem(section, str(part), items, targets)
+            found = _part_problem(section, str(part), items, targets, options)
             if found is not None:
                 return f"{where}:{found}"
     return None
@@ -1603,6 +1689,7 @@ __all__ = [
     "AGGREGATES",
     "AMOUNT_NAMES",
     "BY_WORDS",
+    "CONNECTION_KEY_MAX",
     "CORE_FITS",
     "CORE_KEY_COLUMNS",
     "CORE_PURPOSES",
@@ -1669,6 +1756,7 @@ __all__ = [
     "code_purpose",
     "code_status",
     "composite",
+    "connection_key_problem",
     "entry_of",
     "is_catalogue",
     "is_semantic",

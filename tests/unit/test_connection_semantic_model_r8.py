@@ -27,14 +27,20 @@ A hermetic fake agrees with any SQL that it gets, so none of this could be
 proved without the database.
 
 Mutations, each red here: drop the partial unique index (case 6, the
-second approved row). Drop ``FORCE`` (case 1 pins ``relforcerowsecurity``.
-The app role of this suite does not own the table, so RLS binds it with
-``ENABLE`` alone, and case 3 pins the policy). Drop the
+second approved row). Drop the policy (case 3, the read of org B). Drop the
 connection select ``_LOCK_SQL`` AND the ``FROM integration_connections`` of
 ``_INSERT_SQL`` (case 4: the insert names the connection by its id alone,
-and the foreign key check skips RLS). Drop only ``_LOCK_SQL``, and the
-version select of case 2 races (two drafts take one number). Swap the two
-steps of ``approve`` (case 7, the index trips).
+and the foreign key check skips RLS). A drop of only one of the two keeps
+case 4 green, because each one guards the other. Swap the two steps of
+``approve`` (case 7, the index trips).
+
+Not a fence here: a drop of ``FORCE`` in the migration. The template of this
+suite applies ``generated/04``, which forces RLS again, and the app role does
+not own the table. The fence of ``FORCE`` is
+``test_semantic_shape_only.py::test_the_migration_holds_the_shape_of_section_10_4``.
+Case 2 (two concurrent drafts) shows that the lock orders the writers. A drop
+of the lock does not turn it red on each run, because the race window is
+short.
 """
 
 from __future__ import annotations
@@ -223,13 +229,36 @@ async def test_2_two_concurrent_drafts_get_two_numbers(db) -> None:
     assert [r[1] for r in _rows(db, cid)] == [1, 2, 3, 4]
 
 
+async def test_2_two_concurrent_approves_leave_one_approved_row(db) -> None:
+    """Two admins approve two drafts of one connection at once. The lock of
+    the connection orders them, so one approved row stays, and the other
+    version is archived. Mutation: drop the archive step of ``approve``, and
+    the second approve trips the partial unique index."""
+    from acb_common.db import tenant_session
+    from gateway.connections import semantic_model as sm
+
+    cid = _connection(db, db.org_a)
+    await _call(db, db.org_a, "save_draft", cid, _body(), _HASH, False)
+    await _call(db, db.org_a, "save_draft", cid, _body("Sales register"), _HASH, False)
+
+    async def one(version: int) -> None:
+        async with tenant_session(db.org_a) as s:
+            await sm.approve(s, cid, version, "admin")
+            await asyncio.sleep(0.05)  # hold the lock, so the other waits
+
+    async with tenant_engine_scope(_app_dsn(db)):
+        await asyncio.gather(one(1), one(2))
+    states = sorted(r[2] for r in _rows(db, cid))
+    assert states == ["approved", "archived"]
+
+
 # ── 3. Org B reads nothing of org A ─────────────────────────────────────────
 
 
 async def test_3_org_b_cannot_read_a_row_of_org_a(db) -> None:
     """Mutation: drop the policy, and org B reads the row of org A. A drop of
-    ``FORCE`` turns case 1 red: the app role of this suite does not own the
-    table, so ``ENABLE`` alone binds it here."""
+    ``FORCE`` in the migration does not turn this suite red (see the module
+    docstring). Its fence is the hermetic migration-shape test."""
     from acb_common.db import tenant_session
 
     cid = _connection(db, db.org_a)

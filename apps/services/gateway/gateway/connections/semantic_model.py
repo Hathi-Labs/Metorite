@@ -102,10 +102,13 @@ _BOUND_SQL = "SELECT NULLIF(current_setting('app.tenant_id', true), '')"
 
 #: The connection under the bound tenant, locked until the transaction ends.
 #: FORCE RLS on the registry and the org filter both keep it to the bound org.
+#: ``FOR NO KEY UPDATE`` orders two writers of one connection, and it does not
+#: block the ``FOR KEY SHARE`` of an insert in another table that references
+#: the connection (a sync run, a source profile, a calendar row).
 _LOCK_SQL = (
     "SELECT id FROM integration_connections "
     f"WHERE id = CAST(:cid AS uuid) AND organization_id = {_BOUND_ORG} "
-    "FOR UPDATE"
+    "FOR NO KEY UPDATE"
 )
 
 _NEXT_SQL = (
