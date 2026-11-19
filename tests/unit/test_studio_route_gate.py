@@ -20,8 +20,9 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
 d. The router carries one feature gate, ``feature:studio``. No route adds a
    second gate. Only the org and group install of WS-PKG PKG-8b, its
    uninstall of PKG-8e, the member of a run with no viewer of WS-STU B6a, the
-   share with people of J2b-2, and the list, the approve and the reject of
-   WS-STU J2b-1 read ``studio:publish``, in their handlers. Such an install
+   share with people of J2b-2, the list, the approve and the reject of
+   WS-STU J2b-1, and the list, the approve, the reject and the unshare of the
+   skill share of J2c read ``studio:publish``, in their handlers. Such an install
    is a share to others (D180.3, ``package_host.md`` §6.1), and J2b-1 is its
    review. No other route reads it. The fence reads the syntax tree, so a second read
    in another quote style fails too.
@@ -105,6 +106,12 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/skills/{skill_id}/versions"),
     ("POST", "/studio/skills/{skill_id}/undo"),
     ("PATCH", "/studio/skills/{skill_id}/state"),
+    # WS-STU J2c, the share of a skill with the org.
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share"),
+    ("GET", "/studio/skill-shares"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/approve"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/reject"),
+    ("DELETE", "/studio/skills/{skill_id}/share"),
     # TOF-3b F4b, the test run of a skill.
     ("POST", "/studio/skills/{skill_id}/tests/run"),
     # A5, the package routes.

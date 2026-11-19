@@ -277,7 +277,16 @@ def tool_result_fields(content: Any) -> tuple[str, bool]:
             return MEMBER_LINE, False
     except Exception:  # the mapping of before, never a lost result
         _log.warning("event_translator.unknown_call_check_failed", exc_info=True)
-    return (str(exc) if exc else str(result)), exc is None and not is_refusal(result)
+    text = str(exc) if exc else str(result)
+    if not exc and "usable as input of compute_run]" in text:
+        # SBX-19: the marker line is for the model. The member never sees it.
+        try:
+            from acb_skills.tool_result_spill import strip_compute_marker
+
+            text = strip_compute_marker(text)
+        except Exception:  # the text as it is, never a lost result
+            _log.warning("event_translator.marker_strip_failed", exc_info=True)
+    return text, exc is None and not is_refusal(result)
 
 
 def _partial_tool_call_id(update: Any) -> str:
