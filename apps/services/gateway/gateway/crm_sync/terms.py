@@ -389,14 +389,17 @@ class Link:
 
 
 def _fold(text: Any) -> str:
-    """A label in one form: lower case, with each character that is not a
-    letter or a digit dropped. ``%`` reads as :data:`PERCENT_WORD` first.
+    """A label in one form: lower case in NFC, with each character that is not a
+    letter, a digit or a combining mark dropped (a variation selector too).
+    A combining vowel sign stays, so two words of an Indic script stay apart. ``%`` reads as :data:`PERCENT_WORD` first.
     Apart from ``%``, it is the rule of ``fold_module`` in
     ``routes/crm/modules.py`` (CRM-Q34-12). This module imports no route, so
     it keeps its own copy."""
     text = str(text or "").replace("%", f" {PERCENT_WORD} ")
-    return "".join(ch for ch in text.lower()
-                   if ch.isalnum() or unicodedata.category(ch).startswith("M"))
+    text = unicodedata.normalize("NFC", text.lower())
+    return "".join(ch for ch in text
+                   if ch.isalnum()
+                   or (unicodedata.category(ch).startswith("M") and not "︀" <= ch <= "️"))
 
 
 def _own_term(word: str) -> bool:
@@ -460,7 +463,8 @@ def link_field(fields: Iterable[Any], word: str, *, module: str = "",
        ``term_state(...).answers``, which the caller read. With no *module*
        or no *answers*, or a word that :func:`_own_term` refuses, the step
        does not run;
-    3. ``case``: the key in any case;
+    3. ``case``: the key in any case. A label that names a different field
+       joins it, so the word is ``ambiguous``;
     4. ``label``: the label, folded by :func:`_fold`;
     5. ``near``: each word of *word* of :data:`NEAR_MIN` letters or more hits
        a word of the label or of the key (:func:`_hit`). It suggests and

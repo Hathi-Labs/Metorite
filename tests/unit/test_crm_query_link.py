@@ -260,6 +260,17 @@ def test_two_words_of_an_indic_script_never_fold_to_one(label: str, word: str) -
     assert found.linked is False and found.step != "label"
 
 
+def test_a_key_and_its_own_label_in_any_case_still_link() -> None:
+    assert link_field([F("Amount", "Amount", "currency")], "amount") == link(
+        "Amount", step="case", money=True)
+
+
+def test_a_label_folds_alike_in_nfc_nfd_and_with_an_emoji_selector() -> None:
+    assert link_field([F("Cafe", "Café Fee", "currency")],
+                      "café fee").linked is True
+    assert link_field([F("Prio", "Priority ⭐️")], "priority ⭐").linked is True
+
+
 def test_the_case_step_sees_the_label_of_a_second_field() -> None:
     fields = [F("Amount", "Advance", "currency"), F("Amount1", "Amount", "currency")]
     assert link_field(fields, "amount") == hint("Amount", "Amount1", step="ambiguous",
