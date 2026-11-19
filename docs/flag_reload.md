@@ -50,6 +50,20 @@ later turn of the chat then gets one line for each of the last 5 sent mails,
 in its run context. The run asks the flag at the start of each turn, so a
 reload applies at the next turn.
 
+`CHAT_CARD_REVISE_ORGS` turns on the revise of a mailbox card
+(`chat_failure_modes.md` §4.3 row C7, task 3814). For each listed org, a
+chat message of the member closes each card of the email assistant's
+`_confirm_destructive` gate, such as "Save this new email in Drafts?". The
+tool then tells the model how to read the message. A new draft of a chat
+also updates the draft of the same email that the chat saved before, so
+Drafts keeps one copy. `*` lists every org, and the default is empty. Empty
+means each card and each draft save is as before.
+
+Its one reader is `acb_skills.card_revise.card_revise_on`. The email tool asks
+it at each card and each save, and the gateway asks it at each save of a
+new-mail card. So a reload applies at once. A flip stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_CLAIM_CHECK_ORGS` turns on the claim check of an answer
 (`chat_failure_modes.md` §6 row HRD-13). For each listed org, the run of the
 orchestrator logs one line, `answer_claims.checked`, at its end. The line
@@ -90,6 +104,15 @@ Approve of a parked plain card approves the same card once in the next run.
 `acb_skills.late_approve.late_approve_on`, and the park, the late answer and
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
+
+`CHAT_PACKS_BATCH_ORGS` gives the member's own WhatsApp turn of each listed
+org the read tools of its packs (`chat_reach.md` G2, task 3494). The turn holds
+no write tool, and the specialist of each pack stays. It acts only where
+`TOOL_PACKS` gives a pack. `*` lists every org, and the default is empty.
+
+Its one reader is `acb_skills.tool_packs.packs_batch_on`. The batch run asks it
+at the start of each WhatsApp run, so a reload applies to the next run. Any
+value other than empty is OWNER-ONLY (`work_plan.md` §6 D4).
 
 `CHAT_PIN_ORGS` turns on the pin of a chat (`chat_organization.md` §18,
 CO-11). For each listed org, a member may pin a chat, and the chat list shows a
