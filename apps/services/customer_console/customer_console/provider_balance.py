@@ -886,6 +886,83 @@ def health_report(
     return out
 
 
+# ── The alert signal for a box (AO-2, customer_console.md §6A.17b) ──────────
+#
+# The gateway tells the admins of the operator org when a vendor runs out. It
+# reads ONE word per vendor, and this module judges the word. So the gateway
+# never reads a status rule or a reason, and no vendor text leaves this plane.
+
+#: The words the box may read, and nothing else.
+#:
+#: * ``out`` and ``low`` — the status of the same name.
+#: * ``serving`` — the vendor serves, with evidence: status ``ok``, or a vendor
+#:   with no balance probe whose latest served call is newer than its latest
+#:   refusal.
+#: * ``clear`` — no refusal counts now, and nothing proves that the vendor
+#:   serves. A 402 that aged out of the window with no call reads so.
+#: * ``other`` — ``refusing``, ``rate_limited`` or ``probe_failed``. The
+#:   alert of AO-2 has no word for these.
+ALERT_SIGNALS = ("out", "low", "serving", "clear", "other")
+
+
+def _instant(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def alert_signal(row: Mapping[str, Any]) -> str:
+    """The one word of :data:`ALERT_SIGNALS` for one :func:`health_report` row.
+
+    ⚠️ A vendor with no probe (Anthropic, OpenAI) never reads ``ok``. Its
+    healthy status is ``unknown``. So ``unknown`` is ``serving`` only when a
+    served call is newer than every refusal, and ``clear`` otherwise.
+    """
+    status = row.get("status")
+    if status in ("out", "low"):
+        return str(status)
+    if status == "ok":
+        return "serving"
+    if status == "unknown":
+        served = _instant(row.get("last_success_at"))
+        refused = _instant(row.get("last_refusal_at"))
+        if served is not None and (refused is None or served > refused):
+            return "serving"
+        return "clear"
+    return "other"
+
+
+def alert_rows(report: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows of ``POST /registry/providers/health``: a closed set of keys.
+
+    Each row is the provider id, the display name from the ONE vendor list
+    (``provider_registry``), the signal and the days left. 🔴 No reason, no
+    probe error and no balance: nothing a vendor wrote, and no number that the
+    alert does not print.
+    """
+    from customer_console import provider_registry
+
+    out: list[dict[str, Any]] = []
+    for row in report:
+        name = str(row["provider"])
+        entry = provider_registry.provider(name)
+        out.append(
+            {
+                "provider": name,
+                # A vendor with no registry row keeps its id. The id is ours.
+                "label": entry.label if entry is not None else name,
+                "signal": alert_signal(row),
+                "days_left": row.get("days_left"),
+            }
+        )
+    return out
+
+
 def refresh_alerts(conn: Any, report: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """Log each provider's status once per TRANSITION. Returns what changed.
 

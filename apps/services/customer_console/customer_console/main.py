@@ -117,6 +117,7 @@ from customer_console.auth import (
     ProvisionCaller,
     ResolveCaller,
     SeatAdminCaller,
+    ServeReadCaller,
     ServingCaller,
     SignedWebhook,
     StaffIdentity,
@@ -4399,6 +4400,42 @@ def provider_health(staff: Operator) -> dict[str, Any]:
     balance is theirs to watch.
     """
     return _provider_health_body()
+
+
+@app.post("/registry/providers/health")
+def provider_health_for_box(caller: ServeReadCaller) -> dict[str, Any]:
+    """One alert word per vendor, for the box that serves AI (AO-2).
+
+    Spec: ``customer_console.md`` §6A.17b. The gateway reads this door through
+    ``acb_auth.console_resolve.provider_health_on_console`` and tells the
+    admins of the operator org when a vendor runs out.
+
+    **Why the box asks.** Every arrow between the two planes runs from the box
+    to the Console (``placed_orgs`` above says why). So the box reads, and this
+    service calls no box.
+
+    **Deployment key only, capability ``serve``.** The operator arm is refused:
+    the operator reads ``GET /providers/health``, which shows more.
+
+    🔴 **A closed set of keys** (``provider_balance.alert_rows``): the vendor
+    id, its display name, one word of ``ALERT_SIGNALS`` and the days left. No
+    reason, no probe error and no balance. So no text that a vendor wrote can
+    reach the box, a bell or a push.
+
+    It reads only. It flushes no refusal and logs no transition, and it is not
+    audited: a box that reads on a timer is not an event.
+    """
+    if caller is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this door answers a box that serves AI; an operator reads "
+                "GET /providers/health"
+            ),
+        )
+    with get_engine().begin() as conn:
+        report = provider_balance.health_report(conn)
+    return {"providers": provider_balance.alert_rows(report)}
 
 
 @app.post("/providers/health/check")

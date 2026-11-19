@@ -63,6 +63,12 @@ one reader, and :func:`claim_stored_call` the one claim (RESUME-2a).
 ``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
 each row is as before.
 
+**The same reply** (RESUME-2b, §4.12.4 item 2, case A). :func:`_record` adds
+the id of the run's reply row to the stored call (``message_id``), from the
+run's ``run_liveness`` record. :func:`park` keeps the stream of the parked run
+for 24 hours (D-RES-7, ``stream_relay.keep_parked_stream``) when both resume
+flags name the org. So a late Approve can go on in the same reply.
+
 **Retention** (task 3435, ``chat_run_continuity.md`` §4.12.4 item 1). No
 reader takes a row past ``expires_at``, and no move changes one. So
 :func:`prune` is the one end of an old row. It runs as a hook of the daily
@@ -861,14 +867,19 @@ def _remember_parked(request_id: str) -> None:
         _PARKED.pop(next(iter(_PARKED)))
 
 
-async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None, str]:
-    """``(org, run_id, agent, actor)`` of the run on *thread_id*, server side."""
+async def _run_facts(
+    thread_id: str,
+) -> tuple[str | None, str | None, str | None, str, str | None]:
+    """``(org, run_id, agent, actor, message_id)`` of the run on *thread_id*,
+    server side. ``message_id`` is the id of the run's reply row, from the
+    ``run_liveness`` record of the run (RESUME-2b). :func:`_record` reads the
+    first four by position, so a stand-in that gives four still works."""
     org: str | None = None
     with contextlib.suppress(Exception):
         from acb_common.db import current_tenant
 
         org = current_tenant()
-    run_id = agent = None
+    run_id = agent = message_id = None
     with contextlib.suppress(Exception):
         from orchestrator import run_liveness, stream_relay
 
@@ -879,21 +890,29 @@ async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None
             org = org or (str(rec.get("org")) if rec.get("org") else None)
             run_id = str(rec.get("runId") or "") or None
             agent = str(rec.get("agent") or "") or None
+            message_id = str(rec.get("messageId") or "") or None
     actor = ""
     with contextlib.suppress(Exception):
         from orchestrator.stream_relay import get_run_actor
 
         actor = (await get_run_actor(thread_id) or "").strip().lower()
-    return org, run_id, agent, actor
+    return org, run_id, agent, actor, message_id
 
 
 async def _record(thread_id: str, ask: CardAsk,
                   stored: dict[str, Any] | None = None) -> str | None:
-    org, run_id, agent, actor = await _run_facts(thread_id)
+    facts = await _run_facts(thread_id)
+    org, run_id, agent, actor = facts[:4]
     if not org:
         # No tenant, so no row: the fail-closed answer (a run with no org has
         # no tenant to be listed under, as in ``register_live_run``).
         return None
+    message_id = facts[4] if len(facts) > 4 else None
+    if stored is not None and message_id:
+        # RESUME-2b: the stored call names the reply row of the card, from
+        # the run's own record, never from an event field. The key is
+        # additive: version 1 stays, and each reader allows a call with none.
+        stored = {**stored, "message_id": message_id}
     row = {
         "request_id": ask.request_id, "thread_id": thread_id, "run_id": run_id,
         "actor_email": actor, "agent_name": agent, "kind": ask.kind,
@@ -1011,8 +1030,10 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
-    except Exception:
-        _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+    except Exception as exc:
+        # Class and id only (task 3538): the answer is a statement parameter.
+        _log.warning("pending_ask.settle_failed", request_id=request_id[:12],
+                     error=type(exc).__name__)
         return
     if row:
         # The question no longer waits, so it leaves My Day at once.
@@ -1139,6 +1160,16 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
         await stream_relay.push_event(thread_id, {
             "type": "RUN_FINISHED", "threadId": thread_id, "parked": True,
         })
+    # D-RES-7 (RESUME-2b): the park ends the stream here, so the stream lives
+    # 24 hours from now. Only where a late Approve can go on in the same
+    # reply: CHAT_RESUME_ORGS and CHAT_LATE_APPROVE_ORGS both name the org.
+    # Off, the stream keeps the life of before. It never raises.
+    with contextlib.suppress(Exception):
+        from acb_skills.late_approve import late_approve_on
+        from acb_skills.stored_call import chat_resume_on
+
+        if chat_resume_on(org) and late_approve_on(org):
+            await stream_relay.keep_parked_stream(thread_id)
     _log.info("pending_ask.parked", request_id=request_id[:12], thread_id=thread_id[:12])
     # The drain's finally saves the reply so far (on_complete), marks the run
     # inactive and clears its live-run entry. That save is the checkpoint.
