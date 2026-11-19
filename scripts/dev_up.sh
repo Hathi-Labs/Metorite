@@ -151,7 +151,7 @@ gateway_env() {
     "GATEWAY_INTERNAL_TOKEN=$TOKEN" \
     "EXECUTIVE_EMAILS=$ME" \
     "STUDIO_ORGS=*" \
-    "APP_REQUESTS_ORGS=*"
+    "APP_REQUESTS_ORGS=*" \n    "GATEWAY_URL=http://127.0.0.1:$GW_PORT"
   studio_key_env
 }
 

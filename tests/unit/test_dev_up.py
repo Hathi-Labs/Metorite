@@ -257,3 +257,19 @@ class TestTheGuards:
     def test_the_state_folder_is_ignored(self):
         """It holds the local gateway token."""
         assert ".dev_up/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
+class TestGatewayUrl:
+    """Task 2455. The skill tools read `GATEWAY_URL` and default to
+    `http://localhost:8080`. On this PC another process can listen there, so a
+    tool write went to that process (a 501 from a fake LLM was the proof). The
+    gateway of the stack must name ITSELF."""
+
+    @needs_bash
+    def test_the_gateway_names_its_own_port(self, tmp_path):
+        env = _print_env(tmp_path)
+        assert env["gateway"]["GATEWAY_URL"] == "http://127.0.0.1:8400"
+
+    @needs_bash
+    def test_the_web_app_keeps_its_own_variable(self, tmp_path):
+        assert "GATEWAY_URL" not in _print_env(tmp_path)["web"]
