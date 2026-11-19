@@ -1229,8 +1229,9 @@ async def _llm_draft_reply(
         if on_delta is not None and isinstance(files, DraftFiles) and files.images:
             # The streamed call sends no images (review round 1, P1-c). With
             # routing off it goes to litellm with no Router hop. With routing
-            # on it is one Router answer (task 3541), and that slice did not
-            # add a vision task to it. So the images are named as not read.
+            # on it streams from the Router (tasks 3541 and 3542), and neither
+            # slice added a vision task to it. So the images are named as not
+            # read.
             files.unread.extend((n, UNREAD_IMAGE) for n, _u in files.images)
             files.images = []
         # Fit the parts to the window of the tier, or move to a tier with a
@@ -2905,8 +2906,9 @@ async def _compose_assist_run(
         try:
             # No session stays open over the provider fetch (PR-A1): the
             # loader lists the files in a short session of its own. No
-            # images: the composer streams, and a streamed call has no
-            # Router hop to choose a model that reads them (P1-c).
+            # images: the composer streams, and the streamed call sends no
+            # `vision` task, so the Router does not pick a model that reads
+            # them (P1-c). Neither task 3541 nor task 3542 added one.
             ctx["_files"] = await load_draft_files(
                 None, req.message_id, user, budget_s=COMPOSE_FILES_BUDGET_S,
                 vision=False)
@@ -3700,6 +3702,17 @@ class DraftUpsertRequest(BaseModel):
     # are normalised before the save. The Email app's composer sends False,
     # so its saves are as before.
     from_chat: bool = False
+    # Task 3605: True when ``body`` is Markdown, as the email assistant writes
+    # it. A draft holds text only, so the save keeps the text part of
+    # ``markdown_mail.mail_bodies``: the Markdown as written, less the bidi
+    # controls. The answer says ``formatting: "text_only"`` when the body had
+    # real structure that the draft does not show.
+    body_markdown: bool = False
+
+
+#: The ``formatting`` key of the answer of a save of a Markdown body that had
+#: formatting (task 3605). The draft holds the text only.
+FORMATTING_TEXT_ONLY = "text_only"
 
 
 #: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
@@ -3797,6 +3810,22 @@ def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
     return req.model_copy(update={"body": visible_spacing(req.body), "subject": subject})
 
 
+def _markdown_draft_text(req: DraftUpsertRequest) -> tuple[DraftUpsertRequest, dict[str, str]]:
+    """A save of a Markdown body (task 3605): the request with the text part
+    of ``markdown_mail.mail_bodies`` as its body, and the ``formatting`` key
+    of the answer. A draft holds text only, so a body with real structure
+    shows no formatting there, and the answer says so. A save that keeps
+    the stored body does not change."""
+    if not req.body_markdown or req.keep_body:
+        return req, {}
+    from gateway.routes.email.markdown_mail import draft_text
+
+    body, lost = draft_text(req.body)
+    if body != req.body:
+        req = req.model_copy(update={"body": body})
+    return req, ({"formatting": FORMATTING_TEXT_ONLY} if lost else {})
+
+
 @router.put("/drafts")
 async def upsert_draft(
     req: DraftUpsertRequest,
@@ -3812,6 +3841,7 @@ async def upsert_draft(
     _refuse_bad_draft_id(req.draft_id)
     if req.from_chat:
         req = _chat_draft_text(req)
+    req, formatting = _markdown_draft_text(req)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         # The signature lives IN the draft body so the upstream (provider)
@@ -3923,8 +3953,57 @@ async def upsert_draft(
                 clear_html=gmail and not req.keep_html,
             )
         if gmail:
-            return {**await _fetch_message_dict(db, local_id), "html": html_state}
-        return await _fetch_message_dict(db, local_id)
+            return {**await _fetch_message_dict(db, local_id), "html": html_state,
+                    **formatting}
+        saved = await _fetch_message_dict(db, local_id)
+        return {**saved, **formatting} if formatting else saved
+
+
+async def save_chat_draft(
+    fields: dict[str, Any], user: UserContext, *, thread: str, member: str, org: str,
+    replaces: str = "", act: str = "new_mail",
+    upsert: Callable[[DraftUpsertRequest, UserContext], Awaitable[Any]] | None = None,
+) -> Any:
+    """Save a NEW draft of a chat card through :func:`upsert_draft`, under the
+    one-draft rule of ``acb_skills.card_revise.save_one_draft`` (task 3814).
+
+    *fields* are the fields of a :class:`DraftUpsertRequest` with no
+    ``draft_id``. *thread* is the chat thread that the card's record holds,
+    and *member* and *org* come from the session, never from a request field
+    (R5). *replaces* is the id that the card's record holds, the draft that
+    the card said it replaces. With ``CHAT_CARD_REVISE_ORGS`` off, or with no
+    such id, it is the one save of before. The read of the earlier draft is
+    the read of :func:`_fetch_message_dict`, and the delete is the delete of
+    a message (``DELETE /email/messages/{id}``). *upsert* lets a caller pass
+    the ``upsert_draft`` that it imported. It answers the ``SavedDraft``."""
+    from acb_skills.card_revise import save_one_draft
+    from gateway.routes.email.transport.messages import delete_message
+
+    save = upsert or upsert_draft
+    account_id = str(fields.get("account_id") or "")
+
+    async def put(body: dict[str, Any]) -> Any:
+        return await save(DraftUpsertRequest(**body), user)
+
+    async def read(draft_id: str) -> dict[str, Any] | None:
+        async with _tenant_session() as db:
+            row = await _fetch_message_dict(db, draft_id)
+        return row if row and str(row.get("account_id") or "") == account_id else None
+
+    async def delete(draft_id: str) -> Any:
+        return await delete_message(draft_id, user)
+
+    return await save_one_draft(put, fields, replaces=replaces, thread=thread, member=member,
+                                act=act, read=read, delete=delete, org=org)
+
+
+def replace_fields(saved: Any, rec: dict[str, Any]) -> dict[str, Any]:
+    """The keys of a card act's answer for the one-draft rule (task 3814):
+    the outcome and the earlier draft, only when the record named one. A card
+    with no ``replaces`` answers no new key."""
+    if not rec.get("replaces"):
+        return {}
+    return {"replace_outcome": saved.outcome, "replaced": saved.earlier}
 
 
 class DraftExpect(BaseModel):

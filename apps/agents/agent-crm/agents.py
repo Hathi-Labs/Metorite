@@ -498,7 +498,12 @@ async def search_crm(
         )
     if not sections and not near_sections:
         scope = ENTITY_LABELS[slugs[0]].lower() + "s" if entity else "the CRM"
-        return f"Nothing in {scope} matches '{query}'."
+        # WS-FIND FIND-6 (§5.3): a zero ends with the fixed pointer to
+        # search_company, only in a pack call of an org of FIND_ORGS. A failure
+        # raises before this line, so it never gets the pointer.
+        from acb_skills.company_search_tools import with_zero_pointer
+
+        return with_zero_pointer(f"Nothing in {scope} matches '{query}'.")
     if not sections:
         return _near_answer(query) + "\n\n" + "\n\n".join(near_sections)
     out = f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)

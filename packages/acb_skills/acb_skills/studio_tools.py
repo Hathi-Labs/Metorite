@@ -1088,13 +1088,14 @@ def _row(r: dict[str, Any]) -> dict[str, Any]:
 
 @annotate(read_only=True, idempotent=True, open_world=False)
 async def studio_list_actions(
-    query: str = "", offset: int = 0, limit: int = 0, app: str = "",
+    query: str = "", offset: int = 0, limit: int = 0, app: str = "", for_skill: bool = False,
 ) -> dict[str, Any]:
     """List the actions an app may use. The optional query filters by id and title.
 
     One page holds at most 30 actions. The "page" line names the total and the offset
     of the next page. With app (a package_id that studio_save gave), the list holds
-    only the actions of that package.
+    only the actions of that package. With for_skill true, the list also holds the
+    tool:<name> chat tools that a skill may name. An app cannot use them.
     """
     aid = _skill_path(app) if str(app or "").strip() else ""
     if aid is None:
@@ -1103,6 +1104,10 @@ async def studio_list_actions(
         rows = await _read_catalog(app=aid)
     except _Refused as exc:
         return _result(False, _sentence(str(exc)), [])
+    # TOF-1e: a ``tool`` row is a chat tool for a skill. An app cannot use it,
+    # so only a call with for_skill keeps it.
+    if not for_skill:
+        rows = [r for r in rows if r.get("source") != "tool"]
     needle = (query or "").strip().lower()
     if needle:
         rows = [r for r in rows
@@ -1916,7 +1921,7 @@ async def studio_skill_save(
     A new skill needs a name, a description and instructions. A new version
     changes only what you send: an omitted field keeps its stored value, and an
     empty actions list clears the actions. A name cannot change. Use only
-    action ids from studio_list_actions. The save asks on no card, and it never
+    action ids from studio_list_actions with for_skill true. The save asks on no card, and it never
     publishes. In a chat that read outside mail, it shows one card first and
     waits (decision: approved, revised, stopped or no_card). A new version of a
     published skill returns it to a draft. A version that changes the

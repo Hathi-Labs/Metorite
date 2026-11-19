@@ -16,6 +16,7 @@ import {
   checkpointAgent,
   checkpointIsEmpty,
 } from "@/lib/assistantCheckpoint";
+import { ROUTE_EVENT } from "@/lib/tierRouting";
 
 const BASE = {
   threadId: "t1",
@@ -70,6 +71,18 @@ describe("assistantCheckpointRow", () => {
     expect(checkpointIsEmpty({ threadId: "t1", content: "  " })).toBe(true);
     expect(checkpointIsEmpty({ threadId: "t1", content: "", todos: [{ id: "1", title: "T", status: "x" }] })).toBe(false);
     expect(checkpointIsEmpty({ threadId: "t1", content: "hi" })).toBe(false);
+  });
+
+  // AO-3 (incident 2026-11-17): a failed turn still sent its tier label, and
+  // the saved row drew an empty reply. Mutation: count `customEvents` whole
+  // again, and the first line fails.
+  it("skips a turn that holds only a label, and keeps a real card", () => {
+    const route = { name: ROUTE_EVENT, value: { tier: "tier-balanced" } };
+    expect(checkpointIsEmpty({ threadId: "t1", content: "", customEvents: [route, route] })).toBe(true);
+    expect(
+      checkpointIsEmpty({ threadId: "t1", content: "", customEvents: [route, { name: "generative_ui", value: {} }] }),
+    ).toBe(false);
+    expect(checkpointIsEmpty({ threadId: "t1", content: "Done.", customEvents: [route] })).toBe(false);
   });
 });
 
