@@ -38,23 +38,44 @@ any runner call and any meter read. A :class:`TestResult` holds codes and
 action names only. The recorded arguments stay in memory for
 :func:`evaluate`, and no answer and no store holds them.
 
+**A turn that errors never passes.** :func:`agent_runner` reads each line of
+the stream. A ``RUN_ERROR`` line, or a stream that ends with no
+``RUN_FINISHED`` line, raises :class:`RunFailed`, and the test reads
+``run_failed``. The detail holds a code, never the text of the error.
+
+**One suite at a time for each member.** :func:`run_suite` takes a slot in
+the tenant Redis before its first test, as the IMAP login test does. A second
+suite of the same member raises :class:`SuiteRunning` with no run and no
+meter read. A Redis fault raises :class:`SuiteSlotUnavailable`, so a fault
+runs nothing.
+
 Fence: ``tests/unit/test_skill_tests.py``.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
+import json
 import re
+import secrets
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from acb_common import get_logger
 from acb_common._log import job_member_scope
 from acb_common.no_person import no_person_scope
+from acb_common.tenant_redis import get_tenant_redis, organization_scope
+from acb_common.tenant_redis import key as redis_key
 from acb_llm.attribution import run_ceiling_scope
+from acb_llm.run_errors import RUN_ERROR_CODES
 from acb_skills.skill_dry_run import (
+    MAX_BAD_KEYS,
+    MAX_KEY_NAME,
     METER_TIMEOUT_S,
     TOOL_CALL_CAP,
     DryRun,
@@ -69,9 +90,12 @@ from gateway.db import tenant_session as _tenant_session
 
 __all__ = [
     "MAX_EXPECT", "MAX_FIELDS", "MAX_INPUT_CHARS", "MAX_RUN", "MAX_TESTS", "REASONS",
-    "ExpectedWrite", "RecordedCall", "SkillTest", "SkillTestError", "SuiteResult",
-    "TestResult", "agent_runner", "call_action", "evaluate", "parse_tests", "run_suite",
+    "ExpectedWrite", "RecordedCall", "RunFailed", "SkillTest", "SkillTestError",
+    "SuiteResult", "SuiteRunning", "SuiteSlotUnavailable", "TestResult", "agent_runner",
+    "call_action", "evaluate", "parse_tests", "run_suite",
 ]
+
+_log = get_logger(__name__)
 
 #: The most tests in one version body.
 MAX_TESTS = 20
@@ -87,6 +111,11 @@ MAX_RUN = 5
 #: The most seconds of one call of :func:`run_suite`. A test that cannot
 #: start inside it is ``not_run``.
 SUITE_SECONDS = 300.0
+#: The seconds that the slot of a suite lives. It outlives the longest suite,
+#: so a worker that dies frees the slot by itself.
+SLOT_SECONDS = int(SUITE_SECONDS) + 60
+#: The namespace of the slot in the tenant Redis.
+_SLOT_NAMESPACE = "studio-skill-test-busy"
 
 #: The reason codes of a result. ``passed`` is the one good code. TOF-3a
 #: uses the same set.
@@ -116,6 +145,28 @@ class SkillTestError(ValueError):
     message names a path, never a value."""
 
     reason = "bad_test"
+
+
+class RunFailed(RuntimeError):
+    """The turn of a test errored, or it ended with no ``RUN_FINISHED``.
+    *code* is a code, such as ``run_error:credits`` or ``run_unfinished``.
+    It never holds the text of the error, which can quote the member."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"The turn failed: {code}")
+        self.code = code
+
+
+class SuiteRunning(RuntimeError):
+    """A suite of this member runs already. The route answers 429."""
+
+    reason = "suite_running"
+
+
+class SuiteSlotUnavailable(RuntimeError):
+    """The slot of the suite could not be read, so nothing runs (fail closed)."""
+
+    reason = "slot_unavailable"
 
 
 @dataclass(frozen=True)
@@ -360,14 +411,22 @@ def _shown(call: RecordedCall, pinned: frozenset[str]) -> str:
 _MISSING = object()
 
 
-def _arg(args: Mapping[str, Any], key: str) -> Any:
-    """The argument *key* of a call. ``<arg>.<key>`` reads one level down."""
-    if key in args:
-        return args[key]
-    head, dot, tail = key.partition(".")
+def _arg(args: Mapping[str, Any], name: str) -> Any:
+    """The argument *name* of a call. ``<arg>.<key>`` reads one level down.
+
+    An argument that is a JSON text of an object, such as ``payload_json`` of
+    ``run_workflow``, is read as that object for the one level."""
+    if name in args:
+        return args[name]
+    head, dot, tail = name.partition(".")
     if not dot:
         return _MISSING
     sub = args.get(head)
+    if isinstance(sub, str):
+        try:
+            sub = json.loads(sub)
+        except ValueError:
+            return _MISSING
     if not isinstance(sub, Mapping) or tail not in sub:
         return _MISSING
     return sub[tail]
@@ -433,7 +492,7 @@ def evaluate(test: SkillTest, calls: Sequence[RecordedCall], *,
     writes = [c for c in calls if c.held and c.write and c.tool not in DISPLAY_TOOLS]
     for call in writes:
         if not call.valid:
-            keys = ", ".join(call.invalid_keys) or "its arguments"
+            keys = ", ".join(k[:MAX_KEY_NAME] for k in call.invalid_keys[:MAX_BAD_KEYS])                 or "its arguments"
             return False, "invalid_call", f"The real tool refuses the held write {call.tool}: {keys}."
     if test.expect is None:
         return True, "passed", ""
@@ -482,19 +541,56 @@ async def agent_runner(message: str, *, run_id: str, thread_id: str, org: str,
     skill pack can load. As the chat route does for a room of one, the
     member is the acting user of the tools that read the gateway. The scope
     of that binding ends with the run. :func:`run_suite` sets the other
-    scopes around it."""
+    scopes around it.
+
+    The stream answers a failed model call with a ``RUN_ERROR`` line, and
+    then it ends with no raise. So this runner reads each line. A
+    ``RUN_ERROR`` line, or an end with no ``RUN_FINISHED`` line, raises
+    :class:`RunFailed`. Its code holds the code of the error, never its text."""
     from acb_skills.memory_tools import _bind_memory_user_id, _unbind_memory_user_id
     from orchestrator.executor import run_agent_stream
 
+    error: str | None = None
+    finished = False
     binding = _bind_memory_user_id(member)
     try:
-        async for _line in run_agent_stream(
+        async for line in run_agent_stream(
             TEST_AGENT, {"message": message}, run_id=run_id, thread_id=thread_id,
             organization_id=org, session_user=member, shows_cards=True, solo_room=True,
         ):
-            pass
+            for event in _events(line):
+                kind = event.get("type")
+                if kind == "RUN_ERROR" and error is None:
+                    code = event.get("code")
+                    error = code if code in RUN_ERROR_CODES else "unknown"
+                elif kind == "RUN_FINISHED":
+                    finished = True
     finally:
         _unbind_memory_user_id(binding)
+    if error is not None:
+        raise RunFailed(f"run_error:{error}")
+    if not finished:
+        raise RunFailed("run_unfinished")
+
+
+def _events(line: Any) -> list[dict[str, Any]]:
+    """The events of one SSE text of the stream: each ``data:`` part that
+    holds a JSON object. Any other part is skipped."""
+    out: list[dict[str, Any]] = []
+    for part in str(line or "").split("\n"):
+        part = part.strip()
+        if not part.startswith("data:"):
+            continue
+        body = part[len("data:"):].strip()
+        if not body or body == "[DONE]":
+            continue
+        try:
+            event = json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            out.append(event)
+    return out
 
 
 def _credits(value: Any) -> Decimal | None:
@@ -587,7 +683,14 @@ async def run_suite(*, org: str, member: str, skill_id: str, version: int | None
     Each test gets a new run id and the thread ``skilltest:<uuid>``. It runs
     as the member (``job_member_scope``), with no person present, under the
     run ceiling, and in ``dry_run_scope``. At most :data:`MAX_RUN` tests run
-    in :data:`SUITE_SECONDS`, and the rest are ``not_run``."""
+    in :data:`SUITE_SECONDS`, and the rest are ``not_run``.
+
+    Before the first test it takes the one slot of the member
+    (:func:`_one_suite`). A suite of the member that runs already raises
+    :class:`SuiteRunning`, and a Redis fault raises
+    :class:`SuiteSlotUnavailable`. Then no test runs and no meter read
+    happens. Each result writes one ``studio.skill_test.result`` line with
+    ids and codes only."""
     from acb_skills import skill_packs, tool_packs
 
     from gateway.routes.studio import flags
@@ -617,48 +720,90 @@ async def run_suite(*, org: str, member: str, skill_id: str, version: int | None
         return suite([_not_run(t, "skill_unloaded", f"The skill does not load: {pack}.")
                       for t in chosen], Decimal(0), "skill_unloaded")
     actions = _actions_of(used)
-    deadline = time.monotonic() + SUITE_SECONDS
     results: list[TestResult] = []
     spent = Decimal(0)
     stopped: str | None = None
-    for place, test in enumerate(chosen):
-        left = deadline - time.monotonic()
-        if stopped is not None or place >= MAX_RUN or left <= 0:
-            results.append(_not_run(test))
-            continue
-        if spent >= effective:
-            stopped = "cap_reached"
-            results.append(_not_run(test))
-            continue
-        result, used_credits = await _run_one(
-            test, pack, actions, org=org, member=member, runner=runner, meter=meter,
-            cap=effective, before=spent, seconds=left)
-        results.append(result)
-        if used_credits is None:
-            stopped = "cost_read_failed"
-        else:
-            spent += used_credits
-        if result.reason in _SUITE_STOPS:
-            stopped = stopped or result.reason
+    async with _one_suite(org, member):
+        deadline = time.monotonic() + SUITE_SECONDS
+        for place, test in enumerate(chosen):
+            left = deadline - time.monotonic()
+            if stopped is not None or place >= MAX_RUN or left <= 0:
+                results.append(_not_run(test))
+                continue
+            if spent >= effective:
+                stopped = "cap_reached"
+                results.append(_not_run(test))
+                continue
+            result, read_ok = await _run_one(
+                test, pack, actions, org=org, member=member, runner=runner, meter=meter,
+                cap=effective, before=spent, seconds=left)
+            results.append(result)
+            _log.info("studio.skill_test.result", org=org, skill=str(skill.id),
+                      version=number, test=test.id, reason=result.reason,
+                      credits=str(result.credits), model_calls=result.model_calls)
+            # The best known cost counts, also after a fault, so the spend
+            # of the suite is never short.
+            spent += result.credits
+            if not read_ok:
+                stopped = "cost_read_failed"
+            if result.reason in _SUITE_STOPS:
+                stopped = stopped or result.reason
     return suite(results, spent, stopped)
+
+
+@contextlib.asynccontextmanager
+async def _one_suite(org: str, member: str) -> AsyncIterator[None]:
+    """Hold the one slot of *member* for a suite, in the tenant Redis.
+
+    The idiom of the IMAP login test (``routes/email/transport/accounts.py``):
+    ``SET NX EX`` of a random token on a key of a hash of the member, and a
+    release only while the key still holds that token. The key expires after
+    :data:`SLOT_SECONDS`, so a worker that dies frees it. A Redis fault raises
+    :class:`SuiteSlotUnavailable`, and nothing runs."""
+    token = secrets.token_hex(8)
+    who = hashlib.sha256(member.strip().lower().encode("utf-8")).hexdigest()[:24]
+    try:
+        with organization_scope(org):
+            busy = redis_key(_SLOT_NAMESPACE, who)
+            taken = await get_tenant_redis().set(busy, token, nx=True, ex=SLOT_SECONDS)
+    except Exception as exc:  # fail closed, and say nothing of the fault
+        _log.warning("studio.skill_test.slot_unavailable", error_type=type(exc).__name__)
+        raise SuiteSlotUnavailable("The slot of the suite is not readable.") from None
+    if not taken:
+        raise SuiteRunning("A suite of this member runs already.")
+    try:
+        yield
+    finally:
+        # A fault frees nothing here, and the key expires by itself.
+        with contextlib.suppress(Exception), organization_scope(org):
+            redis = get_tenant_redis()
+            held = await redis.get(busy)
+            if isinstance(held, bytes):
+                held = held.decode("utf-8", errors="replace")
+            if held == token:
+                await redis.delete(busy)
 
 
 async def _run_one(test: SkillTest, pack: Any, actions: Sequence[str], *, org: str,
                    member: str, runner: Runner, meter: Meter, cap: Decimal,
-                   before: Decimal, seconds: float) -> tuple[TestResult, Decimal | None]:
-    """One test on one real turn. Answers the result and the credits of its
-    run, or None for credits that the meter could not read."""
+                   before: Decimal, seconds: float) -> tuple[TestResult, bool]:
+    """One test on one real turn. Answers the result and whether the meter
+    read after the run worked. When that read faults, the credits of the
+    result are the highest read of the run, so the spend is never short."""
     run_id = str(uuid.uuid4())
     thread_id = f"skilltest:{uuid.uuid4()}"
+
+    seen: list[Decimal] = []
 
     async def spend() -> Decimal:
         value = _credits(await meter(org, member, run_id))
         if value is None:
             raise ValueError("the meter gave no number")
+        seen.append(value)
         return before + value
 
     record = DryRun(pack=pack, call_cap=TOOL_CALL_CAP, credit_cap=cap, spend=spend)
-    failed = False
+    failed: str | None = None
     with job_member_scope(member, app="studio", agent="studio.skill_test"), \
             no_person_scope(), run_ceiling_scope(cap - before), dry_run_scope(record):
         # The runner runs in its own task, on a copy of these scopes. The
@@ -672,8 +817,12 @@ async def _run_one(test: SkillTest, pack: Any, actions: Sequence[str], *, org: s
             raise
         except DryRunStopped:
             pass
+        except RunFailed as exc:
+            failed = exc.code
+        except TimeoutError:
+            failed = "run_timeout"
         except Exception:
-            failed = True
+            failed = "runner_raised"
         credits = await _read(meter, org, member, run_id)
     if credits is None and record.stopped is None:
         record.stopped = "cost_read_failed"  # a cost that no one can read fails the test
@@ -684,13 +833,13 @@ async def _run_one(test: SkillTest, pack: Any, actions: Sequence[str], *, org: s
         writes=tuple(_shown(c, pinned) for c in record.calls
                      if c.held and c.write and c.tool not in DISPLAY_TOOLS),
         calls=tuple(_shown(c, pinned) for c in record.calls),
-        credits=credits if credits is not None else Decimal(0),
+        credits=credits if credits is not None else max(seen, default=Decimal(0)),
         model_calls=record.model_calls, run_id=run_id)
-    return result, credits
+    return result, credits is not None
 
 
 def _outcome(test: SkillTest, record: DryRun, actions: Sequence[str],
-             failed: bool) -> tuple[str, bool, str]:
+             failed: str | None) -> tuple[str, bool, str]:
     """The reason, the verdict and the detail of one run, in order: a stop,
     an unloaded skill, an unarmed door, a failed run, then the pass rule. The
     attach refuses an unloaded skill, so that run is unarmed too, and the
@@ -701,7 +850,8 @@ def _outcome(test: SkillTest, record: DryRun, actions: Sequence[str],
         return "skill_unloaded", False, "The skill did not load in the run."
     if not record.armed:
         return "hold_unarmed", False, "The run had no dry-run door."
-    if failed:
-        return "run_failed", False, "The run ended with an error."
+    if failed is not None:
+        # A code only, never the text of the error.
+        return "run_failed", False, f"The run failed: {failed}."
     ok, reason, detail = evaluate(test, record.calls, skill_actions=actions)
     return reason, ok, detail

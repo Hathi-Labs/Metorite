@@ -53,8 +53,9 @@ the tests of a skill on real turns, each in a dry run
 order is fixed: the switch ``STUDIO_ORGS`` and the switch
 ``STUDIO_SKILL_TESTS_ORGS`` (404 before any other work), the request
 checks, the owner check, then the credit cap. With no cap set, the route
-answers 409 ``cap_unset`` and runs nothing. The answer holds codes and
-action names only, never an argument of a call.
+answers 409 ``cap_unset`` and runs nothing. A second request of a member
+whose suite runs answers 429 ``suite_running`` and runs nothing. The answer
+holds codes and action names only, never an argument of a call.
 """
 
 from __future__ import annotations
@@ -529,6 +530,8 @@ MAX_TEST_INPUTS = 1
 #: A request cap: a decimal string of credits with at most 4 places.
 _CAP_TEXT = re.compile(r"[0-9]{1,9}(\.[0-9]{1,4})?")
 CAP_UNSET = "Skill tests have no credit cap yet. An owner must set the cap first."
+SUITE_RUNNING = "Your skill tests are running. Wait for them to end, then try again."
+SLOT_UNAVAILABLE = "Metorite cannot start skill tests now. Try again soon."
 
 
 class _RunTests(BaseModel):
@@ -629,4 +632,10 @@ async def run_skill_tests(
         raise HTTPException(status_code=404, detail=NOT_FOUND) from None
     except skill_tests.SkillTestError as exc:
         raise _refuse(422, str(exc)) from None
+    except skill_tests.SuiteRunning:
+        raise HTTPException(status_code=429, detail={
+            "code": "suite_running", "message": SUITE_RUNNING}) from None
+    except skill_tests.SuiteSlotUnavailable:
+        raise HTTPException(status_code=503, detail={
+            "code": "slot_unavailable", "message": SLOT_UNAVAILABLE}) from None
     return _suite_out(result)

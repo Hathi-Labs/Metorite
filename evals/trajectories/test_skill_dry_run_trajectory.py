@@ -47,6 +47,7 @@ from orchestrator import executor as ex
 
 from tests.unit._egress_mark_store import install_memory_mark_store
 from tests.unit._native_maf_harness import ScriptedModel, text_turn, tool_turn
+from tests.unit.test_skill_tests import install_slot_redis
 
 REPO = Path(__file__).resolve().parents[2]
 ORG = "0a0a0a0a-0000-4000-8000-0000000f4b01"
@@ -78,6 +79,7 @@ def world(monkeypatch, tmp_path):
     """The packs on, a cap set, the fakes in place, and the guards on every
     other model path."""
     install_memory_mark_store(monkeypatch)
+    install_slot_redis(monkeypatch)  # the slot of a suite, in memory
     settings = get_settings()
     for key, value in (("tool_packs", "*"), ("tool_packs_orgs", "*"),
                        ("studio_chat_tools_orgs", "*"), ("studio_skill_tests_cap_credits", "5"),
@@ -216,3 +218,38 @@ def test_an_org_with_no_packs_starts_no_model_call(world, monkeypatch) -> None:
     result = _suite(_Meter([Decimal(0)]))
     assert result.results[0].reason == "skill_unloaded"
     assert world.model.bodies == [] and world.gateway == [] and world.side == []
+
+
+def test_a_turn_that_errors_never_passes_on_the_real_loop(world, monkeypatch) -> None:
+    """The model answers 503, so the stream ends with a ``RUN_ERROR`` line and
+    raises nothing. A test that expects no write must read ``run_failed``.
+    Mutation: ignore the ``RUN_ERROR`` line in ``agent_runner`` → ``passed`` → red."""
+    world.model = _Down()
+    nothing = {**BODY, "tests": [{"id": "t0", "input": "Say hello", "expect": []}]}
+
+    async def _load(org: str, member: str, skill_id: str, version: int | None) -> Any:
+        skill = store.Skill(id=SID, name="Add a task", slug="add-a-task", description="",
+                            owner_email=MEMBER, visibility="private", state="draft",
+                            current_version=1, created_at=_NOW, updated_at=_NOW)
+        return skill, store.Version(skill_id=SID, version=1, body=nothing, content_hash="h",
+                                    created_by=MEMBER, created_at=_NOW)
+
+    monkeypatch.setattr(st, "_load_skill", _load)
+    result = _suite(_Meter([Decimal(0)]))
+    only = result.results[0]
+    assert (only.reason, only.passed, result.passed) == ("run_failed", False, False), only
+    assert only.detail.startswith("The run failed: run_error:")
+    assert "Router is down" not in repr(result)
+    assert world.model.bodies, "non-vacuity: the model was asked"
+    assert [m for m, _p in world.gateway if m != "GET"] == []
+
+
+class _Down:
+    """A model transport that answers 503 to each request."""
+
+    def __init__(self) -> None:
+        self.bodies: list[dict[str, Any]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.bodies.append(json.loads(request.content or b"{}"))
+        return httpx.Response(503, json={"error": {"message": "the Router is down"}})

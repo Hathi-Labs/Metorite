@@ -91,10 +91,10 @@ def _tool(fn: Any, name: str | None = None, **props: Any) -> FunctionTool:
                         additional_properties=props or None)
 
 
-def _real_list_spaces() -> FunctionTool:
+def _real_read_page() -> FunctionTool:
     from acb_skills import knowledge_tools
 
-    return _tool(knowledge_tools.list_spaces, "list_spaces")
+    return _tool(knowledge_tools.read_page, "read_page")
 
 
 # -- the hold (F4a) ------------------------------------------------------------
@@ -125,20 +125,20 @@ def test_a_model_shaped_argument_is_recorded_as_a_dict() -> None:
 
 
 def test_an_unarmed_door_holds_every_call() -> None:
-    tool = _real_list_spaces()
-    record = DryRun(pack=_pack("list_spaces"), real=(tool,))
+    tool = _real_read_page()
+    record = DryRun(pack=_pack("read_page"), real=(tool,))
     spy, _ = _go(HoldAndRecord(record), tool)
     assert spy.ran == 0 and record.calls[0].held is True
 
 
 def test_no_record_holds_every_call() -> None:
-    spy, ctx = _go(HoldAndRecord(), _real_list_spaces())
+    spy, ctx = _go(HoldAndRecord(), _real_read_page())
     assert spy.ran == 0 and ctx.result == HELD_TEXT
 
 
 def test_the_call_cap_holds_and_names_the_stop() -> None:
-    tool = _real_list_spaces()
-    record = _armed("list_spaces", call_cap=1, real=(tool,))
+    tool = _real_read_page()
+    record = _armed("read_page", call_cap=1, real=(tool,))
     mw = HoldAndRecord(record)
     first, _ = _go(mw, tool)
     second, _ = _go(mw, tool)
@@ -174,9 +174,8 @@ REASONS: dict[str, tuple[str, str]] = {
     "skill_projects.reads.my_work": (
         "my_work", "GET of the member's inbox, assigned tasks, plan order and own project"),
     "acb_skills.knowledge_tools.read_page": (
-        "read_page", "GET /knowledge/pages/{id}. It closes the run's profile writes first"),
-    "acb_skills.knowledge_tools.list_spaces": (
-        "list_spaces", "GET /knowledge/spaces. It closes the run's profile writes first"),
+        "read_page", "GET /knowledge/pages/{id}, a SELECT only (load_page with no lock). "
+        "It closes the run's profile writes first"),
 }
 
 
@@ -213,6 +212,8 @@ HELD_CLASSES: dict[str, frozenset[str]] = {
     "memory": frozenset({"remember", "recall_timeline", "recall_facts", "query_history"}),
     "diagnostics": frozenset({"get_errors", "run_diagnostics"}),
     "post_read": frozenset({"studio_record_list"}),
+    # GET /knowledge/spaces inserts the company space on its first call.
+    "route_writes": frozenset({"list_spaces"}),
     "no_action": frozenset({"crm_list_records", "crm_get_record", "org_facts"}),
 }
 
@@ -233,40 +234,40 @@ def test_each_held_class_is_held_when_the_skill_names_it(cls: str) -> None:
 
 
 def test_a_captured_allowlisted_read_of_the_skill_runs() -> None:
-    tool = _real_list_spaces()
-    record = _armed("list_spaces", real=(tool,))
+    tool = _real_read_page()
+    record = _armed("read_page", real=(tool,))
     spy, ctx = _go(HoldAndRecord(record), tool)
     assert spy.ran == 1 and ctx.result is None and record.calls[0].held is False
 
 
 def test_a_borrowed_name_is_held() -> None:
-    async def list_spaces() -> str:  # the right name, another function
-        return "spaces"
+    async def read_page(page_id: str) -> str:  # the right name, another function
+        return "page"
 
-    tool = _tool(list_spaces, "list_spaces")
-    record = _armed("list_spaces", real=(tool,))
+    tool = _tool(read_page, "read_page")
+    record = _armed("read_page", real=(tool,))
     spy, _ = _go(HoldAndRecord(record), tool)
     assert spy.ran == 0 and record.calls[0].held is True
 
 
 def test_an_object_that_attach_did_not_capture_is_held() -> None:
-    record = _armed("list_spaces", real=(_real_list_spaces(),))
-    spy, _ = _go(HoldAndRecord(record), _real_list_spaces())  # a second object
+    record = _armed("read_page", real=(_real_read_page(),))
+    spy, _ = _go(HoldAndRecord(record), _real_read_page())  # a second object
     assert spy.ran == 0
 
 
 def test_a_same_name_mcp_tool_is_held() -> None:
     from acb_skills import knowledge_tools
 
-    tool = _tool(knowledge_tools.list_spaces, "list_spaces", _mcp_is_tool=True)
-    record = _armed("list_spaces", real=(tool,))
+    tool = _tool(knowledge_tools.read_page, "read_page", _mcp_is_tool=True)
+    record = _armed("read_page", real=(tool,))
     spy, _ = _go(HoldAndRecord(record), tool)
     assert spy.ran == 0 and record.calls[0].write is True
 
 
 def test_an_allowlisted_read_outside_the_skill_is_held() -> None:
-    tool = _real_list_spaces()
-    record = _armed("read_page", real=(tool,))
+    tool = _real_read_page()
+    record = _armed("list_tasks", real=(tool,))
     spy, _ = _go(HoldAndRecord(record), tool)
     assert spy.ran == 0
 
@@ -281,8 +282,8 @@ def test_a_display_tool_is_held_also_when_captured() -> None:
 
 
 def test_a_held_read_is_no_write() -> None:
-    tool = _real_list_spaces()
-    record = _armed("read_page")  # not of the skill, so it is held
+    tool = _real_read_page()
+    record = _armed("list_tasks")  # not of the skill, so it is held
     _go(HoldAndRecord(record), tool)
     assert record.calls[0].held is True and record.calls[0].write is False
 
@@ -321,6 +322,17 @@ def test_an_unexpected_key_is_invalid_when_the_schema_refuses_it() -> None:
     assert check_args(tool, {"a": "x"}) == (True, ())
     assert check_args(tool, {"a": "x", "b": 1}) == (False, ("b",))
     assert check_args(tool, {"a": 5}) == (False, ("a",))
+
+
+def test_the_bad_key_names_are_cut_and_capped() -> None:
+    """The model chose the key names, so a record keeps at most 10 of them,
+    each at most 64 characters."""
+    tool = FunctionTool(func=None, name="t", description="d", input_model={
+        "type": "object", "properties": {"a": {"type": "string"}},
+        "additionalProperties": False})
+    junk = {f"k{i:02d}" + "x" * 200: 1 for i in range(30)}
+    valid, keys = check_args(tool, junk)
+    assert valid is False and len(keys) == 10 and all(len(k) <= 64 for k in keys)
 
 
 # -- the cap guard (F4b) -------------------------------------------------------
@@ -394,6 +406,42 @@ def test_model_call_refusal_order() -> None:
     assert asyncio.run(model_call_refusal(record)) == "call_cap"
 
 
+#: The chat middlewares that may call ``call_next`` more than once in one
+#: pass. ``CapGuard`` is outermost, so it sees one request for each pass, and
+#: a second request of such a pass has no meter read. The answer check and
+#: the claim check share ONE retry for each run (``RunLedger.retried``). So
+#: a test makes at most ``MODEL_CALL_CAP + 1`` model requests (F4.md).
+_RETRYING_CHAT_MIDDLEWARE = frozenset({"CheckAnswers", "CheckClaims"})
+
+
+def test_only_the_reviewed_chat_middleware_can_send_a_second_request() -> None:
+    """Mutation: a new chat middleware calls ``call_next`` twice → red, so the
+    bound of F4.md is checked again before it ships."""
+    found: set[str] = set()
+    for base in ("apps/services/orchestrator/orchestrator", "packages/acb_skills/acb_skills",
+                 "packages/acb_llm/acb_llm"):
+        for path in (_ROOT / base).rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            for cls in ast.walk(tree):
+                if not isinstance(cls, ast.ClassDef) or not any(
+                        getattr(b, "id", getattr(b, "attr", "")) == "ChatMiddleware"
+                        for b in cls.bases):
+                    continue
+                # Each method of the class: a helper can call it too.
+                sites = [n for n in ast.walk(cls) if isinstance(n, ast.Call)
+                         and getattr(n.func, "id", "") == "call_next"]
+                loops = [n for n in ast.walk(cls) if isinstance(n, ast.For | ast.While)
+                         and any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "call_next"
+                                 for c in ast.walk(n))]
+                if len(sites) > 1 or loops:
+                    found.add(cls.name)
+    assert found == _RETRYING_CHAT_MIDDLEWARE, found
+    text = (_ROOT / "packages/acb_skills/acb_skills/answer_check.py").read_text(encoding="utf-8")
+    assert "if not self._ledger.retried:" in text and "self._ledger.retried = True" in text
+
+
 # -- the attach (F4b) ----------------------------------------------------------
 
 
@@ -424,10 +472,10 @@ def _pool(agent: Any) -> list[Any]:
 
 def test_attach_puts_the_hold_first_and_arms_last() -> None:
     probe = _Probe()
-    tool = _real_list_spaces()
+    tool = _real_read_page()
     agent = _agent([tool, _tool(_create_lead, "create_lead")], [probe])
     agents = [agent]
-    record = DryRun(pack=_pack("list_spaces", "create_lead"), loaded=True)
+    record = DryRun(pack=_pack("read_page", "create_lead"), loaded=True)
     attach(agents, record, native=Agent, tools_of=_pool)
     view = agents[0]
     assert view is not agent and list(agent.middleware) == [probe]

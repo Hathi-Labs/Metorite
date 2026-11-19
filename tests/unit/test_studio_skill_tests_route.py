@@ -26,6 +26,7 @@ from gateway.routes.studio import skills
 from gateway.studio import skill_tests as st
 
 from tests.unit import test_studio_skills_routes as _routes
+from tests.unit.test_skill_tests import SlotRedis, install_slot_redis
 from tests.unit.test_studio_skills_routes import (
     ANA,
     BEN,
@@ -87,6 +88,7 @@ def run(monkeypatch, world):
     settings = get_settings()
     monkeypatch.setattr(settings, "studio_skill_tests_orgs", "*", raising=False)
     monkeypatch.setattr(settings, "studio_skill_tests_cap_credits", "5", raising=False)
+    seen["redis"] = install_slot_redis(monkeypatch)
     return seen
 
 
@@ -206,3 +208,39 @@ def test_a_version_that_does_not_exist_is_404(world, run) -> None:
     sid = _skill(world)
     answer = _client(world).post(RUN.format(sid=sid), json={"version": 9})
     assert (answer.status_code, answer.json()) == (404, NOT_FOUND) and run["runs"] == []
+
+
+def test_a_second_run_of_the_member_is_429_and_runs_nothing(world, run) -> None:
+    """A suite of the member holds the slot. Mutation: skip the slot in
+    ``run_suite`` → the second request runs → red."""
+    import hashlib
+
+    from acb_common.tenant_redis import key, organization_scope
+
+    sid = _skill(world)
+    who = hashlib.sha256(ANA.encode("utf-8")).hexdigest()[:24]
+    with organization_scope(ORG):
+        busy = key("studio-skill-test-busy", who)
+    run["redis"].data[busy.value] = "the-first-suite"
+    answer = _client(world).post(RUN.format(sid=sid), json={})
+    assert answer.status_code == 429
+    assert answer.json()["detail"] == {"code": "suite_running", "message": skills.SUITE_RUNNING}
+    assert run["runs"] == [] and run["reads"] == 0
+    assert run["redis"].data[busy.value] == "the-first-suite", "a refusal frees nothing"
+
+
+def test_a_redis_fault_is_503_and_runs_nothing(world, run, monkeypatch) -> None:
+    sid = _skill(world)
+    install_slot_redis(monkeypatch, SlotRedis(fail=True))
+    answer = _client(world).post(RUN.format(sid=sid), json={})
+    assert answer.status_code == 503
+    assert answer.json()["detail"]["code"] == "slot_unavailable"
+    assert run["runs"] == [] and run["reads"] == 0
+
+
+def test_the_slot_is_free_after_a_run(world, run) -> None:
+    sid = _skill(world)
+    c = _client(world)
+    assert c.post(RUN.format(sid=sid), json={}).status_code == 200
+    assert run["redis"].data == {}
+    assert c.post(RUN.format(sid=sid), json={}).status_code == 200

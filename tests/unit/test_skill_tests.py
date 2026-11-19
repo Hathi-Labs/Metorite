@@ -473,9 +473,46 @@ def _version_row(body: dict[str, Any], version: int = 2) -> store.Version:
                          created_by=MEMBER, created_at=_NOW)
 
 
+class SlotRedis:
+    """A raw in-memory Redis for the slot of a suite: ``set`` with ``nx``,
+    ``get`` and ``delete``. *fail* makes each call raise, as an outage does."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.data: dict[str, Any] = {}
+        self.fail = fail
+        self.calls: list[tuple[str, str]] = []
+
+    async def set(self, name: str, value: Any, nx: bool = False, ex: int | None = None) -> Any:
+        self.calls.append(("set", name))
+        if self.fail:
+            raise ConnectionError("redis is down")
+        if nx and name in self.data:
+            return None
+        self.data[name] = value
+        return True
+
+    async def get(self, name: str) -> Any:
+        self.calls.append(("get", name))
+        return self.data.get(name)
+
+    async def delete(self, *names: str) -> int:
+        self.calls.append(("delete", ",".join(names)))
+        return sum(1 for n in names if self.data.pop(n, None) is not None)
+
+
+def install_slot_redis(monkeypatch: Any, raw: SlotRedis | None = None) -> SlotRedis:
+    """Point the slot of ``run_suite`` at *raw*, wrapped in the tenant client."""
+    from acb_common.tenant_redis import TenantRedis
+
+    raw = raw or SlotRedis()
+    monkeypatch.setattr(st, "get_tenant_redis", lambda: TenantRedis(raw))
+    return raw
+
+
 @pytest.fixture
 def stored(monkeypatch):
-    """The stored skill that ``_load_skill`` gives, and the cap setting."""
+    """The stored skill that ``_load_skill`` gives, the cap setting, and the
+    slot Redis."""
     world = SimpleNamespace(body={**RUN_BODY, "tests": [
         {"id": "t1", "input": "Add Ravi from Acme",
          "expect": [{"action": "object:lead.create", "fields": {"data.company": "Acme"}}]}]})
@@ -486,6 +523,7 @@ def stored(monkeypatch):
 
     monkeypatch.setattr(st, "_load_skill", _load)
     monkeypatch.setattr(get_settings(), "studio_skill_tests_cap_credits", "5", raising=False)
+    world.redis = install_slot_redis(monkeypatch)
     return world
 
 
@@ -731,3 +769,228 @@ def test_the_runner_names_no_pack_flag() -> None:
     src = Path(st.__file__).read_text(encoding="utf-8")
     for word in ("packs_on(", "TOOL_PACKS", "tool_packs_orgs"):
         assert word not in src, word
+
+
+# -- F4b review: a turn that errors or does not finish never passes ---------------
+
+SECRET_WORDS = "sk-secret-member-words"
+
+
+@pytest.fixture
+def stream(monkeypatch):
+    """Install a fake ``executor.run_agent_stream``. It arms and loads the
+    record, as the attach does, then yields *events* and returns."""
+    from orchestrator import executor as ex
+
+    def install(*events: dict[str, Any]) -> None:
+        async def fake(agent: str, payload: dict[str, Any], **_kw: Any) -> Any:
+            record = current_dry_run()
+            assert record is not None
+            record.armed = record.loaded = True
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n"
+
+        monkeypatch.setattr(ex, "run_agent_stream", fake)
+
+    return install
+
+
+STARTED = {"type": "RUN_STARTED", "runId": "r", "threadId": "t"}
+FINISHED = {"type": "RUN_FINISHED", "runId": "r", "threadId": "t"}
+
+
+def _error(code: str = "credits") -> dict[str, Any]:
+    return {"type": "RUN_ERROR", "code": code, "message": SECRET_WORDS, "ref": "x"}
+
+
+def _real_run(**kw: Any) -> st.SuiteResult:
+    return _run(st.agent_runner, _Meter([Decimal(0)]), **kw)
+
+
+def test_a_run_error_line_fails_a_test_that_expects_no_write(stored, stream) -> None:
+    """Mutation: ignore the ``RUN_ERROR`` line in ``agent_runner`` → the test
+    reads ``passed`` → red."""
+    stored.body = {**RUN_BODY, "tests": [{"id": "t1", "input": "x", "expect": []}]}
+    stream(STARTED, _error("credits"))
+    result = _real_run()
+    only = result.results[0]
+    assert (only.reason, only.passed, result.passed) == ("run_failed", False, False)
+    assert only.detail == "The run failed: run_error:credits."
+    assert SECRET_WORDS not in repr(result)
+
+
+def test_a_run_error_line_fails_an_input_only_run(stored, stream) -> None:
+    stored.body = {**RUN_BODY}
+    stream(STARTED, _error("ai_unavailable"), FINISHED)
+    result = _real_run(inputs=("Add Ravi",))
+    assert [(r.test_id, r.reason) for r in result.results] == [("input-1", "run_failed")]
+    assert result.passed is False
+
+
+def test_a_run_error_beats_a_missing_write(stored, stream) -> None:
+    stream(STARTED, _error("model_refused"))
+    assert _real_run().results[0].reason == "run_failed"
+
+
+def test_a_stream_with_no_finish_line_fails(stored, stream) -> None:
+    stored.body = {**RUN_BODY, "tests": [{"id": "t1", "input": "x", "expect": []}]}
+    stream(STARTED)
+    only = _real_run().results[0]
+    assert (only.reason, only.detail) == ("run_failed", "The run failed: run_unfinished.")
+
+
+def test_an_error_code_outside_the_vocabulary_reads_unknown(stored, stream) -> None:
+    stored.body = {**RUN_BODY, "tests": [{"id": "t1", "input": "x", "expect": []}]}
+    stream(STARTED, _error(SECRET_WORDS))
+    only = _real_run().results[0]
+    assert only.detail == "The run failed: run_error:unknown." and SECRET_WORDS not in only.detail
+
+
+def test_a_finished_turn_with_no_call_still_passes(stored, stream) -> None:
+    stored.body = {**RUN_BODY, "tests": [{"id": "t1", "input": "x", "expect": []}]}
+    stream(STARTED, FINISHED)
+    result = _real_run()
+    assert (result.results[0].reason, result.passed) == ("passed", True)
+
+
+# -- F4b review: one suite at a time for each member --------------------------------
+
+
+def test_a_second_suite_of_the_member_is_refused_and_runs_nothing(stored) -> None:
+    """Mutation: drop the ``nx=True`` of the slot → the second suite runs → red."""
+    inner_runner, inner_meter = _Runner(), _Meter([Decimal(0)])
+    seen: list[str] = []
+
+    class _Outer(_Runner):
+        async def __call__(self, message: str, **kw: Any) -> None:
+            with pytest.raises(st.SuiteRunning):
+                await st.run_suite(org=ORG, member=MEMBER, skill_id=SID,
+                                   runner=inner_runner, meter=inner_meter)
+            seen.append("refused")
+            await super().__call__(message, **kw)
+
+    result = _run(_Outer(), _Meter([Decimal(0)]))
+    assert seen == ["refused"] and result.results[0].reason == "passed"
+    assert inner_runner.seen == [] and inner_meter.reads == []
+    assert stored.redis.data == {}, "the slot is free after the suite"
+    assert _run(_Runner(), _Meter([Decimal(0)])).results[0].reason == "passed"
+
+
+def test_the_slot_is_released_after_an_exception(stored, monkeypatch) -> None:
+    async def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("a fault inside the suite")
+
+    real = st._run_one
+    monkeypatch.setattr(st, "_run_one", boom)
+    with pytest.raises(RuntimeError):
+        _run(_Runner(), _Meter([Decimal(0)]))
+    assert stored.redis.data == {}
+    monkeypatch.setattr(st, "_run_one", real)
+    assert _run(_Runner(), _Meter([Decimal(0)])).results[0].reason == "passed"
+
+
+def test_a_slot_that_is_not_mine_is_never_freed(stored) -> None:
+    """A release after the key expired must not free a newer suite's slot."""
+    class _Steal(_Runner):
+        async def __call__(self, message: str, **kw: Any) -> None:
+            await super().__call__(message, **kw)
+            for name in list(stored.redis.data):
+                stored.redis.data[name] = "another-token"
+
+    _run(_Steal(), _Meter([Decimal(0)]))
+    assert list(stored.redis.data.values()) == ["another-token"]
+
+
+def test_a_redis_fault_runs_nothing(stored, monkeypatch) -> None:
+    install_slot_redis(monkeypatch, SlotRedis(fail=True))
+    runner, meter = _Runner(), _Meter([Decimal(0)])
+    with pytest.raises(st.SuiteSlotUnavailable):
+        _run(runner, meter)
+    assert runner.seen == [] and meter.reads == []
+
+
+def test_the_slot_key_names_no_address(stored) -> None:
+    class _Look(_Runner):
+        async def __call__(self, message: str, **kw: Any) -> None:
+            self.keys = list(stored.redis.data)
+            await super().__call__(message, **kw)
+
+    runner = _Look()
+    _run(runner, _Meter([Decimal(0)]))
+    assert len(runner.keys) == 1 and MEMBER not in runner.keys[0]
+    assert ORG in runner.keys[0], "the tenant client prefixes the org"
+
+
+# -- F4b review: the payload of a workflow, the log line and the cap ceiling --------
+
+
+def test_a_payload_json_field_matches_one_level_down() -> None:
+    t = _test([("workflow:wf-1", {"payload_json.region": "south"})])
+    good = _call("run_workflow", {"workflow": "wf-1", "payload_json": '{"region": "south"}'})
+    bad = _call("run_workflow", {"workflow": "wf-1", "payload_json": '{"region": "north"}'})
+    junk = _call("run_workflow", {"workflow": "wf-1", "payload_json": "not json"})
+    assert _ev(t, [good], RECORD)[:2] == (True, "passed")
+    assert _ev(t, [bad], RECORD)[1] == "field_mismatch"
+    assert _ev(t, [junk], RECORD)[1] == "field_mismatch"
+
+
+def test_a_workflow_call_by_name_reads_other_action() -> None:
+    """F4.md: the action list holds ids, so a call by name is other_action."""
+    call = _call("run_workflow", {"workflow": "Daily report"})
+    assert _ev(_test(None), [call], RECORD)[1] == "other_action"
+
+
+def test_each_result_logs_ids_and_codes_only(stored) -> None:
+    import structlog
+
+    secret = "sk-secret-in-a-write"
+    runner = _Runner(calls=[(_record_tool(), {
+        "package_id": "p1", "object": "lead", "data": {"company": secret}})])
+    with structlog.testing.capture_logs() as caps:
+        _run(runner, _Meter([Decimal("0.25")]))
+    lines = [c for c in caps if c["event"] == "studio.skill_test.result"]
+    assert len(lines) == 1
+    line = lines[0]
+    assert (line["org"], line["skill"], line["version"], line["test"]) == (ORG, SID, 2, "t1")
+    assert (line["reason"], line["credits"], line["model_calls"]) == ("field_mismatch", "0.25", 1)
+    assert secret not in repr(caps) and "Add Ravi" not in repr(caps)
+
+
+@pytest.mark.parametrize("raw", ["1E+30", "1e400", "1000000.0001", "99999999"])
+def test_a_cap_above_the_ceiling_reads_as_unset(stored, monkeypatch, raw) -> None:
+    from gateway.routes.studio import flags
+
+    monkeypatch.setattr(get_settings(), "studio_skill_tests_cap_credits", raw, raising=False)
+    assert flags.skill_tests_cap() is None
+    runner = _Runner()
+    assert _run(runner, _Meter([Decimal(0)])).stopped == "cap_unset" and runner.seen == []
+
+
+def test_the_cap_ceiling_itself_is_a_cap(monkeypatch) -> None:
+    from gateway.routes.studio import flags
+
+    monkeypatch.setattr(get_settings(), "studio_skill_tests_cap_credits", "1000000", raising=False)
+    assert flags.skill_tests_cap() == Decimal(1_000_000)
+
+
+def test_a_meter_fault_after_the_run_stops_the_suite_and_keeps_the_known_cost(stored) -> None:
+    """The meter works during the run and faults on the read after it.
+    Mutation: ``_read`` answers ``Decimal(0)`` on a fault → the test reads
+    ``passed`` and the spend reads 0 → red."""
+    stored.body = {**RUN_BODY, "tests": [
+        {"id": f"t{i}", "input": "x", "expect": []} for i in range(2)]}
+    meter = _Meter([Decimal("0.5"), RuntimeError("down")])
+    result = _run(_Runner(calls=[]), meter)
+    first, second = result.results
+    assert (first.reason, first.credits) == ("cost_read_failed", Decimal("0.5"))
+    assert second.reason == "not_run" and result.stopped == "cost_read_failed"
+    assert result.credits == Decimal("0.5"), "the spend is never short"
+
+
+def test_the_detail_of_an_invalid_write_caps_its_key_names() -> None:
+    names = tuple(f"k{i:02d}" + "x" * 200 for i in range(30))
+    bad = _call("create_lead", {"company": "Acme"}, valid=False, invalid_keys=names)
+    ok, reason, detail = _ev(_test([("tool:create_lead", {})]), [bad])
+    assert (ok, reason) == (False, "invalid_call")
+    shown = detail.split(": ", 1)[1].rstrip(".").split(", ")
+    assert len(shown) == 10 and all(len(n) <= 64 for n in shown)

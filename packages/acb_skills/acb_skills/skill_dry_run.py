@@ -54,7 +54,8 @@ from acb_skills.egress import _from_mcp, _risk_of
 from acb_skills.tool_guard import tool_name
 
 __all__ = [
-    "HELD_TEXT", "METER_TIMEOUT_S", "MODEL_CALL_CAP", "REAL_READS", "TOOL_CALL_CAP", "CapGuard",
+    "HELD_TEXT", "MAX_BAD_KEYS", "MAX_KEY_NAME", "METER_TIMEOUT_S", "MODEL_CALL_CAP",
+    "REAL_READS", "TOOL_CALL_CAP", "CapGuard",
     "DryRun", "DryRunRefused", "DryRunStopped", "HoldAndRecord", "RecordedCall",
     "attach", "check_args", "current_dry_run", "dry_run_scope",
     "model_call_refusal", "tool_identity",
@@ -71,6 +72,11 @@ MODEL_CALL_CAP = 8
 TOOL_CALL_CAP = 20
 #: The most seconds of one read of the meter. A slower read is a fault.
 METER_TIMEOUT_S = 10.0
+#: The most characters of one bad key name that a record keeps. The model
+#: chose the name, so it is cut.
+MAX_KEY_NAME = 64
+#: The most bad key names that a record keeps.
+MAX_BAD_KEYS = 10
 
 #: THE frozen allowlist of the tools that a dry run may run for real. The key
 #: is the identity of the owner's function (:func:`tool_identity`), and the
@@ -78,13 +84,14 @@ METER_TIMEOUT_S = 10.0
 #: first-party store may join: no model call, no embedding call, no member
 #: ask, no card, no page move and no network write. A new entry needs a
 #: reason in ``tests/unit/test_skill_dry_run.py::REASONS``. A tool that is no
-#: entry is held, so a new tool fails closed.
+#: entry is held, so a new tool fails closed. ⚠️ Read the gateway ROUTE too,
+#: not only the tool: ``list_spaces`` is a GET, but ``GET /knowledge/spaces``
+#: inserts the company space and its grant on its first call, so it is held.
 REAL_READS: Mapping[str, str] = MappingProxyType({
     "skill_projects.reads.list_tasks": "list_tasks",
     "skill_projects.reads.task_detail": "task_detail",
     "skill_projects.reads.my_work": "my_work",
     "acb_skills.knowledge_tools.read_page": "read_page",
-    "acb_skills.knowledge_tools.list_spaces": "list_spaces",
 })
 
 
@@ -282,7 +289,7 @@ def check_args(function: Any, args: Mapping[str, Any]) -> tuple[bool, tuple[str,
             names = {str(e["loc"][0]) if e.get("loc") else "(arguments)"
                      for e in exc.errors(include_url=False, include_context=False,
                                          include_input=False)}
-            return False, tuple(sorted(names))
+            return False, _key_names(names)
         except Exception:
             return False, ()
     try:
@@ -290,7 +297,13 @@ def check_args(function: Any, args: Mapping[str, Any]) -> tuple[bool, tuple[str,
     except Exception:
         return False, ()
     bad = _schema_problems(parsed, schema) if isinstance(schema, Mapping) else set()
-    return (not bad), tuple(sorted(bad))
+    return (not bad), _key_names(bad)
+
+
+def _key_names(names: set[str]) -> tuple[str, ...]:
+    """At most :data:`MAX_BAD_KEYS` names, each cut to :data:`MAX_KEY_NAME`
+    characters, sorted."""
+    return tuple(sorted({str(n)[:MAX_KEY_NAME] for n in names}))[:MAX_BAD_KEYS]
 
 
 def _writes(function: Any, name: str) -> bool:

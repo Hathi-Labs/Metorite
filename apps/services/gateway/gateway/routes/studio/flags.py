@@ -120,12 +120,18 @@ def skill_tests_allowed(organization_id: str | None) -> bool:
     return "*" in listed or str(organization_id).strip().lower() in listed
 
 
+#: The highest credit cap that the reader takes. A larger value, such as
+#: ``1E+30``, reads as unset, so the run ceiling text never overflows.
+MAX_SKILL_TESTS_CAP = Decimal(1_000_000)
+
+
 def skill_tests_cap() -> Decimal | None:
     """The credit cap of one run of a skill's tests (TOF-3b F4b), or None.
 
     The one reader of ``STUDIO_SKILL_TESTS_CAP_CREDITS``. The setting has no
-    default value. Empty, text that is no number, ``NaN``, ``Infinity`` and a
-    value of 0 or less all answer None, so the runner refuses the run."""
+    default value. Empty, text that is no number, ``NaN``, ``Infinity``, a
+    value of 0 or less, and a value above :data:`MAX_SKILL_TESTS_CAP` all
+    answer None, so the runner refuses the run."""
     raw = str(getattr(get_settings(), "studio_skill_tests_cap_credits", "") or "").strip()
     if not raw:
         return None
@@ -133,7 +139,9 @@ def skill_tests_cap() -> Decimal | None:
         value = Decimal(raw)
     except (InvalidOperation, ValueError):
         return None
-    return value if value.is_finite() and value > 0 else None
+    if not value.is_finite() or value <= 0 or value > MAX_SKILL_TESTS_CAP:
+        return None
+    return value
 
 
 def search_allowed(organization_id: str | None) -> bool:

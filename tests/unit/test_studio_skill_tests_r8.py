@@ -60,6 +60,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
     promoted,
 )
+from tests.unit.test_skill_tests import install_slot_redis
 
 pytestmark = _DB_GATE
 
@@ -79,6 +80,7 @@ def _dsn(url: Any) -> str:
 @pytest.fixture
 def world(promoted, monkeypatch):  # noqa: F811
     monkeypatch.setattr(get_settings(), "studio_skill_tests_cap_credits", "5", raising=False)
+    install_slot_redis(monkeypatch)  # the slot of a suite, in memory
     yield SimpleNamespace(p=promoted)
     with promoted.admin_engine.begin() as c:
         c.execute(text("DELETE FROM studio_skills WHERE owner_email LIKE :t"), {"t": _LIKE})
