@@ -981,7 +981,9 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
   amount, a date or an instruction passes. Drop the check of a filter option,
   and an amount in a fixed filter passes. Drop the check of a parameter name,
   of a field `type` or of `model_version` in a connection body, and its case
-  fails. Drop one place from `_key_values`, and the case of that place fails.
+  fails. Drop one place from `_key_values`, and the case of that place fails. The
+  synonym target is the exception, because `_targets` already admits only keys
+  that pass the key rule.
 - `test_flag_reload.py` (extended). `CONNECTION_MODEL_ORGS` reloads with no
   restart. **Mutation:** leave the flag out of the reload list.
 - `test_tenant_coverage.py` and `test_tenancy_boundary.py`. The table is in the
