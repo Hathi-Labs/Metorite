@@ -15,10 +15,14 @@ proved without the database.
 4. A record with no site and a record with no date make their own groups,
    and ``total`` is the sum over every record.
 5. No row of organization B shows.
-6. Off ``CRM_MODULE_FIND_ORGS``: a 422 for ``group_field2``, and a call with
-   one group field is the answer of the base code, byte for byte.
+6. Off ``CRM_MODULE_FIND_ORGS``: a 422 for ``group_field2``, the page
+   parameters change nothing, and a call with one group field is the answer
+   of the base code, byte for byte. A page past 1,000,000 is a 422.
 7. A statement past the timeout is the 503 ``aggregate_timeout``.
 8. 30,000 records in 200 groups answer inside the 10 s timeout.
+9. A text field of numbers sums in two groups as in one (CRM-Q34-11).
+10. The chat tool walks pages 1 to 3 of one field with tied values, and
+    each group shows once. Among ties, the keys give the order.
 
 The hermetic rules are in ``test_crm_two_group.py``.
 """
@@ -249,9 +253,10 @@ async def test_org_b_never_shows(invoices, app_engine) -> None:
 
 # ── 6. Off the list ─────────────────────────────────────────────────────────
 
-#: The answer of a one-field call, recorded on the base code (origin/main
-#: cc9c0a584, run on 2026-11-18 with the base aggregate.py and field_sql.py
-#: put back in place). This slice must not change one byte of it.
+#: The answer of a one-field call, recorded on the base code: origin/main
+#: cc9c0a584 on 2026-11-18, with the base aggregate.py and field_sql.py put
+#: back in place. Proved again on origin/main ecb879c69 on 2026-11-19, the
+#: same way. This slice must not change one byte of it.
 _BASE_ONE_FIELD = [
     (
         '{"entity":"module:Invoices","measure":"sum","group_by":null,"group_field":"Statu'
@@ -280,8 +285,25 @@ async def test_off_the_list_a_second_field_is_a_422(invoices, app_engine, monkey
     res = await _get(invoices, a, **_TWO)
     assert res.status_code == 422, res.text
     assert "filter by the other" in res.json()["detail"]
-    res = await _get(invoices, a, entity="module:Invoices", group_field="Site", group_page=2)
-    assert res.status_code == 422 and "filter by the other" in res.json()["detail"]
+    # Fix round item 1: off the list the route ignores the page parameters,
+    # page 2 and a huge page too. The answer is the one of no page.
+    plain = await _get(invoices, a, entity="module:Invoices", group_field="Site")
+    for page in (1, 2, 10**20):
+        res = await _get(invoices, a, entity="module:Invoices", group_field="Site",
+                         group_page=page, group_page_size=50)
+        assert res.status_code == 200 and res.text == plain.text, (page, res.text[:200])
+
+
+async def test_a_page_past_the_bound_is_a_422(invoices, app_engine) -> None:
+    """Fix round item 2: ``page * size`` would overflow a bigint, so the
+    route refuses a page past 1,000,000 before any statement."""
+    a = invoices.org_a
+    for page in (1_000_001, 10**20):
+        res = await _get(invoices, a, **_TWO, group_page=page)
+        assert res.status_code == 422, (page, res.text)
+        assert "1 to 1,000,000" in res.json()["detail"]
+    last = await _ok(invoices, a, **_TWO, group_page=1_000_000, group_page_size=200)
+    assert last["groups"] == [] and last["group_page"] == 1_000_000
 
 
 @pytest.mark.parametrize("flag", ["", "*"])
@@ -406,3 +428,68 @@ async def test_a_text_field_of_numbers_sums_in_two_groups(works, app_engine) -> 
     eq = await _ok(works, a, **query, **{"field.Notes": "12"})
     assert eq["records"] == 1 and [(g["key"], g["key2"]) for g in eq["groups"]] == [
         ("w0", "2026-11")]
+
+
+# ── 10. Pages through the chat tool, with tied values ───────────────────────
+
+
+async def _tool_text(p: Any, org: str, monkeypatch: Any, **args: Any) -> str:
+    """``crm_aggregate`` with its gateway calls sent to the real router, so
+    each page carries exactly the parameters that the tool builds."""
+    import acb_skills.crm_tools as tools
+
+    async def _forward(path: str, params: dict | None = None, timeout: float = 30.0) -> Any:
+        query = urlencode({k: v for k, v in (params or {}).items() if v is not None})
+        res = await _call(p, _admin(org), "GET", f"{path}?{query}" if query else path)
+        if path == "/crm/aggregate":
+            assert res.status_code == 200, res.text
+        return res.json() if res.status_code == 200 else {}
+
+    monkeypatch.setattr(tools, "_get", _forward)
+    return await tools.crm_aggregate(**args)
+
+
+async def test_the_tool_pages_one_field_with_ties_and_no_group_twice(
+        invoices, app_engine, monkeypatch) -> None:
+    """Fix round item 1: 121 groups of Site (8 or 9 records each, so most
+    counts tie), walked page 1, 2, 3 through the tool. Every group shows
+    exactly once, and page 1 names the count of pages."""
+    import re
+
+    a = invoices.org_a
+    seen: list[str] = []
+    for page in (1, 2, 3):
+        out = await _tool_text(invoices, a, monkeypatch, entity="module:Invoices",
+                               group_field="Site", page=page)
+        seen.extend(re.findall(r"^- (.+?): ", out, flags=re.M))
+        if page == 1:
+            assert "Groups 1-50 of 121, page 1 of 3. Ask for page 2 for more." in out
+            assert "Other (" not in out
+    sites = {f"Site {i}" for i in range(120)} | {"(none)"}
+    assert len(seen) == len(set(seen)) == 121 and set(seen) == sites
+
+
+def _ordered(groups: list[dict]) -> list[dict]:
+    """The order of the route, in Python: value down, then key, then key2,
+    each None last. The keys are ASCII letters and digits."""
+    return sorted(groups, key=lambda g: (
+        g["value"] is None, -(g["value"] or 0),
+        g.get("key") is None, g.get("key") or "",
+        g.get("key2") is None, g.get("key2") or ""))
+
+
+async def test_the_order_among_ties_is_the_keys(invoices, app_engine) -> None:
+    """Fix round item 7: a count by site and month ties on most values, and
+    many ties share the site, so only ``key2`` orders them. The pages give
+    the order of the keys, and the same page twice is the same page."""
+    a = invoices.org_a
+    query = {**_TWO, "measure": "count"}
+    query.pop("field")
+    groups, _first = await _every_page(invoices, a, 50, **query)
+    assert groups == _ordered(groups)
+    ties = {}
+    for g in groups:
+        ties.setdefault((g["value"], g.get("key")), []).append(g.get("key2"))
+    assert any(len(k2) > 1 for k2 in ties.values())  # key2 decides somewhere
+    again = await _ok(invoices, a, **query, group_page=2)
+    assert again["groups"] == groups[50:100]

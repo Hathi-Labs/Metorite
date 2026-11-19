@@ -4,11 +4,12 @@ Spec: ``project-docs/specs/crm_platform.md`` §18.17, CRM-Q34-10. The real
 SQL is proved in ``test_crm_two_group_r8.py``. These rules need no database,
 so they never skip.
 
-1. Off ``CRM_MODULE_FIND_ORGS``: ``group_field2`` and a page past 1 are a
-   422 that names the way without them. Every other call is the call of
-   today, and the SQL of one group field does not change.
+1. Off ``CRM_MODULE_FIND_ORGS``: ``group_field2`` is a 422 that names the
+   way without it. The page parameters are ignored, so every other call is
+   the call of today, and the SQL of one group field does not change.
 2. A core entity refuses ``group_field2``. Two dates, a bucket on a value
-   field, one field twice and a page size past 200 are each a 422.
+   field, one field twice, a page size past 200 and a page past 1,000,000
+   are each a 422.
 3. The order of a page is a total order: a key ends it.
 4. The chat tool names the page and the count of groups, and each group as
    ``<label> · <label2>: value``.
@@ -57,13 +58,11 @@ def _detail(call: Any) -> str:
 # ── 1. Off the list ─────────────────────────────────────────────────────────
 
 
-def test_off_the_list_a_second_field_or_a_later_page_is_a_422(agg, monkeypatch) -> None:
+def test_off_the_list_a_second_field_is_a_422(agg, monkeypatch) -> None:
     _flag(agg, monkeypatch, False)
     detail = _detail(lambda: agg._paging("Invoices", "Site", None, "Invoice_Date", None, None))
     assert detail == agg.TWO_GROUP_OFF
     assert "filter by the other" in detail and "field.<b>=<value>" in detail
-    assert _detail(lambda: agg._paging("Invoices", "Site", None, None, 2, None)) == (
-        agg.TWO_GROUP_OFF)
 
 
 @pytest.mark.parametrize("on", [False, True])
@@ -73,10 +72,13 @@ def test_a_call_with_no_new_parameter_is_the_call_of_today(agg, monkeypatch, on)
     assert agg._paging(None, None, None, None, None, None) is None
 
 
-def test_off_the_list_page_one_and_a_size_change_nothing(agg, monkeypatch) -> None:
+def test_off_the_list_the_page_parameters_change_nothing(agg, monkeypatch) -> None:
+    """Fix round item 1: off the list the route ignores every page
+    parameter, page 2 and a huge page too, so the tool may always send them."""
     _flag(agg, monkeypatch, False)
-    assert agg._paging("Invoices", "Site", None, None, 1, None) is None
-    assert agg._paging("Invoices", "Site", None, None, None, 500) is None
+    for page, size in ((1, None), (None, 500), (2, 50), (10**20, 0), (0, None)):
+        assert agg._paging("Invoices", "Site", None, None, page, size) is None
+        assert agg._paging(None, "Site", None, None, page, size) is None
 
 
 def test_the_sql_of_one_group_field_does_not_change() -> None:
@@ -119,10 +121,13 @@ def test_a_group_of_one_field_dumps_the_keys_of_today() -> None:
 # ── 2. The refusals ─────────────────────────────────────────────────────────
 
 
-def test_a_core_entity_refuses_a_second_field(agg, monkeypatch) -> None:
-    _flag(agg, monkeypatch, True)
+@pytest.mark.parametrize("on", [False, True])
+def test_a_core_entity_refuses_a_second_field(agg, monkeypatch, on) -> None:
+    _flag(agg, monkeypatch, on)
     detail = _detail(lambda: agg._paging(None, "Site", None, "Status", None, None))
     assert "module entity" in detail
+    # A page alone on a core entity is the call of today.
+    assert agg._paging(None, "Site", None, None, 3, 50) is None
 
 
 def test_on_the_list_the_page_and_its_size(agg, monkeypatch) -> None:
@@ -131,8 +136,17 @@ def test_on_the_list_the_page_and_its_size(agg, monkeypatch) -> None:
     assert agg._paging("Invoices", "Site", None, None, 3, 200) == (3, 200)
     assert "200" in _detail(lambda: agg._paging("Invoices", "Site", None, None, 1, 201))
     assert _detail(lambda: agg._paging("Invoices", "Site", None, None, 1, 0))
-    assert "from 1" in _detail(lambda: agg._paging("Invoices", "Site", None, None, 0, None))
+    assert "1 to 1,000,000" in _detail(lambda: agg._paging("Invoices", "Site", None, None, 0,
+                                                            None))
+    # Fix round item 2: a page past the bound is a 422, never an int8 overflow.
+    assert agg.GROUP_PAGES_MAX == 1_000_000
+    assert agg._paging("Invoices", "Site", None, None, 1_000_000, 200) == (1_000_000, 200)
+    for page in (1_000_001, 10**20):
+        assert "1 to 1,000,000" in _detail(
+            lambda page=page: agg._paging("Invoices", "Site", None, None, page, None))
     assert "group_field" in _detail(lambda: agg._paging("Invoices", None, None, "Site", 1, None))
+    assert "group_field" in _detail(lambda: agg._paging("Invoices", None, None, None, 2, None))
+    assert agg._paging("Invoices", None, None, None, 1, None) is None
     assert "split" in _detail(lambda: agg._paging("Invoices", "Site", "a,b", None, 2, None))
 
 
@@ -217,26 +231,72 @@ async def test_the_tool_names_the_page_and_each_pair(monkeypatch) -> None:
     assert "Other (" not in out
 
 
-async def test_the_tool_sends_no_page_for_page_one_of_one_field(monkeypatch) -> None:
-    """With no second field, page 1 sends what it sends today. Page 2 was
-    always empty (the route sent 50 groups, the tool shows 50), so it now
-    asks the route for its page 2."""
+async def test_the_tool_sends_the_page_on_every_module_group(monkeypatch) -> None:
+    """Fix round item 1: page 1 and page 2 of a module group both ask the
+    route for its page, so both read ONE order and no group repeats or goes
+    missing. Item 3: a second group goes to the route, which refuses what it
+    cannot take. A core entity sends no page."""
     import acb_skills.crm_tools as tools
 
     sent: list[dict] = []
 
     async def _get(path: str, params: dict | None = None) -> dict:
         if path == "/crm/aggregate":
-            sent.append(dict(params or {}))
+            sent.append({k: v for k, v in (params or {}).items() if v is not None})
         return {"entity": "module:Invoices", "measure": "count", "zone": "UTC",
                 "groups": [{"key": "s1", "label": "Site 1", "value": 1}],
                 "total": 1, "other": 0, "omitted": 0}
 
     monkeypatch.setattr(tools, "_get", _get)
-    await tools.crm_aggregate("module:Invoices", group_field="Site")
-    assert not {"group_field2", "group_page", "group_page_size"} & {
-        k for k, v in sent[-1].items() if v is not None}
-    await tools.crm_aggregate("module:Invoices", group_field="Site", page=2)
-    assert (sent[-1]["group_page"], sent[-1]["group_field2"]) == (2, None)
-    await tools.crm_aggregate("deals", group_field="Region", page=2)
-    assert "group_page" not in sent[-1]
+    for page in (1, 2):
+        await tools.crm_aggregate("module:Invoices", group_field="Site", page=page)
+        assert (sent[-1]["group_page"], sent[-1]["group_page_size"]) == (page, tools.MAX_ROWS)
+        assert "group_field2" not in sent[-1]
+    await tools.crm_aggregate("module:Invoices", group_by="status", group_field2="Site")
+    assert sent[-1]["group_field2"] == "Site" and sent[-1]["group_page"] == 1
+    await tools.crm_aggregate("deals", group_field="Region", group_field2="Stage", page=2)
+    assert sent[-1]["group_field2"] == "Stage" and "group_page" not in sent[-1]
+    await tools.crm_aggregate("module:Invoices")
+    assert not {"group_field2", "group_page", "group_page_size"} & set(sent[-1])
+
+
+@pytest.mark.parametrize(("data", "words"), [
+    ({"group_field_label": "Site", "group_field2_label": "Invoice Date",
+      "group_field_type": "lookup", "group_field2_type": "date"},
+     "Site and Invoice Date (month)"),
+    ({"group_field_label": "Invoice Date", "group_field2_label": "Site",
+      "group_field_type": "date", "group_field2_type": "lookup"},
+     "Invoice Date (month) and Site"),
+    ({"group_field_label": "Invoice Date", "group_field_type": "date"}, "Invoice Date (month)"),
+])
+def test_the_heading_puts_the_bucket_on_the_date_field(data: dict, words: str) -> None:
+    """Fix round item 5."""
+    import acb_skills.crm_tools as tools
+
+    assert tools._group_words(data, "x", "month") == words
+
+
+async def test_a_datetime_second_group_names_the_zone(monkeypatch) -> None:
+    """Fix round item 6."""
+    import acb_skills.crm_tools as tools
+
+    async def _get(path: str, params: dict | None = None) -> dict:
+        body = _paged_body(1)
+        body.update(zone="Asia/Kolkata", group_field_type="lookup",
+                    group_field2_type="datetime")
+        return body
+
+    monkeypatch.setattr(tools, "_get", _get)
+    out = await tools.crm_aggregate("module:Invoices", group_field="Site",
+                                    group_field2="Paid_On", bucket="month")
+    assert "Months count in the CRM time zone, Asia/Kolkata." in out.splitlines()
+
+
+def test_a_page_of_an_empty_module_is_no_filter_miss() -> None:
+    """Fix round item 4: the page and the second group filter nothing, so a
+    paged total of an empty module never says the filters matched nothing."""
+    import acb_skills.crm_tools as tools
+
+    params = {"entity": "module:Invoices", "group_field": "Site", "group_field2": "Day",
+              "group_page": 1, "group_page_size": 50}
+    assert tools._no_match(params, {"records": 0}, "Invoices") is None

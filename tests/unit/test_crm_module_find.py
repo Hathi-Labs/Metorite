@@ -37,11 +37,14 @@ def _calls(source: str, name: str) -> set[str] | None:
     return None
 
 
-#: file → function → the calls it must make.
+#: file → function → the calls it must make. CRM-Q34-10 moved the flag,
+#: the refusal and the words of ``q`` into ``_module_filters``, which both
+#: module reads call. ``_read_pages`` adds the words, with no near pass.
 _PINS: dict[str, dict[str, set[str]]] = {
     "aggregate.py": {
-        "_read": {"find_words", "_with_words", "_near_pass", "q_refusal",
-                  "module_find_allowed"},
+        "_module_filters": {"find_words", "q_refusal", "module_find_allowed"},
+        "_read": {"_module_filters", "_with_words", "_near_pass"},
+        "_read_pages": {"_module_filters", "_with_words"},
         "_with_words": {"find_where"},
         "_near_pass": {"find_near", "find_where"},
     },
