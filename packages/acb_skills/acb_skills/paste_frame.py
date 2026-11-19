@@ -527,14 +527,7 @@ def frame_current_turn(
     prefixes and the ``steers_frame`` line. A part that is not a string
     frames the whole turn. A part that is missing (the compose trim rewrote
     the turn) frames the whole turn as one block, with no lead, only when the
-    RAW part holds :data:`MIN_LINES` or more lines that are not blank.
-
-    A long part frames EACH copy of it in the turn (HRD-14b fix round 2). A
-    server Continue note comes AFTER the replayed steers, and it can quote a
-    steer word for word. The search from the end would find that quote, and
-    the real steer would stay outside. So each copy goes into a block, also a
-    copy inside server text: that is the safe failure. A short part frames
-    nothing, so its last copy only bounds the search of the parts before it."""
+    RAW part holds :data:`MIN_LINES` or more lines that are not blank."""
     if any(not isinstance(part, str) for part in parts):
         return frame_whole(text, frame)
     spans: list[tuple[int, int, str]] = []
@@ -543,30 +536,16 @@ def frame_current_turn(
         want = str(part).strip()
         if not want:
             continue
-        found = _copies(text, want, end) if is_long(part) else []
-        if not found:
-            at = text.rfind(want, 0, end)
-            found = [at] if at >= 0 else []
-        if not found:
+        at = text.rfind(want, 0, end)
+        if at < 0:
             if is_long(part):
                 return frame_whole(text, frame)
             continue
-        spans += [(at, at + len(want), want) for at in sorted(found, reverse=True)]
-        end = min(found)
+        spans.append((at, at + len(want), want))
+        end = at
     out = text
     for at, stop, want in spans:  # from the end, so each index still holds
         out = out[:at] + frame_part(want, frame, paths_exist=paths_exist) + out[stop:]
-    return out
-
-
-def _copies(text: str, want: str, end: int) -> list[int]:
-    """The start of each copy of *want* that lies whole in ``text[:end]``,
-    with no overlap, from the start."""
-    out: list[int] = []
-    at = text.find(want, 0, end)
-    while at >= 0:
-        out.append(at)
-        at = text.find(want, at + len(want), end)
     return out
 
 
