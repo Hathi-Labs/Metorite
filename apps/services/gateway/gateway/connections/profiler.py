@@ -438,7 +438,14 @@ class _Reads:
             result, _cut = await self.run.call(tool, args, timeout_s=RUN_S - spent)
         except mcp_tools.LiveLimited:
             raise _Stop("limited") from None
-        except (mcp_tools.LiveRefused, mcp_tools.ListFailed):
+        except mcp_tools.ListFailed as failed:
+            if failed.reason == mcp_tools.REASON_CACHE:
+                # The org window cannot count, so no step may go on.
+                raise _Stop("limited") from None
+            if _clock() - self.start > RUN_S:
+                raise _Stop("time") from None
+            return
+        except mcp_tools.LiveRefused:
             # A refused or failed tool gives no shape. The run goes on.
             if _clock() - self.start > RUN_S:
                 raise _Stop("time") from None
