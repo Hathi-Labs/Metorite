@@ -395,3 +395,41 @@ def test_a_tie_of_value_and_label_breaks_by_the_key(agg) -> None:
     assert ordered == [("z", "Big"), ("", "(none)"), (None, "(none)"),
                        ("k-b", "Acme Ltd"), ("ka", "Acme Ltd")]
     assert [(g.key, g.label) for g in sorted(reversed(rows), key=agg.cut_key)] == ordered
+
+
+@pytest.mark.parametrize(("raw", "cents"), [
+    (0.125, "0.13"), (2.675, "2.68"), (-0.125, "-0.13"), (0.12, "0.12"), (5, "5.00"),
+    (1e300, "1" + "0" * 300 + ".00"), ("0.125", "0.13"),
+])
+def test_the_cut_rounds_a_half_cent_as_sql_does(agg, raw, cents) -> None:
+    """Round 4: page 1 orders by the value rounded as Postgres rounds a
+    numeric (half away from zero), never by ``round(float, 2)``, which gives
+    0.12 for 0.125. So page 1 and page 2 agree on a half cent."""
+    from decimal import Decimal
+
+    value = Decimal(raw) if isinstance(raw, str) else raw
+    assert agg.cents(value) == Decimal(cents)
+
+
+@pytest.mark.parametrize("raw", [None, float("nan"), float("inf"), float("-inf")])
+def test_no_value_sorts_last_and_never_crashes(agg, raw) -> None:
+    from gateway.routes.crm.aggregate import AggregateGroup
+
+    assert agg.cents(raw) is None
+    group = AggregateGroup(key="k", label="x", value=None)
+    assert agg.cut_key(group, raw)[0] is True
+
+
+def test_the_cut_reads_the_raw_value_before_the_answer_rounds_it(agg) -> None:
+    """Round 4: the shown value 0.12 of a raw 0.125 sorts as 0.13, above a
+    raw 0.12, as SQL sorts them. The name alone would put "A" first."""
+    from gateway.routes.crm.aggregate import AggregateGroup
+
+    z = AggregateGroup(key="ka", label="Z", value=0.12)
+    a = AggregateGroup(key="kb", label="A", value=0.12)
+    order = sorted([(a, 0.12), (z, 0.125)], key=lambda g: agg.cut_key(*g))
+    assert [g.label for g, _raw in order] == ["Z", "A"]
+    neg = sorted([(AggregateGroup(key="ka", label="A", value=-0.12), -0.125),
+                  (AggregateGroup(key="kb", label="Z", value=-0.12), -0.12)],
+                 key=lambda g: agg.cut_key(*g))
+    assert [g.label for g, _raw in neg] == ["Z", "A"]

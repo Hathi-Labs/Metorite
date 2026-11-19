@@ -133,6 +133,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Context, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -1784,7 +1785,7 @@ async def _compute(
         for key, acc in read.values.items()
     ]
     # The 50 largest groups stay. The rest fold into `other`.
-    groups.sort(key=lambda g: cut_key(g[0]))
+    groups.sort(key=lambda g: cut_key(g[0], g[1].value))
     kept, rest = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
     # With no group, the one row IS the total, so no group is shown.
     shown = [] if overall else [g for g, _acc in kept]
@@ -1843,13 +1844,44 @@ async def _compute(
     )
 
 
-def cut_key(group: AggregateGroup) -> tuple[Any, ...]:
+#: The cents of :func:`cents`, and a context wide enough for any float.
+_CENT = Decimal("0.01")
+_WIDE = Context(prec=400)
+
+#: What :func:`cut_key` reads when no raw value is given.
+_SHOWN = object()
+
+
+def cents(value: Any) -> Decimal | None:
+    """CRM-Q34-10: *value* rounded to 2 places as Postgres rounds a
+    ``numeric``: half away from zero, on the decimal text. ``repr`` of a
+    float is the shortest text that reads back as it, which is the text of
+    the numeric the statement gave. So 0.125 is 0.13 and -0.125 is -0.13
+    here and in SQL, where ``round(float, 2)`` gives 0.12 and -0.12. None,
+    NaN and an infinity give None."""
+    if value is None:
+        return None
+    try:
+        exact = value if isinstance(value, Decimal) else Decimal(repr(float(value)))
+        if not exact.is_finite():
+            return None
+        return exact.quantize(_CENT, rounding=ROUND_HALF_UP, context=_WIDE)
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+
+
+def cut_key(group: AggregateGroup, raw: Any = _SHOWN) -> tuple[Any, ...]:
     """The order in which an answer of one page keeps its 50 largest groups:
     the value down (None last), then the label. CRM-Q34-10: then the key by
     code point, None last, so a tie of value and label has one order. It is
-    the order of ``field_sql.one_group_order``, so page 2 continues this cut."""
-    return (group.value is None, -(group.value or 0.0), group.label,
-            group.key is None, group.key or "")
+    the order of ``field_sql.one_group_order``, so page 2 continues this cut.
+
+    *raw* is the value before the answer rounds it (``_Acc.value``). The
+    order rounds it as SQL does (:func:`cents`), never as ``round(float)``
+    does, so the two pages agree on a half cent. The shown value does not
+    change."""
+    value = cents(group.value if raw is _SHOWN else raw)
+    return (value is None, -(value or 0), group.label, group.key is None, group.key or "")
 
 
 def _next_page(module: str | None, group_field: str | None, fields: str | None,
