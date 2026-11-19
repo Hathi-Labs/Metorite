@@ -2340,22 +2340,21 @@ before, during and after the release.
   (`enforcement-flip`). The edit of `deploy/hostinger/gateway-drain.sh` is
   under the dated `deploy-write` grant of `.claude/OWNER_GRANTS.md` (to
   2026-11-30).
-- **The park runs in the run's own task.** The route sets a signal for each
-  wait that exists now (`pending_ask.park_at_stop`). Each wait wakes in
-  `executor.wait_user_future` and calls `pending_ask.park_for_stop` there.
-  `park` reads two ContextVars of the run: the HRD-22 offer reads the card of
-  the wait, and the "Not done" line reads the closed cards of the run. A call
+- **The park runs in the run's own task.** The route wakes each wait that
+  exists now (`pending_ask.park_at_stop`). Each wait then parks in its own
+  task (`executor.wait_user_future`, `pending_ask.park_for_stop`). `park`
+  reads two ContextVars of the run. The HRD-22 offer reads the card of the
+  wait, and the "Not done" line reads the closed cards of the run. A call
   from the route task would lose both.
 - **The flags are read twice.** A wait takes the signal only when both flags
   name the tenant that the run bound. The park reads them again with the org
   of the row. A refusal keeps the wait, as before. No tenant and no member
   come from the request (R5).
 - **The count waits for the park.** Until its park takes the Future, a
-  thread reads as waiting on a person. So `GET /internal/drain` counts a
-  thread whose park the stop woke as a running run
-  (`pending_ask.parking_threads`). Then the stop waits for the drain of the
-  run to save the reply and forget its record, and the next process writes
-  no `run_interrupted` mark.
+  thread reads as waiting on a person. So `GET /internal/drain` reads a woken
+  thread as a running run (`pending_ask.parking_threads`). Then the stop
+  waits for the drain of the run. The drain saves the reply and forgets the
+  record, so the next process writes no `run_interrupted` mark.
 - **The script.** The call has its own bound (`GATEWAY_DRAIN_PARK_SECONDS`,
   8 s), and the route waits at most `pending_ask.STOP_PARK_SECONDS` (5 s).
   The bound of the wait starts before the call, so the whole stop step stays
@@ -2372,12 +2371,14 @@ before, during and after the release.
   call is on the row from the card (`note_event`, `_record`), and
   `_thread_at_rest` closes the dead run first. So the card writes once.
 
-Fences (R7): `tests/unit/test_gateway_drain.py` (the script, the route and
-the count), `tests/unit/test_pending_ask_flow.py` (the park in the run's own
-task, the flags, the late card, a refusal, an answer that comes first) and
-`tests/unit/test_resume_continuation.py` (the restart and the same reply).
-The R8 case is `tests/unit/test_resume_continuation_r8.py`
-`test_a_card_parked_at_the_stop_goes_on_in_the_same_reply`.
+Fences (R7):
+
+- `tests/unit/test_gateway_drain.py`: the script, the route and the count.
+- `tests/unit/test_pending_ask_flow.py`: the park in the run's own task, the
+  flags, the late card, a refusal, and an answer that comes first.
+- `tests/unit/test_resume_continuation.py`: the restart and the same reply.
+- `tests/unit/test_resume_continuation_r8.py` (R8):
+  `test_a_card_parked_at_the_stop_goes_on_in_the_same_reply`.
 
 **RESUME-6, a cut run goes on by itself.** The next process closes a run that
 the stop cut, as today (`run_liveness.sweep_dead_instances`,
@@ -2526,8 +2527,8 @@ live run. RESUME-2d builds the decision (§4.12.7).
 
 | What | Where |
 |---|---|
-| The park, and the run cancel | `apps/services/orchestrator/orchestrator/pending_ask.py` `park` (1086), and `executor.py` `wait_user_future` (3219, the park at 3311-3317) |
-| The park at the stop (RESUME-5) | `pending_ask.py` `stop_wait` (1232), `parking_threads` (1272), `park_for_stop` (1286), `park_at_stop` (1302). `executor.py` `wait_user_future`: the signal at 3272, and the park in the run's own task at 3283-3298 |
+| The park, and the run cancel | `apps/services/orchestrator/orchestrator/pending_ask.py` `park` (1086), and `executor.py` `wait_user_future` (3219, the park at 3298-3304) |
+| The park at the stop (RESUME-5) | `pending_ask.py` `stop_wait` (1232), `end_stop_wait` (1256), `parking_threads` (1272), `park_for_stop` (1286), `park_at_stop` (1302). `executor.py` `wait_user_future`: the signal at 3272, and the park in the run's own task at 3283-3290. `_wait_slice` (3325) and `_park_at_stop` (3347) |
 | The row columns, the claim, and the reply row of a stored call | `pending_ask.py` `_COLUMNS` (213), `claim_stored_call` (493), `_run_facts` (774), `_record` (806) |
 | The late answer, the resume, and the 409 | `apps/services/gateway/gateway/routes/agent.py` `_late_answer_from_row` (3813), `_resume_from_row` (3980), `_continuation_request` (4202), `_same_reply_of` (4223), `_same_label_as_park` (4281), and the `run_restarted` 409 (4598) |
 | The last turn of a chat (RESUME-2b) | `apps/services/gateway/gateway/routes/chat.py` `_SHOWN_ROW_SQL` (681), `_LAST_TURN_SQL` (701), `label_of` (739), `reply_turn` (761). The fold of part one: `apps/services/gateway/gateway/chat_fold.py` `_same_label_as_row` (505), `same_reply_events` (556). The mark of a same-reply start: `executor.py` `_same_reply_run` (7037) |
