@@ -65,6 +65,8 @@ Verify: `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)
     - `_add_crm_facts_block` and `_log_request_tools_view` add no tool.
 
     `test_skill_mcp_reach.py::test_each_late_injection_site_has_a_decision` reads the source of `_inject_agent_tools`. A new site that adds a tool makes it fail until the site has a decision. `build` reads `reserved_names` once for each build.
+12. **The source fence reads each form of a site (final check P2).** `late_sites` reads an assignment, an augmented assignment and a starred item in a list. It also reads a local name that a call assigned, and an `append`, `extend` or `insert` call. The sinks are `_extra_tools`, `_all_tools`, `existing`, `_do["tools"]` and an attribute `tools` or `_tools`. A test gives the walker a small source in each form. Each decision of a site must name an entry of `RESERVED_LOCAL_PREFIXES`, `RESERVED_LATE_NAMES` or `family_tool_names`.
+13. **The MAF loaders are reserved (final check P2).** MAF names its progressive-disclosure loaders `<server>_list_mcp_tools`, `<server>_load_tool` and `<server>_unload_tool`. An MCP tool of one of those three names gives `mcp_name_reserved`. `skill_packs.MCP_LOADER_TOOL_NAMES` holds the names, and a parity test reads them from MAF.
 
 ## Open owner questions
 

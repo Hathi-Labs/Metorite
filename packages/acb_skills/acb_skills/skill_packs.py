@@ -81,6 +81,7 @@ __all__ = [
     "LOADER_TOOLS",
     "MAX_RULES_TOKENS",
     "MCP_PREFIX",
+    "MCP_LOADER_TOOL_NAMES",
     "MIN_NAME_CHARS",
     "RESERVED_LATE_NAMES",
     "RESERVED_LOCAL_PREFIXES",
@@ -207,6 +208,15 @@ LOADER_TOOLS: frozenset[str] = frozenset({"load_skill_tools", "find_tools"})
 RESERVED_LOCAL_PREFIXES: tuple[str, ...] = ("app_",)
 RESERVED_LATE_NAMES: frozenset[str] = frozenset({"whatsapp_ui"})
 
+#: TOF-5a-1 final check P2. The tool names of the progressive-disclosure
+#: loaders of MAF (``agent_framework._mcp._MCP_PROGRESSIVE_*_TOOL_NAME``). MAF
+#: names them ``<server>_list_mcp_tools``, ``<server>_load_tool`` and
+#: ``<server>_unload_tool`` (``_progressive_loader_names``). An MCP tool of
+#: one of these names gives the local name of a loader, so a skill would
+#: steer the model to the loader. The parity fence is
+#: ``test_skill_packs.py::test_the_mcp_loader_names_are_the_names_of_maf``.
+MCP_LOADER_TOOL_NAMES: frozenset[str] = frozenset({"list_mcp_tools", "load_tool", "unload_tool"})
+
 
 def family_tool_names() -> frozenset[str]:
     """THE union of the tools of each pack of ``skill_families``. The run's
@@ -217,10 +227,13 @@ def family_tool_names() -> frozenset[str]:
                      for n in fam.get("tools", ()))
 
 
-def is_reserved_local(name: str, reserved: frozenset[str]) -> bool:
+def is_reserved_local(name: str, reserved: frozenset[str], server: str = "") -> bool:
     """True when the MCP local name *name* is a first-party name: in
     *reserved*, in :data:`RESERVED_LATE_NAMES`, or with a prefix of
-    :data:`RESERVED_LOCAL_PREFIXES`."""
+    :data:`RESERVED_LOCAL_PREFIXES`. With *server*, the local name of a MAF
+    loader of that server (:data:`MCP_LOADER_TOOL_NAMES`) is reserved too."""
+    if server and name in {f"{server}_{t}" for t in MCP_LOADER_TOOL_NAMES}:
+        return True
     return (name in reserved or name in RESERVED_LATE_NAMES
             or name.startswith(RESERVED_LOCAL_PREFIXES))
 
@@ -562,7 +575,8 @@ def _mcp_reason(action: str, chat_tools: bool, served: Mapping[str, str] | None,
     if not chat_tools or served is None:
         return "chat_tools_off"
     found = mcp_local_name(action)
-    if action in reserved or (found is not None and is_reserved_local(found[1], taken)):
+    if action in reserved or (
+            found is not None and is_reserved_local(found[1], taken, found[0])):
         return "mcp_name_reserved"
     if action in unapproved:
         return "mcp_not_approved"

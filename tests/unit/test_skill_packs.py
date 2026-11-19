@@ -1626,13 +1626,16 @@ async def test_with_a_flag_off_the_turn_reads_no_mcp_fact(monkeypatch, off: str)
     ("mcp:github.search", "github_search"),
     ("mcp:app.crm_update_deal", "app_crm_update_deal"),  # a Custom App action
     ("mcp:whatsapp.ui", "whatsapp_ui"),
+    ("mcp:crm.load_tool", "crm_load_tool"),
+    ("mcp:crm.list_mcp_tools", "crm_list_mcp_tools"),
+    ("mcp:crm.unload_tool", "crm_unload_tool"),
 ])
 def test_a_local_name_of_a_first_party_tool_is_reserved(mcp_id: str, local: str) -> None:
     """Review P1. ``build`` refuses an MCP id whose local name is a first-party
     tool, also when the map serves it and also before the approval check.
     The run can add its own names (*mcp_reserved*). Mutation: drop the
     check of ``reserved_names`` → red."""
-    assert sp.is_reserved_local(local, sp.reserved_names())
+    assert sp.is_reserved_local(local, sp.reserved_names(), mcp_id[4:].split(".")[0])
     assert _mcp_build([mcp_id], served={mcp_id: local}) == "mcp_name_reserved"
     assert _mcp_build([mcp_id], served={}, unapproved={mcp_id}) == "mcp_name_reserved"
     assert _mcp_build([_MCP_ID], served={_MCP_ID: _MCP_LOCAL},
@@ -1678,3 +1681,20 @@ def test_reserved_names_are_read_once_a_build(monkeypatch) -> None:
     calls.clear()
     assert isinstance(_pack(), sp.SkillPack)
     assert calls == []
+
+
+def test_the_mcp_loader_names_are_the_names_of_maf() -> None:
+    """Final check P2. The parity fence of ``MCP_LOADER_TOOL_NAMES``: the
+    names that MAF gives its progressive-disclosure loaders, with the server
+    as the prefix. A tool of another name is not reserved. Mutation: drop a
+    name from the list → red."""
+    from agent_framework import _mcp as maf
+
+    names = {maf._MCP_PROGRESSIVE_LIST_TOOL_NAME, maf._MCP_PROGRESSIVE_LOAD_TOOL_NAME,
+             maf._MCP_PROGRESSIVE_UNLOAD_TOOL_NAME}
+    assert sp.MCP_LOADER_TOOL_NAMES == names
+    for name in names:
+        local = maf._build_prefixed_mcp_name(name, "crm")
+        assert sp.is_reserved_local(local, frozenset(), "crm"), local
+    assert not sp.is_reserved_local("crm_load_tools", frozenset(), "crm")
+    assert not sp.is_reserved_local("crm_load_tool", frozenset(), "crm-2")

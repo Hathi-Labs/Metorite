@@ -4598,7 +4598,8 @@ async def _skill_mcp_map(
     taken = _reserved_tool_names(reach.agent if reach is not None else None)
     taken |= skill_packs.reserved_names()
     reserved = frozenset(i for i in {*served, *unapproved} if skill_packs.is_reserved_local(
-        (skill_packs.mcp_local_name(i) or ("", ""))[1], taken))
+        (skill_packs.mcp_local_name(i) or ("", ""))[1], taken,
+        (skill_packs.mcp_local_name(i) or ("", ""))[0]))
     served = {i: n for i, n in served.items() if i not in reserved}
     unapproved = frozenset(unapproved - reserved)
     for name in sorted({_mcp_server_of(i) for i in reserved}):

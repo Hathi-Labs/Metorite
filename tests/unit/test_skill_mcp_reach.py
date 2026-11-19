@@ -388,6 +388,9 @@ def test_a_skill_whose_server_did_not_attach_writes_one_line(monkeypatch) -> Non
     ("github", "search", "github_search"),  # a tool of a pack family
     ("app", "crm_update_deal", "app_crm_update_deal"),  # a Custom App action tool
     ("whatsapp", "ui", "whatsapp_ui"),  # the WhatsApp UI tool
+    ("crm", "load_tool", "crm_load_tool"),  # a MAF loader of the server
+    ("crm", "list_mcp_tools", "crm_list_mcp_tools"),
+    ("crm", "unload_tool", "crm_unload_tool"),
 ])
 async def test_an_mcp_tool_with_a_first_party_name_never_serves(
     monkeypatch, server: str, name: str, local: str,
@@ -442,77 +445,153 @@ def test_the_unattached_log_counts_only_mcp_functions(monkeypatch) -> None:
 
 
 #: Re-review P1. Each call whose tools ``_inject_agent_tools`` adds to the
-#: run, and the decision that reserves its names. A new site fails the test
-#: below until it gets a decision here and in ``skill_packs``.
-_LATE_SITES = {
-    "_collect_injectable_platform_tools": "families",
-    "load_app_action_tools": "prefix app_",
-    "load_workflow_tools": "families",
-    "_whatsapp_ui_tools": "late name",
+#: run, and the decision that reserves its names: ``("prefix", p)`` for a
+#: prefix of ``RESERVED_LOCAL_PREFIXES``, ``("late", n)`` for a name of
+#: ``RESERVED_LATE_NAMES``, ``("families", names)`` for names in
+#: ``family_tool_names``. The test checks each decision against the lists.
+_LATE_SITES: dict[str, tuple[str, Any]] = {
+    "_collect_injectable_platform_tools": ("families", "injected_tool_names"),
+    "load_app_action_tools": ("prefix", "app_"),
+    "load_workflow_tools": ("families", ("list_workflows", "run_workflow", "get_workflow_run")),
+    "_whatsapp_ui_tools": ("late", "whatsapp_ui"),
 }
+#: The calls that keep, filter, gate or wrap the list. They add no tool.
+_NO_ADD = frozenset({"_drop_withheld", "_gate_injected_tool", "_is_egress", "getattr",
+                     "_norm", "_norm_legacy", "list"})
+#: The lists of tools that the function fills.
+_TARGETS = frozenset({"_extra_tools", "_all_tools", "existing"})
 
 
-def _added_calls(fn: Any) -> set[str]:
-    """The names of the calls whose result joins ``_extra_tools`` or
-    ``_all_tools`` in the source of *fn*: an assignment from a call, a
-    ``+`` of a call, and an ``append`` or ``extend`` of one."""
+def late_sites(source: str) -> set[str]:
+    """The names of the calls whose tools join a tool list in *source*.
+
+    A sink is a name of :data:`_TARGETS`, ``_do["tools"]``, or an
+    attribute ``tools`` or ``_tools``. A tool joins by an assignment, an
+    augmented assignment, or an ``append``, ``extend`` or ``insert`` call. The
+    walker reads a call, a ``+``, a list or tuple with a starred item, and a
+    local name, which it follows to the calls that assigned it. It never
+    follows a loop name, a condition or a call of :data:`_NO_ADD`."""
     import ast
-    import inspect
     import textwrap
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-    targets = {"_extra_tools", "_all_tools"}
-    found: set[str] = set()
-
-    def _calls(node: Any) -> None:
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Call):
-                name = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
-                if name:
-                    found.add(str(name))
-
+    tree = ast.parse(textwrap.dedent(source))
+    assigned: dict[str, list[Any]] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", None) in targets for t in node.targets):
-            if isinstance(node.value, ast.BinOp):
-                _calls(node.value.right)
-            elif isinstance(node.value, ast.Call):
-                _calls(node.value)
-        if (isinstance(node, ast.Call) and getattr(node.func, "attr", None) in {"append", "extend"}
-                and getattr(node.func.value, "id", None) in targets):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in _TARGETS:
+                    assigned.setdefault(target.id, []).append(node.value)
+
+    def _sink(node: Any) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in _TARGETS
+        if isinstance(node, ast.Subscript):
+            return (isinstance(node.value, ast.Name) and node.value.id == "_do"
+                    and getattr(node.slice, "value", None) == "tools")
+        return isinstance(node, ast.Attribute) and node.attr in {"tools", "_tools"}
+
+    def _calls(node: Any, seen: frozenset[str] = frozenset()) -> set[str]:
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            return set() if not name or name in _NO_ADD else {str(name)}
+        if isinstance(node, ast.Name):
+            if node.id in _TARGETS or node.id in seen:
+                return set()
+            found: set[str] = set()
+            for value in assigned.get(node.id, ()):
+                found |= _calls(value, seen | {node.id})
+            return found
+        if isinstance(node, ast.BinOp):
+            return _calls(node.left, seen) | _calls(node.right, seen)
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return set().union(*(_calls(e, seen) for e in node.elts)) if node.elts else set()
+        if isinstance(node, ast.Starred):
+            return _calls(node.value, seen)
+        if isinstance(node, ast.Subscript):
+            return _calls(node.value, seen)
+        if isinstance(node, ast.IfExp):
+            return _calls(node.body, seen) | _calls(node.orelse, seen)
+        if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+            return _calls(node.elt, seen)
+        return set()
+
+    sites: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(_sink(t) for t in node.targets):
+            sites |= _calls(node.value)
+        elif isinstance(node, ast.AugAssign) and _sink(node.target):
+            sites |= _calls(node.value)
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and node.func.attr in {"append", "extend", "insert"} and _sink(node.func.value)):
             for arg in node.args:
-                _calls(arg)
-    return found
+                sites |= _calls(arg)
+    return sites
+
+
+@pytest.mark.parametrize("body", [
+    "_extra_tools += load_x(agent_name)",
+    "_extra_tools = [*_extra_tools, *load_x()]",
+    "_late = load_x()\n_extra_tools = _extra_tools + _late",
+    "_do = getattr(agent, 'default_options', None)\n_do['tools'].append(load_x())",
+    "_extra_tools = _extra_tools + load_x(agent_name)",
+    "_extra_tools.extend(load_x())",
+    "agent.tools.append(load_x())",
+])
+def test_the_walker_finds_a_site_in_each_form(body: str) -> None:
+    """Final check P2. Each form of a new injection site is a site.
+    Mutation: drop a form from ``late_sites`` → red."""
+    source = "def f(agents, agent_name):\n" + "\n".join(
+        "    " + line for line in body.splitlines())
+    assert "load_x" in late_sites(source), body
+
+
+def test_the_walker_skips_a_filter_and_a_condition() -> None:
+    """A filter, a gate, a wrapper and a condition add no tool. Mutation:
+    read each call of the value → red."""
+    source = """
+def f(agents, names):
+    _scope = resolve_scope()
+    _extra_tools = [fn for fn in _all_tools if fn.__name__ in _scope]
+    _extra_tools = _drop_withheld(_extra_tools, withheld_names())
+    _extra_tools = [_gate_injected_tool(fn) for fn in _extra_tools]
+    _do["instructions"] = build_prompt()
+    existing = list(getattr(opts, "tools", []) or [])
+    for fn in _extra_tools:
+        wrapped = _norm([fn])[0]
+        existing.append(wrapped)
+"""
+    assert late_sites(source) == set()
 
 
 def test_each_late_injection_site_has_a_decision() -> None:
-    """Re-review P1. The tools that injection adds after the packs step are
-    reserved by name or by prefix (``skill_packs.RESERVED_LOCAL_PREFIXES``,
-    ``RESERVED_LATE_NAMES`` and the families). A new site that adds a tool
-    fails here until it has a decision. Mutation: drop ``app_`` or
+    """Re-review P1 and final check P2. The tools that injection adds after
+    the packs step are reserved by name or by prefix. A new site that adds a
+    tool fails here until it has a decision, and each decision must name an
+    entry of the lists of ``skill_packs``. Mutation: drop ``app_`` or
     ``whatsapp_ui`` from the lists, or add a site → red."""
     import inspect
 
+    from acb_skills.skill_families import injected_tool_names
     from orchestrator import _tool_injection as ti
     from orchestrator import app_tools, workflow_tools
 
-    sites = _added_calls(ti._inject_agent_tools)
-    # The filters and the gate keep the list, and they add no tool.
-    sites -= {"_drop_withheld", "_gate_injected_tool", "_is_egress", "getattr"}
-    assert sites == set(_LATE_SITES), sites
-    assert "app_" in sp.RESERVED_LOCAL_PREFIXES
+    assert late_sites(inspect.getsource(ti._inject_agent_tools)) == set(_LATE_SITES)
+    families = sp.family_tool_names()
+    for site, (kind, value) in _LATE_SITES.items():
+        if kind == "prefix":
+            assert value in sp.RESERVED_LOCAL_PREFIXES, site
+            assert sp.is_reserved_local(f"{value}any_action", frozenset()), site
+        elif kind == "late":
+            assert value in sp.RESERVED_LATE_NAMES, site
+        else:
+            names = set(injected_tool_names()) if value == "injected_tool_names" else set(value)
+            assert names and names <= families, (site, names - families)
     assert 'f"app_{slug}_{name}"' in inspect.getsource(app_tools)
-    assert sp.is_reserved_local("app_any_action", frozenset())
-    assert "whatsapp_ui" in sp.RESERVED_LATE_NAMES
     from acb_skills.whatsapp_ui import whatsapp_ui
 
-    assert whatsapp_ui.__name__ in sp.RESERVED_LATE_NAMES
-    families = sp.family_tool_names()
+    assert whatsapp_ui.__name__ == _LATE_SITES["_whatsapp_ui_tools"][1]
     trio = {f.__name__ for f in (workflow_tools.list_workflows, workflow_tools.run_workflow,
                                  workflow_tools.get_workflow_run)}
-    assert trio <= families, trio - families
-    from acb_skills.skill_families import injected_tool_names
-
-    assert set(injected_tool_names()) <= families
+    assert trio == set(_LATE_SITES["load_workflow_tools"][1])
     assert sp.LOADER_TOOLS <= sp.reserved_names()
     assert ti._FIRST_PARTY_LOADERS is sp.LOADER_TOOLS, "one owner of the loader names"
