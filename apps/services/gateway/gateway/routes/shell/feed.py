@@ -1438,6 +1438,13 @@ def _source_line(facts: dict[str, Any]) -> str:
     return "The last three syncs failed."
 
 
+def _provider_line(_facts: dict[str, Any]) -> str:
+    """The why line of ``provider_alert`` (AO-2). The source gives no feed
+    signal today, so no card uses it. A fixed sentence: never a word that a
+    vendor wrote."""
+    return "An AI vendor account needs a look. Open the provider page."
+
+
 def _review_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
     """The why line of ``doc_needs_review`` (KB-9b). It names the review date
     and nothing else: no person."""
@@ -1466,6 +1473,8 @@ _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
     # KB-9b slice 2: a source that the member connected stopped syncing.
     "source_sync_failed": ("source_failed", lambda f, _tz, _today: _source_line(f)),
+    # AO-2: the AI vendor alert of the operator's admins.
+    "provider_alert": ("provider_alert", lambda f, _tz, _today: _provider_line(f)),
 }
 
 
