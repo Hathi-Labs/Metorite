@@ -734,6 +734,18 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "secret",
         "Gives a box a new token and shows it once. A secret never goes through the chat.",
     ),
+    "GET /api/integrations/api/zoho_books": (
+        "oauth",
+        "API-5. Reads the state of the Zoho Books consent and the choices of the admin's own pending pick.",
+    ),
+    "POST /api/integrations/api/zoho_books/pick": (
+        "oauth",
+        "API-5. The return step of the Zoho Books consent: the admin picks one Books organization.",
+    ),
+    "POST /api/integrations/api/zoho_books/start": (
+        "oauth",
+        "API-5. Starts the Zoho Books consent. The browser goes to Zoho, and the admin approves it there.",
+    ),
     "POST /api/integrations/configure": (
         "secret",
         "Saves the keys of an integration. A secret never goes through the chat.",

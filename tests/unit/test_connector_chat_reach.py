@@ -43,6 +43,8 @@ REACH: dict[str, tuple[str, str]] = {
     "google_sheets": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "smtp": ("gap", "task 3440: a key feeds scripts only, no chat tool"),
     "mcp": ("mcp", "_inject_mcp_servers"),
+    # API-5 lists the connector. The shared chat tools of api_connections.md §2.4 close the gap.
+    "api:zoho_books": ("gap", "task 3790 (API-4): the api_read chat tools are not built yet"),
 }
 
 

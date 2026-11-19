@@ -17,6 +17,7 @@ from acb_common.studio_manifest import CONNECTION_NAME_RE
 from gateway.calendar_sync import connections as cal
 from gateway.kb_sources.registry import SOURCES as DRIVE_SOURCES
 from gateway.routes import integrations
+from gateway.routes import integrations_api_connect as api_connect
 from gateway.routes import integrations_connections as ic
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +44,8 @@ def _ids() -> list[str]:
 def _flows() -> set[str]:
     """The provider ids that have a connect flow, derived from the code."""
     out = {"mailbox", "whatsapp", "zoho", "github", "mcp"}
+    # API-5: each API template with a connect flow (``api_connections.md`` §2.11).
+    out.add(api_connect.PROVIDER)
     out |= set(cal.SOURCES)
     out |= set(DRIVE_SOURCES)
     out |= {s.replace("-", "_") for s in integrations._SETUP_GUIDES if s not in _NOT_A_KEY_GUIDE}

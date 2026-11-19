@@ -4,6 +4,7 @@
 // status and the server's own message, because the MCP guard explains its
 // refusals (a private address, a non-https URL) and the form shows them.
 
+import { parseBooksStatus, pickErrorText, startErrorText, type BooksStatus } from "./apiConnect";
 import { refusalText, startErrorMessage, type Connection, type McpSwitches } from "./connections";
 
 export class IntegrationsError extends Error {
@@ -122,6 +123,64 @@ export async function startMcpOAuth(name: string): Promise<string> {
     throw new IntegrationsError(startErrorMessage("failed"), 502, "failed");
   }
   return body.url;
+}
+
+// ── Zoho Books, the first API connection (API-5) ──────────────────────────
+//
+// The gateway route answers 404 for an org that `API_CONNECTIONS_ORGS` does
+// not hold, and 403 without `integrations:manage`. Both read as `null`: the
+// console then offers the old "Add API" only.
+
+/** The status of the org's Zoho Books connection, or `null` when it is not open to this member. */
+export async function getBooksStatus(): Promise<BooksStatus | null> {
+  const res = await fetch("/api/integrations/api/zoho_books", { cache: "no-store" });
+  if (res.status === 404 || res.status === 403) return null;
+  if (!res.ok) return fail(res);
+  return parseBooksStatus(await res.json().catch(() => ({})));
+}
+
+/** The status with the choices of this admin's own pending pick. */
+export async function getBooksPick(pick: string): Promise<BooksStatus | null> {
+  const res = await fetch(`/api/integrations/api/zoho_books?pick=${encodeURIComponent(pick)}`, {
+    cache: "no-store",
+  });
+  if (res.status === 404 || res.status === 403) return null;
+  if (!res.ok) return fail(res);
+  return parseBooksStatus(await res.json().catch(() => ({})));
+}
+
+/**
+ * Start the Zoho Books consent. The gateway signs the state and builds the
+ * URL, and the BFF passes on an https URL only. The caller sends the browser
+ * there. A refusal carries its short code.
+ */
+export async function startBooks(): Promise<string> {
+  const res = await fetch("/api/integrations/api/zoho_books/start", { method: "POST" });
+  const body = (await res.json().catch(() => ({}))) as { url?: unknown; detail?: unknown };
+  if (!res.ok) {
+    const code = typeof body.detail === "string" ? body.detail : undefined;
+    throw new IntegrationsError(startErrorText(code), res.status, code);
+  }
+  if (typeof body.url !== "string" || !body.url.startsWith("https://")) {
+    throw new IntegrationsError(startErrorText("failed"), 502, "failed");
+  }
+  return body.url;
+}
+
+/** Finish a consent that found several organizations, with one of them. */
+export async function pickBooks(pick: string, organizationId: string): Promise<BooksStatus> {
+  const res = await fetch("/api/integrations/api/zoho_books/pick", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pick, zoho_organization_id: organizationId }),
+  });
+  const body: unknown = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    const code = typeof detail === "string" ? detail : undefined;
+    throw new IntegrationsError(pickErrorText(code), res.status, code);
+  }
+  return parseBooksStatus(body);
 }
 
 export async function addMcp(body: Record<string, unknown>): Promise<void> {

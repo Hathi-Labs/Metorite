@@ -52,6 +52,7 @@ import {
   type McpSwitches,
   type StatusFilter,
 } from "../lib/connections";
+import { ApiConnectReturn } from "./ApiConnect";
 import ApiKeysView from "./ApiKeysView";
 import CalendarConnectionsGroup from "./CalendarConnectionsGroup";
 import ConnectionList from "./ConnectionList";
@@ -286,6 +287,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
       )}
       {/* WS-54 GH-3: GitHub sends the browser back here after the install. */}
       <GitHubAppReturn onConnected={invalidateConnections} />
+      {/* API-5: Zoho sends the browser back here after the Books consent. */}
+      <ApiConnectReturn onConnected={invalidateConnections} />
       {/* CE-10c (D96.1): the calendar connections, read-only, with a link to Calendar settings. */}
       <CalendarConnectionsGroup />
       {res.error && res.data === undefined ? (

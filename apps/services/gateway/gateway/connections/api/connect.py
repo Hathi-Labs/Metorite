@@ -318,6 +318,19 @@ def pending_record(member: str, sealed_credential: str,
     }, separators=(",", ":"))
 
 
+def pending_member(raw: Any) -> str | None:
+    """The member of a pending record, with no open of the credential.
+
+    API-5 (gap 3 of §2.11): the pick reads the member first, and it takes the
+    entry only for that member. ``None`` for a bad record.
+    """
+    try:
+        member = json.loads(raw)["member"]
+    except (TypeError, ValueError, KeyError):
+        return None
+    return member if isinstance(member, str) else None
+
+
 def pending_from(raw: Any, open_value: Any) -> PendingPick | None:
     """The pending pick of *raw*, or ``None`` for a bad or unopened record.
 
@@ -364,6 +377,7 @@ __all__ = [
     "organizations_url",
     "parse_organizations",
     "pending_from",
+    "pending_member",
     "pending_record",
     "provider_meta",
     "read_answer_ok",
