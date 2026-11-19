@@ -1613,3 +1613,140 @@ async def test_with_the_flag_off_the_rule_reads_no_record(
                           member=MEMBER, to=RAVI)
     assert saved.outcome == cr.CREATED
     assert redis.reads == 0 and redis.writes == 0 and box.gets == []
+
+
+# ── 13. The verifier's survivors (on 3e3abe244) ─────────────────────────────
+
+
+async def test_send_draft_with_the_flag_off_asks_no_close_on_steer(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """Off is the call of before: no ``close_on_steer`` argument at all."""
+    _flag(monkeypatch, "")
+    draft = "00000000-0000-4000-8000-0000000000d1"
+
+    async def get(_path: str, *_a: Any, **_kw: Any) -> Any:
+        return {"id": draft, "account_id": BOX, "folder": "drafts", "subject": "Hi",
+                "to_addresses": [{"email": "ravi@contoso.test"}]}
+
+    async def sealed(*_a: Any, **_kw: Any) -> Any:
+        return "detail", "context", {"text_digest": "a" * 64}
+
+    async def recent(_did: str, detail: str) -> str:
+        return detail
+
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
+    monkeypatch.setattr(agents, "_get", get)
+    monkeypatch.setattr(agents, "_sealed_card", sealed)
+    monkeypatch.setattr(agents, "_with_recent_reply", recent)
+    out = await agents.send_draft(BOX, draft)
+    assert "close_on_steer" not in card[-1]
+    assert out == agents._not_done("The draft was not sent.")
+    assert tool.posts == []
+
+
+@pytest.fixture()
+def unsubscribe(monkeypatch: pytest.MonkeyPatch, tool: _Mailbox) -> _Mailbox:
+    """The unsubscribe tools with a stored one-click target and no held run."""
+    async def target(_aid: str, _email: str) -> Any:
+        return {"kind": "one-click", "link": "https://list.example/u"}
+
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
+    monkeypatch.setattr(agents, "_unsubscribe_target", target)
+    monkeypatch.setattr(agents, "_unsubscribe_card",
+                        lambda _t, _s: ("detail", "context", ""))
+    monkeypatch.setattr(agents, "_unsubscribe_line", lambda s, _t: (f"- {s}", ""))
+    return tool
+
+
+@pytest.mark.parametrize("call", [
+    lambda: agents.unsubscribe_sender(BOX, email="news@list.example"),
+    lambda: agents.unsubscribe_sender(BOX, emails=["a@list.example", "b@list.example"]),
+])
+async def test_a_closed_unsubscribe_card_answers_its_act_and_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, unsubscribe: _Mailbox, card: _Cards, call: Any,
+) -> None:
+    """``unsubscribe_sender`` and ``_unsubscribe_many``: a chat message closes
+    the card, the tool answers the unsubscribe text, and nothing is posted."""
+    _flag(monkeypatch, ORG)
+    out = await call()
+    assert card[-1]["close_on_steer"] is True
+    assert out == agents._closed_by_message("unsubscribe")
+    assert unsubscribe.posts == []
+
+
+async def test_a_closed_outward_rule_card_answers_its_act_and_saves_nothing(
+    monkeypatch: pytest.MonkeyPatch, tool: _Mailbox, card: _Cards,
+) -> None:
+    """``_outward_rule_refusal``: the closed card gives the generic text, so
+    the rule tool returns it and saves no rule."""
+    _flag(monkeypatch, ORG)
+    monkeypatch.setattr(agents, "_held_in_no_egress", lambda _a: False)
+    monkeypatch.setattr(agents, "_has_outward_action", lambda _a: True)
+    monkeypatch.setattr(agents, "_rule_targets", lambda _r: ([{"to": "x"}], ""))
+
+    async def no_refusal(*_a: Any, **_kw: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(agents, "_target_refusal", no_refusal)
+    monkeypatch.setattr(agents, "_outward_card", lambda _rows: ("detail", "context"))
+    monkeypatch.setattr(agents, "_rule_lines", lambda _r: "- a rule")
+    out = await agents._outward_rule_refusal(
+        "Save this rule?", [{"actions": [{"type": "FORWARD"}]}], "The rule was not saved.")
+    assert card[-1]["close_on_steer"] is True
+    assert out == agents._closed_by_message("card")
+    assert tool.posts == [] and tool.calls == []
+
+
+async def test_a_failed_delete_keeps_both_drafts_in_the_record(
+    redis: _Redis, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DELETE_FAILED: both drafts stay in Drafts, so the record knows both."""
+    _flag(monkeypatch, ORG)
+    box = _Mailbox()
+    first = await _file_save(box, "", [], "Hi.")
+
+    async def broken(_path: str) -> Any:
+        raise RuntimeError("provider down")
+
+    box.delete = broken  # type: ignore[method-assign]
+    second = await _file_save(box, first.result["id"], ["a.pdf"], "Hi 2.")
+    assert second.outcome == cr.DELETE_FAILED
+    [raw] = redis.data.values()
+    assert sorted(r["id"] for r in json.loads(raw)["drafts"]) == sorted(
+        [first.result["id"], second.result["id"]])
+
+
+async def test_the_gateway_read_takes_no_draft_of_another_mailbox(
+    monkeypatch: pytest.MonkeyPatch, redis: _Redis,
+) -> None:
+    """``save_chat_draft.read`` answers None for a row of another mailbox, so
+    the named id reads gone and nothing is updated."""
+    from contextlib import asynccontextmanager
+
+    from gateway.routes.email.automation import drafting
+
+    _flag(monkeypatch, ORG)
+    calls: list[Any] = []
+    row = {"id": "d9", "account_id": "another-box", "folder": "drafts",
+           "subject": "Rates", "body_text": "Hi.", "to_addresses": [{"email": RAVI[0]}]}
+    await cr.note_draft(thread=THREAD, account_id=BOX, member=MEMBER, draft_id="d9",
+                        to=RAVI, subject="Rates", digest=cr.draft_digest(row), org=ORG)
+
+    @asynccontextmanager
+    async def session() -> Any:
+        yield object()
+
+    async def fetch(_db: Any, _did: str) -> dict[str, Any]:
+        return dict(row)
+
+    async def upsert(req: Any, _user: Any) -> Any:
+        calls.append(req)
+        return {"id": "g1"}
+
+    monkeypatch.setattr(drafting, "_tenant_session", session)
+    monkeypatch.setattr(drafting, "_fetch_message_dict", fetch)
+    saved = await drafting.save_chat_draft(
+        {"account_id": BOX, "to": RAVI, "subject": "Rates", "body": "New."}, object(),
+        thread=THREAD, member=MEMBER, org=ORG, replaces="d9", upsert=upsert)
+    assert saved.outcome == cr.CREATED and [c.draft_id for c in calls] == [None]
