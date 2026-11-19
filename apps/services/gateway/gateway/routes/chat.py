@@ -13,6 +13,7 @@ POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
 POST   /chat/sessions/{session_id}/continue    Continue a held chat in a fresh chat (WT-1)
 PUT    /chat/sessions/{session_id}/pin         Pin a chat for the caller (CO-11)
 DELETE /chat/sessions/{session_id}/pin         Unpin a chat for the caller (CO-11)
+PUT    /chat/sessions/{session_id}/topic       Move a chat into a topic, for the caller (CO-2b)
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -40,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
@@ -47,8 +49,9 @@ from acb_common import get_logger
 from acb_common.assistant_profile import PROFILE_USED_EVENT
 from acb_common.chat_continue_flag import continue_allowed
 from acb_common.pg_text import storable
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from gateway import chat_session_member as chat_pins
+from gateway import chat_topic
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -56,7 +59,7 @@ from gateway.rooms import (
     resolve_room_access,
     session_exists_elsewhere,
 )
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _log = get_logger("gateway.chat")
 
@@ -193,7 +196,10 @@ _SESSIONS_SQL = (
     "                 WHERE m.session_id = s.id AND m.role = 'user' "
     "                 LIMIT 1), false) AS has_user_message, "
     f"      {_IS_BRIEF_SQL} AS is_brief, "
-    "       me.role AS my_role, s.archived_at "
+    "       me.role AS my_role, s.archived_at, "
+    # CO-13: the link of a chat that continues another one. The
+    # title is found below, in this same result (§17.5).
+    "       s.continued_from "
     "FROM chat_session s "
     # One join on the participant key, so no query per row.
     "LEFT JOIN chat_session_participant me "
@@ -217,10 +223,29 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     # switch on. Off, the list sends today's one statement and today's keys.
     pins_on = chat_pins.pin_allowed(organization_id)
     pins: dict[str, Any] = {}
+    # CO-2b (§6): the caller's own topic of each chat, only with the switch on.
+    topics_on = chat_topic.topics_allowed(organization_id)
+    topics: dict[str, Any] = {}
     with tenant_session(organization_id) as s:
         rows = s.execute(text(_SESSIONS_SQL), {"uid": user_id}).fetchall()
         if pins_on:
             pins = chat_pins.pinned_at_of(s, user_id)
+        if topics_on:
+            topics = chat_pins.topics_of_chats(s, [r.id for r in rows], user_id)
+    # CO-13 (§17.5): the source of a continued chat is readable by this member
+    # exactly when it is a row of this list. The list holds every row that
+    # SESSION_VISIBLE_SQL passes, with no limit, under the bound tenant, so a
+    # source of another org or one that the member cannot read is not here.
+    # No second rule and no second query. A deleted source left a NULL link.
+    readable = {r.id: r.title for r in rows}
+
+    def _mark(link: str | None) -> dict | None:
+        if not link:
+            return None
+        if link in readable:
+            return {"id": link, "title": readable[link]}
+        return {"id": None, "title": None}
+
     listed = [
         {
             "id": r.id,
@@ -255,6 +280,9 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # D99 (migration 254): an archived chat stays in the list, and
             # the assistant shows it under "Archived".
             "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
+            # CO-13: null for a chat that continues nothing. An archived
+            # source stays in the list, so it keeps its title and its link.
+            "continuedFrom": _mark(r.continued_from),
         }
         for r in rows
     ]
@@ -264,6 +292,13 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
         for item, r in zip(listed, rows, strict=True):
             item.update(chat_pins.pin_fields(pins.get(r.id),
                                              archived=r.archived_at is not None))
+    if topics_on:
+        # Only the caller's topic, and only a topic that shows to the caller.
+        # A colleague in the same room reads none of it (CO-2b). An archived
+        # chat reads as no topic, as it reads as not pinned.
+        for item, r in zip(listed, rows, strict=True):
+            item.update(chat_pins.topic_fields(topics.get(r.id),
+                                               archived=r.archived_at is not None))
     return listed
 
 
@@ -629,6 +664,137 @@ def _unpin_session(
         return chat_pins.unpin(s, session_id, viewer=user_id)
 
 
+def _move_session(
+    session_id: str, user_id: str, topic_id: str | None, *, organization_id: str | None,
+) -> chat_pins.TopicMove:
+    """Move the chat of *user_id* into a topic, or to "No topic" (CO-2b)."""
+    from acb_graph import tenant_session
+
+    with tenant_session(organization_id) as s:
+        return chat_pins.set_topic(s, session_id, viewer=user_id, topic_id=topic_id)
+
+
+#: The rows that a reader sees (S14, §20): every row but the empty agent row
+#: that the gateway mints before the first checkpoint. The names are bare, so
+#: they bind to the nearest ``chat_message`` of the statement. ONE predicate:
+#: :func:`_get_messages` and :data:`_LAST_TURN_SQL` both use it.
+_SHOWN_ROW_SQL = (
+    "NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
+    "THEN 'agent' ELSE 'other' END) = 'agent' "
+    "AND content = '' "
+    "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
+    "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
+    "AND COALESCE(reasoning, '') = '')"
+)
+
+#: RESUME-2b (``chat_run_continuity.md`` §4.12.4 item 2, case A): the reply
+#: row *mid*, and whether it is the last turn of its chat. One row back means
+#: it exists. Its first column is True when no row that a reader sees comes
+#: after it. "After" is the order of :func:`_get_messages`: a larger
+#: ``(timestamp_ms, id)``. So a row with the same ``timestamp_ms`` and a
+#: larger ``id`` shows after the reply, and it counts (review of 2026-11-17,
+#: P2-2). The second column is the ``authority`` label of the reply, which the
+#: fold at the park wrote. The third column is True when a participant joined
+#: after the reply row: its ``join_message_ts`` (the history waterline) is
+#: later than the row's ``timestamp_ms`` (review round 2, P2-b). The org
+#: stands beside RLS (R5).
+_LAST_TURN_SQL = (
+    "SELECT NOT EXISTS ("
+    "  SELECT 1 FROM chat_message "
+    "  WHERE session_id = r.session_id AND organization_id = r.organization_id "
+    "    AND (timestamp_ms, id) > (r.timestamp_ms, r.id) AND " + _SHOWN_ROW_SQL
+    + "), r.authority, EXISTS ("
+    "  SELECT 1 FROM chat_session_participant p "
+    "  WHERE p.session_id = r.session_id AND p.organization_id = r.organization_id "
+    "    AND p.join_message_ts > r.timestamp_ms"
+    ") FROM chat_message r "
+    "WHERE r.organization_id = CAST(:org AS uuid) AND r.session_id = :sid "
+    "  AND r.id = :mid"
+)
+
+#: A label: the sorted members and the sorted caps of an ``authority`` value.
+Label = tuple[tuple[str, ...], tuple[str, ...]]
+
+#: The label of an ``authority`` value of another shape. It never equals a
+#: real label, which names two members or more (fail closed).
+_BAD_LABEL: Label = ((), ())
+
+
+@dataclass(frozen=True)
+class ReplyTurn:
+    """The reply row of a parked turn, as RESUME-2b reads it (:func:`reply_turn`).
+
+    *last* is True when no row that a reader sees comes after it. *label* is
+    the ``authority`` label of the row (:func:`label_of`): the members and
+    the caps of a shared room when the fold at the park wrote the row. It is
+    None when the row has no label, which is a solo run at the park.
+    *late_join* is True when a participant's history waterline is later than
+    the row (review round 2, P2-b)."""
+
+    last: bool
+    label: Label | None
+    late_join: bool = False
+
+
+def label_of(authority: Any) -> Label | None:
+    """The label of an ``authority`` value (``chat_fold._run_authority``):
+    ``(members, caps)``, each sorted, the members in lower case. None for no
+    label. A value of another shape gives :data:`_BAD_LABEL`. RESUME-2b reads
+    the label of a row and the label of now through this one function."""
+    if authority is None:
+        return None
+    if isinstance(authority, str):
+        try:
+            authority = json.loads(authority)
+        except ValueError:
+            return _BAD_LABEL
+    if not isinstance(authority, dict):
+        return _BAD_LABEL
+    members, caps = authority.get("members"), authority.get("caps", [])
+    if (not isinstance(members, list) or not all(isinstance(m, str) for m in members)
+            or not isinstance(caps, list) or not all(isinstance(c, str) for c in caps)):
+        return _BAD_LABEL
+    return (tuple(sorted({m.strip().lower() for m in members if m.strip()})),
+            tuple(sorted(set(caps))))
+
+
+def reply_turn(
+    session_id: str, message_id: str, *, organization_id: str | None,
+) -> ReplyTurn | None:
+    """The reply row *message_id* of the chat *session_id* (RESUME-2b, case A),
+    or None when it is not there.
+
+    ``gateway.routes.agent._same_reply_of`` and the final fold of a
+    same-reply run (``chat_fold``) call it. A late Approve goes on in the same
+    reply only when nothing shows after the row, no member joined after it,
+    and the label of the room did not change since the park. The org is the
+    session's: the read opens ``tenant_session(organization_id)``, and the SQL
+    names the org beside RLS. A missing row, another org and no org give
+    None. Sync: call it through ``asyncio.to_thread``. Fence:
+    ``tests/unit/test_resume_continuation_r8.py`` (R8)."""
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    if not organization_id or not session_id or not message_id:
+        return None
+    with tenant_session(organization_id) as s:
+        row = s.execute(
+            text(_LAST_TURN_SQL),
+            {"org": organization_id, "sid": session_id, "mid": message_id},
+        ).first()
+    if row is None:
+        return None
+    return ReplyTurn(last=bool(row[0]), label=label_of(row[1]), late_join=bool(row[2]))
+
+
+def reply_is_last_turn(
+    session_id: str, message_id: str, *, organization_id: str | None,
+) -> bool:
+    """True when :func:`reply_turn` finds the row and it is the last turn."""
+    turn = reply_turn(session_id, message_id, organization_id=organization_id)
+    return turn is not None and turn.last
+
+
 def _get_messages(
     session_id: str,
     user_id: str,
@@ -683,12 +849,7 @@ def _get_messages(
             # content before the first checkpoint. A reader does not see it
             # until it holds content, a tool event, a custom event or
             # reasoning. SQL, not Python, so a LIMIT does not count it.
-            " AND NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
-            "THEN 'agent' ELSE 'other' END) = 'agent' "
-            "AND content = '' "
-            "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
-            "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
-            "AND COALESCE(reasoning, '') = '')"
+            " AND " + _SHOWN_ROW_SQL
         )
         params: dict = {"sid": session_id}
         if before is not None:
@@ -1298,6 +1459,58 @@ async def unpin_session(
     return {"ok": True, "pinned": False, "pinnedAt": None}
 
 
+class TopicMoveIn(BaseModel):
+    """The move of a chat (CO-2b): a topic id, or null for "No topic". The
+    member and the org come from the session, so any other key gets 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic_id: str | None = Field(max_length=64)
+
+
+@router.put("/sessions/{session_id}/topic", summary="Move a chat into a topic, for the caller")
+async def move_session_topic(
+    session_id: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """CO-2b (`chat_organization.md` §6, D163). The topic is the caller's own:
+    a colleague in the same room keeps their topic. The pass never writes over
+    this move. The member is the session's, never a request field (R11).
+
+    404 while `CHAT_TOPICS_ORGS` leaves the org out, before the body is read.
+    No body parameter is declared, because FastAPI parses a declared body
+    before the handler. 404 "Topic not found" for a topic that the caller may
+    not use: a colleague's topic, a hidden company topic, an unknown id and an
+    id that is not a UUID. 404 "Session not found" for a chat that the caller
+    cannot read. 409 for an archived chat, as for the pin. The body is
+    :class:`TopicMoveIn`."""
+    from gateway.routes.chat_topics import NOT_FOUND, _body
+
+    org = user.organization_id
+    if not chat_topic.topics_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+    member = (user.email or "").strip()
+    if not member:
+        raise HTTPException(status_code=403, detail="Sign in to move a chat.")
+    payload = await _body(request, TopicMoveIn)
+    tid: str | None = None
+    if payload.topic_id is not None:
+        tid = chat_topic.topic_id(payload.topic_id)
+        if tid is None:
+            raise HTTPException(status_code=404, detail=NOT_FOUND)
+    moved = await asyncio.to_thread(_move_session, session_id, member, tid, organization_id=org)
+    if moved.state == "no_topic":
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if moved.state == "archived":
+        raise HTTPException(
+            status_code=409, detail="This chat is archived. Restore it, then move it.",
+        )
+    if moved.state != "set":
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"ok": True, **chat_pins.topic_fields(moved.topic)}
+
+
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(
     session_id: str,
@@ -1590,6 +1803,9 @@ async def continue_session(
     while ``CHAT_CONTINUE_ORGS`` does not hold the caller's org, and when the
     caller cannot read the source. It is 409 when the source holds no row
     that the caller typed. The request names no id, no org and no member.
+    Beside it, HRD-19a copies the member's decisions and item in focus to the new
+    chat, key to key. They are in no field of the answer, and the log holds their
+    counts. The answer keeps the shape that ``test_continue_carry.py`` pins.
     """
     org = user.organization_id
     me = (user.email or "").strip()
@@ -1630,7 +1846,21 @@ async def continue_session(
     if not linked:
         # The source left between the read and the write.
         raise HTTPException(status_code=404, detail="Session not found")
-    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12])
+    # HRD-19a (chat_failure_modes.md E3): the member's own decisions and the item in
+    # focus cross KEY TO KEY, each under the flag of its own store. Nothing is written
+    # into `text` or into a `chat_message` row, so a decision never becomes a message that
+    # the member "typed". The org and the member come from the session. A shared room
+    # carries nothing: its records are the records of one member in one chat.
+    carried_records = {"decisions": 0, "focus": False}
+    if not room.is_shared:
+        from acb_skills import chat_constraints, chat_focus
+
+        carried_records["decisions"] = await chat_constraints.carry_decisions(
+            org or "", session_id, new_id, me)
+        carried_records["focus"] = await chat_focus.carry_focus(
+            org or "", session_id, new_id, me)
+    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12],
+              decisions=carried_records["decisions"], focus=carried_records["focus"])
     return {"session_id": new_id, "text": carried}
 
 

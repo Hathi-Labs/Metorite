@@ -352,6 +352,17 @@ def _short_query(term: str) -> str:
     )
 
 
+def _with_zero_pointer(zero: str) -> str:
+    """*zero* with the pointer of WS-FIND FIND-6, through the one helper
+    ``acb_skills.company_search_tools.with_zero_pointer``. Without
+    ``acb_skills``, *zero* itself, as the other optional imports here."""
+    try:
+        from acb_skills.company_search_tools import with_zero_pointer
+    except ImportError:  # pragma: no cover - acb_skills ships with the platform
+        return zero
+    return with_zero_pointer(zero)
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_tasks(query: str, limit: int = 10) -> str:
     """Search tasks by the words in their title AND description, or by task
@@ -369,7 +380,10 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     payload = await get("/projects/search", {"q": term, "limit": cap, "most_words": "true"})
     rows = (payload or {}).get("rows") or []
     if not rows:
-        return f"No task matches {data(term)}. Try a shorter fragment."
+        # WS-FIND FIND-6 (§5.3): a zero ends with the fixed pointer to
+        # search_company, only in a pack call of an org of FIND_ORGS. A failure
+        # raises before this line, so it never gets the pointer.
+        return _with_zero_pointer(f"No task matches {data(term)}. Try a shorter fragment.")
     if payload.get("partial"):
         # HRD-4: no task holds every word, so the rows hold some of them.
         out = [legend(), (
@@ -503,7 +517,16 @@ async def _attachments_block(task_id: str) -> list[str]:
     files = (attachments or {}).get("rows") or []
     if not files:
         return []
-    return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
+    # HRD-2: the id delete_attachment takes. A name alone left the model no id.
+    return [
+        f"Attachments ({len(files)}): "
+        + ", ".join(
+            data(f.get("name"))
+            + (f" (attachment id {f.get('attachment_id') or f.get('id')})"
+               if (f.get("attachment_id") or f.get("id")) else "")
+            for f in files
+        )
+    ]
 
 
 async def _refs_block(task_id: str) -> list[str]:
@@ -548,6 +571,12 @@ async def _timeline_block(task_id: str) -> list[str]:
         body = ev.get("body") or ""
         meta = ev.get("meta") or {}
         line = f"- {_day(ev.get('created_at'))} {ev.get('type')} by {data(ev.get('created_by') or '?')}"
+        if ev.get("id"):
+            # HRD-2: the id that edit_comment, delete_comment, comment(reply_to)
+            # and revert_activity take. A comment row is a comment id, any
+            # other row is an activity id.
+            label = "comment id" if ev.get("type") == "comment" else "activity id"
+            line += f" ({label} {ev['id']})"
         if body:
             line += f": {data(str(body)[:300])}"
         elif meta.get("field"):

@@ -32,6 +32,13 @@ they call. With the flag off, nothing calls this function.
 ⚠️ **These names are a contract.** CRM-Q27 imports :data:`BATCH`,
 :data:`EMBED_DIMS` and :func:`embed`, and ``crm_sync/scheduler.py`` loads it
 at import time. ``tests/unit/test_kb_chunk.py`` pins them.
+
+**The second function, :func:`relay`** (task 3553, 2449 S2). The gateway's
+OpenAI-shaped ``POST /v1/embeddings`` route calls it. It makes the SAME one
+Router call as :func:`embed`, and it returns the Router's verdict as it came,
+so a 402 stays a 402 for the HTTP caller. It never answers a zero vector, and
+it never calls a vendor. A refusal or an outage FAILS (D57.7):
+:class:`EmbedUnavailable` is raised, and nothing falls back.
 """
 
 from __future__ import annotations
@@ -65,6 +72,26 @@ MAX_TEXT_CHARS = 8000
 #: Seconds one request may take when a write embeds its chunks. A query
 #: passes its own, shorter limit.
 TIMEOUT_S = 20.0
+
+#: Seconds one :func:`relay` request may take. The Console gives the vendor
+#: 60 s for one try, so a shorter bound here would drop an answer that the
+#: Console already metered.
+RELAY_TIMEOUT_S = 75.0
+
+#: The most texts one :func:`relay` request may carry. It equals the
+#: Console door's own ceiling (``customer_console/main.py``,
+#: ``_MAX_EMBED_INPUTS``), so the route refuses a larger batch with no hop.
+#: ``tests/unit/test_gateway_embeddings_console.py`` pins the two.
+RELAY_MAX_INPUTS = 128
+
+
+class EmbedUnavailable(Exception):
+    """The Router produced no answer that :func:`relay` can return.
+
+    The box is not wired for the Router, the Console answered 5xx, 401, 408
+    or 429, the call timed out, or a deployment-key box had no proven member.
+    The route answers 502. 🔴 Nothing falls back to a vendor key (D57.7).
+    """
 
 
 def _vector(value: Any) -> list[float] | None:
@@ -165,3 +192,44 @@ async def embed(
         tier=EMBED_TIER,
     )
     return out
+
+
+async def relay(
+    texts: list[str],
+    *,
+    member: str | None,
+    member_proven: bool,
+    agent: str | None = None,
+    module_slug: str | None = None,
+    run_id: str | None = None,
+    timeout: float = RELAY_TIMEOUT_S,
+) -> tuple[int, dict[str, Any]]:
+    """Ask the Router once for *texts*, and return its verdict as it came.
+
+    The payload is ``{"model": tier-embed, "input": texts}`` and nothing
+    else. The Router picks the model (D32.7), so a field of the caller's body
+    never reaches the Console. The caller passes the member that ITS session
+    proved (R11). This function reads no request.
+
+    Returns ``(status, body)``. A 200 holds the OpenAI-shaped ``data``. Any
+    other status is a verdict (402 no credit, 400 the tier, 403 the run
+    ceiling, 422 the body), and the caller relays it unchanged.
+
+    Raises:
+        EmbedUnavailable: no answer came. There is no retry, because the
+            Console meters each request it serves.
+    """
+    from acb_auth import console_resolve
+
+    try:
+        return await console_resolve.embeddings_on_console(
+            {"model": EMBED_TIER, "input": list(texts)},
+            timeout=timeout,
+            member=member,
+            member_proven=member_proven,
+            agent=agent,
+            module_slug=module_slug,
+            run_id=run_id,
+        )
+    except Exception as exc:  # the door down is a failure, never a fallback
+        raise EmbedUnavailable(str(exc)[:200]) from exc
