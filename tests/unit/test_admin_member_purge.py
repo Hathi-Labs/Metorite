@@ -148,8 +148,13 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     # out a seat on her own entry, which the cascade of her entries deletes.
     fake.seed_rows("calendar_entry_attendees",
                    {"member_email": PRIYA, "entry_id": "entry-colleague"})
-    # ── her one private AI Studio skill (WS-STU F1) ──
-    fake.seed_rows("studio_skills", {"owner_email": PRIYA})
+    # ── her AI Studio skills (WS-STU F1 and J2d): a private one, one with
+    #    only a pending ask, and one that the org shares. Only the shared one
+    #    stays. ──
+    fake.seed_rows("studio_skills", {"owner_email": PRIYA},
+                   {"owner_email": PRIYA, "visibility": "private",
+                    "share_state": "pending", "share_version": 1},
+                   {"owner_email": PRIYA, "visibility": "org", "shared_version": 1})
     # ── her app installs (WS-PKG PKG-4): a private one that nobody else
     #    sees, a private one of the app she shared with Ravi, and two that
     #    she made for the org and for a group. Only the first one goes. ──
@@ -530,8 +535,9 @@ async def test_the_response_says_what_happened_table_by_table(
         "reminders": 2,
         # WS-BRIEF BR-4: the fake holds no brief of the member.
         "brief_runs": 0,
-        # WS-STU F1: her one private skill. The versions go by cascade.
-        "studio_skills": 1,
+        # WS-STU F1 and J2d: her private skill and the skill with only a
+        # pending ask. The versions go by cascade.
+        "studio_skills": 2,
         # WS-STU AF-10a: her two private saved views.
         "studio_private_views": 2,
         # WS-PKG PKG-4: her one private install that nobody else sees. The
@@ -575,6 +581,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "shared_private_app_installs": 1,
         # WS-STU AF-10a: her one shared saved view stays with her address (D63).
         "studio_shared_views": 1,
+        # WS-STU J2d: her one skill that the org shares stays with the org.
+        "studio_shared_skills": 1,
     }
 
 
@@ -635,13 +643,14 @@ def test_no_audit_table_appears_on_the_delete_side_at_all() -> None:
     # split, by a column the schema forces on us, each asserted below.
     # `chat_session` splits on `visibility`, and `package_install` (WS-PKG
     # PKG-4) on `scope_kind` and on a grant to another person, and
-    # `studio_saved_views` (WS-STU AF-10a) on `shared`. (The retired task
-    # store was split too, until migration 217 dropped it.)
-    split = {"chat_session", "package_install", "studio_saved_views"}
+    # `studio_saved_views` (WS-STU AF-10a) on `shared`, and `studio_skills`
+    # (WS-STU J2d) on the share term of the store. (The retired task store was
+    # split too, until migration 217 dropped it.)
+    split = {"chat_session", "package_install", "studio_saved_views", "studio_skills"}
     assert not (deleted_tables & kept_tables) - split, (
         "a table is both deleted and kept; only chat_session (by visibility), "
-        "package_install (by scope_kind and grants) and studio_saved_views "
-        "(by shared) are legitimately split"
+        "package_install (by scope_kind and grants), studio_saved_views "
+        "(by shared) and studio_skills (by the share term) are legitimately split"
     )
 
 
@@ -844,25 +853,34 @@ def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
 
 
 def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
-    """WS-STU F1: the purge deletes the member's AI Studio skills.
+    """WS-STU F1 and J2d: the purge deletes the member's AI Studio skills
+    that the org does not share, and keeps the ones that it shares.
 
-    In F1 a skill is private, and only its owner reads it, so a purge leaves
-    none behind. The clause names the owner and the bound org, because the
-    same address may hold skills in another org. ``studio_skill_versions``
-    is not a row of the list: its foreign key cascades from
-    ``studio_skills``, and the schema must keep it so.
+    Only the owner reads a skill that the org does not share, so a purge
+    leaves none behind. A skill that the org shares stays with the org (the
+    orchestrator's decision of 2026-11-19, ``ai_studio_rows/J2d.md``). The
+    two clauses split on the one share term of the store, so no skill is on
+    both sides or on none. Each names the owner and the bound org, because
+    the same address may hold skills in another org.
+    ``studio_skill_versions`` is not a row of the list: its foreign key
+    cascades from ``studio_skills``, and the schema must keep it so.
 
     ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
-    above, and ``test_studio_skills_r8.py`` fails on the real database.
+    above. Dropping the ``NOT`` fails here, in the count dict, and in
+    ``test_studio_skill_share_chat_r8.py`` on the real database.
     """
-    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
     from gateway.routes.tasks.settings import _BOUND_ORG
+    from gateway.studio.skills_store import SHARED_WITH_ORG
 
     from tests.unit._schema_cascade import cascade_closure
 
     [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skills"]
-    assert rows.key == "studio_skills"
-    assert rows.where == f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    [kept] = [r for r in _PURGE_KEEPS if r.table == "studio_skills"]
+    tail = f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert SHARED_WITH_ORG == "(visibility = 'org' AND shared_version IS NOT NULL)"
+    assert (rows.key, rows.where) == ("studio_skills", f"NOT {SHARED_WITH_ORG} AND {tail}")
+    assert (kept.key, kept.where) == ("studio_shared_skills", f"{SHARED_WITH_ORG} AND {tail}")
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("studio_skills") < keys.index("member_record")
     assert "studio_skill_versions" in cascade_closure("studio_skills")

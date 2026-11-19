@@ -41,6 +41,7 @@ import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunSta
 import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor, replayIdOf } from "@/lib/runReplay";
+import { REPLAY_OPEN, RUN_RESUMED_FRAME, replayEndAfter, type ReplayEnd } from "@/lib/chatResume";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
@@ -1223,9 +1224,10 @@ export function useAgentChat({
     dispatchRun(threadId, { type: "attach", at: Date.now(), messageId: lastId });
 
     let reconToken: string | null = null;
-    let terminal = false;
-    // The last `done` was a park (RESUME-3a).
-    let parkedEnd = false;
+    // How the replay ends: `terminal` after a `done`, `parked` when that
+    // `done` was a park (RESUME-3a). RESUME-3b: a `run_resumed` opens it
+    // again, so only the last `done` after it ends the replay.
+    let end: ReplayEnd = REPLAY_OPEN;
     // RESUME-2d: the server kept this run from this reader (`withheld`).
     let withheldEnd = false;
     let streamed = false;
@@ -1353,6 +1355,9 @@ export function useAgentChat({
         for await (const evt of readSSEEvents(
           res.body, threadId, () => !!reconToken && ownsStream(threadId, lastId, reconToken),
         )) {
+            // RESUME-3b: the end of the replay is the last `done` after the
+            // last `run_resumed` (`lib/chatResume.ts`). Every frame passes.
+            end = replayEndAfter(end, evt);
             switch (evt.type) {
               // Common message-state events — same handling as the live loop
               // (see applyStreamEvent).  A replayed stream never carries todos,
@@ -1422,7 +1427,6 @@ export function useAgentChat({
                 break;
               }
               case "done":
-                terminal = true;
                 clearCardLog(threadId);
                 // Restore a trailing answer folded into the timeline (turn ended
                 // on a tool call) and mark the message settled — the shared
@@ -1430,9 +1434,13 @@ export function useAgentChat({
                 updLast((m) => applyStreamEvent(m, evt, fold));
                 // RESUME-3a: a park, as in the live loop. The card stays, and
                 // a slot of a redraft ends (C3).
-                parkedEnd = evt.parked === true;
-                if (parkedEnd) emitAgentEvent("onRunRested", { threadId });
+                if (end.parked) emitAgentEvent("onRunRested", { threadId });
                 withheldEnd = evt.withheld === true;
+                break;
+              case RUN_RESUMED_FRAME:
+                // RESUME-3b, case A: the parked run goes on in this reply, so
+                // the reply streams again after a `done` in the middle.
+                updLast((m) => ({ ...m, streaming: true, isThinkingActive: true }));
                 break;
               case "error":
                 // The agent emitted an error during its run (e.g. Copilot
@@ -1460,7 +1468,7 @@ export function useAgentChat({
         if (shadow && hasBody(shadow)) commit();
         else shadow = null;
       }
-      if (!terminal) updLast((m) => ({ ...m, streaming: false, isThinkingActive: false }));
+      if (!end.terminal) updLast((m) => ({ ...m, streaming: false, isThinkingActive: false }));
       else updLast((m) => applyStreamEvent(m, { type: "done" }, fold));
     } catch {
       // Reconnect failed (network error, timeout, etc.) — polling handles it.
@@ -1496,7 +1504,7 @@ export function useAgentChat({
         // RESUME-2d: a withheld end is no "Done". The chat rests and does not
         // attach to that run again while the server lists it.
         if (streamed && withheldEnd) dispatchRun(threadId, { type: "attach_withheld", at: Date.now() });
-        else if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal, ...(terminal && parkedEnd ? { parked: true } : {}) });
+        else if (streamed) dispatchRun(threadId, { type: "stream_end", at: Date.now(), terminal: end.terminal, ...(end.terminal && end.parked ? { parked: true } : {}) });
         else dispatchRun(threadId, { type: "attach_failed", at: Date.now() });
       }
     }

@@ -505,3 +505,253 @@ test.describe("A late Approve resumes the parked card (RESUME-3a)", () => {
     await expect(page.locator("[data-rollup-turn]").filter({ hasText: RESUMED_TEXT })).toHaveCount(1);
   });
 });
+
+// ── RESUME-3b (task 3475): case A, the same reply ──────────────────────────
+//
+// `chat_run_continuity.md` §4.12.4 item 5, case A (RESUME-2b). The parked turn
+// is the last turn, so a late Approve goes on in the SAME reply, under the
+// parked run's id. The 200 says `sameReply` and names the parked reply. A
+// list of the parked thread names the run that parked (`parkedRunId`). The
+// replay holds part one, a second start of r1 (the BFF's `run_resumed`
+// frame), then part two. One variant also holds a `done` between the two
+// parts: a Stop in the window of the start, or the synthetic end of a
+// reconnect.
+
+async function installCaseA(page: Page, opts: { midDone: boolean; cut?: boolean }) {
+  await page.addInitScript(({ RID, TITLE, PARKED, RESUMED, midDone, cut }) => {
+    if (!sessionStorage.getItem("__inited")) {
+      window.localStorage.clear();
+      sessionStorage.setItem("__inited", "1");
+      sessionStorage.setItem("__srv", JSON.stringify({ phase: "none" }));
+    }
+    const w = window as unknown as Record<string, unknown>;
+    const read = () => JSON.parse(sessionStorage.getItem("__srv") || "{}");
+    const write = (patch: Record<string, unknown>) =>
+      sessionStorage.setItem("__srv", JSON.stringify({ ...read(), ...patch }));
+    w.__srv = { read, write };
+    const calls: string[] = [];
+    w.__calls = calls;
+    // Did a "Done" draw on this page load, and did it draw before part two?
+    // `firstEnd`: the first rest tone of the row after part two shows.
+    const seen = { done: 0, doneBeforePartTwo: 0, firstEnd: "" };
+    w.__seen = seen;
+    new MutationObserver(() => {
+      const partTwo = (document.body?.textContent ?? "").includes(RESUMED);
+      if (partTwo && !seen.firstEnd) {
+        if (document.querySelector('[data-run-tone="finishing"]')) seen.firstEnd = "finishing";
+        else if (document.querySelector('[data-run-tone="done"]')) seen.firstEnd = "done";
+      }
+      if (!document.querySelector('[data-run-tone="done"]')) return;
+      seen.done++;
+      if (!partTwo) seen.doneBeforePartTwo++;
+    }).observe(document, { subtree: true, childList: true, attributes: true });
+
+    const card = { title: TITLE, detail: "", context: "", request_id: RID };
+    const enc = new TextEncoder();
+    const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const orig = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const s = read();
+      if (url.includes("/api/chat/active-sessions")) {
+        const row = { threadId: s.threadId, agentName: "orchestrator", title: "Move Acme" };
+        if (s.phase === "r1") return json([{ ...row, state: "running", live: true, runId: "r1", startedAt: new Date(s.r1At).toISOString() }]);
+        // RESUME-3b: the parked row names the run that parked.
+        if (s.phase === "parked") return json([{ ...row, state: "needs_input", live: false, askKind: "confirmation", parkedRunId: "r1" }]);
+        // Case A: the continuation keeps the run id r1.
+        if (s.phase === "goes-on") return json([{ ...row, state: "running", live: true, runId: "r1", startedAt: new Date(s.goesOnAt).toISOString() }]);
+        return json([]);
+      }
+      if (url.includes("/api/chat/pending-asks")) {
+        if (s.phase !== "parked") return json([]);
+        return json([{
+          requestId: RID, kind: "confirmation", event: "confirmation_requested",
+          payload: card, askedAt: new Date(s.r1At).toISOString(), answerBy: "new_run",
+        }]);
+      }
+      if (url.includes("/api/agent/respond-input")) {
+        calls.push("respond");
+        if (s.phase !== "parked") return json({ detail: "no question waits on that id" }, 409);
+        // RESUME-2b: the same run goes on in the parked reply.
+        write({ phase: "goes-on", goesOnAt: Date.now() });
+        return json({ ok: true, resumed: true, threadId: s.threadId, runId: "r1", sameReply: true, messageId: s.replyId });
+      }
+      if (url.includes("/api/auth/me")) {
+        return json({
+          email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
+          organization: { id: "00000000-0000-0000-0000-0000000000e2", slug: "e2e" },
+          roles: ["owner"], legacy_role: "executive", features: ["chat"],
+          features_denied: [], agents: ["orchestrator"], permissions: ["*"],
+          capabilities: [], denied: [], is_admin: true,
+        });
+      }
+      if (url.includes("/api/health")) return json({ gateway: "up", build: "e2e" });
+      if (url.includes("/api/chat/sessions")) {
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.includes("/room")) return json({ detail: "not a room" }, 403);
+        if (method === "GET" && url.includes("/messages") && s.threadId && url.includes(s.threadId) && s.phase !== "none" && s.phase !== "r1") {
+          // The fold of case A writes both parts into the SAME row.
+          const content = s.phase === "ended" ? `${PARKED}\n\n${RESUMED}` : PARKED;
+          return json([
+            { id: s.userId, role: "user", content: "Move Acme to Payment Complete", timestamp: s.r1At },
+            { id: s.replyId, role: "assistant", content, timestamp: s.r1At + 1, toolEvents: [] },
+          ]);
+        }
+        return method === "GET" ? json([]) : json({ ok: true, saved: 1, unchanged: [] });
+      }
+      if (url.includes("/api/agent/chat")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if (body.reconnect) {
+          calls.push(`reconnect:${body.assistantMessageId === s.replyId ? "parked-reply" : "other"}`);
+          if (read().phase !== "goes-on") return json({}, 404);
+          return new Response(new ReadableStream<Uint8Array>({
+            async start(c) {
+              // Part one, as the stream still holds it. The parked end is gone.
+              c.enqueue(frame({ type: "message_start", messageId: "m-1" }));
+              c.enqueue(frame({ type: "delta", content: PARKED, messageId: "m-1" }));
+              c.enqueue(frame({ type: "message_end", messageId: "m-1" }));
+              c.enqueue(frame({ type: "custom", name: "confirmation_requested", value: card }));
+              if (midDone) c.enqueue(frame({ type: "done", run_id: "r1" }));
+              // The second start of r1, marked `resumed`, as the BFF sends it.
+              c.enqueue(frame({ type: "run_resumed", run_id: "r1" }));
+              await new Promise((r) => setTimeout(r, 400));
+              c.enqueue(frame({ type: "custom", name: "confirmation_resolved", value: { request_id: RID, answer: "APPROVE" } }));
+              c.enqueue(frame({ type: "message_start", messageId: "m-2" }));
+              c.enqueue(frame({ type: "delta", content: RESUMED, messageId: "m-2" }));
+              c.enqueue(frame({ type: "message_end", messageId: "m-2" }));
+              await new Promise((r) => setTimeout(r, 1_500));
+              write({ phase: "ended" });
+              // `cut`: the stream ends with no final `done` (a proxy cut, a
+              // restart). The `done` before the second start must not count.
+              if (!cut) c.enqueue(frame({ type: "done", run_id: "r1" }));
+              c.close();
+            },
+          }), { status: 200, headers: { "content-type": "text/event-stream" } });
+        }
+        calls.push("send");
+        write({ phase: "r1", r1At: Date.now(), threadId: body.threadId, userId: body.userMessageId, replyId: body.assistantMessageId });
+        return new Response(new ReadableStream<Uint8Array>({
+          async start(c) {
+            c.enqueue(frame({ type: "message_start", messageId: "m-1" }));
+            c.enqueue(frame({ type: "delta", content: PARKED, messageId: "m-1" }));
+            c.enqueue(frame({ type: "message_end", messageId: "m-1" }));
+            c.enqueue(frame({ type: "custom", name: "confirmation_requested", value: card }));
+            // Nobody answers. The run parks on its card and ends.
+            await new Promise((r) => setTimeout(r, 1_500));
+            write({ phase: "parked" });
+            c.enqueue(frame({ type: "done", run_id: "r1", parked: true }));
+            c.close();
+          },
+        }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return orig(input, init);
+    };
+  }, { RID: RESUME_RID, TITLE: RESUME_TITLE, PARKED: PARKED_TEXT, RESUMED: RESUMED_TEXT, midDone: opts.midDone, cut: !!opts.cut });
+  await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
+  await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
+}
+
+const doneBeforePartTwo = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __seen: { doneBeforePartTwo: number } }).__seen.doneBeforePartTwo);
+
+/** The run parks on its card. With `reload`, the member then reloads. */
+async function parkCaseA(page: Page, reload: boolean) {
+  await startTurn(page, RESUME_TITLE);
+  await expect(resumeRow(page)).toHaveAttribute("data-run-tone", "parked", { timeout: 15_000 });
+  await expect(resumeRow(page)).toContainText("Waiting for your answer");
+  // The lists of the park reach the chat. A list within DONE_HOLD_MS of the
+  // park is held, so the 200's `sameReply` alone must carry this tab.
+  await page.waitForTimeout(6_000);
+  await expect(page.locator("[data-confirmation-approve]")).toBeVisible();
+  if (!reload) return;
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: /^Message / })).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator("[data-confirmation-approve]")).toBeVisible({ timeout: 30_000 });
+  await expect(resumeRow(page)).toHaveAttribute("data-run-tone", "parked", { timeout: 30_000 });
+  await expect(page.getByText(PARKED_TEXT).first()).toBeVisible();
+}
+
+/** The card leaves with "Approved" under the parked reply, and the reply goes
+ *  on in THAT bubble: one bubble, which holds both parts. */
+async function expectSameReply(page: Page) {
+  const turns = page.locator("[data-rollup-turn]");
+  const reply = turns.filter({ hasText: PARKED_TEXT });
+  await expect(page.getByText(RESUMED_TEXT).first()).toBeVisible({ timeout: 30_000 });
+  await expect(reply).toHaveCount(1);
+  await expect(reply).toContainText(RESUMED_TEXT);
+  await expect(turns.filter({ hasText: RESUMED_TEXT })).toHaveCount(1);
+  const receipt = reply.locator('[data-confirmation-receipt="approved"]');
+  await expect(receipt).toHaveCount(1);
+  await expect(receipt).toContainText(`Approved · ${RESUME_TITLE}`);
+  await expect(page.locator("[data-confirmation-approve]")).toHaveCount(0);
+  // No "Done" while the reply went on, and no restart or resend.
+  expect(await doneBeforePartTwo(page)).toBe(0);
+  const body = await page.locator("body").innerText();
+  expect(body).not.toMatch(/restarted/i);
+  expect(body).not.toContain("stopped waiting");
+  expect(body).not.toContain("as a new message");
+  // Every re-attach replayed into the parked reply, never a placeholder.
+  const reconnects = (await resumeCalls(page)).filter((c) => c.startsWith("reconnect"));
+  expect(reconnects.length).toBeGreaterThanOrEqual(1);
+  expect(reconnects.filter((c) => c !== "reconnect:parked-reply")).toEqual([]);
+}
+
+test.describe("A late Approve goes on in the same reply (RESUME-3b, case A)", () => {
+  test.describe.configure({ timeout: 150_000 });
+
+  for (const reload of [true, false]) {
+    test(`the approving tab ${reload ? "after a reload" : "with no reload"}: one bubble, "Approved" under it`, async ({ page }) => {
+      await installCaseA(page, { midDone: false });
+      await parkCaseA(page, reload);
+      await page.waitForTimeout(500); // ARM_MS: a new card ignores the first 400 ms
+      await page.locator("[data-confirmation-approve]").click();
+      await expectSameReply(page);
+      expect((await resumeCalls(page)).filter((c) => c === "respond")).toHaveLength(1);
+      // After a reload, still one bubble with both parts.
+      await expect.poll(async () => (await page.evaluate(() =>
+        (window as unknown as { __srv: { read: () => { phase: string } } }).__srv.read().phase)), { timeout: 20_000 }).toBe("ended");
+      await page.reload();
+      await expect(page.getByText(RESUMED_TEXT).first()).toBeVisible({ timeout: 60_000 });
+      const turns = page.locator("[data-rollup-turn]");
+      await expect(turns.filter({ hasText: RESUMED_TEXT })).toHaveCount(1);
+      await expect(turns.filter({ hasText: PARKED_TEXT })).toHaveCount(1);
+    });
+  }
+
+  test("a second tab that showed the parked card: another device approves, one bubble, no Done before part two", async ({ page }) => {
+    // This tab never answers. Another device does: the "server" moves on.
+    // The replay also holds a `done` before the second start (D3).
+    await installCaseA(page, { midDone: true });
+    await parkCaseA(page, true);
+    await page.evaluate(() => {
+      (window as unknown as { __srv: { write: (p: Record<string, unknown>) => void } }).__srv
+        .write({ phase: "goes-on", goesOnAt: Date.now() });
+    });
+    await expectSameReply(page);
+    expect((await resumeCalls(page)).filter((c) => c === "respond")).toEqual([]);
+  });
+
+  test("a replay cut after the second start reads as not finished, never \"Done\" first (review P2-3)", async ({ page }) => {
+    // The replay holds a `done` before the second start, then part two, and
+    // then the stream is CUT with no final `done`. The end is the last `done`
+    // after the last `run_resumed`, so the cut reads as "Checking the run".
+    // A terminal flag that never resets would read the cut as "Done".
+    await installCaseA(page, { midDone: true, cut: true });
+    await parkCaseA(page, true);
+    await page.evaluate(() => {
+      (window as unknown as { __srv: { write: (p: Record<string, unknown>) => void } }).__srv
+        .write({ phase: "goes-on", goesOnAt: Date.now() });
+    });
+    await expect(page.getByText(RESUMED_TEXT).first()).toBeVisible({ timeout: 30_000 });
+    await expect.poll(async () => page.evaluate(() =>
+      (window as unknown as { __seen: { firstEnd: string } }).__seen.firstEnd), { timeout: 30_000 }).not.toBe("");
+    expect(await page.evaluate(() => (window as unknown as { __seen: { firstEnd: string } }).__seen.firstEnd))
+      .toBe("finishing");
+    // Still one bubble, with "Approved" under it.
+    await expectSameReply(page);
+  });
+});

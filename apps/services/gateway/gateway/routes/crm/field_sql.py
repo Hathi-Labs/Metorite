@@ -1910,6 +1910,34 @@ async def find_near(db: Any, scope: FieldScope, words: Sequence[str], where: str
                                    deadline=name_match.scoring_deadline())
 
 
+#: The record names that the company search reads for the near lookup
+#: (FIND-11): the newest records of the mirrored modules. ``:cap`` is
+#: ``name_match.NEAR_VOCABULARY``. The modules are bound, never in the text.
+_RECORD_NAMES_SQL = (
+    "SELECT name FROM crm_module_records "
+    "WHERE module = ANY(CAST(:modules AS text[])) AND name IS NOT NULL "
+    "ORDER BY ext_modified_at DESC NULLS LAST, id LIMIT :cap"
+)
+
+
+async def near_record_names(db: Any, modules: Sequence[str], words: Sequence[str],
+                            k: int) -> dict[str, list[Any]]:
+    """The names near each of *words* among the record names of *modules*, in
+    the caller's tenant session (FIND-11). One bounded read, then
+    ``name_match.near_lookup`` scores them in a thread, off the event loop,
+    with ``name_match.scoring_deadline()``, as ``records.near_names`` does."""
+    import asyncio
+
+    from acb_common import name_match
+
+    rows = (await db.execute(text(_RECORD_NAMES_SQL), {
+        "modules": list(modules), "cap": name_match.NEAR_VOCABULARY,
+    })).fetchall()
+    return await asyncio.to_thread(
+        name_match.near_lookup, list(words), [str(r.name) for r in rows], k,
+        deadline=name_match.scoring_deadline())
+
+
 def row_near_name(scope: FieldScope, name: Any, fields: Mapping[str, Any],
                   hit: FindNear) -> str | None:
     """The stored name of one row that the near pass matched: the record
