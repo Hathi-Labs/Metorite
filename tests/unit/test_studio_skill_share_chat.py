@@ -358,12 +358,12 @@ def test_no_result_text_says_a_member_loads_a_version_without_the_published_cond
     """TOF-4b fence: the loader needs state = 'published', and a new version makes a
     draft. Each sentence that says a member loads a version carries the condition."""
     import re
-    texts = [st._SHARE_APPROVE_NOTE, st._SHARE_DONE["approve"].format(v=1),
+    texts = [st._SHARE_APPROVE_NOTE, st._SHARE_PENDING, st._SHARE_DONE["approve"].format(v=1),
              st._share_text({"visibility": "org", "shared_version": 1})]
     src = (ROOT / "packages/acb_skills/acb_skills/studio_tools.py").read_text(encoding="utf-8")
     for text in texts:
         assert "published" in text, text
-    for m in re.finditer(r"loads? (?:it from|version)[^\n]*", src):
+    for m in re.finditer(r"(?:loads? version|load it from|only you load this version)[^\n]*", src):
         assert "published" in src[m.start():m.start() + 200], m.group(0)
 
 

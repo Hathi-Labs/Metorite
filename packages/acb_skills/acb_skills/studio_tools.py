@@ -2371,10 +2371,11 @@ _SHARE_ASK_NOTE = ("Approve to ask a holder of studio:publish to share this vers
 _SHARE_END_NOTE = ("Approve to end the share. The other members stop loading this skill at their "
                    "next message. A waiting ask is withdrawn.")
 _SHARE_APPROVE_NOTE = ("Approve to share this version with each member of the organization. "
-                       "They load it once the skill is published. Publish it if it is a draft.")
+                       "They load it once the skill is published. If it is a draft, the owner publishes it.")
 _SHARE_REJECT_NOTE = "Approve to refuse this ask. The skill stays as it is now."
 _SHARE_PENDING = ("The ask waits for a holder of studio:publish. You cannot approve your own "
-                  "ask. Until a holder approves it, only you load this version.")
+                  "ask. Until a holder approves it, only you load this version. After the approval, the "
+                  "members load it once the skill is published. If it is a draft, publish it.")
 _SHARE_ALREADY = "This version already waits for a holder of studio:publish. Nothing changed."
 _SHARE_NOTHING = "This skill is not shared, and no ask waits. Nothing changed."
 _SHARE_NONE = "No ask to share this skill waits for you. Nothing changed."
