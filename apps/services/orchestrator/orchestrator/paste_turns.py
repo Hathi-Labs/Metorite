@@ -34,7 +34,11 @@ Rules that bind:
 5. **Unbound or string: no frame.** No raw binding (None), or a shape that is
    not ``session`` or ``list``, frames nothing on the run.
 6. **Fails closed.** Each part that fails frames whole. A proof of an upload
-   note that raises frames its part whole.
+   note that raises frames its part whole. A binding that ``before_run``
+   cannot read, a turn that fails and a request that fails frame each user
+   turn whole, with its other parts and its properties kept. Only when even
+   that fails does the request go as it came: the seam never fails a model
+   request, so the chat turn goes on.
 
 WARNING: the frame is advice to the model, and no test can prove that a
 model obeys it.
@@ -109,7 +113,11 @@ class PasteFrame(ChatMiddleware):
         steer_turns: Any = None,
         prove: Prover | None = None,
         frame: UntrustedFrame | None = None,
+        whole: bool = False,
     ) -> None:
+        #: Fail closed (rule 6): the binding could not be read, so each user
+        #: turn of each request is ONE block, with no lead.
+        self._whole = whole
         self._parts = parts
         self._shape = shape
         self._current = current
@@ -126,8 +134,9 @@ class PasteFrame(ChatMiddleware):
 
     @property
     def active(self) -> bool:
-        """True when the run is bound and its shape is framed (rule 5)."""
-        return self._parts is not None and self._shape in FRAMED_SHAPES
+        """True when the run is bound and its shape is framed (rule 5), or
+        when the seam frames each turn whole (rule 6)."""
+        return self._whole or (self._parts is not None and self._shape in FRAMED_SHAPES)
 
     # -- the proof of an upload note ------------------------------------------
 
@@ -216,6 +225,31 @@ class PasteFrame(ChatMiddleware):
             additional_properties=dict(getattr(message, "additional_properties", None) or {}),
         )
 
+    def _whole_copy(self, message: Any) -> Any:
+        """A NEW message with each text of *message* as ONE block, with no
+        lead. Each other part (an image, a file) and the properties stay."""
+        new_contents: list[Any] = []
+        for content in list(getattr(message, "contents", None) or []):
+            if getattr(content, "type", None) != "text":
+                new_contents.append(content)
+                continue
+            raw = str(getattr(content, "text", "") or "")
+            key = ("whole", raw)
+            if key not in self._memo:
+                self._memo[key] = pf.frame_whole(raw, self._frame)
+            new_contents.append(self._memo[key])
+        return Message(
+            "user", new_contents,
+            author_name=getattr(message, "author_name", None),
+            message_id=getattr(message, "message_id", None),
+            additional_properties=dict(getattr(message, "additional_properties", None) or {}),
+        )
+
+    def _all_whole(self, messages: Sequence[Any]) -> list[Any]:
+        """*messages* with each user turn that holds text as ONE block."""
+        return [self._whole_copy(m) if _role(m) == "user" and _texts(m) else m
+                for m in messages]
+
     def _current_index(self, messages: Sequence[Any], placed: set[int]) -> int:
         for i, message in enumerate(messages):
             if self._current is not None and message is self._current:
@@ -230,6 +264,8 @@ class PasteFrame(ChatMiddleware):
     def framed(self, messages: Sequence[Any]) -> list[Any]:
         """A NEW list: *messages* with each user turn framed by its rule. The
         proofs of the upload notes must be in place (:meth:`process`)."""
+        if self._whole:
+            return self._all_whole(messages)
         placed = {id(turn) for _anchor, turn in getattr(self._steers, "_placed", ()) or ()}
         current = self._current_index(messages, placed)
         out: list[Any] = []
@@ -247,8 +283,7 @@ class PasteFrame(ChatMiddleware):
                 out.append(self._copy(message, kind))
             except Exception as exc:  # fail closed: the whole turn is one block
                 _log.warning("paste_frame.turn_failed", error=type(exc).__name__)
-                text = "\n".join(str(getattr(c, "text", "") or "") for c in _texts(message))
-                out.append(Message("user", [pf.frame_whole(text, self._frame)]))
+                out.append(self._whole_copy(message))
         return out
 
     async def process(self, context: Any, call_next: Any) -> None:
@@ -263,8 +298,15 @@ class PasteFrame(ChatMiddleware):
                     _log.info("paste_frame.framed", turns=blocks, shape=self._shape,
                               parts=len(self._parts or ()))
                 context.messages = framed
-            except Exception as exc:  # never fail a model request
+            except Exception as exc:
+                # Fail closed (rule 6): each user turn is one block. If even
+                # that fails, the request goes as it came: the seam never
+                # fails a model request, so the chat turn goes on.
                 _log.warning("paste_frame.request_failed", error=type(exc).__name__)
+                try:
+                    context.messages = self._all_whole(list(context.messages or []))
+                except Exception as again:
+                    _log.warning("paste_frame.whole_failed", error=type(again).__name__)
         await call_next()
 
 
@@ -290,19 +332,30 @@ class PasteFrameProvider(ContextProvider):
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
     ) -> None:
-        prove = self._prove
-        if prove is None:
-            from acb_skills.attachment_tools import upload_paths_exist
+        """Read the binding of the run ONCE. It fails closed (rule 6): when the
+        read raises, the run gets a middleware that frames each user turn
+        whole, and the seam logs once. It never fails the run."""
+        try:
+            prove = self._prove
+            if prove is None:
+                from acb_skills.attachment_tools import upload_paths_exist
 
-            prove = upload_paths_exist
-        from acb_skills.write_artifact import artifact_context
+                prove = upload_paths_exist
+            from acb_skills.write_artifact import artifact_context
 
-        run_id = str(artifact_context().get("run_id") or "")
-        metadata = getattr(context, "metadata", None) or {}
-        context.extend_middleware(self.source_id, [PasteFrame(
-            parts=pf.raw_parts(),
-            shape=pf.shape_of(run_id),
-            current=_current_turn(context),
-            steer_turns=metadata.get(STEER_TURNS_KEY),
-            prove=prove,
-        )])
+            run_id = str(artifact_context().get("run_id") or "")
+            metadata = getattr(context, "metadata", None) or {}
+            middleware = PasteFrame(
+                parts=pf.raw_parts(),
+                shape=pf.shape_of(run_id),
+                current=_current_turn(context),
+                steer_turns=metadata.get(STEER_TURNS_KEY),
+                prove=prove,
+            )
+        except Exception as exc:
+            _log.warning("paste_frame.bind_failed", error=type(exc).__name__)
+            middleware = PasteFrame(parts=(), shape="list", whole=True)
+        try:
+            context.extend_middleware(self.source_id, [middleware])
+        except Exception as exc:  # the run goes on with no seam
+            _log.warning("paste_frame.attach_failed", error=type(exc).__name__)

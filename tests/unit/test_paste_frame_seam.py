@@ -89,10 +89,14 @@ PART = f"{WORDS}\n\n{PASTE9}"
 def _clean(monkeypatch):
     steer._PENDING_GUIDANCE.clear()
     steer._CLOSED.clear()
+    # Fix round 1 (f): a shape that an earlier test recorded in this thread
+    # never leaks into the next one, so a rerun in one process passes.
+    pf._RUN_SHAPE.set(None)
     monkeypatch.setattr(get_settings(), FLAG, "", raising=False)
     yield
     steer._PENDING_GUIDANCE.clear()
     steer._CLOSED.clear()
+    pf._RUN_SHAPE.set(None)
 
 
 def _flag(monkeypatch, value: str) -> None:
@@ -637,17 +641,14 @@ def test_hrd22_with_the_flag_on():
     the seam. The record: a short card acts once. A card question of
     :data:`LATE_APPROVE_QUESTION_LINES_TO_A_BLOCK` lines or more makes 8 lines,
     so it is one block and the model asks again."""
-    rows = "
-".join(f"Row {i}: set the owner of task {i} to Ravi" for i in range(9))
+    rows = "\n".join(f"Row {i}: set the owner of task {i} to Ravi" for i in range(9))
     record = {
         "short_card": _card_outcome("Approve the change of the task?", "APPROVE"),
-        "card_of_9_rows": _card_outcome(f"Approve these rows?
-{rows}", "APPROVE"),
+        "card_of_9_rows": _card_outcome(f"Approve these rows?\n{rows}", "APPROVE"),
     }
     first_block = next(
         n for n in range(1, 20)
-        if _card_outcome("
-".join(f"Row {i}: approve" for i in range(n)), "APPROVE")
+        if _card_outcome("\n".join(f"Row {i}: approve" for i in range(n)), "APPROVE")
         == "asks again")
     record["question_lines_to_a_block"] = first_block
     assert record == {"short_card": "acts once", "card_of_9_rows": "asks again",
@@ -669,6 +670,74 @@ def test_the_seam_fails_closed():
     odd = Message("user", ["Hello"])
     out2 = _users(_request(_middleware((b"bytes",), current=odd), [odd]))[0]
     assert out2.startswith(_frame().paste_note()) and _inside(out2, "Hello")
+
+
+def test_a_binding_that_cannot_be_read_frames_each_turn_whole(monkeypatch):
+    """Fix round 1 (c): ``before_run`` that cannot read the binding attaches a
+    middleware that frames each user turn whole, and it never fails the run.
+    Mutation: a ``before_run`` with no ``try`` -> red (it raises)."""
+    def boom() -> Any:
+        raise RuntimeError("no binding")
+
+    monkeypatch.setattr(pf, "raw_parts", boom)
+    attached: list[Any] = []
+    ctx = SimpleNamespace(input_messages=[], metadata={},
+                          extend_middleware=lambda _sid, mws: attached.extend(mws))
+
+    async def prove(paths: tuple[str, ...]) -> bool:
+        return False
+
+    asyncio.run(paste_turns.PasteFrameProvider(prove=prove).before_run(
+        agent=None, session=None, context=ctx, state={}))
+    assert len(attached) == 1 and attached[0].active
+    short = Message("user", ["Create a task for Ravi"])
+    out = _users(_request(attached[0], [short]))[0]
+    assert out.count("<<<PASTED TEXT ") == 1 and "Create a task for Ravi" in out
+
+
+def test_a_failed_turn_keeps_its_other_parts_and_properties(monkeypatch):
+    """Fix round 1 (d): the whole-turn fallback keeps each part that is not
+    text and the properties of the message. A request that fails frames each
+    user turn whole, and the request still goes."""
+    other = Content.from_function_result("c9", result="an attached part")
+    turn = Message("user", [PART, other], additional_properties={"kept": 1})
+    mw = _middleware((PART,), current=turn)
+
+    def broken(_message: Any, _kind: str) -> Any:
+        raise RuntimeError("a fault in the rule")
+
+    monkeypatch.setattr(mw, "_copy", broken)
+    out = _request(mw, [turn])[0]
+    assert out is not turn and any(getattr(c, "type", None) == "function_result" for c in out.contents)
+    assert out.additional_properties == {"kept": 1}
+    assert out.text.startswith(_frame().paste_note())
+
+    mw2 = _middleware((PART,), current=turn)
+
+    def no_list(_messages: Any) -> Any:
+        raise RuntimeError("a fault in the list")
+
+    monkeypatch.setattr(mw2, "framed", no_list)
+    out2 = _request(mw2, [turn])[0]
+    assert out2.text.startswith(_frame().paste_note())
+    assert any(getattr(c, "type", None) == "function_result" for c in out2.contents)
+
+
+def test_a_listed_org_turns_the_seam_on(monkeypatch):
+    """Fix round 1 (e): the reader with a LISTED org id, not the star. The
+    seam reads the org of the run binding only."""
+    _flag(monkeypatch, "acme, other-org")
+    assert pf.paste_frame_on("acme") and pf.paste_frame_on("ACME")
+    assert not pf.paste_frame_on("evil") and not pf.paste_frame_everywhere()
+    agent = Agent(client=ScriptedClient([]), name="paste-probe")
+    agents = [agent]
+    monkeypatch.setattr(_tool_injection, "_run_org", lambda: "acme")
+    _tool_injection._apply_paste_frame(agents, attach=True)
+    assert any(isinstance(p, paste_turns.PasteFrameProvider) for p in agents[0].context_providers)
+    monkeypatch.setattr(_tool_injection, "_run_org", lambda: "evil")
+    others = [agent]
+    _tool_injection._apply_paste_frame(others, attach=True)
+    assert others[0] is agent
 
 
 def test_a_proven_upload_note_goes_after_the_block():
