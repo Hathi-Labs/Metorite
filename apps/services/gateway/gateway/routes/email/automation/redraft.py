@@ -124,6 +124,11 @@ def _member(user: UserContext) -> str:
     return (user.email or "").strip().lower()
 
 
+#: The held record kinds that hold one row for each person (§21): a new mail
+#: and, since HRD-8b-2, a forward.
+_HELD_ROW_KINDS: frozenset[str] = frozenset({"new", "forward"})
+
+
 def _people_of(rec: dict[str, Any]) -> dict[str, set[str]] | None:
     """The people of a card record, by kind and in lower case, or None for a
     record that is not a new mail. A plain record holds the lists, and a held
@@ -131,7 +136,7 @@ def _people_of(rec: dict[str, Any]) -> dict[str, set[str]] | None:
     kind = rec.get("kind")
     if kind == "new-mail":
         return {k: {str(a).strip().lower() for a in rec.get(k) or []} for k in _KINDS}
-    if kind == "new":
+    if kind in _HELD_ROW_KINDS:
         out: dict[str, set[str]] = {k: set() for k in _KINDS}
         for row in rec.get("rows") or []:
             if isinstance(row, dict) and row.get("kind") in out:
@@ -209,7 +214,7 @@ async def _find_card(
     if rec is not None and rec.get("kind") == "new-mail":
         return rec, nm.RECORD_NAMESPACE
     rec = await hc.peek_record(user, card_id, thread_id=thread_id)
-    if rec is not None and rec.get("kind") == "new":
+    if rec is not None and rec.get("kind") in _HELD_ROW_KINDS:
         return rec, hc.RECORD_NAMESPACE
     return None
 
@@ -275,6 +280,11 @@ async def _keep_one(user: UserContext, org: str, member: str, thread: str, raw: 
         found = await _find_card(user, card_id, thread)
         if found is None:
             _log.info("email.card_draft_dropped", reason="no_card")
+            return False
+        if act_of(found[0]) != "new":
+            # HRD-8b-2: a forward card joins the revise, and it has no form that
+            # the member edits. A snapshot of it is no snapshot of a new mail.
+            _log.info("email.card_draft_dropped", reason="not_new_mail")
             return False
         with organization_scope(org):
             redis = hc._tenant_redis()
@@ -503,9 +513,10 @@ def _cc_of(rec: dict[str, Any]) -> list[str]:
 
 
 #: The act kind of each record kind that the revise reads (HRD-8b). A plain
-#: new-mail card and a held ``new`` card are one act, a new mail. A forward and
-#: a reply join when their cards take the revise (HRD-8b-2).
-ACT_OF_KIND: dict[str, str] = {"new-mail": "new", "new": "new"}
+#: new-mail card and a held ``new`` card are one act, a new mail. A held
+#: ``forward`` card is a forward (HRD-8b-2). A reply card has its own record
+#: and joins later (HRD-8b-3).
+ACT_OF_KIND: dict[str, str] = {"new-mail": "new", "new": "new", "forward": "forward"}
 
 
 def act_of(rec: dict[str, Any]) -> str:
@@ -551,7 +562,7 @@ def _untickable(rec: dict[str, Any]) -> dict[str, list[str]] | None:
     kind = rec.get("kind")
     if kind == "new-mail":
         return {k: [str(a).strip().lower() for a in rec.get(k) or []] for k in _KINDS}
-    if kind == "new":
+    if kind in _HELD_ROW_KINDS:
         out: dict[str, list[str]] = {k: [] for k in _KINDS}
         for row in rec.get("rows") or []:
             if isinstance(row, dict) and row.get("kind") in out and row.get("checked") is True:
