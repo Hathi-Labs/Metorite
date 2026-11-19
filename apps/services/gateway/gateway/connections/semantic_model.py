@@ -6,8 +6,9 @@ file that adds ``connection_semantic_models`` (464 at build). R8 suite:
 
 **One module names the table.** This is the one module that runs SQL on
 ``connection_semantic_models``. It never names the credential column of the
-registry. It reads one column of ``integration_connections``, the id, to
-check and lock the connection. Fence: ``test_semantic_shape_only.py``.
+registry. It reads one column of the connection registry, the id, to
+check and lock the connection. The two statements live in
+``connections/store.py``, the one module that names that table. Fence: ``test_semantic_shape_only.py``.
 
 **Shape only.** Each write runs ``crm_sync.catalogue.shape_only`` on the body
 before it writes. A problem refuses the write with ``shape:<code>``. This
@@ -55,6 +56,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from gateway.connections.store import FROM_ONE_FOR_MODEL_SQL, LOCK_ONE_FOR_MODEL_SQL
 from gateway.crm_sync.catalogue import MODEL_SECTIONS, SECTION_PARTS, shape_only
 
 __all__ = [
@@ -105,11 +107,7 @@ _BOUND_SQL = "SELECT NULLIF(current_setting('app.tenant_id', true), '')"
 #: ``FOR NO KEY UPDATE`` orders two writers of one connection, and it does not
 #: block the ``FOR KEY SHARE`` of an insert in another table that references
 #: the connection (a sync run, a source profile, a calendar row).
-_LOCK_SQL = (
-    "SELECT id FROM integration_connections "
-    f"WHERE id = CAST(:cid AS uuid) AND organization_id = {_BOUND_ORG} "
-    "FOR NO KEY UPDATE"
-)
+_LOCK_SQL = LOCK_ONE_FOR_MODEL_SQL.format(org=_BOUND_ORG)
 
 _NEXT_SQL = (
     f"SELECT COALESCE(max(version), 0) + 1 FROM {TABLE} "
@@ -122,9 +120,9 @@ _INSERT_SQL = (
     f"INSERT INTO {TABLE} "
     "(connection_id, version, state, body, shape_hash, made_by, untrusted_origin) "
     f"SELECT c.id, :version, '{STATE_DRAFT}', CAST(:body AS jsonb), :hash, :made_by, "
-    ":untrusted FROM integration_connections c "
-    f"WHERE c.id = CAST(:cid AS uuid) AND c.organization_id = {_BOUND_ORG} "
-    "RETURNING version"
+    ":untrusted "
+    + FROM_ONE_FOR_MODEL_SQL.format(org=_BOUND_ORG)
+    + " RETURNING version"
 )
 
 _ROW_SQL = (
