@@ -373,16 +373,6 @@ one reader is `acb_skills.task_card.task_edit_card_on`. The tool and the card
 gate ask it at each card, so a reload applies to the next card. A flip stays
 OWNER-GATE (`enforcement-flip`, EAC-7).
 
-`SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
-(`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
-kinds `measure`, `join` and `query`, and `org_facts` serves the approved
-ones. `*` lists every org, and the default is empty. Empty keeps each item of
-these kinds as an unknown kind, and serves none.
-
-Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and each
-plan write and each facts read ask it. A reload applies a change. The flip
-stays OWNER-GATE (`enforcement-flip`).
-
 `PROVIDER_ALERT_ORGS` names the org whose admins hear when an AI vendor runs
 out of credit or runs low (`customer_console.md` §6A.17b, AO-2). They get one
 bell row and one phone push. Set it to the operator org id. The default is
@@ -392,6 +382,16 @@ admins must never get our vendor alerts. Its one reader is
 source ask it on each call, so a reload applies at the next 15-minute bucket.
 It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
 OWNER-GATE (`enforcement-flip`).
+
+`SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
+(`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
+kinds `measure`, `join` and `query`, and `org_facts` serves the approved
+ones. `*` lists every org, and the default is empty. Empty keeps each item of
+these kinds as an unknown kind, and serves none.
+
+Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`, and each
+plan write and each facts read ask it. A reload applies a change. The flip
+stays OWNER-GATE (`enforcement-flip`).
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
