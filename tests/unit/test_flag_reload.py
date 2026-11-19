@@ -488,6 +488,22 @@ def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) ->
     assert not semantic_model_allowed(None)
 
 
+def test_api_connections_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """API-1, api_connections.md §4 (D-API-8). The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from acb_common.api_connections_flag import api_connections_allowed
+
+    assert fr.reloadable("API_CONNECTIONS_ORGS")
+    monkeypatch.setenv("API_CONNECTIONS_ORGS", "")
+    get_settings.cache_clear()
+    assert not api_connections_allowed("acme")
+    env(**{**_START, "API_CONNECTIONS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("API_CONNECTIONS_ORGS",)
+    assert api_connections_allowed("ACME ")
+    assert not api_connections_allowed("globex")
+    assert not api_connections_allowed(None)
+
+
 def test_chat_card_precondition_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """HRD-10a, chat_failure_modes.md section 6. The reload list holds the key,
     and the one reader of the version check of a card sees a change with no
