@@ -467,6 +467,24 @@ def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) ->
     assert not semantic_model_allowed(None)
 
 
+def test_connection_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-SEM SEM-12, semantic_model.md §10.4. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart.
+    Mutation: leave the flag out of the reload list (a name that does not end
+    in ``_orgs``), and the first assert fails."""
+    from gateway.connections.semantic_model import connection_model_allowed
+
+    assert fr.reloadable("CONNECTION_MODEL_ORGS")
+    monkeypatch.setenv("CONNECTION_MODEL_ORGS", "")
+    get_settings.cache_clear()
+    assert not connection_model_allowed("acme")
+    env(**{**_START, "CONNECTION_MODEL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CONNECTION_MODEL_ORGS",)
+    assert connection_model_allowed("ACME ")
+    assert not connection_model_allowed("globex")
+    assert not connection_model_allowed(None)
+
+
 def test_chat_card_precondition_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """HRD-10a, chat_failure_modes.md section 6. The reload list holds the key,
     and the one reader of the version check of a card sees a change with no

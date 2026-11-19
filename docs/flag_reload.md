@@ -264,6 +264,17 @@ is `orchestrator._maf_mcp.connected_systems_org_allowed`, which
 reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`), after
 the owner preview.
 
+`CONNECTION_MODEL_ORGS` turns on the store of the semantic model of a
+connection (`semantic_model.md` §10.4, SEM-12). For each listed org, the one
+writer `gateway.connections.semantic_model` may write a draft, accept a part,
+approve a version and read the approved version. `*` lists every org, and the
+default is empty. Empty means each write refuses with "off", and the read
+returns nothing.
+
+Its one reader is `gateway.connections.semantic_model.connection_model_allowed`.
+Each function asks it with the org of the bound tenant, on each call. So a
+reload applies to the next call. A flip is the gate `enforcement-flip`.
+
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one
 `people.person.updated` event after the commit. `*` lists every org, and the

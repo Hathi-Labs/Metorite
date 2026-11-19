@@ -1,7 +1,9 @@
 # The semantic model: one way for the chat to read any large data source
 
 **Status: ACTIVE for the parts the owner accepted (2026-11-18, owner in chat,
-D226). The rest stays PROPOSED. SEM-7 is built, dark (task 3737). Nothing else is built.**
+D226). The rest stays PROPOSED. SEM-7 is built, dark (task 3737). SEM-12 is
+BUILT, dark (task 3742): migration 464, `connections/semantic_model.py`, and
+`shape_only` in `crm_sync/catalogue.py`, behind `CONNECTION_MODEL_ORGS`. Nothing else is built.**
 
 The owner accepted D-SEM-1, 2, 4, 5, 6, 7, 9, 10 and 11 as recommended. The
 owner chose Option A for D-SEM-3. D-SEM-8 goes to a new connector spec.

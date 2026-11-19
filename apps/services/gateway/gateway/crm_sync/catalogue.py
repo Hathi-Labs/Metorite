@@ -1225,6 +1225,380 @@ def semantic_ref_problem(item: Mapping[str, Any], sources: Mapping[str, Source])
     return "kind"
 
 
+# ── The model of a connection: ``shape_only`` (WS-SEM SEM-12) ────────────────
+#
+# ``semantic_model.md`` §3.3 point 6 and §10.4. The body of the model of a
+# connection is one object with four keys: ``v`` (the integer 1), and the
+# three sections ``code``, ``ai`` and ``admin``. The name of a section is the
+# writer kind of each part in it. :func:`shape_only` is the one check of a
+# body. ``connections/semantic_model.py`` calls it before each write. It
+# reuses the item checks of SEM-7 above, and it adds no second copy of
+# :data:`LABEL_MAX`, :func:`number_like` or :func:`_has_literal`.
+
+#: The value of ``v`` in a body.
+MODEL_V = 1
+SECTION_CODE = "code"
+SECTION_AI = "ai"
+SECTION_ADMIN = "admin"
+#: The sections, in the order of the writer kinds. A later kind wins.
+MODEL_SECTIONS: tuple[str, ...] = (SECTION_CODE, SECTION_AI, SECTION_ADMIN)
+#: The body keys (parts) that each section may hold (§10.4).
+SECTION_PARTS: Mapping[str, frozenset[str]] = {
+    SECTION_CODE: frozenset({"entities", "fields", "joins"}),
+    SECTION_AI: frozenset({"entities", "fields"}),
+    SECTION_ADMIN: frozenset({"measures", "joins", "tax_marks", "synonyms", "samples",
+                              "queries", "instructions"}),
+}
+#: The most items in one part, and the most options of one field.
+PART_ITEMS_MAX = 1000
+FIELD_OPTIONS_MAX = 100
+#: The time grains of a dimension.
+GRAINS: tuple[str, ...] = ("day", "week", "month", "quarter", "year")
+#: How a value lookup matches a name: the source's own search, or an exact
+#: match. No value is stored (§3.3).
+LOOKUPS: tuple[str, ...] = ("search", "exact")
+
+_CODE_ENTITY_KEYS = frozenset({"key", "label", "records", "first_date", "last_date"})
+_CODE_FIELD_KEYS = frozenset({"entity", "key", "label", "type", "fill", "grain", "options",
+                              "lookup", "tax"})
+_AI_ENTITY_KEYS = frozenset({"key", "purpose", "text"})
+_AI_FIELD_KEYS = frozenset({"entity", "key", "meaning", "unit", "tax", "text"})
+_TAX_MARK_KEYS = frozenset({"entity", "field", "tax"})
+_SYNONYM_KEYS = frozenset({"word", "target"})
+_SAMPLE_KEYS = frozenset({"question"})
+_INSTRUCTION_KEYS = frozenset({"text"})
+#: A key that names a secret (§8). A body never holds one, in any section.
+_SECRET_WORDS: tuple[str, ...] = ("header", "token", "url", "path", "host", "secret",
+                                  "password", "credential", "cookie")
+#: A key that names a figure of money. A body never holds one (§3.3 point 5).
+_FIGURE_WORDS = frozenset({"amount", "total", "balance", "figure", "sum"})
+#: A mark of money beside a digit: "₹ 5,000", "5000 $", "Rs. 400".
+_MONEY = re.compile(r"[₹$€£¥]\s*\d|\d\s*[₹$€£¥]|\b(?:rs|inr|usd|eur|gbp)\.?\s*\d",
+                    re.IGNORECASE)
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _tax_words() -> Mapping[str, str]:
+    """The closed tax marks and their words: the evidence words of a money
+    field (§18.15.5). Imported here: ``crm_sync.questions`` imports this
+    module."""
+    from gateway.crm_sync.questions import EVIDENCE_WORDS
+
+    return EVIDENCE_WORDS
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _share_value(value: Any) -> bool:
+    return (isinstance(value, int | float) and not isinstance(value, bool)
+            and 0 <= value <= 1)
+
+
+def _iso_date(value: Any) -> bool:
+    from datetime import date
+
+    if not isinstance(value, str) or not _DATE.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _label_problem(value: Any) -> str | None:
+    """A label or an option that the source wrote: plain text of at most
+    :data:`LABEL_MAX` characters, and never a number or an amount."""
+    if not _plain(value, LABEL_MAX):
+        return "label"
+    if number_like(value) or _MONEY.search(value):
+        return "label_value"
+    return None
+
+
+def _admin_text_problem(value: Any) -> str | None:
+    """The admin's words: 1 to ``BODY_MAX`` characters that pass
+    ``clean_body``, with no digit that :func:`_has_literal` finds."""
+    from gateway.routes.crm.rules import BODY_MAX
+
+    if not _plain(value, BODY_MAX):
+        return "text"
+    return "text_value" if _has_literal(value) else None
+
+
+def ai_text(part: str, item: Mapping[str, Any]) -> str | None:
+    """The text of an item of the ``ai`` section, built by code from its
+    closed words (§4.2 step 4), or ``None`` when a word is not in its closed
+    set. The profiler writes this text, and :func:`shape_only` builds it
+    again and refuses any other text."""
+    if part == "entities":
+        return PURPOSE_MEANINGS.get(str(item.get("purpose")))
+    if part != "fields":
+        return None
+    said: list[str] = []
+    if "meaning" in item:
+        meaning = PART_MEANINGS.get(str(item["meaning"]))
+        if meaning is None:
+            return None
+        said.append(f"It is {meaning}.")
+    if "unit" in item:
+        if item["unit"] not in UNITS:
+            return None
+        said.append(f"Its unit is {item['unit']}.")
+    if "tax" in item:
+        word = _tax_words().get(str(item["tax"]))
+        if word is None:
+            return None
+        said.append(f"Tax: {word}.")
+    return " ".join(said) or None
+
+
+def _code_entity(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _CODE_ENTITY_KEYS:
+        return "keys"
+    if not _module(item.get("key")):
+        return "key"
+    if "label" in item and (found := _label_problem(item["label"])) is not None:
+        return found
+    if "records" in item and not _count(item["records"]):
+        return "records"
+    dates = [item[k] for k in ("first_date", "last_date") if k in item]
+    if not all(_iso_date(d) for d in dates):
+        return "date"
+    if len(dates) == 2 and dates[0] > dates[1]:
+        return "date"
+    return None
+
+
+def _code_field(item: Mapping[str, Any]) -> str | None:
+    if not set(item) <= _CODE_FIELD_KEYS:
+        return "keys"
+    if not _module(item.get("entity")) or not _field_key(item.get("key")):
+        return "key"
+    if "label" in item and (found := _label_problem(item["label"])) is not None:
+        return found
+    if "type" in item and not (isinstance(item["type"], str) and _SLUG.fullmatch(item["type"])):
+        return "type"
+    if "fill" in item and not _share_value(item["fill"]):
+        return "fill"
+    if "grain" in item and item["grain"] not in GRAINS:
+        return "grain"
+    if "lookup" in item and item["lookup"] not in LOOKUPS:
+        return "lookup"
+    if "tax" in item and item["tax"] not in _tax_words():
+        return "tax"
+    options = item.get("options")
+    if options is None:
+        return None
+    if not isinstance(options, list) or len(options) > FIELD_OPTIONS_MAX:
+        return "options"
+    if len({str(o) for o in options}) != len(options):
+        return "options"
+    for one in options:
+        found = _label_problem(one)
+        if found is not None:
+            return "options" if found == "label" else "options_value"
+    return None
+
+
+def _ai_item(part: str, item: Mapping[str, Any]) -> str | None:
+    keys = _AI_ENTITY_KEYS if part == "entities" else _AI_FIELD_KEYS
+    if not set(item) <= keys:
+        return "keys"
+    if part == "entities":
+        if not _module(item.get("key")):
+            return "key"
+        if item.get("purpose") not in PURPOSES:
+            return "purpose"
+    else:
+        if not _module(item.get("entity")) or not _field_key(item.get("key")):
+            return "key"
+        if not {"meaning", "unit", "tax"} & set(item):
+            return "words"
+    # Imported here: ``gateway.routes.crm`` imports this module.
+    from gateway.routes.crm.rules import BODY_MAX
+
+    built = ai_text(part, item)
+    if built is None:
+        return "words"
+    text_ = item.get("text")
+    if not isinstance(text_, str) or text_ != built or len(text_) > BODY_MAX:
+        return "ai_text"
+    return None
+
+
+def _kind_then(kind: str, check: Any) -> Any:
+    """An item of a SEM-7 kind: the ``kind`` key may be left out, and when
+    present it names the kind. Then the item check of SEM-7 runs."""
+    def run(item: Mapping[str, Any]) -> str | None:
+        if "kind" in item and item["kind"] != kind:
+            return "kind"
+        return check(item)
+    return run
+
+
+def _tax_mark(item: Mapping[str, Any]) -> str | None:
+    if set(item) != _TAX_MARK_KEYS:
+        return "keys"
+    if not _module(item.get("entity")) or not _field_key(item.get("field")):
+        return "key"
+    return None if item.get("tax") in _tax_words() else "tax"
+
+
+def _words_item(keys: frozenset[str]) -> Any:
+    def run(item: Mapping[str, Any]) -> str | None:
+        if set(item) != keys:
+            return "keys"
+        for k in sorted(keys):
+            found = _admin_text_problem(item.get(k))
+            if found is not None:
+                return found
+        return None
+    return run
+
+
+def _synonym(targets: frozenset[str]) -> Any:
+    def run(item: Mapping[str, Any]) -> str | None:
+        if set(item) != _SYNONYM_KEYS:
+            return "keys"
+        found = _admin_text_problem(item.get("word"))
+        if found is not None:
+            return found
+        return None if item.get("target") in targets else "target"
+    return run
+
+
+#: The check of a part that only one section may hold, or that has one rule
+#: in each section. The section check comes first in :func:`shape_only`.
+_PART_CHECKS: Mapping[str, Any] = {
+    "joins": _kind_then(KIND_JOIN, _join_problem),
+    "measures": _kind_then(KIND_MEASURE, _measure_problem),
+    "queries": _kind_then(KIND_QUERY, _query_problem),
+    "tax_marks": _tax_mark,
+    "samples": _words_item(_SAMPLE_KEYS),
+    "instructions": _words_item(_INSTRUCTION_KEYS),
+}
+
+#: The identity of an item, for the parts where two items may not share it.
+_IDENTITY: Mapping[str, Any] = {
+    "entities": lambda i: i.get("key"),
+    "fields": lambda i: (i.get("entity"), i.get("key")),
+    "measures": lambda i: i.get("key"),
+    "queries": lambda i: i.get("key"),
+}
+
+
+def _keys_of(value: Any) -> Iterable[str]:
+    """Each key of each mapping in *value*, at any depth."""
+    if isinstance(value, Mapping):
+        for k, v in value.items():
+            yield str(k)
+            yield from _keys_of(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _keys_of(v)
+
+
+def _key_problem(body: Mapping[str, Any]) -> str | None:
+    for key in _keys_of(body):
+        low = key.lower()
+        if any(word in low for word in _SECRET_WORDS):
+            return "secret"
+        if low in _FIGURE_WORDS or low.removesuffix("s") in _FIGURE_WORDS:
+            return "figure"
+    return None
+
+
+def _targets(body: Mapping[str, Any]) -> frozenset[str]:
+    """The keys that a synonym may name: the key of an entity, a field or a
+    measure of the body."""
+    found: set[str] = set()
+    for section in MODEL_SECTIONS:
+        parts = body.get(section)
+        if not isinstance(parts, Mapping):
+            continue
+        for part in ("entities", "fields", "measures"):
+            items = parts.get(part)
+            for item in items if isinstance(items, list) else ():
+                if isinstance(item, Mapping) and isinstance(item.get("key"), str):
+                    found.add(item["key"])
+    return frozenset(found)
+
+
+def _part_problem(section: str, part: str, items: Any, targets: frozenset[str]) -> str | None:
+    if not isinstance(items, list) or len(items) > PART_ITEMS_MAX:
+        return "items"
+    if section == SECTION_CODE and part == "entities":
+        check: Any = _code_entity
+    elif section == SECTION_CODE and part == "fields":
+        check = _code_field
+    elif section == SECTION_AI and part in ("entities", "fields"):
+        def check(item: Mapping[str, Any]) -> str | None:
+            return _ai_item(part, item)
+    elif part == "synonyms":
+        check = _synonym(targets)
+    else:
+        check = _PART_CHECKS.get(part)
+    if check is None:
+        return "part"
+    seen: set[Any] = set()
+    identity = _IDENTITY.get(part)
+    for item in items:
+        if not isinstance(item, Mapping):
+            return "item"
+        found = check(item)
+        if found is not None:
+            return found
+        if identity is not None:
+            one = identity(item)
+            if one in seen:
+                return "duplicate"
+            seen.add(one)
+    return None
+
+
+def shape_only(body: Any) -> str | None:
+    """Why a body of the model of a connection is not shape only, or
+    ``None`` (``semantic_model.md`` §3.3 point 6 and §10.4). It is pure and
+    reads no database. It returns the FIRST problem as a short code:
+
+    * ``body``: not an object with exactly the keys ``v``, ``code``, ``ai``
+      and ``admin``. ``v``: ``v`` is not :data:`MODEL_V`.
+    * ``secret``: a key, at any depth, names a header, a token, a url, a
+      path, a host or another secret (§8).
+    * ``figure``: a key names an amount, a total, a balance or a figure.
+    * ``<section>``: the section is not an object.
+    * ``<section>.<part>:<word>``: a part of a section. ``section`` is a
+      part in the wrong section. ``part`` is a key outside the closed set.
+      Each other word is the first problem of an item, such as ``keys``,
+      ``label_value``, ``ai_text``, ``text_value``, ``param_value`` or
+      ``query_value`` (the words of :func:`semantic_problem`).
+    """
+    if not isinstance(body, Mapping) or set(body) != {"v", *MODEL_SECTIONS}:
+        return "body"
+    if isinstance(body["v"], bool) or body["v"] != MODEL_V:
+        return "v"
+    found = _key_problem(body)
+    if found is not None:
+        return found
+    targets = _targets(body)
+    for section in MODEL_SECTIONS:
+        parts = body[section]
+        if not isinstance(parts, Mapping):
+            return section
+        for part, items in parts.items():
+            where = f"{section}.{part}"
+            if part not in SECTION_PARTS[section]:
+                known = any(part in s for s in SECTION_PARTS.values())
+                return f"{where}:{'section' if known else 'part'}"
+            found = _part_problem(section, str(part), items, targets)
+            if found is not None:
+                return f"{where}:{found}"
+    return None
+
+
 __all__ = [
     "AGGREGATES",
     "AMOUNT_NAMES",
@@ -1233,7 +1607,9 @@ __all__ = [
     "CORE_KEY_COLUMNS",
     "CORE_PURPOSES",
     "DEFAULT_REVENUE",
+    "FIELD_OPTIONS_MAX",
     "FILTERS_MAX",
+    "GRAINS",
     "GROUP_MAX",
     "KEY_PARTS",
     "KIND_CATALOGUE",
@@ -1241,6 +1617,9 @@ __all__ = [
     "KIND_MEASURE",
     "KIND_QUERY",
     "LABEL_MAX",
+    "LOOKUPS",
+    "MODEL_SECTIONS",
+    "MODEL_V",
     "MODULE_PARTS",
     "MONEY_PURPOSES",
     "NUMBER_TYPES",
@@ -1250,6 +1629,7 @@ __all__ = [
     "ORG_PARTS",
     "PARAMS_MAX",
     "PARAM_KINDS",
+    "PART_ITEMS_MAX",
     "PART_MEANINGS",
     "PART_TYPES",
     "PURPOSES",
@@ -1257,6 +1637,10 @@ __all__ = [
     "PURPOSE_WORDS",
     "RANK_LIMIT",
     "REVENUE_VALUES",
+    "SECTION_ADMIN",
+    "SECTION_AI",
+    "SECTION_CODE",
+    "SECTION_PARTS",
     "SEMANTIC_KINDS",
     "SHADOW_KEYS",
     "SLOT_PURPOSES",
@@ -1274,6 +1658,7 @@ __all__ = [
     "Entry",
     "Field",
     "Source",
+    "ai_text",
     "build",
     "clear_parts",
     "code_amount",
@@ -1298,6 +1683,7 @@ __all__ = [
     "role_purposes",
     "semantic_problem",
     "semantic_ref_problem",
+    "shape_only",
     "singulars",
     "stored_items",
     "sum_shape_problem",
