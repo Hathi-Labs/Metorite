@@ -300,7 +300,8 @@ def test_a_studio_tool_belongs_to_the_studio_builder() -> None:
     """Mutation: a Studio tool mapped to email → red."""
     names = pack.studio_tool_names()
     assert {"studio_skill_list", "studio_draft", "studio_workflow_publish"} <= names
-    assert len(names) == 25
+    # WS-STU J2d: the share tool of the fourth pack of the owner.
+    assert "studio_skill_share" in names and len(names) == 26
     for name in names:
         assert run.owner_of_tool(name) == pack.STUDIO, name
     assert run.owner_of_tool("read_email") == pack.EA
@@ -315,6 +316,7 @@ def test_the_studio_names_come_from_the_skill_families() -> None:
         frozenset(SKILL_FAMILIES["studio"]["tools"])
         | frozenset(SKILL_FAMILIES["studio-more"]["tools"])
         | frozenset(SKILL_FAMILIES["studio-workflows"]["tools"])
+        | frozenset(SKILL_FAMILIES["studio-share"]["tools"])
     )
     assert pack.STUDIO not in pack.OWNERS  # no specialist, no config.json
 

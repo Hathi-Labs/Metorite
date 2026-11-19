@@ -1598,6 +1598,35 @@ def module_where(
                     source=from_source(*sources))
 
 
+def field_filter_refusal() -> HTTPException:
+    """The 422 of ``field.<key>`` on a module list for an org that is not on
+    ``CRM_MODULE_FIND_ORGS`` (CRM-Q34-4). The list never drops a filter in
+    silence: a dropped filter reads as a list of the right records."""
+    return _refuse(
+        "This module list takes no field.<key> filter. For a total, use "
+        "crm_aggregate with field_filters. For a list, filter by owner or q.")
+
+
+async def module_field_where(
+    db: Any, module: str, pairs: list[tuple[str, str]],
+) -> WhereSql:
+    """The WHERE of the ``field.<key>`` filters of a module LIST (CRM-Q34-4).
+
+    The same three calls as the module total (``aggregate._read``): the text
+    matches, the lookup ids and :func:`module_where`, so a list and a total
+    with the same filters hold the same records. Fence:
+    ``tests/unit/test_crm_module_records_r8.py``. The caller names the module
+    from the mirrored set, and RLS holds the session (R5)."""
+    from gateway.routes.crm.core import current_tenant
+
+    org = str(current_tenant())
+    scope = await module_scope(db, module)
+    zone = await crm_zone(db, current_tenant())
+    matches = await text_matches(db, org, scope, module, pairs)
+    ids = await lookup_ids(db, org, scope, pairs)
+    return module_where(scope, module, pairs, zone=zone, matches=matches, ids=ids)
+
+
 # ── q across a module (CRM-Q34-7, crm_platform.md §18.17) ───────────────────
 #
 # For an org on CRM_MODULE_FIND_ORGS, ``q`` on the module list AND on a module
@@ -1879,6 +1908,34 @@ async def find_near(db: Any, scope: FieldScope, words: Sequence[str], where: str
     })).fetchall()
     return await asyncio.to_thread(rank_near, list(words), [str(r.n) for r in rows],
                                    deadline=name_match.scoring_deadline())
+
+
+#: The record names that the company search reads for the near lookup
+#: (FIND-11): the newest records of the mirrored modules. ``:cap`` is
+#: ``name_match.NEAR_VOCABULARY``. The modules are bound, never in the text.
+_RECORD_NAMES_SQL = (
+    "SELECT name FROM crm_module_records "
+    "WHERE module = ANY(CAST(:modules AS text[])) AND name IS NOT NULL "
+    "ORDER BY ext_modified_at DESC NULLS LAST, id LIMIT :cap"
+)
+
+
+async def near_record_names(db: Any, modules: Sequence[str], words: Sequence[str],
+                            k: int) -> dict[str, list[Any]]:
+    """The names near each of *words* among the record names of *modules*, in
+    the caller's tenant session (FIND-11). One bounded read, then
+    ``name_match.near_lookup`` scores them in a thread, off the event loop,
+    with ``name_match.scoring_deadline()``, as ``records.near_names`` does."""
+    import asyncio
+
+    from acb_common import name_match
+
+    rows = (await db.execute(text(_RECORD_NAMES_SQL), {
+        "modules": list(modules), "cap": name_match.NEAR_VOCABULARY,
+    })).fetchall()
+    return await asyncio.to_thread(
+        name_match.near_lookup, list(words), [str(r.name) for r in rows], k,
+        deadline=name_match.scoring_deadline())
 
 
 def row_near_name(scope: FieldScope, name: Any, fields: Mapping[str, Any],
@@ -2282,6 +2339,7 @@ __all__ = [
     "day_field",
     "day_sql",
     "day_start",
+    "field_filter_refusal",
     "field_pairs",
     "find_keys",
     "find_near",
@@ -2295,6 +2353,7 @@ __all__ = [
     "lookup_ids",
     "lookup_targets",
     "measure_sql",
+    "module_field_where",
     "module_measure",
     "module_scope",
     "module_where",

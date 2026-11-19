@@ -186,7 +186,8 @@ async def test_q_with_the_same_subject_filter_counts_one_row_on_both(inv, app_en
     """The same filter on both sides: Subject is "under_score item 500".
     The total takes it as ``field.Subject``, and the list as
     ``custom.Subject``. The total takes no ``custom.<key>`` (a 422 of
-    ``MODULE_PARAMS``), and the list takes no ``field.<key>`` (CRM-Q34-4)."""
+    ``MODULE_PARAMS``). The list takes ``field.<key>`` too since CRM-Q34-4
+    (``test_crm_module_list_filters_r8.py``)."""
     value = "under_score item 500"
     total = await _total(inv, inv.org_a, q="acme", **{"field.Subject": value})
     page = await _list(inv, inv.org_a, q="acme", **{"custom.Subject": value})

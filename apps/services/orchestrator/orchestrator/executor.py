@@ -2427,6 +2427,24 @@ def _pack_left_block(agent_name: str) -> str:
         return ""
 
 
+def _connected_systems_block() -> str:
+    """CSY-1 (``chat_connected_systems.md`` §3.2): the "Connected systems" block of
+    the servers that THIS run attached, or "". Only for an org in
+    ``CONNECTED_SYSTEMS_ORGS``. The org comes from the run binding, never the
+    payload (R5). With no server or the flag off it is "", so the context keeps
+    its bytes. Never raises."""
+    try:
+        from acb_skills.server_brief import attached_block
+
+        from orchestrator._maf_mcp import connected_systems_org_allowed
+
+        if not connected_systems_org_allowed(_current_run_org()):
+            return ""
+        return attached_block()
+    except Exception:
+        return ""
+
+
 class _SetupLaps:
     """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
     its first model request.
@@ -3229,6 +3247,12 @@ async def wait_user_future(
     the run 419 s on that card. A refused early park tries again at the
     normal window, so a card is never lost. With ``CHAT_DURABLE_ASKS`` off
     there is no late path, and the wait is as before.
+
+    RESUME-5 (``chat_run_continuity.md`` §4.12.5): where both resume flags
+    name the run's org, the gateway's stop wakes this wait once
+    (``pending_ask.stop_wait``), and the run parks here, in its own task
+    (``pending_ask.park_for_stop``). A refused park keeps waiting. Fences:
+    ``tests/unit/test_pending_ask_flow.py``, ``tests/unit/test_gateway_drain.py``.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -3241,6 +3265,11 @@ async def wait_user_future(
     early = park_after is not None and park_after < normal
     window = park_after if early else normal
     park_at = loop.time() + window if rid else None
+    # RESUME-5 (chat_run_continuity.md §4.12.5): the gateway's stop can wake
+    # this wait, and the run then parks HERE, in its own task, so the park
+    # reads the run's ContextVars. None unless both resume flags name the
+    # run's org, and with no request id: then each slice is as before.
+    stop = pending_ask.stop_wait(rid or "", tid)
     answer: str | None = None
     try:
         while True:
@@ -3251,9 +3280,14 @@ async def wait_user_future(
             if park_at is not None:
                 wait = max(0.0, min(wait, park_at - loop.time()))
             try:
-                # Shield: a slice timeout must not cancel the shared future —
-                # the next slice keeps waiting on it.
-                result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+                if await _wait_slice(fut, stop, wait):
+                    # The stop woke the wait. One attempt: a refusal keeps
+                    # waiting, as before.
+                    woken, stop = stop, None
+                    if await _park_at_stop(rid or "", tid, fut, woken):
+                        raise asyncio.CancelledError
+                    continue
+                result = fut.result()
                 answer = _settled_answer(result)
                 return result
             except asyncio.TimeoutError:
@@ -3281,8 +3315,48 @@ async def wait_user_future(
                         pass
     finally:
         if rid:
+            # RESUME-5: sync, before the first await, so a cancel cannot skip
+            # it. The stop reads True only when this run parked.
+            pending_ask.end_stop_wait(rid)
             with contextlib.suppress(BaseException):
                 await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+async def _wait_slice(
+    fut: "asyncio.Future[dict[str, Any]]", stop: "asyncio.Future[None] | None",
+    wait: float,
+) -> bool:
+    """One slice of :func:`wait_user_future`. False when *fut* is done, and
+    True when the stop woke the wait first (RESUME-5). Raises
+    ``asyncio.TimeoutError`` when the slice ends.
+
+    With no *stop*, the slice is the slice of before. Neither awaitable is
+    cancelled when the slice ends: the next slice waits on the same ones."""
+    if stop is None:
+        # Shield: a slice timeout must not cancel the shared future.
+        await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+        return False
+    await asyncio.wait((fut, stop), timeout=wait, return_when=asyncio.FIRST_COMPLETED)
+    if fut.done():
+        return False
+    if stop.done():
+        return True
+    raise asyncio.TimeoutError
+
+
+async def _park_at_stop(
+    rid: str, tid: str, fut: Any, woken: "asyncio.Future[None] | None",
+) -> bool:
+    """RESUME-5: park the run of this wait at the stop, in this task. True
+    when parked. False ends the stop's entry, so the route reads the outcome,
+    and the wait goes on. A cancelled *woken* is no stop."""
+    from orchestrator import pending_ask
+
+    if (woken is not None and not woken.cancelled() and rid and tid
+            and await pending_ask.park_for_stop(rid, tid, fut)):
+        return True
+    pending_ask.end_stop_wait(rid)
+    return False
 
 
 def _settled_answer(result: Any) -> str | None:
@@ -7341,6 +7415,15 @@ def _resume_tool_of(agents: list[Any], name: str) -> Any | None:
     return None
 
 
+def _same_reply_run(resume_call: dict[str, Any] | None) -> bool:
+    """True when *resume_call*, the server's kwarg of :func:`run_agent_stream`,
+    names a SAME-reply run (RESUME-2b, case A). Only JSON ``true`` counts.
+    A late decline (RESUME-4a-2) is never one. Never a key of the event
+    payload (R11)."""
+    return (isinstance(resume_call, dict) and resume_call.get("same_reply") is True
+            and resume_call.get("declined") is not True)
+
+
 def _resume_tool_name(resume_call: dict[str, Any] | None) -> str:
     """The tool name of the stored call in *resume_call*, the server's kwarg
     of :func:`run_agent_stream`, or "". Never a key of the event payload
@@ -7929,7 +8012,15 @@ async def run_agent_stream(
         _thread_emit_seq[thread_id] = 0
 
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
-        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+        # RESUME-2b (review round 2, P2-a): the start of a SAME-reply run
+        # (case A) carries `resumed`. It goes on in the parked run's stream
+        # with the SAME run id, so only the mark tells part one's start from
+        # a continuation's start (`stream_relay.parked_end_of`,
+        # `chat_fold.same_reply_events`). A case B run starts a stream of its
+        # own, so it is not marked. The flag comes from the server's kwarg
+        # only (R11). Any other run sends the bytes of before.
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id,
+                    **({"resumed": True} if _same_reply_run(resume_call) else {})})
         _laps.lap("start")
         # CS-3a: the setup starts now, so the first phase goes, before the
         # load, the tier wait, the session load and the compose. The run's org
@@ -12295,6 +12386,9 @@ def _context_preamble_parts(
     # run binding that `_prime_sent_acts` set, never the payload (R5). Last,
     # so each block above keeps its place and its bytes.
     parts.extend(filter(None, [_sent_acts_block(agent_name)]))
+    # CSY-1: the connected systems of this run, LAST (after the sent-acts block of task 3594): after every stable part,
+    # so the cache keeps its prefix. The same attached set gives the same bytes.
+    parts.extend(filter(None, [_connected_systems_block()]))
     return parts
 
 

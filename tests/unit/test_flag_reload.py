@@ -208,6 +208,27 @@ def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not door_ops_allowed("globex")
 
 
+def test_chat_no_shrink_orgs_reload_and_their_reader_follows(env, monkeypatch) -> None:
+    """HRD-17e-1, chat_failure_modes.md §6. The reload list holds both keys,
+    and the one reader of the guard sees each change with no restart."""
+    from gateway.chat_no_shrink import ON, SHADOW, no_shrink_mode
+
+    assert fr.reloadable("CHAT_NO_SHRINK_ORGS")
+    assert fr.reloadable("CHAT_NO_SHRINK_SHADOW_ORGS")
+    monkeypatch.setenv("CHAT_NO_SHRINK_ORGS", "")
+    monkeypatch.setenv("CHAT_NO_SHRINK_SHADOW_ORGS", "")
+    get_settings.cache_clear()
+    assert no_shrink_mode("acme") == "off"
+    env(**{**_START, "CHAT_NO_SHRINK_SHADOW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_NO_SHRINK_SHADOW_ORGS",)
+    assert no_shrink_mode("acme") == SHADOW
+    assert no_shrink_mode("globex") == "off"
+    env(**{**_START, "CHAT_NO_SHRINK_SHADOW_ORGS": "acme", "CHAT_NO_SHRINK_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_NO_SHRINK_ORGS",)
+    assert no_shrink_mode("acme") == ON
+    assert no_shrink_mode(None) == "off"
+
+
 def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-CO CO-11, chat_organization.md §18. The reload list holds the key,
     and the one reader of the pin switch sees a change with no restart."""
@@ -449,6 +470,72 @@ def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert topics_allowed("ACME ")
     assert not topics_allowed("globex")
     assert not topics_allowed(None)
+
+
+def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-SEM SEM-7, semantic_model.md §10.2. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from gateway.routes.crm.flags import semantic_model_allowed
+
+    assert fr.reloadable("SEMANTIC_MODEL_ORGS")
+    monkeypatch.setenv("SEMANTIC_MODEL_ORGS", "")
+    get_settings.cache_clear()
+    assert not semantic_model_allowed("acme")
+    env(**{**_START, "SEMANTIC_MODEL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("SEMANTIC_MODEL_ORGS",)
+    assert semantic_model_allowed("ACME ")
+    assert not semantic_model_allowed("globex")
+    assert not semantic_model_allowed(None)
+
+
+def test_api_connections_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """API-1, api_connections.md §4 (D-API-8). The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from acb_common.api_connections_flag import api_connections_allowed
+
+    assert fr.reloadable("API_CONNECTIONS_ORGS")
+    monkeypatch.setenv("API_CONNECTIONS_ORGS", "")
+    get_settings.cache_clear()
+    assert not api_connections_allowed("acme")
+    env(**{**_START, "API_CONNECTIONS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("API_CONNECTIONS_ORGS",)
+    assert api_connections_allowed("ACME ")
+    assert not api_connections_allowed("globex")
+    assert not api_connections_allowed(None)
+
+
+def test_connection_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-SEM SEM-12, semantic_model.md §10.4. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart.
+    Mutation: leave the flag out of the reload list (a name that does not end
+    in ``_orgs``), and the first assert fails."""
+    from gateway.connections.semantic_model import connection_model_allowed
+
+    assert fr.reloadable("CONNECTION_MODEL_ORGS")
+    monkeypatch.setenv("CONNECTION_MODEL_ORGS", "")
+    get_settings.cache_clear()
+    assert not connection_model_allowed("acme")
+    env(**{**_START, "CONNECTION_MODEL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CONNECTION_MODEL_ORGS",)
+    assert connection_model_allowed("ACME ")
+    assert not connection_model_allowed("globex")
+    assert not connection_model_allowed(None)
+
+
+def test_chat_card_precondition_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """HRD-10a, chat_failure_modes.md section 6. The reload list holds the key,
+    and the one reader of the version check of a card sees a change with no
+    restart."""
+    from acb_skills.ask_tools import card_precondition_on
+
+    assert fr.reloadable("CHAT_CARD_PRECONDITION_ORGS")
+    monkeypatch.setenv("CHAT_CARD_PRECONDITION_ORGS", "")
+    get_settings.cache_clear()
+    assert not card_precondition_on("acme")
+    env(**{**_START, "CHAT_CARD_PRECONDITION_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_CARD_PRECONDITION_ORGS",)
+    assert card_precondition_on("ACME ")
+    assert not card_precondition_on("globex")
 
 
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
