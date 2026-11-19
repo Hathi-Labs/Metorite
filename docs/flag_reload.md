@@ -33,13 +33,23 @@ numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
+`API_CONNECTIONS_ORGS` turns on the API connections of the chat
+(`api_connections.md` §4, D-API-8). API-1 declares it, and the rung 1 slices
+read it. `*` lists every org, and the default is empty. Empty gives no org an
+API connection in the chat. Its one reader is
+`acb_common.api_connections_flag.api_connections_allowed`. A reload applies a
+change. The flip waits for the rung 1 demo, and it stays OWNER-GATE
+(`enforcement-flip`).
+
 `CHAT_CARD_PRECONDITION_ORGS` turns on the version check of a card
 (`chat_failure_modes.md` §6 row HRD-10a). For each listed org, `update_task`
 sends the `updated_at` of the read that the card shows as `If-Match`. A task
 that changed while the card waited gets a 412, and the tool writes nothing. The
 tool then answers "Changed since the card", with the old and new values of the
 fields on the card. For a deal, the CRM tool `crm_update_record` does the
-same (HRD-10c). `*` lists every org, and the default is empty.
+same (HRD-10c). The email tool `edit_draft` sends the digest of its read of
+the draft as `expect_digest`, and a changed draft gets no save (HRD-10d-1).
+`*` lists every org, and the default is empty.
 
 Empty gives the PATCH of before, with no `If-Match`. Its one reader is
 `acb_skills.ask_tools.card_precondition_on`. It reads the org from the run
@@ -118,6 +128,25 @@ Approve of a parked plain card approves the same card once in the next run.
 the card gate each ask it. So a reload applies at once, and an org that leaves
 the list uses no grant. A flip stays OWNER-GATE (`enforcement-flip`).
 
+`CHAT_NO_SHRINK_ORGS` turns on the guard of a chat save
+(`chat_failure_modes.md` §6 row HRD-17e-1). For each listed org, a client
+save that makes an agent row shorter before the fold seals it keeps the stored
+text. The save logs one `chat_no_shrink_refused` line, with lengths and no
+text. `*` lists every org, and the default is empty.
+
+Its one reader is `gateway.chat_no_shrink.no_shrink_mode`, and each save asks
+it. So a reload applies at the next save. A flip stays OWNER-GATE
+(`enforcement-flip`). Do not flip it before the owner reads the counts of
+`CHAT_NO_SHRINK_SHADOW_ORGS`.
+
+`CHAT_NO_SHRINK_SHADOW_ORGS` turns on the shadow of the same guard. For each
+listed org, the save is the save of before. A client save that makes an agent
+row shorter before the seal logs one `chat_no_shrink_shadow` line, with
+lengths and no text. An org in both lists enforces.
+
+`*` lists every org, and the default is empty. It has the same reader. A flip
+stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_PACKS_BATCH_ORGS` gives the member's own WhatsApp turn of each listed
 org the read tools of its packs (`chat_reach.md` G2, task 3494). The turn holds
 no write tool, and the specialist of each pack stays. It acts only where
@@ -173,6 +202,12 @@ RESUME-2b: when the parked turn is the last turn, the call goes on in the
 same reply. For an org on both lists, a park keeps the stream of the run 24
 hours (D-RES-7). The same flag turns on this case A, so it has two more
 preconditions.
+
+RESUME-5: the stop of a release parks each run that waits on a card
+(`POST /internal/drain/park`). It parks only the runs of an org on both
+lists, with `CHAT_DURABLE_ASKS` on. A wait reads the two lists when it starts, and
+the park reads them again. So a reload applies to the next card, and a
+removal also applies to a card that waits now.
 
 ⚠️ Do not add an org to `CHAT_RESUME_ORGS` before both of these merge:
 
@@ -273,6 +308,17 @@ is `orchestrator._maf_mcp.connected_systems_org_allowed`, which
 `executor._connected_systems_block` asks on each turn, on the run's org. A
 reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`), after
 the owner preview.
+
+`CONNECTION_MODEL_ORGS` turns on the store of the semantic model of a
+connection (`semantic_model.md` §10.4, SEM-12). For each listed org, the one
+writer `gateway.connections.semantic_model` may write a draft, accept a part,
+approve a version and read the approved version. `*` lists every org, and the
+default is empty. Empty means each write refuses with "off", and the read
+returns nothing.
+
+Its one reader is `gateway.connections.semantic_model.connection_model_allowed`.
+Each function asks it with the org of the bound tenant, on each call. So a
+reload applies to the next call. A flip is the gate `enforcement-flip`.
 
 `CORE_EVENTS_ORGS` turns on the events of the core apps on the one event bus
 (`ai_studio.md` §14 E12a). For each listed org, a person edit emits one

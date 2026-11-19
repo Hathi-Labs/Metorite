@@ -3247,6 +3247,12 @@ async def wait_user_future(
     the run 419 s on that card. A refused early park tries again at the
     normal window, so a card is never lost. With ``CHAT_DURABLE_ASKS`` off
     there is no late path, and the wait is as before.
+
+    RESUME-5 (``chat_run_continuity.md`` §4.12.5): where both resume flags
+    name the run's org, the gateway's stop wakes this wait once
+    (``pending_ask.stop_wait``), and the run parks here, in its own task
+    (``pending_ask.park_for_stop``). A refused park keeps waiting. Fences:
+    ``tests/unit/test_pending_ask_flow.py``, ``tests/unit/test_gateway_drain.py``.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -3259,6 +3265,11 @@ async def wait_user_future(
     early = park_after is not None and park_after < normal
     window = park_after if early else normal
     park_at = loop.time() + window if rid else None
+    # RESUME-5 (chat_run_continuity.md §4.12.5): the gateway's stop can wake
+    # this wait, and the run then parks HERE, in its own task, so the park
+    # reads the run's ContextVars. None unless both resume flags name the
+    # run's org, and with no request id: then each slice is as before.
+    stop = pending_ask.stop_wait(rid or "", tid)
     answer: str | None = None
     try:
         while True:
@@ -3269,9 +3280,14 @@ async def wait_user_future(
             if park_at is not None:
                 wait = max(0.0, min(wait, park_at - loop.time()))
             try:
-                # Shield: a slice timeout must not cancel the shared future —
-                # the next slice keeps waiting on it.
-                result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+                if await _wait_slice(fut, stop, wait):
+                    # The stop woke the wait. One attempt: a refusal keeps
+                    # waiting, as before.
+                    woken, stop = stop, None
+                    if await _park_at_stop(rid or "", tid, fut, woken):
+                        raise asyncio.CancelledError
+                    continue
+                result = fut.result()
                 answer = _settled_answer(result)
                 return result
             except asyncio.TimeoutError:
@@ -3299,8 +3315,48 @@ async def wait_user_future(
                         pass
     finally:
         if rid:
+            # RESUME-5: sync, before the first await, so a cancel cannot skip
+            # it. The stop reads True only when this run parked.
+            pending_ask.end_stop_wait(rid)
             with contextlib.suppress(BaseException):
                 await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+async def _wait_slice(
+    fut: "asyncio.Future[dict[str, Any]]", stop: "asyncio.Future[None] | None",
+    wait: float,
+) -> bool:
+    """One slice of :func:`wait_user_future`. False when *fut* is done, and
+    True when the stop woke the wait first (RESUME-5). Raises
+    ``asyncio.TimeoutError`` when the slice ends.
+
+    With no *stop*, the slice is the slice of before. Neither awaitable is
+    cancelled when the slice ends: the next slice waits on the same ones."""
+    if stop is None:
+        # Shield: a slice timeout must not cancel the shared future.
+        await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+        return False
+    await asyncio.wait((fut, stop), timeout=wait, return_when=asyncio.FIRST_COMPLETED)
+    if fut.done():
+        return False
+    if stop.done():
+        return True
+    raise asyncio.TimeoutError
+
+
+async def _park_at_stop(
+    rid: str, tid: str, fut: Any, woken: "asyncio.Future[None] | None",
+) -> bool:
+    """RESUME-5: park the run of this wait at the stop, in this task. True
+    when parked. False ends the stop's entry, so the route reads the outcome,
+    and the wait goes on. A cancelled *woken* is no stop."""
+    from orchestrator import pending_ask
+
+    if (woken is not None and not woken.cancelled() and rid and tid
+            and await pending_ask.park_for_stop(rid, tid, fut)):
+        return True
+    pending_ask.end_stop_wait(rid)
+    return False
 
 
 def _settled_answer(result: Any) -> str | None:

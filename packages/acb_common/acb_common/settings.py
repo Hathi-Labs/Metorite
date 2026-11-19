@@ -404,6 +404,30 @@ class Settings(BaseSettings):
     # so a flip on a box is gate `enforcement-flip`. Fence:
     # tests/unit/test_crm_plan_kinds_semantic.py.
     semantic_model_orgs: str = ""
+    # `api_connections_orgs` (WS-API API-1, task 3787, D228, 2026-11-19)
+    # lists the organization ids that may use an API connection in the chat
+    # (`api_connections.md` §4, D-API-8), in the grammar of `crm_orgs`.
+    # Default empty means NO organization. API-1 declares it, and the later
+    # rung 1 slices read it. The one reader is
+    # `acb_common.api_connections_flag.api_connections_allowed`. A `*_ORGS`
+    # key, so a SIGHUP reload applies it (`docs/flag_reload.md`). The flip
+    # waits for the rung 1 demo, and it is gate `enforcement-flip`. Fence:
+    # tests/unit/test_api_templates.py.
+    api_connections_orgs: str = ""
+    # `connection_model_orgs` (WS-SEM SEM-12, task 3742, 2026-11-19) lists
+    # the organization ids that may write and read the semantic model of a
+    # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
+    # or `*`. Default empty means NO organization: each write
+    # function of `gateway.connections.semantic_model` refuses with "off",
+    # and `read_approved` returns None. The one reader is
+    # `gateway.connections.semantic_model.connection_model_allowed`. It
+    # fails closed, and it takes the org of the bound tenant, never of the
+    # request. A `*_ORGS` key, so a SIGHUP reload applies it
+    # (`docs/flag_reload.md`). A name in the list spends nothing, so a flip
+    # on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_connection_semantic_model_r8.py,
+    # tests/unit/test_flag_reload.py.
+    connection_model_orgs: str = ""
     # `crm_answer_check` (WS-53 CRM-Q29, 2026-10-17) is the number check of
     # a chat answer that read a CRM tool (`crm_platform.md` §18.11.2):
     # `off` (the default), `shadow` (check at the end of the answer and log
@@ -1169,6 +1193,23 @@ class Settings(BaseSettings):
     # (`gateway/flag_reload.py`). It calls no model.
     # Fence: tests/unit/test_run_phase_event.py.
     chat_run_phase_orgs: str = ""
+
+    # ── No shrink before the seal (HRD-17e-1, chat_failure_modes.md §6) ─────
+    #
+    # Two comma lists of organization ids, or `*`. Each is empty by default,
+    # and then each chat save runs the upsert of before, byte for byte.
+    # CHAT_NO_SHRINK_SHADOW_ORGS only logs: the save is the save of before,
+    # and a client write that makes an agent row shorter before the fold
+    # seals it logs one `chat_no_shrink_shadow` line, with lengths and no
+    # text. CHAT_NO_SHRINK_ORGS enforces: such a write keeps the stored text,
+    # and logs `chat_no_shrink_refused`. An org in both lists enforces. The
+    # one reader is `gateway.chat_no_shrink.no_shrink_mode`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`, and the enforce flip waits for the shadow counts.
+    # Fences: tests/unit/test_chat_upsert_no_shrink.py and
+    # tests/unit/test_chat_upsert_no_shrink_r8.py.
+    chat_no_shrink_orgs: str = ""
+    chat_no_shrink_shadow_orgs: str = ""
 
     # ── A card checks that its object did not change (HRD-10a) ──────────────
     #

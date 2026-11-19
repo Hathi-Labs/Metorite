@@ -229,13 +229,14 @@ describe("the acts of a row", () => {
     expect(ACTION_HINT.resume).toContain("same agent client");
     expect(ACTION_HINT.resume).toContain("keeps the task");
     expect(ACTION_HINT.close_run).toContain("free the task for anyone");
+    expect(ACTION_HINT.close_run).toContain("moves to its lane");
   });
 
-  it("asks before it closes a run, and says that the task stays", () => {
+  it("asks before it closes a run, and says that the assignees stay and the task moves to its lane", () => {
     const copy = closeRunCopy(dangling);
     expect(copy.title).toBe("Close this agent run?");
     expect(copy.body).toContain("Claude Code");
-    expect(copy.body).toContain("The task keeps its status and its assignees.");
+    expect(copy.body).toContain("The assignees stay. The task moves to its lane");
     expect(copy.confirm).toBe(ACTION_LABEL.close_run);
   });
 
