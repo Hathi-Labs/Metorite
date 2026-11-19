@@ -112,6 +112,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/skills/{skill_id}/versions/{version}/share/approve"),
     ("POST", "/studio/skills/{skill_id}/versions/{version}/share/reject"),
     ("DELETE", "/studio/skills/{skill_id}/share"),
+    # WS-STU J2d (TOF-4b), the owner's read of the share. It reads no right.
+    ("GET", "/studio/skills/{skill_id}/share"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
     # K1a, the template list and the one-step create from a template.

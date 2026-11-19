@@ -1778,15 +1778,28 @@ def _no_constant(name: str) -> Any:
     raise ValueError(name)
 
 
+def _no_nul(name: str, value: str) -> None:
+    """A NUL in a query leaf is refused by the ONE guard (``records.refuse_nul``,
+    CRM-Q25c: a second copy is a defect, fence ``test_crm_nul_guard_r8.py``).
+    The 422 keeps the query code ``query_value_invalid``."""
+    from acb_common.studio_query import VALUE_INVALID
+    from gateway.routes.crm.records import NUL_DETAIL, refuse_nul
+
+    try:
+        refuse_nul([(name, value)])
+    except HTTPException:
+        raise query_refusal(VALUE_INVALID, NUL_DETAIL) from None
+
+
 def _leaf_of(item: Mapping[str, Any]) -> list[QueryLeaf]:
     """The leaves of one checked leaf: one, or one ``eq`` for each value of
     an ``in``. Each value is a JSON string or number, or a bool. A value
-    with a NUL is refused here, before it reaches Postgres."""
+    with a NUL is refused here (the one guard of records.py), before it
+    reaches Postgres."""
     from acb_common.studio_query import VALUE_INVALID
 
     key, op = str(item["field"]), str(item["op"])
-    if "\x00" in key:
-        raise query_refusal(VALUE_INVALID, "A field name holds no NUL character.")
+    _no_nul(key, "")
     if "value" not in item:
         raise query_refusal(VALUE_INVALID, f"Field `{_shown(key)}`: give a value.")
     values = list(item["value"]) if op == "in" else [item["value"]]
@@ -1795,9 +1808,7 @@ def _leaf_of(item: Mapping[str, Any]) -> list[QueryLeaf]:
         if isinstance(value, bool | int | float):
             pass
         elif isinstance(value, str):
-            if "\x00" in value:
-                raise query_refusal(VALUE_INVALID,
-                                    f"Field `{_shown(key)}`: a value holds no NUL character.")
+            _no_nul("", value)
         else:
             raise query_refusal(
                 VALUE_INVALID,
@@ -2293,6 +2304,34 @@ async def find_near(db: Any, scope: FieldScope, words: Sequence[str], where: str
     })).fetchall()
     return await asyncio.to_thread(rank_near, list(words), [str(r.n) for r in rows],
                                    deadline=name_match.scoring_deadline())
+
+
+#: The record names that the company search reads for the near lookup
+#: (FIND-11): the newest records of the mirrored modules. ``:cap`` is
+#: ``name_match.NEAR_VOCABULARY``. The modules are bound, never in the text.
+_RECORD_NAMES_SQL = (
+    "SELECT name FROM crm_module_records "
+    "WHERE module = ANY(CAST(:modules AS text[])) AND name IS NOT NULL "
+    "ORDER BY ext_modified_at DESC NULLS LAST, id LIMIT :cap"
+)
+
+
+async def near_record_names(db: Any, modules: Sequence[str], words: Sequence[str],
+                            k: int) -> dict[str, list[Any]]:
+    """The names near each of *words* among the record names of *modules*, in
+    the caller's tenant session (FIND-11). One bounded read, then
+    ``name_match.near_lookup`` scores them in a thread, off the event loop,
+    with ``name_match.scoring_deadline()``, as ``records.near_names`` does."""
+    import asyncio
+
+    from acb_common import name_match
+
+    rows = (await db.execute(text(_RECORD_NAMES_SQL), {
+        "modules": list(modules), "cap": name_match.NEAR_VOCABULARY,
+    })).fetchall()
+    return await asyncio.to_thread(
+        name_match.near_lookup, list(words), [str(r.name) for r in rows], k,
+        deadline=name_match.scoring_deadline())
 
 
 def row_near_name(scope: FieldScope, name: Any, fields: Mapping[str, Any],
