@@ -46,8 +46,10 @@ _PAGE = r"[0-9]{1,4}"
 _WORD = r"[a-z_]{1,24}"
 _SORT_ORDER = r"[AD]{1}"
 
-#: Fifty invoices fit well inside the answer cap of 64 KiB.
-_PAGE_SIZE = 50
+#: 49 invoices fit well inside the answer cap of 64 KiB. The page size is
+#: the largest value that the size shape takes, so the gateway total (API-3)
+#: can send it on each page.
+_PAGE_SIZE = 49
 
 #: The size shape takes 0 to 49. The closed grammar cannot say "1 to 50", and
 #: the validator refuses a size shape that allows a number above the page

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
@@ -42,6 +43,7 @@ from gateway.routes import api_connections as routes
 from tests.unit import _api_call_fakes as f
 
 READ = "/connections/api/zoho_books/read"
+SIZE = ZOHO_BOOKS.op("list_invoices").paging.size
 
 
 def _ok(body: bytes) -> outbound_guard.Answer:
@@ -178,45 +180,45 @@ async def test_an_answer_over_the_row_cap_is_refused(monkeypatch) -> None:
 
 
 async def test_the_total_adds_the_pages_and_stops_at_a_short_page(monkeypatch) -> None:
-    pages = [_ok(f.books_page(50, amount="10.10")), _ok(f.books_page(50, amount=0.2)),
+    pages = [_ok(f.books_page(SIZE, amount="10.10")), _ok(f.books_page(SIZE, amount=0.2)),
              _ok(f.books_page(3, amount=1))]
     _, wire, _ = f.hermetic(monkeypatch, wire=f.Wire(answer=pages))
     r = await f.call(f.user(), "POST", READ, body=f.read(total=True, status="paid"))
     assert r.status_code == 200, r.text
     out = r.json()
-    assert out["total"] == "518.00"
-    assert (out["pages_read"], out["records"], out["numbers"], out["not_numbers"]) == (3, 103, 103, 0)
+    assert out["total"] == format(SIZE * Decimal("10.10") + SIZE * Decimal("0.2") + 3, "f")
+    assert (out["pages_read"], out["records"], out["numbers"], out["not_numbers"]) == (3, 2 * SIZE + 3, 2 * SIZE + 3, 0)
     assert out["incomplete"] is False and out["stopped_by"] is None
     assert out["currency"] == "INR" and out["partial_total"] is None
     queries = [dict(parse_qsl(urlsplit(s.url).query)) for s in wire.sent]
     assert [q["page"] for q in queries] == ["1", "2", "3"]
-    assert all(q["per_page"] == "50" and q["status"] == "paid" for q in queries)
+    assert all(q["per_page"] == str(SIZE) and q["status"] == "paid" for q in queries)
 
 
 async def test_the_total_stops_at_the_page_limit_and_says_incomplete(monkeypatch) -> None:
-    _, wire, _ = f.hermetic(monkeypatch, wire=f.Wire(answer=lambda sent: _ok(f.books_page(50))))
+    _, wire, _ = f.hermetic(monkeypatch, wire=f.Wire(answer=lambda sent: _ok(f.books_page(SIZE))))
     r = await f.call(f.user(), "POST", READ, body=f.read(total=True))
     assert r.status_code == 200, r.text
     out = r.json()
     assert MAX_TOTAL_PAGES == 10
     assert out["pages_read"] == MAX_TOTAL_PAGES == len(wire.sent)
     assert out["incomplete"] is True and out["stopped_by"] == "page_limit"
-    assert out["total"] is None and out["partial_total"] == "5000"
+    assert out["total"] is None and out["partial_total"] == str(MAX_TOTAL_PAGES * SIZE * 10)
 
 
 async def test_a_limit_stops_the_total_and_gives_no_figure(monkeypatch) -> None:
-    f.hermetic(monkeypatch, wire=f.Wire(answer=lambda sent: _ok(f.books_page(50))))
+    f.hermetic(monkeypatch, wire=f.Wire(answer=lambda sent: _ok(f.books_page(SIZE))))
     for _ in range(6):  # six of the ten calls of the member are gone
         assert (await f.call(f.user(), "POST", READ, body=f.read())).status_code == 200
     r = await f.call(f.user(), "POST", READ, body=f.read(total=True))
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["incomplete"] is True and out["stopped_by"] == "rate_limit"
-    assert out["pages_read"] == 4 and out["total"] is None and out["partial_total"] == "2000"
+    assert out["pages_read"] == 4 and out["total"] is None and out["partial_total"] == str(4 * SIZE * 10)
 
 
 async def test_a_mixed_currency_total_is_refused_with_the_list(monkeypatch) -> None:
-    pages = [_ok(f.books_page(50, currency="INR")), _ok(f.books_page(2, currency="USD"))]
+    pages = [_ok(f.books_page(SIZE, currency="INR")), _ok(f.books_page(2, currency="USD"))]
     f.hermetic(monkeypatch, wire=f.Wire(answer=pages))
     r = await f.call(f.user(), "POST", READ, body=f.read(total=True))
     assert r.status_code == 422, r.text
