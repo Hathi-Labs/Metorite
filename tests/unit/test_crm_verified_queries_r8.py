@@ -35,7 +35,6 @@ from tests.unit.test_crm_questions_r8 import (  # noqa: F401
     call,
     defs,
     q_env,
-    records,
     seed_a,
 )
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
@@ -56,20 +55,34 @@ _SAVE = {
               {"field": "Invoice_Date", "op": "on", "literal": "October 2026",
                "name": "month", "kind": "month"}],
 }
-_KEY = "net_value"
+_KEY = "net_value__customer_month"
 _VALUES = {"customer": _CUSTOMER, "month": "2026-10"}
 
 
-def _invoice(name: str, buyer: str, net: int, day: str) -> dict:
-    return {"Name": name, "Net_Value": net, "Invoice_Date": day,
+def _invoice(name: str, buyer: str, net: int, day: str, billed: int = 0) -> dict:
+    return {"Name": name, "Net_Value": net, "Billed_Value": billed, "Invoice_Date": day,
             "Buyer": {"id": f"b-{buyer[:4]}", "name": buyer}}
 
 
+def vq_records(p: Any, org: str, module: str, rows: list[dict]) -> None:
+    """Records with ext ids of their own (``VQ-<i>``), so they never meet
+    the ``<Module>-<i>`` ids of ``seed_a`` on ``crm_module_records_ext_key``.
+    The ``q_env`` teardown deletes each row of both orgs."""
+    with p.admin_engine.begin() as c:
+        for i, fields in enumerate(rows):
+            c.execute(text(
+                "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+                "ext_id, name, fields) VALUES (CAST(:o AS uuid), :m, 'zoho', :e, :n, "
+                "CAST(:f AS jsonb))"),
+                {"o": org, "m": module, "e": f"VQ-{i}", "n": fields["Name"],
+                 "f": json.dumps(fields)})
+
+
 def seed_invoices(p: Any, org: str) -> None:
-    records(p, org, "Invoices", [
-        _invoice("V-1", _CUSTOMER, 100, "2026-10-05"),
-        _invoice("V-2", _CUSTOMER, 50, "2026-11-02"),
-        _invoice("V-3", "Ravi Kumar", 70, "2026-10-09"),
+    vq_records(p, org, "Invoices", [
+        _invoice("V-1", _CUSTOMER, 100, "2026-10-05", billed=10),
+        _invoice("V-2", _CUSTOMER, 50, "2026-11-02", billed=20),
+        _invoice("V-3", "Ravi Kumar", 70, "2026-10-09", billed=30),
     ])
 
 
@@ -176,7 +189,8 @@ async def test_save_match_run_stale_restore_and_repair_for_one_org(
     assert int(row.version) == int(saved.version) == 2
     [item] = _queries(row.rules)
     assert item["question"] == "Net value for {customer} in {month}"
-    assert item["model_version"] == 1
+    # The version that the save committed.
+    assert item["model_version"] == 2
     stored = json.dumps(row.rules)
     for word in ("Asha", "Rao", "October", "2026", "total"):
         assert word not in stored, word
@@ -224,13 +238,21 @@ async def test_save_match_run_stale_restore_and_repair_for_one_org(
         await _save(p, admin, {**_SAVE, "key": "net_again"})
     assert exc.value.detail["code"] == "stale_query"
 
-    # 6. One repair, as a draft: Net_Value maps to Net_Amount.
+    # 6. No field clearly stands for Net_Value: Net_Amount and Billed_Value
+    #    each share one word. So no repair, and no draft.
+    with pytest.raises(HTTPException) as exc:
+        await as_user(p, admin, lambda: vq.propose_repair(admin, _KEY))
+    assert exc.value.detail["code"] == "no_repair" and _drafts(p, p.org_a) == []
+
+    # 7. The source brings the field back under a new key, with the label
+    #    "Net Value". One repair, as a draft, onto that field.
+    defs(p, p.org_a, "Invoices", [("NetValue", "currency", None)])
     draft = await as_user(p, admin, lambda: vq.propose_repair(admin, _KEY,
                                                               {"customer": _CUSTOMER}))
     [held] = _drafts(p, p.org_a)
     assert int(held.version) == int(draft.version) and held.created_by == "suggestion"
     [fixed] = _queries(held.rules)
-    assert fixed["query"]["fields"] == ["Net_Amount"]
+    assert fixed["query"]["fields"] == ["NetValue"]
     assert fixed["params"] == item["params"] and fixed["question"] == item["question"]
     # The approved version still holds the stale item: no approve in silence.
     assert _queries(_approved(p, p.org_a).rules) == [item]
@@ -254,7 +276,7 @@ async def test_org_b_never_sees_or_runs_a_question_of_org_a(sem_env, app_engine)
     defs(p, p.org_b, "Invoices", [("Net_Value", "currency", None),
                                   ("Invoice_Date", "date", None),
                                   ("Buyer", "lookup", "Buyer_Clients")])
-    records(p, p.org_b, "Invoices", [_invoice("B-1", _CUSTOMER, 9000, "2026-10-01")])
+    vq_records(p, p.org_b, "Invoices", [_invoice("B-1", _CUSTOMER, 9000, "2026-10-01")])
     await _save(p, _user(p.org_a), _SAVE)
     b_admin = _user(p.org_b)
 
@@ -296,3 +318,26 @@ async def test_a_member_that_the_crm_does_not_admit_gets_no_row(
     monkeypatch.setattr(get_settings(), "semantic_model_orgs", "", raising=False)
     off = await _lower(p, _user(p.org_a), _VALUES)
     assert off.status_code == 404 and off.json()["detail"]["code"] == "semantic_off"
+
+
+async def test_a_sum_of_two_fields_is_one_total(sem_env, app_engine) -> None:
+    """P1-A: a verified question that sums two fields answers ONE total of
+    both, as the member, through ``GET /crm/aggregate``."""
+    from gateway.routes.crm import verified_queries as vq
+
+    p = sem_env
+    seed_a(p)
+    seed_invoices(p, p.org_a)
+    body = {**_SAVE, "question": "Net and billed for Asha Rao in October 2026",
+            "fields": ["Net_Value", "Billed_Value"]}
+    await _save(p, _user(p.org_a), body)
+    member = _user(p.org_a, admin=False)
+    key = "net_billed__customer_month"
+    lowered = await _lower(p, member, _VALUES, key)
+    assert lowered.status_code == 200, lowered.text
+    aggregate = lowered.json()["aggregate"]
+    assert aggregate["field"] == "Net_Value+Billed_Value" and "fields" not in aggregate
+    # V-1 only: 100 net and 10 billed.
+    assert await _total(p, member, lowered.json()) == 110
+    answer = await as_user(p, member, lambda: vq.run_query(member, key, _VALUES))
+    assert answer["answer"].total == 110

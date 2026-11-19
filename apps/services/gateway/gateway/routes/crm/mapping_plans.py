@@ -805,6 +805,10 @@ async def commit(
     in_use_items = split_rules(_rules_of(in_use))[1] if in_use is not None else None
     if held and semantic:
         # SEM-8: the items of the restored version count as items in use.
+        # So check_kinds skips their shape check too. That is safe: each
+        # reader drops an item that fails `semantic_problem`
+        # (`verified_queries.queries_of`, `facts.semantic_facts`), so a
+        # restored item of an illegal shape is kept and never served.
         in_use_items = [*(in_use_items or []), *(dict(h) for h in held)]
     check_kinds(others, semantic=semantic, in_use=in_use_items)
     if semantic:

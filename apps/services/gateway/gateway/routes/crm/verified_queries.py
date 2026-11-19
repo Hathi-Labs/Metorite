@@ -205,6 +205,14 @@ def stale_reason(item: Mapping[str, Any], by_module: Mapping[str, cat.Source],
             found = src.field(str(key))
             if found is None or found.type not in cat.NUMBER_TYPES:
                 return f"type:{key}"
+    # A condition whose field changed its type (a date that became text)
+    # no longer takes the kind of its parameter.
+    kinds = {str(p.get("name")): str(p.get("kind")) for p in item.get("params") or []}
+    for cond in shape.get("where") or []:
+        types = _types_for("where", kinds.get(str(cond.get("param"))), None)
+        found = src.field(str(cond.get("field")))
+        if types is not None and found is not None and found.type not in types:
+            return f"type:{cond.get('field')}"
     return None
 
 
@@ -234,21 +242,28 @@ def _kind_of(found: cat.Field | None) -> str:
 
 
 def _swap(question: str, literal: str, name: str) -> str:
-    """*question* with each *literal* (any case) as ``{name}``. 422
-    ``literal_not_in_question`` when the words do not hold it."""
-    found = re.compile(re.escape(literal), re.IGNORECASE)
-    if not found.search(question):
+    """*question* with the first whole-word span of *literal* (any case, the
+    spaces folded) as ``{name}``. A part of a word never matches, so the
+    literal "in" never hits "Invoices". 422 ``literal_not_in_question``
+    when the words do not hold it."""
+    words = " ".join(literal.split())
+    found = re.compile(rf"(?<!\w){re.escape(words)}(?!\w)", re.IGNORECASE)
+    if not words or not found.search(question):
         raise _refuse("literal_not_in_question",
                       "Each condition names words of the question that hold its value.")
-    return found.sub("{" + name + "}", question)
+    return found.sub("{" + name + "}", question, count=1)
 
 
-def _key_of(question: str) -> str:
-    """A key from the question words, with no parameter."""
+def _key_of(question: str, names: Sequence[str]) -> str:
+    """A key from the question words, then ``__`` and the parameter names.
+    So "Net value for {customer}" and "Net value in {month}" get two keys:
+    ``net_value__customer`` and ``net_value__month``."""
     plain = [w for w in terms.words(cat._PLACEHOLDER.sub(" ", question))
              if w not in GLUE_WORDS and not w[0].isdigit()]
-    key = "_".join(plain)[:40].rstrip("_") or "query"
-    return key if key[0].isalpha() else f"q_{key}"[:40]
+    head = "_".join(plain)[:24].rstrip("_") or "query"
+    head = head if head[0].isalpha() else f"q_{head}"[:24]
+    tail = "_".join(names)
+    return f"{head}__{tail}"[:40].rstrip("_") if tail else head
 
 
 class ConditionIn(BaseModel):
@@ -279,11 +294,16 @@ class SaveIn(BaseModel):
     key: str | None = None
 
 
-def build_item(payload: SaveIn, by_module: Mapping[str, cat.Source],
-               version: int) -> dict[str, Any]:
+def build_item(payload: SaveIn, by_module: Mapping[str, cat.Source], version: int,
+               measures: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """The ``query`` item of *payload*: each literal is a named parameter.
     It holds no value. 422 ``bad_query`` names the part that is not legal,
-    and ``question_value`` means a figure that stays in the question."""
+    and ``question_value`` means a figure that stays in the question.
+
+    *version* is the plan version that the save commits (the version that
+    holds the item first). With *measures* (the save), an item that fits
+    the catalogue must also lower: 422 ``not_runnable`` names a shape that
+    the aggregate cannot run (:func:`runnable_problem`)."""
     src = by_module.get(payload.module)
     question = " ".join(payload.question.split())
     taken: set[str] = set()
@@ -310,12 +330,16 @@ def build_item(payload: SaveIn, by_module: Mapping[str, cat.Source],
         shape["where"] = where
     if payload.group_by:
         shape["group_by"] = list(payload.group_by)
-    item = {"kind": cat.KIND_QUERY, "key": payload.key or _key_of(question),
-            "question": question, "params": params, "query": shape,
-            "model_version": int(version)}
+    key = payload.key or _key_of(question, [p["name"] for p in params])
+    item = {"kind": cat.KIND_QUERY, "key": key, "question": question, "params": params,
+            "query": shape, "model_version": int(version)}
     problem = cat.semantic_problem(item)
     if problem is not None:
         raise _refuse("bad_query", f"The query is not legal ({problem}).")
+    if measures is not None and stale_reason(item, by_module, measures) is None:
+        problem = runnable_problem(item, measures, by_module)
+        if problem is not None:
+            raise _not_runnable(problem)
     return item
 
 
@@ -374,6 +398,9 @@ class Lowered:
     pairs: tuple[tuple[str, str], ...] = ()
 
     def params(self) -> dict[str, str]:
+        """The query of ``GET /crm/aggregate``. :func:`lower` refuses two
+        pairs with one name, so this dict holds each pair of
+        :attr:`pairs`, the list that ``aggregate.compute`` takes."""
         out = {"entity": self.entity, "measure": self.measure}
         for name in ("field", "fields", "group_field", "bucket"):
             value = getattr(self, name)
@@ -385,7 +412,7 @@ class Lowered:
 
 
 def _not_runnable(why: str) -> HTTPException:
-    return _refuse("not_runnable", f"The aggregate cannot run this query ({why}).")
+    return _refuse("not_runnable", f"The aggregate cannot run this query ({why}).", why=why)
 
 
 def period(value: str) -> tuple[str, str] | None:
@@ -418,8 +445,12 @@ def _check_value(name: str, kind: str, value: str) -> None:
     """422 ``bad_value`` for a value that is not of *kind*."""
     good = True
     if kind == "number":
+        # A range of numbers is "<from>..<to>": each side is a number.
         try:
-            float(value)
+            parts = [p for p in value.split("..")]
+            good = len(parts) <= 2 and all(p.strip() for p in parts)
+            for part in parts:
+                float(part)
         except ValueError:
             good = False
     elif kind in DATE_KINDS:
@@ -489,14 +520,21 @@ def _condition(src: cat.Source, cond: Mapping[str, Any], value: str) -> list[tup
 
 def _measure_parts(src: cat.Source, aggregate: str, fields: Sequence[Any],
                    filters: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], list]:
-    """The measure words of the aggregate, and the pairs of fixed filters."""
+    """The measure words of the aggregate, and the pairs of fixed filters.
+
+    A ``sum`` of 2 to 5 fields is ONE total of their sum. On a module it
+    lowers to the key ``A+B`` that ``field_sql.FieldScope.ref`` reads as one
+    sum. It never lowers to ``fields=A,B``: that is a split, whose total is
+    the first field only. A core entity has no such key, so it cannot run."""
     keys = [str(k) for k in fields]
     if aggregate == "count":
         out: dict[str, Any] = {"measure": "count"}
     elif len(keys) == 1:
         out = {"measure": aggregate, "field": keys[0]}
+    elif aggregate == "sum" and src.kind == "module":
+        out = {"measure": "sum", "field": cat.SUM_KEY_JOIN.join(keys)}
     elif aggregate == "sum":
-        out = {"measure": "sum", "fields": ",".join(keys)}
+        raise _not_runnable("a sum of more than one field on a core entity")
     else:
         raise _not_runnable("a measure of more than one field")
     pairs: list[tuple[str, str]] = []
@@ -506,6 +544,53 @@ def _measure_parts(src: cat.Source, aggregate: str, fields: Sequence[Any],
             raise _not_runnable("a fixed filter of more than one option")
         pairs.append((str(one["field"]), options[0]))
     return out, pairs
+
+
+def _option(src: cat.Source, cond: Mapping[str, Any], value: str) -> str:
+    """The option key that *value* names, in the case of the field. 422
+    ``not_an_option`` when the field holds option keys and *value* is none
+    of them. A field with no option keys takes any value."""
+    found = src.field(str(cond["field"]))
+    options = found.options if found is not None else ()
+    if not options:
+        return value
+    for option in options:
+        if option.lower() == value.lower():
+            return option
+    raise _refuse("not_an_option", f"The value of {cond['param']} is not an option.",
+                  param=cond["param"], options=list(options))
+
+
+#: A value of each kind that lowers, for the save check of a shape.
+_PLACEHOLDERS = {"number": "1", "date": "2026-01-01", "month": "2026-01",
+                 "quarter": "2026-Q1", "year": "2026", "period": "2026-01"}
+
+
+def runnable_problem(item: Mapping[str, Any], measures: Mapping[str, Mapping[str, Any]],
+                     by_module: Mapping[str, cat.Source]) -> str | None:
+    """Why :func:`lower` refuses the shape of a fresh *item*, or ``None``.
+    It lowers once with a placeholder value of each kind. The save refuses
+    such an item, and the matcher never offers it."""
+    shape = item.get("query") or {}
+    src = by_module.get(str(shape.get("module")))
+    ops = {str(w.get("param")): str(w.get("op")) for w in shape.get("where") or []}
+    fields = {str(w.get("param")): str(w.get("field")) for w in shape.get("where") or []}
+    values: dict[str, str] = {}
+    for p in item.get("params") or []:
+        name, kind = str(p["name"]), str(p["kind"])
+        value = _PLACEHOLDERS.get(kind, "x")
+        if kind == "option" and src is not None:
+            found = src.field(fields.get(name))
+            value = found.options[0] if found is not None and found.options else "x"
+        if ops.get(name) == "between":
+            value = f"{value}..{value}"
+        values[name] = value
+    try:
+        lower(item, values, measures, by_module)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return str(detail.get("why") or detail.get("code") or exc.status_code)
+    return None
 
 
 def lower(item: Mapping[str, Any], values: Mapping[str, Any],
@@ -535,9 +620,17 @@ def lower(item: Mapping[str, Any], values: Mapping[str, Any],
     else:
         parts, pairs = _measure_parts(src, str(shape.get("aggregate") or "count"),
                                       shape.get("fields") or [], [])
+    kinds = {str(p["name"]): str(p["kind"]) for p in item.get("params") or []}
     for cond in shape.get("where") or []:
         if cond["param"] in given:
-            pairs.extend(_condition(src, cond, given[cond["param"]]))
+            value = given[cond["param"]]
+            if kinds.get(cond["param"]) == "option":
+                value = _option(src, cond, value)
+            pairs.extend(_condition(src, cond, value))
+    names = [n for n, _v in pairs]
+    if len(set(names)) != len(names):
+        # A condition never overwrites a fixed filter or another condition.
+        raise _not_runnable("two conditions on one field")
     group = [str(g) for g in shape.get("group_by") or []]
     if len(group) > 1:
         raise _not_runnable("more than one group field")
@@ -571,25 +664,39 @@ def _types_for(role: str, kind: str | None, aggregate: str | None) -> frozenset[
 
 def _closest(src: cat.Source, gone: str, types: frozenset[str] | None,
              used: set[str]) -> str | None:
-    """The field of *src* closest to the dropped key *gone*: the same type,
-    the most words in common (the term matcher's words), then the most
-    filled, then the key. A field with no word in common stands only when
-    it is the one field of its type."""
+    """The field of *src* that clearly stands for the dropped key *gone*,
+    of a type in *types*, or ``None``. The words are the term matcher's.
+
+    1. A field whose key words or label words are the words of *gone*
+       wins. Two such fields are a tie with no winner.
+    2. Else the most words in common, at least two. Each field at the top
+       must share the SAME words. Only then does the fill share break the
+       tie, then the key.
+    3. A field that shares one word, or no word, never stands: "Net Value"
+       could be "Net Amount" or "Billed Value", and the repair must keep
+       the output."""
     want = set(terms.words(gone))
     pool = [f for f in src.fields if f.key not in used
             and (types is None or f.type in types)]
+    exact = [f for f in pool
+             if set(terms.words(f.key)) == want or set(terms.words(f.label)) == want]
+    if exact:
+        return exact[0].key if len(exact) == 1 else None
     scored = []
     for f in pool:
-        common = len(want & {*terms.words(f.key), *terms.words(f.label)})
+        common = frozenset(want & {*terms.words(f.key), *terms.words(f.label)})
         fill = float((src.fills or {}).get(f.key) or 0.0)
         scored.append((common, fill, f.key))
     if not scored:
         return None
-    scored.sort(key=lambda s: (-s[0], -s[1], s[2]))
-    best = scored[0]
-    if best[0] == 0 and len(scored) > 1:
+    top = max(len(s[0]) for s in scored)
+    if top < 2:
         return None
-    return best[2]
+    best = [s for s in scored if len(s[0]) == top]
+    if len({s[0] for s in best}) > 1:
+        return None
+    best.sort(key=lambda s: (-s[1], s[2]))
+    return best[0][2]
 
 
 def repair(item: Mapping[str, Any], by_module: Mapping[str, cat.Source],
@@ -669,14 +776,35 @@ async def save(user: UserContext, payload: SaveIn) -> Any:
     """An admin saves a verified question (§6.3 "Save"). It is a new
     approved version of the plan, through :func:`mapping_plans.commit`, so
     Undo restores the version before. An open draft moves onto the new
-    version (:func:`mapping_plans.carry_draft`). Returns the plan row."""
+    version (:func:`mapping_plans.carry_draft`). Returns the plan row.
+
+    ⚠️ The library half: no route calls this yet. Its HTTP route arrives in
+    the follow-up slice SEM-8b, with the chat tool that the CRM manifest
+    fence asks for.
+
+    A save of the SAME question under its key is an update. A DIFFERENT
+    question under a key that the plan holds is a 409 ``key_exists``. An
+    item that does not fit the catalogue is a 422 ``stale_query``, and a
+    shape that cannot run is a 422 ``not_runnable``."""
+    from gateway.routes.crm.mapping_plans import _next_version
+
     org = await _require_admin(user)
     by = actor(user).lower()
     async with _tenant_session() as db:
         approved = await lock_plan(db, by)
         by_module, _others = await _state(db, org)
-        item = build_item(payload, by_module, int(approved.version))
         fields, others = split_rules(_rules_of(approved))
+        measures = measures_of(others)
+        # The version that this save commits: the lock is held, so commit
+        # takes the same next version.
+        item = build_item(payload, by_module, await _next_version(db), measures)
+        reason = stale_reason(item, by_module, measures)
+        if reason is not None:
+            raise _refuse("stale_query", "The question does not fit the CRM of today.",
+                          stale_reason=reason)
+        held = [o for o in queries_of(others) if o["key"] == item["key"]]
+        if held and held[0]["question"] != item["question"]:
+            raise _refuse("key_exists", "Another verified question holds this key.", 409)
         draft = await open_draft(db, approved)
         plan = await commit(
             db, org=org, fields=fields, others=merge_kinds(others, [item], semantic=True),
@@ -706,7 +834,11 @@ async def _compute(lowered: Lowered, user: UserContext) -> Any:
 async def run_query(user: UserContext, key: str, values: Mapping[str, Any]) -> dict[str, Any]:
     """Run the verified question *key* as *user*, read-only, through the
     one aggregate body. The answer carries ``verified``. A stale question
-    is a 409 ``stale_query`` and never runs."""
+    is a 409 ``stale_query`` and never runs.
+
+    ⚠️ The library half: no route calls this yet. Its HTTP route arrives in
+    the follow-up slice SEM-8b. The chat runs a verified question through
+    the lower route and ``GET /crm/aggregate``, with the same pairs."""
     org = _org(user)
     async with _tenant_session() as db:
         by_module, others = await _state(db, org)
@@ -723,7 +855,10 @@ async def propose_repair(user: UserContext, key: str,
     an admin. It runs the repair read-only with *values* (a condition with
     no value is left out), and keeps it as a draft item only when it runs.
     Returns the draft row. 409 ``not_stale``, ``repair_pending`` (a draft
-    holds a change of this question), ``no_repair`` or ``repair_failed``."""
+    holds a change of this question), ``no_repair`` or ``repair_failed``.
+
+    ⚠️ The library half: no route calls this yet. Its HTTP route arrives in
+    the follow-up slice SEM-8b."""
     org = await _require_admin(user)
     async with _tenant_session() as db:
         approved = await _approved(db)
@@ -822,6 +957,9 @@ async def match_verified_queries(
     fresh, gone = [], []
     for item in queries_of(others):
         reason = stale_reason(item, by_module, measures)
+        if reason is None and runnable_problem(item, measures, by_module) is not None:
+            # A shape that cannot run is never offered.
+            continue
         (fresh if reason is None else gone).append((item, reason))
     found = match(payload.q, [i for i, _r in fresh]) if payload.q.strip() else []
     stale = ([StaleModel(key=str(i["key"]), question=str(i["question"]), stale_reason=str(r))
@@ -845,7 +983,14 @@ async def lower_verified_query(
     async with _tenant_session() as db:
         by_module, others = await _state(db, org)
     item = _find(others, key)
-    lowered = lower(item, values, measures_of(others), by_module)
+    try:
+        lowered = lower(item, values, measures_of(others), by_module)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if detail.get("code") == "stale_query" and not user.has_permission(ADMIN_PERMISSION):
+            # The reason names our parts, for an admin only.
+            raise _refuse("stale_query", str(detail.get("message")), 409) from None
+        raise
     return LoweredModel(key=key, question=str(item["question"]),
                         model_version=int(item["model_version"]), entity=lowered.entity,
                         aggregate=lowered.params())
@@ -868,6 +1013,7 @@ __all__ = [
     "queries_of",
     "repair",
     "run_query",
+    "runnable_problem",
     "save",
     "stale_reason",
     "wanted_words",

@@ -67,7 +67,7 @@ def _invoices(*fields: cat.Field) -> cat.Source:
                       fills={"Net_Value": 0.9, "Net_Amount": 0.8, "Gross_Value": 0.5})
 
 
-def _sources(*, net: bool = True) -> dict[str, cat.Source]:
+def _sources(*, net: bool = True, rename: bool = False) -> dict[str, cat.Source]:
     fields = [
         cat.Field("Status", "Status", "select", options=("Draft", "Sent")),
         cat.Field("Buyer", "Buyer", "lookup", target="Buyer_Clients"),
@@ -79,6 +79,9 @@ def _sources(*, net: bool = True) -> dict[str, cat.Source]:
         fields.insert(0, cat.Field("Net_Value", "Net Value", "currency"))
     else:
         fields.insert(0, cat.Field("Net_Amount", "Net Amount", "currency"))
+    if rename:
+        # The source renamed the key, and the label stays "Net Value".
+        fields.append(cat.Field("NetValueNew", "Net Value", "currency"))
     return {"Invoices": _invoices(*fields)}
 
 
@@ -125,7 +128,7 @@ def test_save_keeps_parameter_names_and_no_value_or_total() -> None:
     assert item["query"]["where"] == [
         {"field": "Buyer", "op": "eq", "param": "customer"},
         {"field": "Invoice_Date", "op": "on", "param": "month"}]
-    assert item["model_version"] == 7 and item["key"] == "billed_amount"
+    assert item["model_version"] == 7 and item["key"] == "billed_amount__customer_month"
     stored = json.dumps(item)
     for value in ("Acme", "Traders", "October", "2026", "total"):
         assert value not in stored, value
@@ -189,10 +192,36 @@ async def test_save_writes_a_new_version_through_commit(monkeypatch) -> None:
     monkeypatch.setattr(vq, "_state", state)
     monkeypatch.setattr(vq, "open_draft", open_draft)
     monkeypatch.setattr(vq, "commit", commit)
+
+    async def next_version(_db: Any) -> int:
+        return 5
+
+    monkeypatch.setattr(mpl, "_next_version", next_version)
     row = await vq.save(_user(), _payload())
     assert row.version == 5 and seen["based_on"] == 4 and seen["org"] == _ORG
     saved = [o for o in seen["others"] if o.get("kind") == "query"]
-    assert len(saved) == 1 and saved[0]["model_version"] == 4
+    # P3-5: the item names the version that the save commits.
+    assert len(saved) == 1 and saved[0]["model_version"] == 5
+
+    # P2-5: the SAME question under its key is an update. A DIFFERENT
+    # question under the key is a 409.
+    held = vq.build_item(_payload(), _sources(), 4)
+    approved.rules = [MEASURE, held]
+    seen.clear()
+    await vq.save(_user(), _payload())
+    assert [o["model_version"] for o in seen["others"] if o.get("kind") == "query"] == [5]
+    approved.rules = [MEASURE, {**held, "question": "Billed value for {customer} in {month}"}]
+    with pytest.raises(HTTPException) as exc:
+        await vq.save(_user(), _payload())
+    assert exc.value.status_code == 409 and _code(exc) == "key_exists"
+    approved.rules = [MEASURE]
+    # A shape that cannot run is refused at save, by name.
+    with pytest.raises(HTTPException) as exc:
+        await vq.save(_user(), _payload(where=[
+            {"field": "Buyer", "op": "ne", "literal": "Acme Traders", "name": "customer"},
+            {"field": "Invoice_Date", "op": "on", "literal": "October 2026",
+             "name": "month", "kind": "month"}]))
+    assert _code(exc) == "not_runnable" and "operator ne" in exc.value.detail["message"]
     with pytest.raises(HTTPException) as exc:
         await vq.save(_user(admin=False), _payload())
     assert exc.value.status_code == 403
@@ -360,14 +389,15 @@ def test_the_restore_route_passes_the_old_items_as_held() -> None:
 
 
 def test_one_repair_maps_the_dropped_field_to_the_closest_one() -> None:
-    fixed = vq.repair(INLINE, _sources(net=False), {}, 9)
+    fixed = vq.repair(INLINE, _sources(net=False, rename=True), {}, 9)
     assert fixed is not None
-    assert fixed["query"]["fields"] == ["Net_Amount"]
+    # The label "Net Value" is the word set of the gone key: it wins.
+    assert fixed["query"]["fields"] == ["NetValueNew"]
     assert fixed["params"] == INLINE["params"] and fixed["question"] == INLINE["question"]
     assert fixed["query"]["aggregate"] == "sum" and fixed["model_version"] == 9
-    assert vq.stale_reason(fixed, _sources(net=False), {}) is None
+    assert vq.stale_reason(fixed, _sources(net=False, rename=True), {}) is None
     # The same shape gives the same one repair.
-    assert vq.repair(INLINE, _sources(net=False), {}, 9) == fixed
+    assert vq.repair(INLINE, _sources(net=False, rename=True), {}, 9) == fixed
     # A fresh query, a gone module and a gone measure get none.
     assert vq.repair(INLINE, _sources(), {}, 9) is None
     assert vq.repair(INLINE, {}, {}, 9) is None
@@ -398,7 +428,7 @@ def _repair_env(monkeypatch: pytest.MonkeyPatch, compute: Any, draft: Any = None
         return SimpleNamespace(version=8, rules=[INLINE])
 
     async def state(_db: Any, _org: str) -> Any:
-        return _sources(net=False), [INLINE]
+        return _sources(net=False, rename=True), [INLINE]
 
     async def open_draft(_db: Any, _approved: Any) -> Any:
         return draft
@@ -426,9 +456,9 @@ async def test_a_repair_is_kept_as_a_draft_only_when_it_runs(monkeypatch) -> Non
     written = _repair_env(monkeypatch, runs)
     row = await vq.propose_repair(_user(), "net_by_customer")
     assert row.version == 9 and written["by"] == mpl.SUGGEST_ACTOR
-    assert written["items"][0]["query"]["fields"] == ["Net_Amount"]
+    assert written["items"][0]["query"]["fields"] == ["NetValueNew"]
     # The test run left out the condition with no value.
-    assert ran[0]["pairs"] == [] and ran[0]["field"] == "Net_Amount"
+    assert ran[0]["pairs"] == [] and ran[0]["field"] == "NetValueNew"
 
     async def fails(entity: str, **kwargs: Any) -> Any:
         raise HTTPException(status_code=422, detail={"code": "unknown_field"})
@@ -443,7 +473,7 @@ async def test_at_most_one_repair_while_a_draft_holds_one(monkeypatch) -> None:
     async def runs(entity: str, **kwargs: Any) -> Any:
         return {}
 
-    fixed = vq.repair(INLINE, _sources(net=False), {}, 8)
+    fixed = vq.repair(INLINE, _sources(net=False, rename=True), {}, 8)
     draft = SimpleNamespace(version=9, rules=[fixed])
     written = _repair_env(monkeypatch, runs, draft)
     with pytest.raises(HTTPException) as exc:
@@ -514,22 +544,33 @@ async def test_flag_off_the_tool_answers_as_before(monkeypatch) -> None:
 
 
 async def test_the_run_form_off_the_flag_reads_the_facts(monkeypatch) -> None:
+    """P2-2: off the flag, no facts read served a verified question. So the
+    run form makes no other gateway call and spends no read: the facts read
+    of before answers, with the same call."""
     from acb_skills import crm_tools
     from acb_skills import org_facts_tools as oft
 
+    oft._VERIFIED_SEEN.set(False)
+    sent: list[tuple[str, Any]] = []
+
     async def get(path: str, params: Any = None, **_kw: Any) -> Any:
-        if path.startswith("/crm/verified-queries/"):
-            raise crm_tools._GatewayError("off", "semantic_off", status=404)
+        sent.append((path, params))
         return {"facts": []}
 
+    reads = crm_tools.RunReads()
     monkeypatch.setattr(oft, "_get", get)
+    monkeypatch.setattr(oft, "_run_reads", lambda: reads)
+    monkeypatch.setattr(crm_tools, "_run_reads", lambda: reads)
     out = await oft.org_facts("crm", "run:billed customer=Asha")
     assert out.startswith("No facts of this organization match.")
+    assert sent == [(oft.ORG_FACTS_PATH, {"app": "crm", "q": "run:billed customer=Asha"})]
+    assert (reads.total, reads.aggregates) == (0, 0)
 
 
 async def test_flag_on_the_tool_matches_and_runs_with_the_mark(monkeypatch) -> None:
     from acb_skills import org_facts_tools as oft
 
+    oft._VERIFIED_SEEN.set(False)
     sent: list[tuple[str, Any]] = []
 
     async def get(path: str, params: Any = None, **_kw: Any) -> Any:
@@ -573,3 +614,229 @@ async def test_flag_on_the_tool_matches_and_runs_with_the_mark(monkeypatch) -> N
     rows = [*_rows(*(f"field:M.F{i}" for i in range(14))), *_rows("query:a")]
     block = oft.crm_facts_block(rows).splitlines()
     assert len(block) == oft.BLOCK_LINES and block[-1].startswith("- 1 verified questions")
+
+
+# ── Review round 1 (P1 to P3) ────────────────────────────────────────────────
+
+
+def _two_field(**over: Any) -> dict:
+    item = {**INLINE, "key": "net_and_gross", "question": "Net and gross for {customer}",
+            "query": {**INLINE["query"], "fields": ["Net_Value", "Gross_Value"]}}
+    item.update(over)
+    return item
+
+
+def test_a_sum_of_two_fields_lowers_to_one_total() -> None:
+    """P1-A: ONE total of A+B, never the split ``fields=A,B``."""
+    lowered = vq.lower(_two_field(), {"customer": "Asha"}, {}, _sources())
+    assert (lowered.measure, lowered.field, lowered.fields) == (
+        "sum", "Net_Value+Gross_Value", None)
+    assert "fields" not in lowered.params()
+    two = {**MEASURE, "key": "both", "fields": ["Net_Value", "Gross_Value"]}
+    query = {**QUERY, "query": {**QUERY["query"], "measure": "both"}}
+    assert vq.lower(query, {"customer": "A", "month": "2026-10"}, {"both": two},
+                    _sources()).field == "Net_Value+Gross_Value"
+    core = cat.Source(module="deals", entity="deals", kind="core", label="Deals",
+                      fields=(cat.Field("Net_Value", "Net", "currency"),
+                              cat.Field("Gross_Value", "Gross", "currency"),
+                              cat.Field("Buyer", "Buyer", "lookup", target="x")))
+    item = _two_field(query={**_two_field()["query"], "module": "deals"})
+    with pytest.raises(HTTPException) as exc:
+        vq.lower(item, {"customer": "A"}, {}, {"deals": core})
+    assert _code(exc) == "not_runnable"
+
+
+def test_a_repair_with_no_clear_winner_is_none() -> None:
+    """P2-1: "Net Amount" and "Gross Value" each share one word with
+    "Net_Value", so no field clearly stands for it."""
+    assert vq.repair(INLINE, _sources(net=False), {}, 9) is None
+    src = _invoices(cat.Field("Buyer", "Buyer", "lookup", target="Buyer_Clients"),
+                    cat.Field("Net_Value_A", "Net Value A", "currency"),
+                    cat.Field("Net_Value_B", "Net Value B", "currency"))
+    # Both share the SAME two words: the fill share breaks the tie.
+    src = cat.Source(**{**src.__dict__, "fills": {"Net_Value_A": 0.2, "Net_Value_B": 0.7}})
+    fixed = vq.repair(INLINE, {"Invoices": src}, {}, 9)
+    assert fixed is not None and fixed["query"]["fields"] == ["Net_Value_B"]
+
+
+def test_a_number_between_splits_and_checks_each_side() -> None:
+    """P2-3: a range of numbers lowers end to end."""
+    item = {**INLINE, "key": "net_range", "question": "Net value between {range}",
+            "params": [{"name": "range", "kind": "number"}],
+            "query": {**INLINE["query"],
+                      "where": [{"field": "Gross_Value", "op": "between", "param": "range"}]}}
+    lowered = vq.lower(item, {"range": "1000..5000"}, {}, _sources())
+    assert lowered.pairs == (("Gross_Value.from", "1000"), ("Gross_Value.to", "5000"))
+    for bad in ("1000..x", "1..2..3", "..5"):
+        with pytest.raises(HTTPException) as exc:
+            vq.lower(item, {"range": bad}, {}, _sources())
+        assert _code(exc) == "bad_value", bad
+
+
+def test_save_refuses_each_shape_that_cannot_run() -> None:
+    """P2-4: what ``lower`` refuses, the save refuses by name."""
+    measures = {"billed": MEASURE}
+    for op in ("ne", "in", "gt", "lt", "contains"):
+        with pytest.raises(HTTPException) as exc:
+            vq.build_item(_payload(where=[
+                {"field": "Buyer", "op": op, "literal": "Acme Traders", "name": "customer"},
+                {"field": "Invoice_Date", "op": "on", "literal": "October 2026",
+                 "name": "month", "kind": "month"}]), _sources(), 2, measures)
+        assert _code(exc) == "not_runnable" and exc.value.detail["why"] == f"operator {op}"
+    with pytest.raises(HTTPException) as exc:
+        vq.build_item(_payload(group_by=["Status", "Buyer"]), _sources(), 2, measures)
+    assert exc.value.detail["why"] == "more than one group field"
+    wide = {**MEASURE, "filters": [{"field": "Status", "options": ["Draft", "Sent"]}]}
+    with pytest.raises(HTTPException) as exc:
+        vq.build_item(_payload(), _sources(), 2, {"billed": wide})
+    assert exc.value.detail["why"] == "a fixed filter of more than one option"
+    # The matcher never offers a stored shape that cannot run.
+    stored = {**QUERY, "query": {**QUERY["query"], "group_by": ["Status", "Buyer"]}}
+    assert vq.runnable_problem(stored, measures, _sources()) == "more than one group field"
+    assert vq.runnable_problem(QUERY, measures, _sources()) is None
+
+
+async def test_the_match_route_never_offers_a_query_that_cannot_run(monkeypatch) -> None:
+    crm_switch_on(monkeypatch, "*")
+    _flag(monkeypatch, "*")
+    stored = {**QUERY, "query": {**QUERY["query"], "group_by": ["Status", "Buyer"]}}
+
+    @asynccontextmanager
+    async def session() -> Any:
+        yield object()
+
+    async def state(_db: Any, _org: str) -> Any:
+        return _sources(), [MEASURE, stored]
+
+    monkeypatch.setattr(vq, "_tenant_session", session)
+    monkeypatch.setattr(vq, "_state", state)
+    got = await vq.match_verified_queries(
+        vq.MatchIn(q="billed amount for Asha in October 2026"), _user(admin=False))
+    assert got.matches == []
+
+
+def test_two_questions_with_the_same_words_get_two_keys() -> None:
+    """P2-5: the key holds the parameter names."""
+    one = vq.build_item(vq.SaveIn(question="Net value for Acme", module="Invoices",
+                                  aggregate="sum", fields=["Net_Value"],
+                                  where=[{"field": "Buyer", "op": "eq", "literal": "Acme",
+                                          "name": "customer"}]), _sources(), 2)
+    two = vq.build_item(vq.SaveIn(question="Net value in October 2026", module="Invoices",
+                                  aggregate="sum", fields=["Net_Value"],
+                                  where=[{"field": "Invoice_Date", "op": "on",
+                                          "literal": "October 2026", "name": "month"}]),
+                        _sources(), 2)
+    assert (one["key"], two["key"]) == ("net_value__customer", "net_value__month")
+
+
+def test_a_where_on_a_fixed_filter_field_never_overwrites_it() -> None:
+    """P3-1: one list of pairs for the route and for compute. A condition
+    on the field of a fixed filter is refused, never written over it."""
+    fixed = {**MEASURE, "filters": [{"field": "Status", "options": ["Sent"]}]}
+    item = {**QUERY, "params": [{"name": "status", "kind": "option"}],
+            "question": "Billed amount with {status}",
+            "query": {"module": "Invoices", "measure": "billed",
+                      "where": [{"field": "Status", "op": "eq", "param": "status"}]}}
+    with pytest.raises(HTTPException) as exc:
+        vq.lower(item, {"status": "Draft"}, {"billed": fixed}, _sources())
+    assert exc.value.detail["why"] == "two conditions on one field"
+    assert vq.runnable_problem(item, {"billed": fixed}, _sources()) is not None
+    lowered = vq.lower(QUERY, {"customer": "A", "month": "2026-10"},
+                       {"billed": {**MEASURE, "filters": [{"field": "Status",
+                                                            "options": ["Sent"]}]}},
+                       _sources())
+    assert lowered.params() == {"entity": lowered.entity, "measure": lowered.measure,
+                                "field": lowered.field,
+                                **{f"field.{n}": v for n, v in lowered.pairs}}
+    assert len(lowered.params()) == 3 + len(lowered.pairs)
+
+
+async def test_the_lower_route_names_the_stale_reason_to_an_admin_only(monkeypatch) -> None:
+    """P3-2."""
+    crm_switch_on(monkeypatch, "*")
+    _flag(monkeypatch, "*")
+
+    @asynccontextmanager
+    async def session() -> Any:
+        yield object()
+
+    async def state(_db: Any, _org: str) -> Any:
+        return _sources(net=False), [INLINE]
+
+    monkeypatch.setattr(vq, "_tenant_session", session)
+    monkeypatch.setattr(vq, "_state", state)
+    request = SimpleNamespace(query_params={"param.customer": "A"})
+    with pytest.raises(HTTPException) as exc:
+        await vq.lower_verified_query("net_by_customer", request, _user(admin=False))
+    assert exc.value.status_code == 409 and "stale_reason" not in exc.value.detail
+    with pytest.raises(HTTPException) as exc:
+        await vq.lower_verified_query("net_by_customer", request, _user())
+    assert exc.value.detail["stale_reason"] == "field:Net_Value"
+
+
+def test_an_option_value_must_be_an_option_key() -> None:
+    """P3-3."""
+    item = {**INLINE, "key": "net_by_status", "question": "Net value with {status}",
+            "params": [{"name": "status", "kind": "option"}],
+            "query": {**INLINE["query"],
+                      "where": [{"field": "Status", "op": "eq", "param": "status"}]}}
+    assert vq.lower(item, {"status": "sent"}, {}, _sources()).pairs == (("Status", "Sent"),)
+    with pytest.raises(HTTPException) as exc:
+        vq.lower(item, {"status": "Lost"}, {}, _sources())
+    assert _code(exc) == "not_an_option" and exc.value.detail["options"] == ["Draft", "Sent"]
+
+
+def test_a_literal_replaces_a_whole_word_span_once() -> None:
+    """P3-4: "in" never hits "Invoices" and never hits a later "in"."""
+    assert vq._swap("Invoices of Pune in Pune", "Pune", "city") == "Invoices of {city} in Pune"
+    assert vq._swap("Net value in   Pune", "in", "x") == "Net value {x}   Pune"
+    # build_item folds the spaces of the question, and _swap those of the literal.
+    assert vq._swap("Net value for Acme Traders", "Acme   Traders", "c") == "Net value for {c}"
+    with pytest.raises(HTTPException):
+        vq._swap("Invoices", "in", "x")
+
+
+def test_a_retyped_where_field_is_stale() -> None:
+    """P3-5: a date that became text no longer takes a month."""
+    src = _sources()["Invoices"]
+    fields = tuple(cat.Field("Invoice_Date", "Invoice Date", "text")
+                   if f.key == "Invoice_Date" else f for f in src.fields)
+    retyped = {"Invoices": cat.Source(**{**src.__dict__, "fields": fields})}
+    assert vq.stale_reason(QUERY, retyped, {"billed": MEASURE}) == "type:Invoice_Date"
+    assert vq.stale_reason(QUERY, _sources(), {"billed": MEASURE}) is None
+
+
+async def test_a_restored_item_of_an_illegal_shape_is_never_served(monkeypatch) -> None:
+    """P3-6: ``held`` skips the shape check of a restored item, and each
+    reader drops it."""
+    from gateway.routes.crm import facts
+
+    illegal = {**INLINE, "total": 4242}
+    mpl.check_kinds([illegal], semantic=True, in_use=[illegal])
+    _load_with(monkeypatch, _sources())
+    await mpl._check_semantic_refs(object(), _ORG, [illegal], None, held=[illegal])
+    assert vq.queries_of([illegal]) == []
+    assert facts.semantic_facts([illegal], list(_sources().values()), None) == []
+
+
+async def test_a_long_message_or_a_failed_match_keeps_the_facts(monkeypatch) -> None:
+    """P2-2: the words are cut to the match limit, and any failure of the
+    match read serves the facts with no verified lines."""
+    from acb_skills import org_facts_tools as oft
+
+    sent: list[Any] = []
+
+    async def get(path: str, params: Any = None, **_kw: Any) -> Any:
+        return {"facts": _rows("query:billed_for_customer", "field:Invoices.Net_Value")}
+
+    async def post(path: str, body: Any) -> Any:
+        sent.append(body)
+        raise RuntimeError("422 from the gateway")
+
+    monkeypatch.setattr(oft, "_get", get)
+    monkeypatch.setattr(oft, "_post", post)
+    monkeypatch.setattr(oft, "_member_words", lambda: "billed " * 1000)
+    out = await oft.org_facts("crm")
+    assert len(sent[0]["q"]) == oft.MATCH_WORDS_MAX
+    assert out.startswith("Facts of this organization (fixed answers):")
+    assert "Fact field:Invoices.Net_Value." in out and oft.RUN_LINE not in out

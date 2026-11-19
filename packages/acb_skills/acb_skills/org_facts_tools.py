@@ -19,6 +19,7 @@ Fences: ``tests/unit/test_org_facts.py`` and ``tests/unit/test_org_facts_r8.py``
 
 from __future__ import annotations
 
+import contextvars
 import re
 from typing import Any
 
@@ -34,6 +35,7 @@ from acb_skills.crm_tools import (
     _member_words,
     _post,
     _read_tool,
+    _run_reads,
 )
 
 #: The route of the seam.
@@ -143,6 +145,34 @@ VERIFIED_MARK = "Verified question"
 #: The shape of a key of a verified question (``catalogue._SLUG``). Any
 #: other text never reaches a URL.
 _RUN_KEY = re.compile(r"[a-z][a-z0-9_]{0,39}")
+#: The most characters of the member's words that a match reads. It is the
+#: cap of ``MatchIn.q`` on the gateway, so a long message never gets a 422.
+MATCH_WORDS_MAX = 2000
+#: True once a facts read of this run served a verified question. Only an
+#: org on ``SEMANTIC_MODEL_ORGS`` gets one. Off the flag it stays False, so
+#: the run form makes no gateway call and spends no read before it falls
+#: back to the facts read of before.
+_VERIFIED_SEEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "org_facts_verified_seen", default=False)
+
+
+def _note_verified(rows: list[Any]) -> bool:
+    """Mark the run when *rows* hold a verified question fact."""
+    seen = any(isinstance(r, dict) and str(r.get("subject") or "").startswith(QUERY_SUBJECT)
+               for r in rows)
+    if seen:
+        _VERIFIED_SEEN.set(True)
+        reads = _run_reads()
+        if reads is not None:
+            # The holder of the run lives across its tool calls.
+            reads.verified = True
+    return seen
+
+
+def _verified_on() -> bool:
+    """True when a facts read of this run served a verified question."""
+    reads = _run_reads()
+    return bool(reads is not None and reads.verified) or _VERIFIED_SEEN.get()
 
 
 def parse_run(text_: str) -> tuple[str, dict[str, str]]:
@@ -161,10 +191,13 @@ async def verified_lines() -> list[str]:
     """The verified questions that match the member's own words of this
     run, with the parameters to give, then :data:`RUN_LINE`. The words go
     in a POST body, never in a URL. Empty with no words or no match."""
-    words = " ".join(_member_words().split())
+    words = " ".join(_member_words().split())[:MATCH_WORDS_MAX]
     if not words:
         return []
-    body = await _post("/crm/verified-queries/match", {"q": words}) or {}
+    try:
+        body = await _post("/crm/verified-queries/match", {"q": words}) or {}
+    except Exception:  # an optional read: the facts still serve without it
+        return []
     matches = [m for m in body.get("matches") or [] if isinstance(m, dict)]
     if not matches:
         return []
@@ -192,6 +225,10 @@ async def _verified_total(key: str, values: dict[str, str]) -> str:
 async def verified_run(text_: str) -> str | None:
     """The answer of the run form, or ``None`` for an org off
     ``SEMANTIC_MODEL_ORGS``: the caller then reads the facts as before."""
+    if not _verified_on():
+        # No facts read of this run served a verified question: the facts
+        # read of before answers, with no other call and no read spent.
+        return None
     key, values = parse_run(text_)
     if not _RUN_KEY.fullmatch(key):
         return "No verified question has this key. Read the keys with org_facts."
@@ -227,7 +264,7 @@ async def org_facts(app: str = "crm", query: str | None = None, offset: int = 0)
     lines.extend(_line(r) for r in page.items)
     if page.line:
         lines.append(page.line)
-    if any(str(r.get("subject") or "").startswith(QUERY_SUBJECT) for r in rows):
+    if _note_verified(rows):
         # SEM-8: only an org on SEMANTIC_MODEL_ORGS has a verified question.
         lines.extend(await verified_lines())
     return "\n".join(lines)
@@ -277,7 +314,9 @@ async def crm_facts_for_run() -> list[Any]:
     except Exception:  # the block is advice: a run never fails on it
         return []
     rows = body.get("facts") if isinstance(body, dict) else None
-    return [r for r in rows or [] if isinstance(r, dict)]
+    out = [r for r in rows or [] if isinstance(r, dict)]
+    _note_verified(out)
+    return out
 
 
 async def crm_facts_block_for_run() -> str:
