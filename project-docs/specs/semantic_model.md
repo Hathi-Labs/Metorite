@@ -610,7 +610,10 @@ A test file marked "new" does not exist yet. Its slice writes it, red first.
 | **SEM-10** | 2 | Measures and Verified questions in "Your answers", with Undo | CRM settings UI | STANDARD UI · captures before merge | `SEMANTIC_MODEL_ORGS` | Vitest of the section (new) | SEM-8, SEM-9 |
 | **SEM-11** | 2 | The weekly counts of refusal codes go to the failure store | a job on the queue | STANDARD · AGENT-SAFE | none | `test_semantic_refusal_feed.py` (new) | SEM-4, TOF-2a (task 3416) |
 | **SEM-12** | 3 | The connection model table, its one writer and `shape_only`, and a partial unique index, so one connection has at most one approved version (review) | a migration (number at build time), `connections/semantic_model.py`, and the one `shape_only` function in `crm_sync/catalogue.py`. The body, the writer, the flag, the migration shape and the file list are in §10.4 | HIGH (migration, tenancy) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_semantic_model_r8.py` (new: org B cannot read org A, org B cannot name the connection of org A, cascade on delete, one approved version), `test_semantic_shape_only.py` (new), `test_flag_reload.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`. The mutation of each is in §14 | D-SEM-2, SEM-7 (PR 2599, task 3737) |
-| **SEM-13** | 3 | The profiler of §4.2: discover, shape reads with no member, decide, draft | `connections/`, `decide_features.py` | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (new, with a fake MCP server): no class B or C tool is called, a tool that says destructive or not idempotent is refused, the caps hold, no value is stored. **Review gap 5:** a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline (`evals/semantic/profiler/`, new). It reuses `splits.py` and `compare.py` of task 3649 after they merge. Those files are on an unpushed branch today, so no text cites them as on `main` | SEM-12 |
+| **SEM-13** | 3 | The profiler of §4.2: discover, shape reads with no member, decide, draft. **Split (audit, 2026-11-19, task 3743)** into SEM-13a, SEM-13b and SEM-13c, the three rows below. This row is the umbrella, and it holds no code of its own | `connections/`, `decide_features.py` (see the three rows) | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The fences of the three rows. No class B or C tool is called, a tool that says destructive or not idempotent is refused, the caps hold, no value is stored. The sealed eval of review gap 5 is in SEM-13c | SEM-12 |
+| **SEM-13a** | 3 | The profiler, first slice (task 3835): steps 1, 2 and 4 of §4.2, with no decide call and an empty `ai` section. No caller. The scope, the decision on approval and the code anchors are in §10.5 | `gateway/connections/profiler.py` (new), `gateway/connections/mcp_tools.py` (a no-member call entry), `tests/unit/test_connection_profiler.py` (new), `tests/unit/test_connection_semantic_model_r8.py` (one case) | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (new, a fake lister and a fake caller, no network), `test_connection_semantic_model_r8.py` (one profiler draft case), `test_studio_live_preview.py` and `test_studio_mcp_tools.py` stay green. The mutation of each is in §14 | SEM-12 (built) |
+| **SEM-13b** | 3 | The profiler, step 3 of §4.2 (task 3836): the decide step. A `connection.` prefix and the feature `connection.map_model`, with its own day counter. The payer is the `connected_by` member. The `ai` section gets the chosen closed words | `gateway/decide_features.py` (a new `Prefix`), `gateway/connections/profiler.py` | HIGH (model calls, credits) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_connection_profiler.py` (extended, with the decide call faked), `test_decide_seam.py` | SEM-13a |
+| **SEM-13c** | 3 | The profiler, last slice (task 3837): step 0 of §4.2 (the trigger), a map from a normalised key back to the source field, and **review gap 5**: a scripted profiler eval with synthetic servers, split into a tune set and a sealed held-out set, with a baseline | `evals/semantic/profiler/` (new), the trigger, the key map | HIGH (third-party data) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | The scripted eval (new), with its sealed held-out set. It reuses `splits.py` and `compare.py` of task 3649 after they merge. On 2026-11-19, `git ls-tree -r origin/main --name-only` holds neither file, so no text cites them as on `main` | SEM-13b, task 3649 on `main` |
 | **SEM-14** | 3 | The model's summary is one input of `server_brief`, with its own header and cap, stable for a version | `acb_skills/server_brief.py` | HIGH (untrusted text) · AGENT-SAFE dark | `CONNECTED_SYSTEMS_ORGS` | `test_server_brief.py` (extended). **Review Q1:** this PR moves the pin test of CSY §3.1 and the figure in CSY §5 to 1,300 characters (the WS-CSY planner agrees to that edit) | CSY-1 (task 3400), D-CSY-1 |
 | **SEM-15** | 3 | An `org_facts` provider for connections. The `org_facts` tool loads with an approved model. **Review gap 3:** the provider runs the same grant check as the attach (`is_authorized`), and returns nothing in a run that holds an untrusted pack (CSY §3.6: a member never learns of a server they cannot use) | `gateway/org_facts.py`, a provider module, `_tool_injection.py` | HIGH (grant) · AGENT-SAFE dark | `CONNECTION_MODEL_ORGS` | `test_org_facts.py`, `test_org_facts_r8.py` (extended). Two fence cases: a member without the grant reads nothing, and a run with the email pack reads nothing | SEM-12 |
 | **SEM-16** | 3 | The panel: the draft as a diff, accept per part, "Read it again" | `ConnectionSheet.tsx` | STANDARD UI · captures before merge | `CONNECTION_MODEL_ORGS` | Vitest of `ConnectionSheet.tsx` (extended) | SEM-13, CSY-9 (task 3409) |
@@ -830,6 +833,99 @@ an old object. It sets `SET LOCAL lock_timeout` first, as 451 does.
 `infra/AGENTS.md`. SEM-12 does not touch `aggregate.py`, `org_facts.py`,
 `connections/store.py` or `members.py`.
 
+### 10.5 SEM-13a in detail: the profiler, first slice
+
+An audit of 2026-11-19 gave the SEM-13 row GO-NARROWED. The row named no
+files and no verification commands. This section gives the first slice of the
+split. It adds no D-number. The SEM-13a row of §10.2 and §14 point here.
+
+**The scope (hand this paragraph to the builder as it is).** SEM-13a, HIGH,
+dark under `CONNECTION_MODEL_ORGS`, with no caller. Add a new module
+`gateway/connections/profiler.py` with `profile(org, connection_id, *, lister,
+caller)`. It does steps 1, 2 and 4 of §4.2. It never does step 3: it makes no
+decide call and writes an empty `ai` section.
+
+- It lists the tools through `mcp_tools.fresh_tool_list`.
+- It calls only tools that `mcp_tool_class` puts in class A.
+- It refuses a tool whose `destructiveHint` is true or whose `idempotentHint`
+  is false. It refuses a server with `always_confirm`.
+- It calls a tool only with no required argument, or with a key from an
+  earlier read.
+- It makes at most 20 calls in 30 s, with at most 64 KB for each result.
+- It keeps only keys, types, counts and the first and last date.
+- It normalises keys and types to the grammar of §10.4 (`Custom_Field_10`,
+  `int64` and the other cases).
+- It writes the body through `semantic_model.save_draft` with
+  `untrusted_origin=False`.
+- Add the no-member call entry to `mcp_tools.py`, and add no second MCP
+  client.
+
+**The decision on approval (fail closed, no owner decision).** The profiler
+runs with no member. So the member checks of `call_read_tool` do not apply:
+the grant `integrations:use:mcp-<server>` and the member counter. The
+profiler still obeys what the admin approved.
+
+It reads a tool only when the tool has a B1b-3 approval. The text of the tool
+in the fresh list must hash as that approval, so `mcp_actions.tool_changed` is
+false. A tool with no approval, or with a changed text, gets no call. A
+failed read of the approvals gives no call to any tool.
+
+This repeats the rule of `call_read_tool` and adds no new rule. The decisions of §4.2 stay as they
+are: no member, reads only, the caps of `map_pipeline`, and the
+`connected_by` payer.
+
+**The code anchors (verified against `main` at `2e6efa641`, 2026-11-19).**
+Each path is under `apps/services/gateway/gateway/` unless it says otherwise.
+
+| Anchor | What the code shows |
+|---|---|
+| `connections/mcp_tools.py` `fresh_tool_list(org, meta, load, *, lister)` | The one read of a tool list that a live call may trust. It serves a cached list only when the list is younger than `FRESH_S` (300 s) and its identity is the identity of the server of now. Else it reads a live `tools/list` through `load`, and refuses a changed server with `LIVE_CHANGED` |
+| `connections/mcp_tools.py` `call_read_tool(org, member, server, tool, args, *, may_use, lister, caller)` | It needs a member. It checks the grant `integrations:use:mcp-<server>` (`_may_use`), a connected server, and an `agent_scope` that holds `*` (`_scope_open`). Then it reads the B1b-3 approvals, and refuses a tool with no approval with `LIVE_TOOL_CHANGED`. A network step passes `_spend` (a counter per member and per org) and one of `LIVE_PER_ORG` slots. The answer goes to a cache keyed by a hash of the member |
+| `connections/mcp_tools.py` `_class_a_item(listed, meta, tool, approved)` | It refuses a tool that is not in the list, a changed tool, a tool that is not class A, and a tool of a server with `always_confirm` |
+| `connections/mcp_tools.py` `_sdk_call(server, tool, args)` | One `tools/call` through the pinned client of `_pinned`, with a byte budget of `MAX_CALL_BYTES`. The `Caller` type lets a test give a fake |
+| `connections/mcp_tools.py` `shape_result(raw)` | The capped, cleaned answer: `content` and `structured`, and `truncated`. An answer with `isError` raises `ListFailed` |
+| `connections/mcp_tools.py` constants | `READ_TIMEOUT_S` is 20.0 s for one read. `MAX_CALL_BYTES` equals `MAX_ANSWER_BYTES`, 1 MB. So the 64 KB cap of the profiler is a check of its own, on the result of `shape_result` |
+| `studio/mcp_actions.py` `mcp_tool_class(hints, *, always_confirm)` | It returns only `A` or `B`. It is `A` only when `always_confirm` is false and `mcp_needs_confirmation` is false |
+| `packages/acb_skills/acb_skills/permission_policy.py` `mcp_needs_confirmation(annotations)` | It reads only `readOnlyHint` and `destructiveHint`. It does not read `idempotentHint`. So the profiler checks `idempotentHint` itself, on the hints of `mcp_actions.tool_hints` |
+| `studio/mcp_approvals.py` and migration 455 | The stored approval of B1b-3. The table `studio_mcp_tool_approvals` holds one row for each org, server and tool: the SHA-256 of the approved text (`tool_text_hash`), the member who approved it and the time. `approved_hashes(db)` reads the map `(server, tool) -> hash` in one query. `mcp_tools._approvals_or_none(org)` gives `None` on a failed read |
+| `connections/mcp.py` `StoredServer` | It has no connection id. `_server` builds it from a `store.Connection` and drops `conn.id` |
+| `connections/store.py` `get_by_id(db, org, connection_id)` | The real map from a connection id to a server. It returns the row of `integration_connections` in the org, or `None`. An MCP server is the row with `provider` `mcp:<name>` (`mcp.PREFIX`), `owning_app` `integrations` (`mcp.OWNING_APP`) and `scope_kind` `org`. The unique index `integration_connections_one_live_idx` (migration 245) allows one such row for each org. No function in `mcp.py` maps a name to an id |
+| `connections/semantic_model.py` `save_draft(db, connection_id, body, shape_hash, untrusted_origin)` | It takes a session of `tenant_session()` first. It refuses with `off` when the flag does not hold the org, runs `shape_only`, and locks the connection under the bound tenant |
+| `crm_sync/catalogue.py` `connection_key_problem(value)` | The one key rule of §10.4. A digit after a digit fails (`_has_literal`). A digit after a letter or `_` passes |
+| `decide_features.py` `PREFIXES` | It holds `my_day.`, `crm.` and `projects.` only. It has no `connection.` prefix. SEM-13a adds none. SEM-13b adds it |
+
+**The map from the connection id to the server.** `profile` takes a
+`connection_id`. It reads the row with `store.get_by_id` under
+`tenant_session(org)`. It refuses unless the row is an MCP org row of the
+form above, with the status `connected`. The server name is `provider` with
+the `mcp:` prefix removed. Then the profiler finds the server in
+`mcp.enabled_meta(org)` by that name.
+
+This map lives in `profiler.py`. SEM-13a adds no new function to `store.py` or
+`mcp.py`.
+
+**The no-member call entry.** The new entry in `mcp_tools.py` reuses
+`fresh_tool_list`, `_class_a_item`, `_sdk_call` and `shape_result`. It drops
+only the three member steps of `call_read_tool`: the grant, `_spend` and the
+answer cache. It keeps the connected server, the `agent_scope` check, the
+approvals, the class check and one of the `LIVE_PER_ORG` slots. It writes no
+answer to the cache.
+
+**The normalisation.** The profiler checks each key with
+`connection_key_problem`, and never with a copy of the rule.
+
+- A key with a run of digits gets an `_` between each two digits. So
+  `Custom_Field_10` becomes `Custom_Field_1_0`, and `TDS_194C` becomes
+  `TDS_1_9_4C`.
+- A type goes through a closed table to one plain word. So `int64` becomes
+  `integer`, and `float64` becomes `number`. A type that is not in the table
+  becomes `unknown`.
+- A key that still fails the rule, or that is the same as a key already in the
+  entity, is left out. The run counts it.
+
+**The flag.** `profile` checks `connection_model_allowed(org)` first. With the
+flag off, it lists no tool, calls no tool and writes nothing.
+
 ---
 
 ## 11. The WS-CSY planner's ten rules, mapped
@@ -954,6 +1050,12 @@ uv run pytest tests/unit/test_studio_query_r8.py tests/unit/test_org_facts_r8.py
 uv run pytest tests/unit/test_semantic_shape_only.py tests/unit/test_flag_reload.py \
   tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py -q
 uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
+
+# SEM-13a (hermetic first, then the R8 case on the database)
+uv run pytest tests/unit/test_connection_profiler.py tests/unit/test_semantic_shape_only.py \
+  tests/unit/test_studio_live_preview.py tests/unit/test_studio_mcp_tools.py -q
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
 ```
 
 **The SEM-12 fences (R7).** Each test names the mutation that must turn it red.
@@ -990,3 +1092,33 @@ uv run pytest tests/unit/test_connection_semantic_model_r8.py -q
 - `test_tenant_coverage.py` and `test_tenancy_boundary.py`. The table is in the
   generated phases, and `REFERENCES` comes before `DEFAULT`. **Mutation:** remove
   the table from `generated/01`.
+
+**The SEM-13a fences (R7).** Each rule of §10.5 names its test, and each test
+names the mutation that must turn it red.
+
+- `test_connection_profiler.py` (new, a fake lister and a fake caller, no
+  network). It has one case for each rule:
+  - The class rule. The fake caller never gets a class B tool.
+    **Mutation:** drop the class check, and the case fails.
+  - The hints. A tool with `destructiveHint` true, or with `idempotentHint`
+    false, gets no call. **Mutation:** drop the hint check, and the case fails.
+  - The approval. A tool with no B1b-3 approval, or with a changed text, gets
+    no call. **Mutation:** drop the check of the approval, and the case fails.
+  - The caps. The 21st call stops the run. A result over 64 KB stops the run.
+    A run over 30 s stops. **Mutation:** drop one cap, and its case fails.
+  - No value. A value in a fake result does not get into the body.
+    **Mutation:** keep a value, and the case fails.
+  - The normalisation. `Custom_Field_10` and `int64` normalise, and
+    `shape_only` passes the body. **Mutation:** drop the normalisation, and
+    `save_draft` refuses the body, so the case fails.
+  - The flag. With the flag off, the fake lister and the fake caller get no
+    call, and nothing is written. **Mutation:** drop the flag check, and the
+    case fails.
+  - The map. A connection id that is not an MCP org row gets no list.
+    **Mutation:** drop the provider check, and the case fails.
+- `test_connection_semantic_model_r8.py` (extended, R8). One case: a profiler
+  draft of a connection saves with `made_by` `code`, an empty `ai` section and
+  `untrusted_origin` false. **Mutation:** write the body with
+  `untrusted_origin` true, and the case fails.
+- `test_studio_live_preview.py` and `test_studio_mcp_tools.py` stay green. They
+  hold `call_read_tool` and `fresh_tool_list`, which the new entry reuses.
