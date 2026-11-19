@@ -103,6 +103,7 @@ from acb_common.tool_refusals import (
     response_body,
     route_template,
     safe_detail,
+    strip_kind_prefix,
 )
 
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
@@ -461,6 +462,9 @@ class RunReads:
     total: int = 0
     #: ``(entity slug, page)`` → the answer of ``crm_list_fields``.
     fields: dict[tuple[str, int], str] = dataclasses.field(default_factory=dict)
+    #: SEM-8: a facts read of this run served a verified question, so the
+    #: run form of ``org_facts`` may read one (``org_facts_tools``).
+    verified: bool = False
 
     def spend(self, tool: str) -> str | None:
         """Count one read of *tool*. The budget line when the read is past
@@ -850,12 +854,16 @@ async def _short_note(keys: frozenset[str] | None) -> str:
 
 def _record_uuid(record_id: str) -> str:
     """The canonical UUID. A path can then hold no separator or dot segment."""
+    # HRD-2: cut the `deal:` that `search_company` prints, refuse another kind.
+    cut = strip_kind_prefix(
+        record_id, "lead", "deal", "contact", "company", read_tool="crm_list_records"
+    )
     try:
-        return str(UUID(str(record_id).strip()))
+        return str(UUID(cut))
     except (AttributeError, TypeError, ValueError):
         raise GatewayRefusal(
             f"Invalid CRM record id {record_id!r}. A CRM id is a UUID — use an "
-            "id that another CRM tool returned, not a name."
+            "id that another CRM tool returned, not a name. crm_list_records gives it."
         ) from None
 
 
